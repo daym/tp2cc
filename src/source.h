@@ -1,0 +1,27 @@
+#pragma once
+
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace p2cc {
+
+struct SourceFile {
+  std::string path;
+  std::string contents;
+
+  static std::unique_ptr<SourceFile> load(const std::filesystem::path& p);
+};
+
+struct Location {
+  const SourceFile* file = nullptr;
+  uint32_t line = 0;
+  uint32_t col = 0;
+
+  std::string to_string() const;
+};
+
+}  // namespace p2cc
