@@ -71,8 +71,10 @@ esac
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/p2cc-use-fpc.XXXXXX")
 build_dir="$work_dir/out"
-startup_obj="$work_dir/prt0.o"
+startup_obj="$build_dir/prt0.o"
 pp_stdout="$work_dir/pp.stdout"
+pp_script="$build_dir/ppas.sh"
+link_res="$build_dir/link.res"
 mkdir -p "$build_dir"
 
 cleanup() {
@@ -92,24 +94,56 @@ then
   exit 1
 fi
 
-set -- "$build_dir"/*.s
-if [ "$1" = "$build_dir/*.s" ]; then
-  echo "error: compiler succeeded but emitted no assembler files in $build_dir" >&2
+if grep -q '^#!/bin/bash' "$pp_stdout"; then
+  sed '/^#!\/bin\/bash$/,$d' "$pp_stdout" >"$link_res"
+  sed -n '/^#!\/bin\/bash$/,$p' "$pp_stdout" >"$pp_script"
+fi
+
+if [ ! -s "$pp_script" ]; then
+  echo "error: compiler succeeded but produced no ppas.sh" >&2
+  cat "$pp_stdout" >&2
   exit 1
 fi
+
+chmod +x "$pp_script"
 
 "$AS" --32 -o "$startup_obj" "$STARTUP_AS"
 
-for asm_src do
-  obj=${asm_src%.s}.o
-  "$AS" --32 -o "$obj" "$asm_src"
-done
+(
+  cd "$build_dir"
+  sh ./ppas.sh
+)
 
-set -- "$build_dir"/*.o
-if [ "$1" = "$build_dir/*.o" ]; then
-  echo "error: assembly succeeded but produced no object files in $build_dir" >&2
+produced_output=""
+
+case "$output_name" in
+  /*)
+    if [ -x "$output_path" ]; then
+      produced_output="$output_path"
+    fi
+    ;;
+esac
+
+if [ -z "$produced_output" ]; then
+  produced_output="$build_dir/$output_name"
+fi
+
+if [ ! -x "$produced_output" ]; then
+  produced_output="$build_dir/${input_file##*/}"
+  case "$produced_output" in
+    *.*) produced_output=${produced_output%.*} ;;
+  esac
+fi
+
+if [ ! -x "$produced_output" ]; then
+  echo "error: compiler driver finished but produced no executable" >&2
+  cat "$pp_stdout" >&2
   exit 1
 fi
 
+if [ "$produced_output" = "$output_path" ]; then
+  exit 0
+fi
+
 mkdir -p "$(dirname "$output_path")"
-"$LD" -m elf_i386 -o "$output_path" "$startup_obj" "$@"
+cp -f "$produced_output" "$output_path"
