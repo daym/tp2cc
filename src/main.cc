@@ -240,7 +240,13 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
     h << "// p2cc: RTL stub for external unit '" << u << "'.\n";
     h << "#pragma once\n";
     h << "#include \"p2cc_rt/prelude.h\"\n";
-    h << "namespace p_" << u << " { using namespace ::rt; }\n";
+    // Namespace alias makes `p_UNIT::name` resolve to `rt::name`, which
+    // is what qualified lookups from other units expect. A
+    // `using namespace ::rt` inside a namespace body would only bring
+    // those names in for UNQUALIFIED lookups done inside that
+    // namespace -- not for external `p_UNIT::name` access.
+    h << "namespace rt {}\n";
+    h << "namespace p_" << u << " = ::rt;\n";
   }
   std::printf("emit-all: %d emitted, %d failed (of %zu units), "
               "%zu rtl stubs\n",

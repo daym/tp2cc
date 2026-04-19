@@ -838,7 +838,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // `UnitName.sym` in Pascal is a qualified unit reference. In
       // C++ the unit maps to `namespace p_UnitName`, so use `::`.
       // Only fire when the base name isn't otherwise bound: locals
-      // shadow, class members shadow, `with` targets shadow.
+      // shadow, class members shadow, `with` targets shadow. The
+      // unit might be an RTL unit that we didn't parse (e.g. `dos`);
+      // we recognise it if it's in the current unit's `uses` list.
       if (m.base->kind == Kind::Ident && registry) {
         const auto& id = static_cast<const Ident&>(*m.base);
         bool shadowed = local_scope.count(id.name) > 0;
@@ -861,8 +863,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
           }
         }
-        if (!shadowed && registry->units.count(id.name)) {
-          return mangle(id.name) + "::" + mangle(m.name);
+        if (!shadowed) {
+          bool is_unit = registry->units.count(id.name) > 0;
+          if (!is_unit) {
+            auto uit = registry->units.find(current_unit_name);
+            if (uit != registry->units.end()) {
+              for (const auto& nm : uit->second.uses) {
+                if (nm == id.name) { is_unit = true; break; }
+              }
+            }
+          }
+          if (is_unit) {
+            return mangle(id.name) + "::" + mangle(m.name);
+          }
         }
       }
       if (m.base->kind == Kind::Ident &&
