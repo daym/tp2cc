@@ -1804,6 +1804,12 @@ inline void p_rewrite(TextFile& f) {
   p_set_ioresult(f, f.f ? 0 : 5);
 }
 inline void p_rewrite(TextFile& f, int32_t) { p_rewrite(f); }
+inline void p_append(TextFile& f) {
+  char buf[260]{};
+  p_file_name_to_buf(f, buf);
+  f.f = std::fopen(buf, "ab");
+  p_set_ioresult(f, f.f ? 0 : 5);
+}
 inline void p_close(TextFile& f) {
   if (f.f) { std::fclose(f.f); f.f = nullptr; }
   p_set_ioresult(f, 0);
