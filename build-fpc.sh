@@ -39,6 +39,7 @@ case "$MACHINE" in
 esac
 
 echo "== [1/4] build p2cc translator =="
+make clean
 make -j"$JOBS"
 
 echo "== [2/4] emit C++ from Pascal =="
