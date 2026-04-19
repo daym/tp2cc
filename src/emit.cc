@@ -1989,9 +1989,12 @@ void Emitter::emit_stmt(const Stmt& s) {
           emitln("return;");
         }
       } else if (name == "new" && call_expr && !call_expr->args.empty()) {
-        // new(p) or new(p, Ctor(args))
+        // new(p) or new(p, Ctor(args)). `p` might be `arr[i]` whose
+        // `decltype` is a reference (`T&`); strip it before computing
+        // the pointee so `new remove_pointer_t<T&>` doesn't arise.
         std::string p = expr_to_cxx(*call_expr->args[0]);
-        emitln(p + " = new ::std::remove_pointer_t<decltype(" + p + ")>{};");
+        emitln(p + " = new ::std::remove_pointer_t<"
+                   "::std::remove_reference_t<decltype(" + p + ")>>{};");
         if (call_expr->args.size() >= 2) {
           const auto& second = *call_expr->args[1];
           std::string method;
