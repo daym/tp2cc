@@ -31,6 +31,11 @@ struct EmittedUnit {
 };
 
 EmittedUnit emit_unit(const ast::UnitNode& u,
-                      const TypeRegistry* registry = nullptr);
+                      const TypeRegistry* registry = nullptr,
+                      // When emitting a `program`, the topo-sorted
+                      // list of unit names (excluding the program
+                      // itself) whose `__unit_init()` should run at
+                      // program startup before the program's body.
+                      const std::vector<std::string>* unit_init_order = nullptr);
 
 }  // namespace p2cc

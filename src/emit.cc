@@ -164,6 +164,11 @@ struct Emitter {
   // driver. Drives member-access and ident-call decisions.
   const TypeRegistry* registry = nullptr;
 
+  // Topologically-sorted unit names whose `__unit_init()` must run at
+  // program start, before the program's `begin..end.` body. Set by
+  // the driver only when emitting the `program` unit.
+  const std::vector<std::string>* unit_init_order = nullptr;
+
   void set_header() { out = &header; }
   void set_impl()   { out = &impl; }
 
@@ -2723,6 +2728,12 @@ void Emitter::emit_unit(const UnitNode& u) {
     }
     flush();
   }
+  // Forward-declare __unit_init() in the header so the program's
+  // init chain in main() can call it across translation units.
+  if (!u.is_program) {
+    nl();
+    emitln("void __unit_init();");
+  }
   nl();
   emitln("}  // namespace " + ns);
 
@@ -2732,6 +2743,15 @@ void Emitter::emit_unit(const UnitNode& u) {
   emitln("#include \"p_" + hguard + ".h\"");
   for (const auto& uu : u.impl_uses) {
     emitln("#include \"p_" + uu + ".h\"");
+  }
+  // The program emits a `__unit_init()` call chain over every
+  // parsed unit; include all of their headers so the declarations
+  // are visible.
+  if (u.is_program && unit_init_order) {
+    for (const auto& uu : *unit_init_order) {
+      if (uu == u.name) continue;
+      emitln("#include \"p_" + uu + ".h\"");
+    }
   }
   nl();
   emitln("namespace " + ns + " {");
@@ -2777,7 +2797,22 @@ void Emitter::emit_unit(const UnitNode& u) {
   //  - unit:     emit a free `__init()` function holding the body.
   //    TODO: chain these in a proper startup init list. For now,
   //    unreferenced init bodies are dead-stripped by the linker.
-  if (u.init_body) {
+  if (!u.is_program) {
+    // Always emit a `__unit_init()` so the program's startup init
+    // chain can call every unit unconditionally (without checking
+    // whether this unit has a begin..end. body). Empty body if
+    // Pascal had none.
+    nl();
+    emitln("void __unit_init() {");
+    indent();
+    ++block_depth;
+    if (u.init_body) emit_stmt(*u.init_body);
+    --block_depth;
+    dedent();
+    emitln("}");
+    nl();
+    emitln("}  // namespace " + ns);
+  } else if (u.init_body) {
     nl();
     if (u.is_program) {
       // Program entry point -- the one unprefixed name we emit.
@@ -2786,6 +2821,16 @@ void Emitter::emit_unit(const UnitNode& u) {
       emitln("int main(int argc, char** argv) {");
       indent();
       emitln("::rt::init_argv(argc, argv);");
+      // Run each uses'd unit's init body in topological order
+      // (dependencies before dependents). Pascal's unit init
+      // semantics: every unit's `begin..end.` at its tail fires
+      // exactly once, before the program body.
+      if (unit_init_order) {
+        for (const auto& uu : *unit_init_order) {
+          if (uu == u.name) continue;  // don't self-init the program
+          emitln(mangle(uu) + "::__unit_init();");
+        }
+      }
       // Re-enter the namespace so the body sees in-unit names
       // unqualified.
       emitln("using namespace " + ns + ";");
@@ -2815,9 +2860,11 @@ void Emitter::emit_unit(const UnitNode& u) {
 
 }  // namespace
 
-EmittedUnit emit_unit(const UnitNode& u, const TypeRegistry* registry) {
+EmittedUnit emit_unit(const UnitNode& u, const TypeRegistry* registry,
+                      const std::vector<std::string>* unit_init_order) {
   Emitter e;
   e.registry = registry;
+  if (unit_init_order) e.unit_init_order = unit_init_order;
   e.emit_unit(u);
   return {std::move(e.header), std::move(e.impl)};
 }

@@ -213,7 +213,23 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
   for (const auto& name : tr.order) {
     const auto* pu = g.lookup(name);
     if (!pu || !pu->ok || !pu->ast) { ++failed; continue; }
-    auto out = emit_unit(*pu->ast, &reg);
+    // For the program unit, pass the topo-sorted list of non-program
+    // units so the emitter can generate a `__unit_init()` chain at
+    // the start of `main()`. Pascal runs each unit's tail
+    // `begin..end.` exactly once, in dependency order, before the
+    // program body.
+    const std::vector<std::string>* init_order = nullptr;
+    std::vector<std::string> init_list;
+    if (pu->ast->is_program) {
+      for (const auto& n : tr.order) {
+        const auto* p = g.lookup(n);
+        if (!p || !p->ok || !p->ast) continue;
+        if (p->ast->is_program) continue;
+        init_list.push_back(n);
+      }
+      init_order = &init_list;
+    }
+    auto out = emit_unit(*pu->ast, &reg, init_order);
     {
       std::ofstream h(fs::path(outdir) / ("p_" + name + ".h"));
       h << out.header;
