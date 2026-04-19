@@ -10,7 +10,7 @@
 #   4. link        -- link build/emitted/pp from the reachable object files
 #
 # Run this inside an i386/i686 toolchain environment. For example:
-#   guix shell --system=i686-linux gcc-toolchain binutils -- ./build-fpc.sh
+#   guix shell --system=i686-linux gcc-toolchain binutils ld-wrapper -- ./build-fpc.sh
 #
 # Do NOT run with a host 64-bit g++ -- the runtime
 # (p2cc_rt/prelude.h) is sized for 32-bit pointers and the build may
