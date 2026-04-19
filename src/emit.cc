@@ -273,6 +273,14 @@ struct Emitter {
   std::string current_fn_name;
   bool current_fn_is_function = false;
   bool current_fn_is_ctor = false;
+  // Stack of loop-exit labels. Pascal `break` inside a `case` arm must
+  // exit the enclosing loop, but C++ `break` inside `switch` exits the
+  // switch -- so we emit Pascal `break` as `goto` to a fresh label
+  // placed right after each loop. Also used by `continue` -> a separate
+  // label placed at the loop's re-test/re-increment point.
+  std::vector<std::string> loop_break_labels;
+  std::vector<std::string> loop_continue_labels;
+  int loop_label_counter = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -2113,9 +2121,19 @@ void Emitter::emit_stmt(const Stmt& s) {
       }
 
       if (name == "break") {
-        emitln("break;");
+        // Pascal break exits the enclosing loop even from inside a case.
+        // Emit as goto so switch nesting can't swallow it.
+        if (!loop_break_labels.empty()) {
+          emitln("goto " + loop_break_labels.back() + ";");
+        } else {
+          emitln("break;");  // outside any loop -- let C++ diagnose
+        }
       } else if (name == "continue") {
-        emitln("continue;");
+        if (!loop_continue_labels.empty()) {
+          emitln("goto " + loop_continue_labels.back() + ";");
+        } else {
+          emitln("continue;");
+        }
       } else if (name == "exit") {
         // exit or exit(v). In a Function, fill the result slot and return;
         // in a Procedure, return; in a Constructor, return the status.
@@ -2213,20 +2231,38 @@ void Emitter::emit_stmt(const Stmt& s) {
     }
     case Kind::While: {
       const auto& w = static_cast<const While&>(s);
+      std::string n = std::to_string(++loop_label_counter);
+      std::string brk = "__ploop_brk_" + n;
+      std::string cont = "__ploop_cnt_" + n;
       emitln("while (" + expr_to_cxx(*w.cond) + ") {");
       indent();
+      loop_break_labels.push_back(brk);
+      loop_continue_labels.push_back(cont);
       if (w.body) emit_stmt(*w.body);
+      emitln(cont + ":;");
+      loop_continue_labels.pop_back();
+      loop_break_labels.pop_back();
       dedent();
       emitln("}");
+      emitln(brk + ":;");
       break;
     }
     case Kind::Repeat: {
       const auto& r = static_cast<const Repeat&>(s);
+      std::string n = std::to_string(++loop_label_counter);
+      std::string brk = "__ploop_brk_" + n;
+      std::string cont = "__ploop_cnt_" + n;
       emitln("do {");
       indent();
+      loop_break_labels.push_back(brk);
+      loop_continue_labels.push_back(cont);
       for (const auto& sub : r.body) emit_stmt(*sub);
+      emitln(cont + ":;");
+      loop_continue_labels.pop_back();
+      loop_break_labels.pop_back();
       dedent();
       emitln("} while (!(" + expr_to_cxx(*r.cond) + "));");
+      emitln(brk + ":;");
       break;
     }
     case Kind::For: {
@@ -2234,6 +2270,9 @@ void Emitter::emit_stmt(const Stmt& s) {
       std::string var = mangle(f.var);
       std::string from = expr_to_cxx(*f.from);
       std::string to = expr_to_cxx(*f.to);
+      std::string n = std::to_string(++loop_label_counter);
+      std::string brk = "__ploop_brk_" + n;
+      std::string cont = "__ploop_cnt_" + n;
       // Pascal `for X := A to B do S` is NOT `for (X=A; X<=B; ++X)`:
       // when X's type is `byte` and B is 255, ++X wraps to 0 and the
       // condition never fails. True semantics: body runs for each X in
@@ -2250,7 +2289,12 @@ void Emitter::emit_stmt(const Stmt& s) {
       emitln(var + " = __pfrom;");
       emitln("while (true) {");
       indent();
+      loop_break_labels.push_back(brk);
+      loop_continue_labels.push_back(cont);
       if (f.body) emit_stmt(*f.body);
+      emitln(cont + ":;");
+      loop_continue_labels.pop_back();
+      loop_break_labels.pop_back();
       emitln("if (" + var + " == __pto) break;");
       emitln(step + std::string("(") + var + ");");
       dedent();
@@ -2259,6 +2303,7 @@ void Emitter::emit_stmt(const Stmt& s) {
       emitln("}");
       dedent();
       emitln("}");
+      emitln(brk + ":;");
       break;
     }
     case Kind::CaseStmt: {
