@@ -1,0 +1,7 @@
+s="$7fffffff"  code=0  longint=2147483647
+s="$80000000"  code=0  longint=-2147483648
+s="$D7B0"  code=0  longint=55216
+s="%1010"  code=0  longint=10
+s="&77"  code=1  longint=0
+s="2147483647"  code=0  longint=2147483647
+s="2147483648"  code=10  longint=0
