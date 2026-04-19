@@ -2234,14 +2234,29 @@ void Emitter::emit_stmt(const Stmt& s) {
       std::string var = mangle(f.var);
       std::string from = expr_to_cxx(*f.from);
       std::string to = expr_to_cxx(*f.to);
-      // Use rt::p_inc/p_dec so enum loop vars work without operator++/--.
-      if (f.downto) {
-        emitln("for (" + var + " = " + from + "; " + var + " >= " + to + "; ::rt::p_dec(" + var + ")) {");
-      } else {
-        emitln("for (" + var + " = " + from + "; " + var + " <= " + to + "; ::rt::p_inc(" + var + ")) {");
-      }
+      // Pascal `for X := A to B do S` is NOT `for (X=A; X<=B; ++X)`:
+      // when X's type is `byte` and B is 255, ++X wraps to 0 and the
+      // condition never fails. True semantics: body runs for each X in
+      // [A,B]; terminate by equality after the body. Snapshot the end
+      // bound so mid-body assignments to B don't alter the loop count.
+      emitln("{");
+      indent();
+      emitln("auto __pfrom = (" + from + ");");
+      emitln("auto __pto = (" + to + ");");
+      const char* cmp = f.downto ? ">=" : "<=";
+      const char* step = f.downto ? "::rt::p_dec" : "::rt::p_inc";
+      emitln(std::string("if (__pfrom ") + cmp + " __pto) {");
+      indent();
+      emitln(var + " = __pfrom;");
+      emitln("while (true) {");
       indent();
       if (f.body) emit_stmt(*f.body);
+      emitln("if (" + var + " == __pto) break;");
+      emitln(step + std::string("(") + var + ");");
+      dedent();
+      emitln("}");
+      dedent();
+      emitln("}");
       dedent();
       emitln("}");
       break;
