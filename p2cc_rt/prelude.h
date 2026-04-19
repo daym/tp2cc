@@ -631,6 +631,16 @@ inline void p_insert(const ShortString<N>& src, ShortString<M>& dest, int pos) {
   }
   dest.length = static_cast<uint8_t>(need);
 }
+// Pascal `insert(c, s, pos)` -- insert a single character.
+template <int M>
+inline void p_insert(char c, ShortString<M>& dest, int pos) {
+  char src[2] = {c, 0};
+  p_insert(src, dest, pos);
+}
+template <int M>
+inline void p_insert(uint8_t c, ShortString<M>& dest, int pos) {
+  p_insert(static_cast<char>(c), dest, pos);
+}
 inline void p_insert(const char* src, ShortString<>& dest, int pos) {
   p_insert(ShortString<>(src), dest, pos);
 }
