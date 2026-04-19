@@ -192,9 +192,10 @@ struct CharConst {
   // only way a CharConst is constructed is from an explicit `'c'` in
   // the emitted const decl.
   explicit constexpr CharConst(char x) : c(static_cast<uint8_t>(x)) {}
-  // Only one integer-kind conversion (uint8_t) so arithmetic /
-  // comparison contexts pick a single path unambiguously. char ->
-  // uint8_t is implicit at call sites anyway.
+  // Conversions: `uint8_t` for Pascal `s[i] := X` (char contexts),
+  // `char` so CharConst can sit in an initializer_list<char> next to
+  // regular char literals without template-deduction conflicts, and
+  // `ShortString<N>` for string-concatenation contexts.
   constexpr operator uint8_t() const { return c; }
   template <int N = 255>
   constexpr operator ShortString<N>() const {
@@ -422,6 +423,29 @@ struct Set {
 template <typename Elem>
 Set<Elem> set_of(std::initializer_list<Elem> xs) {
   return Set<Elem>::from_list(xs);
+}
+
+// Mixed-type variadic `set_of` -- Pascal set literals like
+// `[newline, #13, '{', ';']` mix a CharConst (our wrapper for Pascal
+// `const X = 'c'`) with plain char literals. A single
+// `initializer_list<Elem>` can't deduce Elem across distinct argument
+// types, so take them as a variadic pack and add each explicitly.
+// The first argument's type drives the Set's element type.
+namespace detail {
+template <typename T> struct set_elem_type { using type = T; };
+template <> struct set_elem_type<char> { using type = uint8_t; };
+// CharConst is our wrapper for Pascal `const X = 'c'` -- treat as
+// uint8_t for set-of-char purposes so `contains(p_c)` with a
+// uint8_t byte matches without needing a CharConst conversion.
+template <> struct set_elem_type<CharConst> { using type = uint8_t; };
+}
+template <typename T, typename... Rest>
+inline auto set_of(T first, Rest... rest) {
+  using E = typename detail::set_elem_type<T>::type;
+  Set<E> s;
+  s.add(static_cast<E>(first));
+  (s.add(static_cast<E>(rest)), ...);
+  return s;
 }
 
 // Empty set-literal sentinel. Pascal `[]` has no element type on its own

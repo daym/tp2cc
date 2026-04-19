@@ -1536,12 +1536,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return "::rt::EmptySet{}";
       }
       if (!has_range) {
-        std::string out = "::rt::set_of({";
+        // Variadic-pack form so the element types don't have to
+        // match exactly (Pascal set literals freely mix e.g. a
+        // CharConst `p_newline` with plain char literals like
+        // `'\r'`, `';'`). The Set's element type is deduced from
+        // the first argument.
+        std::string out = "::rt::set_of(";
         for (size_t i = 0; i < s.elements.size(); ++i) {
           if (i) out += ", ";
           out += expr_to_cxx(*s.elements[i]);
         }
-        out += "})";
+        out += ")";
         return out;
       }
       // Slow path: mixed scalar + range elements. Build a Set in an IIFE
