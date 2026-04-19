@@ -20,6 +20,13 @@ void add_record_fields(RecordInfo& ri, const TyRecord& tr) {
     fi.type = f.type.get();
     for (const auto& n : f.names) ri.fields[lc(n)] = fi;
   }
+  // Variant-record tag (`case typ : toptype of ...`) -- `typ` is an
+  // actual field in the emitted struct, so it must be indexed as one.
+  if (tr.has_variant && !tr.variant_tag_name.empty()) {
+    FieldInfo fi;
+    fi.type = tr.variant_tag_type.get();
+    ri.fields[lc(tr.variant_tag_name)] = fi;
+  }
   for (const auto& vc : tr.variant_cases) {
     for (const auto& f : vc.fields) {
       FieldInfo fi;
