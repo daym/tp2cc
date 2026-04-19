@@ -23,6 +23,8 @@
 
 namespace p2cc {
 
+struct TypeRegistry;
+
 struct EmittedUnit {
   std::string header;  // contents of UNIT.h
   std::string impl;    // contents of UNIT.cc
@@ -50,6 +52,7 @@ void collect_enum_sizes(const ast::UnitNode& u,
 EmittedUnit emit_unit(const ast::UnitNode& u,
                       const std::unordered_set<std::string>& extra_parameterless = {},
                       const std::unordered_set<std::string>& extra_fields = {},
-                      const std::unordered_map<std::string, EnumInfo>& extra_enums = {});
+                      const std::unordered_map<std::string, EnumInfo>& extra_enums = {},
+                      const TypeRegistry* registry = nullptr);
 
 }  // namespace p2cc

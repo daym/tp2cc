@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "diag.h"
+#include "typereg.h"
 
 namespace p2cc {
 
@@ -145,6 +146,27 @@ struct Emitter {
   // parameterless method in another unit.
   std::unordered_set<std::string> local_scope;
 
+  // Variable-to-declared-type map for the current scope (parameters +
+  // locals). Populated at proc-body entry so expression-type deduction
+  // can answer "what class does this variable belong to?" and the
+  // Member-access emitter can auto-call only actual methods.
+  std::unordered_map<std::string, const ast::TypeExpr*> local_types;
+
+  // `with X do` bindings: for every `with target`, push the target's
+  // expression text (already emitted) and its deduced type. Bare idents
+  // inside the body that resolve as fields of one of the targets get
+  // rewritten to `target.name`. For auto-call decisions on bare idents,
+  // consult these types.
+  struct WithBind {
+    std::string cxx_text;
+    const ast::TypeExpr* type = nullptr;
+  };
+  std::vector<WithBind> with_stack;
+
+  // Reified type/symbol tree spanning all parsed units. Set by the
+  // driver. Drives member-access and ident-call decisions.
+  const TypeRegistry* registry = nullptr;
+
   // Map from Pascal type-alias name (lowercased) to its type expression
   // within the currently-emitted unit. Used to resolve named aliases so
   // a typed-constant whose declared type is a named `array[...] of T`
@@ -193,6 +215,15 @@ struct Emitter {
   void emit_nested_proc_lambda(const ProcDecl& pd);
   void emit_stmt(const Stmt& s);
   void emit_stmt_line(const Stmt& s);  // prepends indent + trailing ';'
+
+  // Expression-type deduction. Returns the Pascal TypeExpr that the
+  // expression has, or nullptr when unknown. Consults the TypeRegistry
+  // for globals and the current scope tables for locals/self-class.
+  const ast::TypeExpr* deduce_type(const ast::Expr& e);
+
+  // Class/record alias name ("tfoo") of `e`, lowercased, if detectable.
+  // Empty if the type can't be narrowed to a named object/record type.
+  std::string deduce_class_alias(const ast::Expr& e);
 
   // State: the Pascal identifier of the current function whose body we are
   // emitting (not mangled). Used by `exit`/`exit(v)` translation so we
@@ -348,6 +379,165 @@ std::string Emitter::type_to_cxx(const TypeExpr& t) {
 }
 
 // ---------------------------------------------------------------------------
+// Expression-type deduction. Used by the Member / Ident emitters so
+// decisions like "is `obj.name` a method call or a field read?" come
+// from the actual type tree, not name-matching heuristics.
+
+static std::string lc_str(std::string s) {
+  for (auto& ch : s)
+    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+  return s;
+}
+
+const TypeExpr* Emitter::deduce_type(const Expr& e) {
+  if (!registry) return nullptr;
+  switch (e.kind) {
+    case Kind::Ident: {
+      const auto& id = static_cast<const Ident&>(e);
+      // Local variables and parameters shadow everything.
+      auto lit = local_types.find(id.name);
+      if (lit != local_types.end()) return lit->second;
+      // Self -- canonically the current class's type.
+      if (id.name == "self" && !current_class_name.empty()) {
+        // We don't track a direct TypeExpr for the class here. Returning
+        // nullptr is fine; Member access will fall through to class-name
+        // handling via `current_class_name` in the caller.
+        return nullptr;
+      }
+      // Class member (inside method body of a known class).
+      if (!current_class_name.empty()) {
+        auto* m = registry->lookup_class_member(current_class_name, id.name);
+        if (m && !m->is_method) return m->field.type;
+      }
+      // `with X do` bindings contribute fields of their target type --
+      // the ident might name such a field.
+      for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
+        std::string ac = registry ? registry->direct_type_name(
+                                        registry->canonicalize(it->type))
+                                  : std::string{};
+        if (ac.empty()) continue;
+        auto* m = registry->lookup_class_member(ac, id.name);
+        if (m && !m->is_method) return m->field.type;
+        auto* rf = registry->lookup_record_field(ac, id.name);
+        if (rf) return rf->type;
+      }
+      // Unit-level var.
+      auto vit = registry->vars.find(id.name);
+      if (vit != registry->vars.end()) return vit->second.type;
+      // Unit-level typed const.
+      auto cit = registry->consts.find(id.name);
+      if (cit != registry->consts.end() && cit->second.type)
+        return cit->second.type;
+      // Unit-level function -- the ident names the function; its "value"
+      // (when not called) is the return type.
+      auto pit = registry->procs.find(id.name);
+      if (pit != registry->procs.end() && pit->second.decl &&
+          pit->second.decl->return_type) {
+        return pit->second.decl->return_type.get();
+      }
+      return nullptr;
+    }
+    case Kind::Deref: {
+      const auto& d = static_cast<const Deref&>(e);
+      const TypeExpr* t = deduce_type(*d.operand);
+      if (!t) return nullptr;
+      t = registry->canonicalize(t);
+      if (t && t->kind == Kind::TyPointer) {
+        const auto& p = static_cast<const TyPointer&>(*t);
+        return p.target.get();
+      }
+      return nullptr;
+    }
+    case Kind::Member: {
+      const auto& m = static_cast<const Member&>(e);
+      // If base is `self`, use current_class_name directly.
+      std::string cls;
+      if (m.base->kind == Kind::Ident) {
+        const auto& id = static_cast<const Ident&>(*m.base);
+        if (id.name == "self") cls = current_class_name;
+      }
+      if (cls.empty()) {
+        const TypeExpr* bt = deduce_type(*m.base);
+        if (bt) cls = registry->direct_type_name(registry->canonicalize(bt));
+      }
+      if (cls.empty()) return nullptr;
+      if (auto* cm = registry->lookup_class_member(cls, m.name)) {
+        if (cm->is_method) {
+          if (cm->method.decl && cm->method.decl->return_type)
+            return cm->method.decl->return_type.get();
+          return nullptr;
+        }
+        return cm->field.type;
+      }
+      if (auto* rf = registry->lookup_record_field(cls, m.name))
+        return rf->type;
+      return nullptr;
+    }
+    case Kind::Index: {
+      const auto& ix = static_cast<const Index&>(e);
+      const TypeExpr* bt = deduce_type(*ix.base);
+      if (!bt) return nullptr;
+      bt = registry->canonicalize(bt);
+      if (bt && bt->kind == Kind::TyArray)
+        return static_cast<const TyArray&>(*bt).element.get();
+      return nullptr;
+    }
+    case Kind::Call: {
+      const auto& c = static_cast<const Call&>(e);
+      if (c.callee->kind == Kind::Ident) {
+        const auto& id = static_cast<const Ident&>(*c.callee);
+        // Type cast `T(expr)` -- target type is the alias's own type.
+        auto ait = registry->aliases.find(id.name);
+        if (ait != registry->aliases.end() && c.args.size() == 1)
+          return ait->second.target;
+        // Class cast `TClass(expr)` -> pointer to class (rare via alias).
+        auto pit = registry->procs.find(id.name);
+        if (pit != registry->procs.end() && pit->second.decl &&
+            pit->second.decl->return_type) {
+          return pit->second.decl->return_type.get();
+        }
+      } else if (c.callee->kind == Kind::Member) {
+        const auto& mem = static_cast<const Member&>(*c.callee);
+        std::string cls;
+        if (mem.base->kind == Kind::Ident &&
+            static_cast<const Ident&>(*mem.base).name == "self") {
+          cls = current_class_name;
+        } else {
+          const TypeExpr* bt = deduce_type(*mem.base);
+          if (bt) cls = registry->direct_type_name(registry->canonicalize(bt));
+        }
+        if (!cls.empty()) {
+          if (auto* cm = registry->lookup_class_member(cls, mem.name)) {
+            if (cm->is_method && cm->method.decl && cm->method.decl->return_type)
+              return cm->method.decl->return_type.get();
+          }
+        }
+      }
+      return nullptr;
+    }
+    case Kind::AddrOf: {
+      // Returning a pointer type would be ideal, but synthesising it on
+      // the fly requires owning a TypeExpr we don't have. Unused today.
+      return nullptr;
+    }
+    default:
+      return nullptr;
+  }
+}
+
+std::string Emitter::deduce_class_alias(const Expr& e) {
+  if (!registry) return {};
+  // Fast path for `self` -- we already know the class.
+  if (e.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(e);
+    if (id.name == "self") return current_class_name;
+  }
+  const TypeExpr* t = deduce_type(e);
+  if (!t) return {};
+  return registry->direct_type_name(registry->canonicalize(t));
+}
+
+// ---------------------------------------------------------------------------
 // Expressions (coarse -- just enough for constant values)
 
 std::string Emitter::expr_to_cxx(const Expr& e) {
@@ -443,15 +633,31 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // those shadow any outer unit-level parameterless proc.
       if (block_depth > 0 && !is_callee_context_ &&
           !local_scope.count(n.name)) {
-        if (!current_class_name.empty()) {
-          auto it = class_parameterless_methods.find(current_class_name);
-          if (it != class_parameterless_methods.end() &&
-              it->second.count(n.name)) {
-            return mangle(n.name) + "()";
+        // Inside a method body: walk the full class chain via the
+        // registry so methods inherited from a base class still
+        // auto-parenthesise. Fields shadow methods here -- lookup
+        // returns the first member match along the chain.
+        if (!current_class_name.empty() && registry) {
+          if (auto* m = registry->lookup_class_member(current_class_name,
+                                                     n.name)) {
+            if (m->is_method && m->method.param_count == 0) {
+              return mangle(n.name) + "()";
+            }
+            // It's a field or a method with params -- leave bare (C++
+            // member lookup resolves it).
+            return mangle(n.name);
           }
         }
-        if (parameterless_methods.count(n.name) &&
-            !field_names.count(n.name)) {
+        // Unit-level parameterless proc. Use the registry so we know
+        // the parameter count; fall back to the name-only set when the
+        // registry wasn't provided.
+        if (registry) {
+          auto pit = registry->procs.find(n.name);
+          if (pit != registry->procs.end() && pit->second.param_count == 0) {
+            return mangle(n.name) + "()";
+          }
+        } else if (parameterless_methods.count(n.name) &&
+                   !field_names.count(n.name)) {
           return mangle(n.name) + "()";
         }
       }
@@ -536,32 +742,34 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       std::string text = expr_to_cxx(*m.base) + "." + mangle(m.name);
       if (!is_callee_context_) {
-        // Safe auto-call: `self.method` when we're inside a method body
-        // of a class that has `method` parameterless.
-        if (!current_class_name.empty() && m.base->kind == Kind::Ident &&
-            static_cast<const Ident&>(*m.base).name == "self") {
-          auto it = class_parameterless_methods.find(current_class_name);
-          if (it != class_parameterless_methods.end() &&
-              it->second.count(m.name)) {
-            text += "()";
+        // Type-driven decision: if we know the base's class, look up the
+        // member in the registry. Parameterless methods auto-call, fields
+        // stay bare.
+        std::string bcls = deduce_class_alias(*m.base);
+        bool decided = false;
+        if (!bcls.empty() && registry) {
+          if (auto* mem = registry->lookup_class_member(bcls, m.name)) {
+            if (mem->is_method && mem->method.param_count == 0) text += "()";
+            decided = true;
+          } else if (registry->lookup_record_field(bcls, m.name)) {
+            decided = true;  // record field -- no call
           }
         }
-        // Universal auto-call: if the name is a parameterless method in
-        // some class AND never a field name anywhere, then `.name` in
-        // value context is unambiguously a call.
-        else if (parameterless_methods.count(m.name) &&
-                 !field_names.count(m.name)) {
-          text += "()";
-        }
-        // Aggressive auto-call: if the name is a parameterless method AND
-        // the base is a pointer-deref expression, bias toward method-call.
-        // Under -fpermissive a wrong guess on a field only trips when a
-        // class really does have a same-named field, which is the minority
-        // case; avoiding "unresolved overloaded function type" errors on
-        // the majority case is worth it.
-        else if (parameterless_methods.count(m.name) &&
-                 m.base->kind == Kind::Deref) {
-          text += "()";
+        if (!decided) {
+          // Fall back to the older name-based heuristics -- these still
+          // catch in-class method-body `self.m` access when type
+          // deduction couldn't pin down `self`.
+          if (!current_class_name.empty() && m.base->kind == Kind::Ident &&
+              static_cast<const Ident&>(*m.base).name == "self") {
+            auto it = class_parameterless_methods.find(current_class_name);
+            if (it != class_parameterless_methods.end() &&
+                it->second.count(m.name)) {
+              text += "()";
+            }
+          } else if (parameterless_methods.count(m.name) &&
+                     !field_names.count(m.name)) {
+            text += "()";
+          }
         }
       }
       return text;
@@ -579,6 +787,34 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       is_callee_context_ = true;
       std::string inner = expr_to_cxx(*a.operand);
       is_callee_context_ = saved;
+      // Pascal `@arr` where `arr` is a BYTE array commonly lands in a
+      // `pchar` context (the fpc compiler's fill buffers etc.).
+      // `Array<uint8_t,...>*` doesn't implicitly convert to `char*`, so
+      // emit `(char*)arr` instead -- our Array<byte> has an explicit
+      // operator `char*`. Non-byte arrays keep `&arr` so
+      // pointer-to-array assignments remain type-compatible.
+      if (registry) {
+        const TypeExpr* ot = deduce_type(*a.operand);
+        if (ot) ot = registry->canonicalize(ot);
+        if (ot && ot->kind == Kind::TyArray) {
+          const auto& ar = static_cast<const TyArray&>(*ot);
+          const TypeExpr* elem = ar.element.get();
+          if (elem) elem = registry->canonicalize(elem);
+          bool byte_elem = false;
+          if (elem && elem->kind == Kind::TyName) {
+            std::string en = static_cast<const TyName&>(*elem).name;
+            for (auto& ch : en)
+              if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+            if (en == "byte" || en == "char" || en == "uint8_t" ||
+                en == "shortint") {
+              byte_elem = true;
+            }
+          }
+          if (byte_elem) {
+            return "((char*)(" + inner + "))";
+          }
+        }
+      }
       return "(&" + inner + ")";
     }
     case Kind::Call: {
@@ -626,6 +862,30 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // `const char*` or `long double` can't appear as `T(expr)`; use
           // a paren cast.
           return "((" + primitive_type_cxx(n) + ")(" + arg0() + "))";
+        } else if ((n == "inc" || n == "dec") &&
+                   (c.args.size() == 1 || c.args.size() == 2) &&
+                   c.args[0]->kind == Kind::Call) {
+          // Pascal `inc(T(lv))` / `dec(T(lv))` -- cast-then-increment a
+          // value in-place. C++ rejects this because the cast produces
+          // an rvalue. Rewrite to `lv = (origtype)((T)lv +/- step)` so
+          // the underlying variable is actually updated.
+          const auto& inner = static_cast<const Call&>(*c.args[0]);
+          if (inner.args.size() == 1 && inner.callee->kind == Kind::Ident) {
+            const auto& tname = static_cast<const Ident&>(*inner.callee).name;
+            if (is_primitive_type(tname)) {
+              std::string lv = expr_to_cxx(*inner.args[0]);
+              std::string cast = primitive_type_cxx(tname);
+              std::string step = (c.args.size() == 2)
+                                     ? expr_to_cxx(*c.args[1])
+                                     : std::string("1");
+              std::string oprator = (n == "inc") ? " + " : " - ";
+              // Preserve the original pointer/ordinal type on write-back
+              // with decltype so e.g. a `pointer` comes back as `void*`.
+              return "(" + lv + " = (decltype(" + lv + "))((" + cast +
+                     ")(" + lv + ")" + oprator + step + "))";
+            }
+          }
+          // Fall through to generic emission.
         } else if (n == "new" && !c.args.empty()) {
           // Expression-form `new(T)` or `new(T, Ctor(args))`. The first
           // arg is the *pointer-type name* (an Ident), which we already
@@ -1337,16 +1597,27 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
 
   // Populate local-scope set so the expression emitter won't auto-call
   // identifiers that happen to name a parameterless method in another
-  // unit (e.g. a local `typename: string;` shadowing a method).
-  for (const auto& p : pd.params)
-    for (const auto& nm : p.names) local_scope.insert(nm);
+  // unit (e.g. a local `typename: string;` shadowing a method). Also
+  // record declared types so `.field` / `.method` access on those
+  // locals can be resolved from the type registry.
+  auto saved_types = local_types;
+  for (const auto& p : pd.params) {
+    for (const auto& nm : p.names) {
+      local_scope.insert(nm);
+      if (p.type) local_types[nm] = p.type.get();
+    }
+  }
   for (const auto& l : pd.locals) {
     if (l->kind == Kind::VarDecl) {
       const auto& vd = static_cast<const VarDecl&>(*l);
-      for (const auto& nm : vd.names) local_scope.insert(nm);
+      for (const auto& nm : vd.names) {
+        local_scope.insert(nm);
+        if (vd.type) local_types[nm] = vd.type.get();
+      }
     } else if (l->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
       local_scope.insert(cd.name);
+      if (cd.type) local_types[cd.name] = cd.type.get();
     } else if (l->kind == Kind::ProcDecl) {
       const auto& npd = static_cast<const ProcDecl&>(*l);
       local_scope.insert(npd.name);
@@ -1375,6 +1646,7 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
   current_fn_is_ctor = saved_ctor;
   current_class_name = std::move(saved_class);
   local_scope = std::move(saved_locals);
+  local_types = std::move(saved_types);
   --block_depth;
 
   dedent();
@@ -1421,20 +1693,29 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   bool saved_fn = current_fn_is_function;
   bool saved_ctor = current_fn_is_ctor;
   auto saved_locals = local_scope;
+  auto saved_types = local_types;
   current_fn_name = pd.name;
   current_fn_is_function = (pd.pkind == ProcKind::Function);
   current_fn_is_ctor = false;
   ++block_depth;
 
-  for (const auto& p : pd.params)
-    for (const auto& nm : p.names) local_scope.insert(nm);
+  for (const auto& p : pd.params) {
+    for (const auto& nm : p.names) {
+      local_scope.insert(nm);
+      if (p.type) local_types[nm] = p.type.get();
+    }
+  }
   for (const auto& l : pd.locals) {
     if (l->kind == Kind::VarDecl) {
       const auto& vd = static_cast<const VarDecl&>(*l);
-      for (const auto& nm : vd.names) local_scope.insert(nm);
+      for (const auto& nm : vd.names) {
+        local_scope.insert(nm);
+        if (vd.type) local_types[nm] = vd.type.get();
+      }
     } else if (l->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
       local_scope.insert(cd.name);
+      if (cd.type) local_types[cd.name] = cd.type.get();
     } else if (l->kind == Kind::ProcDecl) {
       const auto& npd = static_cast<const ProcDecl&>(*l);
       local_scope.insert(npd.name);
@@ -1454,6 +1735,7 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   current_fn_is_function = saved_fn;
   current_fn_is_ctor = saved_ctor;
   local_scope = std::move(saved_locals);
+  local_types = std::move(saved_types);
   --block_depth;
 
   dedent();
@@ -1768,11 +2050,13 @@ void Emitter::emit_unit(const UnitNode& u) {
 EmittedUnit emit_unit(const UnitNode& u,
                       const std::unordered_set<std::string>& extra_parameterless,
                       const std::unordered_set<std::string>& extra_fields,
-                      const std::unordered_map<std::string, EnumInfo>& extra_enums) {
+                      const std::unordered_map<std::string, EnumInfo>& extra_enums,
+                      const TypeRegistry* registry) {
   Emitter e;
   e.extra_parameterless_methods_ = extra_parameterless;
   e.extra_field_names_ = extra_fields;
   e.extra_enum_sizes_ = extra_enums;
+  e.registry = registry;
   e.emit_unit(u);
   return {std::move(e.header), std::move(e.impl)};
 }

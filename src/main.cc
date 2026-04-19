@@ -12,6 +12,7 @@
 #include "lexer.h"
 #include "parser.h"
 #include "source.h"
+#include "typereg.h"
 #include "units.h"
 
 namespace fs = std::filesystem;
@@ -135,6 +136,18 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
   g.define("LINUX");
   g.skip_path_containing("/new/");
   g.skip_path_containing("/tokendat.pas");
+  // ppovin.pas is TP7-only overlay glue (pp.pas does
+  // `{$ifdef FPC}{$UNDEF USEOVERLAY}{$ENDIF}`; under FPC it's never
+  // `uses`d). Emitting it independently drags in an undeclared
+  // `ovrgetbuf` -- skip it entirely.
+  g.skip_path_containing("/ppovin.pas");
+  // Non-Linux target-specific units. We're emitting for linux/i386,
+  // so dos-extender / os2 / win32 back-ends are dead code for the
+  // bootstrap path.
+  g.skip_path_containing("/t_go32v1.pas");
+  g.skip_path_containing("/t_go32v2.pas");
+  g.skip_path_containing("/t_os2.pas");
+  g.skip_path_containing("/t_win32.pas");
   g.skip_path_containing("/m68k/");
   g.skip_path_containing("/alpha/");
   g.skip_path_containing("/powerpc/");
@@ -171,10 +184,22 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
     }
   }
 
+  // Reified type/symbol tree spanning every parsed unit. The emitter
+  // consults it to decide, per Pascal-level semantics, whether an
+  // expression `obj.name` refers to a field or a parameterless method
+  // (and similarly for bare identifier auto-call).
+  std::vector<const ast::UnitNode*> asts;
+  for (const auto& [_, pu] : g.units()) {
+    if (pu.ast) asts.push_back(pu.ast.get());
+  }
+  TypeRegistry reg;
+  reg.build(asts);
+
   for (const auto& name : tr.order) {
     const auto* pu = g.lookup(name);
     if (!pu || !pu->ok || !pu->ast) { ++failed; continue; }
-    auto out = emit_unit(*pu->ast, all_parameterless, all_fields, all_enums);
+    auto out = emit_unit(*pu->ast, all_parameterless, all_fields,
+                         all_enums, &reg);
     {
       std::ofstream h(fs::path(outdir) / ("p_" + name + ".h"));
       h << out.header;
