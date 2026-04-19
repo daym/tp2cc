@@ -2002,6 +2002,16 @@ template <typename F>
 inline void p_popen(F&, const ShortString<>&, char) {}
 template <typename F>
 inline void p_popen(F&, const ShortString<>&, p_char) {}
+inline void p_pclose(TextFile& f) {
+  int rc = 0;
+  if (f.f) {
+    rc = ::pclose(f.f);
+    f.f = nullptr;
+  }
+  p_set_ioresult(f, rc == -1 ? errno : 0);
+}
+template <typename F>
+inline void p_pclose(F&) {}
 // STUB: heap-trace hook.
 template <typename F> inline void p_setheaptraceoutput(F&&) {}
 template <typename F> inline void p_setlocaltime(F&&) {}
