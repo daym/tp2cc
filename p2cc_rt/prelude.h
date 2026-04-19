@@ -28,6 +28,7 @@
 #include <spawn.h>
 #include <string>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <type_traits>
 #include <unistd.h>
@@ -1988,6 +1989,18 @@ inline int32_t p_shell(const ShortString<N>& cmd) {
   return p_last_dosexitcode;
 }
 inline int32_t p_dosexitcode() { return p_last_dosexitcode; }
+// Used by fpc 1.0.6 as an existence check for the drive.
+inline int32_t p_disksize(uint8_t drive_number) {
+  struct statvfs st{};
+  if (::statvfs(".", &st) != 0) return -1;
+  unsigned long long total =
+      static_cast<unsigned long long>(st.f_blocks) * st.f_frsize;
+  if (total > static_cast<unsigned long long>(
+                  std::numeric_limits<int32_t>::max())) {
+    return std::numeric_limits<int32_t>::max();
+  }
+  return static_cast<int32_t>(total);
+}
 
 // `System.heapsize` appears as a plain value in the compiler's
 // status prints. Real fpc sets this during startup; we expose a
