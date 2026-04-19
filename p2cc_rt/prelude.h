@@ -490,6 +490,8 @@ Set<Elem> set_of_range(std::initializer_list<SetElem<Elem>> xs) {
 
 struct TextFile {
   std::FILE* f = nullptr;
+  ShortString<> name;
+  int32_t iores = 0;  // last IOResult
 };
 
 // Pascal `file of T` - minimal stub; behaviour added as needed.
@@ -646,6 +648,22 @@ inline void p_flush(const TextFile&) {}
 // actually-transferred count. Accept both shapes variadically.
 template <typename... A> inline void p_blockread(TextFile&, A&&...) {}
 template <typename... A> inline void p_blockwrite(TextFile&, A&&...) {}
+// `readln(f, s)` reads a line into `s`. `readln` (no args) reads and
+// discards a line. `readln(f)` reads/discards a line from `f`.
+inline void p_readln(TextFile& f) {
+  if (!f.f) return;
+  int c;
+  while ((c = std::fgetc(f.f)) != EOF && c != '\n') {}
+}
+template <int N>
+inline void p_readln(TextFile& f, ShortString<N>& s) {
+  s.length = 0;
+  if (!f.f) return;
+  int c;
+  while ((c = std::fgetc(f.f)) != EOF && c != '\n') {
+    if (s.length < N) { s.data[s.length] = static_cast<char>(c); ++s.length; }
+  }
+}
 template <typename... A> inline void p_readln(A&&...) {}
 template <typename... A> inline void p_read(A&&...) {}
 // `settextbuf(f, buf, size)` is a stub -- we don't buffer. Take the buffer
@@ -906,13 +924,39 @@ inline void p_writeln(Args&&... args) {
 
 // --- File-IO placeholders ---------------------------------------------------
 // Real behaviour is added as units are translated that need them.
-inline void p_assign(TextFile&, const ShortString<>&) {}
-inline void p_reset(TextFile&) {}
-inline void p_reset(TextFile&, int32_t) {}          // rec size form
-inline void p_rewrite(TextFile&) {}
-inline void p_rewrite(TextFile&, int32_t) {}         // rec size form
-inline void p_close(TextFile&) {}
-inline bool p_eof(const TextFile&) { return true; }
+inline void p_assign(TextFile& f, const ShortString<>& n) {
+  f.name = n;
+  f.f = nullptr;
+  f.iores = 0;
+}
+inline void p_reset(TextFile& f) {
+  char buf[260]{};
+  int n = f.name.length < 255 ? f.name.length : 255;
+  for (int i = 0; i < n; ++i) buf[i] = f.name.data[i];
+  f.f = std::fopen(buf, "r");
+  f.iores = f.f ? 0 : 2;  // 2 = file-not-found per fpc's convention
+}
+inline void p_reset(TextFile& f, int32_t) { p_reset(f); }  // rec size form
+inline void p_rewrite(TextFile& f) {
+  char buf[260]{};
+  int n = f.name.length < 255 ? f.name.length : 255;
+  for (int i = 0; i < n; ++i) buf[i] = f.name.data[i];
+  f.f = std::fopen(buf, "w");
+  f.iores = f.f ? 0 : 5;
+}
+inline void p_rewrite(TextFile& f, int32_t) { p_rewrite(f); }
+inline void p_close(TextFile& f) {
+  if (f.f) { std::fclose(f.f); f.f = nullptr; }
+}
+inline bool p_eof(TextFile& f) {
+  if (!f.f) return true;
+  // Peek one char to update feof state after consuming previous
+  // bytes -- glibc sets EOF flag lazily otherwise.
+  int c = std::fgetc(f.f);
+  if (c == EOF) return true;
+  std::ungetc(c, f.f);
+  return false;
+}
 // typed-file variants
 template <typename T> inline void p_assign(TypedFile<T>&, const ShortString<>&) {}
 template <typename T> inline void p_reset(TypedFile<T>&) {}
