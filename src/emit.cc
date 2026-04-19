@@ -139,6 +139,16 @@ struct Emitter {
   };
   std::unordered_map<std::string, NestedFn> local_nested_fns;
 
+  // Function-local enum types: name -> the TyEnum AST node. Pascal
+  // lets a `type T = (a, b, c)` and `const X : array[T] of ... = ...`
+  // live inside a proc's declaration section. These aren't in the
+  // unit-wide TypeRegistry (which only indexes interface/impl top-
+  // level decls), so we layer them on here while emitting the proc.
+  std::unordered_map<std::string, const ast::TyEnum*> local_enums;
+  // Function-local type aliases: `type pi = ^integer;` style.
+  std::unordered_map<std::string, const ast::TypeExpr*>
+      local_type_aliases_scoped;
+
   // `with X do` bindings: for every `with target`, push the target's
   // expression text (already emitted) and its deduced type. Bare idents
   // inside the body that resolve as fields of one of the targets get
@@ -327,10 +337,13 @@ std::string Emitter::array_type_to_cxx(const TyArray& a) {
                   ") + 1)";
     } else if (dim.kind == Kind::TyName) {
       const auto& tn = static_cast<const TyName&>(dim);
-      // The type registry records every enum in every unit with its
-      // member list, so `array[someenum] of T` dimensions compute
-      // regardless of where `someenum` is declared.
-      if (registry) {
+      // Function-local enum first (if we're inside a proc body),
+      // then the cross-unit registry of enums.
+      auto leit = local_enums.find(tn.name);
+      if (leit != local_enums.end()) {
+        lo = "0";
+        size_expr = std::to_string(leit->second->members.size());
+      } else if (registry) {
         auto eit = registry->enums.find(tn.name);
         if (eit != registry->enums.end()) {
           lo = "0";
@@ -1192,7 +1205,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if ((n == "low" || n == "high") && c.args.size() == 1 &&
             c.args[0]->kind == Kind::Ident) {
           const auto& a = static_cast<const Ident&>(*c.args[0]);
-          if (registry) {
+          // Function-local enum: the `__low`/`__high` constants live
+          // right alongside us in the current block scope.
+          if (local_enums.count(a.name)) {
+            is_low_high_type = true;
+            low_high_rewrite = mangle(a.name) + "__" + n;
+          } else if (registry) {
             auto eit = registry->enums.find(a.name);
             if (eit != registry->enums.end()) {
               // Enum's `__low` / `__high` constants live in its
@@ -1668,7 +1686,12 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
                       ") + 1)";
         } else if (dim.kind == Kind::TyName) {
           const auto& tn = static_cast<const TyName&>(dim);
-          if (registry) {
+          // Function-local enum (in scope during this proc body)?
+          auto leit = local_enums.find(tn.name);
+          if (leit != local_enums.end()) {
+            lo = "0";
+            size_expr = std::to_string(leit->second->members.size());
+          } else if (registry) {
             auto eit = registry->enums.find(tn.name);
             if (eit != registry->enums.end()) {
               lo = "0";
@@ -1688,10 +1711,9 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
           }
         }
         if (size_expr.empty()) {
-          // Dim unresolved (e.g. function-local enum not in registry).
-          // Fall back to the matching nesting level of the initialiser
-          // literal -- Pascal writes out every element, so the element
-          // count equals the dim size.
+          // Dim unresolved -- fall back to the matching nesting level
+          // of the initialiser literal. Pascal writes out every
+          // element, so the element count equals the dim size.
           if (init_by_dim[i] &&
               init_by_dim[i]->kind == Kind::ArrayConst) {
             const auto& ac = static_cast<const ArrayConst&>(*init_by_dim[i]);
@@ -2284,6 +2306,8 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
   auto saved_types = local_types;
   auto saved_nested = local_nested_fns;
   auto saved_untyped = local_untyped_params;
+  auto saved_local_enums = local_enums;
+  auto saved_local_aliases = local_type_aliases_scoped;
   for (const auto& p : pd.params) {
     for (const auto& nm : p.names) {
       local_scope.insert(nm);
@@ -2305,6 +2329,19 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
       local_scope.insert(cd.name);
       if (cd.type) local_types[cd.name] = cd.type.get();
+    } else if (l->kind == Kind::TypeDecl) {
+      // Pascal's local `type` section is statically visible to the
+      // translator too -- record enums (for array-dim sizing and
+      // `low(T)`/`high(T)` rewrites) and aliases (for canonicalize).
+      const auto& td = static_cast<const TypeDecl&>(*l);
+      if (td.type) {
+        if (td.type->kind == Kind::TyEnum) {
+          local_enums[td.name] =
+              static_cast<const ast::TyEnum*>(td.type.get());
+        } else {
+          local_type_aliases_scoped[td.name] = td.type.get();
+        }
+      }
     } else if (l->kind == Kind::ProcDecl) {
       const auto& npd = static_cast<const ProcDecl&>(*l);
       local_scope.insert(npd.name);
@@ -2345,6 +2382,8 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
   local_types = std::move(saved_types);
   local_nested_fns = std::move(saved_nested);
   local_untyped_params = std::move(saved_untyped);
+  local_enums = std::move(saved_local_enums);
+  local_type_aliases_scoped = std::move(saved_local_aliases);
   --block_depth;
 
   dedent();
@@ -2399,6 +2438,8 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   auto saved_types = local_types;
   auto saved_nested = local_nested_fns;
   auto saved_untyped = local_untyped_params;
+  auto saved_local_enums = local_enums;
+  auto saved_local_aliases = local_type_aliases_scoped;
   current_fn_name = pd.name;
   current_fn_is_function = (pd.pkind == ProcKind::Function);
   current_fn_is_ctor = false;
@@ -2422,6 +2463,16 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
       local_scope.insert(cd.name);
       if (cd.type) local_types[cd.name] = cd.type.get();
+    } else if (l->kind == Kind::TypeDecl) {
+      const auto& td = static_cast<const TypeDecl&>(*l);
+      if (td.type) {
+        if (td.type->kind == Kind::TyEnum) {
+          local_enums[td.name] =
+              static_cast<const ast::TyEnum*>(td.type.get());
+        } else {
+          local_type_aliases_scoped[td.name] = td.type.get();
+        }
+      }
     } else if (l->kind == Kind::ProcDecl) {
       const auto& npd = static_cast<const ProcDecl&>(*l);
       local_scope.insert(npd.name);
@@ -2450,6 +2501,8 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   local_types = std::move(saved_types);
   local_nested_fns = std::move(saved_nested);
   local_untyped_params = std::move(saved_untyped);
+  local_enums = std::move(saved_local_enums);
+  local_type_aliases_scoped = std::move(saved_local_aliases);
   --block_depth;
 
   dedent();
