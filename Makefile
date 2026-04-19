@@ -22,7 +22,7 @@ TEST_BINS := $(BINDIR)/test_lexer $(BINDIR)/test_parser $(BINDIR)/test_units $(B
 
 ALL_BINS  := $(BINDIR)/p2cc $(TEST_BINS)
 
-.PHONY: all test clean lex-all
+.PHONY: all clean lex-all parse-all topo check distcheck
 all: $(ALL_BINS)
 
 $(OBJDIR)/%.o: src/%.cc src/%.h
@@ -70,3 +70,5 @@ topo: $(BINDIR)/p2cc
 
 clean:
 	rm -rf $(BUILD)
+
+distcheck: check
