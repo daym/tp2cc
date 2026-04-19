@@ -15,9 +15,9 @@
 #include "test_util.h"
 #include "typereg.h"
 
-using namespace p2cc;
-using namespace p2cc::ast;
-using namespace p2cc_test;
+using namespace tp2cc;
+using namespace tp2cc::ast;
+using namespace tp2cc_test;
 
 namespace {
 
@@ -401,7 +401,7 @@ int main() {
   RUN_TEST(test_local_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_cxx_reserved_word_identifiers);
 
-  int n = p2cc_test::failures();
+  int n = tp2cc_test::failures();
   std::printf("%s: %d failure%s\n", (n == 0 ? "PASS" : "FAIL"), n,
               (n == 1 ? "" : "s"));
   return n == 0 ? 0 : 1;

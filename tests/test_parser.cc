@@ -16,9 +16,9 @@
 #include "test_util.h"
 #include "token.h"
 
-using namespace p2cc;
-using namespace p2cc::ast;
-using namespace p2cc_test;
+using namespace tp2cc;
+using namespace tp2cc::ast;
+using namespace tp2cc_test;
 
 namespace {
 
@@ -629,7 +629,7 @@ int main() {
   RUN_TEST(test_unit_named_like_directive);
   RUN_TEST(test_error_recovery_basic);
 
-  int n = p2cc_test::failures();
+  int n = tp2cc_test::failures();
   std::printf("%s: %d failure%s\n", (n == 0 ? "PASS" : "FAIL"), n,
               (n == 1 ? "" : "s"));
   return n == 0 ? 0 : 1;

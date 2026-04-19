@@ -5,7 +5,7 @@
 
 #include "diag.h"
 
-namespace p2cc {
+namespace tp2cc {
 
 using namespace ast;
 
@@ -1422,4 +1422,4 @@ ExprPtr Parser::parse_set_literal() {
   return s;
 }
 
-}  // namespace p2cc
+}  // namespace tp2cc

@@ -1,6 +1,6 @@
 #pragma once
 
-// Pascal AST for p2cc.
+// Pascal AST for tp2cc.
 //
 // Design:
 //   * `Node` is the polymorphic base with a virtual destructor.
@@ -22,7 +22,7 @@
 
 #include "source.h"
 
-namespace p2cc::ast {
+namespace tp2cc::ast {
 
 enum class Kind : uint16_t {
   // Expressions
@@ -493,4 +493,4 @@ struct UnitNode : Node {
   UnitNode() : Node(Kind::UnitNode) {}
 };
 
-}  // namespace p2cc::ast
+}  // namespace tp2cc::ast

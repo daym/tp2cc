@@ -5,7 +5,7 @@
 
 #include "source.h"
 
-namespace p2cc {
+namespace tp2cc {
 
 enum class Tok : uint16_t {
   // Control
@@ -91,4 +91,4 @@ struct Token {
 
 const char* tok_name(Tok t);
 
-}  // namespace p2cc
+}  // namespace tp2cc

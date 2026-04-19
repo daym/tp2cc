@@ -10,7 +10,7 @@
 
 namespace fs = std::filesystem;
 
-namespace p2cc {
+namespace tp2cc {
 
 UnitGraph::UnitGraph() = default;
 
@@ -272,4 +272,4 @@ const ParsedUnit* UnitGraph::lookup(std::string_view name) const {
   return &it->second;
 }
 
-}  // namespace p2cc
+}  // namespace tp2cc

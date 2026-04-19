@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace p2cc {
+namespace tp2cc {
 
 using namespace ast;
 
@@ -157,7 +157,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
 }  // namespace
 
 void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
-  // rt:: builtins that live in `p2cc_rt/prelude.h` rather than a
+  // rt:: builtins that live in `tp2cc_rt/prelude.h` rather than a
   // Pascal unit. Model them as ProcInfos so deduce_type / is_bool
   // / auto-call decisions go through the same lookup path as real
   // Pascal procs. Fields: param_count, is_function,
@@ -277,4 +277,4 @@ const FieldInfo* TypeRegistry::lookup_record_field(
   return &fit->second;
 }
 
-}  // namespace p2cc
+}  // namespace tp2cc

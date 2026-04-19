@@ -17,7 +17,7 @@
 #include "units.h"
 
 namespace fs = std::filesystem;
-using namespace p2cc;
+using namespace tp2cc;
 
 namespace {
 
@@ -308,12 +308,12 @@ int cmd_emit_all(const std::string& input_path, const std::string& outdir) {
   }
   // Emit stub headers for external RTL units so `#include "unit.h"` resolves.
   // They declare an empty namespace with the expected name; real symbols come
-  // from p2cc_rt/prelude.h (or are added later as the runtime grows).
+  // from tp2cc_rt/prelude.h (or are added later as the runtime grows).
   for (const auto& u : rtl_refs) {
     std::ofstream h(fs::path(outdir) / ("p_" + u + ".h"));
-    h << "// p2cc: RTL stub for external unit '" << u << "'.\n";
+    h << "// tp2cc: RTL stub for external unit '" << u << "'.\n";
     h << "#pragma once\n";
-    h << "#include \"p2cc_rt/prelude.h\"\n";
+    h << "#include \"tp2cc_rt/prelude.h\"\n";
     // Namespace alias makes `p_UNIT::name` resolve to `rt::name`, which
     // is what qualified lookups from other units expect. A
     // `using namespace ::rt` inside a namespace body would only bring
@@ -395,13 +395,13 @@ int cmd_topo(const std::string& input_path) {
 void usage() {
   std::fprintf(stderr,
                "usage:\n"
-               "  p2cc lex <file>\n"
-               "  p2cc lex-all <dir>\n"
-               "  p2cc parse <file>\n"
-               "  p2cc parse-all <dir>\n"
-               "  p2cc topo <dir|entry.pas>\n"
-               "  p2cc emit <file> <outdir>\n"
-               "  p2cc emit-all <dir|entry.pas> <outdir>\n");
+               "  tp2cc lex <file>\n"
+               "  tp2cc lex-all <dir>\n"
+               "  tp2cc parse <file>\n"
+               "  tp2cc parse-all <dir>\n"
+               "  tp2cc topo <dir|entry.pas>\n"
+               "  tp2cc emit <file> <outdir>\n"
+               "  tp2cc emit-all <dir|entry.pas> <outdir>\n");
 }
 
 }  // namespace

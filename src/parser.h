@@ -6,7 +6,7 @@
 #include "lexer.h"
 #include "token.h"
 
-namespace p2cc {
+namespace tp2cc {
 
 class Parser {
  public:
@@ -103,4 +103,4 @@ class Parser {
   ast::ExprPtr parse_const_value();
 };
 
-}  // namespace p2cc
+}  // namespace tp2cc

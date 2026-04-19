@@ -15,8 +15,8 @@
 set -u
 
 # Re-exec in a new session/process group on first entry.
-if [ -z "${P2CC_SESSION-}" ]; then
-  P2CC_SESSION=1 exec setsid --wait "$0" "$@"
+if [ -z "${TP2CC_SESSION-}" ]; then
+  TP2CC_SESSION=1 exec setsid --wait "$0" "$@"
 fi
 
 DIR="${1:-build/emitted}"

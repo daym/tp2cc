@@ -12,7 +12,7 @@ FPCDIR_DEFAULT="$ROOT/../rpm/"
 AS="${AS:-as}"
 LD="${LD:-ld}"
 STARTUP_AS="${STARTUP_AS:-$ROOT/../rpm/rtl/linux/i386/prt0.as}"
-KEEP_WORK="${KEEP_P2CC_WORK:-0}"
+KEEP_WORK="${KEEP_TP2CC_WORK:-0}"
 
 if [ ! -x "$PP" ]; then
   echo "error: $PP not found; run ./build-fpc.sh first" >&2
@@ -69,7 +69,7 @@ case "$output_name" in
   *) output_path=$(pwd)/$output_name ;;
 esac
 
-work_dir=$(mktemp -d "${TMPDIR:-/tmp}/p2cc-use-fpc.XXXXXX")
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/tp2cc-use-fpc.XXXXXX")
 build_dir="$work_dir/out"
 startup_obj="$build_dir/prt0.o"
 pp_stdout="$work_dir/pp.stdout"

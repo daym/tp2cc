@@ -1,9 +1,9 @@
 #!/bin/sh
 #
-# Bootstrap FPC 1.0.6 from the checked-out source tree using p2cc.
+# Bootstrap FPC 1.0.6 from the checked-out source tree using tp2cc.
 #
 # Stages:
-#   1. Build `p2cc`.
+#   1. Build `tp2cc`.
 #   2. Translate `compiler/pp.pas` from FPC 1.0.6 to C++ and link stage1.
 #   3. Use stage1 `pp` to rebuild `compiler/pp.pas` as stage2.
 #   4. Use stage2 `pp` to rebuild `compiler/pp.pas` again as stage3.
@@ -83,13 +83,13 @@ install_support_files() {
 }
 
 build_stage1() {
-  echo "== [2/7] build p2cc translator =="
-  make -j"$JOBS" build/bin/p2cc
+  echo "== [2/7] build tp2cc translator =="
+  make -j"$JOBS" build/bin/tp2cc
 
   echo "== [3/7] translate FPC 1.0.6 compiler to C++ =="
   rm -rf "$STAGE1_DIR" "$STAGE1_LOGDIR"
   mkdir -p "$STAGE1_DIR"
-  ./build/bin/p2cc emit-all "$ENTRY_FILE" "$STAGE1_DIR"
+  ./build/bin/tp2cc emit-all "$ENTRY_FILE" "$STAGE1_DIR"
   write_bootstrap_cfg
   install_support_files "$STAGE1_DIR"
 
@@ -134,7 +134,7 @@ compile_pp_stage() {
 verify_compiler() {
   pp_bin="$1"
   cfg_dir="$2"
-  help_out=$(mktemp "${TMPDIR:-/tmp}/p2cc-bootstrap-help.XXXXXX")
+  help_out=$(mktemp "${TMPDIR:-/tmp}/tp2cc-bootstrap-help.XXXXXX")
   if PPC_CONFIG_PATH="$cfg_dir" FPCDIR="$CLEAN_SRC" "$pp_bin" -h >"$help_out" 2>&1; then
     :
   fi

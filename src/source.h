@@ -7,7 +7,7 @@
 #include <string_view>
 #include <vector>
 
-namespace p2cc {
+namespace tp2cc {
 
 struct SourceFile {
   std::string path;
@@ -24,4 +24,4 @@ struct Location {
   std::string to_string() const;
 };
 
-}  // namespace p2cc
+}  // namespace tp2cc

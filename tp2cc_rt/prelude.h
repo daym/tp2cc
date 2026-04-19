@@ -1,6 +1,6 @@
 #pragma once
 
-// Minimal runtime for p2cc-emitted code.
+// Minimal runtime for tp2cc-emitted code.
 //
 // This header is deliberately small -- we only provide the pieces the
 // translator currently emits references to. It will grow alongside M3/M4/M5

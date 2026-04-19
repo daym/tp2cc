@@ -2,7 +2,7 @@
 
 #include <cstdio>
 
-namespace p2cc {
+namespace tp2cc {
 
 static int g_errors = 0;
 
@@ -21,4 +21,4 @@ void report_warning(Location where, std::string_view msg) {
 
 int error_count() { return g_errors; }
 
-}  // namespace p2cc
+}  // namespace tp2cc

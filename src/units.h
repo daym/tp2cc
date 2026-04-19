@@ -20,7 +20,7 @@
 
 #include "ast.h"
 
-namespace p2cc {
+namespace tp2cc {
 
 struct ParsedUnit {
   std::string name;                    // lowercased canonical name
@@ -87,4 +87,4 @@ class UnitGraph {
   int parse_recursive(const std::filesystem::path& path);
 };
 
-}  // namespace p2cc
+}  // namespace tp2cc

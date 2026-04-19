@@ -14,8 +14,8 @@
 #include "test_util.h"
 #include "token.h"
 
-using namespace p2cc;
-using namespace p2cc_test;
+using namespace tp2cc;
+using namespace tp2cc_test;
 
 namespace {
 
@@ -271,9 +271,9 @@ void test_directive_define_undef() {
 }
 
 void test_directive_builtin_macro_expands_deterministically() {
-  int errs_before = p2cc::error_count();
+  int errs_before = tp2cc::error_count();
   auto ts = lex_all("const d = {$I %DATE%};");
-  int errs = p2cc::error_count() - errs_before;
+  int errs = tp2cc::error_count() - errs_before;
   CHECK_EQ(errs, 0);
   CHECK_EQ(ts.size(), size_t{5});
   CHECK(ts[0].kind == Tok::KwConst);
@@ -413,7 +413,7 @@ int main() {
   RUN_TEST(test_object_declaration_syntax);
   RUN_TEST(test_location_tracking);
 
-  int n = p2cc_test::failures();
+  int n = tp2cc_test::failures();
   std::printf("%s: %d failure%s\n", (n == 0 ? "PASS" : "FAIL"), n,
               (n == 1 ? "" : "s"));
   return n == 0 ? 0 : 1;

@@ -7,11 +7,11 @@
 #include <limits>
 #include <cstdio>
 
-#include "../p2cc_rt/prelude.h"
+#include "../tp2cc_rt/prelude.h"
 #include "test_util.h"
 
 using namespace rt;
-using namespace p2cc_test;
+using namespace tp2cc_test;
 
 namespace {
 
@@ -150,7 +150,7 @@ int main() {
   RUN_TEST(test_exec_reports_spawn_failure);
   RUN_TEST(test_shell_tracks_exit_status);
 
-  int n = p2cc_test::failures();
+  int n = tp2cc_test::failures();
   std::printf("%s: %d failure%s\n", (n == 0 ? "PASS" : "FAIL"), n,
               (n == 1 ? "" : "s"));
   return n == 0 ? 0 : 1;

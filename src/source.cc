@@ -4,7 +4,7 @@
 #include <fstream>
 #include <sstream>
 
-namespace p2cc {
+namespace tp2cc {
 
 std::unique_ptr<SourceFile> SourceFile::load(const std::filesystem::path& p) {
   std::ifstream f(p, std::ios::binary);
@@ -23,4 +23,4 @@ std::string Location::to_string() const {
   return (file ? file->path : std::string("<no-file>")) + buf;
 }
 
-}  // namespace p2cc
+}  // namespace tp2cc

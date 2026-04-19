@@ -19,7 +19,7 @@
 
 #include "ast.h"
 
-namespace p2cc {
+namespace tp2cc {
 
 enum class SymKind : uint8_t {
   Unknown,
@@ -211,4 +211,4 @@ struct TypeRegistry {
       const std::string& record_name, const std::string& member) const;
 };
 
-}  // namespace p2cc
+}  // namespace tp2cc

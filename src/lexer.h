@@ -11,7 +11,7 @@
 #include "source.h"
 #include "token.h"
 
-namespace p2cc {
+namespace tp2cc {
 
 // A Lexer that owns a stack of input sources (so {$include FOO} can push a new
 // file) and a conditional-compilation state (IfdefStack).
@@ -79,4 +79,4 @@ class Lexer {
   // For peek() we keep the current input on the back of stack_.
 };
 
-}  // namespace p2cc
+}  // namespace tp2cc

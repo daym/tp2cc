@@ -8,7 +8,7 @@
 
 #include "diag.h"
 
-namespace p2cc {
+namespace tp2cc {
 
 namespace {
 
@@ -738,4 +738,4 @@ Token Lexer::next() {
   }
 }
 
-}  // namespace p2cc
+}  // namespace tp2cc

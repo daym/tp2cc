@@ -17,15 +17,15 @@
 #include "test_util.h"
 #include "units.h"
 
-using namespace p2cc;
-using namespace p2cc_test;
+using namespace tp2cc;
+using namespace tp2cc_test;
 
 namespace fs = std::filesystem;
 
 namespace {
 
 fs::path make_tmpdir(const char* tag) {
-  fs::path base = fs::temp_directory_path() / "p2cc-test";
+  fs::path base = fs::temp_directory_path() / "tp2cc-test";
   fs::create_directories(base);
   char nm[64];
   std::snprintf(nm, sizeof(nm), "%s-%d", tag, (int)::getpid());
@@ -229,7 +229,7 @@ int main() {
   RUN_TEST(test_discover_from_entry_only_reachable_units);
   RUN_TEST(test_real_fpc_compiler_acyclic);
 
-  int n = p2cc_test::failures();
+  int n = tp2cc_test::failures();
   std::printf("%s: %d failure%s\n", (n == 0 ? "PASS" : "FAIL"), n,
               (n == 1 ? "" : "s"));
   return n == 0 ? 0 : 1;

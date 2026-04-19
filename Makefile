@@ -1,8 +1,8 @@
-# p2cc -- Pascal-to-C++ bootstrap translator
+# tp2cc -- Pascal-to-C++ bootstrap translator
 #
 # Plain-make build. No cmake dependency.
 #
-#   make           - build the p2cc binary and all test binaries
+#   make           - build the tp2cc binary and all test binaries
 #   make check     - build and run all tests
 #   make clean
 #   make lex-all   - run the lexer over rpm/compiler as a smoke test
@@ -21,7 +21,7 @@ LIB_OBJS := $(patsubst src/%.cc,$(OBJDIR)/%.o,$(LIB_SRCS))
 
 TEST_BINS := $(BINDIR)/test_lexer $(BINDIR)/test_parser $(BINDIR)/test_units $(BINDIR)/test_emit $(BINDIR)/test_runtime
 
-ALL_BINS  := $(BINDIR)/p2cc $(TEST_BINS)
+ALL_BINS  := $(BINDIR)/tp2cc $(TEST_BINS)
 
 .PHONY: all clean lex-all parse-all topo check distcheck
 all: $(ALL_BINS)
@@ -34,7 +34,7 @@ $(OBJDIR)/tests/%.o: tests/%.cc
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -Itests -c $< -o $@
 
-$(BINDIR)/p2cc: $(LIB_OBJS) $(OBJDIR)/main.o
+$(BINDIR)/tp2cc: $(LIB_OBJS) $(OBJDIR)/main.o
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $^ -o $@
 
@@ -64,14 +64,14 @@ check: $(TEST_BINS)
 	  $$t; \
 	done
 
-lex-all: $(BINDIR)/p2cc
-	$(BINDIR)/p2cc lex-all ../rpm/compiler
+lex-all: $(BINDIR)/tp2cc
+	$(BINDIR)/tp2cc lex-all ../rpm/compiler
 
-parse-all: $(BINDIR)/p2cc
-	$(BINDIR)/p2cc parse-all ../rpm/compiler
+parse-all: $(BINDIR)/tp2cc
+	$(BINDIR)/tp2cc parse-all ../rpm/compiler
 
-topo: $(BINDIR)/p2cc
-	$(BINDIR)/p2cc topo ../rpm/compiler
+topo: $(BINDIR)/tp2cc
+	$(BINDIR)/tp2cc topo ../rpm/compiler
 
 clean:
 	rm -rf $(BUILD)
@@ -81,4 +81,4 @@ distcheck: check
 install: all
 	install -m 755 -d $(DESTDIR)$(PREFIX)
 	install -m 755 -d $(DESTDIR)$(PREFIX)/bin
-	install -m 755 $(BINDIR)/p2cc $(DESTDIR)$(PREFIX)/bin/p2cc
+	install -m 755 $(BINDIR)/tp2cc $(DESTDIR)$(PREFIX)/bin/tp2cc

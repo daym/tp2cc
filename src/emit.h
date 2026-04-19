@@ -21,7 +21,7 @@
 
 #include "ast.h"
 
-namespace p2cc {
+namespace tp2cc {
 
 struct TypeRegistry;
 
@@ -38,4 +38,4 @@ EmittedUnit emit_unit(const ast::UnitNode& u,
                       // program startup before the program's body.
                       const std::vector<std::string>* unit_init_order = nullptr);
 
-}  // namespace p2cc
+}  // namespace tp2cc
