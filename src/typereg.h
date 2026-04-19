@@ -93,24 +93,69 @@ struct ConstInfo {
 struct UnitInfo {
   std::string name;
   std::vector<std::string> uses;         // interface + impl (order)
-  // Per-unit symbol tables. Keeping these keyed by (unit, name)
-  // avoids last-wins collisions when two units both declare
-  // `infile` / `current_module` / `result` etc. The global maps on
-  // TypeRegistry below are only used for cross-unit qualification
-  // decisions -- deduce_type etc. should read from the per-unit
-  // map for the current unit first.
-  std::unordered_map<std::string, VarInfo> vars;
-  std::unordered_map<std::string, ConstInfo> consts;
-  std::unordered_map<std::string, ProcInfo> procs;
-  std::unordered_set<std::string> types;
-  // Enum-member -> defining unit (only this one), so the
-  // EnumMember lookup can resolve to the member's own enum.
-  std::unordered_set<std::string> enum_members;
+  // Per-unit symbol tables -- split interface vs impl. Only
+  // interface-exported symbols are visible to other units; both are
+  // visible within this unit's own procs/method bodies.
+  std::unordered_map<std::string, VarInfo> iface_vars;
+  std::unordered_map<std::string, ConstInfo> iface_consts;
+  std::unordered_map<std::string, ProcInfo> iface_procs;
+  std::unordered_set<std::string> iface_types;
+  std::unordered_set<std::string> iface_enum_members;
+  std::unordered_map<std::string, VarInfo> impl_vars;
+  std::unordered_map<std::string, ConstInfo> impl_consts;
+  std::unordered_map<std::string, ProcInfo> impl_procs;
+  std::unordered_set<std::string> impl_types;
+  std::unordered_set<std::string> impl_enum_members;
 
-  // Convenience accessors for existing call sites.
+  // Union views over iface + impl (used for own-unit lookup where
+  // both sections are in scope).
+  template <typename M>
+  static const typename M::mapped_type* find(const M& a, const M& b,
+                                              const std::string& n) {
+    auto it = a.find(n);
+    if (it != a.end()) return &it->second;
+    auto jt = b.find(n);
+    if (jt != b.end()) return &jt->second;
+    return nullptr;
+  }
+  const VarInfo* find_var(const std::string& n) const {
+    return find(iface_vars, impl_vars, n);
+  }
+  const ConstInfo* find_const(const std::string& n) const {
+    return find(iface_consts, impl_consts, n);
+  }
+  const ProcInfo* find_proc(const std::string& n) const {
+    return find(iface_procs, impl_procs, n);
+  }
+  bool has_type(const std::string& n) const {
+    return iface_types.count(n) || impl_types.count(n);
+  }
+  bool has_enum_member(const std::string& n) const {
+    return iface_enum_members.count(n) || impl_enum_members.count(n);
+  }
   bool has(const std::string& n) const {
-    return vars.count(n) || consts.count(n) || procs.count(n) ||
-           types.count(n) || enum_members.count(n);
+    return find_var(n) || find_const(n) || find_proc(n) ||
+           has_type(n) || has_enum_member(n);
+  }
+  // Interface-exports view: what other units see when they `uses`
+  // this unit.
+  const VarInfo* find_export_var(const std::string& n) const {
+    auto it = iface_vars.find(n);
+    return it == iface_vars.end() ? nullptr : &it->second;
+  }
+  const ConstInfo* find_export_const(const std::string& n) const {
+    auto it = iface_consts.find(n);
+    return it == iface_consts.end() ? nullptr : &it->second;
+  }
+  const ProcInfo* find_export_proc(const std::string& n) const {
+    auto it = iface_procs.find(n);
+    return it == iface_procs.end() ? nullptr : &it->second;
+  }
+  bool has_export_type(const std::string& n) const {
+    return iface_types.count(n) > 0;
+  }
+  bool has_export_enum_member(const std::string& n) const {
+    return iface_enum_members.count(n) > 0;
   }
 };
 

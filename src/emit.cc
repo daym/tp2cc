@@ -464,26 +464,32 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       // are NOT consulted here -- two units can share a name with
       // different types and the only right answer is to find the
       // one exported from a unit the current unit actually uses.
-      auto lookup_in_unit = [&](const UnitInfo& u) -> const TypeExpr* {
-        auto vit = u.vars.find(id.name);
-        if (vit != u.vars.end()) return vit->second.type;
-        auto cit = u.consts.find(id.name);
-        if (cit != u.consts.end() && cit->second.type) return cit->second.type;
-        auto pit = u.procs.find(id.name);
-        if (pit != u.procs.end() && pit->second.decl &&
-            pit->second.decl->return_type) {
-          return pit->second.decl->return_type.get();
-        }
+      // Own-unit: both interface and impl visible. Other units:
+      // interface-exports only.
+      auto lookup_own = [&](const UnitInfo& u) -> const TypeExpr* {
+        if (auto* v = u.find_var(id.name)) return v->type;
+        if (auto* c = u.find_const(id.name); c && c->type) return c->type;
+        if (auto* p = u.find_proc(id.name);
+            p && p->decl && p->decl->return_type)
+          return p->decl->return_type.get();
+        return nullptr;
+      };
+      auto lookup_export = [&](const UnitInfo& u) -> const TypeExpr* {
+        if (auto* v = u.find_export_var(id.name)) return v->type;
+        if (auto* c = u.find_export_const(id.name); c && c->type) return c->type;
+        if (auto* p = u.find_export_proc(id.name);
+            p && p->decl && p->decl->return_type)
+          return p->decl->return_type.get();
         return nullptr;
       };
       auto cur = registry->units.find(current_unit_name);
       if (cur != registry->units.end()) {
-        if (const auto* t = lookup_in_unit(cur->second)) return t;
+        if (const auto* t = lookup_own(cur->second)) return t;
         for (auto it = cur->second.uses.rbegin();
              it != cur->second.uses.rend(); ++it) {
           auto uit = registry->units.find(*it);
           if (uit == registry->units.end()) continue;
-          if (const auto* t = lookup_in_unit(uit->second)) return t;
+          if (const auto* t = lookup_export(uit->second)) return t;
         }
       }
       return nullptr;
@@ -605,20 +611,17 @@ Emitter::ResolveResult Emitter::resolve_name(
       auto uit = registry->units.find(qualifier);
       if (uit != registry->units.end()) {
         const UnitInfo& u = uit->second;
-        auto pit = u.procs.find(name);
-        if (pit != u.procs.end()) {
+        if (auto* pi = u.find_export_proc(name)) {
           r.kind = ResolvedKind::UnitProc;
-          r.proc = pit->second.decl;
+          r.proc = pi->decl;
           r.is_callable = true;
-          r.is_parameterless = (pit->second.param_count == 0);
+          r.is_parameterless = (pi->param_count == 0);
           return r;
         }
-        if (u.vars.count(name)) { r.kind = ResolvedKind::UnitVar; return r; }
-        if (u.consts.count(name)) { r.kind = ResolvedKind::UnitConst; return r; }
-        if (u.enum_members.count(name)) {
-          r.kind = ResolvedKind::EnumMember; return r;
-        }
-        if (u.types.count(name)) { r.kind = ResolvedKind::UnitType; return r; }
+        if (u.find_export_var(name)) { r.kind = ResolvedKind::UnitVar; return r; }
+        if (u.find_export_const(name)) { r.kind = ResolvedKind::UnitConst; return r; }
+        if (u.has_export_enum_member(name)) { r.kind = ResolvedKind::EnumMember; return r; }
+        if (u.has_export_type(name)) { r.kind = ResolvedKind::UnitType; return r; }
       }
     }
     // RTL unit we don't parse (e.g. `dos.getenv` when dos.pas isn't
@@ -727,27 +730,24 @@ Emitter::ResolveResult Emitter::resolve_name(
     // Current unit's own symbols shadow everything from `uses`.
     // Emit bare (C++ picks them up in the current namespace).
     if (ui) {
-      auto pit = ui->procs.find(name);
-      if (pit != ui->procs.end()) {
+      if (auto* pi = ui->find_proc(name)) {
         r.cxx = mangle(name);
         r.kind = ResolvedKind::UnitProc;
-        r.proc = pit->second.decl;
+        r.proc = pi->decl;
         r.is_callable = true;
-        r.is_parameterless = (pit->second.param_count == 0);
+        r.is_parameterless = (pi->param_count == 0);
         return r;
       }
-      auto vit = ui->vars.find(name);
-      if (vit != ui->vars.end()) {
+      if (ui->find_var(name)) {
         r.cxx = mangle(name); r.kind = ResolvedKind::UnitVar; return r;
       }
-      auto cit = ui->consts.find(name);
-      if (cit != ui->consts.end()) {
+      if (ui->find_const(name)) {
         r.cxx = mangle(name); r.kind = ResolvedKind::UnitConst; return r;
       }
-      if (ui->enum_members.count(name)) {
+      if (ui->has_enum_member(name)) {
         r.cxx = mangle(name); r.kind = ResolvedKind::EnumMember; return r;
       }
-      if (ui->types.count(name)) {
+      if (ui->has_type(name)) {
         r.cxx = mangle(name); r.kind = ResolvedKind::UnitType; return r;
       }
     }
@@ -759,30 +759,28 @@ Emitter::ResolveResult Emitter::resolve_name(
       auto it = registry->units.find(un);
       if (it == registry->units.end()) return false;
       const UnitInfo& u = it->second;
-      auto pit = u.procs.find(name);
-      if (pit != u.procs.end()) {
+      // Other units contribute only their interface-exported names.
+      if (auto* pi = u.find_export_proc(name)) {
         r.cxx = mangle(un) + "::" + mangle(name);
         r.kind = ResolvedKind::UnitProc;
-        r.proc = pit->second.decl;
+        r.proc = pi->decl;
         r.is_callable = true;
-        r.is_parameterless = (pit->second.param_count == 0);
+        r.is_parameterless = (pi->param_count == 0);
         return true;
       }
-      auto vit = u.vars.find(name);
-      if (vit != u.vars.end()) {
+      if (u.find_export_var(name)) {
         r.cxx = mangle(un) + "::" + mangle(name);
         r.kind = ResolvedKind::UnitVar; return true;
       }
-      auto cit = u.consts.find(name);
-      if (cit != u.consts.end()) {
+      if (u.find_export_const(name)) {
         r.cxx = mangle(un) + "::" + mangle(name);
         r.kind = ResolvedKind::UnitConst; return true;
       }
-      if (u.enum_members.count(name)) {
+      if (u.has_export_enum_member(name)) {
         r.cxx = mangle(un) + "::" + mangle(name);
         r.kind = ResolvedKind::EnumMember; return true;
       }
-      if (u.types.count(name)) {
+      if (u.has_export_type(name)) {
         r.cxx = mangle(un) + "::" + mangle(name);
         r.kind = ResolvedKind::UnitType; return true;
       }
