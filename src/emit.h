@@ -16,6 +16,8 @@
 // driven by tests.
 
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "ast.h"
 
@@ -26,6 +28,28 @@ struct EmittedUnit {
   std::string impl;    // contents of UNIT.cc
 };
 
-EmittedUnit emit_unit(const ast::UnitNode& u);
+// Collect parameterless method names from a single parsed unit's AST.
+// Caller is expected to drive this over every parsed unit before emission
+// so cross-unit `obj.method` auto-parenthesising works.
+void collect_parameterless_methods(const ast::UnitNode& u,
+                                   std::unordered_set<std::string>& out);
+
+// Collect all record/object field names from a parsed unit's AST. Used
+// to block auto-call on `obj.name` when `name` appears as a field in
+// any class (cross-unit safety).
+void collect_field_names(const ast::UnitNode& u,
+                         std::unordered_set<std::string>& out);
+
+// Collect all type aliases (enum-like names are most useful) from a
+// parsed unit. Enables cross-unit `array[tenum] of T` dim-size
+// computation even when `tenum` is declared in another unit.
+struct EnumInfo { int member_count = 0; };
+void collect_enum_sizes(const ast::UnitNode& u,
+                        std::unordered_map<std::string, EnumInfo>& out);
+
+EmittedUnit emit_unit(const ast::UnitNode& u,
+                      const std::unordered_set<std::string>& extra_parameterless = {},
+                      const std::unordered_set<std::string>& extra_fields = {},
+                      const std::unordered_map<std::string, EnumInfo>& extra_enums = {});
 
 }  // namespace p2cc

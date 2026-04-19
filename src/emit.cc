@@ -51,8 +51,8 @@ const std::unordered_map<std::string, std::string>& primitive_type_map() {
       {"extended",  "long double"},
       {"comp",      "long double"},
       {"pointer",   "void*"},
-      {"pchar",     "const char*"},
-      {"ppchar",    "const char**"},
+      {"pchar",     "char*"},
+      {"ppchar",    "char**"},
       {"text",      "::rt::TextFile"},
       {"int64",     "int64_t"},
       {"qword",     "uint64_t"},
@@ -86,13 +86,64 @@ struct Emitter {
   // which means C++ `inline` is invalid for local decls.
   int block_depth = 0;
 
-  // Pascal lets you call a parameterless function/method without parens:
-  // `x := obj.size` means `x := obj.size()`. In C++ that yields a member
-  // pointer, which is a compile error in most contexts. We scan the
-  // current unit for parameterless method names and append `()` to bare
-  // member accesses. Same-unit only -- cross-unit callers still need
-  // explicit parens.
+  // Global bag of parameterless method names (across all units). NOT
+  // used for auto-call any more (too many false positives where the same
+  // name is a field in one class and a method in another); retained only
+  // for possible future heuristics.
   std::unordered_set<std::string> parameterless_methods;
+
+  // Per-class parameterless method names. Keyed by the Pascal class name
+  // (lowercased). Used for safe auto-call inside a method body: bare
+  // `foo` resolves via C++ name lookup to `this->foo` (member), and if
+  // foo is a parameterless method we append `()` so the value form
+  // compiles.
+  std::unordered_map<std::string, std::unordered_set<std::string>>
+      class_parameterless_methods;
+
+  // Names that appear as a FIELD in any record/object across the unit.
+  // `obj.name` where name is in this set is ambiguous (field vs method
+  // of a different class) and we refuse to auto-call. If a name is in
+  // `parameterless_methods` but NOT here, we can safely auto-call in
+  // value context too.
+  std::unordered_set<std::string> field_names;
+
+  // Name of the Pascal class whose method body we're currently emitting
+  // (if any). Empty when emitting a free function or at namespace scope.
+  std::string current_class_name;
+
+  // Suppresses the "bare method reference -> append ()" rewrite. Set
+  // while emitting (a) the CALLEE of a Call (else `foo(args)` would
+  // become `foo()(args)`), and (b) the operand of AddrOf (else `@foo`
+  // would become `&foo()`).
+  bool is_callee_context_ = false;
+
+  // When emitting an LHS expression, if set, any bare Ident whose name
+  // equals this value is rewritten to `p_result`. Used so that Pascal's
+  // `funcname := x`, `funcname[i] := x`, `funcname.field := x` all route
+  // to the result slot rather than trying to mutate the function.
+  std::string lhs_fn_rewrite;
+
+  // Additional parameterless method names from other units, set by the
+  // driver before calling `emit_unit` so cross-unit `obj.method` auto-
+  // parenthesising works.
+  std::unordered_set<std::string> extra_parameterless_methods_;
+
+  // Additional field names from other units, set by the driver. Merged
+  // with `field_names` before auto-call decisions so `obj.name` where
+  // `name` is a field in some OTHER unit's record stays as-is.
+  std::unordered_set<std::string> extra_field_names_;
+
+  // Cross-unit enum sizes (name -> number of members). Used so that
+  // `array[tenum] of T` in a unit that doesn't itself define `tenum`
+  // can still compute the array dimension.
+  std::unordered_map<std::string, EnumInfo> extra_enum_sizes_;
+
+  // Names bound in the current function's scope (parameters + locals).
+  // `obj` resolved bare at block scope that hits this set must be a
+  // variable, so auto-call (`name()`) is suppressed. Prevents false
+  // auto-call on local vars whose names happen to coincide with a
+  // parameterless method in another unit.
+  std::unordered_set<std::string> local_scope;
 
   // Map from Pascal type-alias name (lowercased) to its type expression
   // within the currently-emitted unit. Used to resolve named aliases so
@@ -201,43 +252,51 @@ std::string Emitter::enum_type_to_cxx(const TyEnum& e, const std::string&) {
 }
 
 std::string Emitter::array_type_to_cxx(const TyArray& a) {
-  // `array[D1, D2, ...] of T` -> nested std::array<std::array<T, ...>, ...>
-  // For open arrays (no dims) we emit a pointer + length convention later;
-  // for now, a plain pointer.
+  // `array[D1, D2, ...] of T` emits as nested ::rt::Array<T, Lo, N>
+  // wrappers. Open arrays (no dims) stay as a plain pointer.
   if (a.dims.empty()) {
     return type_to_cxx(*a.element) + "*";
   }
-  // Start from innermost to outermost. We need the dim size; for a named
-  // index type we can't compute it cheaply here without the type table.
-  // For ordinal subrange `lo..hi`, we can compute `hi - lo + 1`.
-  std::vector<std::string> size_strs;
-  for (const auto& d : a.dims) {
-    if (d->kind == Kind::TySubrange) {
-      const auto& sr = static_cast<const TySubrange&>(*d);
-      size_strs.push_back("(" + const_value_to_cxx(*sr.hi) +
-                          " - " + const_value_to_cxx(*sr.lo) + " + 1)");
-    } else if (d->kind == Kind::TyName) {
-      // Index by a named ordinal type -- use an opaque helper whose size
-      // the runtime knows. Conservative: treat as an int-indexed array
-      // using a sentinel size constant that the emitter (later) will
-      // resolve via the symbol table. For now, leave as a pointer.
-      size_strs.clear();
-      break;
-    } else {
-      size_strs.clear();
-      break;
+  std::string ty = type_to_cxx(*a.element);
+  // Wrap from innermost to outermost.
+  for (auto it = a.dims.rbegin(); it != a.dims.rend(); ++it) {
+    std::string lo = "0", size_expr;
+    const auto& dim = **it;
+    if (dim.kind == Kind::TySubrange) {
+      const auto& sr = static_cast<const TySubrange&>(dim);
+      lo = const_value_to_cxx(*sr.lo);
+      size_expr = "((" + const_value_to_cxx(*sr.hi) + ") - (" + lo +
+                  ") + 1)";
+    } else if (dim.kind == Kind::TyName) {
+      const auto& tn = static_cast<const TyName&>(dim);
+      auto at = local_type_aliases.find(tn.name);
+      if (at != local_type_aliases.end() && at->second &&
+          at->second->kind == Kind::TyEnum) {
+        const auto& en = static_cast<const TyEnum&>(*at->second);
+        lo = "0";
+        size_expr = std::to_string(en.members.size());
+      } else if (auto eit = extra_enum_sizes_.find(tn.name);
+                 eit != extra_enum_sizes_.end()) {
+        // Cross-unit enum (defined in another unit).
+        lo = "0";
+        size_expr = std::to_string(eit->second.member_count);
+      } else if (tn.name == "boolean" || tn.name == "bytebool") {
+        lo = "0"; size_expr = "2";
+      } else if (tn.name == "byte" || tn.name == "char" ||
+                 tn.name == "shortint") {
+        lo = "0"; size_expr = "256";
+      } else if (tn.name == "word" || tn.name == "smallint" ||
+                 tn.name == "wordbool") {
+        lo = "0"; size_expr = "65536";
+      }
     }
+    if (size_expr.empty()) {
+      // Can't compute dimension statically; fall back to pointer.
+      return type_to_cxx(*a.element) + "*";
+    }
+    ty = "::rt::Array<" + ty + ", " + lo + ", " + size_expr + ">";
   }
-  if (size_strs.empty()) {
-    // Fall back to raw pointer; callers will index via bracket anyway.
-    return type_to_cxx(*a.element) + "*";
-  }
-  std::string t = type_to_cxx(*a.element);
-  // Outermost-first: wrap innermost first.
-  for (auto it = size_strs.rbegin(); it != size_strs.rend(); ++it) {
-    t = "::std::array<" + t + ", " + *it + ">";
-  }
-  return t;
+  return ty;
 }
 
 std::string Emitter::procedural_type_to_cxx(const TyProcedural& p) {
@@ -273,6 +332,17 @@ std::string Emitter::type_to_cxx(const TypeExpr& t) {
     case Kind::TyString:     return string_type_to_cxx(static_cast<const TyString&>(t));
     case Kind::TyEnum:       return enum_type_to_cxx(static_cast<const TyEnum&>(t), "");
     case Kind::TyProcedural: return procedural_type_to_cxx(static_cast<const TyProcedural&>(t));
+    case Kind::TyFile: {
+      // Pascal `text`, `file`, `file of T`.
+      const auto& tf = static_cast<const TyFile&>(t);
+      if (tf.is_text || !tf.element) return "::rt::TextFile";
+      return "::rt::TypedFile<" + type_to_cxx(*tf.element) + ">";
+    }
+    case Kind::TyRecord:
+    case Kind::TyObject:
+      // Anonymous record/object in-place -- rare; emit a stub. Named
+      // records/objects come via TyName above.
+      return "/* inline-record */ int32_t";
     default:                 return "/* unsupported-type */ int32_t";
   }
 }
@@ -323,8 +393,26 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (n.value.size() == 1) {
         return "'" + escape_char_body(n.value[0], true) + "'";
       }
+      // C++ `\xHH` escapes are greedy: any following hex digit gets
+      // pulled into the escape ("\x01" + "7" would parse as "\x017"
+      // which overflows). We close and reopen the string literal
+      // between a non-printable (emitted as hex) and any subsequent
+      // hex-digit character.
+      auto is_hex_digit = [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+               (c >= 'A' && c <= 'F');
+      };
       std::string out = "::rt::ShortString<>(\"";
-      for (char c : n.value) out += escape_char_body(c, false);
+      bool prev_was_hex_escape = false;
+      for (char c : n.value) {
+        bool is_printable = (unsigned char)c >= 0x20 && (unsigned char)c < 0x7f
+                            && c != '"' && c != '\\';
+        if (prev_was_hex_escape && is_hex_digit(c)) {
+          out += "\" \"";  // split into adjacent literals
+        }
+        out += escape_char_body(c, false);
+        prev_was_hex_escape = !is_printable;
+      }
       out += "\")";
       return out;
     }
@@ -341,7 +429,33 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return "inherited{}";
       }
       if (n.name == "self") return "(*this)";
-      // Intentionally do NOT substitute primitive type names here.
+      // LHS rewrite: Pascal's `funcname := ...`, `funcname[i] := ...`
+      // etc. all need the root ident routed to the function's result slot
+      // rather than shadowing/mutating the function itself.
+      if (!lhs_fn_rewrite.empty() && n.name == lhs_fn_rewrite) {
+        return "result";
+      }
+      // Auto-call of bare parameterless references -- only inside
+      // function/proc bodies. At namespace scope we leave names bare
+      // because Pascal commonly uses a function name as a function-
+      // pointer value in typed-const initialisers. Skip if the name is
+      // a local parameter/var/nested proc of the current function --
+      // those shadow any outer unit-level parameterless proc.
+      if (block_depth > 0 && !is_callee_context_ &&
+          !local_scope.count(n.name)) {
+        if (!current_class_name.empty()) {
+          auto it = class_parameterless_methods.find(current_class_name);
+          if (it != class_parameterless_methods.end() &&
+              it->second.count(n.name)) {
+            return mangle(n.name) + "()";
+          }
+        }
+        if (parameterless_methods.count(n.name) &&
+            !field_names.count(n.name)) {
+          return mangle(n.name) + "()";
+        }
+      }
+      // Intentionally do NOT substitute primitive type names here --
       // `text` might be a Pascal field name as easily as the `text`
       // file-type, and we have no symbol table at expression emission.
       // Type-context substitution lives in type_to_cxx; type-casts are
@@ -398,35 +512,74 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Unary: {
       const auto& n = static_cast<const Unary&>(e);
-      const char* op = "+";
-      switch (n.op) {
-        case UnOp::Neg: op = "-"; break;
-        case UnOp::Plus: op = "+"; break;
-        case UnOp::Not: op = "~"; break;
+      if (n.op == UnOp::Not) {
+        // Pascal `not` is logical for bool, bitwise for int. Dispatch
+        // at compile time via a runtime helper.
+        return "::rt::p_not(" + expr_to_cxx(*n.operand) + ")";
       }
+      const char* op = (n.op == UnOp::Neg) ? "-" : "+";
       return std::string(op) + expr_to_cxx(*n.operand);
     }
     case Kind::Member: {
       const auto& m = static_cast<const Member&>(e);
       if (m.base->kind == Kind::Ident &&
           static_cast<const Ident&>(*m.base).name == "inherited") {
-        return "inherited::" + mangle(m.name);
+        // `inherited method` auto-calls if it's known parameterless in
+        // ANY class (global set). Safe because `inherited` is a Pascal
+        // keyword, the context is always a method call (not a field
+        // read on a distinct object).
+        std::string text = "inherited::" + mangle(m.name);
+        if (!is_callee_context_ && parameterless_methods.count(m.name)) {
+          text += "()";
+        }
+        return text;
       }
       std::string text = expr_to_cxx(*m.base) + "." + mangle(m.name);
-      // Pascal auto-calls a parameterless function/method written without
-      // parens. Append `()` if the name is a known parameterless method
-      // in this unit. The parent Call node (if any) handles its own
-      // parens and bypasses this path through parse_postfix.
-      if (parameterless_methods.count(m.name)) text += "()";
+      if (!is_callee_context_) {
+        // Safe auto-call: `self.method` when we're inside a method body
+        // of a class that has `method` parameterless.
+        if (!current_class_name.empty() && m.base->kind == Kind::Ident &&
+            static_cast<const Ident&>(*m.base).name == "self") {
+          auto it = class_parameterless_methods.find(current_class_name);
+          if (it != class_parameterless_methods.end() &&
+              it->second.count(m.name)) {
+            text += "()";
+          }
+        }
+        // Universal auto-call: if the name is a parameterless method in
+        // some class AND never a field name anywhere, then `.name` in
+        // value context is unambiguously a call.
+        else if (parameterless_methods.count(m.name) &&
+                 !field_names.count(m.name)) {
+          text += "()";
+        }
+        // Aggressive auto-call: if the name is a parameterless method AND
+        // the base is a pointer-deref expression, bias toward method-call.
+        // Under -fpermissive a wrong guess on a field only trips when a
+        // class really does have a same-named field, which is the minority
+        // case; avoiding "unresolved overloaded function type" errors on
+        // the majority case is worth it.
+        else if (parameterless_methods.count(m.name) &&
+                 m.base->kind == Kind::Deref) {
+          text += "()";
+        }
+      }
       return text;
     }
     case Kind::Deref: {
       const auto& d = static_cast<const Deref&>(e);
-      return "(*" + expr_to_cxx(*d.operand) + ")";
+      // `::rt::p_deref(p)` is equivalent to `*p` for typed pointers and
+      // yields `char&` for `void*` so Pascal `ptr^` on untyped pointers
+      // still compiles.
+      return "::rt::p_deref(" + expr_to_cxx(*d.operand) + ")";
     }
     case Kind::AddrOf: {
       const auto& a = static_cast<const AddrOf&>(e);
-      return "(&" + expr_to_cxx(*a.operand) + ")";
+      bool saved = is_callee_context_;
+      is_callee_context_ = true;
+      std::string inner = expr_to_cxx(*a.operand);
+      is_callee_context_ = saved;
+      return "(&" + inner + ")";
     }
     case Kind::Call: {
       const auto& c = static_cast<const Call&>(e);
@@ -502,7 +655,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                  margs + "); return __p; }())";
         }
       }
-      std::string out = expr_to_cxx(*c.callee) + "(";
+      is_callee_context_ = true;
+      std::string callee_text = expr_to_cxx(*c.callee);
+      is_callee_context_ = false;
+      std::string out = callee_text + "(";
       for (size_t i = 0; i < c.args.size(); ++i) {
         if (i) out += ", ";
         out += expr_to_cxx(*c.args[i]);
@@ -518,14 +674,56 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::SetLit: {
       const auto& s = static_cast<const SetLit&>(e);
-      // Construct an ::rt::set_of(..) helper; element type inferred.
-      std::string out = "::rt::set_of({";
-      for (size_t i = 0; i < s.elements.size(); ++i) {
-        if (i) out += ", ";
-        out += expr_to_cxx(*s.elements[i]);
+      // Fast path when there are no range-elements: the deduction-friendly
+      // set_of helper works.
+      bool has_range = false;
+      for (const auto& el : s.elements) {
+        if (el->kind == Kind::Range) { has_range = true; break; }
       }
-      out += "})";
-      return out;
+      if (s.elements.empty()) {
+        // `[]` in Pascal: untyped empty set. EmptySet converts to any
+        // `Set<T>` implicitly, so the value is usable in any set
+        // context.
+        return "::rt::EmptySet{}";
+      }
+      if (!has_range) {
+        std::string out = "::rt::set_of({";
+        for (size_t i = 0; i < s.elements.size(); ++i) {
+          if (i) out += ", ";
+          out += expr_to_cxx(*s.elements[i]);
+        }
+        out += "})";
+        return out;
+      }
+      // Slow path: mixed scalar + range elements. Build a Set in an IIFE
+      // whose element type is deduced from the first element (either a
+      // scalar value or a range low-bound). Use `[&]` inside function
+      // bodies (may reference outer locals); use `[]` at namespace scope
+      // where `[&]` is invalid.
+      std::string first;
+      if (s.elements.front()->kind == Kind::Range) {
+        first = expr_to_cxx(
+            *static_cast<const Range&>(*s.elements.front()).lo);
+      } else {
+        first = expr_to_cxx(*s.elements.front());
+      }
+      std::string body =
+          "::rt::Set<decltype(" + first + ")> __s;";
+      for (const auto& el : s.elements) {
+        if (el->kind == Kind::Range) {
+          const auto& r = static_cast<const Range&>(*el);
+          std::string lo = expr_to_cxx(*r.lo);
+          std::string hi = expr_to_cxx(*r.hi);
+          body += " for (int64_t __v = (int64_t)(" + lo +
+                  "); __v <= (int64_t)(" + hi +
+                  "); ++__v) __s.add(static_cast<decltype(" + first +
+                  ")>(__v));";
+        } else {
+          body += " __s.add(" + expr_to_cxx(*el) + ");";
+        }
+      }
+      const char* cap = (block_depth > 0) ? "[&]" : "[]";
+      return std::string("(") + cap + "{ " + body + " return __s; }())";
     }
     case Kind::Range: {
       const auto& r = static_cast<const Range&>(e);
@@ -610,6 +808,18 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
             const auto& en = static_cast<const TyEnum&>(*at->second);
             lo = "0";
             size_expr = std::to_string(en.members.size());
+          } else if (auto eit = extra_enum_sizes_.find(tn.name);
+                     eit != extra_enum_sizes_.end()) {
+            lo = "0";
+            size_expr = std::to_string(eit->second.member_count);
+          } else if (tn.name == "boolean" || tn.name == "bytebool") {
+            lo = "0"; size_expr = "2";
+          } else if (tn.name == "byte" || tn.name == "char" ||
+                     tn.name == "shortint") {
+            lo = "0"; size_expr = "256";
+          } else if (tn.name == "word" || tn.name == "smallint" ||
+                     tn.name == "wordbool") {
+            lo = "0"; size_expr = "65536";
           }
         }
         if (size_expr.empty()) {
@@ -873,16 +1083,14 @@ void Emitter::emit_stmt(const Stmt& s) {
     }
     case Kind::Assign: {
       const auto& a = static_cast<const Assign&>(s);
-      // Pascal: inside a function body, `funcname := value` assigns the
-      // return value. We rewrite to the result slot so the function's
-      // own name still refers to the function (enabling recursion).
-      std::string target_cxx;
-      if (!current_fn_name.empty() && a.target->kind == Kind::Ident &&
-          static_cast<const Ident&>(*a.target).name == current_fn_name) {
-        target_cxx = "p_result";
-      } else {
-        target_cxx = expr_to_cxx(*a.target);
-      }
+      // Enable LHS-rewrite for the function name so that Pascal
+      // `funcname := x`, `funcname[i] := x`, `funcname.field := x` etc.
+      // all route to the result slot. We only scope the rewrite to the
+      // target emission so the RHS still sees the function for recursive
+      // calls.
+      lhs_fn_rewrite = current_fn_name;
+      std::string target_cxx = expr_to_cxx(*a.target);
+      lhs_fn_rewrite.clear();
       emitln(target_cxx + " = " + expr_to_cxx(*a.value) + ";");
       break;
     }
@@ -909,14 +1117,11 @@ void Emitter::emit_stmt(const Stmt& s) {
       } else if (name == "exit") {
         // exit or exit(v). In a Function, fill the result slot and return;
         // in a Procedure, return; in a Constructor, return the status.
-        if (call_expr && !call_expr->args.empty() && !current_fn_name.empty()) {
-          emitln(mangle(current_fn_name) + " = " +
-                 expr_to_cxx(*call_expr->args[0]) + ";");
-          emitln("return " + mangle(current_fn_name) + ";");
-        } else if (current_fn_is_function && !current_fn_name.empty()) {
-          emitln("return " + mangle(current_fn_name) + ";");
-        } else if (current_fn_is_ctor) {
-          emitln("return p_result;");
+        if (call_expr && !call_expr->args.empty() && current_fn_is_function) {
+          emitln("result = " + expr_to_cxx(*call_expr->args[0]) + ";");
+          emitln("return result;");
+        } else if (current_fn_is_function || current_fn_is_ctor) {
+          emitln("return result;");
         } else {
           emitln("return;");
         }
@@ -963,7 +1168,21 @@ void Emitter::emit_stmt(const Stmt& s) {
         emitln("delete " + p + ";");
         emitln(p + " = nullptr;");
       } else {
-        emitln(expr_to_cxx(*es.expr) + ";");
+        // In statement context, a bare `obj.name` or `name` that refers
+        // to a known parameterless method is unambiguously a call (no
+        // one writes `obj.field;` to discard a value). Auto-append `()`
+        // in those cases.
+        std::string text = expr_to_cxx(*es.expr);
+        bool needs_parens = false;
+        if (es.expr->kind == Kind::Member) {
+          const auto& m = static_cast<const Member&>(*es.expr);
+          if (parameterless_methods.count(m.name)) needs_parens = true;
+        } else if (es.expr->kind == Kind::Ident) {
+          const auto& id = static_cast<const Ident&>(*es.expr);
+          if (parameterless_methods.count(id.name)) needs_parens = true;
+        }
+        if (needs_parens && text.back() != ')') text += "()";
+        emitln(text + ";");
       }
       break;
     }
@@ -1005,10 +1224,11 @@ void Emitter::emit_stmt(const Stmt& s) {
       std::string var = mangle(f.var);
       std::string from = expr_to_cxx(*f.from);
       std::string to = expr_to_cxx(*f.to);
+      // Use rt::p_inc/p_dec so enum loop vars work without operator++/--.
       if (f.downto) {
-        emitln("for (" + var + " = " + from + "; " + var + " >= " + to + "; --" + var + ") {");
+        emitln("for (" + var + " = " + from + "; " + var + " >= " + to + "; ::rt::p_dec(" + var + ")) {");
       } else {
-        emitln("for (" + var + " = " + from + "; " + var + " <= " + to + "; ++" + var + ") {");
+        emitln("for (" + var + " = " + from + "; " + var + " <= " + to + "; ::rt::p_inc(" + var + ")) {");
       }
       indent();
       if (f.body) emit_stmt(*f.body);
@@ -1107,31 +1327,54 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
   std::string saved_name = current_fn_name;
   bool saved_fn = current_fn_is_function;
   bool saved_ctor = current_fn_is_ctor;
+  std::string saved_class = current_class_name;
+  auto saved_locals = local_scope;
   current_fn_name = pd.name;
   current_fn_is_function = (pd.pkind == ProcKind::Function);
   current_fn_is_ctor = (pd.pkind == ProcKind::Constructor);
+  current_class_name = pd.of_type;  // empty for free functions
   ++block_depth;
 
+  // Populate local-scope set so the expression emitter won't auto-call
+  // identifiers that happen to name a parameterless method in another
+  // unit (e.g. a local `typename: string;` shadowing a method).
+  for (const auto& p : pd.params)
+    for (const auto& nm : p.names) local_scope.insert(nm);
+  for (const auto& l : pd.locals) {
+    if (l->kind == Kind::VarDecl) {
+      const auto& vd = static_cast<const VarDecl&>(*l);
+      for (const auto& nm : vd.names) local_scope.insert(nm);
+    } else if (l->kind == Kind::ConstDecl) {
+      const auto& cd = static_cast<const ConstDecl&>(*l);
+      local_scope.insert(cd.name);
+    } else if (l->kind == Kind::ProcDecl) {
+      const auto& npd = static_cast<const ProcDecl&>(*l);
+      local_scope.insert(npd.name);
+    }
+  }
+
   for (const auto& l : pd.locals) emit_decl(*l, /*in_header=*/false);
-  // Pascal result variable. We deliberately don't create a local with
-  // the function's name here: that would shadow the function itself and
-  // silently break recursive calls `funcname(args)`. Instead we use
-  // `p_result` as the sole slot, and rewrite Pascal-style `funcname :=
-  // value` assignments at emit-time (see Kind::Assign in emit_stmt).
+  // Pascal result variable. We use an internal slot named `result`
+  // (unprefixed) so it won't collide with a Pascal-level variable
+  // named `result` (which would emit as `p_result`). Shadowing the
+  // function itself is avoided because we don't use the function's
+  // name for the slot.
   if (pd.pkind == ProcKind::Function && pd.return_type) {
-    emitln(ret + " p_result{};");
+    emitln(ret + " result{};");
   } else if (pd.pkind == ProcKind::Constructor) {
-    emitln("bool p_result = true;");
+    emitln("bool result = true;");
   }
   if (pd.body) emit_stmt(*pd.body);
   if (pd.pkind == ProcKind::Function ||
       pd.pkind == ProcKind::Constructor) {
-    emitln("return p_result;");
+    emitln("return result;");
   }
 
   current_fn_name = std::move(saved_name);
   current_fn_is_function = saved_fn;
   current_fn_is_ctor = saved_ctor;
+  current_class_name = std::move(saved_class);
+  local_scope = std::move(saved_locals);
   --block_depth;
 
   dedent();
@@ -1177,23 +1420,40 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   std::string saved_name = current_fn_name;
   bool saved_fn = current_fn_is_function;
   bool saved_ctor = current_fn_is_ctor;
+  auto saved_locals = local_scope;
   current_fn_name = pd.name;
   current_fn_is_function = (pd.pkind == ProcKind::Function);
   current_fn_is_ctor = false;
   ++block_depth;
 
+  for (const auto& p : pd.params)
+    for (const auto& nm : p.names) local_scope.insert(nm);
+  for (const auto& l : pd.locals) {
+    if (l->kind == Kind::VarDecl) {
+      const auto& vd = static_cast<const VarDecl&>(*l);
+      for (const auto& nm : vd.names) local_scope.insert(nm);
+    } else if (l->kind == Kind::ConstDecl) {
+      const auto& cd = static_cast<const ConstDecl&>(*l);
+      local_scope.insert(cd.name);
+    } else if (l->kind == Kind::ProcDecl) {
+      const auto& npd = static_cast<const ProcDecl&>(*l);
+      local_scope.insert(npd.name);
+    }
+  }
+
   for (const auto& l : pd.locals) emit_decl(*l, /*in_header=*/false);
   if (pd.pkind == ProcKind::Function && pd.return_type) {
-    emitln(ret + " p_result{};");
+    emitln(ret + " result{};");
   }
   if (pd.body) emit_stmt(*pd.body);
   if (pd.pkind == ProcKind::Function) {
-    emitln("return p_result;");
+    emitln("return result;");
   }
 
   current_fn_name = std::move(saved_name);
   current_fn_is_function = saved_fn;
   current_fn_is_ctor = saved_ctor;
+  local_scope = std::move(saved_locals);
   --block_depth;
 
   dedent();
@@ -1343,27 +1603,54 @@ static std::vector<const Decl*> ordered_type_decls(
   return out;
 }
 
-// Scan a decl list for:
-//   - object-type parameterless methods (for auto-call in Member emission)
-//   - type aliases (name -> underlying TypeExpr*) so a typed const whose
-//     declared type is a named alias to an array can still emit as a
-//     C-style array.
+// Scan a decl list, populating:
+//   * global parameterless-methods set (all classes' param-less methods)
+//   * per-class parameterless-methods map (for safe auto-call within a
+//     method body without polluting other classes with false positives)
+//   * local type-alias table (name -> underlying TypeExpr*)
 static void collect_unit_tables(
     const std::vector<DeclPtr>& decls,
     std::unordered_set<std::string>& methods,
+    std::unordered_map<std::string, std::unordered_set<std::string>>&
+        class_methods,
+    std::unordered_set<std::string>& all_field_names,
     std::unordered_map<std::string, const TypeExpr*>& aliases) {
   for (const auto& d : decls) {
+    if (d->kind == Kind::ProcDecl) {
+      // Unit-scope parameterless function/procedure. Pascal lets the
+      // caller write `x := func` (no parens) to call it. Put the name
+      // in `methods` so the auto-call logic picks it up; the field-name
+      // check (never-a-field) still gates against false positives.
+      const auto& pd = static_cast<const ProcDecl&>(*d);
+      if (pd.params.empty()) methods.insert(pd.name);
+      continue;
+    }
     if (d->kind != Kind::TypeDecl) continue;
     const auto& td = static_cast<const TypeDecl&>(*d);
     if (!td.type) continue;
     aliases[td.name] = td.type.get();
     if (td.type->kind == Kind::TyObject) {
       const auto& to = static_cast<const TyObject&>(*td.type);
+      auto& cm = class_methods[td.name];
       for (const auto& m : to.members) {
-        if (m.is_field || !m.method) continue;
-        const auto& pd = static_cast<const ProcDecl&>(*m.method);
-        if (pd.params.empty()) methods.insert(pd.name);
+        if (m.is_field) {
+          for (const auto& n : m.field_names) all_field_names.insert(n);
+        } else if (m.method) {
+          const auto& pd = static_cast<const ProcDecl&>(*m.method);
+          if (pd.params.empty()) {
+            methods.insert(pd.name);
+            cm.insert(pd.name);
+          }
+        }
       }
+    } else if (td.type->kind == Kind::TyRecord) {
+      const auto& tr = static_cast<const TyRecord&>(*td.type);
+      for (const auto& f : tr.fields) {
+        for (const auto& n : f.names) all_field_names.insert(n);
+      }
+      for (const auto& vc : tr.variant_cases)
+        for (const auto& f : vc.fields)
+          for (const auto& n : f.names) all_field_names.insert(n);
     }
   }
 }
@@ -1373,9 +1660,18 @@ void Emitter::emit_unit(const UnitNode& u) {
   const std::string hguard = u.name;  // used for the #include stem
 
   collect_unit_tables(u.interface_decls, parameterless_methods,
+                      class_parameterless_methods, field_names,
                       local_type_aliases);
   collect_unit_tables(u.impl_decls, parameterless_methods,
+                      class_parameterless_methods, field_names,
                       local_type_aliases);
+  // Merge cross-unit sets populated by the driver.
+  for (const auto& n : extra_parameterless_methods_) {
+    parameterless_methods.insert(n);
+  }
+  for (const auto& n : extra_field_names_) {
+    field_names.insert(n);
+  }
 
   // Header.
   set_header();
@@ -1469,10 +1765,56 @@ void Emitter::emit_unit(const UnitNode& u) {
 
 }  // namespace
 
-EmittedUnit emit_unit(const UnitNode& u) {
+EmittedUnit emit_unit(const UnitNode& u,
+                      const std::unordered_set<std::string>& extra_parameterless,
+                      const std::unordered_set<std::string>& extra_fields,
+                      const std::unordered_map<std::string, EnumInfo>& extra_enums) {
   Emitter e;
+  e.extra_parameterless_methods_ = extra_parameterless;
+  e.extra_field_names_ = extra_fields;
+  e.extra_enum_sizes_ = extra_enums;
   e.emit_unit(u);
   return {std::move(e.header), std::move(e.impl)};
+}
+
+void collect_enum_sizes(const UnitNode& u,
+                        std::unordered_map<std::string, EnumInfo>& out) {
+  auto scan = [&](const std::vector<DeclPtr>& decls) {
+    for (const auto& d : decls) {
+      if (d->kind != Kind::TypeDecl) continue;
+      const auto& td = static_cast<const TypeDecl&>(*d);
+      if (td.type && td.type->kind == Kind::TyEnum) {
+        const auto& en = static_cast<const TyEnum&>(*td.type);
+        out[td.name] = EnumInfo{static_cast<int>(en.members.size())};
+      }
+    }
+  };
+  scan(u.interface_decls);
+  scan(u.impl_decls);
+}
+
+void collect_parameterless_methods(const UnitNode& u,
+                                   std::unordered_set<std::string>& out) {
+  std::unordered_map<std::string, const TypeExpr*> aliases_unused;
+  std::unordered_map<std::string, std::unordered_set<std::string>>
+      class_methods_unused;
+  std::unordered_set<std::string> fields_unused;
+  collect_unit_tables(u.interface_decls, out, class_methods_unused,
+                      fields_unused, aliases_unused);
+  collect_unit_tables(u.impl_decls, out, class_methods_unused,
+                      fields_unused, aliases_unused);
+}
+
+void collect_field_names(const UnitNode& u,
+                         std::unordered_set<std::string>& out) {
+  std::unordered_map<std::string, const TypeExpr*> aliases_unused;
+  std::unordered_map<std::string, std::unordered_set<std::string>>
+      class_methods_unused;
+  std::unordered_set<std::string> methods_unused;
+  collect_unit_tables(u.interface_decls, methods_unused,
+                      class_methods_unused, out, aliases_unused);
+  collect_unit_tables(u.impl_decls, methods_unused,
+                      class_methods_unused, out, aliases_unused);
 }
 
 }  // namespace p2cc

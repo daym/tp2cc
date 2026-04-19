@@ -782,12 +782,12 @@ TypePtr Parser::parse_record_type(bool packed) {
         if (!accept(Tok::Semi)) break;
       }
       // Nested variant part inside this case body: `case [tag:] T of ...`
+      // We flatten nested variant sub-cases: each sub-case's fields become
+      // a standalone VariantCase on the outer record. Pascal lets you name
+      // the fields directly on the outer record regardless of which case
+      // is active, and the emitter already emits one struct-in-union per
+      // case -- so flattening preserves access semantics.
       if (accept(Tok::KwCase)) {
-        // We model nested variants structurally by parsing through them and
-        // ignoring their sub-cases (they don't affect the shape we need for
-        // codegen at this stage -- they're rare and appear only in the
-        // compiler's own cpu-base records). Parse them to advance the
-        // token stream correctly.
         if ((cur_.kind == Tok::Ident || tok_is_directive_kw()) &&
             peek().kind == Tok::Colon) {
           advance(); advance();
@@ -795,22 +795,26 @@ TypePtr Parser::parse_record_type(bool packed) {
         (void)parse_type();
         expect(Tok::KwOf, "nested variant");
         while (!at_end() && !check(Tok::RParen)) {
-          (void)parse_expr();
-          while (accept(Tok::Comma)) (void)parse_expr();
+          VariantCase sub;
+          sub.labels.push_back(parse_expr());
+          while (accept(Tok::Comma)) sub.labels.push_back(parse_expr());
           expect(Tok::Colon, "nested variant case");
           expect(Tok::LParen, "nested variant case");
           while (!at_end() && !check(Tok::RParen)) {
+            RecordField nf;
             if (cur_.kind != Tok::Ident && !tok_is_directive_kw()) break;
-            advance();
+            nf.names.push_back(cur_.text); advance();
             while (accept(Tok::Comma)) {
               if (cur_.kind != Tok::Ident && !tok_is_directive_kw()) break;
-              advance();
+              nf.names.push_back(cur_.text); advance();
             }
             expect(Tok::Colon, "nested variant field");
-            (void)parse_type();
+            nf.type = parse_type();
+            sub.fields.push_back(std::move(nf));
             if (!accept(Tok::Semi)) break;
           }
           expect(Tok::RParen, "nested variant case");
+          tr->variant_cases.push_back(std::move(sub));
           if (!accept(Tok::Semi)) break;
         }
       }
