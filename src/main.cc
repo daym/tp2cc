@@ -180,18 +180,13 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
   int emitted = 0, failed = 0;
   std::set<std::string> rtl_refs;  // external-RTL unit names seen in uses
 
-  // Pre-pass: collect cross-unit name tables so the emitter can
-  // auto-parenthesise method calls correctly across unit boundaries
-  // and compute array dimensions indexed by enums from other units.
-  std::unordered_set<std::string> all_parameterless;
-  std::unordered_set<std::string> all_fields;
+  // Pre-pass: collect cross-unit enum sizes so typed-const arrays
+  // indexed by an enum defined in another unit can still compute
+  // their dimensions. Everything else the emitter needs about
+  // cross-unit symbols comes from the TypeRegistry below.
   std::unordered_map<std::string, EnumInfo> all_enums;
   for (const auto& [_, pu] : g.units()) {
-    if (pu.ast) {
-      collect_parameterless_methods(*pu.ast, all_parameterless);
-      collect_field_names(*pu.ast, all_fields);
-      collect_enum_sizes(*pu.ast, all_enums);
-    }
+    if (pu.ast) collect_enum_sizes(*pu.ast, all_enums);
   }
 
   // Reified type/symbol tree spanning every parsed unit. The emitter
@@ -208,8 +203,7 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
   for (const auto& name : tr.order) {
     const auto* pu = g.lookup(name);
     if (!pu || !pu->ok || !pu->ast) { ++failed; continue; }
-    auto out = emit_unit(*pu->ast, all_parameterless, all_fields,
-                         all_enums, &reg);
+    auto out = emit_unit(*pu->ast, all_enums, &reg);
     {
       std::ofstream h(fs::path(outdir) / ("p_" + name + ".h"));
       h << out.header;

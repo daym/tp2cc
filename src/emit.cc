@@ -87,27 +87,6 @@ struct Emitter {
   // which means C++ `inline` is invalid for local decls.
   int block_depth = 0;
 
-  // Global bag of parameterless method names (across all units). NOT
-  // used for auto-call any more (too many false positives where the same
-  // name is a field in one class and a method in another); retained only
-  // for possible future heuristics.
-  std::unordered_set<std::string> parameterless_methods;
-
-  // Per-class parameterless method names. Keyed by the Pascal class name
-  // (lowercased). Used for safe auto-call inside a method body: bare
-  // `foo` resolves via C++ name lookup to `this->foo` (member), and if
-  // foo is a parameterless method we append `()` so the value form
-  // compiles.
-  std::unordered_map<std::string, std::unordered_set<std::string>>
-      class_parameterless_methods;
-
-  // Names that appear as a FIELD in any record/object across the unit.
-  // `obj.name` where name is in this set is ambiguous (field vs method
-  // of a different class) and we refuse to auto-call. If a name is in
-  // `parameterless_methods` but NOT here, we can safely auto-call in
-  // value context too.
-  std::unordered_set<std::string> field_names;
-
   // Name of the Pascal class whose method body we're currently emitting
   // (if any). Empty when emitting a free function or at namespace scope.
   std::string current_class_name;
@@ -129,16 +108,6 @@ struct Emitter {
   // `funcname := x`, `funcname[i] := x`, `funcname.field := x` all route
   // to the result slot rather than trying to mutate the function.
   std::string lhs_fn_rewrite;
-
-  // Additional parameterless method names from other units, set by the
-  // driver before calling `emit_unit` so cross-unit `obj.method` auto-
-  // parenthesising works.
-  std::unordered_set<std::string> extra_parameterless_methods_;
-
-  // Additional field names from other units, set by the driver. Merged
-  // with `field_names` before auto-call decisions so `obj.name` where
-  // `name` is a field in some OTHER unit's record stays as-is.
-  std::unordered_set<std::string> extra_field_names_;
 
   // Cross-unit enum sizes (name -> number of members). Used so that
   // `array[tenum] of T` in a unit that doesn't itself define `tenum`
@@ -247,6 +216,52 @@ struct Emitter {
   // Class/record alias name ("tfoo") of `e`, lowercased, if detectable.
   // Empty if the type can't be narrowed to a named object/record type.
   std::string deduce_class_alias(const ast::Expr& e);
+
+  // ---------------------------------------------------------------------
+  // Pascal name resolution (one function, every emit path goes through
+  // it). Given a name and optional qualifier, model the full Pascal
+  // lookup:
+  //   - unqualified: `with` -> locals -> enclosing nested fns ->
+  //                  class+ancestors (in method body) -> current unit ->
+  //                  `uses` chain -> rt:: builtins.
+  //   - `Unit.name`: symbols exported by `Unit` (which must be in the
+  //                  current unit's `uses` list).
+  //   - `Class.name` / `obj.name`: class's members walking ancestors.
+  //
+  // The resolved result tells the emitter:
+  //   - how to spell the access in C++,
+  //   - whether it's a parameterless callable (value context -> auto-call),
+  //   - the ProcDecl* for call-site untyped-var arg wrapping,
+  //   - whether it's a field/var/const/enum-member (never auto-call).
+  enum class ResolvedKind {
+    Unknown,          // emit the mangled name; let C++ lookup sort it out
+    ResultSlot,       // Pascal fn's name-as-read inside its own body
+    Local,            // param/local/typed-const/nested-fn-name
+    NestedFn,         // a parameterless nested function value
+    WithField,        // field under a `with X do` binding
+    WithMethod,       // method under a `with X do` binding
+    ClassField,       // member of current class (or ancestor)
+    ClassMethod,      // method of current class (or ancestor)
+    UnitVar,
+    UnitConst,
+    UnitProc,
+    UnitType,
+    EnumMember,
+    RtBuiltin,
+  };
+  struct ResolveResult {
+    ResolvedKind kind = ResolvedKind::Unknown;
+    std::string cxx;              // the full C++ expression text
+    bool is_parameterless = false;
+    bool is_callable = false;
+    const ast::ProcDecl* proc = nullptr;   // for call-site analysis
+  };
+  // Qualifier: empty means unqualified lookup.  Otherwise it's a
+  // unit name or a class/record alias name (both lowercased).
+  enum class QualifierKind { None, Unit, Class };
+  ResolveResult resolve_name(const std::string& name,
+                             QualifierKind qk = QualifierKind::None,
+                             const std::string& qualifier = {});
 
   // State: the Pascal identifier of the current function whose body we are
   // emitting (not mangled). Used by `exit`/`exit(v)` translation so we
@@ -561,6 +576,216 @@ std::string Emitter::deduce_class_alias(const Expr& e) {
 }
 
 // ---------------------------------------------------------------------------
+// Single-point Pascal name resolution. `resolve_name` walks the real
+// Pascal lookup order and returns a `ResolveResult` every emit site
+// consumes uniformly; this avoids having the same "is it a method?
+// is it a unit-qualified proc? should we auto-call?" logic grow in
+// three different places in the emitter.
+
+Emitter::ResolveResult Emitter::resolve_name(
+    const std::string& name, QualifierKind qk, const std::string& qualifier) {
+  ResolveResult r;
+
+  // ----- Qualified lookups first: `Unit.name` / `Class.name`. -----
+  if (qk == QualifierKind::Unit) {
+    r.cxx = mangle(qualifier) + "::" + mangle(name);
+    if (registry) {
+      auto pit = registry->procs.find(name);
+      if (pit != registry->procs.end() && pit->second.decl) {
+        r.kind = ResolvedKind::UnitProc;
+        r.proc = pit->second.decl;
+        r.is_callable = true;
+        r.is_parameterless = (pit->second.param_count == 0);
+        return r;
+      }
+      auto cit = registry->consts.find(name);
+      if (cit != registry->consts.end()) {
+        r.kind = ResolvedKind::UnitConst; return r;
+      }
+      auto vit = registry->vars.find(name);
+      if (vit != registry->vars.end()) {
+        r.kind = ResolvedKind::UnitVar; return r;
+      }
+      auto eit = registry->enum_members.find(name);
+      if (eit != registry->enum_members.end()) {
+        r.kind = ResolvedKind::EnumMember; return r;
+      }
+    }
+    r.kind = ResolvedKind::Unknown; return r;
+  }
+  if (qk == QualifierKind::Class) {
+    if (registry) {
+      if (auto* m = registry->lookup_class_member(qualifier, name)) {
+        if (m->is_method) {
+          r.kind = ResolvedKind::ClassMethod;
+          r.proc = m->method.decl;
+          r.is_callable = true;
+          r.is_parameterless = (m->method.param_count == 0);
+        } else {
+          r.kind = ResolvedKind::ClassField;
+        }
+        r.cxx = mangle(name);  // caller emits the `base.` prefix
+        return r;
+      }
+    }
+    r.cxx = mangle(name);
+    r.kind = ResolvedKind::Unknown;
+    return r;
+  }
+
+  // ----- Unqualified lookup. -----
+
+  // 1. Function-name-as-read inside its own body -> `result`.
+  if (current_fn_is_function && !current_fn_name.empty() &&
+      name == current_fn_name) {
+    r.cxx = "result";
+    r.kind = ResolvedKind::ResultSlot;
+    return r;
+  }
+  // 2. `with X do` bindings (inside-out). Fields and methods of X's
+  //    class (walking ancestors) shadow outer scopes.
+  if (registry) {
+    for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
+      std::string cls = it->type
+                            ? registry->direct_type_name(
+                                  registry->canonicalize(it->type))
+                            : std::string{};
+      if (cls.empty()) continue;
+      if (auto* m = registry->lookup_class_member(cls, name)) {
+        r.cxx = it->cxx_text + "." + mangle(name);
+        if (m->is_method) {
+          r.kind = ResolvedKind::WithMethod;
+          r.proc = m->method.decl;
+          r.is_callable = true;
+          r.is_parameterless = (m->method.param_count == 0);
+        } else {
+          r.kind = ResolvedKind::WithField;
+        }
+        return r;
+      }
+      if (auto* f = registry->lookup_record_field(cls, name)) {
+        (void)f;
+        r.cxx = it->cxx_text + "." + mangle(name);
+        r.kind = ResolvedKind::WithField;
+        return r;
+      }
+    }
+  }
+  // 3. Nested parameterless function in the current scope -- stored
+  //    as `std::function<T()>`, so a bare reference is NOT the value.
+  {
+    auto nit = local_nested_fns.find(name);
+    if (nit != local_nested_fns.end()) {
+      r.kind = ResolvedKind::NestedFn;
+      r.cxx = mangle(name);
+      r.is_callable = true;
+      r.is_parameterless = (nit->second.param_count == 0);
+      return r;
+    }
+  }
+  // 4. Procedure-local (param, var, typed const, nested-proc-name).
+  if (local_scope.count(name)) {
+    r.kind = ResolvedKind::Local;
+    r.cxx = mangle(name);
+    return r;
+  }
+  // 5. Current class's members (chain).
+  if (!current_class_name.empty() && registry) {
+    if (auto* m = registry->lookup_class_member(current_class_name, name)) {
+      r.cxx = mangle(name);
+      if (m->is_method) {
+        r.kind = ResolvedKind::ClassMethod;
+        r.proc = m->method.decl;
+        r.is_callable = true;
+        r.is_parameterless = (m->method.param_count == 0);
+      } else {
+        r.kind = ResolvedKind::ClassField;
+      }
+      return r;
+    }
+  }
+  // 6. Unit-level -- own unit first, then cross-unit (`uses` chain).
+  if (registry) {
+    auto uit = registry->units.find(current_unit_name);
+    const UnitInfo* ui = (uit != registry->units.end())
+                            ? &uit->second : nullptr;
+    bool own = ui && (ui->own_consts.count(name) ||
+                      ui->own_vars.count(name) ||
+                      ui->own_procs.count(name) ||
+                      ui->own_types.count(name));
+    auto uses_unit = [&](const std::string& u) {
+      if (!ui) return false;
+      for (const auto& nm : ui->uses) if (nm == u) return true;
+      return false;
+    };
+
+    auto pit = registry->procs.find(name);
+    if (pit != registry->procs.end() && pit->second.decl) {
+      bool is_own = own;  // `own` covers procs too
+      if (is_own || uses_unit(pit->second.defining_unit)) {
+        r.cxx = is_own
+                    ? mangle(name)
+                    : mangle(pit->second.defining_unit) + "::" + mangle(name);
+        r.kind = ResolvedKind::UnitProc;
+        r.proc = pit->second.decl;
+        r.is_callable = true;
+        r.is_parameterless = (pit->second.param_count == 0);
+        return r;
+      }
+    }
+    if (!own) {
+      auto cit = registry->consts.find(name);
+      if (cit != registry->consts.end() && uses_unit(cit->second.defining_unit)) {
+        r.cxx = mangle(cit->second.defining_unit) + "::" + mangle(name);
+        r.kind = ResolvedKind::UnitConst; return r;
+      }
+      auto vit = registry->vars.find(name);
+      if (vit != registry->vars.end() && uses_unit(vit->second.defining_unit)) {
+        r.cxx = mangle(vit->second.defining_unit) + "::" + mangle(name);
+        r.kind = ResolvedKind::UnitVar; return r;
+      }
+      auto eit = registry->enum_members.find(name);
+      if (eit != registry->enum_members.end() && uses_unit(eit->second)) {
+        r.cxx = mangle(eit->second) + "::" + mangle(name);
+        r.kind = ResolvedKind::EnumMember; return r;
+      }
+    }
+    // Own-unit const/var/enum/type fall through bare -- C++ finds
+    // them in the current `namespace p_UNIT { ... }`.
+    if (ui) {
+      if (ui->own_consts.count(name)) {
+        r.cxx = mangle(name); r.kind = ResolvedKind::UnitConst; return r;
+      }
+      if (ui->own_vars.count(name)) {
+        r.cxx = mangle(name); r.kind = ResolvedKind::UnitVar; return r;
+      }
+      if (ui->own_types.count(name)) {
+        r.cxx = mangle(name); r.kind = ResolvedKind::UnitType; return r;
+      }
+    }
+  }
+  // 7. rt:: builtins we know are zero-arg.
+  static const std::unordered_set<std::string> rt_param0 = {
+      "memavail", "heapavail", "maxavail",
+      "paramcount", "ioresult", "eof", "eoln",
+      "dosexitcode", "ovrgetbuf",
+  };
+  if (rt_param0.count(name)) {
+    r.cxx = mangle(name);
+    r.kind = ResolvedKind::RtBuiltin;
+    r.is_callable = true;
+    r.is_parameterless = true;
+    return r;
+  }
+  // 8. Fallback: emit the mangled name and let C++ lookup sort it out
+  //    (catches rt:: free functions we haven't enumerated and any
+  //    name that's in the current namespace).
+  r.cxx = mangle(name);
+  r.kind = ResolvedKind::Unknown;
+  return r;
+}
+
+// ---------------------------------------------------------------------------
 // Expressions (coarse -- just enough for constant values)
 
 std::string Emitter::expr_to_cxx(const Expr& e) {
@@ -636,159 +861,29 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Ident: {
       const auto& n = static_cast<const Ident&>(e);
-      if (n.name == "inherited") {
-        // Bare `inherited;` (rare) -- `inherited{}` default-constructs the
-        // parent via the in-struct `using inherited = Parent;` alias.
-        return "inherited{}";
-      }
+      if (n.name == "inherited") return "inherited{}";
       if (n.name == "self") return "(*this)";
-      // LHS rewrite: Pascal's `funcname := ...`, `funcname[i] := ...`
-      // etc. all need the root ident routed to the function's result slot
-      // rather than shadowing/mutating the function itself.
+      // LHS rewrite for `funcname := ...` assignments during Assign target
+      // emission. We handle this BEFORE resolve_name so recursive
+      // calls using `funcname(...)` still see the function name.
       if (!lhs_fn_rewrite.empty() && n.name == lhs_fn_rewrite) {
         return "result";
       }
-      // Pascal function-name-as-read: inside a function body the
-      // function's own identifier evaluates to its in-progress
-      // result value. Only applies when we're emitting a VALUE (not
-      // a callee), since recursive calls still need the function
-      // name.
-      if (current_fn_is_function && !is_callee_context_ &&
+      // The function-name-as-read rewrite is already in resolve_name
+      // (only fires outside is_callee_context_), but we need to
+      // suppress it in callee context to keep recursive call sites
+      // spelled with the function's name.
+      if (is_callee_context_ && current_fn_is_function &&
           !current_fn_name.empty() && n.name == current_fn_name) {
-        return "result";
-      }
-      // Pascal name resolution for a bare ident inside a proc body,
-      // walked in lookup order:
-      //   1. innermost `with X do` binding (fields shadow locals)
-      //   2. procedure locals / parameters
-      //   3. nested parameterless function -> auto-call
-      //   4. current class's member chain (methods auto-call)
-      //   5. unit-level parameterless proc -> auto-call
-      //   6. fallthrough: emit the mangled name, let C++ name lookup
-      //      handle it (reaches namespace-scope decls, rt::, using-
-      //      directives from `uses`)
-      bool want_call = !is_callee_context_;
-
-      // 1. `with`
-      if (registry && !with_stack.empty()) {
-        for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
-          std::string cls;
-          if (it->type) {
-            cls = registry->direct_type_name(registry->canonicalize(it->type));
-          }
-          if (cls.empty()) continue;
-          if (auto* m = registry->lookup_class_member(cls, n.name)) {
-            std::string text = it->cxx_text + "." + mangle(n.name);
-            if (want_call && m->is_method && m->method.param_count == 0)
-              text += "()";
-            return text;
-          }
-          if (registry->lookup_record_field(cls, n.name)) {
-            return it->cxx_text + "." + mangle(n.name);
-          }
-        }
-      }
-      // 2. Proc-local (parameter, var, typed const). A local is just a
-      //    variable -- never auto-called.
-      if (local_scope.count(n.name)) {
-        // 3. Exception: nested parameterless functions. Their C++ shape
-        //    is `std::function<T()>`, so the "value" you get from a
-        //    bare reference is the callable, not T. Force the call.
-        if (block_depth > 0 && want_call) {
-          auto nit = local_nested_fns.find(n.name);
-          if (nit != local_nested_fns.end() && nit->second.param_count == 0 &&
-              nit->second.is_function) {
-            return mangle(n.name) + "()";
-          }
-        }
         return mangle(n.name);
       }
-      // 4. Current class's members (chain). Not gated by want_call
-      //    because we still need to emit the bare name (not a
-      //    unit-qualified one) when the ident is a class field/method
-      //    even inside `@` / callee context.
-      if (block_depth > 0 && !current_class_name.empty() && registry) {
-        if (auto* m = registry->lookup_class_member(current_class_name,
-                                                   n.name)) {
-          if (want_call && m->is_method && m->method.param_count == 0) {
-            return mangle(n.name) + "()";
-          }
-          return mangle(n.name);
-        }
-      }
-      // 5. Unit-level const/var referenced from another unit's code.
-      //    If our own unit declares this name, it shadows everything
-      //    from `uses` -- keep it bare (C++ looks it up in our own
-      //    namespace). Otherwise, qualify to the defining unit so
-      //    two same-named consts brought in by `using namespace`
-      //    don't go ambiguous. Only qualify if the defining unit is
-      //    actually in our `uses` chain -- otherwise we'd emit a
-      //    qualified name to a namespace our .cc doesn't include.
-      if (block_depth > 0 && registry) {
-        auto uit = registry->units.find(current_unit_name);
-        const UnitInfo* ui = (uit != registry->units.end())
-                                 ? &uit->second
-                                 : nullptr;
-        bool own = ui && (ui->own_consts.count(n.name) ||
-                          ui->own_vars.count(n.name) ||
-                          ui->own_procs.count(n.name) ||
-                          ui->own_types.count(n.name));
-        auto uses_unit = [&](const std::string& u) {
-          if (!ui) return false;
-          for (const auto& nm : ui->uses) if (nm == u) return true;
-          return false;
-        };
-        if (!own) {
-          auto cit = registry->consts.find(n.name);
-          if (cit != registry->consts.end() &&
-              cit->second.defining_unit != current_unit_name &&
-              uses_unit(cit->second.defining_unit)) {
-            return mangle(cit->second.defining_unit) + "::" + mangle(n.name);
-          }
-          auto vit = registry->vars.find(n.name);
-          if (vit != registry->vars.end() &&
-              vit->second.defining_unit != current_unit_name &&
-              uses_unit(vit->second.defining_unit)) {
-            return mangle(vit->second.defining_unit) + "::" + mangle(n.name);
-          }
-          // Enum members: same-named members across two uses'd enums
-          // go ambiguous under `using namespace`. Qualify.
-          auto eit = registry->enum_members.find(n.name);
-          if (eit != registry->enum_members.end() &&
-              eit->second != current_unit_name &&
-              uses_unit(eit->second)) {
-            return mangle(eit->second) + "::" + mangle(n.name);
-          }
-        }
-      }
-      // 5c. Unit-level parameterless proc.
-      if (block_depth > 0 && want_call && registry) {
-        auto pit = registry->procs.find(n.name);
-        if (pit != registry->procs.end() && pit->second.param_count == 0) {
-          return mangle(n.name) + "()";
-        }
-      }
-      // 5b. Known parameterless builtins from p2cc_rt. These are
-      // defined as free functions in namespace rt and brought into
-      // scope via `using namespace ::rt`; a bare reference to one
-      // needs auto-call like any other parameterless function.
-      if (block_depth > 0 && want_call) {
-        static const std::unordered_set<std::string> rt_param0 = {
-            "memavail", "heapavail", "maxavail",
-            "paramcount", "ioresult", "eof", "eoln",
-            "dosexitcode", "ovrgetbuf",
-        };
-        if (rt_param0.count(n.name)) {
-          return mangle(n.name) + "()";
-        }
-      }
-      // 6. Primitive type names deliberately not substituted here --
-      //    `text` might be a Pascal field name as easily as the `text`
-      //    file-type, and the symbol table disambiguates only after
-      //    context (type position vs expression position). Type-context
-      //    substitution lives in type_to_cxx; type-casts are handled in
-      //    the Call case.
-      return mangle(n.name);
+      ResolveResult rr = resolve_name(n.name);
+      // At namespace scope (block_depth == 0) we leave callable
+      // names bare: Pascal typed-const initialisers reference
+      // function names as procedural-pointer values.
+      bool want_call = !is_callee_context_ && block_depth > 0 &&
+                       rr.is_callable && rr.is_parameterless;
+      return want_call ? rr.cxx + "()" : rr.cxx;
     }
     case Kind::Binary: {
       const auto& n = static_cast<const Binary&>(e);
@@ -874,20 +969,49 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Member: {
       const auto& m = static_cast<const Member&>(e);
-      // `UnitName.sym` in Pascal is a qualified unit reference. In
-      // C++ the unit maps to `namespace p_UnitName`, so use `::`.
-      // Only fire when the base name isn't otherwise bound: locals
-      // shadow, class members shadow, `with` targets shadow. The
-      // unit might be an RTL unit that we didn't parse (e.g. `dos`);
-      // we recognise it if it's in the current unit's `uses` list.
-      if (m.base->kind == Kind::Ident && registry) {
-        const auto& id = static_cast<const Ident&>(*m.base);
-        bool shadowed = local_scope.count(id.name) > 0;
-        if (!shadowed && !current_class_name.empty()) {
-          if (registry->lookup_class_member(current_class_name, id.name)) {
-            shadowed = true;
-          }
+      // Classify the base into one of the qualifier kinds that
+      // `resolve_name` understands. The base cases are:
+      //   - `inherited.name`    -> class-qualified on parent alias
+      //   - `Unit.name`         -> unit-qualified (Unit must be a
+      //                            known unit or in the current
+      //                            unit's `uses` list)
+      //   - `expr.name` where   -> class-qualified on deduced type
+      //     expr's type is a
+      //     named class/record
+      //   - otherwise           -> unknown: emit `base.name` and let
+      //                            C++ member lookup do its thing.
+      auto base_is_ident = [&](std::string& out) -> bool {
+        if (m.base->kind != Kind::Ident) return false;
+        out = static_cast<const Ident&>(*m.base).name;
+        return true;
+      };
+
+      std::string base_name;
+      // `inherited.foo` -- treat as class-qualified on the parent
+      // alias (C++ `inherited::foo` via the in-struct `using
+      // inherited = Parent;` alias).
+      if (base_is_ident(base_name) && base_name == "inherited") {
+        std::string parent;
+        if (registry && !current_class_name.empty()) {
+          auto cit = registry->classes.find(current_class_name);
+          if (cit != registry->classes.end()) parent = cit->second.parent;
         }
+        std::string text = "inherited::" + mangle(m.name);
+        if (parent.empty()) return text;
+        ResolveResult rr =
+            resolve_name(m.name, QualifierKind::Class, parent);
+        bool want_call = !is_callee_context_ &&
+                         rr.is_callable && rr.is_parameterless;
+        return want_call ? text + "()" : text;
+      }
+
+      // `Unit.name` -- only when the base ident names a known unit
+      // AND isn't shadowed by any nearer binding.
+      if (registry && base_is_ident(base_name)) {
+        bool shadowed = local_scope.count(base_name) > 0;
+        if (!shadowed && !current_class_name.empty() &&
+            registry->lookup_class_member(current_class_name, base_name))
+          shadowed = true;
         if (!shadowed) {
           for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
             std::string cls = it->type
@@ -895,84 +1019,42 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                                         registry->canonicalize(it->type))
                                   : std::string{};
             if (!cls.empty() &&
-                (registry->lookup_class_member(cls, id.name) ||
-                 registry->lookup_record_field(cls, id.name))) {
-              shadowed = true;
-              break;
+                (registry->lookup_class_member(cls, base_name) ||
+                 registry->lookup_record_field(cls, base_name))) {
+              shadowed = true; break;
             }
           }
         }
         if (!shadowed) {
-          bool is_unit = registry->units.count(id.name) > 0;
+          bool is_unit = registry->units.count(base_name) > 0;
           if (!is_unit) {
             auto uit = registry->units.find(current_unit_name);
             if (uit != registry->units.end()) {
               for (const auto& nm : uit->second.uses) {
-                if (nm == id.name) { is_unit = true; break; }
+                if (nm == base_name) { is_unit = true; break; }
               }
             }
           }
           if (is_unit) {
-            std::string text = mangle(id.name) + "::" + mangle(m.name);
-            // If the qualified target is a parameterless proc in the
-            // named unit, auto-call it (Pascal lets you write
-            // `unit.func` without parens to call the function). Our
-            // registry's `procs` map keeps the last-registered def
-            // per name, so we check by name+param-count and trust
-            // that a same-named proc in another unit is also
-            // parameterless (true for `assemble`, `exit`, etc.).
-            if (!is_callee_context_ && registry) {
-              auto pit = registry->procs.find(m.name);
-              if (pit != registry->procs.end() &&
-                  pit->second.param_count == 0) {
-                text += "()";
-              }
-            }
-            return text;
+            ResolveResult rr =
+                resolve_name(m.name, QualifierKind::Unit, base_name);
+            bool want_call = !is_callee_context_ &&
+                             rr.is_callable && rr.is_parameterless;
+            return want_call ? rr.cxx + "()" : rr.cxx;
           }
         }
       }
-      if (m.base->kind == Kind::Ident &&
-          static_cast<const Ident&>(*m.base).name == "inherited") {
-        // `inherited method` auto-calls if it's known parameterless in
-        // ANY class (global set). Safe because `inherited` is a Pascal
-        // keyword, the context is always a method call (not a field
-        // read on a distinct object).
-        std::string text = "inherited::" + mangle(m.name);
-        if (!is_callee_context_ && parameterless_methods.count(m.name)) {
-          text += "()";
-        }
-        return text;
-      }
-      std::string text = expr_to_cxx(*m.base) + "." + mangle(m.name);
-      if (!is_callee_context_ && registry) {
-        // Type-driven: if we can identify the base's class/record,
-        // look up the member in the registry. Parameterless methods
-        // auto-call; fields stay bare. If the base's type can't be
-        // identified (e.g. a procedure-local record type that isn't
-        // in the registry) we leave the access bare rather than
-        // guessing -- a wrong auto-call silently miscompiles, a
-        // missed one produces a loud C++ error we can fix.
-        std::string bcls = deduce_class_alias(*m.base);
-        if (!bcls.empty()) {
-          if (auto* mem = registry->lookup_class_member(bcls, m.name)) {
-            if (mem->is_method && mem->method.param_count == 0) text += "()";
-          }
-        }
-      } else if (!is_callee_context_) {
-        // No registry: fall back to the old name-based heuristic.
-        if (!current_class_name.empty() && m.base->kind == Kind::Ident &&
-            static_cast<const Ident&>(*m.base).name == "self") {
-          auto it = class_parameterless_methods.find(current_class_name);
-          if (it != class_parameterless_methods.end() &&
-              it->second.count(m.name)) {
-            text += "()";
-          }
-        } else if (parameterless_methods.count(m.name) &&
-                   !field_names.count(m.name)) {
-          text += "()";
-        }
-      }
+
+      // Otherwise: object/record field/method access. Emit `base.name`
+      // and auto-call if the deduced class has `name` as a
+      // parameterless method.
+      std::string base_cxx = expr_to_cxx(*m.base);
+      std::string text = base_cxx + "." + mangle(m.name);
+      if (is_callee_context_ || !registry) return text;
+      std::string bcls = deduce_class_alias(*m.base);
+      if (bcls.empty()) return text;
+      ResolveResult rr = resolve_name(m.name, QualifierKind::Class, bcls);
+      if (rr.is_callable && rr.is_parameterless) text += "()";
       return text;
     }
     case Kind::Deref: {
@@ -1927,21 +2009,10 @@ void Emitter::emit_stmt(const Stmt& s) {
         emitln("delete " + p + ";");
         emitln(p + " = nullptr;");
       } else {
-        // In statement context, a bare `obj.name` or `name` that refers
-        // to a known parameterless method is unambiguously a call (no
-        // one writes `obj.field;` to discard a value). Auto-append `()`
-        // in those cases.
-        std::string text = expr_to_cxx(*es.expr);
-        bool needs_parens = false;
-        if (es.expr->kind == Kind::Member) {
-          const auto& m = static_cast<const Member&>(*es.expr);
-          if (parameterless_methods.count(m.name)) needs_parens = true;
-        } else if (es.expr->kind == Kind::Ident) {
-          const auto& id = static_cast<const Ident&>(*es.expr);
-          if (parameterless_methods.count(id.name)) needs_parens = true;
-        }
-        if (needs_parens && text.back() != ')') text += "()";
-        emitln(text + ";");
+        // `expr_to_cxx` already auto-calls parameterless procs/methods
+        // in value context via `resolve_name`, so a statement-form
+        // call emits correctly as-is.
+        emitln(expr_to_cxx(*es.expr) + ";");
       }
       break;
     }
@@ -2417,55 +2488,18 @@ static std::vector<const Decl*> ordered_type_decls(
   return out;
 }
 
-// Scan a decl list, populating:
-//   * global parameterless-methods set (all classes' param-less methods)
-//   * per-class parameterless-methods map (for safe auto-call within a
-//     method body without polluting other classes with false positives)
-//   * local type-alias table (name -> underlying TypeExpr*)
-static void collect_unit_tables(
+// Collect in-unit type aliases (name -> underlying TypeExpr*) for
+// the legacy `local_type_aliases` map the typed-const emitter still
+// uses. All other name-resolution queries go through the registry
+// now.
+static void collect_unit_aliases(
     const std::vector<DeclPtr>& decls,
-    std::unordered_set<std::string>& methods,
-    std::unordered_map<std::string, std::unordered_set<std::string>>&
-        class_methods,
-    std::unordered_set<std::string>& all_field_names,
     std::unordered_map<std::string, const TypeExpr*>& aliases) {
   for (const auto& d : decls) {
-    if (d->kind == Kind::ProcDecl) {
-      // Unit-scope parameterless function/procedure. Pascal lets the
-      // caller write `x := func` (no parens) to call it. Put the name
-      // in `methods` so the auto-call logic picks it up; the field-name
-      // check (never-a-field) still gates against false positives.
-      const auto& pd = static_cast<const ProcDecl&>(*d);
-      if (pd.params.empty()) methods.insert(pd.name);
-      continue;
-    }
     if (d->kind != Kind::TypeDecl) continue;
     const auto& td = static_cast<const TypeDecl&>(*d);
     if (!td.type) continue;
     aliases[td.name] = td.type.get();
-    if (td.type->kind == Kind::TyObject) {
-      const auto& to = static_cast<const TyObject&>(*td.type);
-      auto& cm = class_methods[td.name];
-      for (const auto& m : to.members) {
-        if (m.is_field) {
-          for (const auto& n : m.field_names) all_field_names.insert(n);
-        } else if (m.method) {
-          const auto& pd = static_cast<const ProcDecl&>(*m.method);
-          if (pd.params.empty()) {
-            methods.insert(pd.name);
-            cm.insert(pd.name);
-          }
-        }
-      }
-    } else if (td.type->kind == Kind::TyRecord) {
-      const auto& tr = static_cast<const TyRecord&>(*td.type);
-      for (const auto& f : tr.fields) {
-        for (const auto& n : f.names) all_field_names.insert(n);
-      }
-      for (const auto& vc : tr.variant_cases)
-        for (const auto& f : vc.fields)
-          for (const auto& n : f.names) all_field_names.insert(n);
-    }
   }
 }
 
@@ -2478,19 +2512,8 @@ void Emitter::emit_unit(const UnitNode& u) {
     if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
   }
 
-  collect_unit_tables(u.interface_decls, parameterless_methods,
-                      class_parameterless_methods, field_names,
-                      local_type_aliases);
-  collect_unit_tables(u.impl_decls, parameterless_methods,
-                      class_parameterless_methods, field_names,
-                      local_type_aliases);
-  // Merge cross-unit sets populated by the driver.
-  for (const auto& n : extra_parameterless_methods_) {
-    parameterless_methods.insert(n);
-  }
-  for (const auto& n : extra_field_names_) {
-    field_names.insert(n);
-  }
+  collect_unit_aliases(u.interface_decls, local_type_aliases);
+  collect_unit_aliases(u.impl_decls, local_type_aliases);
 
   // Header.
   set_header();
@@ -2585,13 +2608,9 @@ void Emitter::emit_unit(const UnitNode& u) {
 }  // namespace
 
 EmittedUnit emit_unit(const UnitNode& u,
-                      const std::unordered_set<std::string>& extra_parameterless,
-                      const std::unordered_set<std::string>& extra_fields,
                       const std::unordered_map<std::string, EnumInfo>& extra_enums,
                       const TypeRegistry* registry) {
   Emitter e;
-  e.extra_parameterless_methods_ = extra_parameterless;
-  e.extra_field_names_ = extra_fields;
   e.extra_enum_sizes_ = extra_enums;
   e.registry = registry;
   e.emit_unit(u);
@@ -2612,30 +2631,6 @@ void collect_enum_sizes(const UnitNode& u,
   };
   scan(u.interface_decls);
   scan(u.impl_decls);
-}
-
-void collect_parameterless_methods(const UnitNode& u,
-                                   std::unordered_set<std::string>& out) {
-  std::unordered_map<std::string, const TypeExpr*> aliases_unused;
-  std::unordered_map<std::string, std::unordered_set<std::string>>
-      class_methods_unused;
-  std::unordered_set<std::string> fields_unused;
-  collect_unit_tables(u.interface_decls, out, class_methods_unused,
-                      fields_unused, aliases_unused);
-  collect_unit_tables(u.impl_decls, out, class_methods_unused,
-                      fields_unused, aliases_unused);
-}
-
-void collect_field_names(const UnitNode& u,
-                         std::unordered_set<std::string>& out) {
-  std::unordered_map<std::string, const TypeExpr*> aliases_unused;
-  std::unordered_map<std::string, std::unordered_set<std::string>>
-      class_methods_unused;
-  std::unordered_set<std::string> methods_unused;
-  collect_unit_tables(u.interface_decls, methods_unused,
-                      class_methods_unused, out, aliases_unused);
-  collect_unit_tables(u.impl_decls, methods_unused,
-                      class_methods_unused, out, aliases_unused);
 }
 
 }  // namespace p2cc
