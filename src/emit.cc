@@ -154,12 +154,6 @@ struct Emitter {
   // driver. Drives member-access and ident-call decisions.
   const TypeRegistry* registry = nullptr;
 
-  // Map from Pascal type-alias name (lowercased) to its type expression
-  // within the currently-emitted unit. Used to resolve named aliases so
-  // a typed-constant whose declared type is a named `array[...] of T`
-  // can still emit a C-style array initialiser.
-  std::unordered_map<std::string, const TypeExpr*> local_type_aliases;
-
   void set_header() { out = &header; }
   void set_impl()   { out = &impl; }
 
@@ -333,17 +327,10 @@ std::string Emitter::array_type_to_cxx(const TyArray& a) {
                   ") + 1)";
     } else if (dim.kind == Kind::TyName) {
       const auto& tn = static_cast<const TyName&>(dim);
-      auto at = local_type_aliases.find(tn.name);
-      if (at != local_type_aliases.end() && at->second &&
-          at->second->kind == Kind::TyEnum) {
-        const auto& en = static_cast<const TyEnum&>(*at->second);
-        lo = "0";
-        size_expr = std::to_string(en.members.size());
-      } else if (registry) {
-        // Cross-unit enum -- the type registry records every enum
-        // (in any unit) with its member list, so we can compute
-        // `array[someenum] of T` dimensions regardless of which
-        // unit declared `someenum`.
+      // The type registry records every enum in every unit with its
+      // member list, so `array[someenum] of T` dimensions compute
+      // regardless of where `someenum` is declared.
+      if (registry) {
         auto eit = registry->enums.find(tn.name);
         if (eit != registry->enums.end()) {
           lo = "0";
@@ -1187,19 +1174,22 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if ((n == "low" || n == "high") && c.args.size() == 1 &&
             c.args[0]->kind == Kind::Ident) {
           const auto& a = static_cast<const Ident&>(*c.args[0]);
-          auto it = local_type_aliases.find(a.name);
-          if (it != local_type_aliases.end() && it->second &&
-              it->second->kind == Kind::TyEnum) {
-            is_low_high_type = true;
-            low_high_rewrite = mangle(a.name) + "__" + n;
-          } else if (registry && registry->enums.count(a.name)) {
-            // Enum defined in another unit: it has emitted `__low` /
-            // `__high` constants inside its own namespace.
-            is_low_high_type = true;
+          if (registry) {
             auto eit = registry->enums.find(a.name);
-            low_high_rewrite = mangle(eit->second.defining_unit) + "::" +
-                               mangle(a.name) + "__" + n;
-          } else {
+            if (eit != registry->enums.end()) {
+              // Enum's `__low` / `__high` constants live in its
+              // defining unit's namespace; qualify unless it's ours.
+              is_low_high_type = true;
+              const std::string& def = eit->second.defining_unit;
+              if (def == current_unit_name) {
+                low_high_rewrite = mangle(a.name) + "__" + n;
+              } else {
+                low_high_rewrite = mangle(def) + "::" + mangle(a.name) +
+                                   "__" + n;
+              }
+            }
+          }
+          if (!is_low_high_type) {
             // Not a type name: may be an array-valued expression.
             // Resolve via type deduction and use rt::Array's low()/
             // high() static methods on the deduced array type.
@@ -1608,13 +1598,10 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
   //   (b) the array has value-copy semantics on pass (Pascal),
   //   (c) `arr[Lo]` picks the first element (Pascal arbitrary low bound).
   if (cd.type && cd.value->kind == Kind::ArrayConst) {
-    const TypeExpr* t = cd.type.get();
-    while (t && t->kind == Kind::TyName) {
-      const auto& tn = static_cast<const TyName&>(*t);
-      auto it = local_type_aliases.find(tn.name);
-      if (it == local_type_aliases.end()) break;
-      t = it->second;
-    }
+    // Chase through named aliases (cross-unit-aware) until we see the
+    // underlying TyArray.
+    const TypeExpr* t = registry ? registry->canonicalize(cd.type.get())
+                                 : cd.type.get();
     if (t && t->kind == Kind::TyArray) {
       const auto& arr = static_cast<const TyArray&>(*t);
       // Wrap the element type in `Array<..., Lo, N>` for each dim from
@@ -1631,13 +1618,7 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
                       ") + 1)";
         } else if (dim.kind == Kind::TyName) {
           const auto& tn = static_cast<const TyName&>(dim);
-          auto at = local_type_aliases.find(tn.name);
-          if (at != local_type_aliases.end() && at->second &&
-              at->second->kind == Kind::TyEnum) {
-            const auto& en = static_cast<const TyEnum&>(*at->second);
-            lo = "0";
-            size_expr = std::to_string(en.members.size());
-          } else if (registry) {
+          if (registry) {
             auto eit = registry->enums.find(tn.name);
             if (eit != registry->enums.end()) {
               lo = "0";
@@ -2529,21 +2510,6 @@ static std::vector<const Decl*> ordered_type_decls(
   return out;
 }
 
-// Collect in-unit type aliases (name -> underlying TypeExpr*) for
-// the legacy `local_type_aliases` map the typed-const emitter still
-// uses. All other name-resolution queries go through the registry
-// now.
-static void collect_unit_aliases(
-    const std::vector<DeclPtr>& decls,
-    std::unordered_map<std::string, const TypeExpr*>& aliases) {
-  for (const auto& d : decls) {
-    if (d->kind != Kind::TypeDecl) continue;
-    const auto& td = static_cast<const TypeDecl&>(*d);
-    if (!td.type) continue;
-    aliases[td.name] = td.type.get();
-  }
-}
-
 void Emitter::emit_unit(const UnitNode& u) {
   const std::string ns = mangle(u.name);
   const std::string hguard = u.name;  // used for the #include stem
@@ -2552,9 +2518,6 @@ void Emitter::emit_unit(const UnitNode& u) {
   for (auto& ch : current_unit_name) {
     if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
   }
-
-  collect_unit_aliases(u.interface_decls, local_type_aliases);
-  collect_unit_aliases(u.impl_decls, local_type_aliases);
 
   // Header.
   set_header();
