@@ -1025,6 +1025,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return want_call ? text + "()" : text;
       }
 
+      // Pascal's `System` unit is implicitly used everywhere. Route
+      // `System.x` straight to `::rt::x` so every builtin (delete,
+      // length, copy, pos, ...) resolves without a per-method stub
+      // on some `p_system` object.
+      if (base_is_ident(base_name) && base_name == "system") {
+        return "::rt::" + mangle(m.name);
+      }
       // `Unit.name` -- only when the base ident names a known unit
       // AND isn't shadowed by any nearer binding.
       if (registry && base_is_ident(base_name)) {

@@ -1085,39 +1085,35 @@ inline ShortString<> p_getenv(const ShortString<>& name) {
 // is stubbed, return 0 ("success").
 inline int32_t p_dosexitcode() { return 0; }
 
-// `system.close(f)`-style qualified calls in the sources -- a thin
-// namespace-object alias to the prelude names above.
-struct SystemStub {
-  int32_t p_heapsize = 1 << 20;
-  template <typename F> void p_close(F&) {}
-  template <typename F> void p_erase(F&) {}
-  // `system.val(s, n, code)` -- string-to-number. Real fpc sets `code`
-  // to the 1-based index of the first bad char or 0 on success.
-  template <typename S, typename N>
-  void p_val(const S& s, N& n, int32_t& code) {
-    // Minimal: integer atoi; any parse failure sets code=length+1.
-    code = 0;
-    n = static_cast<N>(0);
-    int i = 0;
-    int len = p_length(s);
-    int sign = 1;
-    if (i < len && (s[i + 1] == '+' || s[i + 1] == '-')) {
-      if (s[i + 1] == '-') sign = -1;
-      ++i;
-    }
-    int64_t v = 0;
-    bool any = false;
-    while (i < len) {
-      char c = static_cast<char>(s[i + 1]);
-      if (c < '0' || c > '9') { code = i + 1; return; }
-      v = v * 10 + (c - '0');
-      any = true;
-      ++i;
-    }
-    if (!any) { code = 1; return; }
-    n = static_cast<N>(sign * v);
+// `System.heapsize` appears as a plain value in the compiler's
+// status prints. Real fpc sets this during startup; we expose a
+// constant close-enough placeholder.
+inline int32_t p_heapsize = 1 << 20;
+
+// Pascal `val(s, n, code)` -- string-to-number parser. The emitter
+// routes `System.Val(...)` to `::rt::p_val(...)`.
+template <typename S, typename N>
+inline void p_val(const S& s, N& n, int32_t& code) {
+  code = 0;
+  n = static_cast<N>(0);
+  int i = 0;
+  int len = p_length(s);
+  int sign = 1;
+  if (i < len && (s[i + 1] == '+' || s[i + 1] == '-')) {
+    if (s[i + 1] == '-') sign = -1;
+    ++i;
   }
-};
-inline SystemStub p_system{};
+  int64_t v = 0;
+  bool any = false;
+  while (i < len) {
+    char c = static_cast<char>(s[i + 1]);
+    if (c < '0' || c > '9') { code = i + 1; return; }
+    v = v * 10 + (c - '0');
+    any = true;
+    ++i;
+  }
+  if (!any) { code = 1; return; }
+  n = static_cast<N>(sign * v);
+}
 
 }  // namespace rt
