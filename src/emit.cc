@@ -285,9 +285,33 @@ std::string Emitter::type_name_to_cxx(const TyName& n) {
 }
 
 std::string Emitter::subrange_type_to_cxx(const TySubrange& r) {
-  // Without further info we can only represent subranges as their base
-  // type; pick int32_t as a safe default.
-  // TODO: derive a narrower type from the bounds when both are IntLit.
+  // If both bounds are enum members of the same enum, the subrange's
+  // base type IS that enum -- and we want to keep that typing so
+  // things like `Set of R_EAX..R_BL` get `Set<tregister>` rather
+  // than `Set<int32_t>`.
+  auto bound_enum = [&](const Expr* e) -> std::string {
+    if (!e || e->kind != Kind::Ident || !registry) return {};
+    auto it = registry->enum_members.find(
+        static_cast<const Ident&>(*e).name);
+    if (it == registry->enum_members.end()) return {};
+    // enum_members maps member-name -> defining unit. Find which
+    // enum within that unit the member belongs to.
+    auto uit = registry->units.find(it->second);
+    if (uit == registry->units.end()) return {};
+    for (const auto& [en, info] : registry->enums) {
+      if (info.defining_unit == it->second) {
+        for (const auto& m : info.members) {
+          if (m == static_cast<const Ident&>(*e).name) return en;
+        }
+      }
+    }
+    return {};
+  };
+  std::string le = bound_enum(r.lo.get());
+  std::string he = bound_enum(r.hi.get());
+  if (!le.empty() && le == he) return mangle(le);
+  // Without further info we can only represent subranges as their
+  // base type; pick int32_t as a safe default.
   return "int32_t";
 }
 
