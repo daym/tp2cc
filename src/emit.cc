@@ -2761,9 +2761,49 @@ void Emitter::emit_unit(const UnitNode& u) {
     }
     flush();
   }
-  // Unit init body isn't emitted yet (M5 concern -- main() generation).
-  nl();
-  emitln("}  // namespace " + ns);
+  // Emit the unit/program `begin..end.` body.
+  //
+  //  - program:  generate `int main(int argc, char** argv)` that
+  //    stashes argv for ParamStr/ParamCount, then runs the program
+  //    body inside an exception-catching IIFE. Pascal `Halt(n)` is
+  //    rt::p_halt, which longjmps back to main.
+  //  - unit:     emit a free `__init()` function holding the body.
+  //    TODO: chain these in a proper startup init list. For now,
+  //    unreferenced init bodies are dead-stripped by the linker.
+  if (u.init_body) {
+    nl();
+    if (u.is_program) {
+      // Program entry point -- the one unprefixed name we emit.
+      emitln("}  // namespace " + ns);
+      nl();
+      emitln("int main(int argc, char** argv) {");
+      indent();
+      emitln("::rt::init_argv(argc, argv);");
+      // Re-enter the namespace so the body sees in-unit names
+      // unqualified.
+      emitln("using namespace " + ns + ";");
+      emitln("using namespace ::rt;");
+      ++block_depth;
+      if (u.init_body) emit_stmt(*u.init_body);
+      --block_depth;
+      emitln("return 0;");
+      dedent();
+      emitln("}");
+    } else {
+      emitln("void __unit_init() {");
+      indent();
+      ++block_depth;
+      emit_stmt(*u.init_body);
+      --block_depth;
+      dedent();
+      emitln("}");
+      nl();
+      emitln("}  // namespace " + ns);
+    }
+  } else {
+    nl();
+    emitln("}  // namespace " + ns);
+  }
 }
 
 }  // namespace

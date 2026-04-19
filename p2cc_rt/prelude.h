@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <csignal>
 #include <functional>
 #include <initializer_list>
 #include <string>
@@ -615,8 +616,10 @@ struct SearchRec { int32_t p_time = 0; int32_t p_size = 0;
                    uint8_t p_attr = 0; ShortString<> p_name; };
 using p_searchrec = SearchRec;
 using p_tsearchrec = SearchRec;
-inline void p_findfirst(const ShortString<>&, int, SearchRec&) {}
-inline void p_findnext(SearchRec&) {}
+inline int32_t p_findfirst(const ShortString<>&, int, SearchRec&) {
+  return -1;  // not found
+}
+inline int32_t p_findnext(SearchRec&) { return -1; }
 inline void p_findclose(SearchRec&) {}
 inline void p_mkdir(const ShortString<>&) {}
 inline void p_rmdir(const ShortString<>&) {}
@@ -735,6 +738,19 @@ inline void p_freemem(P*& p, int = 0) {
 
 [[noreturn]] inline void p_halt() { std::exit(0); }
 [[noreturn]] inline void p_halt(int code) { std::exit(code); }
+// Pascal `RunError(n)` -- abort with a runtime-error code. Same effect
+// as Halt(n) for our purposes.
+[[noreturn]] inline void p_runerror(int code = 0) { std::exit(code); }
+
+// POSIX `signal(sig, handler)` -- fpc's catch unit installs signal
+// handlers for SIGSEGV/SIGBUS/SIGILL to turn them into RunErrors.
+inline p_signalhandler p_signal(int32_t sig, p_signalhandler h) {
+  return reinterpret_cast<p_signalhandler>(
+      std::signal(sig, reinterpret_cast<void (*)(int)>(h)));
+}
+
+// `FindFirst` attribute mask -- any file (every attribute bit set).
+inline constexpr int32_t p_faanyfile = 0x3F;
 
 // Pascal's system-level `exitproc` points to a procedure run at program
 // exit. We don't implement exit-chaining yet; provide the variable so
@@ -743,8 +759,17 @@ using ExitProc = void (*)();
 inline ExitProc p_exitproc = nullptr;
 inline int32_t p_exitcode = 0;
 
-inline int p_paramcount() { return 0; }    // set by main()
-inline ShortString<> p_paramstr(int) { return {}; }  // set by main()
+// ParamCount / ParamStr -- argv machinery. `init_argv` is called by
+// the emitted `main(argc, argv)` stub, then Pascal code uses the
+// builtin accessors.
+inline int rt_argc = 0;
+inline char** rt_argv = nullptr;
+inline void init_argv(int argc, char** argv) { rt_argc = argc; rt_argv = argv; }
+inline int p_paramcount() { return rt_argc > 0 ? rt_argc - 1 : 0; }
+inline ShortString<> p_paramstr(int i) {
+  if (i < 0 || i >= rt_argc || !rt_argv || !rt_argv[i]) return {};
+  return ShortString<>(rt_argv[i]);
+}
 
 inline int32_t p_ioresult() { return 0; }
 
