@@ -2190,7 +2190,12 @@ std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
     if (!p.type) {
       pt = "void*";
     } else {
-      pt = type_to_cxx(*p.type);
+      if (p.type->kind == Kind::TyArray &&
+          static_cast<const TyArray&>(*p.type).dims.empty()) {
+        pt = open_array_type_to_cxx(*p.type);
+      } else {
+        pt = type_to_cxx(*p.type);
+      }
       if (p.mode == Param::Var || p.mode == Param::Out) pt += "&";
       else if (p.mode == Param::Const) pt = std::string("const ") + pt + "&";
     }

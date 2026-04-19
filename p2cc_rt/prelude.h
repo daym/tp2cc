@@ -490,6 +490,42 @@ struct Array {
   }
 };
 
+template <typename T>
+struct OpenArray {
+  T* data = nullptr;
+  int32_t count = 0;
+
+  constexpr OpenArray() = default;
+  constexpr OpenArray(T* p, int32_t n) : data(p), count(n) {}
+
+  template <typename U, auto Lo, int N>
+  requires std::is_convertible_v<U*, T*>
+  constexpr OpenArray(Array<U, Lo, N>& a) : data(a.data), count(N) {}
+
+  template <typename U, auto Lo, int N>
+  requires std::is_convertible_v<const U*, T*>
+  constexpr OpenArray(const Array<U, Lo, N>& a) : data(a.data), count(N) {}
+
+  template <int N>
+  requires std::is_convertible_v<p_char*, T*>
+  constexpr OpenArray(ShortString<N>& s) : data(s.data), count(s.length) {}
+
+  template <int N>
+  requires std::is_convertible_v<const p_char*, T*>
+  constexpr OpenArray(const ShortString<N>& s) : data(s.data), count(s.length) {}
+
+  constexpr T& operator[](int32_t i) { return data[i]; }
+  constexpr const T& operator[](int32_t i) const { return data[i]; }
+
+  constexpr T* begin() { return data; }
+  constexpr T* end() { return data + count; }
+  constexpr const T* begin() const { return data; }
+  constexpr const T* end() const { return data + count; }
+
+  constexpr int32_t low() const { return 0; }
+  constexpr int32_t high() const { return count - 1; }
+};
+
 template <typename Arr>
 struct ByteReinterpreter;
 
@@ -519,6 +555,23 @@ struct ByteReinterpreter<Array<Elem, Lo, N>> {
 template <typename Arr, typename Src>
 inline Arr p_reinterpret_bytes(const Src& src) {
   return ByteReinterpreter<Arr>::cast(src);
+}
+
+template <typename T, typename Src>
+inline T& p_reinterpret_ref(Src& src) {
+  return *reinterpret_cast<T*>(&src);
+}
+template <typename T, typename Src>
+inline const T& p_reinterpret_ref(const Src& src) {
+  return *reinterpret_cast<const T*>(&src);
+}
+template <typename T>
+inline T& p_reinterpret_ref(void* p) {
+  return *reinterpret_cast<T*>(p);
+}
+template <typename T>
+inline const T& p_reinterpret_ref(const void* p) {
+  return *reinterpret_cast<const T*>(p);
 }
 
 // --- Set<Elem> --------------------------------------------------------------
