@@ -2742,6 +2742,13 @@ void Emitter::emit_unit(const UnitNode& u) {
   }
   nl();
   emit_forward_struct_decls(*this, u.impl_decls);
+  // Emit definitions (not just extern declarations) for interface
+  // vars in the .cc so external references resolve at link time.
+  for (const auto& d : u.interface_decls) {
+    if (d->kind == Kind::VarDecl) {
+      emit_decl(*d, /*in_header=*/false);
+    }
+  }
   {
     std::vector<const Decl*> run;
     auto flush = [&] {
