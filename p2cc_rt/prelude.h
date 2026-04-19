@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cmath>
 #include <cctype>
 #include <cstddef>
@@ -24,12 +25,16 @@
 #include <glob.h>
 #include <initializer_list>
 #include <limits.h>
+#include <spawn.h>
 #include <string>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <type_traits>
 #include <unistd.h>
 #include <utility>
 #include <vector>
+
+extern char** environ;
 
 namespace rt {
 
@@ -726,6 +731,101 @@ inline void p_parse_pascal_integer(const std::string& buf, Int& out,
   out = static_cast<Int>(u);
   code = 0;
 }
+
+inline std::vector<std::string> p_split_commandline(const std::string& s) {
+  std::vector<std::string> args;
+  std::string cur;
+  char quote = '\0';
+  bool escape = false;
+
+  for (char c : s) {
+    if (escape) {
+      cur += c;
+      escape = false;
+      continue;
+    }
+    if (quote != '\'') {
+      if (c == '\\') {
+        escape = true;
+        continue;
+      }
+      if (quote == '"' && c == '"') {
+        quote = '\0';
+        continue;
+      }
+    }
+    if (quote == '\'' && c == '\'') {
+      quote = '\0';
+      continue;
+    }
+    if (quote == '\0' && (c == '\'' || c == '"')) {
+      quote = c;
+      continue;
+    }
+    if (quote == '\0' &&
+        std::isspace(static_cast<unsigned char>(c)) != 0) {
+      if (!cur.empty()) {
+        args.push_back(cur);
+        cur.clear();
+      }
+      continue;
+    }
+    cur += c;
+  }
+
+  if (escape) cur += '\\';
+  if (!cur.empty()) args.push_back(cur);
+  return args;
+}
+
+inline int32_t p_doserror = 0;
+inline int32_t p_last_dosexitcode = 0;
+
+inline void p_store_wait_status(int status) {
+  p_doserror = 0;
+  if (WIFEXITED(status)) {
+    p_last_dosexitcode = WEXITSTATUS(status);
+  } else if (WIFSIGNALED(status)) {
+    p_last_dosexitcode = 128 + WTERMSIG(status);
+  } else {
+    p_last_dosexitcode = 1;
+  }
+}
+
+inline void p_spawn_process(const std::vector<std::string>& args) {
+  p_last_dosexitcode = 0;
+  if (args.empty() || args[0].empty()) {
+    p_doserror = ENOENT;
+    return;
+  }
+
+  std::vector<char*> argv;
+  argv.reserve(args.size() + 1);
+  for (const std::string& arg : args) {
+    argv.push_back(const_cast<char*>(arg.c_str()));
+  }
+  argv.push_back(nullptr);
+
+  pid_t pid = 0;
+  int spawn_err = ::posix_spawnp(&pid, argv[0], nullptr, nullptr, argv.data(),
+                                 ::environ);
+  if (spawn_err != 0) {
+    p_doserror = spawn_err;
+    return;
+  }
+
+  int status = 0;
+  while (::waitpid(pid, &status, 0) < 0) {
+    if (errno != EINTR) {
+      p_doserror = errno;
+      p_last_dosexitcode = 0;
+      return;
+    }
+  }
+
+  p_store_wait_status(status);
+}
+
 // Dos/file procedures -- stubbed; real behaviour added as needed.
 struct SearchRec { int32_t p_time = 0; int32_t p_size = 0;
                    uint8_t p_attr = 0; ShortString<> p_name;
@@ -733,7 +833,6 @@ struct SearchRec { int32_t p_time = 0; int32_t p_size = 0;
                    std::size_t p_index = 0; };
 using p_searchrec = SearchRec;
 using p_tsearchrec = SearchRec;
-inline int32_t p_doserror = 0;
 inline void p_searchrec_fill(SearchRec& rec, const std::string& path) {
   struct stat st{};
   if (::stat(path.c_str(), &st) != 0) return;
@@ -1127,6 +1226,12 @@ inline void p_val(const ShortString<N>& s, long double& out, int32_t& code) {
   if (end && *end == '\0') { out = v; code = 0; }
   else { code = static_cast<int32_t>(end - buf.c_str()) + 1; }
 }
+template <int N>
+inline void p_val(const ShortString<N>& s, float& out, int32_t& code) {
+  double v = 0.0;
+  p_val(s, v, code);
+  if (code == 0) out = static_cast<float>(v);
+}
 
 template <int N>
 inline ShortString<> p_copy(const ShortString<N>& s, int start, int count) {
@@ -1343,10 +1448,14 @@ inline int32_t p_segment(const void*) { return 0; }
 inline int32_t p_offset(const void*) { return 0; }
 inline int32_t p_extraoptions = 0;
 inline int32_t p_moduleindex = 0;
-// STUB: dos.exec -- launches external process. No-op here means the
-// bootstrap assembler/linker step won't actually run; the compiler
-// path that invokes external tools has to be audited before release.
-template <typename... A> inline void p_exec(A&&...) {}
+template <int N, int M>
+inline void p_exec(const ShortString<N>& command, const ShortString<M>& para) {
+  std::vector<std::string> args;
+  args.push_back(p_to_std_string(command));
+  auto rest = p_split_commandline(p_to_std_string(para));
+  args.insert(args.end(), rest.begin(), rest.end());
+  p_spawn_process(args);
+}
 // Pascal `include(set, elem)` / `exclude(set, elem)` add/remove a
 // single element. Not stubs -- these are real Pascal set builtins.
 template <typename E1, typename E2>
@@ -1471,16 +1580,12 @@ inline GetEnvResult p_getenv(const ShortString<>& name) {
 }
 // Pascal `Linux.Shell(cmd)` -- run a command via `/bin/sh -c`, i.e.
 // POSIX `system(3)`. Used by the compiler for wildcard expansion.
-inline int32_t p_shell(const ShortString<>& cmd) {
-  char buf[260]{};
-  int n = cmd.length < 255 ? cmd.length : 255;
-  for (int i = 0; i < n; ++i) buf[i] = cmd.data[i];
-  return std::system(buf);
+template <int N>
+inline int32_t p_shell(const ShortString<N>& cmd) {
+  p_spawn_process({"/bin/sh", "-c", p_to_std_string(cmd)});
+  return p_last_dosexitcode;
 }
-// STUB: `dosexitcode` is a function in fpc's dos unit that returns
-// the exit code of the last `exec`-launched child. Since our `exec`
-// is stubbed, return 0 ("success").
-inline int32_t p_dosexitcode() { return 0; }
+inline int32_t p_dosexitcode() { return p_last_dosexitcode; }
 
 // `System.heapsize` appears as a plain value in the compiler's
 // status prints. Real fpc sets this during startup; we expose a
