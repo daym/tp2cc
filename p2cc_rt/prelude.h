@@ -1841,6 +1841,13 @@ inline void p_rewrite(TypedFile<T>& f) {
 }
 template <typename T> inline void p_rewrite(TypedFile<T>& f, int32_t) { p_rewrite(f); }
 template <typename T>
+inline void p_append(TypedFile<T>& f) {
+  char buf[260]{};
+  p_file_name_to_buf(f, buf);
+  f.f = std::fopen(buf, "ab");
+  p_set_ioresult(f, f.f ? 0 : 5);
+}
+template <typename T>
 inline void p_close(TypedFile<T>& f) {
   if (f.f) { std::fclose(f.f); f.f = nullptr; }
   p_set_ioresult(f, 0);
