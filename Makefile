@@ -71,4 +71,7 @@ distcheck: check
 install: all
 	install -m 755 -d $(DESTDIR)$(PREFIX)
 	install -m 755 -d $(DESTDIR)$(PREFIX)/bin
+	install -m 755 -d $(DESTDIR)$(PREFIX)/include
+	install -m 755 -d $(DESTDIR)$(PREFIX)/include/tp2cc_rt
 	install -m 755 $(BINDIR)/tp2cc $(DESTDIR)$(PREFIX)/bin/tp2cc
+	install -m 644 tp2cc_rt/prelude.h $(DESTDIR)$(PREFIX)/include/tp2cc_rt/prelude.h
