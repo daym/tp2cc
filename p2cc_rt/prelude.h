@@ -1589,6 +1589,14 @@ inline void p_val(const ShortString<N>& s, double& out, int32_t& code) {
   if (end && *end == '\0') { out = v; code = 0; }
   else { code = static_cast<int32_t>(end - buf.c_str()) + 1; }
 }
+template <int N, typename Code>
+requires (std::is_integral_v<Code> && !std::is_same_v<Code, bool> &&
+          !std::is_same_v<Code, int32_t>)
+inline void p_val(const ShortString<N>& s, double& out, Code& code) {
+  int32_t parsed_code = 0;
+  p_val(s, out, parsed_code);
+  code = static_cast<Code>(parsed_code);
+}
 template <int N>
 inline void p_val(const ShortString<N>& s, long double& out, int32_t& code) {
   std::string buf = p_to_std_string(s);
@@ -1597,11 +1605,27 @@ inline void p_val(const ShortString<N>& s, long double& out, int32_t& code) {
   if (end && *end == '\0') { out = v; code = 0; }
   else { code = static_cast<int32_t>(end - buf.c_str()) + 1; }
 }
+template <int N, typename Code>
+requires (std::is_integral_v<Code> && !std::is_same_v<Code, bool> &&
+          !std::is_same_v<Code, int32_t>)
+inline void p_val(const ShortString<N>& s, long double& out, Code& code) {
+  int32_t parsed_code = 0;
+  p_val(s, out, parsed_code);
+  code = static_cast<Code>(parsed_code);
+}
 template <int N>
 inline void p_val(const ShortString<N>& s, float& out, int32_t& code) {
   double v = 0.0;
   p_val(s, v, code);
   if (code == 0) out = static_cast<float>(v);
+}
+template <int N, typename Code>
+requires (std::is_integral_v<Code> && !std::is_same_v<Code, bool> &&
+          !std::is_same_v<Code, int32_t>)
+inline void p_val(const ShortString<N>& s, float& out, Code& code) {
+  int32_t parsed_code = 0;
+  p_val(s, out, parsed_code);
+  code = static_cast<Code>(parsed_code);
 }
 
 template <int N>
@@ -2105,11 +2129,15 @@ inline int32_t p_heapsize = 1 << 20;
 
 // Pascal `val(s, n, code)` -- string-to-number parser. The emitter
 // routes `System.Val(...)` to `::rt::p_val(...)`.
-template <typename S, typename N,
+template <typename S, typename N, typename Code,
           typename = std::enable_if_t<std::is_integral_v<N> &&
-                                      !std::is_same_v<N, bool>>>
-inline void p_val(const S& s, N& n, int32_t& code) {
-  p_parse_pascal_integer(p_to_std_string(s), n, code);
+                                      !std::is_same_v<N, bool> &&
+                                      std::is_integral_v<Code> &&
+                                      !std::is_same_v<Code, bool>>>
+inline void p_val(const S& s, N& n, Code& code) {
+  int32_t parsed_code = 0;
+  p_parse_pascal_integer(p_to_std_string(s), n, parsed_code);
+  code = static_cast<Code>(parsed_code);
 }
 
 }  // namespace rt
