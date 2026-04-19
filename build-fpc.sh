@@ -52,6 +52,11 @@ cat > "$OUT_DIR/ppc386.cfg" <<EOF
 -Fi$RPM_DIR/rtl/inc
 -Fi$RPM_DIR/rtl/i386
 -Fi$RPM_DIR/rtl/linux
+-Fu$RPM_DIR/rtl/inc
+-Fu$RPM_DIR/rtl/linux
+-Fu$RPM_DIR/rtl/i386
+-Fu$RPM_DIR/rtl/objpas
+-Fu$RPM_DIR/rtl/fakertl
 EOF
 
 echo "== [3/4] compile emitted units (32-bit) =="
