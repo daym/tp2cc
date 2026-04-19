@@ -662,11 +662,14 @@ inline void p_parse_pascal_integer(const std::string& buf, Int& out,
   static_assert(std::is_integral_v<Int> && !std::is_same_v<Int, bool>);
 
   using UInt = std::make_unsigned_t<Int>;
-  constexpr int bits = static_cast<int>(sizeof(UInt) * CHAR_BIT);
-  constexpr uint64_t mask =
-      bits == 64 ? UINT64_MAX : ((uint64_t{1} << bits) - 1);
+  auto fail = [&](std::size_t pos) {
+    out = 0;
+    code = static_cast<int32_t>(pos + 1);
+  };
 
   std::size_t i = 0;
+  while (i < buf.size() && (buf[i] == ' ' || buf[i] == '\t')) ++i;
+
   bool neg = false;
   if (i < buf.size() && (buf[i] == '+' || buf[i] == '-')) {
     neg = buf[i] == '-';
@@ -679,51 +682,69 @@ inline void p_parse_pascal_integer(const std::string& buf, Int& out,
       case '$':
         base = 16;
         ++i;
+        while ((i + 1) < buf.size() && buf[i] == '0') ++i;
         break;
       case '%':
         base = 2;
-        ++i;
-        break;
-      case '&':
-        base = 8;
         ++i;
         break;
     }
   }
 
   if (i >= buf.size()) {
-    code = static_cast<int32_t>(i + 1);
-    out = 0;
+    fail(i);
     return;
   }
 
-  uint64_t value = 0;
+  if constexpr (std::is_unsigned_v<Int>) {
+    if (neg) {
+      fail(i);
+      return;
+    }
+  }
+
+  UInt max_value = std::numeric_limits<UInt>::max();
+  if constexpr (std::is_signed_v<Int>) {
+    if (base == 10) {
+      const UInt max_signed = static_cast<UInt>(std::numeric_limits<Int>::max());
+      max_value = neg ? (max_signed + UInt{1}) : max_signed;
+    }
+  }
+
+  UInt value = 0;
   bool any = false;
   for (; i < buf.size(); ++i) {
     int d = p_digit_value(buf[i]);
     if (d < 0 || d >= base) {
-      code = static_cast<int32_t>(i + 1);
-      out = 0;
+      fail(i);
       return;
     }
     any = true;
-    if constexpr (bits == 64) {
-      value = value * static_cast<uint64_t>(base) + static_cast<uint64_t>(d);
-    } else {
-      value = (value * static_cast<uint64_t>(base) +
-               static_cast<uint64_t>(d)) & mask;
+
+    const UInt ub = static_cast<UInt>(base);
+    const UInt ud = static_cast<UInt>(d);
+    if (value > (max_value / ub)) {
+      fail(i);
+      return;
     }
+
+    const UInt next = value * ub;
+    if (next > (max_value - ud)) {
+      fail(i);
+      return;
+    }
+    value = next + ud;
   }
 
   if (!any) {
-    code = static_cast<int32_t>(i + 1);
-    out = 0;
+    fail(i);
     return;
   }
 
-  UInt u = static_cast<UInt>(value);
-  if (neg) u = UInt(0) - u;
-  out = static_cast<Int>(u);
+  if constexpr (std::is_signed_v<Int>) {
+    if (neg) value = UInt(0) - value;
+  }
+  out = static_cast<Int>(value);
   code = 0;
 }
 

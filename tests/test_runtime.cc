@@ -32,19 +32,28 @@ void test_val_accepts_prefixed_integers() {
   p_val(ShortString<>("%1010"), v, code);
   CHECK_EQ(code, 0);
   CHECK_EQ(v, 10);
-
-  p_val(ShortString<>("&77"), v, code);
-  CHECK_EQ(code, 0);
-  CHECK_EQ(v, 63);
 }
 
-void test_val_wraps_decimal_longint() {
+void test_val_accepts_decimal_min_longint() {
   int32_t v = 0;
   int32_t code = -1;
 
-  p_val(ShortString<>("2147483648"), v, code);
+  p_val(ShortString<>("-2147483648"), v, code);
   CHECK_EQ(code, 0);
   CHECK_EQ(v, std::numeric_limits<int32_t>::min());
+}
+
+void test_val_rejects_compiler_unsupported_integer_forms() {
+  int32_t v = 123;
+  int32_t code = -1;
+
+  p_val(ShortString<>("&77"), v, code);
+  CHECK_EQ(code, 1);
+  CHECK_EQ(v, 0);
+
+  p_val(ShortString<>("2147483648"), v, code);
+  CHECK_EQ(code, 10);
+  CHECK_EQ(v, 0);
 }
 
 void test_shortstring_char_concat_grows_capacity() {
@@ -78,7 +87,8 @@ void test_shell_tracks_exit_status() {
 
 int main() {
   RUN_TEST(test_val_accepts_prefixed_integers);
-  RUN_TEST(test_val_wraps_decimal_longint);
+  RUN_TEST(test_val_accepts_decimal_min_longint);
+  RUN_TEST(test_val_rejects_compiler_unsupported_integer_forms);
   RUN_TEST(test_shortstring_char_concat_grows_capacity);
   RUN_TEST(test_exec_tracks_exit_status);
   RUN_TEST(test_exec_reports_spawn_failure);
