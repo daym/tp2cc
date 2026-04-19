@@ -5,8 +5,9 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 ROOT="$SCRIPT_DIR"
 OUT_DIR="$ROOT/build/emitted"
-PP="$OUT_DIR/pp"
-CFG="$OUT_DIR/ppc386.cfg"
+PP="${PP:-$OUT_DIR/pp}"
+CFG_DIR="${PPC_CONFIG_PATH:-$OUT_DIR}"
+CFG="$CFG_DIR/ppc386.cfg"
 FPCDIR_DEFAULT="$ROOT/../rpm/"
 AS="${AS:-as}"
 LD="${LD:-ld}"
@@ -49,7 +50,7 @@ for arg in "$@"; do
 done
 
 if [ -z "$input_file" ]; then
-  PPC_CONFIG_PATH="$OUT_DIR" \
+  PPC_CONFIG_PATH="$CFG_DIR" \
   FPCDIR="${FPCDIR:-$FPCDIR_DEFAULT}" \
   exec "$PP" "$@"
 fi
@@ -83,7 +84,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-if ! PPC_CONFIG_PATH="$OUT_DIR" \
+if ! PPC_CONFIG_PATH="$CFG_DIR" \
   FPCDIR="${FPCDIR:-$FPCDIR_DEFAULT}" \
   "$PP" "$@" -B -a -s "-FE$build_dir" "-FU$build_dir" >"$pp_stdout"
 then
