@@ -5,7 +5,6 @@
 #   make           - build the tp2cc binary and all test binaries
 #   make check     - build and run all tests
 #   make clean
-#   make lex-all   - run the lexer over rpm/compiler as a smoke test
 
 CXX      ?= g++
 CXXFLAGS ?= -std=c++20 -O0 -g -Wall -Wextra -Wpedantic -Wno-unused-parameter
@@ -23,7 +22,7 @@ TEST_BINS := $(BINDIR)/test_lexer $(BINDIR)/test_parser $(BINDIR)/test_units $(B
 
 ALL_BINS  := $(BINDIR)/tp2cc $(TEST_BINS)
 
-.PHONY: all clean lex-all parse-all topo check distcheck
+.PHONY: all clean check distcheck
 all: $(ALL_BINS)
 
 $(OBJDIR)/%.o: src/%.cc src/%.h
@@ -63,15 +62,6 @@ check: $(TEST_BINS)
 	  echo "==> $$t"; \
 	  $$t; \
 	done
-
-lex-all: $(BINDIR)/tp2cc
-	$(BINDIR)/tp2cc lex-all ../rpm/compiler
-
-parse-all: $(BINDIR)/tp2cc
-	$(BINDIR)/tp2cc parse-all ../rpm/compiler
-
-topo: $(BINDIR)/tp2cc
-	$(BINDIR)/tp2cc topo ../rpm/compiler
 
 clean:
 	rm -rf $(BUILD)
