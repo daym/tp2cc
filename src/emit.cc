@@ -1114,12 +1114,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       is_callee_context_ = true;
       std::string inner = expr_to_cxx(*a.operand);
       is_callee_context_ = saved;
-      // Pascal `@arr` where `arr` is a BYTE array commonly lands in a
-      // `pchar` context (the fpc compiler's fill buffers etc.).
-      // `Array<uint8_t,...>*` doesn't implicitly convert to `char*`, so
-      // emit `(char*)arr` instead -- our Array<byte> has an explicit
-      // operator `char*`. Non-byte arrays keep `&arr` so
-      // pointer-to-array assignments remain type-compatible.
+      // Pascal `@arr` where `arr` is a flat byte-array (`array of
+      // char` / `array of byte`) typically lands in a `pchar` or
+      // `pointer` context -- the fpc compiler's fill buffers and
+      // inline byte tables do exactly this. For that narrow case
+      // emit `(char*)arr` using `rt::Array<byte>`'s `operator
+      // char*`. Anything deeper than one array level (e.g.
+      // `array of array of char`) stays as `&arr` and the source
+      // is expected to use a flatter spelling -- we do not paper
+      // over nested-array type-punning at the translator level.
       if (registry) {
         const TypeExpr* ot = deduce_type(*a.operand);
         if (ot) ot = registry->canonicalize(ot);
@@ -1127,18 +1130,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           const auto& ar = static_cast<const TyArray&>(*ot);
           const TypeExpr* elem = ar.element.get();
           if (elem) elem = registry->canonicalize(elem);
-          bool byte_elem = false;
           if (elem && elem->kind == Kind::TyName) {
             std::string en = static_cast<const TyName&>(*elem).name;
             for (auto& ch : en)
               if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
             if (en == "byte" || en == "char" || en == "uint8_t" ||
                 en == "shortint") {
-              byte_elem = true;
+              return "((char*)(" + inner + "))";
             }
-          }
-          if (byte_elem) {
-            return "((char*)(" + inner + "))";
           }
         }
       }
