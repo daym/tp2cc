@@ -340,15 +340,25 @@ void Lexer::do_include(std::string_view arg, Location where) {
     report_error(where, "empty {$include ...}");
     return;
   }
-  // Builtin include-macros like {$I %DATE%} / %TIME% / %FPCVERSION% /
-  // %FPCTARGET% expand to a string literal produced by the compiler at
-  // build time. They break reproducible builds, so we refuse to handle
-  // them. The one real consumer in fpc 0.99 is version.pas; patch that
-  // source (or add a driver-level override) before translating.
   if (a.size() >= 2 && a.front() == '%' && a.back() == '%') {
-    report_error(where,
-                 "builtin include-macro {$I " + a +
-                     "} is not supported (breaks reproducibility)");
+    std::string macro = lower(a);
+    std::string contents;
+    if (macro == "%date%") contents = "'1970-01-01'";
+    else if (macro == "%time%") contents = "'00:00:00'";
+    else if (macro == "%fpcversion%") contents = "'0.0.0'";
+    else if (macro == "%fpctarget%") contents = "'i386-linux'";
+    else if (macro == "%fpcos%") contents = "'linux'";
+    else {
+      report_error(where, "unsupported builtin include-macro {$I " + a + "}");
+      return;
+    }
+    auto sf = std::make_unique<SourceFile>();
+    sf->path = stack_.back().file->path + ":{$I " + a + "}";
+    sf->contents = std::move(contents);
+    Input in;
+    in.file = sf.get();
+    in.owned = std::move(sf);
+    stack_.push_back(std::move(in));
     return;
   }
 

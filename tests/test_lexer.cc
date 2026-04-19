@@ -270,21 +270,18 @@ void test_directive_define_undef() {
   CHECK_EQ(ts[1].text, std::string("three"));
 }
 
-void test_directive_builtin_macro_rejected() {
-  // {$I %DATE%} and friends are not supported -- they break reproducibility.
+void test_directive_builtin_macro_expands_deterministically() {
   int errs_before = p2cc::error_count();
   auto ts = lex_all("const d = {$I %DATE%};");
   int errs = p2cc::error_count() - errs_before;
-  CHECK(errs >= 1);
-  // We still want the surrounding tokens to be lexed.
-  // const d = ;
-  CHECK(ts.size() >= 4);
-  if (ts.size() >= 4) {
-    CHECK(ts[0].kind == Tok::KwConst);
-    CHECK(ts[1].kind == Tok::Ident);
-    CHECK(ts[2].kind == Tok::Eq);
-    CHECK(ts[3].kind == Tok::Semi);
-  }
+  CHECK_EQ(errs, 0);
+  CHECK_EQ(ts.size(), size_t{5});
+  CHECK(ts[0].kind == Tok::KwConst);
+  CHECK(ts[1].kind == Tok::Ident);
+  CHECK(ts[2].kind == Tok::Eq);
+  CHECK(ts[3].kind == Tok::StringLit);
+  CHECK_EQ(ts[3].text, std::string("1970-01-01"));
+  CHECK(ts[4].kind == Tok::Semi);
 }
 
 void test_directive_ignored_configs() {
@@ -409,7 +406,7 @@ int main() {
   RUN_TEST(test_directive_else);
   RUN_TEST(test_directive_nested_ifdef);
   RUN_TEST(test_directive_define_undef);
-  RUN_TEST(test_directive_builtin_macro_rejected);
+  RUN_TEST(test_directive_builtin_macro_expands_deterministically);
   RUN_TEST(test_directive_ignored_configs);
   RUN_TEST(test_enum_and_set_of_type);
   RUN_TEST(test_set_literal_and_in);
