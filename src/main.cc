@@ -147,6 +147,11 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
   // `uses`d). Emitting it independently drags in an undeclared
   // `ovrgetbuf` -- skip it entirely.
   g.skip_path_containing("/ppovin.pas");
+  // og386elf.pas is unreferenced (og386cff.pas is the live version
+  // used by ag386bin). The elf variant has latent `inherited init;`
+  // bugs where the parent ctor took a param the child didn't pass;
+  // the original fpc compiled it by accident. Skip.
+  g.skip_path_containing("/og386elf.pas");
   // dmisc.pas is a Delphi-only drop-in for the dos unit (wraps
   // Kernel32 APIs). Every `uses dmisc` in the compiler sits under
   // `{$ifdef Delphi}`, so it's dead code under FPC.
