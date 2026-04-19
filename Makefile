@@ -9,6 +9,7 @@
 
 CXX      ?= g++
 CXXFLAGS ?= -std=c++20 -O0 -g -Wall -Wextra -Wpedantic -Wno-unused-parameter
+PREFIX   ?= /usr
 INCLUDES := -Isrc
 
 BUILD    := build
@@ -76,3 +77,8 @@ clean:
 	rm -rf $(BUILD)
 
 distcheck: check
+
+install: all
+	install -m 755 -d $(DESTDIR)$(PREFIX)
+	install -m 755 -d $(DESTDIR)$(PREFIX)/bin
+	install -m 755 $(BINDIR)/p2cc $(DESTDIR)$(PREFIX)/bin/p2cc
