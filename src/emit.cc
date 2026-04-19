@@ -2048,6 +2048,13 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
 
   if (td.type && td.type->kind == Kind::TyRecord) {
     const auto& tr = static_cast<const TyRecord&>(*td.type);
+    // Packed compiler records are often byte-for-byte file layouts that still
+    // need ordinary field access in emitted C++. `[[gnu::packed]]` preserves
+    // the layout, but GCC then treats those fields as potentially misaligned
+    // packed members and rejects many non-const reference bindings. `#pragma
+    // pack` gives the byte layout we need here while keeping the generated
+    // field expressions usable.
+    if (tr.is_packed) emitln("#pragma pack(push, 1)");
     emitln("struct " + name + " {");
     indent();
     for (const auto& f : tr.fields) {
@@ -2085,6 +2092,7 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     }
     dedent();
     emitln("};");
+    if (tr.is_packed) emitln("#pragma pack(pop)");
     return;
   }
 

@@ -220,6 +220,22 @@ void test_named_subrange_array_type() {
                  "using p_arr = ::rt::Array<int32_t, 1, ((10) - (1) + 1)>;"));
 }
 
+void test_packed_record_keeps_packed_layout() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  hdr = packed record\n"
+      "    tag : byte;\n"
+      "    size : longint;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "#pragma pack(push, 1)"));
+  CHECK(contains(out.header, "struct p_hdr {"));
+  CHECK(contains(out.header, "#pragma pack(pop)"));
+}
+
 void test_parenthesized_record_const() {
   auto out = compile_snippet(
       "unit u;\n"
