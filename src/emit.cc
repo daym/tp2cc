@@ -767,7 +767,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         static const std::unordered_set<std::string> rt_param0 = {
             "memavail", "heapavail", "maxavail",
             "paramcount", "ioresult", "eof", "eoln",
-            "erroraddr", "dosexitcode", "ovrgetbuf",
+            "dosexitcode", "ovrgetbuf",
         };
         if (rt_param0.count(n.name)) {
           return mangle(n.name) + "()";

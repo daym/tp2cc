@@ -870,11 +870,10 @@ template <typename... A> inline int32_t p_seg(A&&...) { return 0; }
 // invoked in defensive paths (error reporting, cross-check prints,
 // trace hooks) that don't need to do real work for bootstrap purposes.
 inline int32_t p_filemode = 0;
-// STUB: `erroraddr` is the RT's last-error address (a pointer the
-// runtime sets when a runtime error occurs). The fpc sources read it
-// via a function-style call in some paths and as a plain value in
-// others; expose it as a zero-arg function returning a pointer.
-inline void* p_erroraddr() { return nullptr; }
+// STUB: `erroraddr` is the RT's last-error address -- a mutable
+// global pointer the runtime sets when a runtime error occurs; fpc's
+// sources check it and clear it via assignment (`erroraddr := nil;`).
+inline void* p_erroraddr = nullptr;
 inline void p_swapvectors() {}
 inline void p_ovrgetbuf(int32_t&) {}
 inline int32_t p_strnew(const char* s) { return 0; (void)s; }
