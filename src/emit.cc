@@ -2130,48 +2130,24 @@ void Emitter::emit_stmt(const Stmt& s) {
         emitln(p + " = nullptr;");
       } else {
         // `expr_to_cxx` auto-calls parameterless procs/methods in
-        // value context. Statement-form Pascal `foo;` / `inherited
-        // foo;` / `writeln;` is also a call even when `foo` takes
-        // args (Pascal's `inherited foo;` reuses current args), so
-        // if the emitted form is a bare function/method name
-        // without `()` we force a call here to make the statement
-        // meaningful. C++ will complain about missing args if any,
-        // which is at least a clear diagnostic.
+        // value context via `resolve_name`. The one extra case we
+        // handle here: Pascal statement-form `writeln;` / `readln;`
+        // / `halt;` -- rt variadic builtins where 0 args is a
+        // legitimate call. We don't try to auto-call parameterful
+        // callables -- those are either emitted as `Call` (handled
+        // above with args) or they're real source bugs (like an
+        // `inherited init;` whose parent wants an arg) that should
+        // be fixed in the Pascal, not papered over.
         std::string text = expr_to_cxx(*es.expr);
-        bool is_callable = false;
-        if (es.expr->kind == Kind::Ident && registry) {
-          const auto& id = static_cast<const Ident&>(*es.expr);
-          ResolveResult rr = resolve_name(id.name);
-          if (rr.is_callable) is_callable = true;
-          // rt:: builtins we recognise as Pascal procs.
-          static const std::unordered_set<std::string> rt_procs = {
+        if (es.expr->kind == Kind::Ident) {
+          static const std::unordered_set<std::string> rt_variadic_procs = {
               "writeln", "write", "readln", "read", "halt",
-              "flush", "close", "reset", "rewrite",
           };
-          if (rt_procs.count(id.name)) is_callable = true;
-        } else if (es.expr->kind == Kind::Member && registry) {
-          const auto& m = static_cast<const Member&>(*es.expr);
-          // `inherited.name` -- class-qualified lookup against parent.
-          if (m.base->kind == Kind::Ident &&
-              static_cast<const Ident&>(*m.base).name == "inherited" &&
-              !current_class_name.empty()) {
-            auto cit = registry->classes.find(current_class_name);
-            if (cit != registry->classes.end() && !cit->second.parent.empty()) {
-              ResolveResult rr = resolve_name(m.name, QualifierKind::Class,
-                                              cit->second.parent);
-              if (rr.is_callable) is_callable = true;
-            }
-          } else {
-            std::string bcls = deduce_class_alias(*m.base);
-            if (!bcls.empty()) {
-              ResolveResult rr = resolve_name(m.name, QualifierKind::Class,
-                                              bcls);
-              if (rr.is_callable) is_callable = true;
-            }
+          const auto& id = static_cast<const Ident&>(*es.expr);
+          if (rt_variadic_procs.count(id.name) &&
+              !text.empty() && text.back() != ')') {
+            text += "()";
           }
-        }
-        if (is_callable && !text.empty() && text.back() != ')') {
-          text += "()";
         }
         emitln(text + ";");
       }
