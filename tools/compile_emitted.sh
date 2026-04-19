@@ -24,18 +24,20 @@ JOBS="${JOBS:-5}"
 DIR="$(cd "$DIR" && pwd)"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOGDIR="${LOGDIR:-$(dirname "$DIR")/compile-logs}"
+TMPDIR="${TMPDIR:-$(dirname "$DIR")/tmp}"
 mkdir -p "$LOGDIR"
+mkdir -p "$TMPDIR"
 
 CXX="${CXX:-g++}"
 # -Wno-narrowing: Pascal freely uses `$80000000`-style hex constants as
 # bitmasks that technically narrow to int32; emission keeps them as plain
 # decimal and we suppress the warning rather than wrap every literal.
-CXXFLAGS="${CXXFLAGS:--std=gnu++20 -I. -O0 -fms-extensions -fpermissive -Wno-narrowing -Wno-microsoft-anon-tag -Wno-permissive}"
+CXXFLAGS="${CXXFLAGS:--std=gnu++20 -I. -O0 -pipe -fms-extensions -fpermissive -Wno-narrowing -Wno-microsoft-anon-tag -Wno-permissive}"
 
 STATUS="$LOGDIR/build.txt"
 : > "$STATUS"
 
-export CXX CXXFLAGS LOGDIR STATUS DIR ROOT
+export CXX CXXFLAGS LOGDIR STATUS DIR ROOT TMPDIR
 
 on_signal() {
   sig="$1"
