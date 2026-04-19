@@ -47,6 +47,11 @@ void test_val_wraps_decimal_longint() {
   CHECK_EQ(v, std::numeric_limits<int32_t>::min());
 }
 
+void test_shortstring_char_concat_grows_capacity() {
+  auto label = ShortString<2>(".L") + 'e' + '0';
+  CHECK_EQ(p_to_std_string(label), std::string(".Le0"));
+}
+
 void test_exec_tracks_exit_status() {
   p_doserror = -1;
   p_exec(ShortString<>("/bin/sh"), ShortString<>("-c 'exit 9'"));
@@ -74,6 +79,7 @@ void test_shell_tracks_exit_status() {
 int main() {
   RUN_TEST(test_val_accepts_prefixed_integers);
   RUN_TEST(test_val_wraps_decimal_longint);
+  RUN_TEST(test_shortstring_char_concat_grows_capacity);
   RUN_TEST(test_exec_tracks_exit_status);
   RUN_TEST(test_exec_reports_spawn_failure);
   RUN_TEST(test_shell_tracks_exit_status);

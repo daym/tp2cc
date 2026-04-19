@@ -162,21 +162,16 @@ struct ShortString {
   friend constexpr ShortString operator+(const char* a, const ShortString& b) {
     return ShortString(a) + b;
   }
-  friend constexpr ShortString operator+(const ShortString& a, char c) {
-    ShortString r = a;
-    if (r.length < N) { r.data[r.length] = c; ++r.length; }
-    return r;
+  friend constexpr auto operator+(const ShortString& a, char c) {
+    return a + ShortString<>(c);
   }
-  friend constexpr ShortString operator+(char c, const ShortString& b) {
-    ShortString r;
-    r.data[0] = c;
-    r.length = 1;
-    return r + b;
+  friend constexpr auto operator+(char c, const ShortString& b) {
+    return ShortString<>(c) + b;
   }
-  friend constexpr ShortString operator+(const ShortString& a, uint8_t c) {
+  friend constexpr auto operator+(const ShortString& a, uint8_t c) {
     return a + static_cast<char>(c);
   }
-  friend constexpr ShortString operator+(uint8_t c, const ShortString& b) {
+  friend constexpr auto operator+(uint8_t c, const ShortString& b) {
     return static_cast<char>(c) + b;
   }
 
