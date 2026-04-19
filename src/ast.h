@@ -328,6 +328,7 @@ struct VarDecl : Decl {
   TypePtr type;
   ExprPtr init;          // optional `= expr` (typed const / global init)
   bool is_absolute = false;
+  bool is_external = false;
   std::string absolute_target;   // when is_absolute; the aliased variable name
   ExprPtr external_name;         // `external 'name'` -- null if not external
   std::string external_lib;      // `external 'lib' name '...'`; may be empty

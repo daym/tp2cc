@@ -194,6 +194,10 @@ struct Emitter {
   std::string type_to_cxx(const TypeExpr& t);
   std::string type_name_to_cxx(const TyName& n);
   std::string array_type_to_cxx(const TyArray& a);
+  const ast::TypeExpr* canonicalize_type(const ast::TypeExpr* t);
+  bool array_dim_bounds_to_cxx(const ast::TypeExpr& dim,
+                               std::string* lo,
+                               std::string* size_expr);
   std::string set_type_to_cxx(const TySet& s);
   std::string enum_type_to_cxx(const TyEnum& e, const std::string& context);
   std::string subrange_type_to_cxx(const TySubrange& r);
@@ -281,6 +285,8 @@ struct Emitter {
   std::vector<std::string> loop_break_labels;
   std::vector<std::string> loop_continue_labels;
   int loop_label_counter = 0;
+
+  void emit_tpexcept_unit(const UnitNode& u);
 };
 
 // ---------------------------------------------------------------------------
@@ -295,6 +301,76 @@ std::string Emitter::type_name_to_cxx(const TyName& n) {
            "::" + mangle(std::string_view(n.name).substr(dot + 1));
   }
   return mangle(n.name);
+}
+
+const TypeExpr* Emitter::canonicalize_type(const TypeExpr* t) {
+  int hops = 0;
+  while (t && t->kind == Kind::TyName && hops++ < 32) {
+    const auto& n = static_cast<const TyName&>(*t);
+    auto lit = local_type_aliases_scoped.find(n.name);
+    if (lit != local_type_aliases_scoped.end() && lit->second &&
+        lit->second != t) {
+      t = lit->second;
+      continue;
+    }
+    if (registry) {
+      const TypeExpr* next = registry->canonicalize(t);
+      if (next && next != t) {
+        t = next;
+        continue;
+      }
+    }
+    break;
+  }
+  return t;
+}
+
+bool Emitter::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
+                                      std::string* lo,
+                                      std::string* size_expr) {
+  const TypeExpr* dim = canonicalize_type(&dim_in);
+  if (!dim) return false;
+  *lo = "0";
+  size_expr->clear();
+  if (dim->kind == Kind::TySubrange) {
+    const auto& sr = static_cast<const TySubrange&>(*dim);
+    *lo = const_value_to_cxx(*sr.lo);
+    *size_expr = "((" + const_value_to_cxx(*sr.hi) + ") - (" + *lo +
+                 ") + 1)";
+    return true;
+  }
+  if (dim->kind == Kind::TyEnum) {
+    const auto& en = static_cast<const TyEnum&>(*dim);
+    *size_expr = std::to_string(en.members.size());
+    return true;
+  }
+  if (dim->kind != Kind::TyName) return false;
+  const auto& tn = static_cast<const TyName&>(*dim);
+  auto leit = local_enums.find(tn.name);
+  if (leit != local_enums.end()) {
+    *size_expr = std::to_string(leit->second->members.size());
+    return true;
+  }
+  if (registry) {
+    auto eit = registry->enums.find(tn.name);
+    if (eit != registry->enums.end()) {
+      *size_expr = std::to_string(eit->second.members.size());
+      return true;
+    }
+  }
+  if (tn.name == "boolean" || tn.name == "bytebool") {
+    *size_expr = "2";
+    return true;
+  }
+  if (tn.name == "byte" || tn.name == "char" || tn.name == "shortint") {
+    *size_expr = "256";
+    return true;
+  }
+  if (tn.name == "word" || tn.name == "smallint" || tn.name == "wordbool") {
+    *size_expr = "65536";
+    return true;
+  }
+  return false;
 }
 
 std::string Emitter::subrange_type_to_cxx(const TySubrange& r) {
@@ -365,41 +441,8 @@ std::string Emitter::array_type_to_cxx(const TyArray& a) {
   std::string ty = type_to_cxx(*a.element);
   // Wrap from innermost to outermost.
   for (auto it = a.dims.rbegin(); it != a.dims.rend(); ++it) {
-    std::string lo = "0", size_expr;
-    const auto& dim = **it;
-    if (dim.kind == Kind::TySubrange) {
-      const auto& sr = static_cast<const TySubrange&>(dim);
-      lo = const_value_to_cxx(*sr.lo);
-      size_expr = "((" + const_value_to_cxx(*sr.hi) + ") - (" + lo +
-                  ") + 1)";
-    } else if (dim.kind == Kind::TyName) {
-      const auto& tn = static_cast<const TyName&>(dim);
-      // Function-local enum first (if we're inside a proc body),
-      // then the cross-unit registry of enums.
-      auto leit = local_enums.find(tn.name);
-      if (leit != local_enums.end()) {
-        lo = "0";
-        size_expr = std::to_string(leit->second->members.size());
-      } else if (registry) {
-        auto eit = registry->enums.find(tn.name);
-        if (eit != registry->enums.end()) {
-          lo = "0";
-          size_expr = std::to_string(eit->second.members.size());
-        }
-      }
-      if (!size_expr.empty()) {
-        // handled above
-      } else if (tn.name == "boolean" || tn.name == "bytebool") {
-        lo = "0"; size_expr = "2";
-      } else if (tn.name == "byte" || tn.name == "char" ||
-                 tn.name == "shortint") {
-        lo = "0"; size_expr = "256";
-      } else if (tn.name == "word" || tn.name == "smallint" ||
-                 tn.name == "wordbool") {
-        lo = "0"; size_expr = "65536";
-      }
-    }
-    if (size_expr.empty()) {
+    std::string lo, size_expr;
+    if (!array_dim_bounds_to_cxx(**it, &lo, &size_expr)) {
       // Can't compute dimension statically; fall back to pointer.
       return type_to_cxx(*a.element) + "*";
     }
@@ -460,12 +503,6 @@ std::string Emitter::type_to_cxx(const TypeExpr& t) {
 // Expression-type deduction. Used by the Member / Ident emitters so
 // decisions like "is `obj.name` a method call or a field read?" come
 // from the actual type tree, not name-matching heuristics.
-
-static std::string lc_str(std::string s) {
-  for (auto& ch : s)
-    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
-  return s;
-}
 
 const TypeExpr* Emitter::deduce_type(const Expr& e) {
   if (!registry) return nullptr;
@@ -1543,6 +1580,26 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       is_callee_context_ = true;
       std::string callee_text = expr_to_cxx(*c.callee);
       is_callee_context_ = false;
+      bool is_tpexcept_setjmp = false;
+      if (c.args.size() == 1) {
+        if (c.callee->kind == Kind::Ident && registry) {
+          const auto& id = static_cast<const Ident&>(*c.callee);
+          if (id.name == "setjmp") {
+            ResolveResult rr = resolve_name(id.name);
+            is_tpexcept_setjmp = (rr.cxx == "p_tpexcept::p_setjmp");
+          }
+        } else if (c.callee->kind == Kind::Member) {
+          const auto& mem = static_cast<const Member&>(*c.callee);
+          if (mem.name == "setjmp" && mem.base->kind == Kind::Ident &&
+              static_cast<const Ident&>(*mem.base).name == "tpexcept") {
+            is_tpexcept_setjmp = true;
+          }
+        }
+      }
+      if (is_tpexcept_setjmp) {
+        return "setjmp(p_tpexcept::p_detail::p_state_for(&(" +
+               expr_to_cxx(*c.args[0]) + ")).p_env)";
+      }
       // Collect per-arg "untyped-var" flags from the callee's proc
       // decl so we can wrap those args with `(void*)&(arg)`. Handles
       // two shapes: Ident callees (unit-level procs) and Member
@@ -1601,7 +1658,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if (untyped_arg[i]) {
           // `@arg` / already-untyped arg: pass its address as void*.
           // If the arg is itself `@x`, collapse to just `x`'s address.
-          out += "((void*)&(" + expr_to_cxx(*c.args[i]) + "))";
+          if (c.args[i]->kind == Kind::AddrOf &&
+              !static_cast<const AddrOf&>(*c.args[i]).double_addr) {
+            out += "((void*)(" + expr_to_cxx(*c.args[i]) + "))";
+          } else {
+            out += "((void*)&(" + expr_to_cxx(*c.args[i]) + "))";
+          }
         } else {
           out += expr_to_cxx(*c.args[i]);
         }
@@ -1720,6 +1782,8 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
   //              TYPED const (`const X : T = 5;`) is writable.
   const bool block = block_depth > 0;
   const std::string linkage = block ? std::string() : std::string("inline ");
+  const TypeExpr* typed_const_ty =
+      cd.type ? canonicalize_type(cd.type.get()) : nullptr;
 
   // Typed array (or named alias ultimately resolving to one) with an
   // array-constant initialiser emits an `rt::Array<T, Lo, N>` so
@@ -1729,8 +1793,7 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
   if (cd.type && cd.value->kind == Kind::ArrayConst) {
     // Chase through named aliases (cross-unit-aware) until we see the
     // underlying TyArray.
-    const TypeExpr* t = registry ? registry->canonicalize(cd.type.get())
-                                 : cd.type.get();
+    const TypeExpr* t = typed_const_ty;
     if (t && t->kind == Kind::TyArray) {
       const auto& arr = static_cast<const TyArray&>(*t);
       // Wrap the element type in `Array<..., Lo, N>` for each dim
@@ -1738,40 +1801,8 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
       std::string ty = arr.element ? type_to_cxx(*arr.element)
                                    : std::string("int32_t");
       for (auto it = arr.dims.rbegin(); it != arr.dims.rend(); ++it) {
-        std::string lo = "0", size_expr;
-        const auto& dim = **it;
-        if (dim.kind == Kind::TySubrange) {
-          const auto& r = static_cast<const TySubrange&>(dim);
-          lo = const_value_to_cxx(*r.lo);
-          size_expr = "((" + const_value_to_cxx(*r.hi) + ") - (" + lo +
-                      ") + 1)";
-        } else if (dim.kind == Kind::TyName) {
-          const auto& tn = static_cast<const TyName&>(dim);
-          // Function-local enum (in scope during this proc body)?
-          auto leit = local_enums.find(tn.name);
-          if (leit != local_enums.end()) {
-            lo = "0";
-            size_expr = std::to_string(leit->second->members.size());
-          } else if (registry) {
-            auto eit = registry->enums.find(tn.name);
-            if (eit != registry->enums.end()) {
-              lo = "0";
-              size_expr = std::to_string(eit->second.members.size());
-            }
-          }
-          if (!size_expr.empty()) {
-            // handled
-          } else if (tn.name == "boolean" || tn.name == "bytebool") {
-            lo = "0"; size_expr = "2";
-          } else if (tn.name == "byte" || tn.name == "char" ||
-                     tn.name == "shortint") {
-            lo = "0"; size_expr = "256";
-          } else if (tn.name == "word" || tn.name == "smallint" ||
-                     tn.name == "wordbool") {
-            lo = "0"; size_expr = "65536";
-          }
-        }
-        if (size_expr.empty()) {
+        std::string lo, size_expr;
+        if (!array_dim_bounds_to_cxx(**it, &lo, &size_expr)) {
           // Still unknown -- fall through to the generic emit below.
           goto generic_emit;
         }
@@ -1785,6 +1816,12 @@ generic_emit:;
 
   if (cd.type) {
     // Typed Pascal const -- writable.
+    if (typed_const_ty && typed_const_ty->kind == Kind::TyArray &&
+        cd.value->kind != Kind::StringLit) {
+      emitln(linkage + type_to_cxx(*cd.type) + " " + name + " = {" + val +
+             "};");
+      return;
+    }
     emitln(linkage + type_to_cxx(*cd.type) + " " + name + " = " + val + ";");
     return;
   }
@@ -1945,6 +1982,14 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
 }
 
 void Emitter::emit_var_decl(const VarDecl& vd, bool in_header) {
+  if (vd.is_absolute) {
+    report_error(vd.loc, "absolute variables are unsupported");
+    return;
+  }
+  if (vd.is_external) {
+    report_error(vd.loc, "external variables are unsupported");
+    return;
+  }
   std::string ty = vd.type ? type_to_cxx(*vd.type) : std::string("int32_t");
   for (const auto& n : vd.names) {
     std::string name = mangle(n);
@@ -1992,6 +2037,10 @@ std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
 }
 
 void Emitter::emit_proc_decl_signature(const ProcDecl& pd) {
+  if (pd.is_external) {
+    report_error(pd.loc, "external routines are unsupported");
+    return;
+  }
   std::string ret;
   if (pd.pkind == ProcKind::Function && pd.return_type) {
     ret = type_to_cxx(*pd.return_type);
@@ -2017,6 +2066,8 @@ void Emitter::emit_decl(const Decl& d, bool in_header) {
       const auto& pd = static_cast<const ProcDecl&>(d);
       if (in_header) {
         emit_proc_decl_signature(pd);
+      } else if (pd.is_external) {
+        report_error(pd.loc, "external routines are unsupported");
       } else if (pd.is_forward) {
         // Pascal `forward;` in the impl section means "the body
         // comes later in this same unit". C++ needs a prototype
@@ -2374,7 +2425,8 @@ void Emitter::emit_stmt(const Stmt& s) {
       break;
     }
     case Kind::AsmStmt: {
-      emitln("/* asm..end -- not translated; use p2cc_rt shim */");
+      report_error(s.loc, "asm blocks are unsupported");
+      emitln("/* unsupported asm */");
       break;
     }
     default:
@@ -2778,6 +2830,10 @@ void Emitter::emit_unit(const UnitNode& u) {
   for (auto& ch : current_unit_name) {
     if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
   }
+  if (current_unit_name == "tpexcept") {
+    emit_tpexcept_unit(u);
+    return;
+  }
 
   // Header.
   set_header();
@@ -2864,6 +2920,8 @@ void Emitter::emit_unit(const UnitNode& u) {
   // vars in the .cc so external references resolve at link time.
   for (const auto& d : u.interface_decls) {
     if (d->kind == Kind::VarDecl) {
+      const auto& vd = static_cast<const VarDecl&>(*d);
+      if (vd.is_absolute || vd.is_external) continue;
       emit_decl(*d, /*in_header=*/false);
     }
   }
@@ -2954,6 +3012,104 @@ void Emitter::emit_unit(const UnitNode& u) {
     nl();
     emitln("}  // namespace " + ns);
   }
+}
+
+void Emitter::emit_tpexcept_unit(const UnitNode& u) {
+  (void)u;
+  set_header();
+  emitln("// Generated by p2cc. Do not edit.");
+  emitln("#pragma once");
+  emitln("#include <cstdint>");
+  emitln("#include <cstddef>");
+  emitln("#include <setjmp.h>");
+  emitln("#include \"p2cc_rt/prelude.h\"");
+  nl();
+  emitln("namespace p_tpexcept {");
+  nl();
+  emitln("using namespace ::rt;");
+  nl();
+  emitln("struct p_jmp_buf {");
+  indent();
+  emitln("int32_t p_eax;");
+  emitln("int32_t p_ebx;");
+  emitln("int32_t p_ecx;");
+  emitln("int32_t p_edx;");
+  emitln("int32_t p_esi;");
+  emitln("int32_t p_edi;");
+  emitln("int32_t p_ebp;");
+  emitln("int32_t p_esp;");
+  emitln("int32_t p_eip;");
+  emitln("int32_t p_flags;");
+  emitln("uint16_t p_cs;");
+  emitln("uint16_t p_ds;");
+  emitln("uint16_t p_es;");
+  emitln("uint16_t p_fs;");
+  emitln("uint16_t p_gs;");
+  emitln("uint16_t p_ss;");
+  dedent();
+  emitln("};");
+  emitln("using p_pjmp_buf = p_jmp_buf*;");
+  nl();
+  emitln("namespace p_detail {");
+  indent();
+  emitln("struct p_jump_state {");
+  indent();
+  emitln("::jmp_buf p_env;");
+  dedent();
+  emitln("};");
+  emitln("p_jump_state& p_state_for(p_jmp_buf* p_rec);");
+  dedent();
+  emitln("}  // namespace p_detail");
+  nl();
+  emitln("int32_t p_setjmp(p_jmp_buf& p_rec) = delete;");
+  emitln("[[noreturn]] void p_longjmp(const p_jmp_buf& p_rec, int32_t p_return_value);");
+  emitln("inline p_pjmp_buf p_recoverpospointer = nullptr;");
+  emitln("inline bool p_longjump_used = false;");
+  nl();
+  emitln("void __unit_init();");
+  nl();
+  emitln("}  // namespace p_tpexcept");
+
+  set_impl();
+  emitln("// Generated by p2cc. Do not edit.");
+  emitln("#include \"p_tpexcept.h\"");
+  emitln("#include <cstdlib>");
+  emitln("#include <unordered_map>");
+  nl();
+  emitln("namespace {");
+  indent();
+  emitln("std::unordered_map<const p_tpexcept::p_jmp_buf*,");
+  emitln("                   p_tpexcept::p_detail::p_jump_state> p_jump_states;");
+  dedent();
+  emitln("}  // namespace");
+  nl();
+  emitln("namespace p_tpexcept {");
+  nl();
+  emitln("using namespace ::rt;");
+  nl();
+  emitln("namespace p_detail {");
+  indent();
+  emitln("p_jump_state& p_state_for(p_jmp_buf* p_rec) {");
+  indent();
+  emitln("return ::p_jump_states[p_rec];");
+  dedent();
+  emitln("}");
+  dedent();
+  emitln("}  // namespace p_detail");
+  nl();
+  emitln("[[noreturn]] void p_longjmp(const p_jmp_buf& p_rec, int32_t p_return_value) {");
+  indent();
+  emitln("auto it = ::p_jump_states.find(&p_rec);");
+  emitln("if (it == ::p_jump_states.end()) std::abort();");
+  emitln("p_longjump_used = true;");
+  emitln("::longjmp(it->second.p_env, p_return_value == 0 ? 1 : p_return_value);");
+  dedent();
+  emitln("}");
+  nl();
+  emitln("void __unit_init() {");
+  emitln("}");
+  nl();
+  emitln("}  // namespace p_tpexcept");
 }
 
 }  // namespace

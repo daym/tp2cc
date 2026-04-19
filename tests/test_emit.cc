@@ -13,6 +13,7 @@
 #include "parser.h"
 #include "source.h"
 #include "test_util.h"
+#include "typereg.h"
 
 using namespace p2cc;
 using namespace p2cc::ast;
@@ -29,6 +30,20 @@ EmittedUnit compile_snippet(std::string text) {
   auto u = p.parse();
   if (!u) return {};
   return emit_unit(*u);
+}
+
+EmittedUnit compile_snippet_with_registry(std::string text) {
+  auto sf = std::make_unique<SourceFile>();
+  sf->path = "<mem>";
+  sf->contents = std::move(text);
+  Lexer lx(std::move(sf));
+  Parser p(lx);
+  auto u = p.parse();
+  if (!u) return {};
+  TypeRegistry reg;
+  std::vector<const UnitNode*> units = {u.get()};
+  reg.build(units);
+  return emit_unit(*u, &reg);
 }
 
 bool contains(const std::string& s, std::string_view needle) {
@@ -170,6 +185,17 @@ void test_typed_array_const() {
   CHECK(contains(out.header, "{1, 2, 4, 8}"));
 }
 
+void test_singleton_typed_array_const() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  only : array[1..1] of longint = (7);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "p_only = {7};"));
+}
+
 void test_nested_array_type() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -178,7 +204,33 @@ void test_nested_array_type() {
       "  t2d = array[0..1, 0..2] of longint;\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "::std::array<::std::array<int32_t"));
+  CHECK(contains(out.header, "::rt::Array<::rt::Array<int32_t"));
+}
+
+void test_named_subrange_array_type() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  idx = 1..10;\n"
+      "  arr = array[idx] of longint;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "using p_arr = ::rt::Array<int32_t, 1, ((10) - (1) + 1)>;"));
+}
+
+void test_parenthesized_record_const() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  r = record a : longint; end;\n"
+      "const\n"
+      "  x : r = ((a : 1));\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "inline p_r p_x = {.p_a = 1};"));
 }
 
 // Pascal identifiers that happen to be C++ reserved words (but are NOT
@@ -216,7 +268,10 @@ int main() {
   RUN_TEST(test_var_extern_in_header_and_def_in_impl);
   RUN_TEST(test_proc_signature_in_header);
   RUN_TEST(test_typed_array_const);
+  RUN_TEST(test_singleton_typed_array_const);
   RUN_TEST(test_nested_array_type);
+  RUN_TEST(test_named_subrange_array_type);
+  RUN_TEST(test_parenthesized_record_const);
   RUN_TEST(test_cxx_reserved_word_identifiers);
 
   int n = p2cc_test::failures();

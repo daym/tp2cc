@@ -362,17 +362,12 @@ ast::ExprPtr Parser::parse_const_value() {
     expect(Tok::RParen, "array constant");
     return ac;
   }
-  // Single item inside parens -- treat as a 1-element array constant to
-  // preserve the array shape (typed context), unless it's clearly just a
-  // parenthesised scalar. Pascal treats `(x)` as both; we conservatively
-  // wrap it as ArrayConst only if the outer type was declared as array-like,
-  // which we can't check here without the type. Wrap as single-element
-  // ArrayConst when the caller is clearly expecting one.
+  // Single item inside parens is just a parenthesised constant. Without the
+  // enclosing type we cannot reliably distinguish `(x)` from a 1-element
+  // array constant, but treating it as an array silently miscompiles nested
+  // record constants like `((a: 1))`.
   expect(Tok::RParen, "parenthesised constant");
-  auto ac = std::make_unique<ArrayConst>();
-  ac->loc = loc;
-  ac->elements.push_back(std::move(first));
-  return ac;
+  return first;
 }
 
 void Parser::parse_type_section(std::vector<DeclPtr>& out) {
@@ -416,6 +411,7 @@ void Parser::parse_var_section(std::vector<DeclPtr>& out) {
     } else if (accept(Tok::Eq)) {
       vd->init = parse_const_value();
     } else if (accept(Tok::KwExternal)) {
+      vd->is_external = true;
       vd->external_name = nullptr;
       if (cur_.kind == Tok::StringLit) {
         vd->external_lib = cur_.text;

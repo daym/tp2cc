@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 #include <fstream>
 #include <set>
@@ -19,6 +20,34 @@ namespace fs = std::filesystem;
 using namespace p2cc;
 
 namespace {
+
+std::string to_lower(std::string_view s) {
+  std::string r(s);
+  for (auto& c : r) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  return r;
+}
+
+void collect_unit_init_order(const UnitGraph& g,
+                             const ast::UnitNode& u,
+                             std::vector<std::string>* out,
+                             std::unordered_set<std::string>* visiting,
+                             std::unordered_set<std::string>* emitted) {
+  auto visit = [&](const std::string& dep, auto&& self) -> void {
+    std::string name = to_lower(dep);
+    const auto* pu = g.lookup(name);
+    if (!pu || !pu->ok || !pu->ast || pu->ast->is_program) return;
+    if (emitted->count(name)) return;
+    if (!visiting->insert(name).second) return;
+    for (const auto& inner : pu->ast->interface_uses) self(inner, self);
+    for (const auto& inner : pu->ast->impl_uses) self(inner, self);
+    visiting->erase(name);
+    if (emitted->insert(name).second) out->push_back(name);
+  };
+  for (const auto& dep : u.interface_uses) visit(dep, visit);
+  for (const auto& dep : u.impl_uses) visit(dep, visit);
+}
 
 int cmd_lex(const std::string& path) {
   auto sf = SourceFile::load(path);
@@ -221,15 +250,20 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
     const std::vector<std::string>* init_order = nullptr;
     std::vector<std::string> init_list;
     if (pu->ast->is_program) {
-      for (const auto& n : tr.order) {
-        const auto* p = g.lookup(n);
-        if (!p || !p->ok || !p->ast) continue;
-        if (p->ast->is_program) continue;
-        init_list.push_back(n);
-      }
+      std::unordered_set<std::string> visiting;
+      std::unordered_set<std::string> emitted_units;
+      collect_unit_init_order(g, *pu->ast, &init_list, &visiting,
+                              &emitted_units);
       init_order = &init_list;
     }
+    int errs_before = error_count();
     auto out = emit_unit(*pu->ast, &reg, init_order);
+    int errs = error_count() - errs_before;
+    if (errs != 0) {
+      std::printf("FAIL %s (%d emit errors)\n", name.c_str(), errs);
+      ++failed;
+      continue;
+    }
     {
       std::ofstream h(fs::path(outdir) / ("p_" + name + ".h"));
       h << out.header;
@@ -284,7 +318,9 @@ int cmd_emit(const std::string& path, const std::string& outdir) {
   Parser parser(lex);
   auto u = parser.parse();
   if (!u || error_count() > 0) return 1;
+  int errs_before = error_count();
   auto out = emit_unit(*u);
+  if (error_count() != errs_before) return 1;
   fs::create_directories(outdir);
   std::string stem = u->name;
   if (stem.empty()) stem = fs::path(path).stem().string();
