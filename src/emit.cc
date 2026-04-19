@@ -1679,14 +1679,24 @@ generic_emit:;
     return;
   }
 
-  // Untyped Pascal const -- immutable. String literals wrap in
-  // ShortString<> so `+` means concatenation. Single-character
-  // string consts are polymorphic in Pascal (act as char or string
-  // by context); we emit them as ShortString<> and rely on an
-  // implicit ShortString->uint8_t conversion (first byte) for the
-  // char-context uses.
+  // Untyped Pascal const -- immutable.
+  //   - Single-char string literal: wrap in `rt::CharConst` so it's
+  //     usable as both `uint8_t` (Pascal char) and `ShortString<>`
+  //     (Pascal string) by context, matching Pascal's polymorphic
+  //     `const X = 'c';` semantics.
+  //   - Multi-char string literal: plain `ShortString<>` so `+`
+  //     resolves to concatenation.
   if (cd.value->kind == Kind::StringLit) {
-    emitln(linkage + "const ::rt::ShortString<> " + name + " = " + val + ";");
+    const auto& sl = static_cast<const StringLit&>(*cd.value);
+    if (sl.value.size() == 1) {
+      // Direct-init (`{...}`) because CharConst's ctor is explicit
+      // -- see prelude.h for why.
+      emitln(linkage + "constexpr ::rt::CharConst " + name + "{" +
+             val + "};");
+    } else {
+      emitln(linkage + "const ::rt::ShortString<> " + name + " = " +
+             val + ";");
+    }
     return;
   }
   emitln(linkage + "const auto " + name + " = " + val + ";");

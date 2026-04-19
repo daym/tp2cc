@@ -51,33 +51,6 @@ struct ShortString {
 
   constexpr ShortString(char c) : length(1) { data[0] = c; }
 
-  // Pascal's `const X = 'c'` is polymorphic: X is a char in a char
-  // context and a 1-element string in a string context. We emit all
-  // single-char string consts as ShortString<>, but provide this
-  // implicit conversion so `s[i] := X` (which expects a uint8_t)
-  // still works. Takes data[0]; for multi-char strings the caller
-  // usually means the first char (Pascal's string[1]).
-  constexpr operator uint8_t() const { return data[0]; }
-
-  // Explicit char-vs-ShortString comparisons so the implicit
-  // conversion above doesn't fight with the per-char builtin `==`
-  // candidates. Matches Pascal `s[i] = 'x'` idioms.
-  friend constexpr bool operator==(uint8_t c, const ShortString& s) {
-    return s.length == 1 && s.data[0] == c;
-  }
-  friend constexpr bool operator==(const ShortString& s, uint8_t c) {
-    return s.length == 1 && s.data[0] == c;
-  }
-  friend constexpr bool operator==(char c, const ShortString& s) {
-    return s.length == 1 && s.data[0] == static_cast<uint8_t>(c);
-  }
-  friend constexpr bool operator==(const ShortString& s, char c) {
-    return s.length == 1 && s.data[0] == static_cast<uint8_t>(c);
-  }
-  friend constexpr bool operator!=(uint8_t c, const ShortString& s) { return !(c == s); }
-  friend constexpr bool operator!=(const ShortString& s, uint8_t c) { return !(s == c); }
-  friend constexpr bool operator!=(char c, const ShortString& s) { return !(c == s); }
-  friend constexpr bool operator!=(const ShortString& s, char c) { return !(s == c); }
 
   // Copy from a ShortString of any capacity (Pascal assigns freely
   // between different `string[N]` sizes; target capacity truncates).
@@ -206,6 +179,55 @@ struct ShortString {
                   : reinterpret_cast<const uint8_t&>(data[i - 1]);
   }
 };
+
+// Pascal `const X = 'c';` declares a constant that is BOTH a char
+// (assignable into `s[i] : char` contexts) and a 1-element string
+// (usable in string concatenations). C++ can't have one type that
+// plays both roles, so the emitter wraps such consts in this tag
+// struct with implicit conversions in both directions. Scoped to
+// the const decl -- ordinary ShortString variables are unaffected.
+struct CharConst {
+  uint8_t c;
+  // `explicit` so `uint8_t -> CharConst` is not viable silently; the
+  // only way a CharConst is constructed is from an explicit `'c'` in
+  // the emitted const decl.
+  explicit constexpr CharConst(char x) : c(static_cast<uint8_t>(x)) {}
+  // Only one integer-kind conversion (uint8_t) so arithmetic /
+  // comparison contexts pick a single path unambiguously. char ->
+  // uint8_t is implicit at call sites anyway.
+  constexpr operator uint8_t() const { return c; }
+  template <int N = 255>
+  constexpr operator ShortString<N>() const {
+    return ShortString<N>(static_cast<char>(c));
+  }
+  friend constexpr bool operator==(CharConst a, CharConst b) { return a.c == b.c; }
+  friend constexpr bool operator!=(CharConst a, CharConst b) { return a.c != b.c; }
+};
+
+// `+` on a CharConst chooses string concatenation: the only reason
+// a Pascal 1-char const appears under `+` is to build a ShortString.
+// Without these explicit overloads the compiler sees two conversion
+// paths (CharConst -> uint8_t and CharConst -> ShortString) and
+// marks `+` ambiguous.
+inline constexpr ShortString<> operator+(CharConst a, CharConst b) {
+  ShortString<> r;
+  r.data[0] = a.c; r.data[1] = b.c; r.length = 2;
+  return r;
+}
+inline constexpr ShortString<> operator+(CharConst a, char b) {
+  return ShortString<>(static_cast<char>(a.c)) + b;
+}
+inline constexpr ShortString<> operator+(char a, CharConst b) {
+  return a + ShortString<>(static_cast<char>(b.c));
+}
+template <int N>
+inline constexpr auto operator+(CharConst a, const ShortString<N>& b) {
+  return ShortString<>(static_cast<char>(a.c)) + b;
+}
+template <int N>
+inline constexpr auto operator+(const ShortString<N>& a, CharConst b) {
+  return a + ShortString<>(static_cast<char>(b.c));
+}
 
 // --- Common Pascal RTL type aliases ----------------------------------------
 // Exposed in the `rt` namespace so emitted units pick them up via
