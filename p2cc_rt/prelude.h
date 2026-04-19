@@ -1479,6 +1479,16 @@ inline void p_freemem(P*& p, int = 0) {
   std::free(p);
   p = nullptr;
 }
+template <typename P>
+inline void p_reallocmem(P*& p, int size) {
+  if (size <= 0) {
+    std::free(static_cast<void*>(p));
+    p = nullptr;
+    return;
+  }
+  void* q = std::realloc(static_cast<void*>(p), static_cast<size_t>(size));
+  if (q) p = static_cast<P*>(q);
+}
 
 // --- Program control --------------------------------------------------------
 
