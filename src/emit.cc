@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -1038,7 +1039,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // short-circuit `&&` / `||` (crucial for `assigned(p) and
       // (p^.x = y)` idioms), integer operands get bitwise `&` /
       // `|`. Pick by deducing either operand's type.
-      auto is_bool = [&](const Expr& x) -> bool {
+      std::function<bool(const Expr&)> is_bool = [&](const Expr& x) -> bool {
         // Calls to rt:: builtins and user procs: consult the registry's
         // recorded return type (registry stores rt builtins under the
         // synthetic `__rt__` unit alongside user procs).
@@ -1065,7 +1066,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
         if (x.kind == Kind::Unary &&
             static_cast<const Unary&>(x).op == UnOp::Not)
-          return true;
+          return is_bool(*static_cast<const Unary&>(x).operand);
         if (x.kind == Kind::BoolLit) return true;
         if (!registry) return false;
         const TypeExpr* t = deduce_type(x);
