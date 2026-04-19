@@ -1751,8 +1751,12 @@ void Emitter::emit_decl(const Decl& d, bool in_header) {
       const auto& pd = static_cast<const ProcDecl&>(d);
       if (in_header) {
         emit_proc_decl_signature(pd);
-      } else if (!pd.is_forward && !pd.is_external && !pd.is_abstract &&
-                 pd.body) {
+      } else if (pd.is_forward) {
+        // Pascal `forward;` in the impl section means "the body
+        // comes later in this same unit". C++ needs a prototype
+        // up-front so calls earlier in the file resolve.
+        emit_proc_decl_signature(pd);
+      } else if (!pd.is_external && !pd.is_abstract && pd.body) {
         if (block_depth > 0) {
           // Nested proc. C++ forbids nested function definitions; emit
           // as a lambda captured by reference so it sees the enclosing
