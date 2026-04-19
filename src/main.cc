@@ -142,6 +142,10 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
   // `uses`d). Emitting it independently drags in an undeclared
   // `ovrgetbuf` -- skip it entirely.
   g.skip_path_containing("/ppovin.pas");
+  // dmisc.pas is a Delphi-only drop-in for the dos unit (wraps
+  // Kernel32 APIs). Every `uses dmisc` in the compiler sits under
+  // `{$ifdef Delphi}`, so it's dead code under FPC.
+  g.skip_path_containing("/dmisc.pas");
   // Non-Linux target-specific units. We're emitting for linux/i386,
   // so dos-extender / os2 / win32 back-ends are dead code for the
   // bootstrap path.
