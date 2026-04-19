@@ -2212,6 +2212,12 @@ void Emitter::emit_stmt(const Stmt& s) {
   }
 }
 
+// Forward decl so emit_proc_body / emit_nested_proc_lambda can call it
+// to forward-declare record/object types in local type-decls before
+// pointer aliases that reference them.
+static void emit_forward_struct_decls(Emitter& e,
+                                      const std::vector<ast::DeclPtr>& decls);
+
 void Emitter::emit_proc_body(const ProcDecl& pd) {
   // Header line: ret ClassName::Method(args) or ret Method(args).
   std::string ret;
@@ -2279,6 +2285,10 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
     }
   }
 
+  // Forward-declare any record/object types in locals so a pointer
+  // alias that textually precedes its target still compiles inside
+  // the function body.
+  emit_forward_struct_decls(*this, pd.locals);
   for (const auto& l : pd.locals) emit_decl(*l, /*in_header=*/false);
   // Pascal result variable. We use an internal slot named `result`
   // (unprefixed) so it won't collide with a Pascal-level variable
@@ -2392,6 +2402,7 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
     }
   }
 
+  emit_forward_struct_decls(*this, pd.locals);
   for (const auto& l : pd.locals) emit_decl(*l, /*in_header=*/false);
   if (pd.pkind == ProcKind::Function && pd.return_type) {
     emitln(ret + " result{};");
