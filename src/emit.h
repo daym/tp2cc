@@ -30,15 +30,7 @@ struct EmittedUnit {
   std::string impl;    // contents of UNIT.cc
 };
 
-// Collect all type aliases (enum-like names are most useful) from a
-// parsed unit. Enables cross-unit `array[tenum] of T` dim-size
-// computation even when `tenum` is declared in another unit.
-struct EnumInfo { int member_count = 0; };
-void collect_enum_sizes(const ast::UnitNode& u,
-                        std::unordered_map<std::string, EnumInfo>& out);
-
 EmittedUnit emit_unit(const ast::UnitNode& u,
-                      const std::unordered_map<std::string, EnumInfo>& extra_enums = {},
                       const TypeRegistry* registry = nullptr);
 
 }  // namespace p2cc

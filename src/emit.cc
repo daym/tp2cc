@@ -109,11 +109,6 @@ struct Emitter {
   // to the result slot rather than trying to mutate the function.
   std::string lhs_fn_rewrite;
 
-  // Cross-unit enum sizes (name -> number of members). Used so that
-  // `array[tenum] of T` in a unit that doesn't itself define `tenum`
-  // can still compute the array dimension.
-  std::unordered_map<std::string, EnumInfo> extra_enum_sizes_;
-
   // Names bound in the current function's scope (parameters + locals).
   // `obj` resolved bare at block scope that hits this set must be a
   // variable, so auto-call (`name()`) is suppressed. Prevents false
@@ -344,11 +339,19 @@ std::string Emitter::array_type_to_cxx(const TyArray& a) {
         const auto& en = static_cast<const TyEnum&>(*at->second);
         lo = "0";
         size_expr = std::to_string(en.members.size());
-      } else if (auto eit = extra_enum_sizes_.find(tn.name);
-                 eit != extra_enum_sizes_.end()) {
-        // Cross-unit enum (defined in another unit).
-        lo = "0";
-        size_expr = std::to_string(eit->second.member_count);
+      } else if (registry) {
+        // Cross-unit enum -- the type registry records every enum
+        // (in any unit) with its member list, so we can compute
+        // `array[someenum] of T` dimensions regardless of which
+        // unit declared `someenum`.
+        auto eit = registry->enums.find(tn.name);
+        if (eit != registry->enums.end()) {
+          lo = "0";
+          size_expr = std::to_string(eit->second.members.size());
+        }
+      }
+      if (!size_expr.empty()) {
+        // handled above
       } else if (tn.name == "boolean" || tn.name == "bytebool") {
         lo = "0"; size_expr = "2";
       } else if (tn.name == "byte" || tn.name == "char" ||
@@ -1634,10 +1637,15 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
             const auto& en = static_cast<const TyEnum&>(*at->second);
             lo = "0";
             size_expr = std::to_string(en.members.size());
-          } else if (auto eit = extra_enum_sizes_.find(tn.name);
-                     eit != extra_enum_sizes_.end()) {
-            lo = "0";
-            size_expr = std::to_string(eit->second.member_count);
+          } else if (registry) {
+            auto eit = registry->enums.find(tn.name);
+            if (eit != registry->enums.end()) {
+              lo = "0";
+              size_expr = std::to_string(eit->second.members.size());
+            }
+          }
+          if (!size_expr.empty()) {
+            // handled
           } else if (tn.name == "boolean" || tn.name == "bytebool") {
             lo = "0"; size_expr = "2";
           } else if (tn.name == "byte" || tn.name == "char" ||
@@ -2640,30 +2648,11 @@ void Emitter::emit_unit(const UnitNode& u) {
 
 }  // namespace
 
-EmittedUnit emit_unit(const UnitNode& u,
-                      const std::unordered_map<std::string, EnumInfo>& extra_enums,
-                      const TypeRegistry* registry) {
+EmittedUnit emit_unit(const UnitNode& u, const TypeRegistry* registry) {
   Emitter e;
-  e.extra_enum_sizes_ = extra_enums;
   e.registry = registry;
   e.emit_unit(u);
   return {std::move(e.header), std::move(e.impl)};
-}
-
-void collect_enum_sizes(const UnitNode& u,
-                        std::unordered_map<std::string, EnumInfo>& out) {
-  auto scan = [&](const std::vector<DeclPtr>& decls) {
-    for (const auto& d : decls) {
-      if (d->kind != Kind::TypeDecl) continue;
-      const auto& td = static_cast<const TypeDecl&>(*d);
-      if (td.type && td.type->kind == Kind::TyEnum) {
-        const auto& en = static_cast<const TyEnum&>(*td.type);
-        out[td.name] = EnumInfo{static_cast<int>(en.members.size())};
-      }
-    }
-  };
-  scan(u.interface_decls);
-  scan(u.impl_decls);
 }
 
 }  // namespace p2cc

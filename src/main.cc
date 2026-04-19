@@ -180,15 +180,6 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
   int emitted = 0, failed = 0;
   std::set<std::string> rtl_refs;  // external-RTL unit names seen in uses
 
-  // Pre-pass: collect cross-unit enum sizes so typed-const arrays
-  // indexed by an enum defined in another unit can still compute
-  // their dimensions. Everything else the emitter needs about
-  // cross-unit symbols comes from the TypeRegistry below.
-  std::unordered_map<std::string, EnumInfo> all_enums;
-  for (const auto& [_, pu] : g.units()) {
-    if (pu.ast) collect_enum_sizes(*pu.ast, all_enums);
-  }
-
   // Reified type/symbol tree spanning every parsed unit. The emitter
   // consults it to decide, per Pascal-level semantics, whether an
   // expression `obj.name` refers to a field or a parameterless method
@@ -203,7 +194,7 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
   for (const auto& name : tr.order) {
     const auto* pu = g.lookup(name);
     if (!pu || !pu->ok || !pu->ast) { ++failed; continue; }
-    auto out = emit_unit(*pu->ast, all_enums, &reg);
+    auto out = emit_unit(*pu->ast, &reg);
     {
       std::ofstream h(fs::path(outdir) / ("p_" + name + ".h"));
       h << out.header;
