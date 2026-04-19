@@ -1307,8 +1307,23 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       };
       if (registry && c.callee->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*c.callee);
-        auto pit = registry->procs.find(id.name);
-        if (pit != registry->procs.end()) mark_from_decl(pit->second.decl);
+        // Inside a method body a bare ident may resolve to one of the
+        // class's methods -- check that first so `self.method`-style
+        // implicit calls get their untyped-var args wrapped too.
+        bool matched = false;
+        if (!current_class_name.empty()) {
+          if (auto* m = registry->lookup_class_member(current_class_name,
+                                                     id.name)) {
+            if (m->is_method) {
+              mark_from_decl(m->method.decl);
+              matched = true;
+            }
+          }
+        }
+        if (!matched) {
+          auto pit = registry->procs.find(id.name);
+          if (pit != registry->procs.end()) mark_from_decl(pit->second.decl);
+        }
       } else if (registry && c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         std::string cls;
