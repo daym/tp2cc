@@ -265,6 +265,21 @@ struct Emitter {
   // Class/record alias name ("tfoo") of `e`, lowercased, if detectable.
   // Empty if the type can't be narrowed to a named object/record type.
   std::string deduce_class_alias(const ast::Expr& e);
+  const ast::Expr* peel_primitive_casts(const ast::Expr* e);
+  bool expr_is_storage_lvalue(const ast::Expr& e);
+  bool expr_is_charish(const ast::Expr& e);
+  bool type_is_stringish(const ast::TypeExpr* t);
+  bool type_is_open_array(const ast::TypeExpr* t);
+  std::string open_array_type_to_cxx(const ast::TypeExpr& t);
+  void mark_call_param_info(const ast::ProcDecl* decl,
+                            std::vector<bool>& untyped_arg,
+                            std::vector<const ast::TypeExpr*>& param_types);
+  void collect_call_param_info(const ast::Expr& callee,
+                               std::vector<bool>& untyped_arg,
+                               std::vector<const ast::TypeExpr*>& param_types);
+  std::string lower_call_arg(const ast::Expr& arg,
+                             const ast::TypeExpr* param_type,
+                             bool untyped_arg);
 
   // ---------------------------------------------------------------------
   // Pascal name resolution (one function, every emit path goes through
@@ -735,6 +750,176 @@ std::string Emitter::deduce_class_alias(const Expr& e) {
   return registry->direct_type_name(registry->canonicalize(t));
 }
 
+// Strip a chain of primitive casts like `pointer(longint(x))` down to the
+// underlying storage expression. Pascal uses these casts to satisfy type
+// checking before reinterpreting bytes, so emit-time lvalue analysis has to
+// look through them.
+const Expr* Emitter::peel_primitive_casts(const Expr* e) {
+  while (e && e->kind == Kind::Call) {
+    const auto& c = static_cast<const Call&>(*e);
+    if (c.args.size() != 1 || c.callee->kind != Kind::Ident) break;
+    if (!is_primitive_type(static_cast<const Ident&>(*c.callee).name)) break;
+    e = c.args[0].get();
+  }
+  return e;
+}
+
+// Decide whether an expression names mutable storage we can legally
+// reinterpret in-place. This is stricter than "AST looks like an lvalue":
+// parameterless methods auto-call in value context, and `inherited.name`
+// can also lower to a call, so those must not be treated as addressable
+// storage here.
+bool Emitter::expr_is_storage_lvalue(const Expr& e) {
+  const Expr* peeled = peel_primitive_casts(&e);
+  const Expr& root = peeled ? *peeled : e;
+  bool is_inherited_member = false;
+  if (root.kind == Kind::Member) {
+    const auto& m = static_cast<const Member&>(root);
+    if (m.base->kind == Kind::Ident &&
+        static_cast<const Ident&>(*m.base).name == "inherited") {
+      is_inherited_member = true;
+    }
+  }
+  bool is_lvalue_shape =
+      !is_inherited_member &&
+      (root.kind == Kind::Ident || root.kind == Kind::Member ||
+       root.kind == Kind::Index || root.kind == Kind::Deref);
+  if (root.kind == Kind::Ident &&
+      local_untyped_params.count(static_cast<const Ident&>(root).name)) {
+    is_lvalue_shape = true;
+  }
+  if (!is_lvalue_shape || !registry) return is_lvalue_shape;
+
+  if (root.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(root);
+    ResolveResult rr = resolve_name(id.name);
+    if (rr.is_callable && rr.is_parameterless) return false;
+  } else if (root.kind == Kind::Member) {
+    const auto& m = static_cast<const Member&>(root);
+    std::string cls = deduce_class_alias(*m.base);
+    if (!cls.empty()) {
+      if (auto* mem = registry->lookup_class_member(cls, m.name)) {
+        if (mem->is_method && mem->method.param_count == 0) return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool Emitter::expr_is_charish(const Expr& e) {
+  const TypeExpr* t = deduce_type(e);
+  if (!t) return false;
+  t = canonicalize_type(t);
+  return tyname_is(t, "char");
+}
+
+bool Emitter::type_is_stringish(const TypeExpr* t) {
+  if (!t) return false;
+  t = canonicalize_type(t);
+  if (!t) return false;
+  if (t->kind == Kind::TyString) return true;
+  return tyname_is(t, "string") || tyname_is(t, "shortstring");
+}
+
+bool Emitter::type_is_open_array(const TypeExpr* t) {
+  if (!t) return false;
+  t = canonicalize_type(t);
+  return t && t->kind == Kind::TyArray &&
+         static_cast<const TyArray&>(*t).dims.empty();
+}
+
+std::string Emitter::open_array_type_to_cxx(const TypeExpr& t) {
+  const TypeExpr* canon = canonicalize_type(&t);
+  const auto& a = static_cast<const TyArray&>(*canon);
+  return "::rt::OpenArray<" +
+         (a.element ? type_to_cxx(*a.element) : std::string("int32_t")) + ">";
+}
+
+void Emitter::mark_call_param_info(
+    const ProcDecl* decl, std::vector<bool>& untyped_arg,
+    std::vector<const TypeExpr*>& param_types) {
+  if (!decl) return;
+  size_t ai = 0;
+  for (const auto& p : decl->params) {
+    for (size_t k = 0; k < p.names.size(); ++k) {
+      if (ai < untyped_arg.size() && !p.type) untyped_arg[ai] = true;
+      if (ai < param_types.size()) param_types[ai] = p.type.get();
+      ++ai;
+    }
+  }
+}
+
+// Call emission only cares about parameter metadata for a narrow set of
+// bootstrap-sensitive rewrites: untyped `var` arguments stay as raw storage
+// pointers, `char` actuals may need string wrapping, and open arrays need the
+// adapter type. Keep the lookup in one helper instead of restating it inside
+// the giant call-expression path.
+void Emitter::collect_call_param_info(
+    const Expr& callee, std::vector<bool>& untyped_arg,
+    std::vector<const TypeExpr*>& param_types) {
+  if (!registry) return;
+  if (callee.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(callee);
+    if (!current_class_name.empty()) {
+      if (auto* m = registry->lookup_class_member(current_class_name,
+                                                  id.name)) {
+        if (m->is_method) {
+          mark_call_param_info(m->method.decl, untyped_arg, param_types);
+          return;
+        }
+      }
+    }
+    ResolveResult rr = resolve_name(id.name);
+    mark_call_param_info(rr.proc, untyped_arg, param_types);
+    return;
+  }
+  if (callee.kind != Kind::Member) return;
+  const auto& mem = static_cast<const Member&>(callee);
+  std::string cls;
+  if (mem.base->kind == Kind::Ident &&
+      static_cast<const Ident&>(*mem.base).name == "self") {
+    cls = current_class_name;
+  } else {
+    cls = deduce_class_alias(*mem.base);
+  }
+  if (cls.empty()) return;
+  if (auto* m = registry->lookup_class_member(cls, mem.name)) {
+    if (m->is_method) {
+      mark_call_param_info(m->method.decl, untyped_arg, param_types);
+    }
+  }
+}
+
+std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
+                                    bool untyped_arg) {
+  std::string arg_text = expr_to_cxx(arg);
+  if (type_is_stringish(param_type) && expr_is_charish(arg)) {
+    arg_text = "::rt::ShortString<>(" + arg_text + ")";
+  }
+  if (type_is_open_array(param_type)) {
+    const TypeExpr* at = deduce_type(arg);
+    if (at) at = canonicalize_type(at);
+    if (!(at && at->kind == Kind::TyArray &&
+          static_cast<const TyArray&>(*at).dims.empty())) {
+      arg_text = open_array_type_to_cxx(*param_type) + "(" + arg_text + ")";
+    }
+  }
+  if (!untyped_arg) return arg_text;
+
+  // Untyped Pascal params are already lowered as "pointer to caller storage".
+  // Forwarding one of them must preserve the pointer value; taking `&` here
+  // would pass the address of the local pointer slot instead.
+  if (arg.kind == Kind::AddrOf &&
+      !static_cast<const AddrOf&>(arg).double_addr) {
+    return "((void*)(" + arg_text + "))";
+  }
+  if (arg.kind == Kind::Ident &&
+      local_untyped_params.count(static_cast<const Ident&>(arg).name)) {
+    return arg_text;
+  }
+  return "((void*)&(" + arg_text + "))";
+}
+
 // ---------------------------------------------------------------------------
 // Single-point Pascal name resolution. `resolve_name` walks the real
 // Pascal lookup order and returns a `ResolveResult` every emit site
@@ -1080,22 +1265,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // arithmetic, so wrap a char-side in ShortString<> to force
       // the ShortString `operator+` overload.
       if (n.op == BinOp::Add) {
-        auto is_charish = [&](const Expr& x) -> bool {
-          const TypeExpr* t = deduce_type(x);
-          if (t) {
-            t = canonicalize_type(t);
-            if (t && t->kind == Kind::TyName) {
-              std::string nm = static_cast<const TyName&>(*t).name;
-              for (auto& c : nm) {
-                if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-              }
-              if (nm == "char") return true;
-            }
-          }
-          return false;
-        };
-        bool l_char = is_charish(*n.lhs);
-        bool r_char = is_charish(*n.rhs);
+        bool l_char = expr_is_charish(*n.lhs);
+        bool r_char = expr_is_charish(*n.rhs);
         if (l_char || r_char) {
           auto wrap = [&](const Expr& x, bool want) {
             return want ? "::rt::ShortString<>(" + expr_to_cxx(x) + ")"
@@ -1106,8 +1277,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       // Pascal `and` / `or` are polymorphic: bool operands get
       // short-circuit `&&` / `||` (crucial for `assigned(p) and
-      // (p^.x = y)` idioms), integer operands get bitwise `&` /
-      // `|`. Pick by deducing either operand's type.
+      // (p^.x = y)` idioms), integer/set operands get bitwise `&` /
+      // `|`. Be strict here: treating a nested flag expression like
+      // `(IF_SM or IF_SM2)` as "boolean because it is an `or`" silently
+      // miscompiles bitmask code into `&&`/`||`.
       std::function<bool(const Expr&)> is_bool = [&](const Expr& x) -> bool {
         // Calls to rt:: builtins and user procs: consult the registry's
         // recorded return type (registry stores rt builtins under the
@@ -1123,15 +1296,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               return true;
           }
         }
-        // Comparisons and logical operators yield bool.
+        // Comparisons always yield bool.
         if (x.kind == Kind::Binary) {
-          auto bop = static_cast<const Binary&>(x).op;
+          const auto& bx = static_cast<const Binary&>(x);
+          auto bop = bx.op;
           if (bop == BinOp::Eq || bop == BinOp::NotEq ||
               bop == BinOp::Lt || bop == BinOp::Gt ||
               bop == BinOp::LtEq || bop == BinOp::GtEq ||
-              bop == BinOp::In || bop == BinOp::Is ||
-              bop == BinOp::And || bop == BinOp::Or)
+              bop == BinOp::In || bop == BinOp::Is)
             return true;
+          if (bop == BinOp::And || bop == BinOp::Or)
+            return is_bool(*bx.lhs) && is_bool(*bx.rhs);
         }
         if (x.kind == Kind::Unary &&
             static_cast<const Unary&>(x).op == UnOp::Not)
@@ -1149,7 +1324,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                nm == "wordbool" || nm == "longbool";
       };
       bool logical_bool = (n.op == BinOp::And || n.op == BinOp::Or) &&
-                          (is_bool(*n.lhs) || is_bool(*n.rhs));
+                          is_bool(*n.lhs) && is_bool(*n.rhs);
       const char* op = "?";
       switch (n.op) {
         case BinOp::Add:    op = "+"; break;
@@ -1452,12 +1627,6 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "((void*)nullptr)";
           }
         } else if (c.args.size() == 1 && is_primitive_type(n)) {
-          auto is_charish = [&](const Expr& x) -> bool {
-            const TypeExpr* t = deduce_type(x);
-            if (!t) return false;
-            t = canonicalize_type(t);
-            return tyname_is(t, "char");
-          };
           // Function-style type cast. Compound C++ type expansions like
           // `const char*` or `long double` can't appear as `T(expr)`; use
           // a paren cast. For `pointer(lv)` (the Pascal pointer type
@@ -1472,27 +1641,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "::rt::p_chr(" + arg0() + ")";
           }
           if (n == "pointer" || n == "pchar" || n == "ppchar") {
-            const Expr* arg_ptr = c.args[0].get();
-            while (arg_ptr && arg_ptr->kind == Kind::Call) {
-              const auto& ic = static_cast<const Call&>(*arg_ptr);
-              if (ic.args.size() == 1 && ic.callee->kind == Kind::Ident &&
-                  is_primitive_type(
-                      static_cast<const Ident&>(*ic.callee).name)) {
-                arg_ptr = ic.args[0].get();
-              } else {
-                break;
-              }
-            }
-            if (arg_ptr &&
-                (arg_ptr->kind == Kind::Ident ||
-                 arg_ptr->kind == Kind::Member ||
-                 arg_ptr->kind == Kind::Index ||
-                 arg_ptr->kind == Kind::Deref)) {
+            const Expr* peeled = peel_primitive_casts(c.args[0].get());
+            if (peeled && expr_is_storage_lvalue(*c.args[0])) {
               return "(*(" + primitive_type_cxx(n) + "*)&(" +
-                     expr_to_cxx(*arg_ptr) + "))";
+                     expr_to_cxx(*peeled) + "))";
             }
           }
-          if (is_charish(*c.args[0])) {
+          if (expr_is_charish(*c.args[0])) {
             return "((" + primitive_type_cxx(n) + ")(::rt::p_ord(" +
                    arg0() + ")))";
           }
@@ -1510,6 +1665,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           if (cast_ty && cast_ty->kind == Kind::TyArray) {
             const auto& arr = static_cast<const TyArray&>(*cast_ty);
+            const Expr* peeled = peel_primitive_casts(c.args[0].get());
+            if (peeled && expr_is_storage_lvalue(*c.args[0])) {
+              return "::rt::p_reinterpret_ref<" + expr_to_cxx(*c.callee) +
+                     ">(" + expr_to_cxx(*peeled) + ")";
+            }
             const TypeExpr* elem =
                 arr.element ? canonicalize_type(arr.element.get()) : nullptr;
             if (arr.dims.size() == 1 &&
@@ -1620,62 +1780,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
         }
         if (cast_to_pointer) {
-          // Peel off a primitive-type intermediate cast like
-          // `pointer(longint(lv))` -- Pascal uses the inner cast to
-          // make the type-check happy before reinterpreting storage.
-          const Expr* arg_ptr = c.args[0].get();
-          while (arg_ptr && arg_ptr->kind == Kind::Call) {
-            const auto& ic = static_cast<const Call&>(*arg_ptr);
-            if (ic.args.size() == 1 && ic.callee->kind == Kind::Ident &&
-                is_primitive_type(
-                    static_cast<const Ident&>(*ic.callee).name)) {
-              arg_ptr = ic.args[0].get();
-            } else {
-              break;
-            }
-          }
-          const Expr& arg = arg_ptr ? *arg_ptr : *c.args[0];
-          // `Member(inherited, name)` emits as `inherited::name()`
-          // when name is a parameterless method, making the value
-          // an rvalue even though the AST is a Member.
-          bool is_inherited_member = false;
-          if (arg.kind == Kind::Member) {
-            const auto& am = static_cast<const Member&>(arg);
-            if (am.base->kind == Kind::Ident &&
-                static_cast<const Ident&>(*am.base).name == "inherited") {
-              is_inherited_member = true;
-            }
-          }
-          bool is_lvalue_shape =
-              !is_inherited_member &&
-              (arg.kind == Kind::Ident || arg.kind == Kind::Member ||
-               arg.kind == Kind::Index || arg.kind == Kind::Deref);
-          // Ident/Member that resolve to a parameterless function are
-          // auto-called by the expression emitter -- the EMITTED form
-          // is `name()`, which is an rvalue even though the AST is
-          // Ident or Member. Ask resolve_name.
-          if (is_lvalue_shape && registry) {
-            if (arg.kind == Kind::Ident) {
-              const auto& id = static_cast<const Ident&>(arg);
-              ResolveResult rr = resolve_name(id.name);
-              if (rr.is_callable && rr.is_parameterless) {
-                is_lvalue_shape = false;
-              }
-            } else if (arg.kind == Kind::Member) {
-              const auto& am = static_cast<const Member&>(arg);
-              std::string bcls = deduce_class_alias(*am.base);
-              if (!bcls.empty()) {
-                if (auto* mem = registry->lookup_class_member(bcls, am.name)) {
-                  if (mem->is_method && mem->method.param_count == 0) {
-                    is_lvalue_shape = false;
-                  }
-                }
-              }
-            }
-          }
-          if (is_lvalue_shape) {
+          const Expr* peeled = peel_primitive_casts(c.args[0].get());
+          if (peeled && expr_is_storage_lvalue(*c.args[0])) {
             return "(*(" + cast_type_cxx + "*)&(" +
-                   expr_to_cxx(arg) + "))";
+                   expr_to_cxx(*peeled) + "))";
           }
         }
       }
@@ -1708,86 +1816,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // callees (methods whose class we can resolve).
       std::vector<bool> untyped_arg(c.args.size(), false);
       std::vector<const TypeExpr*> param_types(c.args.size(), nullptr);
-      auto mark_from_decl = [&](const ast::ProcDecl* decl) {
-        if (!decl) return;
-        size_t ai = 0;
-        for (const auto& p : decl->params) {
-          for (size_t k = 0; k < p.names.size(); ++k) {
-            if (ai < untyped_arg.size() && !p.type) untyped_arg[ai] = true;
-            if (ai < param_types.size()) param_types[ai] = p.type.get();
-            ++ai;
-          }
-        }
-      };
-      if (registry && c.callee->kind == Kind::Ident) {
-        const auto& id = static_cast<const Ident&>(*c.callee);
-        // Inside a method body a bare ident may resolve to one of the
-        // class's methods -- check that first so `self.method`-style
-        // implicit calls get their untyped-var args wrapped too.
-        bool matched = false;
-        if (!current_class_name.empty()) {
-          if (auto* m = registry->lookup_class_member(current_class_name,
-                                                     id.name)) {
-            if (m->is_method) {
-              mark_from_decl(m->method.decl);
-              matched = true;
-            }
-          }
-        }
-        if (!matched) {
-          // Use the per-unit lookup via resolve_name so we pick the
-          // proc from the current unit / uses chain instead of the
-          // last-wins global map.
-          ResolveResult rr = resolve_name(id.name);
-          if (rr.proc) mark_from_decl(rr.proc);
-        }
-      } else if (registry && c.callee->kind == Kind::Member) {
-        const auto& mem = static_cast<const Member&>(*c.callee);
-        std::string cls;
-        if (mem.base->kind == Kind::Ident &&
-            static_cast<const Ident&>(*mem.base).name == "self") {
-          cls = current_class_name;
-        } else {
-          cls = deduce_class_alias(*mem.base);
-        }
-        if (!cls.empty()) {
-          if (auto* m = registry->lookup_class_member(cls, mem.name)) {
-            if (m->is_method) mark_from_decl(m->method.decl);
-          }
-        }
-      }
+      collect_call_param_info(*c.callee, untyped_arg, param_types);
       std::string out = callee_text + "(";
-      auto is_charish = [&](const Expr& x) -> bool {
-        const TypeExpr* t = deduce_type(x);
-        if (!t) return false;
-        t = canonicalize_type(t);
-        return tyname_is(t, "char");
-      };
-      auto type_is_stringish = [&](const TypeExpr* t) -> bool {
-        if (!t) return false;
-        t = canonicalize_type(t);
-        if (!t) return false;
-        if (t->kind == Kind::TyString) return true;
-        return tyname_is(t, "string") || tyname_is(t, "shortstring");
-      };
       for (size_t i = 0; i < c.args.size(); ++i) {
         if (i) out += ", ";
-        std::string arg_text = expr_to_cxx(*c.args[i]);
-        if (type_is_stringish(param_types[i]) && is_charish(*c.args[i])) {
-          arg_text = "::rt::ShortString<>(" + arg_text + ")";
-        }
-        if (untyped_arg[i]) {
-          // `@arg` / already-untyped arg: pass its address as void*.
-          // If the arg is itself `@x`, collapse to just `x`'s address.
-          if (c.args[i]->kind == Kind::AddrOf &&
-              !static_cast<const AddrOf&>(*c.args[i]).double_addr) {
-            out += "((void*)(" + arg_text + "))";
-          } else {
-            out += "((void*)&(" + arg_text + "))";
-          }
-        } else {
-          out += arg_text;
-        }
+        out += lower_call_arg(*c.args[i], param_types[i], untyped_arg[i]);
       }
       out += ")";
       return out;
@@ -2273,21 +2306,9 @@ void Emitter::emit_stmt(const Stmt& s) {
       lhs_fn_rewrite = current_fn_name;
       std::string target_cxx = expr_to_cxx(*a.target);
       lhs_fn_rewrite.clear();
-      auto is_charish = [&](const Expr& x) -> bool {
-        const TypeExpr* t = deduce_type(x);
-        if (!t) return false;
-        t = canonicalize_type(t);
-        return tyname_is(t, "char");
-      };
-      auto type_is_stringish = [&](const TypeExpr* t) -> bool {
-        if (!t) return false;
-        t = canonicalize_type(t);
-        if (!t) return false;
-        if (t->kind == Kind::TyString) return true;
-        return tyname_is(t, "string") || tyname_is(t, "shortstring");
-      };
       std::string rhs_cxx = expr_to_cxx(*a.value);
-      if (type_is_stringish(deduce_type(*a.target)) && is_charish(*a.value)) {
+      if (type_is_stringish(deduce_type(*a.target)) &&
+          expr_is_charish(*a.value)) {
         rhs_cxx = "::rt::ShortString<>(" + rhs_cxx + ")";
       }
       emitln(target_cxx + " = " + rhs_cxx + ";");
