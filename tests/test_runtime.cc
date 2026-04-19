@@ -3,6 +3,7 @@
 // before we have to debug a broken bootstrap binary.
 
 #include <cstdint>
+#include <cstring>
 #include <limits>
 
 #include "../p2cc_rt/prelude.h"
@@ -57,8 +58,39 @@ void test_val_rejects_compiler_unsupported_integer_forms() {
 }
 
 void test_shortstring_char_concat_grows_capacity() {
-  auto label = ShortString<2>(".L") + 'e' + '0';
+  auto label = ShortString<2>(".L") + p_char_of('e') + p_char_of('0');
   CHECK_EQ(p_to_std_string(label), std::string(".Le0"));
+}
+
+void test_move_reads_from_const_shortstring_storage() {
+  const ShortString<> text("hello");
+  Array<p_char, 0, 8> buf;
+
+  p_move(text[1], buf[0], p_length(text));
+  buf[p_length(text)] = p_char_of('\0');
+
+  CHECK_EQ(p_to_std_string(static_cast<p_char*>(buf)), std::string("hello"));
+}
+
+void test_str_formats_real_values() {
+  ShortString<> s;
+
+  p_str(100.0, s);
+  CHECK_EQ(p_to_std_string(s), std::string(" 100"));
+
+  p_str(0.01, s);
+  CHECK_EQ(p_to_std_string(s), std::string(" 0.01"));
+}
+
+void test_reinterpret_bytes_copies_raw_object_bytes() {
+  long double v = 10.0L;
+  auto bytes = p_reinterpret_bytes<Array<uint8_t, 0, 10>>(v);
+  uint8_t raw[sizeof(v)] = {};
+
+  std::memcpy(raw, &v, sizeof(v));
+  for (int i = 0; i < 10; ++i) {
+    CHECK_EQ(bytes.data[i], raw[i]);
+  }
 }
 
 void test_exec_tracks_exit_status() {
@@ -90,6 +122,9 @@ int main() {
   RUN_TEST(test_val_accepts_decimal_min_longint);
   RUN_TEST(test_val_rejects_compiler_unsupported_integer_forms);
   RUN_TEST(test_shortstring_char_concat_grows_capacity);
+  RUN_TEST(test_move_reads_from_const_shortstring_storage);
+  RUN_TEST(test_str_formats_real_values);
+  RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
   RUN_TEST(test_exec_tracks_exit_status);
   RUN_TEST(test_exec_reports_spawn_failure);
   RUN_TEST(test_shell_tracks_exit_status);

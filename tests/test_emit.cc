@@ -233,6 +233,52 @@ void test_parenthesized_record_const() {
   CHECK(contains(out.header, "inline p_r p_x = {.p_a = 1};"));
 }
 
+void test_char_plus_cast_uses_string_concat() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  s = #1 + char(byte(66));\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "::rt::ShortString<>(::rt::p_char_of('\\x01'))"));
+  CHECK(!contains(out.header, "'\\x01' + (("));
+}
+
+void test_byte_array_typecast_reinterprets_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  t80bitarray = array[0..9] of byte;\n"
+      "procedure dump(e : extended; i : longint);\n"
+      "implementation\n"
+      "procedure dump(e : extended; i : longint);\n"
+      "begin\n"
+      "  writeln(t80bitarray(e)[i]);\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::p_reinterpret_bytes<p_t80bitarray>(p_e)[p_i]"));
+  CHECK(!contains(out.impl, "p_t80bitarray(p_e)[p_i]"));
+}
+
+void test_local_byte_array_typecast_reinterprets_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure dump(e : extended; i : longint);\n"
+      "implementation\n"
+      "procedure dump(e : extended; i : longint);\n"
+      "type\n"
+      "  t80bitarray = array[0..9] of byte;\n"
+      "begin\n"
+      "  writeln(t80bitarray(e)[i]);\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::p_reinterpret_bytes<p_t80bitarray>(p_e)[p_i]"));
+  CHECK(!contains(out.impl, "p_t80bitarray(p_e)[p_i]"));
+}
+
 // Pascal identifiers that happen to be C++ reserved words (but are NOT
 // Pascal keywords) must survive translation thanks to the `p_` prefix.
 void test_cxx_reserved_word_identifiers() {
@@ -272,6 +318,9 @@ int main() {
   RUN_TEST(test_nested_array_type);
   RUN_TEST(test_named_subrange_array_type);
   RUN_TEST(test_parenthesized_record_const);
+  RUN_TEST(test_char_plus_cast_uses_string_concat);
+  RUN_TEST(test_byte_array_typecast_reinterprets_storage);
+  RUN_TEST(test_local_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_cxx_reserved_word_identifiers);
 
   int n = p2cc_test::failures();

@@ -80,10 +80,14 @@ inline p_char* p_from_c_str_copy(const char* s) {
 struct CharConst;
 
 struct ShortStringCharValue {
-  uint8_t byte = 0;
+  const uint8_t* byte = nullptr;
 
-  constexpr explicit operator uint8_t() const { return byte; }
-  constexpr operator p_char() const { return p_char_of(byte); }
+  constexpr explicit operator uint8_t() const { return *byte; }
+  constexpr operator p_char() const { return p_char_of(*byte); }
+
+  const p_char* operator&() const {
+    return reinterpret_cast<const p_char*>(byte);
+  }
 };
 
 struct ShortStringCharRef {
@@ -264,7 +268,7 @@ struct ShortString {
   }
   constexpr ShortStringCharValue operator[](int i) const {
     return ShortStringCharValue{
-        i == 0 ? length : p_char_byte(data[i - 1])};
+        i == 0 ? &length : reinterpret_cast<const uint8_t*>(&data[i - 1])};
   }
 };
 
@@ -484,6 +488,37 @@ struct Array {
     return static_cast<decltype(Lo)>(p_ordinal_value(Lo) + N - 1);
   }
 };
+
+template <typename Arr>
+struct ByteReinterpreter;
+
+template <typename Elem, auto Lo, int N>
+struct ByteReinterpreter<Array<Elem, Lo, N>> {
+  template <typename Src>
+  static Array<Elem, Lo, N> cast(const Src& src) {
+    static_assert(std::is_same_v<Elem, uint8_t> ||
+                      std::is_same_v<Elem, p_char>,
+                  "byte reinterpretation only supports byte-sized arrays");
+    Array<Elem, Lo, N> out;
+    const auto* raw = reinterpret_cast<const uint8_t*>(&src);
+    const int bytes = static_cast<int>(
+        std::min<std::size_t>(sizeof(src), sizeof(out.data)));
+    for (int i = 0; i < bytes; ++i) {
+      if constexpr (std::is_same_v<Elem, p_char>)
+        out.data[i] = p_char_of(raw[i]);
+      else
+        out.data[i] = raw[i];
+    }
+    return out;
+  }
+};
+
+// Pascal typecasts like `array[0..9] of byte(x)` reinterpret raw
+// storage bytes; they are not element-wise numeric conversions.
+template <typename Arr, typename Src>
+inline Arr p_reinterpret_bytes(const Src& src) {
+  return ByteReinterpreter<Arr>::cast(src);
+}
 
 // --- Set<Elem> --------------------------------------------------------------
 //
@@ -1305,8 +1340,25 @@ inline void p_fillchar(T& dest, int count, p_char value) {
 inline void p_move(const void* src, void* dest, int count) {
   std::memmove(dest, src, static_cast<size_t>(count));
 }
+inline void p_move(ShortStringCharRef src, void* dest, int count) {
+  std::memmove(dest, src.byte, static_cast<size_t>(count));
+}
+inline void p_move(ShortStringCharValue src, void* dest, int count) {
+  std::memmove(dest, src.byte, static_cast<size_t>(count));
+}
 inline void p_move(const void* src, ShortStringCharRef dest, int count) {
   std::memmove(dest.byte, src, static_cast<size_t>(count));
+}
+inline void p_move(ShortStringCharValue src, ShortStringCharRef dest, int count) {
+  std::memmove(dest.byte, src.byte, static_cast<size_t>(count));
+}
+template <typename D>
+inline void p_move(ShortStringCharRef src, D& dest, int count) {
+  std::memmove(std::addressof(dest), src.byte, static_cast<size_t>(count));
+}
+template <typename D>
+inline void p_move(ShortStringCharValue src, D& dest, int count) {
+  std::memmove(std::addressof(dest), src.byte, static_cast<size_t>(count));
 }
 template <typename S, typename D>
 inline void p_move(const S& src, D& dest, int count) {
@@ -1520,6 +1572,50 @@ template <typename T> inline void p_write_one(T* p) {
   std::fprintf(stdout, "%p", (void*)p);
 }
 
+template <int N>
+inline void p_write_file_one(std::FILE* out, const ShortString<N>& s) {
+  if (!out) return;
+  for (int i = 0; i < s.length; ++i) std::fputc(p_char_to_c(s.data[i]), out);
+}
+inline void p_write_file_one(std::FILE* out, const char* s) {
+  if (out && s) std::fputs(s, out);
+}
+inline void p_write_file_one(std::FILE* out, const p_char* s) {
+  if (out && s) std::fputs(p_c_str(s), out);
+}
+inline void p_write_file_one(std::FILE* out, p_char* s) {
+  p_write_file_one(out, const_cast<const p_char*>(s));
+}
+inline void p_write_file_one(std::FILE* out, int32_t v) {
+  if (out) std::fprintf(out, "%d", v);
+}
+inline void p_write_file_one(std::FILE* out, uint32_t v) {
+  if (out) std::fprintf(out, "%u", v);
+}
+inline void p_write_file_one(std::FILE* out, int64_t v) {
+  if (out) std::fprintf(out, "%lld", (long long)v);
+}
+inline void p_write_file_one(std::FILE* out, uint64_t v) {
+  if (out) std::fprintf(out, "%llu", (unsigned long long)v);
+}
+inline void p_write_file_one(std::FILE* out, double v) {
+  if (out) std::fprintf(out, "%g", v);
+}
+inline void p_write_file_one(std::FILE* out, long double v) {
+  if (out) std::fprintf(out, "%Lg", v);
+}
+inline void p_write_file_one(std::FILE* out, p_char c) {
+  if (out) std::fputc(p_char_to_c(c), out);
+}
+inline void p_write_file_one(std::FILE* out, bool b) {
+  if (out) std::fputs(b ? "TRUE" : "FALSE", out);
+}
+inline void p_write_file_one(std::FILE*, const TextFile&) {}
+template <typename T>
+inline void p_write_file_one(std::FILE* out, T* p) {
+  if (out) std::fprintf(out, "%p", (void*)p);
+}
+
 // Variadic write / writeln -- Pascal `write(a, b, c)` and
 // `writeln(f, a, b, c)`. Every arg is emitted via p_write_one.
 template <typename... Args>
@@ -1530,6 +1626,40 @@ template <typename... Args>
 inline void p_writeln(Args&&... args) {
   (p_write_one(std::forward<Args>(args)), ...);
   std::fputc('\n', stdout);
+}
+template <typename... Args>
+inline void p_write(TextFile& f, Args&&... args) {
+  if (!f.f) {
+    p_set_ioresult(f, 103);
+    return;
+  }
+  (p_write_file_one(f.f, std::forward<Args>(args)), ...);
+  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
+}
+inline void p_write(TextFile& f) {
+  if (!f.f) {
+    p_set_ioresult(f, 103);
+    return;
+  }
+  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
+}
+template <typename... Args>
+inline void p_writeln(TextFile& f, Args&&... args) {
+  if (!f.f) {
+    p_set_ioresult(f, 103);
+    return;
+  }
+  (p_write_file_one(f.f, std::forward<Args>(args)), ...);
+  std::fputc('\n', f.f);
+  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
+}
+inline void p_writeln(TextFile& f) {
+  if (!f.f) {
+    p_set_ioresult(f, 103);
+    return;
+  }
+  std::fputc('\n', f.f);
+  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
 
 // --- File-IO placeholders ---------------------------------------------------
@@ -1613,6 +1743,42 @@ template <int N>
 inline void p_str(int32_t v, ShortString<N>& out) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%d", v);
+  out = ShortString<N>(buf);
+}
+template <int N>
+inline void p_str(uint32_t v, ShortString<N>& out) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%u", v);
+  out = ShortString<N>(buf);
+}
+template <int N>
+inline void p_str(int64_t v, ShortString<N>& out) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(v));
+  out = ShortString<N>(buf);
+}
+template <int N>
+inline void p_str(uint64_t v, ShortString<N>& out) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(v));
+  out = ShortString<N>(buf);
+}
+template <int N>
+inline void p_str(float v, ShortString<N>& out) {
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "% .9g", static_cast<double>(v));
+  out = ShortString<N>(buf);
+}
+template <int N>
+inline void p_str(double v, ShortString<N>& out) {
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "% .17g", v);
+  out = ShortString<N>(buf);
+}
+template <int N>
+inline void p_str(long double v, ShortString<N>& out) {
+  char buf[96];
+  std::snprintf(buf, sizeof(buf), "% .21Lg", v);
   out = ShortString<N>(buf);
 }
 

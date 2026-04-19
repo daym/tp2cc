@@ -1497,6 +1497,27 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                    arg0() + ")))";
           }
           return "((" + primitive_type_cxx(n) + ")(" + arg0() + "))";
+        } else if (c.args.size() == 1 && n != "inc" && n != "dec") {
+          const TypeExpr* cast_ty = nullptr;
+          auto lit = local_type_aliases_scoped.find(n);
+          if (lit != local_type_aliases_scoped.end()) {
+            cast_ty = canonicalize_type(lit->second);
+          } else if (registry) {
+            auto ait = registry->aliases.find(n);
+            if (ait != registry->aliases.end() && ait->second.target) {
+              cast_ty = canonicalize_type(ait->second.target);
+            }
+          }
+          if (cast_ty && cast_ty->kind == Kind::TyArray) {
+            const auto& arr = static_cast<const TyArray&>(*cast_ty);
+            const TypeExpr* elem =
+                arr.element ? canonicalize_type(arr.element.get()) : nullptr;
+            if (arr.dims.size() == 1 &&
+                (tyname_is(elem, "byte") || tyname_is(elem, "char"))) {
+              return "::rt::p_reinterpret_bytes<" +
+                     expr_to_cxx(*c.callee) + ">(" + arg0() + ")";
+            }
+          }
         } else if ((n == "inc" || n == "dec") &&
                    (c.args.size() == 1 || c.args.size() == 2) &&
                    c.args[0]->kind == Kind::Call) {
