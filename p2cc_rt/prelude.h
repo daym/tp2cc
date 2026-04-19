@@ -1266,10 +1266,6 @@ inline int32_t p_segment(const void*) { return 0; }
 inline int32_t p_offset(const void*) { return 0; }
 inline int32_t p_extraoptions = 0;
 inline int32_t p_moduleindex = 0;
-// STUB: loadunit is a compiler hook for loading precompiled units.
-// Accept any shape of arguments so overloaded calls in pmodules type-
-// check. Always returns 0 ("not loaded from cache").
-template <typename... A> inline int32_t p_loadunit(A&&...) { return 0; }
 // STUB: dos.exec -- launches external process. No-op here means the
 // bootstrap assembler/linker step won't actually run; the compiler
 // path that invokes external tools has to be audited before release.
