@@ -51,6 +51,34 @@ struct ShortString {
 
   constexpr ShortString(char c) : length(1) { data[0] = c; }
 
+  // Pascal's `const X = 'c'` is polymorphic: X is a char in a char
+  // context and a 1-element string in a string context. We emit all
+  // single-char string consts as ShortString<>, but provide this
+  // implicit conversion so `s[i] := X` (which expects a uint8_t)
+  // still works. Takes data[0]; for multi-char strings the caller
+  // usually means the first char (Pascal's string[1]).
+  constexpr operator uint8_t() const { return data[0]; }
+
+  // Explicit char-vs-ShortString comparisons so the implicit
+  // conversion above doesn't fight with the per-char builtin `==`
+  // candidates. Matches Pascal `s[i] = 'x'` idioms.
+  friend constexpr bool operator==(uint8_t c, const ShortString& s) {
+    return s.length == 1 && s.data[0] == c;
+  }
+  friend constexpr bool operator==(const ShortString& s, uint8_t c) {
+    return s.length == 1 && s.data[0] == c;
+  }
+  friend constexpr bool operator==(char c, const ShortString& s) {
+    return s.length == 1 && s.data[0] == static_cast<uint8_t>(c);
+  }
+  friend constexpr bool operator==(const ShortString& s, char c) {
+    return s.length == 1 && s.data[0] == static_cast<uint8_t>(c);
+  }
+  friend constexpr bool operator!=(uint8_t c, const ShortString& s) { return !(c == s); }
+  friend constexpr bool operator!=(const ShortString& s, uint8_t c) { return !(s == c); }
+  friend constexpr bool operator!=(char c, const ShortString& s) { return !(c == s); }
+  friend constexpr bool operator!=(const ShortString& s, char c) { return !(s == c); }
+
   // Copy from a ShortString of any capacity (Pascal assigns freely
   // between different `string[N]` sizes; target capacity truncates).
   template <int M>

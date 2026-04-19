@@ -1679,8 +1679,12 @@ generic_emit:;
     return;
   }
 
-  // Untyped Pascal const -- immutable. Multi-char string literals wrap in
-  // ShortString<> so `+` means concatenation.
+  // Untyped Pascal const -- immutable. String literals wrap in
+  // ShortString<> so `+` means concatenation. Single-character
+  // string consts are polymorphic in Pascal (act as char or string
+  // by context); we emit them as ShortString<> and rely on an
+  // implicit ShortString->uint8_t conversion (first byte) for the
+  // char-context uses.
   if (cd.value->kind == Kind::StringLit) {
     emitln(linkage + "const ::rt::ShortString<> " + name + " = " + val + ";");
     return;
