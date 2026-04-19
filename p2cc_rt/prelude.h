@@ -1453,6 +1453,15 @@ inline void p_freemem(void*& p, int = 0) {
   std::free(p);
   p = nullptr;
 }
+inline void p_reallocmem(void*& p, int size) {
+  if (size <= 0) {
+    std::free(p);
+    p = nullptr;
+    return;
+  }
+  void* q = std::realloc(p, static_cast<size_t>(size));
+  if (q) p = q;
+}
 template <typename P>
 inline void p_getmem(P*& p, int size) {
   // Pascal idiom: `getmem(p, length(s)+1)` then `p^ := s` where p is
