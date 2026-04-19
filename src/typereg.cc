@@ -87,8 +87,12 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
           EnumInfoReg ei;
           ei.name = nm;
           ei.defining_unit = unit;
-          for (const auto& m : static_cast<const TyEnum&>(*td.type).members)
-            ei.members.push_back(lc(m));
+          for (const auto& m : static_cast<const TyEnum&>(*td.type).members) {
+            std::string lm = lc(m);
+            ei.members.push_back(lm);
+            r.enum_members[lm] = unit;
+            if (ui) ui->own_consts.insert(lm);
+          }
           r.enums[nm] = std::move(ei);
         } else {
           // Alias (possibly pointer / array / primitive).

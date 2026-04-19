@@ -118,6 +118,11 @@ struct TypeRegistry {
   std::unordered_map<std::string, ProcInfo> procs;
   std::unordered_map<std::string, VarInfo> vars;
   std::unordered_map<std::string, ConstInfo> consts;
+  // Enum member -> defining unit. Enum members are emitted at unit-
+  // namespace scope (Pascal's unscoped enums leak members into the
+  // enclosing namespace); using-namespaces can cause ambiguity when
+  // two units' enums share a member name.
+  std::unordered_map<std::string, std::string> enum_members;
 
   // Fill from all parsed UnitNodes.
   void build(const std::vector<const ast::UnitNode*>& units);

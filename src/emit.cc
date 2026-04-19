@@ -736,6 +736,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               uses_unit(vit->second.defining_unit)) {
             return mangle(vit->second.defining_unit) + "::" + mangle(n.name);
           }
+          // Enum members: same-named members across two uses'd enums
+          // go ambiguous under `using namespace`. Qualify.
+          auto eit = registry->enum_members.find(n.name);
+          if (eit != registry->enum_members.end() &&
+              eit->second != current_unit_name &&
+              uses_unit(eit->second)) {
+            return mangle(eit->second) + "::" + mangle(n.name);
+          }
         }
       }
       // 5c. Unit-level parameterless proc.
@@ -981,6 +989,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         };
 
         // `low(T)`/`high(T)` on a type-name arg -> emitted enum constant.
+        // `low(arr)`/`high(arr)` on an array value -> call `arr.low()` /
+        // `arr.high()` (rt::Array exposes those as static methods).
         bool is_low_high_type = false;
         std::string low_high_rewrite;
         if ((n == "low" || n == "high") && c.args.size() == 1 &&
@@ -998,6 +1008,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             auto eit = registry->enums.find(a.name);
             low_high_rewrite = mangle(eit->second.defining_unit) + "::" +
                                mangle(a.name) + "__" + n;
+          } else {
+            // Not a type name: may be an array-valued expression.
+            // Resolve via type deduction and use rt::Array's low()/
+            // high() static methods on the deduced array type.
+            const TypeExpr* at = deduce_type(*c.args[0]);
+            if (at) at = registry ? registry->canonicalize(at) : at;
+            if (at && at->kind == Kind::TyArray) {
+              is_low_high_type = true;
+              low_high_rewrite = mangle(a.name) + "." + n + "()";
+            }
           }
         }
 
@@ -2294,6 +2314,10 @@ void Emitter::emit_unit(const UnitNode& u) {
   const std::string ns = mangle(u.name);
   const std::string hguard = u.name;  // used for the #include stem
   current_unit_name = u.name;
+  // Lowercase for consistency with the registry's keys.
+  for (auto& ch : current_unit_name) {
+    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+  }
 
   collect_unit_tables(u.interface_decls, parameterless_methods,
                       class_parameterless_methods, field_names,
