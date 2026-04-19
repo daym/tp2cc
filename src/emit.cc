@@ -648,6 +648,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (!lhs_fn_rewrite.empty() && n.name == lhs_fn_rewrite) {
         return "result";
       }
+      // Pascal function-name-as-read: inside a function body the
+      // function's own identifier evaluates to its in-progress
+      // result value. Only applies when we're emitting a VALUE (not
+      // a callee), since recursive calls still need the function
+      // name.
+      if (current_fn_is_function && !is_callee_context_ &&
+          !current_fn_name.empty() && n.name == current_fn_name) {
+        return "result";
+      }
       // Pascal name resolution for a bare ident inside a proc body,
       // walked in lookup order:
       //   1. innermost `with X do` binding (fields shadow locals)
