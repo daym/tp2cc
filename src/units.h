@@ -47,6 +47,11 @@ class UnitGraph {
   // ParsedUnit. Returns the number of parse errors across all files.
   int discover();
 
+  // Parse a single program/unit file and recursively discover only the units
+  // reachable through its `uses` graph. Search roots are still used to locate
+  // referenced units by filename.
+  int discover_from_entry(std::filesystem::path entry_path);
+
   // After discover(), compute a topological order so that each unit's
   // dependencies come before it. Returns the order as a sequence of unit
   // names; also returns any cycles as pairs of (from, to).
@@ -71,9 +76,15 @@ class UnitGraph {
 
   // Map lowercased unit name -> ParsedUnit.
   std::unordered_map<std::string, ParsedUnit> units_;
+  std::unordered_map<std::string, std::vector<std::filesystem::path>>
+      unit_path_index_;
+  bool unit_path_index_ready_ = false;
 
   bool skipped(const std::string& path) const;
   static std::string to_lower(std::string_view s);
+  void build_unit_path_index();
+  std::filesystem::path find_unit_path(std::string_view name);
+  int parse_recursive(const std::filesystem::path& path);
 };
 
 }  // namespace p2cc

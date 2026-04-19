@@ -49,6 +49,14 @@ void write_unit(const fs::path& dir, const std::string& name,
   write_file(dir / (name + ".pas"), body);
 }
 
+void write_program(const fs::path& path, const std::string& name,
+                   const std::string& uses) {
+  std::string body = "program " + name + ";\n";
+  if (!uses.empty()) body += "uses " + uses + ";\n";
+  body += "begin\nend.\n";
+  write_file(path, body);
+}
+
 std::vector<std::string> order_of(UnitGraph& g) {
   auto tr = g.topo_sort();
   return tr.order;
@@ -168,6 +176,24 @@ void test_skip_path() {
   fs::remove_all(d);
 }
 
+void test_discover_from_entry_only_reachable_units() {
+  auto d = make_tmpdir("entry");
+  fs::create_directories(d / "sub");
+  write_program(d / "main.pas", "main", "alpha");
+  write_unit(d, "alpha", "beta");
+  write_unit(d / "sub", "beta", "");
+  write_unit(d, "unused", "");
+
+  UnitGraph g;
+  CHECK_EQ(g.discover_from_entry(d / "main.pas"), 0);
+  CHECK_EQ(g.units().size(), size_t{3});
+  CHECK(g.lookup("main") != nullptr);
+  CHECK(g.lookup("alpha") != nullptr);
+  CHECK(g.lookup("beta") != nullptr);
+  CHECK(g.lookup("unused") == nullptr);
+  fs::remove_all(d);
+}
+
 void test_real_fpc_compiler_acyclic() {
   // Smoke test: the real fpc 0.99 compiler source tree should be acyclic.
   fs::path src_root = fs::path(__FILE__).parent_path().parent_path().parent_path();
@@ -200,6 +226,7 @@ int main() {
   RUN_TEST(test_external_uses_ignored);
   RUN_TEST(test_cycle_detected);
   RUN_TEST(test_skip_path);
+  RUN_TEST(test_discover_from_entry_only_reachable_units);
   RUN_TEST(test_real_fpc_compiler_acyclic);
 
   int n = p2cc_test::failures();

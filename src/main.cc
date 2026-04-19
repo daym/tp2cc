@@ -157,9 +157,8 @@ int cmd_parse_all(const std::string& dir) {
   return fails == 0 ? 0 : 1;
 }
 
-int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
+int cmd_emit_all(const std::string& input_path, const std::string& outdir) {
   UnitGraph g;
-  g.add_search_root(in_dir);
   g.define("FPC");
   g.define("I386");
   g.define("CPU86");   // version.pas guards `source_cpu_string` on CPU86.
@@ -217,7 +216,21 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
            "/opts68k", "/ra68k",  "/og68k"}) {
     g.skip_path_containing(p);
   }
-  int derr = g.discover();
+  fs::path input = input_path;
+  int derr = 0;
+  if (!fs::exists(input)) {
+    std::fprintf(stderr, "cannot read %s\n", input_path.c_str());
+    return 2;
+  }
+  if (fs::is_regular_file(input)) {
+    derr = g.discover_from_entry(input);
+  } else if (fs::is_directory(input)) {
+    g.add_search_root(input);
+    derr = g.discover();
+  } else {
+    std::fprintf(stderr, "unsupported input path %s\n", input_path.c_str());
+    return 2;
+  }
   if (derr) std::fprintf(stderr, "discover saw %d errors\n", derr);
   auto tr = g.topo_sort();
   if (!tr.cycle_edges.empty()) {
@@ -336,9 +349,8 @@ int cmd_emit(const std::string& path, const std::string& outdir) {
   return 0;
 }
 
-int cmd_topo(const std::string& dir) {
+int cmd_topo(const std::string& input_path) {
   UnitGraph g;
-  g.add_search_root(dir);
   g.define("FPC");
   g.define("I386");
   g.define("LINUX");
@@ -349,7 +361,21 @@ int cmd_topo(const std::string& dir) {
   g.skip_path_containing("/m68k/");
   g.skip_path_containing("/alpha/");
   g.skip_path_containing("/powerpc/");
-  int errs = g.discover();
+  fs::path input = input_path;
+  int errs = 0;
+  if (!fs::exists(input)) {
+    std::fprintf(stderr, "cannot read %s\n", input_path.c_str());
+    return 2;
+  }
+  if (fs::is_regular_file(input)) {
+    errs = g.discover_from_entry(input);
+  } else if (fs::is_directory(input)) {
+    g.add_search_root(input);
+    errs = g.discover();
+  } else {
+    std::fprintf(stderr, "unsupported input path %s\n", input_path.c_str());
+    return 2;
+  }
   auto tr = g.topo_sort();
   std::printf("units discovered: %zu\n", g.units().size());
   std::printf("topo order:\n");
@@ -370,9 +396,9 @@ void usage() {
                "  p2cc lex-all <dir>\n"
                "  p2cc parse <file>\n"
                "  p2cc parse-all <dir>\n"
-               "  p2cc topo <dir>\n"
+               "  p2cc topo <dir|entry.pas>\n"
                "  p2cc emit <file> <outdir>\n"
-               "  p2cc emit-all <dir> <outdir>\n");
+               "  p2cc emit-all <dir|entry.pas> <outdir>\n");
 }
 
 }  // namespace

@@ -22,6 +22,7 @@ fi
 DIR="${1:-build/emitted}"
 JOBS="${JOBS:-5}"
 DIR="$(cd "$DIR" && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOGDIR="${LOGDIR:-$(dirname "$DIR")/compile-logs}"
 mkdir -p "$LOGDIR"
 
@@ -34,7 +35,7 @@ CXXFLAGS="${CXXFLAGS:--std=gnu++20 -I. -O0 -fms-extensions -fpermissive -Wno-nar
 STATUS="$LOGDIR/build.txt"
 : > "$STATUS"
 
-export CXX CXXFLAGS LOGDIR STATUS DIR
+export CXX CXXFLAGS LOGDIR STATUS DIR ROOT
 
 on_signal() {
   local sig="$1"
@@ -54,11 +55,11 @@ trap 'on_signal 1'  HUP
 # Fan out: one `$CXX -c` per emitted .cc. xargs keeps at most $JOBS
 # running at a time. Each inner shell cd's into DIR so `-I.` resolves.
 ( cd "$DIR" && ls p_*.cc ) \
-  | xargs -n1 -P"$JOBS" -I{} bash -c '
+  | xargs -P"$JOBS" -I{} bash -c '
       f="{}"
       base="${f%.cc}"
       cd "$DIR"
-      if $CXX $CXXFLAGS -c "$f" -o "$base.o" 2>"$LOGDIR/$base.log"; then
+      if $CXX -I. -I"$ROOT" $CXXFLAGS -c "$f" -o "$base.o" 2>"$LOGDIR/$base.log"; then
         rm -f "$LOGDIR/$base.log"
         echo "OK   $base" >> "$STATUS"
       else
