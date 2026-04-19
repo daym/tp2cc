@@ -3,7 +3,7 @@
 # Plain-make build. No cmake dependency.
 #
 #   make           - build the p2cc binary and all test binaries
-#   make test      - build and run all tests
+#   make check     - build and run all tests
 #   make clean
 #   make lex-all   - run the lexer over rpm/compiler as a smoke test
 
@@ -18,7 +18,7 @@ BINDIR   := $(BUILD)/bin
 LIB_SRCS := src/diag.cc src/source.cc src/lexer.cc src/parser.cc src/units.cc src/typereg.cc src/emit.cc
 LIB_OBJS := $(patsubst src/%.cc,$(OBJDIR)/%.o,$(LIB_SRCS))
 
-TEST_BINS := $(BINDIR)/test_lexer $(BINDIR)/test_parser $(BINDIR)/test_units $(BINDIR)/test_emit
+TEST_BINS := $(BINDIR)/test_lexer $(BINDIR)/test_parser $(BINDIR)/test_units $(BINDIR)/test_emit $(BINDIR)/test_runtime
 
 ALL_BINS  := $(BINDIR)/p2cc $(TEST_BINS)
 
@@ -50,6 +50,10 @@ $(BINDIR)/test_units: $(LIB_OBJS) $(OBJDIR)/tests/test_units.o
 	$(CXX) $(CXXFLAGS) $^ -o $@
 
 $(BINDIR)/test_emit: $(LIB_OBJS) $(OBJDIR)/tests/test_emit.o
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $^ -o $@
+
+$(BINDIR)/test_runtime: $(OBJDIR)/tests/test_runtime.o
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $^ -o $@
 
