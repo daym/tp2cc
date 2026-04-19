@@ -1248,6 +1248,16 @@ inline void p_flush(const TextFile& f) {
 // `blockread` / `blockwrite` are stubs and callers in fpc use either
 // the 3-arg or 4-arg form depending on whether they care about the
 // actually-transferred count. Accept both shapes variadically.
+template <typename File, typename Count>
+inline void p_blockread(File& f, void* value, int32_t count, Count& transferred) {
+  if (!f.f) {
+    transferred = static_cast<Count>(0);
+    p_set_ioresult(f, 103);
+    return;
+  }
+  transferred = static_cast<Count>(std::fread(value, 1, count, f.f));
+  p_set_ioresult(f, std::ferror(f.f) ? 100 : 0);
+}
 template <typename File, typename T, typename Count>
 inline void p_blockread(File& f, T& value, int32_t count, Count& transferred) {
   if (!f.f) {
@@ -1263,6 +1273,20 @@ template <typename File, typename T>
 inline void p_blockread(File& f, T& value, int32_t count) {
   int32_t transferred = 0;
   p_blockread(f, value, count, transferred);
+}
+template <typename File>
+inline void p_blockread(File& f, void* value, int32_t count) {
+  int32_t transferred = 0;
+  p_blockread(f, value, count, transferred);
+}
+template <typename File>
+inline void p_blockwrite(File& f, const void* value, int32_t count) {
+  if (!f.f) {
+    p_set_ioresult(f, 103);
+    return;
+  }
+  std::fwrite(value, 1, count, f.f);
+  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
 template <typename File, typename T>
 inline void p_blockwrite(File& f, const T& value, int32_t count) {
