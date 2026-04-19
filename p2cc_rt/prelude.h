@@ -1091,6 +1091,14 @@ inline GetEnvResult p_getenv(const ShortString<>& name) {
   for (int i = 0; i < n; ++i) buf[i] = name.data[i];
   return {std::getenv(buf)};
 }
+// Pascal `Linux.Shell(cmd)` -- run a command via `/bin/sh -c`, i.e.
+// POSIX `system(3)`. Used by the compiler for wildcard expansion.
+inline int32_t p_shell(const ShortString<>& cmd) {
+  char buf[260]{};
+  int n = cmd.length < 255 ? cmd.length : 255;
+  for (int i = 0; i < n; ++i) buf[i] = cmd.data[i];
+  return std::system(buf);
+}
 // STUB: `dosexitcode` is a function in fpc's dos unit that returns
 // the exit code of the last `exec`-launched child. Since our `exec`
 // is stubbed, return 0 ("success").
