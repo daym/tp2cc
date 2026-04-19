@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Compile every emitted *.cc file in parallel. Writes per-file logs,
 # a status summary, and cleans up its own process group on signal/exit.
 #
@@ -38,7 +38,7 @@ STATUS="$LOGDIR/build.txt"
 export CXX CXXFLAGS LOGDIR STATUS DIR ROOT
 
 on_signal() {
-  local sig="$1"
+  sig="$1"
   trap - INT TERM HUP
   # Negative PID -> signal the whole process group. We're the group
   # leader because we setsid'd.
@@ -55,8 +55,8 @@ trap 'on_signal 1'  HUP
 # Fan out: one `$CXX -c` per emitted .cc. xargs keeps at most $JOBS
 # running at a time. Each inner shell cd's into DIR so `-I.` resolves.
 ( cd "$DIR" && ls p_*.cc ) \
-  | xargs -P"$JOBS" -I{} bash -c '
-      f="{}"
+  | xargs -n1 -P"$JOBS" sh -c '
+      f="$1"
       base="${f%.cc}"
       cd "$DIR"
       if $CXX -I. -I"$ROOT" $CXXFLAGS -c "$f" -o "$base.o" 2>"$LOGDIR/$base.log"; then
@@ -65,7 +65,7 @@ trap 'on_signal 1'  HUP
       else
         echo "FAIL $base" >> "$STATUS"
       fi
-    '
+    ' sh
 
 ok=$(grep -c "^OK"   "$STATUS" 2>/dev/null || echo 0)
 fail=$(grep -c "^FAIL" "$STATUS" 2>/dev/null || echo 0)
