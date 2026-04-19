@@ -913,7 +913,22 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
           }
           if (is_unit) {
-            return mangle(id.name) + "::" + mangle(m.name);
+            std::string text = mangle(id.name) + "::" + mangle(m.name);
+            // If the qualified target is a parameterless proc in the
+            // named unit, auto-call it (Pascal lets you write
+            // `unit.func` without parens to call the function). Our
+            // registry's `procs` map keeps the last-registered def
+            // per name, so we check by name+param-count and trust
+            // that a same-named proc in another unit is also
+            // parameterless (true for `assemble`, `exit`, etc.).
+            if (!is_callee_context_ && registry) {
+              auto pit = registry->procs.find(m.name);
+              if (pit != registry->procs.end() &&
+                  pit->second.param_count == 0) {
+                text += "()";
+              }
+            }
+            return text;
           }
         }
       }
