@@ -247,7 +247,6 @@ using p_sw_word    = uint32_t;
 // linux / file descriptors
 using p_thandle   = int32_t;
 using p_tfiletime = int64_t;
-struct p_tfilerec { char _opaque[332] = {}; };
 
 // signal handler (syslinux) + POSIX signal numbers used by catch.pas.
 using p_signalhandler = void (*)(int32_t);
@@ -262,26 +261,6 @@ inline constexpr int32_t p_sigfpe  = 8;
 inline constexpr int32_t p_sigkill = 9;
 inline constexpr int32_t p_sigsegv = 11;
 inline constexpr int32_t p_sigterm = 15;
-
-// --- TObject ---------------------------------------------------------------
-// Pascal TP `object` types with no explicit parent get TObject as implicit
-// parent. We provide a minimal stub; user code mostly just needs the name
-// to exist so `inherited Init` etc. compile.
-struct p_tobject {
-  using inherited = p_tobject;
-  bool p_init() { return true; }
-  virtual void p_done() {}
-  virtual ~p_tobject() = default;
-};
-using p_pobject = p_tobject*;
-
-// TP Objects unit placeholders. Code that references these types still
-// compiles; behaviour is stubbed.
-struct p_tstreamrec { int32_t p_objtype = 0; };
-struct p_tstream    : p_tobject {};
-struct p_tcollection : p_tobject {};
-struct p_tsortedcollection : p_tcollection {};
-struct p_tstringcollection : p_tsortedcollection {};
 
 // --- Array<T, Lo, N> -------------------------------------------------------
 // Pascal `array[Lo..Hi] of T`. Value-semantics (copied on pass, like
