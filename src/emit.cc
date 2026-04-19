@@ -1657,28 +1657,13 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
                                  : cd.type.get();
     if (t && t->kind == Kind::TyArray) {
       const auto& arr = static_cast<const TyArray&>(*t);
-      // Wrap the element type in `Array<..., Lo, N>` for each dim from
-      // innermost to outermost. When the dim is a TyName whose enum
-      // isn't in the registry (function-local enum), fall back to the
-      // nested ArrayConst's element count at that level.
+      // Wrap the element type in `Array<..., Lo, N>` for each dim
+      // from innermost to outermost.
       std::string ty = arr.element ? type_to_cxx(*arr.element)
                                    : std::string("int32_t");
-      // Walk down into the ArrayConst alongside the dims (outermost
-      // first) to recover sizes from the init shape.
-      const Expr* init_at = cd.value.get();
-      std::vector<const Expr*> init_by_dim(arr.dims.size(), nullptr);
-      for (size_t i = 0; i < arr.dims.size(); ++i) {
-        init_by_dim[i] = init_at;
-        if (init_at && init_at->kind == Kind::ArrayConst) {
-          const auto& ac = static_cast<const ArrayConst&>(*init_at);
-          init_at = ac.elements.empty() ? nullptr : ac.elements.front().get();
-        } else {
-          init_at = nullptr;
-        }
-      }
-      for (size_t i = arr.dims.size(); i-- > 0;) {
+      for (auto it = arr.dims.rbegin(); it != arr.dims.rend(); ++it) {
         std::string lo = "0", size_expr;
-        const auto& dim = *arr.dims[i];
+        const auto& dim = **it;
         if (dim.kind == Kind::TySubrange) {
           const auto& r = static_cast<const TySubrange&>(dim);
           lo = const_value_to_cxx(*r.lo);
@@ -1708,17 +1693,6 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
           } else if (tn.name == "word" || tn.name == "smallint" ||
                      tn.name == "wordbool") {
             lo = "0"; size_expr = "65536";
-          }
-        }
-        if (size_expr.empty()) {
-          // Dim unresolved -- fall back to the matching nesting level
-          // of the initialiser literal. Pascal writes out every
-          // element, so the element count equals the dim size.
-          if (init_by_dim[i] &&
-              init_by_dim[i]->kind == Kind::ArrayConst) {
-            const auto& ac = static_cast<const ArrayConst&>(*init_by_dim[i]);
-            lo = "0";
-            size_expr = std::to_string(ac.elements.size());
           }
         }
         if (size_expr.empty()) {
