@@ -158,6 +158,12 @@ struct Emitter {
   // Member-access emitter can auto-call only actual methods.
   std::unordered_map<std::string, const ast::TypeExpr*> local_types;
 
+  // Names of the current scope's parameters that are Pascal's untyped
+  // `var X` / `const X` / `X` form. Their C++ type is `void*` (not
+  // `void*&`); the callee receives the caller's storage address.
+  // `@X` on one of these emits as the ident itself -- no `&`.
+  std::unordered_set<std::string> local_untyped_params;
+
   // Nested procs/functions declared in the current scope. For each
   // name, store the parameter count and whether it returns a value.
   // Used so bare references to a parameterless nested `function`
@@ -945,6 +951,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
         }
       }
+      // `@X` where X is a Pascal untyped-var parameter: X is already
+      // `void*` holding the caller's storage address, so the
+      // address-of-X is just X itself.
+      if (a.operand && a.operand->kind == Kind::Ident) {
+        const auto& id = static_cast<const Ident&>(*a.operand);
+        if (local_untyped_params.count(id.name)) {
+          return "(" + mangle(id.name) + ")";
+        }
+      }
       bool saved = is_callee_context_;
       is_callee_context_ = true;
       std::string inner = expr_to_cxx(*a.operand);
@@ -1251,10 +1266,50 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       is_callee_context_ = true;
       std::string callee_text = expr_to_cxx(*c.callee);
       is_callee_context_ = false;
+      // Collect per-arg "untyped-var" flags from the callee's proc
+      // decl so we can wrap those args with `(void*)&(arg)`. Handles
+      // two shapes: Ident callees (unit-level procs) and Member
+      // callees (methods whose class we can resolve).
+      std::vector<bool> untyped_arg(c.args.size(), false);
+      auto mark_from_decl = [&](const ast::ProcDecl* decl) {
+        if (!decl) return;
+        size_t ai = 0;
+        for (const auto& p : decl->params) {
+          for (size_t k = 0; k < p.names.size(); ++k) {
+            if (ai < untyped_arg.size() && !p.type) untyped_arg[ai] = true;
+            ++ai;
+          }
+        }
+      };
+      if (registry && c.callee->kind == Kind::Ident) {
+        const auto& id = static_cast<const Ident&>(*c.callee);
+        auto pit = registry->procs.find(id.name);
+        if (pit != registry->procs.end()) mark_from_decl(pit->second.decl);
+      } else if (registry && c.callee->kind == Kind::Member) {
+        const auto& mem = static_cast<const Member&>(*c.callee);
+        std::string cls;
+        if (mem.base->kind == Kind::Ident &&
+            static_cast<const Ident&>(*mem.base).name == "self") {
+          cls = current_class_name;
+        } else {
+          cls = deduce_class_alias(*mem.base);
+        }
+        if (!cls.empty()) {
+          if (auto* m = registry->lookup_class_member(cls, mem.name)) {
+            if (m->is_method) mark_from_decl(m->method.decl);
+          }
+        }
+      }
       std::string out = callee_text + "(";
       for (size_t i = 0; i < c.args.size(); ++i) {
         if (i) out += ", ";
-        out += expr_to_cxx(*c.args[i]);
+        if (untyped_arg[i]) {
+          // `@arg` / already-untyped arg: pass its address as void*.
+          // If the arg is itself `@x`, collapse to just `x`'s address.
+          out += "((void*)&(" + expr_to_cxx(*c.args[i]) + "))";
+        } else {
+          out += expr_to_cxx(*c.args[i]);
+        }
       }
       out += ")";
       return out;
@@ -1595,9 +1650,19 @@ std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
   std::string out;
   bool first = true;
   for (const auto& p : params) {
-    std::string pt = p.type ? type_to_cxx(*p.type) : std::string("void*");
-    if (p.mode == Param::Var || p.mode == Param::Out) pt += "&";
-    else if (p.mode == Param::Const) pt = std::string("const ") + pt + "&";
+    // Untyped `var X` / `const X` / `X` in Pascal means "pass the
+    // storage, any type". The closest C++ is a raw address: `void*`
+    // (no reference). Inside the body, Pascal's `@X` becomes just
+    // `X` (the pointer itself). At call sites we wrap the argument
+    // with `(void*)&(arg)` to pass the caller's storage address.
+    std::string pt;
+    if (!p.type) {
+      pt = "void*";
+    } else {
+      pt = type_to_cxx(*p.type);
+      if (p.mode == Param::Var || p.mode == Param::Out) pt += "&";
+      else if (p.mode == Param::Const) pt = std::string("const ") + pt + "&";
+    }
     for (const auto& n : p.names) {
       if (!first) out += ", ";
       first = false;
@@ -1974,10 +2039,15 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
   // locals can be resolved from the type registry.
   auto saved_types = local_types;
   auto saved_nested = local_nested_fns;
+  auto saved_untyped = local_untyped_params;
   for (const auto& p : pd.params) {
     for (const auto& nm : p.names) {
       local_scope.insert(nm);
-      if (p.type) local_types[nm] = p.type.get();
+      if (p.type) {
+        local_types[nm] = p.type.get();
+      } else {
+        local_untyped_params.insert(nm);
+      }
     }
   }
   for (const auto& l : pd.locals) {
@@ -2026,6 +2096,7 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
   local_scope = std::move(saved_locals);
   local_types = std::move(saved_types);
   local_nested_fns = std::move(saved_nested);
+  local_untyped_params = std::move(saved_untyped);
   --block_depth;
 
   dedent();
@@ -2044,9 +2115,14 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   {
     bool first = true;
     for (const auto& p : pd.params) {
-      std::string pt = p.type ? type_to_cxx(*p.type) : std::string("void*");
-      if (p.mode == Param::Var || p.mode == Param::Out) pt += "&";
-      else if (p.mode == Param::Const) pt = std::string("const ") + pt + "&";
+      std::string pt;
+      if (!p.type) {
+        pt = "void*";
+      } else {
+        pt = type_to_cxx(*p.type);
+        if (p.mode == Param::Var || p.mode == Param::Out) pt += "&";
+        else if (p.mode == Param::Const) pt = std::string("const ") + pt + "&";
+      }
       for (const auto& n : p.names) {
         (void)n;
         if (!first) sig_params += ", ";
@@ -2074,6 +2150,7 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   auto saved_locals = local_scope;
   auto saved_types = local_types;
   auto saved_nested = local_nested_fns;
+  auto saved_untyped = local_untyped_params;
   current_fn_name = pd.name;
   current_fn_is_function = (pd.pkind == ProcKind::Function);
   current_fn_is_ctor = false;
@@ -2083,6 +2160,7 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
     for (const auto& nm : p.names) {
       local_scope.insert(nm);
       if (p.type) local_types[nm] = p.type.get();
+      else local_untyped_params.insert(nm);
     }
   }
   for (const auto& l : pd.locals) {
@@ -2122,6 +2200,7 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   local_scope = std::move(saved_locals);
   local_types = std::move(saved_types);
   local_nested_fns = std::move(saved_nested);
+  local_untyped_params = std::move(saved_untyped);
   --block_depth;
 
   dedent();
