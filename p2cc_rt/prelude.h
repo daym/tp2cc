@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -20,10 +21,15 @@
 #include <cstring>
 #include <csignal>
 #include <functional>
+#include <glob.h>
 #include <initializer_list>
+#include <limits.h>
 #include <string>
+#include <sys/stat.h>
 #include <type_traits>
+#include <unistd.h>
 #include <utility>
+#include <vector>
 
 namespace rt {
 
@@ -498,6 +504,8 @@ struct TextFile {
 template <typename T>
 struct TypedFile {
   std::FILE* f = nullptr;
+  ShortString<> name;
+  int32_t iores = 0;
 };
 
 // --- Range helper (placeholder for `a..b` in set literals) ------------------
@@ -607,6 +615,30 @@ inline int32_t p_memavail() { return 1 << 30; }   // stub: "lots of memory"
 inline int32_t p_heapavail() { return 1 << 30; }
 inline int32_t p_maxavail()  { return 1 << 30; }
 
+inline int32_t p_last_ioresult = 0;
+
+template <typename File>
+inline void p_set_ioresult(File& f, int32_t code) {
+  f.iores = code;
+  p_last_ioresult = code;
+}
+
+inline ShortString<> p_file_name_to_string(const ShortString<>& name) {
+  return name;
+}
+
+template <typename File>
+inline void p_file_name_to_buf(const File& f, char (&buf)[260]) {
+  int n = f.name.length < 255 ? f.name.length : 255;
+  for (int i = 0; i < n; ++i) buf[i] = f.name.data[i];
+  buf[n] = '\0';
+}
+
+template <int N>
+inline std::string p_to_std_string(const ShortString<N>& s) {
+  return std::string(s.data, s.data + s.length);
+}
+
 inline int32_t p_strtoint(const ShortString<>& s) {
   char buf[260]{};
   for (int i = 0; i < s.length; ++i) buf[i] = s.data[i];
@@ -615,39 +647,194 @@ inline int32_t p_strtoint(const ShortString<>& s) {
 
 // Dos/file procedures -- stubbed; real behaviour added as needed.
 struct SearchRec { int32_t p_time = 0; int32_t p_size = 0;
-                   uint8_t p_attr = 0; ShortString<> p_name; };
+                   uint8_t p_attr = 0; ShortString<> p_name;
+                   std::vector<std::string> p_matches;
+                   std::size_t p_index = 0; };
 using p_searchrec = SearchRec;
 using p_tsearchrec = SearchRec;
-inline int32_t p_findfirst(const ShortString<>&, int, SearchRec&) {
-  return -1;  // not found
+inline int32_t p_doserror = 0;
+inline void p_searchrec_fill(SearchRec& rec, const std::string& path) {
+  struct stat st{};
+  if (::stat(path.c_str(), &st) != 0) return;
+  rec.p_time = static_cast<int32_t>(st.st_mtime);
+  rec.p_size = static_cast<int32_t>(st.st_size > INT32_MAX ? INT32_MAX : st.st_size);
+  rec.p_attr = 0;
+  if (S_ISDIR(st.st_mode)) rec.p_attr |= 0x10;
+  std::size_t sep = path.find_last_of("/\\");
+  rec.p_name = ShortString<>((sep == std::string::npos ? path : path.substr(sep + 1)).c_str());
 }
-inline int32_t p_findnext(SearchRec&) { return -1; }
-inline void p_findclose(SearchRec&) {}
-inline void p_mkdir(const ShortString<>&) {}
-inline void p_rmdir(const ShortString<>&) {}
-inline void p_chdir(const ShortString<>&) {}
-inline void p_getdir(int, ShortString<>& out) { out = ShortString<>("/"); }
-inline void p_erase(const ShortString<>&) {}
-inline void p_erase(TextFile&) {}      // `erase(f)` after assign(f, name)
-inline void p_rename(const ShortString<>&, const ShortString<>&) {}
-inline void p_rename(TextFile&, const ShortString<>&) {}
+inline int32_t p_findfirst(const ShortString<>& pattern, int attrs, SearchRec& rec) {
+  rec.p_matches.clear();
+  rec.p_index = 0;
+  rec.p_attr = 0;
+  rec.p_name = ShortString<>("");
+  glob_t matches{};
+  int rc = ::glob(p_to_std_string(pattern).c_str(), GLOB_NOSORT, nullptr, &matches);
+  if (rc != 0) {
+    ::globfree(&matches);
+    p_doserror = 18;
+    return p_doserror;
+  }
+  for (std::size_t i = 0; i < matches.gl_pathc; ++i) {
+    const char* path = matches.gl_pathv[i];
+    struct stat st{};
+    if (::stat(path, &st) != 0) continue;
+    if (attrs == 0x10 && !S_ISDIR(st.st_mode)) continue;
+    rec.p_matches.emplace_back(path);
+  }
+  ::globfree(&matches);
+  if (rec.p_matches.empty()) {
+    p_doserror = 18;
+    return p_doserror;
+  }
+  p_searchrec_fill(rec, rec.p_matches[0]);
+  p_doserror = 0;
+  return 0;
+}
+inline int32_t p_findnext(SearchRec& rec) {
+  if (rec.p_index + 1 >= rec.p_matches.size()) {
+    p_doserror = 18;
+    return p_doserror;
+  }
+  ++rec.p_index;
+  p_searchrec_fill(rec, rec.p_matches[rec.p_index]);
+  p_doserror = 0;
+  return 0;
+}
+inline void p_findclose(SearchRec& rec) {
+  rec.p_matches.clear();
+  rec.p_index = 0;
+}
+inline void p_mkdir(const ShortString<>& path) {
+  p_last_ioresult = ::mkdir(p_to_std_string(path).c_str(), 0777) == 0 ? 0 : 5;
+}
+inline void p_rmdir(const ShortString<>& path) {
+  p_last_ioresult = ::rmdir(p_to_std_string(path).c_str()) == 0 ? 0 : 5;
+}
+inline void p_chdir(const ShortString<>& path) {
+  p_last_ioresult = ::chdir(p_to_std_string(path).c_str()) == 0 ? 0 : 3;
+}
+template <int N>
+inline void p_getdir(int, ShortString<N>& out) {
+  char buf[PATH_MAX > 0 ? PATH_MAX : 4096]{};
+  if (::getcwd(buf, sizeof(buf)) == nullptr) out = ShortString<N>("");
+  else out = ShortString<N>(buf);
+}
+inline void p_erase(const ShortString<>& path) {
+  p_last_ioresult = std::remove(p_to_std_string(path).c_str()) == 0 ? 0 : 2;
+}
+inline void p_erase(TextFile& f) {      // `erase(f)` after assign(f, name)
+  char buf[260]{};
+  p_file_name_to_buf(f, buf);
+  p_set_ioresult(f, std::remove(buf) == 0 ? 0 : 2);
+}
+inline void p_rename(const ShortString<>& old_name, const ShortString<>& new_name) {
+  p_last_ioresult =
+      std::rename(p_to_std_string(old_name).c_str(), p_to_std_string(new_name).c_str()) == 0 ? 0 : 5;
+}
+inline void p_rename(TextFile& f, const ShortString<>& new_name) {
+  char buf[260]{};
+  p_file_name_to_buf(f, buf);
+  p_set_ioresult(f, std::rename(buf, p_to_std_string(new_name).c_str()) == 0 ? 0 : 5);
+}
 inline ShortString<> p_fsearch(const ShortString<>& name, const ShortString<>&) { return name; }
-inline void p_fsplit(const ShortString<>&, ShortString<>&, ShortString<>&, ShortString<>&) {}
+inline void p_fsplit(const ShortString<>& input, ShortString<>& dir,
+                     ShortString<>& name, ShortString<>& ext) {
+  std::string path;
+  path.reserve(input.length);
+  for (int i = 0; i < input.length; ++i) {
+    char c = input.data[i];
+    if (c == '\\') c = '/';
+    path.push_back(c);
+  }
+
+  std::string dir_part;
+  if (path.size() >= 2 && std::isalpha(static_cast<unsigned char>(path[0])) &&
+      path[1] == ':') {
+    dir_part = path.substr(0, 2);
+    path.erase(0, 2);
+  }
+
+  size_t last_sep = path.find_last_of('/');
+  std::string leaf = path;
+  if (last_sep != std::string::npos) {
+    dir_part += path.substr(0, last_sep + 1);
+    leaf = path.substr(last_sep + 1);
+  }
+
+  size_t dot = leaf.find_last_of('.');
+  std::string name_part = leaf;
+  std::string ext_part;
+  if (dot != std::string::npos) {
+    name_part = leaf.substr(0, dot);
+    ext_part = leaf.substr(dot);
+  }
+
+  dir = ShortString<>(dir_part.c_str());
+  name = ShortString<>(name_part.c_str());
+  ext = ShortString<>(ext_part.c_str());
+}
 inline ShortString<> p_fexpand(const ShortString<>& s) { return s; }
 
 inline void p_epochtolocal(int32_t, uint16_t&, uint16_t&, uint16_t&,
                            uint16_t&, uint16_t&, uint16_t&) {}
 
-inline int32_t p_filepos(const TextFile&) { return 0; }
-inline int32_t p_filesize(const TextFile&) { return 0; }
-inline void p_seek(TextFile&, int32_t) {}
+template <typename File>
+inline int32_t p_filepos(const File& f) {
+  if (!f.f) return 0;
+  long pos = std::ftell(f.f);
+  return pos < 0 ? 0 : static_cast<int32_t>(pos);
+}
+template <typename File>
+inline int32_t p_filesize(const File& f) {
+  if (!f.f) return 0;
+  long cur = std::ftell(f.f);
+  if (cur < 0) return 0;
+  if (std::fseek(f.f, 0, SEEK_END) != 0) return 0;
+  long size = std::ftell(f.f);
+  std::fseek(f.f, cur, SEEK_SET);
+  return size < 0 ? 0 : static_cast<int32_t>(size);
+}
+template <typename File>
+inline void p_seek(File& f, int32_t pos) {
+  if (!f.f) {
+    p_set_ioresult(f, 103);
+    return;
+  }
+  p_set_ioresult(f, std::fseek(f.f, pos, SEEK_SET) == 0 ? 0 : 103);
+}
 inline void p_truncate(TextFile&) {}
-inline void p_flush(const TextFile&) {}
+inline void p_flush(const TextFile& f) {
+  if (f.f) std::fflush(f.f);
+}
 // `blockread` / `blockwrite` are stubs and callers in fpc use either
 // the 3-arg or 4-arg form depending on whether they care about the
 // actually-transferred count. Accept both shapes variadically.
-template <typename... A> inline void p_blockread(TextFile&, A&&...) {}
-template <typename... A> inline void p_blockwrite(TextFile&, A&&...) {}
+template <typename File, typename T, typename Count>
+inline void p_blockread(File& f, T& value, int32_t count, Count& transferred) {
+  if (!f.f) {
+    transferred = static_cast<Count>(0);
+    p_set_ioresult(f, 103);
+    return;
+  }
+  transferred = static_cast<Count>(
+      std::fread(static_cast<void*>(std::addressof(value)), 1, count, f.f));
+  p_set_ioresult(f, std::ferror(f.f) ? 100 : 0);
+}
+template <typename File, typename T>
+inline void p_blockread(File& f, T& value, int32_t count) {
+  int32_t transferred = 0;
+  p_blockread(f, value, count, transferred);
+}
+template <typename File, typename T>
+inline void p_blockwrite(File& f, const T& value, int32_t count) {
+  if (!f.f) {
+    p_set_ioresult(f, 103);
+    return;
+  }
+  std::fwrite(static_cast<const void*>(std::addressof(value)), 1, count, f.f);
+  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
+}
 // `readln(f, s)` reads a line into `s`. `readln` (no args) reads and
 // discards a line. `readln(f)` reads/discards a line from `f`.
 inline void p_readln(TextFile& f) {
@@ -797,7 +984,11 @@ inline ShortString<> p_paramstr(int i) {
   return ShortString<>(rt_argv[i]);
 }
 
-inline int32_t p_ioresult() { return 0; }
+inline int32_t p_ioresult() {
+  int32_t result = p_last_ioresult;
+  p_last_ioresult = 0;
+  return result;
+}
 
 // --- String intrinsics ------------------------------------------------------
 
@@ -935,26 +1126,25 @@ inline void p_writeln(Args&&... args) {
 inline void p_assign(TextFile& f, const ShortString<>& n) {
   f.name = n;
   f.f = nullptr;
-  f.iores = 0;
+  p_set_ioresult(f, 0);
 }
 inline void p_reset(TextFile& f) {
   char buf[260]{};
-  int n = f.name.length < 255 ? f.name.length : 255;
-  for (int i = 0; i < n; ++i) buf[i] = f.name.data[i];
-  f.f = std::fopen(buf, "r");
-  f.iores = f.f ? 0 : 2;  // 2 = file-not-found per fpc's convention
+  p_file_name_to_buf(f, buf);
+  f.f = std::fopen(buf, "rb");
+  p_set_ioresult(f, f.f ? 0 : 2);  // 2 = file-not-found per fpc convention
 }
 inline void p_reset(TextFile& f, int32_t) { p_reset(f); }  // rec size form
 inline void p_rewrite(TextFile& f) {
   char buf[260]{};
-  int n = f.name.length < 255 ? f.name.length : 255;
-  for (int i = 0; i < n; ++i) buf[i] = f.name.data[i];
-  f.f = std::fopen(buf, "w");
-  f.iores = f.f ? 0 : 5;
+  p_file_name_to_buf(f, buf);
+  f.f = std::fopen(buf, "wb");
+  p_set_ioresult(f, f.f ? 0 : 5);
 }
 inline void p_rewrite(TextFile& f, int32_t) { p_rewrite(f); }
 inline void p_close(TextFile& f) {
   if (f.f) { std::fclose(f.f); f.f = nullptr; }
+  p_set_ioresult(f, 0);
 }
 inline bool p_eof(TextFile& f) {
   if (!f.f) return true;
@@ -966,13 +1156,41 @@ inline bool p_eof(TextFile& f) {
   return false;
 }
 // typed-file variants
-template <typename T> inline void p_assign(TypedFile<T>&, const ShortString<>&) {}
-template <typename T> inline void p_reset(TypedFile<T>&) {}
-template <typename T> inline void p_reset(TypedFile<T>&, int32_t) {}
-template <typename T> inline void p_rewrite(TypedFile<T>&) {}
-template <typename T> inline void p_rewrite(TypedFile<T>&, int32_t) {}
-template <typename T> inline void p_close(TypedFile<T>&) {}
-template <typename T> inline bool p_eof(const TypedFile<T>&) { return true; }
+template <typename T>
+inline void p_assign(TypedFile<T>& f, const ShortString<>& n) {
+  f.name = n;
+  f.f = nullptr;
+  p_set_ioresult(f, 0);
+}
+template <typename T>
+inline void p_reset(TypedFile<T>& f) {
+  char buf[260]{};
+  p_file_name_to_buf(f, buf);
+  f.f = std::fopen(buf, "rb");
+  p_set_ioresult(f, f.f ? 0 : 2);
+}
+template <typename T> inline void p_reset(TypedFile<T>& f, int32_t) { p_reset(f); }
+template <typename T>
+inline void p_rewrite(TypedFile<T>& f) {
+  char buf[260]{};
+  p_file_name_to_buf(f, buf);
+  f.f = std::fopen(buf, "wb");
+  p_set_ioresult(f, f.f ? 0 : 5);
+}
+template <typename T> inline void p_rewrite(TypedFile<T>& f, int32_t) { p_rewrite(f); }
+template <typename T>
+inline void p_close(TypedFile<T>& f) {
+  if (f.f) { std::fclose(f.f); f.f = nullptr; }
+  p_set_ioresult(f, 0);
+}
+template <typename T>
+inline bool p_eof(const TypedFile<T>& f) {
+  if (!f.f) return true;
+  int c = std::fgetc(f.f);
+  if (c == EOF) return true;
+  std::ungetc(c, f.f);
+  return false;
+}
 
 // --- Val / Str --------------------------------------------------------------
 
@@ -1126,8 +1344,6 @@ using p_plinkergo32v1 = StubTargetLib*;
 using p_tlinkergo32v2 = StubTargetLib;
 using p_plinkergo32v2 = StubTargetLib*;
 template <typename... A> inline int32_t p_getversion(A&&...) { return 0; }
-// STUB: `doserror` is the DOS unit's global error code after a call.
-inline int32_t p_doserror = 0;
 // DOS file-attribute flags (from fpc's dos unit). Used in
 // FindFirst(mask, attrs, rec) calls for file enumeration.
 inline constexpr int32_t p_readonly  = 0x01;
@@ -1142,7 +1358,25 @@ inline constexpr int32_t p_anyfile   = 0x3F;
 // touches (mtime for timestamp comparisons).
 struct LinuxStat { int32_t p_mtime = 0; int32_t p_mode = 0; int32_t p_size = 0; };
 using p_stat = LinuxStat;
-template <typename... A> inline bool p_fstat(A&&...) { return false; }
+template <int N>
+inline bool p_fstat(const ShortString<N>& path, p_stat& info) {
+  struct stat st{};
+  if (::stat(p_to_std_string(path).c_str(), &st) != 0) return false;
+  info.p_mtime = static_cast<int32_t>(st.st_mtime);
+  info.p_mode = static_cast<int32_t>(st.st_mode);
+  info.p_size = static_cast<int32_t>(st.st_size > INT32_MAX ? INT32_MAX : st.st_size);
+  return true;
+}
+template <typename File>
+inline bool p_fstat(const File& f, p_stat& info) {
+  if (!f.f) return false;
+  struct stat st{};
+  if (::fstat(::fileno(f.f), &st) != 0) return false;
+  info.p_mtime = static_cast<int32_t>(st.st_mtime);
+  info.p_mode = static_cast<int32_t>(st.st_mode);
+  info.p_size = static_cast<int32_t>(st.st_size > INT32_MAX ? INT32_MAX : st.st_size);
+  return true;
+}
 
 // Return value of `getenv`. fpc's `dos.getenv` returns ShortString,
 // `linux.getenv` returns pchar -- same lowered name, different
