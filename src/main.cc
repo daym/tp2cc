@@ -147,6 +147,15 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
   // `uses`d). Emitting it independently drags in an undeclared
   // `ovrgetbuf` -- skip it entirely.
   g.skip_path_containing("/ppovin.pas");
+  // Utility *programs* bundled in the compiler source but not part
+  // of the compiler itself -- each has its own `program begin..end.`
+  // -> `int main()`, which would collide with pp.pas's main. They
+  // build independently from this bootstrap.
+  g.skip_path_containing("/fixlog.pas");
+  g.skip_path_containing("/fixnasm.pas");
+  g.skip_path_containing("/messagedif.pas");
+  g.skip_path_containing("/msg2inc.pas");
+  g.skip_path_containing("/nasmconv.pas");
   // og386elf.pas is unreferenced (og386cff.pas is the live version
   // used by ag386bin). The elf variant has latent `inherited init;`
   // bugs where the parent ctor took a param the child didn't pass;
