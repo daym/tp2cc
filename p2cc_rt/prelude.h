@@ -1004,18 +1004,9 @@ template <typename F, typename T> inline void p_setftime(F&&, T) {}
 template <typename... A> inline void p_setextrainfo(A&&...) {}
 // STUB: stderr is the fpc standard error TextFile.
 inline TextFile p_stderr;
-// STUB: tprocdefcoll -- procedure-def collection used by symtable's
-// delphi-only branch.
-struct ProcDefColl {
-  void* p_data = nullptr;
-  int32_t p_count = 0;
-  struct ProcDefColl* p_next = nullptr;
-  void* p_def = nullptr;
-  void* p_procdef = nullptr;
-  int32_t p_forwarddef = 0;
-};
-using p_tprocdefcoll = ProcDefColl;
-using p_pprocdefcoll = ProcDefColl*;
+// (No global `tprocdefcoll` -- it's a function-local record type in
+// tccal.pas and gets emitted there. An earlier stub here was taking
+// name precedence over the real thing via `using namespace ::rt`.)
 
 // STUB: target-platform import/export/linker types from the skipped
 // t_win32.pas / t_os2.pas / t_go32v*.pas back-ends. The call sites
