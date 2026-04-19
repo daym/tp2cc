@@ -245,6 +245,62 @@ void test_char_plus_cast_uses_string_concat() {
   CHECK(!contains(out.header, "'\\x01' + (("));
 }
 
+void test_integer_and_or_stays_bitwise() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  IF_SM = 1;\n"
+      "  IF_SM2 = 2;\n"
+      "procedure check(flags : longint);\n"
+      "implementation\n"
+      "procedure check(flags : longint);\n"
+      "begin\n"
+      "  if (flags and (IF_SM or IF_SM2)) <> 0 then writeln(flags);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "(p_flags & (p_if_sm | p_if_sm2)) != 0"));
+  CHECK(!contains(out.impl, "(p_flags && (p_if_sm || p_if_sm2)) != 0"));
+}
+
+void test_nested_boolean_function_and_short_circuits() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure outer(x : longint);\n"
+      "implementation\n"
+      "procedure outer(x : longint);\n"
+      "  function ready(v : longint) : boolean;\n"
+      "  begin\n"
+      "    ready := v > 0;\n"
+      "  end;\n"
+      "begin\n"
+      "  if (x < 10) and ready(x) then writeln(x);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "((p_x < 10) && p_ready(p_x))"));
+  CHECK(!contains(out.impl, "((p_x < 10) & p_ready(p_x))"));
+}
+
+void test_nested_untyped_var_forwarding_stays_pointer_value() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure inner(var x);\n"
+      "procedure outer(var y);\n"
+      "implementation\n"
+      "procedure inner(var x);\n"
+      "begin\n"
+      "end;\n"
+      "procedure outer(var y);\n"
+      "begin\n"
+      "  inner(y);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_inner(p_y);"));
+  CHECK(!contains(out.impl, "p_inner(((void*)&(p_y)))"));
+}
+
 void test_byte_array_typecast_reinterprets_storage() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"

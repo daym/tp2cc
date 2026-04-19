@@ -577,6 +577,13 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       // Local variables and parameters shadow everything.
       auto lit = local_types.find(id.name);
       if (lit != local_types.end()) return lit->second;
+      // Nested functions live in `local_nested_fns`, not `local_types`.
+      // Type deduction still needs to see their result type so boolean
+      // expressions like `if ready and flag then` lower to `&&` even
+      // before the ident emitter auto-calls a parameterless `ready`.
+      auto nit = local_nested_fns.find(id.name);
+      if (nit != local_nested_fns.end() && nit->second.is_function)
+        return nit->second.return_type;
       // Self -- canonically the current class's type.
       if (id.name == "self" && !current_class_name.empty()) {
         // We don't track a direct TypeExpr for the class here. Returning
@@ -695,6 +702,9 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
         if ((id.name == "succ" || id.name == "pred" || id.name == "upcase") &&
             c.args.size() == 1)
           return deduce_type(*c.args[0]);
+        auto nit = local_nested_fns.find(id.name);
+        if (nit != local_nested_fns.end() && nit->second.is_function)
+          return nit->second.return_type;
         // Type cast `T(expr)` -- target type is the alias's own type.
         auto ait = registry->aliases.find(id.name);
         if (ait != registry->aliases.end() && c.args.size() == 1)
