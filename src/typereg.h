@@ -93,13 +93,25 @@ struct ConstInfo {
 struct UnitInfo {
   std::string name;
   std::vector<std::string> uses;         // interface + impl (order)
-  // Names declared in THIS unit (interface + impl) -- used to
-  // shadow same-named symbols from `uses` without extra lookup
-  // cost.
-  std::unordered_set<std::string> own_consts;
-  std::unordered_set<std::string> own_vars;
-  std::unordered_set<std::string> own_procs;
-  std::unordered_set<std::string> own_types;
+  // Per-unit symbol tables. Keeping these keyed by (unit, name)
+  // avoids last-wins collisions when two units both declare
+  // `infile` / `current_module` / `result` etc. The global maps on
+  // TypeRegistry below are only used for cross-unit qualification
+  // decisions -- deduce_type etc. should read from the per-unit
+  // map for the current unit first.
+  std::unordered_map<std::string, VarInfo> vars;
+  std::unordered_map<std::string, ConstInfo> consts;
+  std::unordered_map<std::string, ProcInfo> procs;
+  std::unordered_set<std::string> types;
+  // Enum-member -> defining unit (only this one), so the
+  // EnumMember lookup can resolve to the member's own enum.
+  std::unordered_set<std::string> enum_members;
+
+  // Convenience accessors for existing call sites.
+  bool has(const std::string& n) const {
+    return vars.count(n) || consts.count(n) || procs.count(n) ||
+           types.count(n) || enum_members.count(n);
+  }
 };
 
 struct TypeRegistry {

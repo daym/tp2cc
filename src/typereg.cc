@@ -68,7 +68,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         const auto& td = static_cast<const TypeDecl&>(*d);
         if (!td.type) continue;
         std::string nm = lc(td.name);
-        if (ui) ui->own_types.insert(nm);
+        if (ui) ui->types.insert(nm);
         if (td.type->kind == Kind::TyObject) {
           ClassInfo ci;
           ci.name = nm;
@@ -91,7 +91,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
             std::string lm = lc(m);
             ei.members.push_back(lm);
             r.enum_members[lm] = unit;
-            if (ui) ui->own_consts.insert(lm);
+            if (ui) ui->enum_members.insert(lm);
           }
           r.enums[nm] = std::move(ei);
         } else {
@@ -114,7 +114,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         for (const auto& par : pd.params) pc += par.names.size();
         p.param_count = pc;
         r.procs[lc(pd.name)] = p;
-        if (ui) ui->own_procs.insert(lc(pd.name));
+        if (ui) ui->procs[lc(pd.name)] = p;
         break;
       }
       case Kind::VarDecl: {
@@ -124,7 +124,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         v.type = vd.type.get();
         for (const auto& n : vd.names) {
           r.vars[lc(n)] = v;
-          if (ui) ui->own_vars.insert(lc(n));
+          if (ui) ui->vars[lc(n)] = v;
         }
         break;
       }
@@ -134,7 +134,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         c.defining_unit = unit;
         c.type = cd.type.get();
         r.consts[lc(cd.name)] = c;
-        if (ui) ui->own_consts.insert(lc(cd.name));
+        if (ui) ui->consts[lc(cd.name)] = c;
         break;
       }
       default:

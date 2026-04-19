@@ -459,19 +459,32 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
         auto* rf = registry->lookup_record_field(ac, id.name);
         if (rf) return rf->type;
       }
-      // Unit-level var.
-      auto vit = registry->vars.find(id.name);
-      if (vit != registry->vars.end()) return vit->second.type;
-      // Unit-level typed const.
-      auto cit = registry->consts.find(id.name);
-      if (cit != registry->consts.end() && cit->second.type)
-        return cit->second.type;
-      // Unit-level function -- the ident names the function; its "value"
-      // (when not called) is the return type.
-      auto pit = registry->procs.find(id.name);
-      if (pit != registry->procs.end() && pit->second.decl &&
-          pit->second.decl->return_type) {
-        return pit->second.decl->return_type.get();
+      // Unit-level lookup: own unit first, then each `uses` entry
+      // (right-to-left). The global last-wins maps on TypeRegistry
+      // are NOT consulted here -- two units can share a name with
+      // different types and the only right answer is to find the
+      // one exported from a unit the current unit actually uses.
+      auto lookup_in_unit = [&](const UnitInfo& u) -> const TypeExpr* {
+        auto vit = u.vars.find(id.name);
+        if (vit != u.vars.end()) return vit->second.type;
+        auto cit = u.consts.find(id.name);
+        if (cit != u.consts.end() && cit->second.type) return cit->second.type;
+        auto pit = u.procs.find(id.name);
+        if (pit != u.procs.end() && pit->second.decl &&
+            pit->second.decl->return_type) {
+          return pit->second.decl->return_type.get();
+        }
+        return nullptr;
+      };
+      auto cur = registry->units.find(current_unit_name);
+      if (cur != registry->units.end()) {
+        if (const auto* t = lookup_in_unit(cur->second)) return t;
+        for (auto it = cur->second.uses.rbegin();
+             it != cur->second.uses.rend(); ++it) {
+          auto uit = registry->units.find(*it);
+          if (uit == registry->units.end()) continue;
+          if (const auto* t = lookup_in_unit(uit->second)) return t;
+        }
       }
       return nullptr;
     }
@@ -528,12 +541,11 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
         auto ait = registry->aliases.find(id.name);
         if (ait != registry->aliases.end() && c.args.size() == 1)
           return ait->second.target;
-        // Class cast `TClass(expr)` -> pointer to class (rare via alias).
-        auto pit = registry->procs.find(id.name);
-        if (pit != registry->procs.end() && pit->second.decl &&
-            pit->second.decl->return_type) {
-          return pit->second.decl->return_type.get();
-        }
+        // Function call -> return type. Per-unit resolution avoids
+        // the last-wins global-map pitfall.
+        ResolveResult rr = resolve_name(id.name);
+        if (rr.proc && rr.proc->return_type)
+          return rr.proc->return_type.get();
       } else if (c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         std::string cls;
@@ -590,28 +602,30 @@ Emitter::ResolveResult Emitter::resolve_name(
   if (qk == QualifierKind::Unit) {
     r.cxx = mangle(qualifier) + "::" + mangle(name);
     if (registry) {
-      auto pit = registry->procs.find(name);
-      if (pit != registry->procs.end() && pit->second.decl) {
-        r.kind = ResolvedKind::UnitProc;
-        r.proc = pit->second.decl;
-        r.is_callable = true;
-        r.is_parameterless = (pit->second.param_count == 0);
-        return r;
-      }
-      auto cit = registry->consts.find(name);
-      if (cit != registry->consts.end()) {
-        r.kind = ResolvedKind::UnitConst; return r;
-      }
-      auto vit = registry->vars.find(name);
-      if (vit != registry->vars.end()) {
-        r.kind = ResolvedKind::UnitVar; return r;
-      }
-      auto eit = registry->enum_members.find(name);
-      if (eit != registry->enum_members.end()) {
-        r.kind = ResolvedKind::EnumMember; return r;
+      auto uit = registry->units.find(qualifier);
+      if (uit != registry->units.end()) {
+        const UnitInfo& u = uit->second;
+        auto pit = u.procs.find(name);
+        if (pit != u.procs.end()) {
+          r.kind = ResolvedKind::UnitProc;
+          r.proc = pit->second.decl;
+          r.is_callable = true;
+          r.is_parameterless = (pit->second.param_count == 0);
+          return r;
+        }
+        if (u.vars.count(name)) { r.kind = ResolvedKind::UnitVar; return r; }
+        if (u.consts.count(name)) { r.kind = ResolvedKind::UnitConst; return r; }
+        if (u.enum_members.count(name)) {
+          r.kind = ResolvedKind::EnumMember; return r;
+        }
+        if (u.types.count(name)) { r.kind = ResolvedKind::UnitType; return r; }
       }
     }
-    r.kind = ResolvedKind::Unknown; return r;
+    // RTL unit we don't parse (e.g. `dos.getenv` when dos.pas isn't
+    // in our source tree). Leave the name unresolved and let the
+    // stub header's `namespace alias = rt` do the final lookup.
+    r.kind = ResolvedKind::Unknown;
+    return r;
   }
   if (qk == QualifierKind::Class) {
     if (registry) {
@@ -709,60 +723,78 @@ Emitter::ResolveResult Emitter::resolve_name(
     auto uit = registry->units.find(current_unit_name);
     const UnitInfo* ui = (uit != registry->units.end())
                             ? &uit->second : nullptr;
-    bool own = ui && (ui->own_consts.count(name) ||
-                      ui->own_vars.count(name) ||
-                      ui->own_procs.count(name) ||
-                      ui->own_types.count(name));
-    auto uses_unit = [&](const std::string& u) {
-      if (!ui) return false;
-      for (const auto& nm : ui->uses) if (nm == u) return true;
-      return false;
-    };
-
-    auto pit = registry->procs.find(name);
-    if (pit != registry->procs.end() && pit->second.decl) {
-      bool is_own = own;  // `own` covers procs too
-      if (is_own || uses_unit(pit->second.defining_unit)) {
-        r.cxx = is_own
-                    ? mangle(name)
-                    : mangle(pit->second.defining_unit) + "::" + mangle(name);
+    bool own = ui && ui->has(name);
+    // Current unit's own symbols shadow everything from `uses`.
+    // Emit bare (C++ picks them up in the current namespace).
+    if (ui) {
+      auto pit = ui->procs.find(name);
+      if (pit != ui->procs.end()) {
+        r.cxx = mangle(name);
         r.kind = ResolvedKind::UnitProc;
         r.proc = pit->second.decl;
         r.is_callable = true;
         r.is_parameterless = (pit->second.param_count == 0);
         return r;
       }
-    }
-    if (!own) {
-      auto cit = registry->consts.find(name);
-      if (cit != registry->consts.end() && uses_unit(cit->second.defining_unit)) {
-        r.cxx = mangle(cit->second.defining_unit) + "::" + mangle(name);
-        r.kind = ResolvedKind::UnitConst; return r;
-      }
-      auto vit = registry->vars.find(name);
-      if (vit != registry->vars.end() && uses_unit(vit->second.defining_unit)) {
-        r.cxx = mangle(vit->second.defining_unit) + "::" + mangle(name);
-        r.kind = ResolvedKind::UnitVar; return r;
-      }
-      auto eit = registry->enum_members.find(name);
-      if (eit != registry->enum_members.end() && uses_unit(eit->second)) {
-        r.cxx = mangle(eit->second) + "::" + mangle(name);
-        r.kind = ResolvedKind::EnumMember; return r;
-      }
-    }
-    // Own-unit const/var/enum/type fall through bare -- C++ finds
-    // them in the current `namespace p_UNIT { ... }`.
-    if (ui) {
-      if (ui->own_consts.count(name)) {
-        r.cxx = mangle(name); r.kind = ResolvedKind::UnitConst; return r;
-      }
-      if (ui->own_vars.count(name)) {
+      auto vit = ui->vars.find(name);
+      if (vit != ui->vars.end()) {
         r.cxx = mangle(name); r.kind = ResolvedKind::UnitVar; return r;
       }
-      if (ui->own_types.count(name)) {
+      auto cit = ui->consts.find(name);
+      if (cit != ui->consts.end()) {
+        r.cxx = mangle(name); r.kind = ResolvedKind::UnitConst; return r;
+      }
+      if (ui->enum_members.count(name)) {
+        r.cxx = mangle(name); r.kind = ResolvedKind::EnumMember; return r;
+      }
+      if (ui->types.count(name)) {
         r.cxx = mangle(name); r.kind = ResolvedKind::UnitType; return r;
       }
     }
+    // Cross-unit lookup: walk the current unit's `uses` list and pick
+    // the first match in a unit that actually exports this name.
+    // Ambiguity between same-named symbols in two `using namespace`'d
+    // units is resolved by emitting the fully-qualified form.
+    auto check_unit = [&](const std::string& un) -> bool {
+      auto it = registry->units.find(un);
+      if (it == registry->units.end()) return false;
+      const UnitInfo& u = it->second;
+      auto pit = u.procs.find(name);
+      if (pit != u.procs.end()) {
+        r.cxx = mangle(un) + "::" + mangle(name);
+        r.kind = ResolvedKind::UnitProc;
+        r.proc = pit->second.decl;
+        r.is_callable = true;
+        r.is_parameterless = (pit->second.param_count == 0);
+        return true;
+      }
+      auto vit = u.vars.find(name);
+      if (vit != u.vars.end()) {
+        r.cxx = mangle(un) + "::" + mangle(name);
+        r.kind = ResolvedKind::UnitVar; return true;
+      }
+      auto cit = u.consts.find(name);
+      if (cit != u.consts.end()) {
+        r.cxx = mangle(un) + "::" + mangle(name);
+        r.kind = ResolvedKind::UnitConst; return true;
+      }
+      if (u.enum_members.count(name)) {
+        r.cxx = mangle(un) + "::" + mangle(name);
+        r.kind = ResolvedKind::EnumMember; return true;
+      }
+      if (u.types.count(name)) {
+        r.cxx = mangle(un) + "::" + mangle(name);
+        r.kind = ResolvedKind::UnitType; return true;
+      }
+      return false;
+    };
+    if (ui) {
+      // Right-to-left is Pascal's uses resolution order.
+      for (auto it = ui->uses.rbegin(); it != ui->uses.rend(); ++it) {
+        if (check_unit(*it)) return r;
+      }
+    }
+    (void)own;  // already handled by the per-unit lookup above.
   }
   // 7. rt:: builtins we know are zero-arg.
   static const std::unordered_set<std::string> rt_param0 = {
@@ -1427,8 +1459,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
         }
         if (!matched) {
-          auto pit = registry->procs.find(id.name);
-          if (pit != registry->procs.end()) mark_from_decl(pit->second.decl);
+          // Use the per-unit lookup via resolve_name so we pick the
+          // proc from the current unit / uses chain instead of the
+          // last-wins global map.
+          ResolveResult rr = resolve_name(id.name);
+          if (rr.proc) mark_from_decl(rr.proc);
         }
       } else if (registry && c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
