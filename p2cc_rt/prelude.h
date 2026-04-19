@@ -461,6 +461,21 @@ template <typename T> inline int p_length(const std::array<T, 0>&) { return 0; }
 template <typename T> inline int32_t p_ord(T x) { return static_cast<int32_t>(x); }
 inline uint8_t p_chr(int x) { return static_cast<uint8_t>(x); }
 
+// Pascal `swap` -- byte-swap the two halves of a word or longint.
+// Real fpc emits it for endianness handling in .ppu file I/O.
+inline uint16_t p_swap(uint16_t w) {
+  return static_cast<uint16_t>((w >> 8) | (w << 8));
+}
+inline uint32_t p_swap(uint32_t l) {
+  return (l >> 16) | (l << 16);
+}
+inline int16_t p_swap(int16_t w) {
+  return static_cast<int16_t>(p_swap(static_cast<uint16_t>(w)));
+}
+inline int32_t p_swap(int32_t l) {
+  return static_cast<int32_t>(p_swap(static_cast<uint32_t>(l)));
+}
+
 // Pascal `ptr^` becomes `p_deref(ptr)`. For typed pointers this is just
 // `*ptr`. For untyped (`pointer` -> `void*`), expose the first byte so
 // code that writes through the deref still compiles; the translated units
