@@ -135,6 +135,11 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
   g.define("I386");
   g.define("CPU86");   // version.pas guards `source_cpu_string` on CPU86.
   g.define("LINUX");
+  // Skip compiling the huge msgtxt.inc message-text table into the
+  // binary. Under EXTERN_MSG the compiler loads `errore.msg` from
+  // disk at startup instead. Avoids the awkward-to-translate
+  // `@msgtxt` on an `array[N] of string[240]` in verbose.pas:488.
+  g.define("EXTERN_MSG");
   g.skip_path_containing("/new/");
   g.skip_path_containing("/tokendat.pas");
   // ppovin.pas is TP7-only overlay glue (pp.pas does
