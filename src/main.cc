@@ -29,6 +29,23 @@ std::string to_lower(std::string_view s) {
   return r;
 }
 
+void define_default_symbols(Lexer& lex) {
+  // Match the baseline bootstrap environment we target: Free Pascal on
+  // linux/i386. `UNIX` matters for 1.0.x compiler conditionals such as
+  // `globals.pas` choosing `DirSep = '/'`.
+  lex.define("FPC");
+  lex.define("I386");
+  lex.define("LINUX");
+  lex.define("UNIX");
+}
+
+void define_default_symbols(UnitGraph& g) {
+  g.define("FPC");
+  g.define("I386");
+  g.define("LINUX");
+  g.define("UNIX");
+}
+
 void collect_unit_init_order(const UnitGraph& g,
                              const ast::UnitNode& u,
                              std::vector<std::string>* out,
@@ -53,9 +70,7 @@ int cmd_lex(const std::string& path) {
   auto sf = SourceFile::load(path);
   if (!sf) { std::fprintf(stderr, "cannot read %s\n", path.c_str()); return 2; }
   Lexer lex(std::move(sf));
-  lex.define("FPC");
-  lex.define("I386");
-  lex.define("LINUX");
+  define_default_symbols(lex);
   for (;;) {
     Token t = lex.next();
     std::printf("%-4u:%-3u  %-3u  %s\n", t.loc.line, t.loc.col,
@@ -88,9 +103,7 @@ int cmd_lex_all(const std::string& dir) {
     if (!sf) { ++fails; continue; }
     int errs_before = error_count();
     Lexer lex(std::move(sf));
-    lex.define("FPC");
-    lex.define("I386");
-    lex.define("LINUX");
+    define_default_symbols(lex);
     int tokens = 0;
     for (;;) {
       Token t = lex.next();
@@ -114,9 +127,7 @@ int cmd_parse(const std::string& path) {
   auto sf = SourceFile::load(path);
   if (!sf) { std::fprintf(stderr, "cannot read %s\n", path.c_str()); return 2; }
   Lexer lex(std::move(sf));
-  lex.define("FPC");
-  lex.define("I386");
-  lex.define("LINUX");
+  define_default_symbols(lex);
   Parser parser(lex);
   auto u = parser.parse();
   if (!u) return 1;
@@ -140,9 +151,7 @@ int cmd_parse_all(const std::string& dir) {
     if (!sf) { ++fails; continue; }
     int errs_before = error_count();
     Lexer lex(std::move(sf));
-    lex.define("FPC");
-    lex.define("I386");
-    lex.define("LINUX");
+    define_default_symbols(lex);
     Parser parser(lex);
     auto u = parser.parse();
     int errs = error_count() - errs_before;
@@ -159,10 +168,8 @@ int cmd_parse_all(const std::string& dir) {
 
 int cmd_emit_all(const std::string& input_path, const std::string& outdir) {
   UnitGraph g;
-  g.define("FPC");
-  g.define("I386");
+  define_default_symbols(g);
   g.define("CPU86");   // version.pas guards `source_cpu_string` on CPU86.
-  g.define("LINUX");
   // Skip compiling the huge msgtxt.inc message-text table into the
   // binary. Under EXTERN_MSG the compiler loads `errore.msg` from
   // disk at startup instead. Avoids the awkward-to-translate
@@ -325,9 +332,7 @@ int cmd_emit(const std::string& path, const std::string& outdir) {
   auto sf = SourceFile::load(path);
   if (!sf) { std::fprintf(stderr, "cannot read %s\n", path.c_str()); return 2; }
   Lexer lex(std::move(sf));
-  lex.define("FPC");
-  lex.define("I386");
-  lex.define("LINUX");
+  define_default_symbols(lex);
   Parser parser(lex);
   auto u = parser.parse();
   if (!u || error_count() > 0) return 1;
@@ -351,9 +356,7 @@ int cmd_emit(const std::string& path, const std::string& outdir) {
 
 int cmd_topo(const std::string& input_path) {
   UnitGraph g;
-  g.define("FPC");
-  g.define("I386");
-  g.define("LINUX");
+  define_default_symbols(g);
   g.skip_path_containing("/new/");
   g.skip_path_containing("/tokendat.pas");
   // Non-i386 CPU subtrees carry units with the same names as the i386
