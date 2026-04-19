@@ -38,6 +38,85 @@ extern char** environ;
 
 namespace rt {
 
+// --- Pascal Char -----------------------------------------------------------
+//
+// Pascal `Char` is an ordinal type, but it is not a C++ arithmetic
+// character. Keep it distinct so accidental integer promotion does not
+// silently change semantics. `Ord` / `Chr` are the explicit boundary.
+
+enum class p_char : uint8_t {};
+
+inline constexpr p_char p_char_of(char c) {
+  return static_cast<p_char>(static_cast<uint8_t>(c));
+}
+inline constexpr p_char p_char_of(p_char c) {
+  return c;
+}
+inline constexpr p_char p_char_of(uint8_t c) {
+  return static_cast<p_char>(c);
+}
+inline constexpr uint8_t p_char_byte(p_char c) {
+  return static_cast<uint8_t>(c);
+}
+inline constexpr char p_char_to_c(p_char c) {
+  return static_cast<char>(p_char_byte(c));
+}
+inline const char* p_c_str(const p_char* s) {
+  return reinterpret_cast<const char*>(s);
+}
+inline char* p_c_str(p_char* s) {
+  return reinterpret_cast<char*>(s);
+}
+inline p_char* p_from_c_str_copy(const char* s) {
+  if (!s) return nullptr;
+  thread_local std::vector<p_char> buf;
+  size_t n = std::strlen(s);
+  buf.resize(n + 1);
+  for (size_t i = 0; i < n; ++i) buf[i] = p_char_of(s[i]);
+  buf[n] = p_char_of('\0');
+  return buf.data();
+}
+
+struct CharConst;
+
+struct ShortStringCharValue {
+  uint8_t byte = 0;
+
+  constexpr explicit operator uint8_t() const { return byte; }
+  constexpr operator p_char() const { return p_char_of(byte); }
+};
+
+struct ShortStringCharRef {
+  uint8_t* byte = nullptr;
+
+  constexpr ShortStringCharRef() = default;
+  constexpr ShortStringCharRef(uint8_t* p) : byte(p) {}
+  constexpr ShortStringCharRef(const ShortStringCharRef&) = default;
+  constexpr explicit operator uint8_t() const { return *byte; }
+  constexpr operator p_char() const { return p_char_of(*byte); }
+
+  constexpr ShortStringCharRef& operator=(const ShortStringCharRef& other) {
+    *byte = *other.byte;
+    return *this;
+  }
+
+  template <typename T>
+  requires std::is_convertible_v<T, p_char>
+  constexpr ShortStringCharRef& operator=(T x) {
+    *byte = p_char_byte(static_cast<p_char>(x));
+    return *this;
+  }
+
+  constexpr ShortStringCharRef& operator=(uint8_t x) {
+    *byte = x;
+    return *this;
+  }
+
+  p_char* operator&() const {
+    return reinterpret_cast<p_char*>(byte);
+  }
+};
+
 // --- ShortString<N> --------------------------------------------------------
 //
 // Pascal-compatible short-string layout: 1 length byte followed by N content
@@ -48,7 +127,7 @@ struct ShortString {
   static_assert(N >= 1 && N <= 255, "ShortString capacity must be 1..255");
 
   uint8_t length = 0;
-  char data[N] = {};
+  p_char data[N] = {};
 
   constexpr ShortString() = default;
 
@@ -58,10 +137,18 @@ struct ShortString {
       while (s[n] && n < N) ++n;
     }
     length = static_cast<uint8_t>(n);
+    for (int i = 0; i < n; ++i) data[i] = p_char_of(s[i]);
+  }
+  constexpr ShortString(const p_char* s) {
+    int n = 0;
+    if (s) {
+      while (p_char_byte(s[n]) != 0 && n < N) ++n;
+    }
+    length = static_cast<uint8_t>(n);
     for (int i = 0; i < n; ++i) data[i] = s[i];
   }
 
-  constexpr ShortString(char c) : length(1) { data[0] = c; }
+  constexpr ShortString(p_char c) : length(1) { data[0] = c; }
 
 
   // Copy from a ShortString of any capacity (Pascal assigns freely
@@ -162,28 +249,22 @@ struct ShortString {
   friend constexpr ShortString operator+(const char* a, const ShortString& b) {
     return ShortString(a) + b;
   }
-  friend constexpr auto operator+(const ShortString& a, char c) {
+  friend constexpr auto operator+(const ShortString& a, p_char c) {
     return a + ShortString<>(c);
   }
-  friend constexpr auto operator+(char c, const ShortString& b) {
+  friend constexpr auto operator+(p_char c, const ShortString& b) {
     return ShortString<>(c) + b;
-  }
-  friend constexpr auto operator+(const ShortString& a, uint8_t c) {
-    return a + static_cast<char>(c);
-  }
-  friend constexpr auto operator+(uint8_t c, const ShortString& b) {
-    return static_cast<char>(c) + b;
   }
 
   // Pascal `s[i]` is 1-based. We model the access: index 0 gives the
   // length byte (as in TP memory layout), 1..length give the characters.
-  constexpr uint8_t& operator[](int i) {
-    return i == 0 ? *reinterpret_cast<uint8_t*>(&length)
-                  : reinterpret_cast<uint8_t&>(data[i - 1]);
+  constexpr ShortStringCharRef operator[](int i) {
+    return ShortStringCharRef{
+        i == 0 ? &length : reinterpret_cast<uint8_t*>(&data[i - 1])};
   }
-  constexpr const uint8_t& operator[](int i) const {
-    return i == 0 ? *reinterpret_cast<const uint8_t*>(&length)
-                  : reinterpret_cast<const uint8_t&>(data[i - 1]);
+  constexpr ShortStringCharValue operator[](int i) const {
+    return ShortStringCharValue{
+        i == 0 ? length : p_char_byte(data[i - 1])};
   }
 };
 
@@ -194,47 +275,81 @@ struct ShortString {
 // struct with implicit conversions in both directions. Scoped to
 // the const decl -- ordinary ShortString variables are unaffected.
 struct CharConst {
-  uint8_t c;
-  // `explicit` so `uint8_t -> CharConst` is not viable silently; the
+  p_char c;
+  // `explicit` so `p_char -> CharConst` is not viable silently; the
   // only way a CharConst is constructed is from an explicit `'c'` in
   // the emitted const decl.
-  explicit constexpr CharConst(char x) : c(static_cast<uint8_t>(x)) {}
-  // Conversions: `uint8_t` for Pascal `s[i] := X` (char contexts),
-  // `char` so CharConst can sit in an initializer_list<char> next to
-  // regular char literals without template-deduction conflicts, and
+  explicit constexpr CharConst(p_char x) : c(x) {}
+  // Conversions: `p_char` for Pascal char contexts, and
   // `ShortString<N>` for string-concatenation contexts.
-  constexpr operator uint8_t() const { return c; }
+  constexpr operator p_char() const { return c; }
   template <int N = 255>
   constexpr operator ShortString<N>() const {
-    return ShortString<N>(static_cast<char>(c));
+    return ShortString<N>(c);
   }
-  friend constexpr bool operator==(CharConst a, CharConst b) { return a.c == b.c; }
-  friend constexpr bool operator!=(CharConst a, CharConst b) { return a.c != b.c; }
 };
 
-// `+` on a CharConst chooses string concatenation: the only reason
-// a Pascal 1-char const appears under `+` is to build a ShortString.
-// Without these explicit overloads the compiler sees two conversion
-// paths (CharConst -> uint8_t and CharConst -> ShortString) and
-// marks `+` ambiguous.
+template <typename A, typename B>
+requires (std::is_convertible_v<A, p_char> &&
+          std::is_convertible_v<B, p_char>)
+inline constexpr bool operator==(A a, B b) {
+  return p_char_byte(static_cast<p_char>(a)) ==
+         p_char_byte(static_cast<p_char>(b));
+}
+template <typename A, typename B>
+requires (std::is_convertible_v<A, p_char> &&
+          std::is_convertible_v<B, p_char>)
+inline constexpr bool operator!=(A a, B b) {
+  return !(a == b);
+}
+template <typename A, typename B>
+requires (std::is_convertible_v<A, p_char> &&
+          std::is_convertible_v<B, p_char>)
+inline constexpr bool operator<(A a, B b) {
+  return p_char_byte(static_cast<p_char>(a)) <
+         p_char_byte(static_cast<p_char>(b));
+}
+template <typename A, typename B>
+requires (std::is_convertible_v<A, p_char> &&
+          std::is_convertible_v<B, p_char>)
+inline constexpr bool operator<=(A a, B b) {
+  return !(b < a);
+}
+template <typename A, typename B>
+requires (std::is_convertible_v<A, p_char> &&
+          std::is_convertible_v<B, p_char>)
+inline constexpr bool operator>(A a, B b) {
+  return b < a;
+}
+template <typename A, typename B>
+requires (std::is_convertible_v<A, p_char> &&
+          std::is_convertible_v<B, p_char>)
+inline constexpr bool operator>=(A a, B b) {
+  return !(a < b);
+}
+
+// `+` on a CharConst / p_char chooses string concatenation: the only
+// reason a Pascal 1-char value appears under `+` is to build a string.
 inline constexpr ShortString<> operator+(CharConst a, CharConst b) {
   ShortString<> r;
-  r.data[0] = a.c; r.data[1] = b.c; r.length = 2;
+  r.data[0] = a.c;
+  r.data[1] = b.c;
+  r.length = 2;
   return r;
 }
-inline constexpr ShortString<> operator+(CharConst a, char b) {
-  return ShortString<>(static_cast<char>(a.c)) + b;
+inline constexpr ShortString<> operator+(CharConst a, p_char b) {
+  return ShortString<>(a.c) + b;
 }
-inline constexpr ShortString<> operator+(char a, CharConst b) {
-  return a + ShortString<>(static_cast<char>(b.c));
+inline constexpr ShortString<> operator+(p_char a, CharConst b) {
+  return a + ShortString<>(b.c);
 }
 template <int N>
 inline constexpr auto operator+(CharConst a, const ShortString<N>& b) {
-  return ShortString<>(static_cast<char>(a.c)) + b;
+  return ShortString<>(a.c) + b;
 }
 template <int N>
 inline constexpr auto operator+(const ShortString<N>& a, CharConst b) {
-  return a + ShortString<>(static_cast<char>(b.c));
+  return a + ShortString<>(b.c);
 }
 
 // --- Common Pascal RTL type aliases ----------------------------------------
@@ -270,6 +385,14 @@ inline constexpr int32_t p_sigkill = 9;
 inline constexpr int32_t p_sigsegv = 11;
 inline constexpr int32_t p_sigterm = 15;
 
+template <typename T>
+inline constexpr int p_ordinal_value(T x) {
+  if constexpr (std::is_convertible_v<T, p_char>)
+    return static_cast<int>(p_char_byte(static_cast<p_char>(x)));
+  else
+    return static_cast<int>(x);
+}
+
 // --- Array<T, Lo, N> -------------------------------------------------------
 // Pascal `array[Lo..Hi] of T`. Value-semantics (copied on pass, like
 // Pascal), arbitrary lower bound, 1- or 0-based or whatever Pascal said.
@@ -280,7 +403,7 @@ inline constexpr int32_t p_sigterm = 15;
 // lot).  Holding a bare C-array as the single member keeps `Array` a
 // simple one-member aggregate, so `Array<R, Lo, N> a = {{.f=1},{.f=2}};`
 // initialises exactly as expected.
-template <typename T, int Lo, int N>
+template <typename T, auto Lo, int N>
 struct Array {
   T data[N]{};
 
@@ -306,7 +429,12 @@ struct Array {
   template <int M>
   constexpr Array(const ShortString<M>& s) {
     int n = s.length < N ? s.length : N;
-    for (int i = 0; i < n; ++i) data[i] = static_cast<T>(s.data[i]);
+    for (int i = 0; i < n; ++i) {
+      if constexpr (std::is_same_v<T, p_char>)
+        data[i] = p_char_of(static_cast<uint8_t>(s.data[i]));
+      else
+        data[i] = static_cast<T>(s.data[i]);
+    }
   }
 
   // Pascal single-char string literal as init for `array of char`. The
@@ -315,14 +443,22 @@ struct Array {
   constexpr Array(char c) {
     if (N > 0) data[0] = static_cast<T>(c);
   }
+  constexpr Array(p_char c) {
+    if (N > 0) {
+      if constexpr (std::is_same_v<T, p_char>)
+        data[0] = c;
+      else
+        data[0] = static_cast<T>(p_char_to_c(c));
+    }
+  }
 
   template <typename Ix>
   constexpr T& operator[](Ix i) {
-    return data[static_cast<int>(i) - Lo];
+    return data[p_ordinal_value(i) - p_ordinal_value(Lo)];
   }
   template <typename Ix>
   constexpr const T& operator[](Ix i) const {
-    return data[static_cast<int>(i) - Lo];
+    return data[p_ordinal_value(i) - p_ordinal_value(Lo)];
   }
 
   constexpr T* begin()             { return data; }
@@ -334,17 +470,19 @@ struct Array {
   // assigned to a pchar. Only active for byte-sized T.
   template <typename U = T,
             typename = std::enable_if_t<sizeof(U) == 1>>
-  constexpr operator const char*() const {
-    return reinterpret_cast<const char*>(data);
+  constexpr operator const p_char*() const {
+    return reinterpret_cast<const p_char*>(data);
   }
   template <typename U = T,
             typename = std::enable_if_t<sizeof(U) == 1>>
-  constexpr operator char*() {
-    return reinterpret_cast<char*>(data);
+  constexpr operator p_char*() {
+    return reinterpret_cast<p_char*>(data);
   }
 
-  static constexpr int low()  { return Lo; }
-  static constexpr int high() { return Lo + N - 1; }
+  static constexpr auto low()  { return Lo; }
+  static constexpr auto high() {
+    return static_cast<decltype(Lo)>(p_ordinal_value(Lo) + N - 1);
+  }
 };
 
 // --- Set<Elem> --------------------------------------------------------------
@@ -378,7 +516,7 @@ struct Set {
   // bitmask. Pascal's in-memory `set` layout matches this for
   // `set of 0..255` / `set of byte`, so an explicit cast
   // `byteset(arr)` is just a reinterpretation.
-  template <int Lo, int N,
+  template <auto Lo, int N,
             typename = std::enable_if_t<(N * sizeof(uint8_t) <= sizeof(bits))>>
   constexpr Set(const Array<uint8_t, Lo, N>& a) {
     const int bytes = (N < static_cast<int>(sizeof(bits)))
@@ -389,7 +527,10 @@ struct Set {
   }
 
   static constexpr int idx(Elem e) {
-    return static_cast<int>(static_cast<int64_t>(e));
+    if constexpr (std::is_same_v<Elem, p_char>)
+      return static_cast<int>(p_char_byte(e));
+    else
+      return static_cast<int>(static_cast<int64_t>(e));
   }
 
   static Set from_list(std::initializer_list<Elem> xs) {
@@ -440,11 +581,8 @@ Set<Elem> set_of(std::initializer_list<Elem> xs) {
 // The first argument's type drives the Set's element type.
 namespace detail {
 template <typename T> struct set_elem_type { using type = T; };
-template <> struct set_elem_type<char> { using type = uint8_t; };
-// CharConst is our wrapper for Pascal `const X = 'c'` -- treat as
-// uint8_t for set-of-char purposes so `contains(p_c)` with a
-// uint8_t byte matches without needing a CharConst conversion.
-template <> struct set_elem_type<CharConst> { using type = uint8_t; };
+template <> struct set_elem_type<char> { using type = p_char; };
+template <> struct set_elem_type<CharConst> { using type = p_char; };
 }
 template <typename T, typename... Rest>
 inline auto set_of(T first, Rest... rest) {
@@ -522,8 +660,17 @@ inline Range range(int64_t a, int64_t b) { return {a, b}; }
 template <int N> inline int p_length(const ShortString<N>& s) { return s.length; }
 template <typename T> inline int p_length(const std::array<T, 0>&) { return 0; }
 
-template <typename T> inline int32_t p_ord(T x) { return static_cast<int32_t>(x); }
-inline uint8_t p_chr(int x) { return static_cast<uint8_t>(x); }
+template <typename T>
+requires std::is_convertible_v<T, p_char>
+inline constexpr int32_t p_ord(T x) {
+  return static_cast<int32_t>(p_char_byte(static_cast<p_char>(x)));
+}
+template <typename T>
+requires (!std::is_convertible_v<T, p_char>)
+inline constexpr int32_t p_ord(T x) {
+  return static_cast<int32_t>(x);
+}
+inline constexpr p_char p_chr(int x) { return p_char_of(static_cast<uint8_t>(x)); }
 
 // Pascal `swap` -- byte-swap the two halves of a word or longint.
 // Real fpc emits it for endianness handling in .ppu file I/O.
@@ -630,22 +777,28 @@ inline ShortString<> p_file_name_to_string(const ShortString<>& name) {
 template <typename File>
 inline void p_file_name_to_buf(const File& f, char (&buf)[260]) {
   int n = f.name.length < 255 ? f.name.length : 255;
-  for (int i = 0; i < n; ++i) buf[i] = f.name.data[i];
+  for (int i = 0; i < n; ++i) buf[i] = p_char_to_c(f.name.data[i]);
   buf[n] = '\0';
 }
 
 template <int N>
 inline std::string p_to_std_string(const ShortString<N>& s) {
-  return std::string(s.data, s.data + s.length);
+  std::string out;
+  out.reserve(s.length);
+  for (int i = 0; i < s.length; ++i) out.push_back(p_char_to_c(s.data[i]));
+  return out;
 }
 
 inline std::string p_to_std_string(const char* s) {
   return s ? std::string(s) : std::string();
 }
+inline std::string p_to_std_string(const p_char* s) {
+  return s ? std::string(p_c_str(s)) : std::string();
+}
 
 inline int32_t p_strtoint(const ShortString<>& s) {
   char buf[260]{};
-  for (int i = 0; i < s.length; ++i) buf[i] = s.data[i];
+  for (int i = 0; i < s.length; ++i) buf[i] = p_char_to_c(s.data[i]);
   return std::atoi(buf);
 }
 
@@ -939,7 +1092,7 @@ inline void p_fsplit(const ShortString<>& input, ShortString<>& dir,
   std::string path;
   path.reserve(input.length);
   for (int i = 0; i < input.length; ++i) {
-    char c = input.data[i];
+    char c = p_char_to_c(input.data[i]);
     if (c == '\\') c = '/';
     path.push_back(c);
   }
@@ -1044,7 +1197,7 @@ inline void p_readln(TextFile& f, ShortString<N>& s) {
   if (!f.f) return;
   int c;
   while ((c = std::fgetc(f.f)) != EOF && c != '\n') {
-    if (s.length < N) { s.data[s.length] = static_cast<char>(c); ++s.length; }
+    if (s.length < N) { s.data[s.length] = p_char_of(static_cast<char>(c)); ++s.length; }
   }
 }
 template <typename... A> inline void p_readln(A&&...) {}
@@ -1059,17 +1212,43 @@ inline bool p_eoln(const TextFile&) { return false; }
 
 // PChar utilities (strings unit).
 inline int p_strlen(const char* s) { return s ? (int)std::strlen(s) : 0; }
+inline int p_strlen(const p_char* s) {
+  if (!s) return 0;
+  int n = 0;
+  while (p_char_byte(s[n]) != 0) ++n;
+  return n;
+}
 inline const char* p_strpas(const char* s) { return s; }
+inline const p_char* p_strpas(const p_char* s) { return s; }
 template <int N>
 inline ShortString<N> p_strpas_s(const char* s) {
   return ShortString<N>(s);
 }
+template <int N>
+inline ShortString<N> p_strpas_s(const p_char* s) {
+  return ShortString<N>(s);
+}
 inline char* p_strpcopy(char* dest, const ShortString<>& src) {
-  for (int i = 0; i < src.length; ++i) dest[i] = src.data[i];
+  for (int i = 0; i < src.length; ++i) dest[i] = p_char_to_c(src.data[i]);
   dest[src.length] = 0;
   return dest;
 }
+inline p_char* p_strpcopy(p_char* dest, const ShortString<>& src) {
+  for (int i = 0; i < src.length; ++i) dest[i] = src.data[i];
+  dest[src.length] = p_char_of('\0');
+  return dest;
+}
 inline int p_strcomp(const char* a, const char* b) { return std::strcmp(a, b); }
+inline int p_strcomp(const p_char* a, const p_char* b) {
+  int i = 0;
+  while (true) {
+    uint8_t av = p_char_byte(a[i]);
+    uint8_t bv = p_char_byte(b[i]);
+    if (av != bv) return av < bv ? -1 : 1;
+    if (av == 0) return 0;
+    ++i;
+  }
+}
 
 // Insert (string manipulation).
 template <int N, int M>
@@ -1090,15 +1269,14 @@ inline void p_insert(const ShortString<N>& src, ShortString<M>& dest, int pos) {
 }
 // Pascal `insert(c, s, pos)` -- insert a single character.
 template <int M>
-inline void p_insert(char c, ShortString<M>& dest, int pos) {
-  char src[2] = {c, 0};
+inline void p_insert(p_char c, ShortString<M>& dest, int pos) {
+  char src[2] = {p_char_to_c(c), 0};
   p_insert(src, dest, pos);
 }
-template <int M>
-inline void p_insert(uint8_t c, ShortString<M>& dest, int pos) {
-  p_insert(static_cast<char>(c), dest, pos);
-}
 inline void p_insert(const char* src, ShortString<>& dest, int pos) {
+  p_insert(ShortString<>(src), dest, pos);
+}
+inline void p_insert(const p_char* src, ShortString<>& dest, int pos) {
   p_insert(ShortString<>(src), dest, pos);
 }
 
@@ -1107,16 +1285,36 @@ inline void p_insert(const char* src, ShortString<>& dest, int pos) {
 inline void p_fillchar(void* dest, int count, int value) {
   std::memset(dest, value & 0xff, static_cast<size_t>(count));
 }
+inline void p_fillchar(void* dest, int count, p_char value) {
+  p_fillchar(dest, count, p_ord(value));
+}
+inline void p_fillchar(ShortStringCharRef dest, int count, int value) {
+  std::memset(dest.byte, value & 0xff, static_cast<size_t>(count));
+}
+inline void p_fillchar(ShortStringCharRef dest, int count, p_char value) {
+  p_fillchar(dest, count, p_ord(value));
+}
 template <typename T>
 inline void p_fillchar(T& dest, int count, int value) {
   std::memset(&dest, value & 0xff, static_cast<size_t>(count));
 }
+template <typename T>
+inline void p_fillchar(T& dest, int count, p_char value) {
+  p_fillchar(dest, count, p_ord(value));
+}
 inline void p_move(const void* src, void* dest, int count) {
   std::memmove(dest, src, static_cast<size_t>(count));
+}
+inline void p_move(const void* src, ShortStringCharRef dest, int count) {
+  std::memmove(dest.byte, src, static_cast<size_t>(count));
 }
 template <typename S, typename D>
 inline void p_move(const S& src, D& dest, int count) {
   std::memmove(&dest, &src, static_cast<size_t>(count));
+}
+template <typename S>
+inline void p_move(const S& src, ShortStringCharRef dest, int count) {
+  std::memmove(dest.byte, &src, static_cast<size_t>(count));
 }
 inline void p_getmem(void*& p, int size) {
   p = std::malloc(static_cast<size_t>(size));
@@ -1194,6 +1392,18 @@ inline int p_pos(const char* needle, const ShortString<N>& hay) {
   for (int i = 0; i + nl <= hay.length; ++i) {
     bool ok = true;
     for (int j = 0; j < nl; ++j) {
+      if (hay.data[i + j] != p_char_of(needle[j])) { ok = false; break; }
+    }
+    if (ok) return i + 1;
+  }
+  return 0;
+}
+template <int N>
+inline int p_pos(const p_char* needle, const ShortString<N>& hay) {
+  int nl = p_strlen(needle);
+  for (int i = 0; i + nl <= hay.length; ++i) {
+    bool ok = true;
+    for (int j = 0; j < nl; ++j) {
       if (hay.data[i + j] != needle[j]) { ok = false; break; }
     }
     if (ok) return i + 1;
@@ -1214,21 +1424,17 @@ inline int p_pos(const ShortString<N>& needle, const ShortString<M>& hay) {
 
 // Pascal `pos(c, s)` with a single-char needle. Very common in compiler.
 template <int N>
-inline int p_pos(char c, const ShortString<N>& hay) {
+inline int p_pos(p_char c, const ShortString<N>& hay) {
   for (int i = 0; i < hay.length; ++i) {
     if (hay.data[i] == c) return i + 1;
   }
   return 0;
 }
-template <int N>
-inline int p_pos(uint8_t c, const ShortString<N>& hay) {
-  return p_pos(static_cast<char>(c), hay);
-}
 
 // Pascal `val(S, real_var, code_var)` overload.
 template <int N>
 inline void p_val(const ShortString<N>& s, double& out, int32_t& code) {
-  std::string buf(s.data, s.data + s.length);
+  std::string buf = p_to_std_string(s);
   char* end = nullptr;
   double v = std::strtod(buf.c_str(), &end);
   if (end && *end == '\0') { out = v; code = 0; }
@@ -1236,7 +1442,7 @@ inline void p_val(const ShortString<N>& s, double& out, int32_t& code) {
 }
 template <int N>
 inline void p_val(const ShortString<N>& s, long double& out, int32_t& code) {
-  std::string buf(s.data, s.data + s.length);
+  std::string buf = p_to_std_string(s);
   char* end = nullptr;
   long double v = std::strtold(buf.c_str(), &end);
   if (end && *end == '\0') { out = v; code = 0; }
@@ -1278,13 +1484,15 @@ inline void p_insert(const char* src, ShortString<N>& s, int pos) {
   // Minimal stub; flesh out later.
 }
 
-inline uint8_t p_upcase(uint8_t c) {
-  return (c >= 'a' && c <= 'z') ? static_cast<uint8_t>(c - 32) : c;
+inline p_char p_upcase(p_char c) {
+  uint8_t b = p_char_byte(c);
+  if (b >= 'a' && b <= 'z') b = static_cast<uint8_t>(b - 32);
+  return p_char_of(b);
 }
 template <int N>
 inline ShortString<N> p_upcase(const ShortString<N>& s) {
   ShortString<N> r = s;
-  for (int i = 0; i < r.length; ++i) r.data[i] = static_cast<char>(p_upcase(static_cast<uint8_t>(r.data[i])));
+  for (int i = 0; i < r.length; ++i) r.data[i] = p_upcase(r.data[i]);
   return r;
 }
 
@@ -1294,17 +1502,18 @@ inline ShortString<N> p_upcase(const ShortString<N>& s) {
 // Single-value writers to stdout.
 template <int N>
 inline void p_write_one(const ShortString<N>& s) {
-  std::fwrite(s.data, 1, s.length, stdout);
+  for (int i = 0; i < s.length; ++i) std::fputc(p_char_to_c(s.data[i]), stdout);
 }
 inline void p_write_one(const char* s)    { if (s) std::fputs(s, stdout); }
+inline void p_write_one(const p_char* s)  { if (s) std::fputs(p_c_str(s), stdout); }
+inline void p_write_one(p_char* s)        { p_write_one(const_cast<const p_char*>(s)); }
 inline void p_write_one(int32_t v)        { std::fprintf(stdout, "%d", v); }
 inline void p_write_one(uint32_t v)       { std::fprintf(stdout, "%u", v); }
 inline void p_write_one(int64_t v)        { std::fprintf(stdout, "%lld", (long long)v); }
 inline void p_write_one(uint64_t v)       { std::fprintf(stdout, "%llu", (unsigned long long)v); }
 inline void p_write_one(double v)         { std::fprintf(stdout, "%g", v); }
 inline void p_write_one(long double v)    { std::fprintf(stdout, "%Lg", v); }
-inline void p_write_one(char c)           { std::fputc(c, stdout); }
-inline void p_write_one(uint8_t c)        { std::fputc(c, stdout); }
+inline void p_write_one(p_char c)         { std::fputc(p_char_to_c(c), stdout); }
 inline void p_write_one(bool b)           { std::fputs(b ? "TRUE" : "FALSE", stdout); }
 inline void p_write_one(const TextFile&)  {}  // first arg of `write(f, ...)`
 template <typename T> inline void p_write_one(T* p) {
@@ -1448,6 +1657,7 @@ inline void* p_erroraddr = nullptr;
 inline void p_swapvectors() {}
 inline void p_ovrgetbuf(int32_t&) {}
 inline int32_t p_strnew(const char* s) { return 0; (void)s; }
+inline int32_t p_strnew(const p_char* s) { return 0; (void)s; }
 inline void p_chmod(const ShortString<>&, int32_t) {}
 template <typename... A> inline int32_t p_execmd(A&&...) { return 0; }
 template <typename... A> inline void p_gettime(A&&...) {}
@@ -1489,6 +1699,8 @@ inline int32_t p_winstackpagesize = 4096;
 // STUB: `popen(f, cmd, mode)` opens a pipe to a process.
 template <typename F>
 inline void p_popen(F&, const ShortString<>&, char) {}
+template <typename F>
+inline void p_popen(F&, const ShortString<>&, p_char) {}
 // STUB: heap-trace hook.
 template <typename F> inline void p_setheaptraceoutput(F&&) {}
 template <typename F> inline void p_setlocaltime(F&&) {}
@@ -1582,16 +1794,24 @@ inline bool p_fstat(const File& f, p_stat& info) {
 // both `Dos.Getenv` and `Linux.Getenv` call sites.
 struct GetEnvResult {
   const char* raw;  // null-terminated env value, or nullptr if unset
-  constexpr operator const char*() const { return raw; }
-  constexpr operator char*() const { return const_cast<char*>(raw); }
+  operator const p_char*() const { return raw ? p_from_c_str_copy(raw) : nullptr; }
+  operator p_char*() const { return raw ? p_from_c_str_copy(raw) : nullptr; }
   operator ShortString<>() const {
     return raw ? ShortString<>(raw) : ShortString<>("");
   }
 };
+template <int N>
+inline auto operator+(const ShortString<N>& a, const GetEnvResult& b) {
+  return a + static_cast<ShortString<>>(b);
+}
+template <int N>
+inline auto operator+(const GetEnvResult& a, const ShortString<N>& b) {
+  return static_cast<ShortString<>>(a) + b;
+}
 inline GetEnvResult p_getenv(const ShortString<>& name) {
   char buf[260]{};
   int n = name.length < 255 ? name.length : 255;
-  for (int i = 0; i < n; ++i) buf[i] = name.data[i];
+  for (int i = 0; i < n; ++i) buf[i] = p_char_to_c(name.data[i]);
   return {std::getenv(buf)};
 }
 // Pascal `Linux.Shell(cmd)` -- run a command via `/bin/sh -c`, i.e.

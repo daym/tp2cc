@@ -19,6 +19,33 @@ using namespace ast;
 
 namespace {
 
+const ast::TyName* builtin_char_type() {
+  static const ast::TyName t = [] {
+    ast::TyName n;
+    n.name = "char";
+    return n;
+  }();
+  return &t;
+}
+
+const ast::TyName* builtin_string_type() {
+  static const ast::TyName t = [] {
+    ast::TyName n;
+    n.name = "string";
+    return n;
+  }();
+  return &t;
+}
+
+const ast::TyName* builtin_pchar_type() {
+  static const ast::TyName t = [] {
+    ast::TyName n;
+    n.name = "pchar";
+    return n;
+  }();
+  return &t;
+}
+
 // ---------------------------------------------------------------------------
 // Name mangling
 
@@ -28,6 +55,19 @@ std::string mangle(std::string_view name) {
   std::string s("p_");
   s.append(name);
   return s;
+}
+
+std::string ascii_lower(std::string_view text) {
+  std::string s(text);
+  for (char& ch : s) {
+    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+  }
+  return s;
+}
+
+bool tyname_is(const TypeExpr* t, std::string_view expected) {
+  return t && t->kind == Kind::TyName &&
+         ascii_lower(static_cast<const TyName&>(*t).name) == expected;
 }
 
 // Pascal primitive type names recognised by name lookup during type emission.
@@ -42,7 +82,7 @@ const std::unordered_map<std::string, std::string>& primitive_type_map() {
       {"word",      "uint16_t"},
       {"shortint",  "int8_t"},
       {"byte",      "uint8_t"},
-      {"char",      "uint8_t"},
+      {"char",      "::rt::p_char"},
       {"boolean",   "bool"},
       {"bytebool",  "uint8_t"},
       {"wordbool",  "uint16_t"},
@@ -53,8 +93,8 @@ const std::unordered_map<std::string, std::string>& primitive_type_map() {
       {"extended",  "long double"},
       {"comp",      "long double"},
       {"pointer",   "void*"},
-      {"pchar",     "char*"},
-      {"ppchar",    "char**"},
+      {"pchar",     "::rt::p_char*"},
+      {"ppchar",    "::rt::p_char**"},
       {"text",      "::rt::TextFile"},
       {"int64",     "int64_t"},
       {"qword",     "uint64_t"},
@@ -329,6 +369,15 @@ const TypeExpr* Emitter::canonicalize_type(const TypeExpr* t) {
 bool Emitter::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
                                       std::string* lo,
                                       std::string* size_expr) {
+  auto expr_is_char = [&](const Expr& e) -> bool {
+    const TypeExpr* t = deduce_type(e);
+    if (t) t = canonicalize_type(t);
+    return tyname_is(t, "char");
+  };
+  auto ordinal_bound = [&](const Expr& e) -> std::string {
+    std::string text = const_value_to_cxx(e);
+    return expr_is_char(e) ? "::rt::p_ord(" + text + ")" : text;
+  };
   const TypeExpr* dim = canonicalize_type(&dim_in);
   if (!dim) return false;
   *lo = "0";
@@ -336,7 +385,7 @@ bool Emitter::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
   if (dim->kind == Kind::TySubrange) {
     const auto& sr = static_cast<const TySubrange&>(*dim);
     *lo = const_value_to_cxx(*sr.lo);
-    *size_expr = "((" + const_value_to_cxx(*sr.hi) + ") - (" + *lo +
+    *size_expr = "((" + ordinal_bound(*sr.hi) + ") - (" + ordinal_bound(*sr.lo) +
                  ") + 1)";
     return true;
   }
@@ -577,6 +626,8 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       const TypeExpr* t = deduce_type(*d.operand);
       if (!t) return nullptr;
       t = registry->canonicalize(t);
+      if (tyname_is(t, "pchar")) return builtin_char_type();
+      if (tyname_is(t, "ppchar")) return builtin_pchar_type();
       if (t && t->kind == Kind::TyPointer) {
         const auto& p = static_cast<const TyPointer&>(*t);
         return p.target.get();
@@ -613,6 +664,9 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       const TypeExpr* bt = deduce_type(*ix.base);
       if (!bt) return nullptr;
       bt = registry->canonicalize(bt);
+      if (bt && bt->kind == Kind::TyString) return builtin_char_type();
+      if (tyname_is(bt, "pchar")) return builtin_char_type();
+      if (tyname_is(bt, "ppchar")) return builtin_pchar_type();
       if (bt && bt->kind == Kind::TyArray)
         return static_cast<const TyArray&>(*bt).element.get();
       return nullptr;
@@ -621,6 +675,11 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       const auto& c = static_cast<const Call&>(e);
       if (c.callee->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*c.callee);
+        if ((id.name == "char" || id.name == "chr") && c.args.size() == 1)
+          return builtin_char_type();
+        if ((id.name == "succ" || id.name == "pred" || id.name == "upcase") &&
+            c.args.size() == 1)
+          return deduce_type(*c.args[0]);
         // Type cast `T(expr)` -- target type is the alias's own type.
         auto ait = registry->aliases.find(id.name);
         if (ait != registry->aliases.end() && c.args.size() == 1)
@@ -648,6 +707,11 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
         }
       }
       return nullptr;
+    }
+    case Kind::StringLit: {
+      const auto& sl = static_cast<const StringLit&>(e);
+      return sl.value.size() == 1 ? builtin_char_type()
+                                  : builtin_string_type();
     }
     case Kind::AddrOf: {
       // Returning a pointer type would be ideal, but synthesising it on
@@ -930,7 +994,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return o;
       };
       if (n.value.size() == 1) {
-        return "'" + escape_char_body(n.value[0], true) + "'";
+        return "::rt::p_char_of('" + escape_char_body(n.value[0], true) + "')";
       }
       // C++ `\xHH` escapes are greedy: any following hex digit gets
       // pulled into the escape ("\x01" + "7" would parse as "\x017"
@@ -1015,18 +1079,23 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // (produces a 2-char string). C++ `char + char` is int
       // arithmetic, so wrap a char-side in ShortString<> to force
       // the ShortString `operator+` overload.
-      if (n.op == BinOp::Add && registry) {
-        auto is_char = [&](const Expr& x) -> bool {
+      if (n.op == BinOp::Add) {
+        auto is_charish = [&](const Expr& x) -> bool {
           const TypeExpr* t = deduce_type(x);
-          if (!t) return false;
-          t = registry->canonicalize(t);
-          if (!t || t->kind != Kind::TyName) return false;
-          std::string nm = static_cast<const TyName&>(*t).name;
-          for (auto& c : nm) if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-          return nm == "char";
+          if (t) {
+            t = canonicalize_type(t);
+            if (t && t->kind == Kind::TyName) {
+              std::string nm = static_cast<const TyName&>(*t).name;
+              for (auto& c : nm) {
+                if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+              }
+              if (nm == "char") return true;
+            }
+          }
+          return false;
         };
-        bool l_char = is_char(*n.lhs);
-        bool r_char = is_char(*n.rhs);
+        bool l_char = is_charish(*n.lhs);
+        bool r_char = is_charish(*n.rhs);
         if (l_char || r_char) {
           auto wrap = [&](const Expr& x, bool want) {
             return want ? "::rt::ShortString<>(" + expr_to_cxx(x) + ")"
@@ -1264,8 +1333,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // char` / `array of byte`) typically lands in a `pchar` or
       // `pointer` context -- the fpc compiler's fill buffers and
       // inline byte tables do exactly this. For that narrow case
-      // emit `(char*)arr` using `rt::Array<byte>`'s `operator
-      // char*`. Anything deeper than one array level (e.g.
+      // emit `(::rt::p_char*)arr` using `rt::Array<byte>`'s pointer
+      // decay. Anything deeper than one array level (e.g.
       // `array of array of char`) stays as `&arr` and the source
       // is expected to use a flatter spelling -- we do not paper
       // over nested-array type-punning at the translator level.
@@ -1277,12 +1346,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           const TypeExpr* elem = ar.element.get();
           if (elem) elem = registry->canonicalize(elem);
           if (elem && elem->kind == Kind::TyName) {
-            std::string en = static_cast<const TyName&>(*elem).name;
-            for (auto& ch : en)
-              if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+            std::string en = ascii_lower(static_cast<const TyName&>(*elem).name);
             if (en == "byte" || en == "char" || en == "uint8_t" ||
                 en == "shortint") {
-              return "((char*)(" + inner + "))";
+              return "((::rt::p_char*)(" + inner + "))";
             }
           }
         }
@@ -1385,6 +1452,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "((void*)nullptr)";
           }
         } else if (c.args.size() == 1 && is_primitive_type(n)) {
+          auto is_charish = [&](const Expr& x) -> bool {
+            const TypeExpr* t = deduce_type(x);
+            if (!t) return false;
+            t = canonicalize_type(t);
+            return tyname_is(t, "char");
+          };
           // Function-style type cast. Compound C++ type expansions like
           // `const char*` or `long double` can't appear as `T(expr)`; use
           // a paren cast. For `pointer(lv)` (the Pascal pointer type
@@ -1395,6 +1468,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // `ppchar(lv)`) through a chain of primitive-type casts
           // ending at an lvalue -- emit a storage reinterpret so the
           // result can bind to a `var`-parameter reference.
+          if (n == "char") {
+            return "::rt::p_chr(" + arg0() + ")";
+          }
           if (n == "pointer" || n == "pchar" || n == "ppchar") {
             const Expr* arg_ptr = c.args[0].get();
             while (arg_ptr && arg_ptr->kind == Kind::Call) {
@@ -1415,6 +1491,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               return "(*(" + primitive_type_cxx(n) + "*)&(" +
                      expr_to_cxx(*arg_ptr) + "))";
             }
+          }
+          if (is_charish(*c.args[0])) {
+            return "((" + primitive_type_cxx(n) + ")(::rt::p_ord(" +
+                   arg0() + ")))";
           }
           return "((" + primitive_type_cxx(n) + ")(" + arg0() + "))";
         } else if ((n == "inc" || n == "dec") &&
@@ -1606,12 +1686,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // two shapes: Ident callees (unit-level procs) and Member
       // callees (methods whose class we can resolve).
       std::vector<bool> untyped_arg(c.args.size(), false);
+      std::vector<const TypeExpr*> param_types(c.args.size(), nullptr);
       auto mark_from_decl = [&](const ast::ProcDecl* decl) {
         if (!decl) return;
         size_t ai = 0;
         for (const auto& p : decl->params) {
           for (size_t k = 0; k < p.names.size(); ++k) {
             if (ai < untyped_arg.size() && !p.type) untyped_arg[ai] = true;
+            if (ai < param_types.size()) param_types[ai] = p.type.get();
             ++ai;
           }
         }
@@ -1654,19 +1736,36 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
       }
       std::string out = callee_text + "(";
+      auto is_charish = [&](const Expr& x) -> bool {
+        const TypeExpr* t = deduce_type(x);
+        if (!t) return false;
+        t = canonicalize_type(t);
+        return tyname_is(t, "char");
+      };
+      auto type_is_stringish = [&](const TypeExpr* t) -> bool {
+        if (!t) return false;
+        t = canonicalize_type(t);
+        if (!t) return false;
+        if (t->kind == Kind::TyString) return true;
+        return tyname_is(t, "string") || tyname_is(t, "shortstring");
+      };
       for (size_t i = 0; i < c.args.size(); ++i) {
         if (i) out += ", ";
+        std::string arg_text = expr_to_cxx(*c.args[i]);
+        if (type_is_stringish(param_types[i]) && is_charish(*c.args[i])) {
+          arg_text = "::rt::ShortString<>(" + arg_text + ")";
+        }
         if (untyped_arg[i]) {
           // `@arg` / already-untyped arg: pass its address as void*.
           // If the arg is itself `@x`, collapse to just `x`'s address.
           if (c.args[i]->kind == Kind::AddrOf &&
               !static_cast<const AddrOf&>(*c.args[i]).double_addr) {
-            out += "((void*)(" + expr_to_cxx(*c.args[i]) + "))";
+            out += "((void*)(" + arg_text + "))";
           } else {
-            out += "((void*)&(" + expr_to_cxx(*c.args[i]) + "))";
+            out += "((void*)&(" + arg_text + "))";
           }
         } else {
-          out += expr_to_cxx(*c.args[i]);
+          out += arg_text;
         }
       }
       out += ")";
@@ -1829,7 +1928,7 @@ generic_emit:;
 
   // Untyped Pascal const -- immutable.
   //   - Single-char string literal: wrap in `rt::CharConst` so it's
-  //     usable as both `uint8_t` (Pascal char) and `ShortString<>`
+  //     usable as both `p_char` (Pascal char) and `ShortString<>`
   //     (Pascal string) by context, matching Pascal's polymorphic
   //     `const X = 'c';` semantics.
   //   - Multi-char string literal: plain `ShortString<>` so `+`
@@ -2153,7 +2252,24 @@ void Emitter::emit_stmt(const Stmt& s) {
       lhs_fn_rewrite = current_fn_name;
       std::string target_cxx = expr_to_cxx(*a.target);
       lhs_fn_rewrite.clear();
-      emitln(target_cxx + " = " + expr_to_cxx(*a.value) + ";");
+      auto is_charish = [&](const Expr& x) -> bool {
+        const TypeExpr* t = deduce_type(x);
+        if (!t) return false;
+        t = canonicalize_type(t);
+        return tyname_is(t, "char");
+      };
+      auto type_is_stringish = [&](const TypeExpr* t) -> bool {
+        if (!t) return false;
+        t = canonicalize_type(t);
+        if (!t) return false;
+        if (t->kind == Kind::TyString) return true;
+        return tyname_is(t, "string") || tyname_is(t, "shortstring");
+      };
+      std::string rhs_cxx = expr_to_cxx(*a.value);
+      if (type_is_stringish(deduce_type(*a.target)) && is_charish(*a.value)) {
+        rhs_cxx = "::rt::ShortString<>(" + rhs_cxx + ")";
+      }
+      emitln(target_cxx + " = " + rhs_cxx + ";");
       break;
     }
     case Kind::ExprStmt: {
@@ -2360,7 +2476,17 @@ void Emitter::emit_stmt(const Stmt& s) {
     }
     case Kind::CaseStmt: {
       const auto& cs = static_cast<const CaseStmt&>(s);
-      emitln("switch (" + expr_to_cxx(*cs.selector) + ") {");
+      auto selector_is_charish = [&]() -> bool {
+        const TypeExpr* t = deduce_type(*cs.selector);
+        if (!t) return false;
+        t = canonicalize_type(t);
+        return tyname_is(t, "char");
+      };
+      auto case_expr = [&](const Expr& e) -> std::string {
+        std::string text = expr_to_cxx(e);
+        return selector_is_charish() ? "::rt::p_ord(" + text + ")" : text;
+      };
+      emitln("switch (" + case_expr(*cs.selector) + ") {");
       indent();
       for (const auto& arm : cs.arms) {
         for (const auto& lab : arm.labels) {
@@ -2369,10 +2495,10 @@ void Emitter::emit_stmt(const Stmt& s) {
             // the gnu profile compiler supports it. TODO: iterate label
             // values for strict standard C++.
             const auto& r = static_cast<const Range&>(*lab);
-            emitln("case " + expr_to_cxx(*r.lo) + " ... " +
-                   expr_to_cxx(*r.hi) + ":");
+            emitln("case " + case_expr(*r.lo) + " ... " +
+                   case_expr(*r.hi) + ":");
           } else {
-            emitln("case " + expr_to_cxx(*lab) + ":");
+            emitln("case " + case_expr(*lab) + ":");
           }
         }
         indent();
@@ -2826,11 +2952,7 @@ static std::vector<const Decl*> ordered_type_decls(
 void Emitter::emit_unit(const UnitNode& u) {
   const std::string ns = mangle(u.name);
   const std::string hguard = u.name;  // used for the #include stem
-  current_unit_name = u.name;
-  // Lowercase for consistency with the registry's keys.
-  for (auto& ch : current_unit_name) {
-    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
-  }
+  current_unit_name = ascii_lower(u.name);
   if (current_unit_name == "tpexcept") {
     emit_tpexcept_unit(u);
     return;
