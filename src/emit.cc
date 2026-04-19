@@ -1062,6 +1062,18 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                              rr.is_callable && rr.is_parameterless;
             return want_call ? rr.cxx + "()" : rr.cxx;
           }
+          // `TClass.method` -- Pascal's way to call a specific
+          // class's method (typically the parent's version from
+          // inside an override). Emit `TClass::method`.
+          if (registry->classes.count(base_name) ||
+              registry->records.count(base_name)) {
+            ResolveResult rr =
+                resolve_name(m.name, QualifierKind::Class, base_name);
+            std::string text = mangle(base_name) + "::" + mangle(m.name);
+            bool want_call = !is_callee_context_ &&
+                             rr.is_callable && rr.is_parameterless;
+            return want_call ? text + "()" : text;
+          }
         }
       }
 
@@ -1393,18 +1405,25 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               !is_inherited_member &&
               (arg.kind == Kind::Ident || arg.kind == Kind::Member ||
                arg.kind == Kind::Index || arg.kind == Kind::Deref);
-          // Further check for Member: if the final access would be
-          // a parameterless method (deduce_type tells us), it's a
-          // call and thus an rvalue. We only need a shallow check:
-          // if a Member's final .name is a parameterless method of
-          // its base's class, treat as rvalue.
-          if (is_lvalue_shape && arg.kind == Kind::Member && registry) {
-            const auto& am = static_cast<const Member&>(arg);
-            std::string bcls = deduce_class_alias(*am.base);
-            if (!bcls.empty()) {
-              if (auto* mem = registry->lookup_class_member(bcls, am.name)) {
-                if (mem->is_method && mem->method.param_count == 0) {
-                  is_lvalue_shape = false;
+          // Ident/Member that resolve to a parameterless function are
+          // auto-called by the expression emitter -- the EMITTED form
+          // is `name()`, which is an rvalue even though the AST is
+          // Ident or Member. Ask resolve_name.
+          if (is_lvalue_shape && registry) {
+            if (arg.kind == Kind::Ident) {
+              const auto& id = static_cast<const Ident&>(arg);
+              ResolveResult rr = resolve_name(id.name);
+              if (rr.is_callable && rr.is_parameterless) {
+                is_lvalue_shape = false;
+              }
+            } else if (arg.kind == Kind::Member) {
+              const auto& am = static_cast<const Member&>(arg);
+              std::string bcls = deduce_class_alias(*am.base);
+              if (!bcls.empty()) {
+                if (auto* mem = registry->lookup_class_member(bcls, am.name)) {
+                  if (mem->is_method && mem->method.param_count == 0) {
+                    is_lvalue_shape = false;
+                  }
                 }
               }
             }
