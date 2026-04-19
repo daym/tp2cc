@@ -78,6 +78,13 @@ struct ProcInfo {
   const ast::ProcDecl* decl = nullptr;
   size_t param_count = 0;
   bool is_function = false;
+  // For rt builtins that accept `foo;` with zero args (writeln,
+  // readln, halt, etc.) regardless of declared arity.
+  bool accepts_zero_args = false;
+  // Return type name (lowercased Pascal type identifier) when known
+  // -- used for `is_bool` / auto-call decisions on rt builtins
+  // whose full AST we don't have.
+  std::string return_type_name;
 };
 
 struct VarInfo {

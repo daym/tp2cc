@@ -791,29 +791,35 @@ Emitter::ResolveResult Emitter::resolve_name(
       auto it = registry->units.find(un);
       if (it == registry->units.end()) return false;
       const UnitInfo& u = it->second;
+      // Synthetic `__rt__` unit holds rt:: builtins. They live in
+      // namespace `::rt` and every emitted unit injects
+      // `using namespace ::rt;`, so emit the bare mangled name.
+      const std::string prefix =
+          (un == "__rt__") ? std::string() : (mangle(un) + "::");
       // Other units contribute only their interface-exported names.
       if (auto* pi = u.find_export_proc(name)) {
-        r.cxx = mangle(un) + "::" + mangle(name);
-        r.kind = ResolvedKind::UnitProc;
+        r.cxx = prefix + mangle(name);
+        r.kind = (un == "__rt__") ? ResolvedKind::RtBuiltin
+                                  : ResolvedKind::UnitProc;
         r.proc = pi->decl;
         r.is_callable = true;
         r.is_parameterless = (pi->param_count == 0);
         return true;
       }
       if (u.find_export_var(name)) {
-        r.cxx = mangle(un) + "::" + mangle(name);
+        r.cxx = prefix + mangle(name);
         r.kind = ResolvedKind::UnitVar; return true;
       }
       if (u.find_export_const(name)) {
-        r.cxx = mangle(un) + "::" + mangle(name);
+        r.cxx = prefix + mangle(name);
         r.kind = ResolvedKind::UnitConst; return true;
       }
       if (u.has_export_enum_member(name)) {
-        r.cxx = mangle(un) + "::" + mangle(name);
+        r.cxx = prefix + mangle(name);
         r.kind = ResolvedKind::EnumMember; return true;
       }
       if (u.has_export_type(name)) {
-        r.cxx = mangle(un) + "::" + mangle(name);
+        r.cxx = prefix + mangle(name);
         r.kind = ResolvedKind::UnitType; return true;
       }
       return false;
@@ -826,20 +832,7 @@ Emitter::ResolveResult Emitter::resolve_name(
     }
     (void)own;  // already handled by the per-unit lookup above.
   }
-  // 7. rt:: builtins we know are zero-arg.
-  static const std::unordered_set<std::string> rt_param0 = {
-      "memavail", "heapavail", "maxavail",
-      "paramcount", "ioresult", "eof", "eoln",
-      "dosexitcode", "ovrgetbuf",
-  };
-  if (rt_param0.count(name)) {
-    r.cxx = mangle(name);
-    r.kind = ResolvedKind::RtBuiltin;
-    r.is_callable = true;
-    r.is_parameterless = true;
-    return r;
-  }
-  // 8. Fallback: emit the mangled name and let C++ lookup sort it out
+  // 7. Fallback: emit the mangled name and let C++ lookup sort it out
   //    (catches rt:: free functions we haven't enumerated and any
   //    name that's in the current namespace).
   r.cxx = mangle(name);
@@ -996,6 +989,52 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return "(" + wrap(*n.lhs, l_char) + " + " + wrap(*n.rhs, r_char) + ")";
         }
       }
+      // Pascal `and` / `or` are polymorphic: bool operands get
+      // short-circuit `&&` / `||` (crucial for `assigned(p) and
+      // (p^.x = y)` idioms), integer operands get bitwise `&` /
+      // `|`. Pick by deducing either operand's type.
+      auto is_bool = [&](const Expr& x) -> bool {
+        // Calls to rt:: builtins and user procs: consult the registry's
+        // recorded return type (registry stores rt builtins under the
+        // synthetic `__rt__` unit alongside user procs).
+        if (x.kind == Kind::Call && registry) {
+          const auto& c = static_cast<const Call&>(x);
+          if (c.callee->kind == Kind::Ident) {
+            const std::string& nm =
+                static_cast<const Ident&>(*c.callee).name;
+            auto pit = registry->procs.find(nm);
+            if (pit != registry->procs.end() &&
+                pit->second.return_type_name == "boolean")
+              return true;
+          }
+        }
+        // Comparisons and logical operators yield bool.
+        if (x.kind == Kind::Binary) {
+          auto bop = static_cast<const Binary&>(x).op;
+          if (bop == BinOp::Eq || bop == BinOp::NotEq ||
+              bop == BinOp::Lt || bop == BinOp::Gt ||
+              bop == BinOp::LtEq || bop == BinOp::GtEq ||
+              bop == BinOp::In || bop == BinOp::Is ||
+              bop == BinOp::And || bop == BinOp::Or)
+            return true;
+        }
+        if (x.kind == Kind::Unary &&
+            static_cast<const Unary&>(x).op == UnOp::Not)
+          return true;
+        if (x.kind == Kind::BoolLit) return true;
+        if (!registry) return false;
+        const TypeExpr* t = deduce_type(x);
+        if (!t) return false;
+        t = registry->canonicalize(t);
+        if (!t || t->kind != Kind::TyName) return false;
+        std::string nm = static_cast<const TyName&>(*t).name;
+        for (auto& c : nm)
+          if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        return nm == "boolean" || nm == "bytebool" ||
+               nm == "wordbool" || nm == "longbool";
+      };
+      bool logical_bool = (n.op == BinOp::And || n.op == BinOp::Or) &&
+                          (is_bool(*n.lhs) || is_bool(*n.rhs));
       const char* op = "?";
       switch (n.op) {
         case BinOp::Add:    op = "+"; break;
@@ -1006,8 +1045,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         case BinOp::Mod:    op = "%"; break;
         case BinOp::Shl:    op = "<<"; break;
         case BinOp::Shr:    op = ">>"; break;
-        case BinOp::And:    op = "&"; break;
-        case BinOp::Or:     op = "|"; break;
+        case BinOp::And:    op = logical_bool ? "&&" : "&"; break;
+        case BinOp::Or:     op = logical_bool ? "||" : "|"; break;
         case BinOp::Xor:    op = "^"; break;
         case BinOp::Eq:     op = "=="; break;
         case BinOp::NotEq:  op = "!="; break;
@@ -2144,12 +2183,11 @@ void Emitter::emit_stmt(const Stmt& s) {
         // `inherited init;` whose parent wants an arg) that should
         // be fixed in the Pascal, not papered over.
         std::string text = expr_to_cxx(*es.expr);
-        if (es.expr->kind == Kind::Ident) {
-          static const std::unordered_set<std::string> rt_variadic_procs = {
-              "writeln", "write", "readln", "read", "halt",
-          };
+        if (es.expr->kind == Kind::Ident && registry) {
           const auto& id = static_cast<const Ident&>(*es.expr);
-          if (rt_variadic_procs.count(id.name) &&
+          auto pit = registry->procs.find(id.name);
+          if (pit != registry->procs.end() &&
+              pit->second.accepts_zero_args &&
               !text.empty() && text.back() != ')') {
             text += "()";
           }

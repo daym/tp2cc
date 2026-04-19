@@ -157,12 +157,61 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
 }  // namespace
 
 void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
+  // rt:: builtins that live in `p2cc_rt/prelude.h` rather than a
+  // Pascal unit. Model them as ProcInfos so deduce_type / is_bool
+  // / auto-call decisions go through the same lookup path as real
+  // Pascal procs. Fields: param_count, is_function,
+  // accepts_zero_args, return_type_name (lowercased Pascal type).
+  struct RtBuiltin {
+    const char* name;
+    size_t params;
+    bool is_fn;
+    bool zero_ok;
+    const char* ret;
+  };
+  static const RtBuiltin rt_builtins[] = {
+      {"assigned",   1, true,  false, "boolean"},
+      {"odd",        1, true,  false, "boolean"},
+      {"eof",        1, true,  true,  "boolean"},  // eof; or eof(f)
+      {"eoln",       1, true,  true,  "boolean"},
+      {"ioresult",   0, true,  false, "longint"},
+      {"memavail",   0, true,  false, "longint"},
+      {"heapavail",  0, true,  false, "longint"},
+      {"maxavail",   0, true,  false, "longint"},
+      {"paramcount", 0, true,  false, "longint"},
+      {"dosexitcode",0, true,  false, "longint"},
+      {"writeln",    1, false, true,  ""},
+      {"write",      1, false, true,  ""},
+      {"readln",     1, false, true,  ""},
+      {"read",       1, false, true,  ""},
+      {"halt",       1, false, true,  ""},
+  };
+  // Synthetic unit "rt::" holds the builtins so lookups that walk
+  // the uses chain can find them as an always-available fallback.
+  UnitInfo rtui;
+  rtui.name = "__rt__";
+  for (const auto& b : rt_builtins) {
+    ProcInfo p;
+    p.defining_unit = "__rt__";
+    p.decl = nullptr;
+    p.param_count = b.params;
+    p.is_function = b.is_fn;
+    p.accepts_zero_args = b.zero_ok;
+    p.return_type_name = b.ret;
+    rtui.iface_procs[b.name] = p;
+    procs[b.name] = p;
+  }
+  units["__rt__"] = std::move(rtui);
+
   for (const auto* u : us) {
     if (!u) continue;
     UnitInfo ui;
     ui.name = lc(u->name);
     for (const auto& nm : u->interface_uses) ui.uses.push_back(lc(nm));
     for (const auto& nm : u->impl_uses) ui.uses.push_back(lc(nm));
+    // Every Pascal unit implicitly uses `System` -- we model rt as
+    // that implicit last fallback on the uses chain.
+    ui.uses.push_back("__rt__");
     units[lc(u->name)] = std::move(ui);
 
     register_decl_list(*this, lc(u->name), u->interface_decls,

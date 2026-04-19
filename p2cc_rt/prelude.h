@@ -744,7 +744,15 @@ inline void p_freemem(void*& p, int = 0) {
 }
 template <typename P>
 inline void p_getmem(P*& p, int size) {
-  p = static_cast<P*>(std::malloc(static_cast<size_t>(size)));
+  // Pascal idiom: `getmem(p, length(s)+1)` then `p^ := s` where p is
+  // `^string`. In Pascal that packs to length+1 bytes because strings
+  // are length-prefixed and stored tightly. In C++ our ShortString<N>
+  // is fixed size, so the assignment would overrun a length+1 buffer.
+  // Round allocations up to at least `sizeof(P)` so any later
+  // store-through via `*p` stays in bounds.
+  size_t n = static_cast<size_t>(size);
+  if (n < sizeof(P)) n = sizeof(P);
+  p = static_cast<P*>(std::malloc(n));
 }
 template <typename P>
 inline void p_freemem(P*& p, int = 0) {
