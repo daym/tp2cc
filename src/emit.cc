@@ -806,6 +806,30 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return "(*dynamic_cast<" + expr_to_cxx(*n.rhs) + "*>(&(" +
                expr_to_cxx(*n.lhs) + ")))";
       }
+      // Pascal `+` on `char` operands means string concatenation
+      // (produces a 2-char string). C++ `char + char` is int
+      // arithmetic, so wrap a char-side in ShortString<> to force
+      // the ShortString `operator+` overload.
+      if (n.op == BinOp::Add && registry) {
+        auto is_char = [&](const Expr& x) -> bool {
+          const TypeExpr* t = deduce_type(x);
+          if (!t) return false;
+          t = registry->canonicalize(t);
+          if (!t || t->kind != Kind::TyName) return false;
+          std::string nm = static_cast<const TyName&>(*t).name;
+          for (auto& c : nm) if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+          return nm == "char";
+        };
+        bool l_char = is_char(*n.lhs);
+        bool r_char = is_char(*n.rhs);
+        if (l_char || r_char) {
+          auto wrap = [&](const Expr& x, bool want) {
+            return want ? "::rt::ShortString<>(" + expr_to_cxx(x) + ")"
+                        : expr_to_cxx(x);
+          };
+          return "(" + wrap(*n.lhs, l_char) + " + " + wrap(*n.rhs, r_char) + ")";
+        }
+      }
       const char* op = "?";
       switch (n.op) {
         case BinOp::Add:    op = "+"; break;
