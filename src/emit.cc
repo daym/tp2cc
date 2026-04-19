@@ -2373,6 +2373,13 @@ void Emitter::emit_stmt(const Stmt& s) {
         } else {
           emitln("return;");
         }
+      } else if (name == "fail") {
+        if (current_fn_is_ctor) {
+          emitln("result = false;");
+          emitln("return result;");
+        } else {
+          report_error(es.loc, "`fail` outside constructors is unsupported");
+        }
       } else if (name == "new" && call_expr && !call_expr->args.empty()) {
         // new(p) or new(p, Ctor(args)). `p` might be `arr[i]` whose
         // `decltype` is a reference (`T&`); strip it before computing
