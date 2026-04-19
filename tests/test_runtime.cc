@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <cstdio>
 
 #include "../p2cc_rt/prelude.h"
 #include "test_util.h"
@@ -93,6 +94,25 @@ void test_reinterpret_bytes_copies_raw_object_bytes() {
   }
 }
 
+void test_blockread_writes_to_void_buffer() {
+  TypedFile<uint8_t> f;
+  uint8_t got[5] = {};
+  int32_t transferred = -1;
+
+  f.f = std::tmpfile();
+  CHECK(f.f != nullptr);
+  const char* text = "hello";
+  std::fwrite(text, 1, 5, f.f);
+  std::rewind(f.f);
+
+  p_blockread(f, static_cast<void*>(got), 5, transferred);
+  CHECK_EQ(transferred, 5);
+  CHECK_EQ(std::memcmp(got, text, 5), 0);
+
+  std::fclose(f.f);
+  f.f = nullptr;
+}
+
 void test_exec_tracks_exit_status() {
   p_doserror = -1;
   p_exec(ShortString<>("/bin/sh"), ShortString<>("-c 'exit 9'"));
@@ -125,6 +145,7 @@ int main() {
   RUN_TEST(test_move_reads_from_const_shortstring_storage);
   RUN_TEST(test_str_formats_real_values);
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
+  RUN_TEST(test_blockread_writes_to_void_buffer);
   RUN_TEST(test_exec_tracks_exit_status);
   RUN_TEST(test_exec_reports_spawn_failure);
   RUN_TEST(test_shell_tracks_exit_status);
