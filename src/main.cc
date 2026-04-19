@@ -133,6 +133,7 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
   g.add_search_root(in_dir);
   g.define("FPC");
   g.define("I386");
+  g.define("CPU86");   // version.pas guards `source_cpu_string` on CPU86.
   g.define("LINUX");
   g.skip_path_containing("/new/");
   g.skip_path_containing("/tokendat.pas");
@@ -148,6 +149,11 @@ int cmd_emit_all(const std::string& in_dir, const std::string& outdir) {
   g.skip_path_containing("/t_go32v2.pas");
   g.skip_path_containing("/t_os2.pas");
   g.skip_path_containing("/t_win32.pas");
+  // Browser units are only pulled in under `{$ifdef BrowserCol}` /
+  // `{$ifdef BrowserLog}` by compiler.pas -- neither is defined by
+  // default under FPC, so these are dead code for bootstrap.
+  g.skip_path_containing("/browcol.pas");
+  g.skip_path_containing("/browlog.pas");
   g.skip_path_containing("/m68k/");
   g.skip_path_containing("/alpha/");
   g.skip_path_containing("/powerpc/");

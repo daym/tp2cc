@@ -56,6 +56,11 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
 
 void register_decl_list(TypeRegistry& r, const std::string& unit,
                         const std::vector<DeclPtr>& decls) {
+  UnitInfo* ui = nullptr;
+  {
+    auto it = r.units.find(unit);
+    if (it != r.units.end()) ui = &it->second;
+  }
   for (const auto& d : decls) {
     if (!d) continue;
     switch (d->kind) {
@@ -63,6 +68,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         const auto& td = static_cast<const TypeDecl&>(*d);
         if (!td.type) continue;
         std::string nm = lc(td.name);
+        if (ui) ui->own_types.insert(nm);
         if (td.type->kind == Kind::TyObject) {
           ClassInfo ci;
           ci.name = nm;
@@ -104,6 +110,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         for (const auto& par : pd.params) pc += par.names.size();
         p.param_count = pc;
         r.procs[lc(pd.name)] = p;
+        if (ui) ui->own_procs.insert(lc(pd.name));
         break;
       }
       case Kind::VarDecl: {
@@ -111,7 +118,10 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         VarInfo v;
         v.defining_unit = unit;
         v.type = vd.type.get();
-        for (const auto& n : vd.names) r.vars[lc(n)] = v;
+        for (const auto& n : vd.names) {
+          r.vars[lc(n)] = v;
+          if (ui) ui->own_vars.insert(lc(n));
+        }
         break;
       }
       case Kind::ConstDecl: {
@@ -120,6 +130,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         c.defining_unit = unit;
         c.type = cd.type.get();
         r.consts[lc(cd.name)] = c;
+        if (ui) ui->own_consts.insert(lc(cd.name));
         break;
       }
       default:

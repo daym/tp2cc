@@ -93,6 +93,13 @@ struct ConstInfo {
 struct UnitInfo {
   std::string name;
   std::vector<std::string> uses;         // interface + impl (order)
+  // Names declared in THIS unit (interface + impl) -- used to
+  // shadow same-named symbols from `uses` without extra lookup
+  // cost.
+  std::unordered_set<std::string> own_consts;
+  std::unordered_set<std::string> own_vars;
+  std::unordered_set<std::string> own_procs;
+  std::unordered_set<std::string> own_types;
 };
 
 struct TypeRegistry {
