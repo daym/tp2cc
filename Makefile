@@ -25,7 +25,7 @@ ALL_BINS  := $(BINDIR)/p2cc $(TEST_BINS)
 .PHONY: all test clean lex-all
 all: $(ALL_BINS)
 
-$(OBJDIR)/%.o: src/%.cc
+$(OBJDIR)/%.o: src/%.cc src/%.h
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
