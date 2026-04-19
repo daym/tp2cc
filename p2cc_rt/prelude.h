@@ -1073,12 +1073,23 @@ struct LinuxStat { int32_t p_mtime = 0; int32_t p_mode = 0; int32_t p_size = 0; 
 using p_stat = LinuxStat;
 template <typename... A> inline bool p_fstat(A&&...) { return false; }
 
-inline ShortString<> p_getenv(const ShortString<>& name) {
+// Return value of `getenv`. fpc's `dos.getenv` returns ShortString,
+// `linux.getenv` returns pchar -- same lowered name, different
+// types. The proxy converts to both, so one `rt::p_getenv` serves
+// both `Dos.Getenv` and `Linux.Getenv` call sites.
+struct GetEnvResult {
+  const char* raw;  // null-terminated env value, or nullptr if unset
+  constexpr operator const char*() const { return raw; }
+  constexpr operator char*() const { return const_cast<char*>(raw); }
+  operator ShortString<>() const {
+    return raw ? ShortString<>(raw) : ShortString<>("");
+  }
+};
+inline GetEnvResult p_getenv(const ShortString<>& name) {
   char buf[260]{};
   int n = name.length < 255 ? name.length : 255;
   for (int i = 0; i < n; ++i) buf[i] = name.data[i];
-  const char* v = std::getenv(buf);
-  return v ? ShortString<>(v) : ShortString<>("");
+  return {std::getenv(buf)};
 }
 // STUB: `dosexitcode` is a function in fpc's dos unit that returns
 // the exit code of the last `exec`-launched child. Since our `exec`
