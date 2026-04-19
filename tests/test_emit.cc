@@ -328,9 +328,10 @@ void test_byte_array_typecast_reinterprets_storage() {
       "procedure dump(e : extended; i : longint);\n"
       "begin\n"
       "  writeln(t80bitarray(e)[i]);\n"
+      "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_reinterpret_bytes<p_t80bitarray>(p_e)[p_i]"));
+                 "::rt::p_reinterpret_ref<p_t80bitarray>(p_e)[p_i]"));
   CHECK(!contains(out.impl, "p_t80bitarray(p_e)[p_i]"));
 }
 
@@ -345,9 +346,10 @@ void test_local_byte_array_typecast_reinterprets_storage() {
       "  t80bitarray = array[0..9] of byte;\n"
       "begin\n"
       "  writeln(t80bitarray(e)[i]);\n"
+      "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_reinterpret_bytes<p_t80bitarray>(p_e)[p_i]"));
+                 "::rt::p_reinterpret_ref<p_t80bitarray>(p_e)[p_i]"));
   CHECK(!contains(out.impl, "p_t80bitarray(p_e)[p_i]"));
 }
 
@@ -389,8 +391,12 @@ int main() {
   RUN_TEST(test_singleton_typed_array_const);
   RUN_TEST(test_nested_array_type);
   RUN_TEST(test_named_subrange_array_type);
+  RUN_TEST(test_packed_record_keeps_packed_layout);
   RUN_TEST(test_parenthesized_record_const);
   RUN_TEST(test_char_plus_cast_uses_string_concat);
+  RUN_TEST(test_integer_and_or_stays_bitwise);
+  RUN_TEST(test_nested_boolean_function_and_short_circuits);
+  RUN_TEST(test_nested_untyped_var_forwarding_stays_pointer_value);
   RUN_TEST(test_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_local_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_cxx_reserved_word_identifiers);
