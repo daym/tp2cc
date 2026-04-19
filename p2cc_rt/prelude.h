@@ -639,12 +639,93 @@ inline std::string p_to_std_string(const ShortString<N>& s) {
   return std::string(s.data, s.data + s.length);
 }
 
+inline std::string p_to_std_string(const char* s) {
+  return s ? std::string(s) : std::string();
+}
+
 inline int32_t p_strtoint(const ShortString<>& s) {
   char buf[260]{};
   for (int i = 0; i < s.length; ++i) buf[i] = s.data[i];
   return std::atoi(buf);
 }
 
+inline int p_digit_value(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+template <typename Int>
+inline void p_parse_pascal_integer(const std::string& buf, Int& out,
+                                   int32_t& code) {
+  static_assert(std::is_integral_v<Int> && !std::is_same_v<Int, bool>);
+
+  using UInt = std::make_unsigned_t<Int>;
+  constexpr int bits = static_cast<int>(sizeof(UInt) * CHAR_BIT);
+  constexpr uint64_t mask =
+      bits == 64 ? UINT64_MAX : ((uint64_t{1} << bits) - 1);
+
+  std::size_t i = 0;
+  bool neg = false;
+  if (i < buf.size() && (buf[i] == '+' || buf[i] == '-')) {
+    neg = buf[i] == '-';
+    ++i;
+  }
+
+  int base = 10;
+  if (i < buf.size()) {
+    switch (buf[i]) {
+      case '$':
+        base = 16;
+        ++i;
+        break;
+      case '%':
+        base = 2;
+        ++i;
+        break;
+      case '&':
+        base = 8;
+        ++i;
+        break;
+    }
+  }
+
+  if (i >= buf.size()) {
+    code = static_cast<int32_t>(i + 1);
+    out = 0;
+    return;
+  }
+
+  uint64_t value = 0;
+  bool any = false;
+  for (; i < buf.size(); ++i) {
+    int d = p_digit_value(buf[i]);
+    if (d < 0 || d >= base) {
+      code = static_cast<int32_t>(i + 1);
+      out = 0;
+      return;
+    }
+    any = true;
+    if constexpr (bits == 64) {
+      value = value * static_cast<uint64_t>(base) + static_cast<uint64_t>(d);
+    } else {
+      value = (value * static_cast<uint64_t>(base) +
+               static_cast<uint64_t>(d)) & mask;
+    }
+  }
+
+  if (!any) {
+    code = static_cast<int32_t>(i + 1);
+    out = 0;
+    return;
+  }
+
+  UInt u = static_cast<UInt>(value);
+  if (neg) u = UInt(0) - u;
+  out = static_cast<Int>(u);
+  code = 0;
+}
 // Dos/file procedures -- stubbed; real behaviour added as needed.
 struct SearchRec { int32_t p_time = 0; int32_t p_size = 0;
                    uint8_t p_attr = 0; ShortString<> p_name;
@@ -1196,11 +1277,7 @@ inline bool p_eof(const TypedFile<T>& f) {
 
 template <int N>
 inline void p_val(const ShortString<N>& s, int32_t& out, int32_t& code) {
-  std::string buf(s.data, s.data + s.length);
-  char* end = nullptr;
-  long v = std::strtol(buf.c_str(), &end, 10);
-  if (end && *end == '\0') { out = static_cast<int32_t>(v); code = 0; }
-  else { code = static_cast<int32_t>(end - buf.c_str()) + 1; }
+  p_parse_pascal_integer(p_to_std_string(s), out, code);
 }
 template <int N>
 inline void p_str(int32_t v, ShortString<N>& out) {
@@ -1412,28 +1489,11 @@ inline int32_t p_heapsize = 1 << 20;
 
 // Pascal `val(s, n, code)` -- string-to-number parser. The emitter
 // routes `System.Val(...)` to `::rt::p_val(...)`.
-template <typename S, typename N>
+template <typename S, typename N,
+          typename = std::enable_if_t<std::is_integral_v<N> &&
+                                      !std::is_same_v<N, bool>>>
 inline void p_val(const S& s, N& n, int32_t& code) {
-  code = 0;
-  n = static_cast<N>(0);
-  int i = 0;
-  int len = p_length(s);
-  int sign = 1;
-  if (i < len && (s[i + 1] == '+' || s[i + 1] == '-')) {
-    if (s[i + 1] == '-') sign = -1;
-    ++i;
-  }
-  int64_t v = 0;
-  bool any = false;
-  while (i < len) {
-    char c = static_cast<char>(s[i + 1]);
-    if (c < '0' || c > '9') { code = i + 1; return; }
-    v = v * 10 + (c - '0');
-    any = true;
-    ++i;
-  }
-  if (!any) { code = 1; return; }
-  n = static_cast<N>(sign * v);
+  p_parse_pascal_integer(p_to_std_string(s), n, code);
 }
 
 }  // namespace rt
