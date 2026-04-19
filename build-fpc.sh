@@ -9,10 +9,12 @@
 #                     (fpc 0.99 targets i386; runtime assumes 32-bit pointers)
 #   4. link        -- link build/emitted/pp from the reachable object files
 #
-# Uses guix shell --system=i686-linux for the 32-bit toolchain. Do NOT run
-# with host g++ -- the runtime (p2cc_rt/prelude.h) is sized for 32-bit
-# pointers and the link will succeed but every pointer-arithmetic site in
-# the translated fpc source will corrupt memory.
+# Run this inside an i386/i686 toolchain environment. For example:
+#   guix shell --system=i686-linux gcc-toolchain binutils -- ./build-fpc.sh
+#
+# Do NOT run with a host 64-bit g++ -- the runtime
+# (p2cc_rt/prelude.h) is sized for 32-bit pointers and the build may
+# succeed while the translated compiler misbehaves badly at runtime.
 
 set -eu
 
@@ -20,9 +22,20 @@ cd "$(dirname "$0")"
 ROOT="$(pwd)"
 
 JOBS="${JOBS:-8}"
-GUIX_CXX='guix shell --system=i686-linux gcc-toolchain -- g++'
+CXX="${CXX:-g++}"
 ENTRY_FILE="../rpm/compiler/pp.pas"
 OUT_DIR="build/emitted"
+
+MACHINE="$($CXX -dumpmachine 2>/dev/null || true)"
+case "$MACHINE" in
+  i?86-*|i86pc-*)
+    ;;
+  *)
+    echo "error: CXX='$CXX' targets '$MACHINE', expected an i386/i686 toolchain" >&2
+    echo "hint: guix shell --system=i686-linux gcc-toolchain binutils -- ./build-fpc.sh" >&2
+    exit 1
+    ;;
+esac
 
 echo "== [1/4] build p2cc translator =="
 make -j"$JOBS"
@@ -33,11 +46,11 @@ mkdir -p "$OUT_DIR"
 ./build/bin/p2cc emit-all "$ENTRY_FILE" "$OUT_DIR"
 
 echo "== [3/4] compile emitted units (32-bit) =="
-JOBS="$JOBS" CXX="$GUIX_CXX" tools/compile_emitted.sh "$OUT_DIR"
+JOBS="$JOBS" CXX="$CXX" tools/compile_emitted.sh "$OUT_DIR"
 
 echo "== [4/4] link pp =="
 cd "$OUT_DIR"
-$GUIX_CXX -m32 -O0 -g p_*.o -o pp
+$CXX -O0 -g p_*.o -o pp
 
 ls -la pp
 echo "ok: $ROOT/$OUT_DIR/pp"
