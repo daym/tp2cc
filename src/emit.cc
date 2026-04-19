@@ -1252,7 +1252,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // cast) through a chain of primitive-type casts ending at
           // an lvalue, emit a storage reinterpret so the result can
           // bind to a `var pointer` parameter.
-          if (n == "pointer") {
+          // Pointer-typed primitive casts (`pointer(lv)`, `pchar(lv)`,
+          // `ppchar(lv)`) through a chain of primitive-type casts
+          // ending at an lvalue -- emit a storage reinterpret so the
+          // result can bind to a `var`-parameter reference.
+          if (n == "pointer" || n == "pchar" || n == "ppchar") {
             const Expr* arg_ptr = c.args[0].get();
             while (arg_ptr && arg_ptr->kind == Kind::Call) {
               const auto& ic = static_cast<const Call&>(*arg_ptr);
@@ -1269,7 +1273,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                  arg_ptr->kind == Kind::Member ||
                  arg_ptr->kind == Kind::Index ||
                  arg_ptr->kind == Kind::Deref)) {
-              return "(*(void**)&(" + expr_to_cxx(*arg_ptr) + "))";
+              return "(*(" + primitive_type_cxx(n) + "*)&(" +
+                     expr_to_cxx(*arg_ptr) + "))";
             }
           }
           return "((" + primitive_type_cxx(n) + ")(" + arg0() + "))";
