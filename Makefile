@@ -53,7 +53,7 @@ $(BINDIR)/test_emit: $(LIB_OBJS) $(OBJDIR)/tests/test_emit.o
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $^ -o $@
 
-test: $(TEST_BINS)
+check: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do \
 	  echo "==> $$t"; \
 	  $$t; \
