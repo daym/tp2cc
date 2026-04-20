@@ -584,18 +584,36 @@ inline const T& p_reinterpret_ref(const void* p) {
 
 // --- Set<Elem> --------------------------------------------------------------
 //
-// A very small set type parameterised by element type. For enum-backed sets
-// we use a uint64_t bitmask assuming enum fits in 64 values (enough for all
-// uses in the compiler proper). For byte-backed sets (`set of byte`,
-// `set of char`) we use a 256-bit std::array<uint64_t, 4>.
+// A 256-bit set, wide enough for `set of byte`, `set of char`, and every
+// enum-backed Pascal set we encounter (emitted code may cast enum values to
+// integers that exceed 63, so a wider mask is essential).
+//
+// The storage is a bare `unsigned char[32]` with alignment 1 -- intentionally,
+// NOT a `uint64_t[4]`. Reason: a Pascal `packed record` maps to a C++ struct
+// wrapped in `#pragma pack(push, 1)`, which places all fields at byte
+// granularity. A `Set` member of such a record then lands at an arbitrary
+// byte offset within the record (and, once placed in an array, most elements
+// have the field at an address that isn't 4- or 8-aligned). Calling any
+// member function on that misaligned `Set` -- e.g. `rec.p_flags.add(x)` --
+// forms a `Set* this` pointer that has lost the "I came from a packed
+// struct" information; inside the method the compiler assumes the pointer
+// has the type's natural alignment and emits aligned loads/stores through it.
+// If the internal storage were `uint64_t[4]`, those loads/stores would be
+// unaligned and are UB under the C++ abstract machine. UBSan's
+// `-fsanitize=alignment` catches exactly this, and on strict-aligning
+// architectures it would fault outright. Using a 1-byte-aligned element
+// type makes every access on `this` trivially aligned regardless of where
+// the `Set` actually sits, so packed-record membership is safe. See the
+// tp2cc codegen -- it emits `#pragma pack(push, 1)` whenever the Pascal
+// source says `packed record` (e.g. `ttargetinfo` in `compiler/systems.pas`
+// which has a `set of ttargetflags` field).
+//
+// All bit operations below are written byte-wise to preserve that property.
 
 template <typename Elem>
 struct Set {
-  // 256-bit bitmask (enough for `set of byte`, `set of char`, and most
-  // enum-backed Pascal sets). Emitted code may cast enum values to
-  // integers that exceed 63 so a wider mask is essential.
-  static constexpr int W = 4;
-  uint64_t bits[W] = {0, 0, 0, 0};
+  static constexpr int Nb = 32;  // 32 bytes == 256 bits.
+  unsigned char bits[Nb] = {};
 
   constexpr Set() = default;
 
@@ -606,7 +624,7 @@ struct Set {
   // conversion constructor that just copies the bitmask.
   template <typename Other>
   constexpr Set(const Set<Other>& o) {
-    for (int i = 0; i < W; ++i) bits[i] = o.bits[i];
+    for (int i = 0; i < Nb; ++i) bits[i] = o.bits[i];
   }
 
   // Adopt the byte-layout of a 32-byte `array[0..31] of byte` as the
@@ -614,13 +632,10 @@ struct Set {
   // `set of 0..255` / `set of byte`, so an explicit cast
   // `byteset(arr)` is just a reinterpretation.
   template <auto Lo, int N,
-            typename = std::enable_if_t<(N * sizeof(uint8_t) <= sizeof(bits))>>
+            typename = std::enable_if_t<(N * sizeof(uint8_t) <= Nb)>>
   constexpr Set(const Array<uint8_t, Lo, N>& a) {
-    const int bytes = (N < static_cast<int>(sizeof(bits)))
-                          ? N
-                          : static_cast<int>(sizeof(bits));
-    auto* dst = reinterpret_cast<uint8_t*>(bits);
-    for (int i = 0; i < bytes; ++i) dst[i] = a.data[i];
+    const int n = (N < Nb) ? N : Nb;
+    for (int i = 0; i < n; ++i) bits[i] = a.data[i];
   }
 
   static constexpr int idx(Elem e) {
@@ -637,30 +652,31 @@ struct Set {
   }
   constexpr void add(Elem e) {
     int i = idx(e);
-    if (i >= 0 && i < 64 * W) bits[i >> 6] |= (uint64_t{1} << (i & 63));
+    if (i >= 0 && i < 8 * Nb)
+      bits[i >> 3] |= static_cast<unsigned char>(1u << (i & 7));
   }
   constexpr bool contains(Elem e) const {
     int i = idx(e);
-    if (i < 0 || i >= 64 * W) return false;
-    return (bits[i >> 6] & (uint64_t{1} << (i & 63))) != 0;
+    if (i < 0 || i >= 8 * Nb) return false;
+    return (bits[i >> 3] & (1u << (i & 7))) != 0;
   }
   friend constexpr Set operator+(Set a, Set b) {
-    Set r; for (int i = 0; i < W; ++i) r.bits[i] = a.bits[i] | b.bits[i]; return r;
+    Set r; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] | b.bits[i]; return r;
   }
   friend constexpr Set operator-(Set a, Set b) {
-    Set r; for (int i = 0; i < W; ++i) r.bits[i] = a.bits[i] & ~b.bits[i]; return r;
+    Set r; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] & ~b.bits[i]; return r;
   }
   friend constexpr Set operator*(Set a, Set b) {
-    Set r; for (int i = 0; i < W; ++i) r.bits[i] = a.bits[i] & b.bits[i]; return r;
+    Set r; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] & b.bits[i]; return r;
   }
   friend constexpr bool operator==(Set a, Set b) {
-    for (int i = 0; i < W; ++i) if (a.bits[i] != b.bits[i]) return false;
+    for (int i = 0; i < Nb; ++i) if (a.bits[i] != b.bits[i]) return false;
     return true;
   }
   friend constexpr bool operator!=(Set a, Set b) { return !(a == b); }
   friend constexpr bool operator<=(Set a, Set b) {
     // subset test
-    for (int i = 0; i < W; ++i) if ((a.bits[i] & ~b.bits[i]) != 0) return false;
+    for (int i = 0; i < Nb; ++i) if ((a.bits[i] & ~b.bits[i]) != 0) return false;
     return true;
   }
 };
@@ -2041,8 +2057,8 @@ inline void p_include(Set<E1>& s, E2 v) { s.add(static_cast<E1>(v)); }
 template <typename E1, typename E2>
 inline void p_exclude(Set<E1>& s, E2 v) {
   int i = Set<E1>::idx(static_cast<E1>(v));
-  if (i >= 0 && i < 64 * Set<E1>::W) {
-    s.bits[i >> 6] &= ~(uint64_t{1} << (i & 63));
+  if (i >= 0 && i < 8 * Set<E1>::Nb) {
+    s.bits[i >> 3] &= static_cast<unsigned char>(~(1u << (i & 7)));
   }
 }
 
