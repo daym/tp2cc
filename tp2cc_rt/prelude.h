@@ -566,6 +566,14 @@ inline const T& p_reinterpret_ref(const Src& src) {
   return *reinterpret_cast<const T*>(&src);
 }
 template <typename T>
+inline T& p_reinterpret_ref(ShortStringCharRef src) {
+  return *reinterpret_cast<T*>(src.byte);
+}
+template <typename T>
+inline const T& p_reinterpret_ref(ShortStringCharValue src) {
+  return *reinterpret_cast<const T*>(src.byte);
+}
+template <typename T>
 inline T& p_reinterpret_ref(void* p) {
   return *reinterpret_cast<T*>(p);
 }

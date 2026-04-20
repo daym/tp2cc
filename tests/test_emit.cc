@@ -404,6 +404,43 @@ void test_const_object_param_uses_mutable_ref() {
   CHECK(!contains(out.header, "void p_take(const p_tobj& p_x);"));
 }
 
+void test_parameterless_procvar_stmt_autocalls() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tstop = procedure;\n"
+      "var\n"
+      "  oldstop : tstop;\n"
+      "procedure kick;\n"
+      "implementation\n"
+      "procedure kick;\n"
+      "begin\n"
+      "  oldstop;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_oldstop();"));
+}
+
+void test_bool_procvar_call_uses_logical_and() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tpred = function : boolean;\n"
+      "var\n"
+      "  pred : tpred;\n"
+      "function go : boolean;\n"
+      "implementation\n"
+      "function go : boolean;\n"
+      "begin\n"
+      "  go := pred() and true;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_pred() && true"));
+  CHECK(!contains(out.impl, "p_pred() & true"));
+}
+
 // Pascal identifiers that happen to be C++ reserved words (but are NOT
 // Pascal keywords) must survive translation thanks to the `p_` prefix.
 void test_cxx_reserved_word_identifiers() {
@@ -453,6 +490,8 @@ int main() {
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
   RUN_TEST(test_inc_primitive_cast_reinterprets_storage);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
+  RUN_TEST(test_parameterless_procvar_stmt_autocalls);
+  RUN_TEST(test_bool_procvar_call_uses_logical_and);
   RUN_TEST(test_cxx_reserved_word_identifiers);
 
   int n = tp2cc_test::failures();

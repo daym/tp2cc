@@ -385,6 +385,12 @@ const TypeExpr* Emitter::canonicalize_type(const TypeExpr* t) {
 
 bool Emitter::const_param_needs_mutable_ref(const TypeExpr* t) {
   t = canonicalize_type(t);
+  if (t && t->kind == Kind::TyName && registry) {
+    const auto& name = static_cast<const TyName&>(*t).name;
+    if (registry->classes.count(name) || registry->records.count(name)) {
+      return true;
+    }
+  }
   // In old Turbo Pascal/FPC object-style code, `const` on records and
   // objects is mainly a calling-convention hint. Treating it as C++
   // deep immutability breaks method calls and container updates.
@@ -397,6 +403,13 @@ std::string Emitter::primitive_cast_lvalue_ref(const Call& c) {
   if (!is_primitive_type(id.name)) return {};
   const Expr* peeled = peel_primitive_casts(c.args[0].get());
   if (!peeled || !expr_is_storage_lvalue(*c.args[0])) return {};
+  if (peeled->kind == Kind::Ident) {
+    ResolveResult rr = resolve_name(static_cast<const Ident&>(*peeled).name);
+    if (rr.kind == ResolvedKind::UnitConst || rr.kind == ResolvedKind::EnumMember ||
+        rr.kind == ResolvedKind::UnitType || rr.is_callable) {
+      return {};
+    }
+  }
   // Pascal `T(lv)` used as an lvalue aliases the same storage with a
   // different type. Emit that reinterpretation directly.
   return "::rt::p_reinterpret_ref<" + primitive_type_cxx(id.name) + ">(" +
@@ -720,6 +733,12 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
     }
     case Kind::Call: {
       const auto& c = static_cast<const Call&>(e);
+      const TypeExpr* callee_type = deduce_type(*c.callee);
+      if (callee_type) callee_type = canonicalize_type(callee_type);
+      if (callee_type && callee_type->kind == Kind::TyProcedural) {
+        const auto& p = static_cast<const TyProcedural&>(*callee_type);
+        if (p.is_function) return p.return_type.get();
+      }
       if (c.callee->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*c.callee);
         if ((id.name == "char" || id.name == "chr") && c.args.size() == 1)
@@ -953,6 +972,14 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
     return arg_text;
   }
   return "((void*)&(" + arg_text + "))";
+}
+
+size_t procedural_param_count(const TyProcedural& p) {
+  size_t count = 0;
+  for (const auto& pp : p.params) {
+    count += pp.names.empty() ? 1 : pp.names.size();
+  }
+  return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -1662,13 +1689,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "((void*)nullptr)";
           }
         } else if (c.args.size() == 1 && is_primitive_type(n)) {
-          // Function-style type cast. If the source is true storage,
-          // Pascal lets `T(lv)` alias that same storage directly.
-          if (std::string ref = primitive_cast_lvalue_ref(c); !ref.empty()) {
-            return ref;
-          }
+          // Function-style type cast in expression context.
+          // Only the explicit lvalue forms handled elsewhere
+          // (`T(lv) := ...`, `inc(T(lv))`, `dec(T(lv))`) reinterpret
+          // storage. Plain `T(expr)` remains a value conversion.
           if (n == "char") {
             return "::rt::p_chr(" + arg0() + ")";
+          }
+          if (n == "pointer" || n == "pchar" || n == "ppchar") {
+            const Expr* peeled = peel_primitive_casts(c.args[0].get());
+            if (peeled && expr_is_storage_lvalue(*c.args[0])) {
+              return "::rt::p_reinterpret_ref<" + primitive_type_cxx(n) +
+                     ">(" + expr_to_cxx(*peeled) + ")";
+            }
           }
           if (expr_is_charish(*c.args[0])) {
             return "((" + primitive_type_cxx(n) + ")(::rt::p_ord(" +
@@ -2449,6 +2482,18 @@ void Emitter::emit_stmt(const Stmt& s) {
               pit->second.accepts_zero_args &&
               !text.empty() && text.back() != ')') {
             text += "()";
+          }
+        }
+        // Parameterless procedural variables are callable in statement
+        // position (`olddo_stop;`) but must stay as plain values in
+        // assignments like `do_stop := olddo_stop;`. Detect that only here.
+        if ((es.expr->kind == Kind::Ident || es.expr->kind == Kind::Member) &&
+            !text.empty() && text.back() != ')') {
+          if (const TypeExpr* t = deduce_type(*es.expr);
+              t && (t = canonicalize_type(t)) &&
+              t->kind == Kind::TyProcedural) {
+            const auto& p = static_cast<const TyProcedural&>(*t);
+            if (procedural_param_count(p) == 0) text += "()";
           }
         }
         emitln(text + ";");
