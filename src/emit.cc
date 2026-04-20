@@ -2112,10 +2112,32 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     if (tr.is_packed) open += "[[gnu::packed]] ";
     emitln(open + name + " {");
     indent();
+
+    // Every field of a `[[gnu::packed]]` struct must be POD-like (standard
+    // layout + trivially copyable). GCC silently *ignores* the packed
+    // attribute for a non-POD field and keeps it at natural alignment
+    // (emitting `warning: ignoring packed attribute because of unpacked
+    // non-POD field` -- a warning with no dedicated `-W` flag, so you
+    // can't `-Werror=...` it). That silently breaks the packed layout the
+    // Pascal source asked for. To turn this into a hard compile-time error
+    // at the precise field, emit a per-field `static_assert` on packed
+    // records.
+    auto emit_field = [&](const std::string& ft, const std::string& fn) {
+      emitln(ft + " " + mangle(fn) + ";");
+      if (tr.is_packed) {
+        emitln("static_assert(::std::is_standard_layout_v<" + ft + "> && "
+               "::std::is_trivially_copyable_v<" + ft + ">, "
+               "\"field '" + fn + "' of packed record '" + name + "' must "
+               "be POD-like: GCC silently ignores [[gnu::packed]] for "
+               "non-POD fields and keeps natural alignment, breaking the "
+               "packed layout Pascal asked for.\");");
+      }
+    };
+
     for (const auto& f : tr.fields) {
       std::string ft = f.type ? type_to_cxx(*f.type) : std::string("int32_t");
       for (const auto& fn : f.names) {
-        emitln(ft + " " + mangle(fn) + ";");
+        emit_field(ft, fn);
       }
     }
     if (tr.has_variant) {
@@ -2124,8 +2146,7 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
       // We match that by emitting one anonymous struct per case inside an
       // anonymous union. GCC accepts this as an extension.
       if (!tr.variant_tag_name.empty() && tr.variant_tag_type) {
-        emitln(type_to_cxx(*tr.variant_tag_type) + " " +
-               mangle(tr.variant_tag_name) + ";");
+        emit_field(type_to_cxx(*tr.variant_tag_type), tr.variant_tag_name);
       }
       emitln("union {");
       indent();
@@ -2136,7 +2157,7 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
         for (const auto& f : vc.fields) {
           std::string ft = f.type ? type_to_cxx(*f.type) : std::string("int32_t");
           for (const auto& fn : f.names) {
-            emitln(ft + " " + mangle(fn) + ";");
+            emit_field(ft, fn);
           }
         }
         dedent();
