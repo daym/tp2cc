@@ -1,0 +1,52 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Guard pobjectdef(resulttype) in tccal first pass
+License: expat
+
+In compiler/tccal.pas the first pass of a method-call node does:
+
+    (not(oo_has_virtual in
+         pobjectdef(p^.methodpointer^.resulttype)^.objectoptions))
+
+This reinterprets whatever `methodpointer^.resulttype' points at as
+a tobjectdef and reads the `objectoptions' field from it.  That
+field exists only on tobjectdef.  Its sibling types -- in particular
+tclassrefdef -- are strictly smaller records with no shared
+hierarchy and no `objectoptions'.
+
+For `ClassName.Method(...)' call shapes the receiver's resulttype
+is a tclassrefdef, so the cast is wrong by construction and the
+field read runs past the end of that allocation.  On native FPC/x86
+the four bytes past the tclassrefdef usually land in adjacent live
+heap, so the smallset test returned some bit and the surrounding
+logic tolerated either outcome.  Under the tp2cc C++ bootstrap the
+allocation is sized exactly, and the oob read is visible.
+
+Fix: guard the cast with `resulttype^.deftype=objectdef'.  When the
+receiver is not an object instance, skip the virtual-method test
+and fall through to `method_must_be_valid := true', which is the
+conservative branch the original code already takes for every other
+non-constructor case.
+
+--- a/compiler/tccal.pas
++++ b/compiler/tccal.pas
+@@ -1267,8 +1267,19 @@
+
+                      { R.Assign is not a constructor !!! }
+                      { but for R^.Assign, R must be valid !! }
++                     { The `pobjectdef(resulttype)^.objectoptions' read below
++                       type-puns whatever `resulttype' points at as a tobjectdef.
++                       That isn't always true: for `ClassName.Method(...)` shapes
++                       the methodpointer's resulttype is a tclassrefdef (no
++                       objectoptions field), and the unguarded read walks off
++                       the end of that allocation.  Guard the cast: only treat
++                       the method's receiver as potentially non-virtual when
++                       the receiver's def really is an object def.  If it
++                       isn't, fall through to `method_must_be_valid := true',
++                       which is the conservative branch. }
+                      if (p^.procdefinition^.proctypeoption=potype_constructor) or
+                         ((p^.methodpointer^.treetype=loadn) and
++                        (p^.methodpointer^.resulttype^.deftype=objectdef) and
+                         (not(oo_has_virtual in pobjectdef(p^.methodpointer^.resulttype)^.objectoptions))) then
+                        method_must_be_valid:=false
+                      else

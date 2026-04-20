@@ -1,0 +1,50 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Depack `treference' and `tlocation' for the tp2cc C++ bootstrap
+License: expat
+
+These two records carry no file-format role -- they are internal
+codegen/operand state for the i386 backend, not written to PPU files
+or to disk in any other form.  Upstream declared them `packed' only
+to save RAM on 1990s-era builds.
+
+tp2cc translates Pascal `packed record' to `struct [[gnu::packed]]' in
+C++.  Unlike `#pragma pack(push,1)', the attribute form makes gcc
+reject binding a C++ reference to a misaligned member, which is
+exactly what a Pascal `var' parameter pointing at
+`treference.offset' or `tlocation.register' becomes under the C++
+lowering: gcc diagnoses `cannot bind packed field X to T&' at
+compile time.
+
+On native x86 the original code worked because the CPU tolerates
+unaligned loads; in C++ the resulting references are undefined
+regardless of hardware.  Depacking these two in-memory records
+restores natural alignment without disturbing any on-disk layout,
+and leaves `[[gnu::packed]]' enforced for records that really are
+file formats (`ppuheader', `tsymbol', `tarhdr', ...).
+
+--- a/compiler/i386/cpubase.pas
++++ b/compiler/i386/cpubase.pas
+@@ -455,7 +455,11 @@
+
+   { immediate/reference record }
+   preference = ^treference;
+-  treference = packed record
++  { was `packed record` -- depacked for the tp2cc C++ bootstrap. This record
++    is in-memory-only (no file-format role), and packing it forced misaligned
++    access to its `longint`/pointer fields. C++ references to those fields
++    are UB when misaligned, which `[[gnu::packed]]` rightly rejects. }
++  treference = record
+      is_immediate : boolean; { is this used as reference or immediate }
+      segment,
+      base,
+@@ -507,7 +511,8 @@
+   );
+
+   plocation = ^tlocation;
+-  tlocation = packed record
++  { depacked for tp2cc bootstrap, see note on `treference` above. }
++  tlocation = record
+      case loc : tloc of
+         LOC_MEM,LOC_REFERENCE : (reference : treference);
+         LOC_FPU : ();

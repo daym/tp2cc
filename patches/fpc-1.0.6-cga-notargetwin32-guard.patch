@@ -1,0 +1,45 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Mirror NOTARGETWIN32 guard around the second winstackpagesize site
+License: expat
+
+`compiler/i386/cga.pas' brings `t_win32' into its uses clause only
+when win32 target support is enabled:
+
+    {$ifndef NOTARGETWIN32}
+           ,t_win32
+    {$endif}
+
+and `winstackpagesize' is declared in t_win32 (it's just `4096'
+there).
+
+cga.pas references `winstackpagesize' at two sites.  The first,
+the `getmem' growing-array stack-touch loop) is correctly
+wrapped in `{$ifndef NOTARGETWIN32}'.  The second (the
+stack-frame setup in `genentrycode') is not -- it just
+runtime-guards on `target_os.id=os_i386_win32'.
+Compiling with `-dNOTARGETWIN32' therefore drops `t_win32' from
+the uses clause and the unguarded site fails to resolve
+`winstackpagesize' at parse time.
+
+Wrap the second site's win32 arm (condition + body) in the same
+`{$ifndef NOTARGETWIN32}' block.
+
+--- a/compiler/i386/cga.pas
++++ b/compiler/i386/cga.pas
+@@ -3597,6 +3597,7 @@
+               if stackframe<>0 then
+                   begin
+                           begin
++{$ifndef NOTARGETWIN32}
+                             { windows guards only a few pages for stack growing, }
+                             { so we have to access every page first              }
+                             if (target_os.id=os_i386_win32) and
+@@ -3638,6 +3639,7 @@
+                                     end
+                               end
+                             else
++{$endif NOTARGETWIN32}
+                               exprasmlist^.insert(new(paicpu,op_const_reg(A_SUB,S_L,stackframe,R_ESP)));
+                             if (cs_check_stack in aktlocalswitches) and
+                               not(target_info.target in [target_i386_freebsd,target_i386_netbsd,

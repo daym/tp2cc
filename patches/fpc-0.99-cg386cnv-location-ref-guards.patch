@@ -1,0 +1,64 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Only free location.reference when the location holds a reference (fpc 0.99)
+License: expat
+
+tlocation is a variant record.  The `reference : treference' field
+belongs to the LOC_MEM/LOC_REFERENCE arm -- it aliases the same
+storage as the register/resflags arms used by LOC_REGISTER,
+LOC_FLAGS, LOC_FPU, LOC_JUMP, and so on.
+
+compiler/cg386cnv.pas's second_bool_to_int and second_int_to_bool
+both call:
+
+    del_reference(pfrom^.location.reference);
+
+without first checking `pfrom^.location.loc'.  When pfrom's location
+is a register (or flags, or ...), `location.reference' aliases
+whatever bytes the other variant wrote there; `del_reference' then
+reads `ref.is_immediate' (a boolean) from those bytes and hands
+`ref.base' / `ref.index' -- which at that point are a mix of the
+register's ordinal and uninitialised padding -- to
+`ungetregister32'.  Native FPC tolerated this because the wrong
+"deallocations" usually targeted registers that were already unused
+or already held the same register number, so no state went visibly
+wrong.  Under tp2cc the boolean read is checked at runtime and the
+out-of-range value (the register ordinal recycled into the
+is_immediate slot) is flagged at p_tgeni386.cc:195.
+
+Fix: guard both call sites with
+`pfrom^.location.loc in [LOC_REFERENCE,LOC_MEM]', matching the test
+del_locref already does internally.  Other del_reference call sites
+elsewhere in the tree sit in case arms that have already established
+loc=LOC_MEM/LOC_REFERENCE; only these two were unguarded.
+
+--- a/compiler/cg386cnv.pas
++++ b/compiler/cg386cnv.pas
+@@ -1050,7 +1050,13 @@
+            end;
+          clear_location(pto^.location);
+          pto^.location.loc:=LOC_REGISTER;
+-         del_reference(pfrom^.location.reference);
++         { `location.reference' is the LOC_MEM/LOC_REFERENCE arm of
++           tlocation's variant part; reading it when loc is a register
++           variant (LOC_REGISTER, LOC_FLAGS, ...) reads bytes belonging to
++           a different variant and was just wrong.  Only free the
++           reference when the location really holds one. }
++         if pfrom^.location.loc in [LOC_REFERENCE,LOC_MEM] then
++           del_reference(pfrom^.location.reference);
+          case pfrom^.resulttype^.size of
+           1 : begin
+                 case pto^.resulttype^.size of
+@@ -1160,7 +1166,11 @@
+               exit;
+            end;
+          pto^.location.loc:=LOC_REGISTER;
+-         del_reference(pfrom^.location.reference);
++         { Only free the reference if the location actually holds one;
++           otherwise `location.reference' aliases a different variant
++           (register slot, resflags, ...) and the read is meaningless. }
++         if pfrom^.location.loc in [LOC_REFERENCE,LOC_MEM] then
++           del_reference(pfrom^.location.reference);
+          opsize:=def_opsize(pfrom^.resulttype);
+          case pfrom^.location.loc of
+             LOC_MEM,LOC_REFERENCE :

@@ -1,0 +1,127 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Stop dereferencing possibly-freed pointertype.def in tpointerdef.done (fpc 0.99)
+License: expat
+
+compiler/symdef.inc's tpointerdef.done disposes the pointed-to def
+only if it is the unresolved forwarddef that this pointerdef
+allocated.  The original check is:
+
+    if assigned(pointertype.def) and
+       (pointertype.def^.deftype=forwarddef) then
+     begin
+       dispose(pointertype.def,done);
+       pointertype.reset;
+     end;
+
+The `pointertype.def^.deftype' read is a use-after-free in the common
+case.  Once pdecl.resolve_type_forward replaces the forward by the
+real resolved def, `pointertype.def' aliases a def owned elsewhere
+(typically by a sibling in the same symtable).  At unit teardown the
+symtable destroys its elements in some order; whenever the target
+runs destruction before the pointerdef, the subsequent
+`pointertype.def^.deftype' read in tpointerdef.done is reading
+already-freed memory.
+
+Native FPC tolerated this because the stale bytes almost never held
+the ordinal value of `forwarddef' and the read otherwise caused no
+observable effect.  Under the tp2cc C++ bootstrap the read is caught
+at runtime as a heap-use-after-free in p_tpointerdef::p_done(), with
+the freeing site pointing at the sibling t_arraydef destruction
+earlier in the same tindexarray::clear() pass.
+
+Fix: track forwarddef ownership with an out-of-band boolean flag on
+tpointerdef, set at init time and cleared by pdecl when the forward
+gets resolved.  The destructor relies on the flag instead of reading
+through a potentially-stale pointer.  PPU-loaded pointerdefs never
+own a forwarddef (forwards are a parse-time construct), so they
+always set the flag to false.
+
+--- a/compiler/symdefh.inc
++++ b/compiler/symdefh.inc
+@@ -158,6 +158,15 @@
+        tpointerdef = object(tdef)
+           pointertype : ttype;
+           is_far : boolean;
++          { True while pointertype.def is an unresolved forwarddef that
++            this pointerdef allocated and therefore owns. Cleared by
++            pdecl.resolve_type_forward once the forward is replaced by
++            the real resolved def (which is owned elsewhere). The
++            destructor relies on this flag instead of reading
++            pointertype.def^.deftype, because at unit teardown the
++            pointed-to real def may already have been freed by a sibling
++            in the same symtable. }
++          has_forward : boolean;
+           constructor init(const tt : ttype);
+           constructor initfar(const tt : ttype);
+           constructor initdef(p : pdef);
+--- a/compiler/symdef.inc
++++ b/compiler/symdef.inc
+@@ -1421,6 +1421,8 @@
+         pointertype:=tt;
+         is_far:=false;
+         savesize:=target_os.size_of_pointer;
++        has_forward:=assigned(pointertype.def) and
++                     (pointertype.def^.deftype=forwarddef);
+       end;
+
+
+@@ -1431,6 +1433,8 @@
+         pointertype:=tt;
+         is_far:=true;
+         savesize:=target_os.size_of_pointer;
++        has_forward:=assigned(pointertype.def) and
++                     (pointertype.def^.deftype=forwarddef);
+       end;
+
+
+@@ -1460,16 +1464,26 @@
+          pointertype.load;
+          is_far:=(readbyte<>0);
+          savesize:=target_os.size_of_pointer;
++         { PPU-loaded pointerdefs never own a forwarddef -- forwards are a
++           parse-time construct; PPU streams store resolved references. }
++         has_forward:=false;
+       end;
+
+
+     destructor tpointerdef.done;
+       begin
+-        if assigned(pointertype.def) and
+-           (pointertype.def^.deftype=forwarddef) then
++        { Only dispose the pointed-to def if it is the unresolved
++          forwarddef we allocated ourselves.  We must NOT dereference
++          pointertype.def here to find that out: at unit teardown the
++          resolved target may already have been freed by a sibling in
++          the same symtable, and reading .deftype would be a
++          use-after-free.  The has_forward flag carries the ownership
++          fact out-of-band. }
++        if has_forward and assigned(pointertype.def) then
+          begin
+            dispose(pointertype.def,done);
+            pointertype.reset;
++           has_forward:=false;
+          end;
+         inherited done;
+       end;
+@@ -1573,6 +1587,7 @@
+          pointertype.load;
+          is_far:=false;
+          savesize:=target_os.size_of_pointer;
++         has_forward:=false;
+       end;
+
+
+--- a/compiler/pdecl.pas
++++ b/compiler/pdecl.pas
+@@ -932,6 +932,10 @@
+                     tokenpos:=stpos;
+                     { we don't need the forwarddef anymore, dispose it }
+                     dispose(hpd,done);
++                    { pointerdef no longer owns a forwarddef; destructor
++                      must not try to dispose whatever pointertype.def
++                      now points at. }
++                    ppointerdef(pd)^.has_forward:=false;
+                     { was a type sym found ? }
+                     if assigned(srsym) and
+                        (srsym^.typ=typesym) then

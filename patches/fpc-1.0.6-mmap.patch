@@ -1,0 +1,38 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Only treat the -1..-4095 return range as a syscall error
+License: expat
+
+FPC 1.0.6's generic Linux SysCall wrapper flags *every* negative
+longint returned from `do_SysCall' as an error and converts it to
+ -1 + errno.
+
+That's wrong for pointer-returning syscalls: on i386,
+mmap/mmap2/brk/mremap legitimately return addresses with the sign
+bit set (anything above 2 GiB in the user-space half of the address
+map), which this code misreports as a failure.  Modern Linux
+kernels hand out exactly such addresses when the heap grows past
+2 GiB or when the kernel's mmap-base lands high, so FPC programs
+die at startup ("heap grow failed", "mmap failed") on any box that
+isn't the 1999-era low-memory layout FPC 0.99.x/1.0.6 was written
+for.
+
+The Linux kernel's actual convention is that a syscall error is the
+range [-4095, -1]; anything outside that is a valid return value.
+This patch adds the lower bound.
+
+--- a/rtl/linux/syscalls.inc
++++ b/rtl/linux/syscalls.inc
+@@ -104,7 +104,11 @@
+ }
+ begin
+   do_SysCall(callnr,regs);
+-  if regs.reg1<0 then
++  { Linux reports syscall errors as -errno in the range -1..-4095.
++    Pointer-returning syscalls such as mmap can legitimately return
++    addresses with the sign bit set on i386, so treating every
++    negative longint as an error breaks heap growth on modern kernels. }
++  if (regs.reg1<0) and (regs.reg1>=-4095) then
+    begin
+ {$IFDEF SYSCALL_DEBUG}
+      If DoSysCallDebug then

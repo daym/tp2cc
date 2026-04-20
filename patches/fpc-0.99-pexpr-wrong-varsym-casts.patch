@@ -1,0 +1,147 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Drop wrong pvarsym() casts in pexpr.factor (fpc 0.99)
+License: expat
+
+compiler/pexpr.pas's factor() declares its local `sym' as `pvarsym'
+and then assigns it from symtable searches like:
+
+    sym := pvarsym(srsymtable^.search(pattern));
+    sym := pvarsym(search_class_member(pobjectdef(pd), pattern));
+    sym := pvarsym(classh^.symtable^.search(pattern));
+
+A symtable search returns an arbitrary psym (procsym, typesym,
+varsym, ...).  tvarsym and its siblings are unrelated record layouts,
+not a class hierarchy -- `pvarsym(x)' when `x' is a `procsym' just
+lies about the type.  Native FPC on x86 got away with it because the
+surrounding code only reads psym-level fields (`typ', `name',
+`symoptions') after the cast, and those happen to live at the same
+offsets across all psym subtypes.  The tp2cc C++ emitter renders the
+narrowing as a checked downcast onto a foreign record type; the cast
+is rejected at runtime.
+
+Fix:
+ * Widen the local `sym' declaration from `pvarsym' to `psym'.
+ * Drop every narrowing `pvarsym(...)' at the search call sites
+   except the one that actually reads a varsym-specific field
+   (`sym^.vartype.def' inside the `recorddef' arm of the field-read
+   case -- record fields really are always varsym).
+ * Keep `gensubscriptnode(pvarsym(sym), ...)' explicit at that site,
+   under the `deftype = recorddef' guard from the surrounding case.
+
+Note: unlike fpc-1.0.6, where the declaration was already `psym' and
+only two cast sites remained, 0.99 still has the wider pattern (6
+sites across factor), so the diff is larger.
+
+--- a/compiler/pexpr.pas
++++ b/compiler/pexpr.pas
+@@ -852,7 +852,17 @@
+          possible_error,
+          unit_specific,
+          again    : boolean;
+-         sym      : pvarsym;
++         { Was `pvarsym' upstream, but the sites below assigned
++           `pvarsym(X^.symtable^.search(pattern))' -- a symtable search
++           returns an arbitrary psym (procsym, typesym, varsym, ...), and
++           recasting the result as `pvarsym' is simply wrong whenever the
++           found symbol isn't a varsym: tvarsym and its siblings are
++           unrelated record layouts, not a class hierarchy. Widened to psym
++           so those sites stop lying about the type.  Only one use-site
++           below actually needs the varsym subtype (for `.vartype'), and
++           only under a `deftype = recorddef' guard where the field really
++           is a varsym. }
++         sym      : psym;
+          classh   : pobjectdef;
+          d      : bestreal;
+          static_name : string;
+@@ -1050,7 +1060,13 @@
+                                                { search also in inherited methods }
+                                                repeat
+                                                  srsymtable:=pobjectdef(pd)^.symtable;
+-                                                 sym:=pvarsym(srsymtable^.search(pattern));
++                                                 { Symtable search returns an arbitrary psym
++                                                   (procsym, typesym, varsym, ...). The old
++                                                   `pvarsym(..)' wrap reinterpreted whatever
++                                                   came back as a tvarsym -- wrong: those are
++                                                   unrelated records. Dropped; nothing below
++                                                   reads varsym-specific fields. }
++                                                 sym:=srsymtable^.search(pattern);
+                                                  if assigned(sym) then
+                                                   break;
+                                                  pd:=pobjectdef(pd)^.childof;
+@@ -1073,7 +1089,10 @@
+                                             p1^.resulttype:=pd;
+                                             { TP allows also @TMenu.Load if Load is only }
+                                             { defined in an anchestor class              }
+-                                            sym:=pvarsym(search_class_member(pobjectdef(pd),pattern));
++                                            { search_class_member returns an arbitrary psym.
++                                              Reinterpreting it as pvarsym was wrong for
++                                              every other subtype. Dropped. }
++                                            sym:=search_class_member(pobjectdef(pd),pattern);
+                                             if not assigned(sym) then
+                                               Message1(sym_e_id_no_member,pattern)
+                                             else if not(getaddr) and not(sp_static in sym^.symoptions) then
+@@ -1431,7 +1450,7 @@
+                     case pd^.deftype of
+                        recorddef:
+                          begin
+-                            sym:=pvarsym(precorddef(pd)^.symtable^.search(pattern));
++                            sym:=precorddef(pd)^.symtable^.search(pattern);
+                             if sym=nil then
+                               begin
+                                 Message1(sym_e_illegal_field,pattern);
+@@ -1440,8 +1459,12 @@
+                               end
+                             else
+                               begin
+-                                p1:=gensubscriptnode(sym,p1);
+-                                pd:=sym^.vartype.def;
++                                p1:=gensubscriptnode(pvarsym(sym),p1);
++                                { record fields are always varsym, so the
++                                  narrowing is sound here -- unlike the
++                                  class-member searches elsewhere in this
++                                  routine. }
++                                pd:=pvarsym(sym)^.vartype.def;
+                               end;
+                             consume(_ID);
+                           end;
+@@ -1452,7 +1475,7 @@
+                              sym:=nil;
+                              while assigned(classh) do
+                               begin
+-                                sym:=pvarsym(classh^.symtable^.search(pattern));
++                                sym:=classh^.symtable^.search(pattern);
+                                 srsymtable:=classh^.symtable;
+                                 if assigned(sym) then
+                                  break;
+@@ -1482,7 +1505,7 @@
+                               allow_only_static:=false;
+                               while assigned(classh) do
+                                 begin
+-                                   sym:=pvarsym(classh^.symtable^.search(pattern));
++                                   sym:=classh^.symtable^.search(pattern);
+                                    srsymtable:=classh^.symtable;
+                                    if assigned(sym) then
+                                      break;
+@@ -1639,7 +1662,7 @@
+                         sym:=nil;
+                         while assigned(classh) do
+                          begin
+-                           sym:=pvarsym(classh^.symtable^.search(pattern));
++                           sym:=classh^.symtable^.search(pattern);
+                            srsymtable:=classh^.symtable;
+                            if assigned(sym) then
+                             break;
+@@ -1696,7 +1719,11 @@
+                     while assigned(classh) do
+                      begin
+                        srsymtable:=pobjectdef(classh)^.symtable;
+-                       sym:=pvarsym(srsymtable^.search(pattern));
++                       { See the declaration-site note: the old
++                         `pvarsym(..)' wrap here reinterpreted whatever the
++                         search returned as a tvarsym, even when it was a
++                         procsym/typesym. Dropped. }
++                       sym:=srsymtable^.search(pattern);
+                        if assigned(sym) then
+                         begin
+                           { only for procsyms we need to set the type (PFV) }

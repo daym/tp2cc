@@ -1,0 +1,43 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Mirror NOTARGETWIN32 guard around the second winstackpagesize site (fpc 0.99)
+License: expat
+
+Same fix as fpc-1.0.6-cga-notargetwin32-guard.patch, applied to the
+fpc-0.99.14 source tree (where the file is named `cgai386.pas'
+rather than i386/cga.pas; the i386 backend isn't split into its own
+subdir yet in 0.99).
+
+cgai386.pas brings `t_win32' into its uses clause only via
+`{$ifndef NOTARGETWIN32}', and `winstackpagesize' is declared in
+t_win32.  The first use site (line ~2820) is correctly wrapped in
+`{$ifndef NOTARGETWIN32}'; the second (the stack-frame setup at
+line ~3186) is not -- it just runtime-guards on
+`target_os.id=os_i386_win32'.  Compiling with `-dNOTARGETWIN32'
+therefore drops `t_win32' from the uses clause and the unguarded
+site fails to resolve `winstackpagesize' at parse time.
+
+Wrap the second site's win32 arm (condition + body) in the same
+`{$ifndef NOTARGETWIN32}' block; the
+`else exprasmlist^.insert(... SUB stackframe ...)' fallback is left
+unconditional and becomes the only branch when win32 is
+unsupported.
+
+--- a/compiler/cgai386.pas
++++ b/compiler/cgai386.pas
+@@ -3183,6 +3183,7 @@
+                       else
+ {$endif unused}
+                           begin
++{$ifndef NOTARGETWIN32}
+                             { windows guards only a few pages for stack growing, }
+                             { so we have to access every page first              }
+                             if (target_os.id=os_i386_win32) and
+@@ -3224,6 +3225,7 @@
+                                     end
+                               end
+                             else
++{$endif NOTARGETWIN32}
+                               exprasmlist^.insert(new(paicpu,op_const_reg(A_SUB,S_L,stackframe,R_ESP)));
+                             if (cs_check_stack in aktlocalswitches) and
+                               not(target_info.target in [target_i386_linux,target_i386_win32]) then

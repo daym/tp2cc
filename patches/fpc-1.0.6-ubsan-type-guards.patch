@@ -1,0 +1,508 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Fix wrong record-type casts and PPU-loader type confusion
+License: expat
+
+The FPC 1.0.6 compiler has wrong casts that native FPC tolerated
+by coincidence and the tp2cc C++ bootstrap exposes:
+
+ * Source-level casts that lie about the record type at the cast
+   site -- e.g. casting a tprocsym pointer as pvarsym, casting an
+   ait_symbol_end record as pai_symbol, casting the Val call node's
+   resulttype as pfloatdef.  The cast names a record type that has
+   nothing to do with the actual record at the address.  Native FPC
+   only got away with these because the surrounding code happened
+   to read a field at an offset that the wrong record also has, or
+   because the variant-part bytes happened to land on a tolerated
+   value.  Under tp2cc the C++ emitter renders a narrowing cast
+   between unrelated record types as a checked downcast, and the
+   sized allocation no longer accommodates the over-read.
+
+ * PPU-loader placeholders.  The loader stored a `tderef' helper
+   chain (the unresolved cross-reference cookie) directly in fields
+   declared as the resolved subtype -- ptypesym, pprocdef,
+   pobjectdef, penumdef, ppropertysym -- treating the field as
+   temporary cookie storage until `deref' replaced the cookie with
+   a real pointer.  That in-place reuse claimed the field already
+   held the resolved type when in fact it held a tderef of an
+   entirely different record type (no shared hierarchy with the
+   declared type).  The C++ emitter then issued a class-hierarchy
+   downcast on a foreign object.  Restructured to park the chain
+   in a shadow `pderef' field instead, leaving the typed field nil
+   until `deref' runs.  PPU on-disk format is unchanged --
+   `writederef' synthesises the bytes from the live object after
+   `deref', never from the chain.
+
+Site-by-site summary:
+
+ * i386/aggas.pas, ait_symbol_end branch: cast was
+   pai_symbol(hp) where hp^.typ=ait_symbol_end.  Both records
+   happen to expose a `sym' field at the same offset so the
+   wrong cast read the right bytes; the correct cast is
+   pai_symbol_end.
+
+ * i386/cginl.pas, Handle_Val, floatdef branch: cast was
+   pfloatdef(p^.resulttype) but p is the whole Val call node --
+   its resulttype is the procedure return type, not the
+   destination variable's type.  Use dest_para^.resulttype
+   instead, matching the outer case.
+
+ * pexpr.pas (2 sites inside typesym member-read handling):
+   `sym' is already declared `psym' in the enclosing function;
+   the historic `pvarsym(..)' wrap around `srsymtable^.search(..)'
+   and `search_class_member(..)' was a narrowing to a sibling
+   record (not a hierarchy descent) and did nothing useful since
+   the call sites only read psym-level fields afterwards.
+   Dropped.
+
+ * tcadd.pas, set-operation handling: when a type-mismatch
+   between `rd' and a setdef `ld' was reported via CGMessage the
+   code fell through without halting, then later did
+   `psetdef(rd)^.settype' on a non-setdef `rd'.  Guard the
+   psetdef(rd) cast with `(rd^.deftype=setdef)'.
+
+ * tree.pas, genloadnode: the parameter is typed pvarsym but some
+   callers (e.g. the `constresourcestring' branch in pexpr) pass
+   a tconstsym expecting the caller to set p^.resulttype
+   themselves.  Guard the `v^.vartype.def' read to the subtypes
+   that actually have a `vartype' field (tvarsym and its child
+   tabsolutesym).
+
+ * symdefh.inc / symsymh.inc: add shadow `pderef' fields
+   alongside every PPU-reference field that held a pderef
+   placeholder: tdef.typesym_deref, tenumdef.basedef_deref,
+   tprocdef.nextoverloaded_deref, tprocdef._class_deref,
+   tobjectdef.childof_deref, tprocsym.definition_deref,
+   tpropertysym.propoverriden_deref, tenumsym.definition_deref.
+
+ * symdef.inc / symsym.inc: each affected `load' now parks the
+   readderef chain in the shadow and leaves the typed field nil;
+   each affected `deref' moves the chain back into the typed
+   field (a cast between unrelated record types, which the C++
+   emitter renders as a reinterpret) and runs the upstream
+   in-place resolve unchanged.
+
+--- a/compiler/i386/aggas.pas
++++ b/compiler/i386/aggas.pas
+@@ -763,9 +763,15 @@
+                   inc(symendcount);
+                   AsmWriteLn(s+':');
+                   AsmWrite(#9'.size'#9);
+-                  AsmWrite(pai_symbol(hp)^.sym^.name);
++                  { was pai_symbol(hp) -- wrong subtype; hp^.typ is
++                    ait_symbol_end here, so the cast must be to
++                    pai_symbol_end. Both records happen to have a
++                    `sym` field at the same offset so the mis-cast
++                    reads the right bytes in native FPC, but it is
++                    still a type violation. }
++                  AsmWrite(pai_symbol_end(hp)^.sym^.name);
+                   AsmWrite(', '+s+' - ');
+-                  AsmWriteLn(pai_symbol(hp)^.sym^.name);
++                  AsmWriteLn(pai_symbol_end(hp)^.sym^.name);
+                 end;
+              end;
+ 
+--- a/compiler/i386/cginl.pas
++++ b/compiler/i386/cginl.pas
+@@ -746,7 +746,12 @@
+              floatdef:
+                begin
+                   procedureprefix := 'FPC_VAL_REAL_';
+-                  if pfloatdef(p^.resulttype)^.typ<>f32bit then
++                  { Upstream wrote pfloatdef(p^.resulttype) here, but `p`
++                    is the Val call node -- its resulttype is the
++                    procedure's return type, not the destination's.
++                    The outer case just confirmed dest_para^.resulttype
++                    is a floatdef, so cast that one instead. }
++                  if pfloatdef(dest_para^.resulttype)^.typ<>f32bit then
+                     inc(fpuvaroffset);
+                end;
+              orddef:
+--- a/compiler/pexpr.pas
++++ b/compiler/pexpr.pas
+@@ -1133,7 +1133,16 @@
+                                                { search also in inherited methods }
+                                                repeat
+                                                  srsymtable:=pobjectdef(pd)^.symtable;
+-                                                 sym:=pvarsym(srsymtable^.search(pattern));
++                                                 { Symtable search returns an arbitrary psym
++                                                   (procsym, typesym, varsym, ...).  `sym` is
++                                                   already declared `psym`; the old
++                                                   `pvarsym(..)` wrap reinterpreted whatever
++                                                   came back as a tvarsym even when the
++                                                   found symbol was a procsym/typesym --
++                                                   unrelated record types, not a hierarchy.
++                                                   Dropped; nothing below reads varsym-
++                                                   specific fields. }
++                                                 sym:=srsymtable^.search(pattern);
+                                                  if assigned(sym) then
+                                                   break;
+                                                  pd:=pobjectdef(pd)^.childof;
+@@ -1156,7 +1165,10 @@
+                                             p1^.resulttype:=pd;
+                                             { TP allows also @TMenu.Load if Load is only }
+                                             { defined in an anchestor class              }
+-                                            sym:=pvarsym(search_class_member(pobjectdef(pd),pattern));
++                                            { `sym` is already declared `psym`; the
++                                              historic pvarsym cast was a no-op that
++                                              narrowed the static type. Dropped. }
++                                            sym:=search_class_member(pobjectdef(pd),pattern);
+                                             if not assigned(sym) then
+                                               Message1(sym_e_id_no_member,pattern)
+                                             else if not(getaddr) and not(sp_static in sym^.symoptions) then
+--- a/compiler/tcadd.pas
++++ b/compiler/tcadd.pas
+@@ -730,7 +730,11 @@
+ 
+                 { if the destination is not a smallset then insert a typeconv
+                   which loads a smallset into a normal set }
+-                if (psetdef(ld)^.settype<>smallset) and
++                { rd may not actually be a setdef here: when a type-mismatch
++                  was reported above via CGMessage we fell through without
++                  halting, so guard the psetdef(rd) cast explicitly. }
++                if (rd^.deftype=setdef) and
++                   (psetdef(ld)^.settype<>smallset) and
+                    (psetdef(rd)^.settype=smallset) then
+                  begin
+                    if (p^.right^.treetype=setconstn) then
+--- a/compiler/tree.pas
++++ b/compiler/tree.pas
+@@ -1100,7 +1100,17 @@
+       {$IFDEF NEWST}
+          p^.resulttype:=v^.definition;
+       {$ELSE}
+-         p^.resulttype:=v^.vartype.def;
++         { `vartype` lives on tvarsym. tabsolutesym inherits from
++           tvarsym so it also has the field at the same offset. Every
++           other tsym subtype (tconstsym, tprocsym, tpropertysym, ...)
++           does NOT have it. The `constresourcestring` branch in pexpr
++           passes a tconstsym here and relies on the caller to assign
++           p^.resulttype themselves afterwards; without a guard we read
++           undefined bytes. }
++         if v^.typ in [varsym,absolutesym] then
++           p^.resulttype:=v^.vartype.def
++         else
++           p^.resulttype:=nil;
+       {$ENDIF NEWST}
+          p^.symtableentry:=v;
+          p^.symtable:=st;
+--- a/compiler/symdefh.inc
++++ b/compiler/symdefh.inc
+@@ -28,6 +28,12 @@
+ 
+        tdef = object(tsymtableentry)
+           typesym    : ptypesym;  { which type the definition was generated this def }
++          { During PPU load the cross-reference to `typesym' isn't yet a
++            real symbol -- the referent may not exist yet.  The chain of
++            lookup steps produced by `readderef' is parked here until the
++            matching `deref' pass resolves it; only after that does
++            `typesym' above hold a real ptypesym. }
++          typesym_deref : pderef;
+ 
+ {$ifdef EXTDEBUG}
+           fileinfo   : tfileposinfo;
+@@ -188,6 +194,9 @@
+        pobjectdef = ^tobjectdef;
+        tobjectdef = object(tdef)
+           childof  : pobjectdef;
++          { PPU-load placeholder for `childof'; see the note on
++            tdef.typesym_deref.  Populated in load, resolved in deref. }
++          childof_deref : pderef;
+           objname  : pstring;
+           symtable : psymtable;
+           objectoptions : tobjectoptions;
+@@ -413,6 +422,10 @@
+           extnumber  : longint;
+           messageinf : tmessageinf;
+           nextoverloaded : pprocdef;
++          { PPU-load placeholders for `nextoverloaded' and `_class';
++            see the note on tdef.typesym_deref. }
++          nextoverloaded_deref : pderef;
++          _class_deref         : pderef;
+ {$ifndef EXTDEBUG}
+           { where is this function defined, needed here because there
+             is only one symbol for all overloaded functions
+@@ -510,6 +523,9 @@
+           maxval    : longint;
+           firstenum : penumsym;
+           basedef   : penumdef;
++          { PPU-load placeholder for `basedef'; see the note on
++            tdef.typesym_deref. }
++          basedef_deref : pderef;
+           constructor init;
+           constructor init_subrange(_basedef:penumdef;_min,_max:longint);
+           constructor load;
+--- a/compiler/symdef.inc
++++ b/compiler/symdef.inc
+@@ -91,6 +91,7 @@
+          deftype:=abstractdef;
+          owner := nil;
+          typesym := nil;
++         typesym_deref := nil;
+ {$ifdef EXTDEBUG}
+          fileinfo := aktfilepos;
+ {$endif}
+@@ -146,7 +147,10 @@
+          nextglobal := nil;
+       { load }
+          indexnr:=readword;
+-         typesym:=ptypesym(readsymref);
++         { Park the cross-reference chain in the shadow field; tdef.deref
++           resolves it into `typesym' in the second pass. }
++         typesym := nil;
++         typesym_deref := pderef(readsymref);
+       end;
+ 
+ 
+@@ -401,6 +405,18 @@
+ 
+     procedure tdef.deref;
+       begin
++        { Move the parked chain from the shadow field into `typesym` so
++          the upstream in-place resolve pattern works unchanged.  pderef
++          and ptypesym are unrelated record types (no shared hierarchy),
++          so the C++ emitter renders this cast as a reinterpret, which
++          just reclassifies the same pointer under the new static type.
++          The original `typesym := ptypesym(readsymref)` was a
++          tsym-hierarchy downcast that claimed the referent was a
++          tsym-derived record -- not true until `resolvesym` replaces
++          the pointer -- and native FPC only got away with it because
++          the intermediate pointer was never dereferenced. }
++        typesym := ptypesym(typesym_deref);
++        typesym_deref := nil;
+         resolvesym(psym(typesym));
+       end;
+ 
+@@ -758,6 +774,7 @@
+          calcsavesize;
+          has_jumps:=false;
+          basedef:=nil;
++         basedef_deref:=nil;
+          rangenr:=0;
+          firstenum:=nil;
+          correct_owner_symtable;
+@@ -770,6 +787,7 @@
+          minval:=_min;
+          maxval:=_max;
+          basedef:=_basedef;
++         basedef_deref:=nil;
+          calcsavesize;
+          has_jumps:=false;
+          rangenr:=0;
+@@ -784,7 +802,10 @@
+       begin
+          tdef.load;
+          deftype:=enumdef;
+-         basedef:=penumdef(readdefref);
++         { Park the cross-ref chain in the shadow; tenumdef.deref
++           resolves it into `basedef' in the second pass. }
++         basedef := nil;
++         basedef_deref := pderef(readdefref);
+          minval:=readlong;
+          maxval:=readlong;
+          savesize:=readlong;
+@@ -834,6 +855,9 @@
+     procedure tenumdef.deref;
+       begin
+         inherited deref;
++        { See tdef.deref for why this routes through the shadow field. }
++        basedef := penumdef(basedef_deref);
++        basedef_deref := nil;
+         resolvedef(pdef(basedef));
+       end;
+ 
+@@ -2630,6 +2654,8 @@
+          interfacedef:=false;
+          hasforward:=false;
+          _class := nil;
++         _class_deref := nil;
++         nextoverloaded_deref := nil;
+          code:=nil;
+          count:=false;
+          is_used:=false;
+@@ -2660,8 +2686,12 @@
+          setstring(_mangledname,s);
+ 
+          extnumber:=readlong;
+-         nextoverloaded:=pprocdef(readdefref);
+-         _class := pobjectdef(readdefref);
++         { Park both cross-ref chains in their shadow fields; they're
++           resolved into `nextoverloaded'/`_class' by tprocdef.deref. }
++         nextoverloaded := nil;
++         nextoverloaded_deref := pderef(readdefref);
++         _class := nil;
++         _class_deref := pderef(readdefref);
+          readposinfo(fileinfo);
+ 
+          if (cs_link_deffile in aktglobalswitches) and
+@@ -2989,7 +3019,12 @@
+     procedure tprocdef.deref;
+       begin
+          inherited deref;
++         { See tdef.deref for why we route through the shadow fields. }
++         nextoverloaded := pprocdef(nextoverloaded_deref);
++         nextoverloaded_deref := nil;
+          resolvedef(pdef(nextoverloaded));
++         _class := pobjectdef(_class_deref);
++         _class_deref := nil;
+          resolvedef(pdef(_class));
+       end;
+ 
+@@ -3291,6 +3326,7 @@
+         deftype:=objectdef;
+         objectoptions:=[];
+         childof:=nil;
++        childof_deref:=nil;
+         symtable:=new(psymtable,init(objectsymtable));
+         symtable^.name := stringdup(n);
+         { create space for vmt !! }
+@@ -3315,7 +3351,10 @@
+          savesize:=readlong;
+          vmt_offset:=readlong;
+          objname:=stringdup(readstring);
+-         childof:=pobjectdef(readdefref);
++         { Park the cross-ref chain in the shadow; tobjectdef.deref
++           resolves it into `childof' in the second pass. }
++         childof := nil;
++         childof_deref := pderef(readdefref);
+          readsmallset(objectoptions);
+          has_rtti:=boolean(readbyte);
+ 
+@@ -3374,6 +3413,9 @@
+          oldrecsyms : psymtable;
+       begin
+          inherited deref;
++         { See tdef.deref for why we route through the shadow field. }
++         childof := pobjectdef(childof_deref);
++         childof_deref := nil;
+          resolvedef(pdef(childof));
+          oldrecsyms:=aktrecordsymtable;
+          aktrecordsymtable:=symtable;
+--- a/compiler/symsym.inc
++++ b/compiler/symsym.inc
+@@ -349,6 +349,7 @@
+          tsym.init(n);
+          typ:=procsym;
+          definition:=nil;
++         definition_deref:=nil;
+          owner:=nil;
+          is_global := false;
+       end;
+@@ -358,7 +359,10 @@
+       begin
+          tsym.load;
+          typ:=procsym;
+-         definition:=pprocdef(readdefref);
++         { Park the cross-ref chain in the shadow; tprocsym.deref
++           resolves it into `definition' in the second pass. }
++         definition := nil;
++         definition_deref := pderef(readdefref);
+          is_global := false;
+       end;
+ 
+@@ -426,6 +430,9 @@
+         last,pd : pprocdef;
+ {$endif DONOTCHAINOPERATORS}
+       begin
++         { See tdef.deref for why we route through the shadow field. }
++         definition := pprocdef(definition_deref);
++         definition_deref := nil;
+          resolvedef(pdef(definition));
+ {$ifdef DONOTCHAINOPERATORS}
+          if (definition^.proctypeoption=potype_operator) then
+@@ -651,6 +658,8 @@
+          inherited init(n);
+          typ:=propertysym;
+          propoptions:=[];
++         propoverriden:=nil;
++         propoverriden_deref:=nil;
+          index:=0;
+          default:=0;
+          proptype.reset;
+@@ -666,9 +675,13 @@
+          inherited load;
+          typ:=propertysym;
+          readsmallset(propoptions);
++         propoverriden := nil;
++         propoverriden_deref := nil;
+          if (ppo_is_override in propoptions) then
+           begin
+-            propoverriden:=ppropertysym(readsymref);
++            { Park the cross-ref chain in the shadow; tpropertysym.deref
++              resolves it into `propoverriden' in the second pass. }
++            propoverriden_deref := pderef(readsymref);
+             { we need to have these objects initialized }
+             new(readaccess,init);
+             new(writeaccess,init);
+@@ -700,6 +713,9 @@
+       begin
+         if (ppo_is_override in propoptions) then
+          begin
++           { See tdef.deref for why we route through the shadow field. }
++           propoverriden := ppropertysym(propoverriden_deref);
++           propoverriden_deref := nil;
+            resolvesym(psym(propoverriden));
+            dooverride(propoverriden);
+          end
+@@ -1846,6 +1862,7 @@
+          tsym.init(n);
+          typ:=enumsym;
+          definition:=def;
++         definition_deref:=nil;
+          value:=v;
+          if def^.min>v then
+            def^.setmin(v);
+@@ -1859,7 +1876,10 @@
+       begin
+          tsym.load;
+          typ:=enumsym;
+-         definition:=penumdef(readdefref);
++         { Park the cross-ref chain in the shadow; tenumsym.deref
++           resolves it into `definition' in the second pass. }
++         definition := nil;
++         definition_deref := pderef(readdefref);
+          value:=readlong;
+          nextenum := Nil;
+       end;
+@@ -1867,6 +1887,9 @@
+ 
+     procedure tenumsym.deref;
+       begin
++         { See tdef.deref for why we route through the shadow field. }
++         definition := penumdef(definition_deref);
++         definition_deref := nil;
+          resolvedef(pdef(definition));
+          order;
+       end;
+--- a/compiler/symsymh.inc
++++ b/compiler/symsymh.inc
+@@ -104,6 +104,9 @@
+        tprocsym = object(tsym)
+           is_global   : boolean;
+           definition  : pprocdef;
++          { PPU-load placeholder for `definition'; see the note on
++            tdef.typesym_deref. }
++          definition_deref : pderef;
+ {$ifdef CHAINPROCSYMS}
+           nextprocsym : pprocsym;
+ {$endif CHAINPROCSYMS}
+@@ -195,6 +198,9 @@
+           propoptions   : tpropertyoptions;
+           proptype      : ttype;
+           propoverriden : ppropertysym;
++          { PPU-load placeholder for `propoverriden'; see the note on
++            tdef.typesym_deref. }
++          propoverriden_deref : pderef;
+           indextype     : ttype;
+           index,
+           default       : longint;
+@@ -291,6 +297,9 @@
+        tenumsym = object(tsym)
+           value      : longint;
+           definition : penumdef;
++          { PPU-load placeholder for `definition'; see the note on
++            tdef.typesym_deref. }
++          definition_deref : pderef;
+           nextenum   : penumsym;
+           constructor init(const n : string;def : penumdef;v : longint);
+           constructor load;

@@ -1,0 +1,42 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Guard the psetdef(rd) cast after a non-halting type mismatch (fpc 0.99)
+License: expat
+
+In compiler/tcadd.pas, inside the setdef-operand arm of the add/op
+handler, control can fall through after CGMessage reports a
+type-mismatch between `rd' and the setdef `ld'.  The fallthrough then
+does:
+
+    if (psetdef(ld)^.settype<>smallset) and
+       (psetdef(rd)^.settype=smallset) then
+
+`rd' at this point is whatever the mismatched operand was -- it need
+not be a setdef at all.  When it isn't (in practice it's commonly an
+enumdef / orddef), `psetdef(rd)^.settype' reads a field that the
+actual record doesn't have, at a meaningless offset.  tsetdef and
+the other defs are siblings, not a hierarchy: the cast is just
+wrong.  Native FPC tolerated it because the bytes at that offset
+were a valid `tsettype' value either way; under tp2cc the cast is
+rejected at runtime as a downcast onto a foreign record type.
+
+Fix: guard the `psetdef(rd)' cast with `rd^.deftype = setdef'.
+
+--- a/compiler/tcadd.pas
++++ b/compiler/tcadd.pas
+@@ -648,7 +648,14 @@
+
+                 { if the destination is not a smallset then insert a typeconv
+                   which loads a smallset into a normal set }
+-                if (psetdef(ld)^.settype<>smallset) and
++                { rd may not actually be a setdef here: when a type-mismatch
++                  was reported above via CGMessage, control falls through
++                  without halting, leaving rd as an unrelated def (enum,
++                  ord, ...).  The `psetdef(rd)' cast below was wrong in
++                  that case -- the unrelated def has no `settype' field.
++                  Guard the cast explicitly. }
++                if (rd^.deftype=setdef) and
++                   (psetdef(ld)^.settype<>smallset) and
+                    (psetdef(rd)^.settype=smallset) then
+                  begin
+                    if (p^.right^.treetype=setconstn) then

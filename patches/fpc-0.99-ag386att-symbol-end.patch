@@ -1,0 +1,48 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Use pai_symbol_end in the ait_symbol_end branch of the AT&T writer (fpc 0.99)
+License: expat
+
+In compiler/ag386att.pas the `ait_symbol_end' arm of the emit case
+reads the symbol name like:
+
+    AsmWrite(pai_symbol(hp)^.sym^.name);
+
+but inside this arm `hp^.typ = ait_symbol_end', which means the
+actual record is a tai_symbol_end -- a sibling of tai_symbol in the
+pai hierarchy with a different layout.  The two records happen to
+expose a `sym' field at the same byte offset, so on native FPC the
+wrong cast reads the right bytes by coincidence.  Under the tp2cc
+C++ bootstrap the emitter renders the cast as a checked downcast
+onto an unrelated record type, and the cast is rejected at runtime
+before the read can take place.
+
+Fix: cast to pai_symbol_end, the actual record type.
+
+--- a/compiler/ag386att.pas
++++ b/compiler/ag386att.pas
+@@ -679,6 +679,12 @@
+              end;
+
+            ait_symbol_end :
++             { hp^.typ is ait_symbol_end here: the actual record is a
++               tai_symbol_end, a sibling of tai_symbol with a different
++               layout.  They happen to share a `sym' field at the same
++               offset so the old pai_symbol(hp) cast read the right bytes
++               by luck on native FPC.  Use pai_symbol_end, the correct
++               type. }
+              begin
+                if target_info.target=target_i386_linux then
+                 begin
+@@ -686,9 +692,9 @@
+                   inc(symendcount);
+                   AsmWriteLn(s+':');
+                   AsmWrite(#9'.size'#9);
+-                  AsmWrite(pai_symbol(hp)^.sym^.name);
++                  AsmWrite(pai_symbol_end(hp)^.sym^.name);
+                   AsmWrite(', '+s+' - ');
+-                  AsmWriteLn(pai_symbol(hp)^.sym^.name);
++                  AsmWriteLn(pai_symbol_end(hp)^.sym^.name);
+                 end;
+              end;
+

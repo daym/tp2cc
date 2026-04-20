@@ -1,0 +1,144 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Add sys_getcwd to RTL GetDir; correct per-arch syscall numbers
+License: expat
+
+Two related linux-RTL fixes.
+
+(1) GetDir robustness (rtl/unix/sysunix.inc):
+
+The FPC 1.0.6 unix GetDir computes the current working directory by
+walking up the directory tree from '.' to '/', at each step
+opendir+readdir'ing the parent and finding the entry whose d_ino
+equals the stat'd inode of the current level.  On kernels and mount
+setups where `readdir`'s d_ino can legitimately differ from `stat`'s
+st_ino for the same name -- notably overlayfs, certain bind mounts,
+and the mount namespaces used by guix-daemon's build chroot -- the
+pre-filter `d^.ino = thisino` rejects the real match, the readdir
+loop runs to end-of-directory, `d = nil`, and the routine exits
+leaving the out parameter as the empty string it was initialized to.
+No error is propagated.
+
+Empty cwd feeds into FExpand (rtl/inc/fexpand.inc), which then
+collapses any relative path that starts with `../` down to
+`/<last component>`.  Every `-Fi../<dir>` the compiler is invoked
+with is thereby canonicalised to a non-existent absolute path,
+silently dropped by options.pas's `PathExists` filter, and the
+include-search list ends up empty.  The first include directive then
+fails with "Can't open include file <foo>" and the bootstrap cycle
+dies.
+
+Linux 2.2 added the sys_getcwd syscall, which returns the path
+directly via the kernel's own dentry walk and is immune to
+readdir/stat inode divergence.  This patch adds the syscall number,
+a Sys_GetCwd wrapper, and prefers it in GetDir, falling back to the
+existing inode-walk only if the kernel returns an error (e.g.
+ENOSYS on a pre-2.2 kernel).
+
+(2) Per-arch syscall numbers (rtl/linux/sysnr.inc):
+
+sysnr.inc was an i386-only syscall table inherited unchanged for
+every linux target the compiler can emit code for.  m68k happens to
+agree with i386 on every syscall it actually has (mismatches are all
+i386-only calls m68k never had, like vm86/ioperm).  PowerPC differs
+on a small set: `chown' (real chown is 181 on powerpc; i386's 16 was
+renamed to lchown in 2.4), `vm86' (no such syscall on powerpc -- 113
+is `quotactl' there, so calling i386's number would invoke the wrong
+thing), and `query_module'/`poll' which are slid down by one.
+
+This patch also adds `getcwd' with per-arch values (i386=183,
+m68k=183, powerpc=182) and overrides for those four powerpc-specific
+divergences.  Alpha is intentionally not handled here.
+
+--- a/rtl/linux/sysnr.inc
++++ b/rtl/linux/sysnr.inc
+@@ -30,7 +30,11 @@
+  syscall_nr_time			= 13;
+  syscall_nr_mknod			= 14;
+  syscall_nr_chmod			= 15;
+- syscall_nr_chown			= 16;
++ { On i386 syscall 16 was renamed `lchown' in 2.4 and a new `chown'
++   was added at 182; FPC keeps the old number for backwards
++   compatibility (so this name actually invokes lchown today).
++   PowerPC never had the rename and `chown' lives at its real number. }
++{$ifdef powerpc} syscall_nr_chown		= 181; {$else} syscall_nr_chown		= 16; {$endif}
+  syscall_nr_break			= 17;
+  syscall_nr_oldstat			= 18;
+  syscall_nr_lseek			= 19;
+@@ -180,10 +184,22 @@
+  syscall_nr_mremap			= 163;
+  syscall_nr_setresuid			= 164;
+  syscall_nr_getresuid			= 165;
+- syscall_nr_vm86			= 166;
+- syscall_nr_query_module		= 167;
+- syscall_nr_poll			= 168;
+- 
++ { vm86/query_module/poll sit at adjacent numbers (166-168) on i386.
++   PowerPC has no vm86; query_module/poll are slid down by one. }
++{$ifdef powerpc} syscall_nr_vm86		= 113; {$else} syscall_nr_vm86			= 166; {$endif}
++{$ifdef powerpc} syscall_nr_query_module	= 166; {$else} syscall_nr_query_module		= 167; {$endif}
++{$ifdef powerpc} syscall_nr_poll		= 167; {$else} syscall_nr_poll			= 168; {$endif}
++ { sys_getcwd was added in Linux 2.2 and lives at different syscall
++   numbers per port. The rest of this file is the i386 syscall table
++   (inherited unchanged for every linux target), but getcwd is the
++   only number actually consulted on a non-i386 path so it is the
++   only one wrapped here. Numbers cross-checked against the upstream
++   kernel syscall tables. }
++{$ifdef i386}    syscall_nr_getcwd		= 183; {$endif}
++{$ifdef m68k}    syscall_nr_getcwd		= 183; {$endif}
++{$ifdef powerpc} syscall_nr_getcwd		= 182; {$endif}
++{$ifdef alpha}   syscall_nr_getcwd		= 367; {$endif}
++
+ {$IFDEF SYSCALL_DEBUG} 
+ const
+   Sys_nr_txt : array[0..168] of string[15]=(
+--- a/rtl/linux/syscalls.inc
++++ b/rtl/linux/syscalls.inc
+@@ -254,6 +258,20 @@
+ end;
+ 
+ 
++Function Sys_GetCwd(Buffer:pchar;Size:longint):longint;
++{
++   Linux 2.2+ syscall.  Returns number of bytes written (including the
++   terminating NUL) on success, or a negative errno on failure.
++}
++var
++  regs : SysCallregs;
++begin
++  regs.reg2:=longint(buffer);
++  regs.reg3:=size;
++  Sys_GetCwd:=SysCall(SysCall_nr_getcwd,regs);
++end;
++
++
+ Function Sys_Symlink(oldname,newname:pchar):longint;
+ {
+   We need this for erase
+--- a/rtl/unix/sysunix.inc
++++ b/rtl/unix/sysunix.inc
+@@ -479,9 +479,24 @@
+   d            : pdirent;
+   mountpoint,validdir : boolean;
+   predot       : string[255];
++  cwdbuf       : array[0..4095] of char;
++  cwdlen       : longint;
+ begin
+   drivenr:=0;
+   dir:='';
++  { Linux 2.2+ sys_getcwd returns the path length including the trailing
++    NUL on success.  Use it when available -- the inode-walk fallback
++    below can silently fail on overlayfs / bind mounts where readdir's
++    d_ino diverges from stat's st_ino. }
++  cwdlen:=Sys_GetCwd(@cwdbuf[0],sizeof(cwdbuf));
++  if (cwdlen>0) and (cwdlen<=256) then
++    begin
++      { cwdlen counts the NUL; shortstring length excludes it. }
++      dir[0]:=chr(cwdlen-1);
++      Move(cwdbuf[0],dir[1],cwdlen-1);
++      exit;
++    end;
++  { Fall through to the inode-walk implementation. }
+   thedir:='/'#0;
+   if sys_stat(@thedir[1],thisdir)<0 then
+    exit;

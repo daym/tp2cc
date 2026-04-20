@@ -1,0 +1,48 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Pair stringdup's getmem with stringdispose's freemem in TStringQueue.Delete
+License: expat
+
+compiler/cobjects.pas's `stringdup' allocates a pstring with
+
+    getmem(p, length(s)+1)
+
+i.e. a variable-size getmem of just the byte the shortstring needs.
+The matching deallocator is `freemem(p, length(p^)+1)', which the
+companion helper `stringdispose' wraps.
+
+`TStringQueue.Delete' instead released the same buffer with plain
+`dispose(p^.data)'.  In Pascal, `dispose' on a typed pointer frees
+`sizeof(typeref^)' bytes -- here `sizeof(string) = 256' -- via the
+new/dispose pair.  Native FPC tolerated the mismatch because its
+heap manager folds new/dispose and getmem/freemem onto the same
+underlying allocator and the size argument is reconciled from the
+heap header rather than the caller-supplied value.  Under stricter
+allocators -- including the tp2cc C++ lowering, where new/delete
+target the C++ operator new/delete and getmem/freemem target
+malloc/free -- the size-mismatched and pair-mismatched call is a
+real heap error: ASan reports it as
+`alloc-dealloc-mismatch (malloc vs operator delete)'.
+
+`TStringQueue.Done' already pairs the buffer correctly with
+`stringdispose'; this just brings Delete in line.
+
+--- a/compiler/cobjects.pas
++++ b/compiler/cobjects.pas
+@@ -817,7 +817,15 @@
+          prev^.next:=p^.next
+         else
+          first:=p^.next;
+-        dispose(p^.data);
++        { p^.data was allocated by stringdup -> getmem(_, length+1).
++          The matching deallocator is freemem of the same size, which
++          stringdispose wraps. The original `dispose(p^.data)' worked on
++          native FPC only because its heap manager folds new/dispose and
++          getmem/freemem onto the same allocator; under stricter
++          allocators (or under tp2cc's C++ lowering, where new/delete
++          and malloc/free are separate) the size-mismatched dispose is
++          a real heap error. }
++        stringdispose(p^.data);
+         dispose(p);
+         Delete:=true;
+         exit;

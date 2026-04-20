@@ -1,0 +1,40 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-20
+Subject: Cast the destination's type, not the call node's, in Val/floatdef (fpc 0.99)
+License: expat
+
+In compiler/cg386inl.pas the Val(string, destvar[, code]) handler
+does, in the `floatdef:` arm:
+
+    if pfloatdef(p^.resulttype)^.typ <> f32bit then
+      inc(fpuvaroffset);
+
+`p' is the whole Val call node.  Its resulttype is the procedure's
+*return type* (a void-like slot for the Val intrinsic), not the
+destination variable's type.  Casting that slot as `pfloatdef' is
+wrong: the def pointed at has nothing to do with floatdef and a
+read of `.typ' lands at a meaningless offset.
+
+The outer `case dest_para^.resulttype^.deftype of' just confirmed
+that `dest_para^.resulttype' really is a floatdef, so that is the
+one to cast.  Native FPC happened to tolerate the original cast
+because the bytes read by `.typ' held a value that compared equal
+to `f32bit' often enough to avoid obvious misbehaviour; under tp2cc
+the field read on the wrong record type is rejected at runtime.
+
+--- a/compiler/cg386inl.pas
++++ b/compiler/cg386inl.pas
+@@ -732,7 +732,12 @@
+              floatdef:
+                begin
+                   procedureprefix := 'FPC_VAL_REAL_';
+-                  if pfloatdef(p^.resulttype)^.typ<>f32bit then
++                  { Upstream wrote pfloatdef(p^.resulttype) -- wrong.  p is
++                    the whole Val call node; its resulttype is the procedure
++                    return type, not the destination's.  The outer case just
++                    confirmed dest_para^.resulttype is a floatdef, so cast
++                    that one. }
++                  if pfloatdef(dest_para^.resulttype)^.typ<>f32bit then
+                     inc(fpuvaroffset);
+                end;
+              orddef:
