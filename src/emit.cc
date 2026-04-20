@@ -1930,8 +1930,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       } else {
         first = expr_to_cxx(*s.elements.front());
       }
+      // Value-init: `Set` has no default member initialisers, so a
+      // bare `Set __s;` would leave the bitmask uninitialised and
+      // `__s.add(...)` only sets specific bits -- every unset bit
+      // would be stack garbage, making `contains()` return true for
+      // arbitrary values.
       std::string body =
-          "::rt::Set<decltype(" + first + ")> __s;";
+          "::rt::Set<decltype(" + first + ")> __s{};";
       for (const auto& el : s.elements) {
         if (el->kind == Kind::Range) {
           const auto& r = static_cast<const Range&>(*el);
@@ -2295,13 +2300,12 @@ void Emitter::emit_var_decl(const VarDecl& vd, bool in_header) {
       // zero-init behaviour that existing emitted code depends on, we
       // emit `T name{};` (value-initialisation) for locals instead of
       // `T name;` (default-initialisation, which would leave primitive
-      // sub-members undefined).
       emitln(ty + " " + name + "{};");
     } else {
       // File-scope / unit-level `var X : T;` with no initialiser.
       // C++ zero-initialises static-storage objects before any dynamic
       // init, so plain `T name;` is already equivalent to value-init
-      // for the trivial types we emit. Leave it alone.
+      // for the trivial types we emit.
       emitln(ty + " " + name + ";");
     }
   }

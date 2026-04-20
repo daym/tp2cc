@@ -131,12 +131,22 @@ template <int N = 255>
 struct ShortString {
   static_assert(N >= 1 && N <= 255, "ShortString capacity must be 1..255");
 
-  uint8_t length = 0;
-  p_char data[N] = {};
+  // No default member initialisers, so `std::is_trivial_v<ShortString>`
+  // holds; that lets a ShortString live as a field of a packed record
+  // without GCC silently dropping the `[[gnu::packed]]` attribute.
+  // Consumers always read no further than `length`, and the emitter
+  // value-inits locals (`ShortString<> s{};`) so Pascal `var s : string;`
+  // still starts empty.
+  uint8_t length;
+  p_char data[N];
 
   constexpr ShortString() = default;
 
-  constexpr ShortString(const char* s) {
+  // `: data{}` mem-init zeroes the tail past what we copy in -- load-
+  // bearing now that `data` has no default member initialiser, or callers
+  // that memcpy/bytewise-compare a returned ShortString would see stack
+  // garbage in positions >= length.
+  constexpr ShortString(const char* s) : data{} {
     int n = 0;
     if (s) {
       while (s[n] && n < N) ++n;
@@ -144,7 +154,7 @@ struct ShortString {
     length = static_cast<uint8_t>(n);
     for (int i = 0; i < n; ++i) data[i] = p_char_of(s[i]);
   }
-  constexpr ShortString(const p_char* s) {
+  constexpr ShortString(const p_char* s) : data{} {
     int n = 0;
     if (s) {
       while (p_char_byte(s[n]) != 0 && n < N) ++n;
@@ -153,13 +163,13 @@ struct ShortString {
     for (int i = 0; i < n; ++i) data[i] = s[i];
   }
 
-  constexpr ShortString(p_char c) : length(1) { data[0] = c; }
+  constexpr ShortString(p_char c) : length(1), data{} { data[0] = c; }
 
 
   // Copy from a ShortString of any capacity (Pascal assigns freely
   // between different `string[N]` sizes; target capacity truncates).
   template <int M>
-  constexpr ShortString(const ShortString<M>& o) {
+  constexpr ShortString(const ShortString<M>& o) : data{} {
     int n = o.length;
     if (n > N) n = N;
     length = static_cast<uint8_t>(n);
@@ -237,7 +247,7 @@ struct ShortString {
   friend constexpr auto operator+(const ShortString& a,
                                   const ShortString<M>& b) {
     constexpr int R = (N > M ? N : M);
-    ShortString<R> out;
+    ShortString<R> out{};
     int n = a.length + b.length;
     if (n > R) n = R;
     for (int i = 0; i < a.length && i < R; ++i) out.data[i] = a.data[i];
@@ -336,7 +346,7 @@ inline constexpr bool operator>=(A a, B b) {
 // `+` on a CharConst / p_char chooses string concatenation: the only
 // reason a Pascal 1-char value appears under `+` is to build a string.
 inline constexpr ShortString<> operator+(CharConst a, CharConst b) {
-  ShortString<> r;
+  ShortString<> r{};
   r.data[0] = a.c;
   r.data[1] = b.c;
   r.length = 2;
@@ -410,18 +420,33 @@ inline constexpr int p_ordinal_value(T x) {
 // initialises exactly as expected.
 template <typename T, auto Lo, int N>
 struct Array {
-  T data[N]{};
+  // `T data[N];` -- DELIBERATELY NOT `T data[N]{};`. A default member
+  // initialiser makes `std::is_trivial_v<Array>` false even when `T` is
+  // trivial, which in turn makes GCC silently ignore `[[gnu::packed]]`
+  // on any packed record containing this Array. Leaving the array
+  // uninitialised in the raw declaration is fine because the tp2cc
+  // emitter's `emit_var_decl` adds `{}` at every local declaration
+  // site, static-storage globals zero-init by C++ rules, and struct
+  // fields get zeroed by their enclosing aggregate's `{...}` init.
+  //
+  // For `T` with virtuals, plain `T data[N];` still default-inits each
+  // element (C++ rule for arrays of class type with a default ctor),
+  // so vtables are set up. Matches Pascal `array of TFoo` semantics.
+  T data[N];
 
-  // User-provided (not =default) so the class is NOT an aggregate. This
-  // matters because `Array<R, Lo, N> a = {{.f=1}, ...}` must dispatch
-  // to the initializer_list<T> ctor and aggregate-init each element as
-  // a T -- not try to aggregate-init the Array (which would route the
-  // designator through `data[N]` and hit GNU-array-designator errors).
-  constexpr Array() {}
+  // Defaulted (not a user-provided body) so the default ctor is
+  // trivial -- required for `is_trivial_v<Array>`, which the emitter's
+  // per-field static_assert demands on packed-record members. The
+  // non-default ctors below are user-*declared* but not-user-*provided*
+  // for purposes of the trivial-default-ctor rule: only the default
+  // ctor has to be trivial, and only non-copy/non-move ctors have to
+  // be absent for trivial copy/move.
+  constexpr Array() = default;
 
   // `Array<T, Lo, N> a = {e0, e1, ...};` -- each element converts to T,
   // so `{.field=v}` designated aggregate inits of element records work.
-  constexpr Array(std::initializer_list<T> il) {
+  // `: data{}` zeroes the tail when fewer than N initializers are given.
+  constexpr Array(std::initializer_list<T> il) : data{} {
     int i = 0;
     for (auto& v : il) {
       if (i < N) data[i++] = v;
@@ -430,9 +455,13 @@ struct Array {
 
   // Convert from a ShortString. Matches Pascal's `array[1..N] of char =
   // 'some string'` idiom: characters fill the first part of the array,
-  // remaining bytes stay zero. Typed for byte-sized T in practice.
+  // remaining bytes stay zero. The `: data{}` mem-init is load-bearing
+  // -- without it (and now that `data` has no default member initialiser)
+  // the tail after the copied prefix would be uninitialised stack
+  // garbage, breaking code that treats the array as a fixed-size char
+  // buffer.
   template <int M>
-  constexpr Array(const ShortString<M>& s) {
+  constexpr Array(const ShortString<M>& s) : data{} {
     int n = s.length < N ? s.length : N;
     for (int i = 0; i < n; ++i) {
       if constexpr (std::is_same_v<T, p_char>)
@@ -445,10 +474,11 @@ struct Array {
   // Pascal single-char string literal as init for `array of char`. The
   // emitter turns a one-character Pascal string into a plain `char`, so
   // we need a ctor that accepts it and places the byte at position 0.
-  constexpr Array(char c) {
+  // `: data{}` zeroes the rest -- see note on the ShortString ctor above.
+  constexpr Array(char c) : data{} {
     if (N > 0) data[0] = static_cast<T>(c);
   }
-  constexpr Array(p_char c) {
+  constexpr Array(p_char c) : data{} {
     if (N > 0) {
       if constexpr (std::is_same_v<T, p_char>)
         data[0] = c;
@@ -536,7 +566,7 @@ struct ByteReinterpreter<Array<Elem, Lo, N>> {
     static_assert(std::is_same_v<Elem, uint8_t> ||
                       std::is_same_v<Elem, p_char>,
                   "byte reinterpretation only supports byte-sized arrays");
-    Array<Elem, Lo, N> out;
+    Array<Elem, Lo, N> out{};
     const auto* raw = reinterpret_cast<const uint8_t*>(&src);
     const int bytes = static_cast<int>(
         std::min<std::size_t>(sizeof(src), sizeof(out.data)));
@@ -613,7 +643,13 @@ inline const T& p_reinterpret_ref(const void* p) {
 template <typename Elem>
 struct Set {
   static constexpr int Nb = 32;  // 32 bytes == 256 bits.
-  unsigned char bits[Nb] = {};
+  // No default member initialiser: keeps `is_trivial_v<Set>` so `Set`
+  // can live inside a packed record without GCC dropping the packing.
+  // `Set` helpers (`from_list`, `set_of`, the emitter's set-range
+  // lambda) value-init with `Set s{};` before calling `add` so the
+  // unset bits are zeroed; otherwise `.contains()` would return true
+  // for arbitrary values.
+  unsigned char bits[Nb];
 
   constexpr Set() = default;
 
@@ -630,10 +666,11 @@ struct Set {
   // Adopt the byte-layout of a 32-byte `array[0..31] of byte` as the
   // bitmask. Pascal's in-memory `set` layout matches this for
   // `set of 0..255` / `set of byte`, so an explicit cast
-  // `byteset(arr)` is just a reinterpretation.
+  // `byteset(arr)` is just a reinterpretation. `: bits{}` zeroes the
+  // tail when `N < Nb`.
   template <auto Lo, int N,
             typename = std::enable_if_t<(N * sizeof(uint8_t) <= Nb)>>
-  constexpr Set(const Array<uint8_t, Lo, N>& a) {
+  constexpr Set(const Array<uint8_t, Lo, N>& a) : bits{} {
     const int n = (N < Nb) ? N : Nb;
     for (int i = 0; i < n; ++i) bits[i] = a.data[i];
   }
@@ -646,7 +683,11 @@ struct Set {
   }
 
   static Set from_list(std::initializer_list<Elem> xs) {
-    Set s;
+    // Value-init; `Set` has no default member initialisers, so a bare
+    // `Set s;` would leave the bitmask uninitialised and the
+    // subsequent `s.add(x)` calls would only set specific bits on top
+    // of stack garbage.
+    Set s{};
     for (auto x : xs) s.add(x);
     return s;
   }
@@ -661,13 +702,13 @@ struct Set {
     return (bits[i >> 3] & (1u << (i & 7))) != 0;
   }
   friend constexpr Set operator+(Set a, Set b) {
-    Set r; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] | b.bits[i]; return r;
+    Set r{}; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] | b.bits[i]; return r;
   }
   friend constexpr Set operator-(Set a, Set b) {
-    Set r; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] & ~b.bits[i]; return r;
+    Set r{}; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] & ~b.bits[i]; return r;
   }
   friend constexpr Set operator*(Set a, Set b) {
-    Set r; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] & b.bits[i]; return r;
+    Set r{}; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] & b.bits[i]; return r;
   }
   friend constexpr bool operator==(Set a, Set b) {
     for (int i = 0; i < Nb; ++i) if (a.bits[i] != b.bits[i]) return false;
@@ -700,7 +741,7 @@ template <> struct set_elem_type<CharConst> { using type = p_char; };
 template <typename T, typename... Rest>
 inline auto set_of(T first, Rest... rest) {
   using E = typename detail::set_elem_type<T>::type;
-  Set<E> s;
+  Set<E> s{};  // value-init: zero the bits[] -- see note on from_list
   s.add(static_cast<E>(first));
   (s.add(static_cast<E>(rest)), ...);
   return s;
@@ -729,7 +770,7 @@ struct SetElem {
 
 template <typename Elem>
 Set<Elem> set_of_range(std::initializer_list<SetElem<Elem>> xs) {
-  Set<Elem> s;
+  Set<Elem> s{};  // value-init; see note on Set::from_list
   for (const auto& x : xs) {
     if (x.is_range) {
       for (int64_t v = static_cast<int64_t>(x.lo);
@@ -747,7 +788,10 @@ Set<Elem> set_of_range(std::initializer_list<SetElem<Elem>> xs) {
 
 struct TextFile {
   std::FILE* f = nullptr;
-  ShortString<> name;
+  // `{}` needed because `ShortString` no longer carries a default
+  // member initialiser on its own fields (would disqualify it from
+  // `is_trivial` and break its use as a packed-record member).
+  ShortString<> name{};
   int32_t iores = 0;  // last IOResult
 };
 
@@ -755,7 +799,7 @@ struct TextFile {
 template <typename T>
 struct TypedFile {
   std::FILE* f = nullptr;
-  ShortString<> name;
+  ShortString<> name{};
   int32_t iores = 0;
 };
 
@@ -1109,7 +1153,7 @@ inline void p_spawn_process(const std::vector<std::string>& args) {
 
 // Dos/file procedures -- stubbed; real behaviour added as needed.
 struct SearchRec { int32_t p_time = 0; int32_t p_size = 0;
-                   uint8_t p_attr = 0; ShortString<> p_name;
+                   uint8_t p_attr = 0; ShortString<> p_name{};
                    std::vector<std::string> p_matches;
                    std::size_t p_index = 0; };
 using p_searchrec = SearchRec;
@@ -1653,7 +1697,7 @@ inline void p_val(const ShortString<N>& s, float& out, Code& code) {
 
 template <int N>
 inline ShortString<> p_copy(const ShortString<N>& s, int start, int count) {
-  ShortString<> r;
+  ShortString<> r{};
   if (start < 1) start = 1;
   int avail = s.length - (start - 1);
   if (avail < 0) avail = 0;
