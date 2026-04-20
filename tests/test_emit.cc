@@ -231,9 +231,7 @@ void test_packed_record_keeps_packed_layout() {
       "  end;\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "#pragma pack(push, 1)"));
-  CHECK(contains(out.header, "struct p_hdr {"));
-  CHECK(contains(out.header, "#pragma pack(pop)"));
+  CHECK(contains(out.header, "struct [[gnu::packed]] p_hdr {"));
 }
 
 void test_parenthesized_record_const() {

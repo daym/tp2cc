@@ -2097,14 +2097,20 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
 
   if (td.type && td.type->kind == Kind::TyRecord) {
     const auto& tr = static_cast<const TyRecord&>(*td.type);
-    // Packed compiler records are often byte-for-byte file layouts that still
-    // need ordinary field access in emitted C++. `[[gnu::packed]]` preserves
-    // the layout, but GCC then treats those fields as potentially misaligned
-    // packed members and rejects many non-const reference bindings. `#pragma
-    // pack` gives the byte layout we need here while keeping the generated
-    // field expressions usable.
-    if (tr.is_packed) emitln("#pragma pack(push, 1)");
-    emitln("struct " + name + " {");
+    // Pascal `packed record` -> `struct [[gnu::packed]]`. We deliberately use
+    // the attribute rather than `#pragma pack(push,1)` because the attribute
+    // makes GCC *warn* about latent UB that `#pragma pack` silently permits:
+    // taking an aligned pointer/reference to a packed field
+    // (`-Waddress-of-packed-member`), binding a non-const reference to one,
+    // or calling a method on an inner struct-typed field that would form a
+    // typed `this` with lost-packedness. All of those are real bugs -- e.g.
+    // the `set of ttargetflags` field inside `packed record ttargetinfo` in
+    // `compiler/systems.pas` would, under `#pragma pack`, happily silently
+    // invoke `Set::add` through a misaligned `this`. With the attribute the
+    // compiler flags it, and we can fix it (see rt::Set, now byte-aligned).
+    std::string open = "struct ";
+    if (tr.is_packed) open += "[[gnu::packed]] ";
+    emitln(open + name + " {");
     indent();
     for (const auto& f : tr.fields) {
       std::string ft = f.type ? type_to_cxx(*f.type) : std::string("int32_t");
@@ -2141,7 +2147,6 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     }
     dedent();
     emitln("};");
-    if (tr.is_packed) emitln("#pragma pack(pop)");
     return;
   }
 
