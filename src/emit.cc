@@ -2162,6 +2162,7 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     if (!to.parent.empty()) {
       emitln("using inherited = " + mangle(to.parent) + ";");
     }
+    bool has_virtual = false;
     for (const auto& m : to.members) {
       if (m.is_field) {
         std::string ft = m.field_type ? type_to_cxx(*m.field_type)
@@ -2184,6 +2185,7 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
         std::string prefix;
         if (pd.is_virtual || pd.is_abstract || pd.is_override) {
           prefix = "virtual ";
+          has_virtual = true;
         }
         std::string suffix;
         if (pd.is_abstract) suffix = " = 0";
@@ -2191,6 +2193,15 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
         emitln(prefix + ret + " " + mangle(pd.name) + "(" +
                param_list_to_cxx(pd.params) + ")" + suffix + ";");
       }
+    }
+    // Polymorphic objects must have a virtual C++ destructor, otherwise
+    // `delete p_base_ptr;` passes sizeof(Base) to operator delete even when
+    // the object is actually a larger Derived -- new-delete-type-mismatch UB.
+    // Pascal's `destructor Done; virtual;` maps to `virtual void p_done()`,
+    // but that's just a regular method; the C++ dtor (`~Name()`) is separate
+    // and must be virtual so the correct sized-delete is issued via the vtable.
+    if (has_virtual) {
+      emitln("virtual ~" + name + "() = default;");
     }
     dedent();
     emitln("};");
