@@ -439,6 +439,20 @@ void test_parameterless_procvar_stmt_autocalls() {
   CHECK(contains(out.impl, "p_oldstop();"));
 }
 
+void test_runtime_builtin_stmt_autocalls() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "begin\n"
+      "  swapvectors;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_swapvectors();"));
+}
+
 void test_bool_procvar_call_uses_logical_and() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -509,6 +523,7 @@ int main() {
   RUN_TEST(test_inc_primitive_cast_reinterprets_storage);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
   RUN_TEST(test_parameterless_procvar_stmt_autocalls);
+  RUN_TEST(test_runtime_builtin_stmt_autocalls);
   RUN_TEST(test_bool_procvar_call_uses_logical_and);
   RUN_TEST(test_cxx_reserved_word_identifiers);
 
