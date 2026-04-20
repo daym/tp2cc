@@ -2125,12 +2125,38 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     auto emit_field = [&](const std::string& ft, const std::string& fn) {
       emitln(ft + " " + mangle(fn) + ";");
       if (tr.is_packed) {
+        // The predicate below is what GCC actually uses to decide whether
+        // to honour `[[gnu::packed]]` on a field. I measured it by
+        // compiling one non-trivial field at a time and checking whether
+        // the "ignoring packed attribute because of unpacked non-POD
+        // field" diagnostic fired; the warning tracks `is_trivial_v`
+        // one-to-one. Weaker checks like `is_trivially_copyable_v` (no
+        // trivial-default-ctor requirement) miss the exact cases GCC
+        // flags -- e.g. a class with a user-provided converting ctor is
+        // trivially copyable but not trivial, and GCC refuses to pack it.
+        //
+        // `is_standard_layout_v` is belt-and-braces: it rules out virtual
+        // bases, mixed access control, references, and other layouts that
+        // aren't a plain byte sequence.
+        //
+        // Together they mean: the type has a statically-knowable byte
+        // layout, can be copied with `memcpy`, has no hidden init side
+        // effects. That's the "POD-like" that Pascal `packed record'
+        // semantics implicitly require when the record is used as a
+        // file/wire format (ppu headers, COFF symbols, ar headers, ...).
+        //
+        // GCC's warning has no dedicated `-W` flag (emitted with
+        // `warning(0, ...)` in `stor-layout.cc`), so we can't `-Werror=`
+        // it selectively; this static_assert is the replacement, firing
+        // at the exact field with a message that names it and explains
+        // what would otherwise go silently wrong.
         emitln("static_assert(::std::is_standard_layout_v<" + ft + "> && "
-               "::std::is_trivially_copyable_v<" + ft + ">, "
+               "::std::is_trivial_v<" + ft + ">, "
                "\"field '" + fn + "' of packed record '" + name + "' must "
-               "be POD-like: GCC silently ignores [[gnu::packed]] for "
-               "non-POD fields and keeps natural alignment, breaking the "
-               "packed layout Pascal asked for.\");");
+               "be POD-like (is_standard_layout && is_trivial): GCC "
+               "silently ignores [[gnu::packed]] for non-trivial fields "
+               "and keeps natural alignment, breaking the packed layout "
+               "Pascal asked for.\");");
       }
     };
 
@@ -2253,12 +2279,30 @@ void Emitter::emit_var_decl(const VarDecl& vd, bool in_header) {
     std::string name = mangle(n);
     if (in_header) {
       emitln("extern " + ty + " " + name + ";");
+    } else if (vd.init) {
+      emitln(ty + " " + name + " = " + expr_to_cxx(*vd.init) + ";");
+    } else if (block_depth > 0) {
+      // Function-local `var X : T;` with no initialiser. Pascal itself
+      // leaves locals undefined, but lots of FPC code still expects
+      // ShortStrings to start with `length = 0` and Arrays to start
+      // zeroed because that was the de-facto behaviour under FPC's
+      // stack-zeroing in debug builds. Until our rt types carried
+      // default member initialisers (`length = 0;`, `T data[N]{}`),
+      // those locals read as zero "for free". We are about to remove
+      // those member initialisers so the rt types can be `is_trivial`
+      // (required for them to live inside a `[[gnu::packed]]` struct
+      // without GCC silently ignoring the packing). To preserve the
+      // zero-init behaviour that existing emitted code depends on, we
+      // emit `T name{};` (value-initialisation) for locals instead of
+      // `T name;` (default-initialisation, which would leave primitive
+      // sub-members undefined).
+      emitln(ty + " " + name + "{};");
     } else {
-      if (vd.init) {
-        emitln(ty + " " + name + " = " + expr_to_cxx(*vd.init) + ";");
-      } else {
-        emitln(ty + " " + name + ";");
-      }
+      // File-scope / unit-level `var X : T;` with no initialiser.
+      // C++ zero-initialises static-storage objects before any dynamic
+      // init, so plain `T name;` is already equivalent to value-init
+      // for the trivial types we emit. Leave it alone.
+      emitln(ty + " " + name + ";");
     }
   }
 }
