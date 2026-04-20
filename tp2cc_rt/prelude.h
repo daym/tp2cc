@@ -840,10 +840,9 @@ template <typename T, typename N> inline void p_dec(T& x, N n) {
   else x = static_cast<T>(static_cast<int64_t>(x) - n);
 }
 
-// No rvalue `p_inc`/`p_dec` overloads here: the `inc(T(lv))` /
-// `dec(T(lv))` idiom in the fpc sources is translated at emit time
-// into `lv = (decltype(lv))((T)lv +/- step)`, so callers only ever
-// reach `p_inc` / `p_dec` with a true lvalue argument.
+// No rvalue `p_inc`/`p_dec` overloads here: casted-lvalue forms like
+// `inc(longint(p))` are emitted as `p_inc(p_reinterpret_ref<int32_t>(p))`,
+// so callers still reach `p_inc` / `p_dec` with a true lvalue.
 
 // --- Missing small RTL procedures ------------------------------------------
 
@@ -1956,8 +1955,29 @@ inline int32_t p_filemode = 0;
 inline void* p_erroraddr = nullptr;
 inline void p_swapvectors() {}
 inline void p_ovrgetbuf(int32_t&) {}
-inline int32_t p_strnew(const char* s) { return 0; (void)s; }
-inline int32_t p_strnew(const p_char* s) { return 0; (void)s; }
+inline p_char* p_strnew(const char* s) {
+  if (!s) return nullptr;
+  std::size_t n = std::strlen(s);
+  auto* out = static_cast<p_char*>(std::malloc((n + 1) * sizeof(p_char)));
+  if (!out) return nullptr;
+  for (std::size_t i = 0; i < n; ++i) out[i] = p_char_of(s[i]);
+  out[n] = p_char_of('\0');
+  return out;
+}
+inline p_char* p_strnew(const p_char* s) {
+  if (!s) return nullptr;
+  std::size_t n = 0;
+  while (p_char_byte(s[n]) != 0) ++n;
+  auto* out = static_cast<p_char*>(std::malloc((n + 1) * sizeof(p_char)));
+  if (!out) return nullptr;
+  for (std::size_t i = 0; i <= n; ++i) out[i] = s[i];
+  return out;
+}
+inline void p_strdispose(p_char*& p) {
+  if (!p) return;
+  std::free(static_cast<void*>(p));
+  p = nullptr;
+}
 inline void p_chmod(const ShortString<>&, int32_t) {}
 template <typename... A> inline int32_t p_execmd(A&&...) { return 0; }
 template <typename... A> inline void p_gettime(A&&...) {}
@@ -2135,7 +2155,9 @@ inline GetEnvResult p_getenv(const ShortString<>& name) {
 // POSIX `system(3)`. Used by the compiler for wildcard expansion.
 template <int N>
 inline int32_t p_shell(const ShortString<N>& cmd) {
-  p_spawn_process({"/bin/sh", "-c", p_to_std_string(cmd)});
+  // Resolve `sh` via PATH so this keeps working in build chroots that
+  // intentionally do not provide a `/bin/sh` path.
+  p_spawn_process({"sh", "-c", p_to_std_string(cmd)});
   return p_last_dosexitcode;
 }
 inline int32_t p_dosexitcode() { return p_last_dosexitcode; }

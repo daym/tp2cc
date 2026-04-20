@@ -353,6 +353,57 @@ void test_local_byte_array_typecast_reinterprets_storage() {
   CHECK(!contains(out.impl, "p_t80bitarray(p_e)[p_i]"));
 }
 
+void test_primitive_cast_assign_reinterprets_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure fill(var b);\n"
+      "implementation\n"
+      "procedure fill(var b);\n"
+      "var\n"
+      "  l : longint;\n"
+      "begin\n"
+      "  longint(b) := l;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_reinterpret_ref<int32_t>(p_b) = p_l;"));
+  CHECK(!contains(out.impl, "p_b = ((int32_t)(p_l));"));
+}
+
+void test_inc_primitive_cast_reinterprets_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure step(p : pchar);\n"
+      "implementation\n"
+      "procedure step(p : pchar);\n"
+      "begin\n"
+      "  inc(longint(p));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::p_inc(::rt::p_reinterpret_ref<int32_t>(p_p))"));
+  CHECK(!contains(out.impl, "p_p = ((int32_t)(p_p) + 1)"));
+}
+
+void test_const_object_param_uses_mutable_ref() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tobj = object\n"
+      "    n : longint;\n"
+      "  end;\n"
+      "procedure take(const x : tobj);\n"
+      "implementation\n"
+      "procedure take(const x : tobj);\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "void p_take(p_tobj& p_x);"));
+  CHECK(!contains(out.header, "void p_take(const p_tobj& p_x);"));
+}
+
 // Pascal identifiers that happen to be C++ reserved words (but are NOT
 // Pascal keywords) must survive translation thanks to the `p_` prefix.
 void test_cxx_reserved_word_identifiers() {
@@ -399,6 +450,9 @@ int main() {
   RUN_TEST(test_nested_untyped_var_forwarding_stays_pointer_value);
   RUN_TEST(test_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_local_byte_array_typecast_reinterprets_storage);
+  RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
+  RUN_TEST(test_inc_primitive_cast_reinterprets_storage);
+  RUN_TEST(test_const_object_param_uses_mutable_ref);
   RUN_TEST(test_cxx_reserved_word_identifiers);
 
   int n = tp2cc_test::failures();

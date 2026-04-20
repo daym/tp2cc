@@ -251,6 +251,8 @@ struct Emitter {
   std::string const_value_to_cxx(const Expr& e);
 
   // Small helpers.
+  bool const_param_needs_mutable_ref(const ast::TypeExpr* t);
+  std::string primitive_cast_lvalue_ref(const ast::Call& c);
   std::string param_list_to_cxx(const std::vector<Param>& params);
   void emit_proc_body(const ProcDecl& pd);
   void emit_nested_proc_lambda(const ProcDecl& pd);
@@ -379,6 +381,26 @@ const TypeExpr* Emitter::canonicalize_type(const TypeExpr* t) {
     break;
   }
   return t;
+}
+
+bool Emitter::const_param_needs_mutable_ref(const TypeExpr* t) {
+  t = canonicalize_type(t);
+  // In old Turbo Pascal/FPC object-style code, `const` on records and
+  // objects is mainly a calling-convention hint. Treating it as C++
+  // deep immutability breaks method calls and container updates.
+  return t && (t->kind == Kind::TyRecord || t->kind == Kind::TyObject);
+}
+
+std::string Emitter::primitive_cast_lvalue_ref(const Call& c) {
+  if (c.args.size() != 1 || c.callee->kind != Kind::Ident) return {};
+  const auto& id = static_cast<const Ident&>(*c.callee);
+  if (!is_primitive_type(id.name)) return {};
+  const Expr* peeled = peel_primitive_casts(c.args[0].get());
+  if (!peeled || !expr_is_storage_lvalue(*c.args[0])) return {};
+  // Pascal `T(lv)` used as an lvalue aliases the same storage with a
+  // different type. Emit that reinterpretation directly.
+  return "::rt::p_reinterpret_ref<" + primitive_type_cxx(id.name) + ">(" +
+         expr_to_cxx(*peeled) + ")";
 }
 
 bool Emitter::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
@@ -523,7 +545,10 @@ std::string Emitter::procedural_type_to_cxx(const TyProcedural& p) {
   for (const auto& pp : p.params) {
     std::string pt = pp.type ? type_to_cxx(*pp.type) : std::string("void*");
     if (pp.mode == Param::Var || pp.mode == Param::Out) pt += "&";
-    else if (pp.mode == Param::Const) pt = std::string("const ") + pt + "&";
+    else if (pp.mode == Param::Const) {
+      if (const_param_needs_mutable_ref(pp.type.get())) pt += "&";
+      else pt = std::string("const ") + pt + "&";
+    }
     for (const auto& n : pp.names) {
       (void)n;
       if (!first) params += ", ";
@@ -1637,25 +1662,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "((void*)nullptr)";
           }
         } else if (c.args.size() == 1 && is_primitive_type(n)) {
-          // Function-style type cast. Compound C++ type expansions like
-          // `const char*` or `long double` can't appear as `T(expr)`; use
-          // a paren cast. For `pointer(lv)` (the Pascal pointer type
-          // cast) through a chain of primitive-type casts ending at
-          // an lvalue, emit a storage reinterpret so the result can
-          // bind to a `var pointer` parameter.
-          // Pointer-typed primitive casts (`pointer(lv)`, `pchar(lv)`,
-          // `ppchar(lv)`) through a chain of primitive-type casts
-          // ending at an lvalue -- emit a storage reinterpret so the
-          // result can bind to a `var`-parameter reference.
+          // Function-style type cast. If the source is true storage,
+          // Pascal lets `T(lv)` alias that same storage directly.
+          if (std::string ref = primitive_cast_lvalue_ref(c); !ref.empty()) {
+            return ref;
+          }
           if (n == "char") {
             return "::rt::p_chr(" + arg0() + ")";
-          }
-          if (n == "pointer" || n == "pchar" || n == "ppchar") {
-            const Expr* peeled = peel_primitive_casts(c.args[0].get());
-            if (peeled && expr_is_storage_lvalue(*c.args[0])) {
-              return "(*(" + primitive_type_cxx(n) + "*)&(" +
-                     expr_to_cxx(*peeled) + "))";
-            }
           }
           if (expr_is_charish(*c.args[0])) {
             return "((" + primitive_type_cxx(n) + ")(::rt::p_ord(" +
@@ -1691,25 +1704,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         } else if ((n == "inc" || n == "dec") &&
                    (c.args.size() == 1 || c.args.size() == 2) &&
                    c.args[0]->kind == Kind::Call) {
-          // Pascal `inc(T(lv))` / `dec(T(lv))` -- cast-then-increment a
-          // value in-place. C++ rejects this because the cast produces
-          // an rvalue. Rewrite to `lv = ((T)lv +/- step)` so the
-          // underlying variable is actually updated; assignment does
-          // the narrowing conversion back to `lv`'s type (we compile
-          // with -Wno-narrowing).
+          // Pascal `inc(T(lv))` / `dec(T(lv))` mutate the storage behind
+          // `lv` as type T. Emit that reinterpreting lvalue explicitly.
           const auto& inner = static_cast<const Call&>(*c.args[0]);
-          if (inner.args.size() == 1 && inner.callee->kind == Kind::Ident) {
-            const auto& tname = static_cast<const Ident&>(*inner.callee).name;
-            if (is_primitive_type(tname)) {
-              std::string lv = expr_to_cxx(*inner.args[0]);
-              std::string cast = primitive_type_cxx(tname);
-              std::string step = (c.args.size() == 2)
-                                     ? expr_to_cxx(*c.args[1])
-                                     : std::string("1");
-              std::string oprator = (n == "inc") ? " + " : " - ";
-              return "(" + lv + " = ((" + cast + ")(" + lv + ")" +
-                     oprator + step + "))";
+          if (std::string ref = primitive_cast_lvalue_ref(inner);
+              !ref.empty()) {
+            std::string op = (n == "inc") ? "::rt::p_inc" : "::rt::p_dec";
+            if (c.args.size() == 2) {
+              return op + "(" + ref + ", " + expr_to_cxx(*c.args[1]) + ")";
             }
+            return op + "(" + ref + ")";
           }
           // Fall through to generic emission.
         } else if (n == "new" && !c.args.empty()) {
@@ -2197,7 +2201,10 @@ std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
         pt = type_to_cxx(*p.type);
       }
       if (p.mode == Param::Var || p.mode == Param::Out) pt += "&";
-      else if (p.mode == Param::Const) pt = std::string("const ") + pt + "&";
+      else if (p.mode == Param::Const) {
+        if (const_param_needs_mutable_ref(p.type.get())) pt += "&";
+        else pt = std::string("const ") + pt + "&";
+      }
     }
     for (const auto& n : p.names) {
       if (!first) out += ", ";
@@ -2290,22 +2297,16 @@ void Emitter::emit_stmt(const Stmt& s) {
     }
     case Kind::Assign: {
       const auto& a = static_cast<const Assign&>(s);
-      // Pascal `T(lv) := rhs` -- assign through a type-cast LHS. C++
-      // rejects this because the functional cast yields an rvalue.
-      // Rewrite to `lv = (decltype(lv))(rhs)` for primitive casts;
-      // for pointer-type-alias casts, reinterpret the storage so the
-      // write lands on the original variable's bits.
+      // Pascal `T(lv) := rhs` writes through a cast view of the same
+      // storage. Emit that storage reinterpret explicitly.
       if (a.target->kind == Kind::Call) {
         const auto& c = static_cast<const Call&>(*a.target);
         if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
-          const auto& id = static_cast<const Ident&>(*c.callee);
-          if (is_primitive_type(id.name)) {
-            std::string lv = expr_to_cxx(*c.args[0]);
-            std::string rhs = expr_to_cxx(*a.value);
-            emitln(lv + " = ((" + primitive_type_cxx(id.name) + ")(" + rhs +
-                   "));");
+          if (std::string ref = primitive_cast_lvalue_ref(c); !ref.empty()) {
+            emitln(ref + " = " + expr_to_cxx(*a.value) + ";");
             break;
           }
+          const auto& id = static_cast<const Ident&>(*c.callee);
           if (registry) {
             auto ait = registry->aliases.find(id.name);
             if (ait != registry->aliases.end() && ait->second.target) {
@@ -2777,7 +2778,10 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
       } else {
         pt = type_to_cxx(*p.type);
         if (p.mode == Param::Var || p.mode == Param::Out) pt += "&";
-        else if (p.mode == Param::Const) pt = std::string("const ") + pt + "&";
+        else if (p.mode == Param::Const) {
+          if (const_param_needs_mutable_ref(p.type.get())) pt += "&";
+          else pt = std::string("const ") + pt + "&";
+        }
       }
       for (const auto& n : p.names) {
         (void)n;

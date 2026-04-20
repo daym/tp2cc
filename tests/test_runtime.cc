@@ -113,9 +113,17 @@ void test_blockread_writes_to_void_buffer() {
   f.f = nullptr;
 }
 
+void test_strnew_allocates_and_disposes_pchar() {
+  p_char* text = p_strnew("hello");
+  CHECK(text != nullptr);
+  CHECK_EQ(p_to_std_string(text), std::string("hello"));
+  p_strdispose(text);
+  CHECK(text == nullptr);
+}
+
 void test_exec_tracks_exit_status() {
   p_doserror = -1;
-  p_exec(ShortString<>("/bin/sh"), ShortString<>("-c 'exit 9'"));
+  p_exec(ShortString<>("sh"), ShortString<>("-c 'exit 9'"));
   CHECK_EQ(p_doserror, 0);
   CHECK_EQ(p_dosexitcode(), 9);
 }
@@ -146,6 +154,7 @@ int main() {
   RUN_TEST(test_str_formats_real_values);
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
   RUN_TEST(test_blockread_writes_to_void_buffer);
+  RUN_TEST(test_strnew_allocates_and_disposes_pchar);
   RUN_TEST(test_exec_tracks_exit_status);
   RUN_TEST(test_exec_reports_spawn_failure);
   RUN_TEST(test_shell_tracks_exit_status);
