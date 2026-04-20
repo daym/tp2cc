@@ -370,6 +370,23 @@ void test_primitive_cast_assign_reinterprets_storage() {
   CHECK(!contains(out.impl, "p_b = ((int32_t)(p_l));"));
 }
 
+void test_primitive_cast_read_reinterprets_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure fetch(var b);\n"
+      "implementation\n"
+      "procedure fetch(var b);\n"
+      "var\n"
+      "  l : longint;\n"
+      "begin\n"
+      "  l := longint(b);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_l = ::rt::p_reinterpret_ref<int32_t>(p_b);"));
+  CHECK(!contains(out.impl, "p_l = ((int32_t)(p_b));"));
+}
+
 void test_inc_primitive_cast_reinterprets_storage() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -488,6 +505,7 @@ int main() {
   RUN_TEST(test_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_local_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
+  RUN_TEST(test_primitive_cast_read_reinterprets_storage);
   RUN_TEST(test_inc_primitive_cast_reinterprets_storage);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
   RUN_TEST(test_parameterless_procvar_stmt_autocalls);

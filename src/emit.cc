@@ -269,6 +269,7 @@ struct Emitter {
   std::string deduce_class_alias(const ast::Expr& e);
   const ast::Expr* peel_primitive_casts(const ast::Expr* e);
   bool expr_is_storage_lvalue(const ast::Expr& e);
+  bool expr_is_untyped_storage_ref(const ast::Expr& e);
   bool expr_is_charish(const ast::Expr& e);
   bool type_is_stringish(const ast::TypeExpr* t);
   bool type_is_open_array(const ast::TypeExpr* t);
@@ -858,6 +859,13 @@ bool Emitter::expr_is_storage_lvalue(const Expr& e) {
     }
   }
   return true;
+}
+
+bool Emitter::expr_is_untyped_storage_ref(const Expr& e) {
+  const Expr* peeled = peel_primitive_casts(&e);
+  const Expr& root = peeled ? *peeled : e;
+  return root.kind == Kind::Ident &&
+         local_untyped_params.count(static_cast<const Ident&>(root).name);
 }
 
 bool Emitter::expr_is_charish(const Expr& e) {
@@ -1693,11 +1701,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // Only the explicit lvalue forms handled elsewhere
           // (`T(lv) := ...`, `inc(T(lv))`, `dec(T(lv))`) reinterpret
           // storage. Plain `T(expr)` remains a value conversion.
+          const Expr* peeled = peel_primitive_casts(c.args[0].get());
+          if (peeled && expr_is_untyped_storage_ref(*c.args[0])) {
+            return "::rt::p_reinterpret_ref<" + primitive_type_cxx(n) +
+                   ">(" + expr_to_cxx(*peeled) + ")";
+          }
           if (n == "char") {
             return "::rt::p_chr(" + arg0() + ")";
           }
           if (n == "pointer" || n == "pchar" || n == "ppchar") {
-            const Expr* peeled = peel_primitive_casts(c.args[0].get());
             if (peeled && expr_is_storage_lvalue(*c.args[0])) {
               return "::rt::p_reinterpret_ref<" + primitive_type_cxx(n) +
                      ">(" + expr_to_cxx(*peeled) + ")";
