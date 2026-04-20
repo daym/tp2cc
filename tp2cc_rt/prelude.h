@@ -1798,6 +1798,10 @@ inline void p_assign(TextFile& f, const ShortString<>& n) {
   p_set_ioresult(f, 0);
 }
 inline void p_reset(TextFile& f) {
+  if (f.f) {
+    std::fclose(f.f);
+    f.f = nullptr;
+  }
   char buf[260]{};
   p_file_name_to_buf(f, buf);
   f.f = std::fopen(buf, "rb");
@@ -1805,6 +1809,10 @@ inline void p_reset(TextFile& f) {
 }
 inline void p_reset(TextFile& f, int32_t) { p_reset(f); }  // rec size form
 inline void p_rewrite(TextFile& f) {
+  if (f.f) {
+    std::fclose(f.f);
+    f.f = nullptr;
+  }
   char buf[260]{};
   p_file_name_to_buf(f, buf);
   f.f = std::fopen(buf, "wb");
@@ -1812,6 +1820,10 @@ inline void p_rewrite(TextFile& f) {
 }
 inline void p_rewrite(TextFile& f, int32_t) { p_rewrite(f); }
 inline void p_append(TextFile& f) {
+  if (f.f) {
+    std::fclose(f.f);
+    f.f = nullptr;
+  }
   char buf[260]{};
   p_file_name_to_buf(f, buf);
   f.f = std::fopen(buf, "ab");
@@ -1839,6 +1851,10 @@ inline void p_assign(TypedFile<T>& f, const ShortString<>& n) {
 }
 template <typename T>
 inline void p_reset(TypedFile<T>& f) {
+  if (f.f) {
+    std::fclose(f.f);
+    f.f = nullptr;
+  }
   char buf[260]{};
   p_file_name_to_buf(f, buf);
   f.f = std::fopen(buf, "rb");
@@ -1847,6 +1863,10 @@ inline void p_reset(TypedFile<T>& f) {
 template <typename T> inline void p_reset(TypedFile<T>& f, int32_t) { p_reset(f); }
 template <typename T>
 inline void p_rewrite(TypedFile<T>& f) {
+  if (f.f) {
+    std::fclose(f.f);
+    f.f = nullptr;
+  }
   char buf[260]{};
   p_file_name_to_buf(f, buf);
   f.f = std::fopen(buf, "wb");
@@ -1855,6 +1875,10 @@ inline void p_rewrite(TypedFile<T>& f) {
 template <typename T> inline void p_rewrite(TypedFile<T>& f, int32_t) { p_rewrite(f); }
 template <typename T>
 inline void p_append(TypedFile<T>& f) {
+  if (f.f) {
+    std::fclose(f.f);
+    f.f = nullptr;
+  }
   char buf[260]{};
   p_file_name_to_buf(f, buf);
   f.f = std::fopen(buf, "ab");

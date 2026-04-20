@@ -6,6 +6,8 @@
 #include <cstring>
 #include <limits>
 #include <cstdio>
+#include <string>
+#include <unistd.h>
 
 #include "../tp2cc_rt/prelude.h"
 #include "test_util.h"
@@ -121,6 +123,32 @@ void test_strnew_allocates_and_disposes_pchar() {
   CHECK(text == nullptr);
 }
 
+void test_textfile_reset_closes_previous_handle() {
+  char path[] = "/tmp/tp2cc-reset-XXXXXX";
+  int fd = ::mkstemp(path);
+  CHECK(fd >= 0);
+  ::close(fd);
+
+  TextFile f;
+  p_assign(f, ShortString<>(path));
+  p_rewrite(f);
+  CHECK(f.f != nullptr);
+  p_write(f, ShortString<>("hello"));
+
+  // The compiler reopens the same file variable in AsmClose before invoking
+  // the assembler. That reopen must close+flush the write handle first.
+  p_reset(f, 1);
+  CHECK(f.f != nullptr);
+
+  char buf[6] = {};
+  std::size_t got = std::fread(buf, 1, 5, f.f);
+  CHECK_EQ(got, static_cast<std::size_t>(5));
+  CHECK_EQ(std::string(buf, 5), std::string("hello"));
+
+  p_close(f);
+  std::remove(path);
+}
+
 void test_exec_tracks_exit_status() {
   p_doserror = -1;
   p_exec(ShortString<>("sh"), ShortString<>("-c 'exit 9'"));
@@ -155,6 +183,7 @@ int main() {
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
   RUN_TEST(test_blockread_writes_to_void_buffer);
   RUN_TEST(test_strnew_allocates_and_disposes_pchar);
+  RUN_TEST(test_textfile_reset_closes_previous_handle);
   RUN_TEST(test_exec_tracks_exit_status);
   RUN_TEST(test_exec_reports_spawn_failure);
   RUN_TEST(test_shell_tracks_exit_status);
