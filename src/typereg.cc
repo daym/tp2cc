@@ -185,6 +185,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"readln",     1, false, true,  ""},
       {"read",       1, false, true,  ""},
       {"halt",       1, false, true,  ""},
+      {"swapvectors",0, false, false, ""},
   };
   // Synthetic unit "rt::" holds the builtins so lookups that walk
   // the uses chain can find them as an always-available fallback.
