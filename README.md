@@ -11,13 +11,13 @@ They do support the following targets:
 * alpha
 * powerpc
 
-Build the translated compiler with:
+Bootstrap the FPC 0.99.14 compiler sources under `../fpc-1.0.6/source` with:
 
-`./build-fpc.sh`
+`./bootstap-fpc-0.sh`
 
-Bootstrap the FPC 1.0.6 compiler sources under `../fpc-1.0.6/source` with:
+Or bootstrap the FPC 1.0.6 compiler sources under `../fpc-1.0.6/source` with:
 
-`./bootstrap-fpc.sh`
+`./bootstrap-fpc-1.sh`
 
 Compile and run the checked-in example programs with:
 
