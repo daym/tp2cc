@@ -20,6 +20,22 @@ ROOT=$(pwd)
 JOBS="${JOBS:-8}"
 CXX="${CXX:-g++}"
 SOURCE_DIR="${FPC106_SRC:-$ROOT/../fpc-1.0.6/source}"
+
+# ASan and UBSan catch packed-field misbindings, vptr downcasts on foreign
+# object hierarchies, oob reads on wrongly-cast records, etc. -- exactly
+# the latent UB tp2cc inherits from decades-old FPC sources. Keep these
+# armed by default; `SAN=` disables for profiling or release runs.
+SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer}"
+CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -fms-extensions -fpermissive -Wno-narrowing -Wno-microsoft-anon-tag -Wno-permissive $SAN"
+export CXXFLAGS
+
+# FPC relies on process-lifetime cleanup: option parsing, symbol tables,
+# asmlists, etc. are strung up through global pointers and freed only by
+# exit. That leaks by design, and LSan turning each exit into a nonzero
+# status breaks the stage2/stage3 use-fpc drivers (which read pp's exit
+# code as "compile failed"). Leave heap/stack checking armed; just turn
+# off the exit-time leak scan. Override with ASAN_OPTIONS=... to re-enable.
+export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
 BOOT_ROOT="${BOOTSTRAP_ROOT:-$ROOT/build/fpc-1.0.6-bootstrap}"
 CLEAN_SRC="$BOOT_ROOT/source"
 STAGE1_DIR="$BOOT_ROOT/stage1"
@@ -102,7 +118,7 @@ build_stage1() {
   fi
   (
     cd "$STAGE1_DIR"
-    "$CXX" -O0 -g3 p_*.o -o pp
+    "$CXX" -O0 -g3 $SAN p_*.o -o pp
   )
 }
 
