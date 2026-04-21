@@ -1,13 +1,17 @@
 #!/bin/sh
-# End-to-end build: tp2cc translator -> emit Pascal->C++ -> compile -> link pp.
+# End-to-end build: tp2cc translator -> emit Pascal->C++ -> compile -> link pp,
+# then self-host.
 #
-# Steps:
+# Stages:
 #   1. make        -- build ./build/bin/tp2cc (64-bit, host toolchain)
 #   2. emit-all    -- translate pp.pas and its recursive `uses` tree to
 #                     build/emitted/*.cc
 #   3. compile     -- compile every emitted p_*.cc with 32-bit g++ from guix
 #                     (fpc 0.99 targets i386; runtime assumes 32-bit pointers)
 #   4. link        -- link build/emitted/pp from the reachable object files
+#   5. stage2      -- use the C++-translated pp to compile rpm/compiler/pp.pas
+#                     natively into build/stage2/pp
+#   6. stage3      -- use stage2 pp to compile pp.pas into build/stage3/pp
 #
 # Run this inside an i386/i686 toolchain environment. For example:
 #   guix shell --system=i686-linux gcc-toolchain binutils -- ./build-fpc.sh
@@ -25,7 +29,25 @@ JOBS="${JOBS:-8}"
 CXX="${CXX:-g++}"
 ENTRY_FILE="../rpm/compiler/pp.pas"
 OUT_DIR="build/emitted"
+STAGE2_DIR="$ROOT/build/stage2"
+STAGE3_DIR="$ROOT/build/stage3"
 RPM_DIR="$ROOT/../rpm"
+
+# ASan + UBSan catch packed-field misbindings, vptr downcasts on foreign
+# object hierarchies, oob reads on wrongly-cast records, etc. -- exactly
+# the latent UB that `tp2cc` inherits from decades-old FPC sources. Keep
+# these on by default; `SAN=` disables for profiling or release runs.
+SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer}"
+CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -fms-extensions -fpermissive -Wno-narrowing -Wno-microsoft-anon-tag -Wno-permissive $SAN"
+export CXXFLAGS
+
+# FPC relies on process-lifetime cleanup: option parsing, symbol tables,
+# asmlists, etc. are strung up through global pointers and freed only by
+# exit. That leaks by design, and LSan turning each exit into a nonzero
+# status breaks the stage2/stage3 use-fpc drivers (which read pp's exit
+# code as "compile failed"). Leave heap/stack checking armed; just turn
+# off the exit-time leak scan. Override with ASAN_OPTIONS=... to re-enable.
+export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
 
 MACHINE="$($CXX -dumpmachine 2>/dev/null || true)"
 case "$MACHINE" in
@@ -38,11 +60,57 @@ case "$MACHINE" in
     ;;
 esac
 
-echo "== [1/4] build tp2cc translator =="
+install_support_files() {
+  stage_dir="$1"
+  cp "$RPM_DIR/compiler/errore.msg" "$stage_dir/errore.msg"
+  if [ "$stage_dir" != "$ROOT/$OUT_DIR" ]; then
+    cp "$ROOT/$OUT_DIR/ppc386.cfg" "$stage_dir/ppc386.cfg"
+  fi
+}
+
+compile_pp_stage() {
+  stage_name="$1"
+  pp_bin="$2"
+  cfg_dir="$3"
+  out_dir="$4"
+
+  echo "== [$stage_name] compile compiler/pp.pas =="
+  rm -rf "$out_dir"
+  mkdir -p "$out_dir"
+  PP="$pp_bin" \
+  PPC_CONFIG_PATH="$cfg_dir" \
+  FPCDIR="$RPM_DIR" \
+    "$ROOT/use-fpc.sh" \
+      "-Fi$RPM_DIR/compiler" \
+      "-Fu$RPM_DIR/compiler" \
+      "-o$out_dir/pp" \
+      "$RPM_DIR/compiler/pp.pas"
+  install_support_files "$out_dir"
+}
+
+verify_compiler() {
+  stage_name="$1"
+  pp_bin="$2"
+  cfg_dir="$3"
+  help_out=$(mktemp "${TMPDIR:-/tmp}/build-fpc-help.XXXXXX")
+  # `pp -h` exits non-zero because no input file was given; that's fine,
+  # we only care that the binary starts up and dumps its usage banner.
+  PPC_CONFIG_PATH="$cfg_dir" FPCDIR="$RPM_DIR" "$pp_bin" -h >"$help_out" 2>&1 || true
+  if ! grep -q "shows this help" "$help_out"; then
+    echo "error: $stage_name pp help output unexpected" >&2
+    cat "$help_out" >&2
+    rm -f "$help_out"
+    exit 1
+  fi
+  rm -f "$help_out"
+  echo "ok: $stage_name ($pp_bin)"
+}
+
+echo "== [1/6] build tp2cc translator =="
 make clean
 make -j"$JOBS"
 
-echo "== [2/4] emit C++ from Pascal =="
+echo "== [2/6] emit C++ from Pascal =="
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 ./build/bin/tp2cc emit-all "$ENTRY_FILE" "$OUT_DIR"
@@ -61,12 +129,24 @@ cat > "$OUT_DIR/ppc386.cfg" <<EOF
 -Fu$RPM_DIR/rtl/fakertl
 EOF
 
-echo "== [3/4] compile emitted units (32-bit) =="
+echo "== [3/6] compile emitted units (32-bit) =="
 JOBS="$JOBS" CXX="$CXX" tools/compile_emitted.sh "$OUT_DIR"
 
-echo "== [4/4] link pp =="
-cd "$OUT_DIR"
-$CXX -O0 -g p_*.o -o pp
+echo "== [4/6] link stage1 pp =="
+(
+  cd "$OUT_DIR"
+  $CXX -O0 -g $SAN p_*.o -o pp
+)
+ls -la "$OUT_DIR/pp"
+verify_compiler stage1 "$ROOT/$OUT_DIR/pp" "$ROOT/$OUT_DIR"
 
-ls -la pp
-echo "ok: $ROOT/$OUT_DIR/pp"
+compile_pp_stage "5/6" "$ROOT/$OUT_DIR/pp" "$ROOT/$OUT_DIR" "$STAGE2_DIR"
+verify_compiler stage2 "$STAGE2_DIR/pp" "$STAGE2_DIR"
+
+compile_pp_stage "6/6" "$STAGE2_DIR/pp" "$STAGE2_DIR" "$STAGE3_DIR"
+verify_compiler stage3 "$STAGE3_DIR/pp" "$STAGE3_DIR"
+
+echo "== bootstrap summary =="
+echo "stage1 (C++ from tp2cc): $ROOT/$OUT_DIR/pp"
+echo "stage2 (Pascal from stage1): $STAGE2_DIR/pp"
+echo "stage3 (Pascal from stage2): $STAGE3_DIR/pp"
