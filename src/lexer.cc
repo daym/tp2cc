@@ -346,8 +346,19 @@ void Lexer::do_include(std::string_view arg, Location where) {
     if (macro == "%date%") contents = "'1970-01-01'";
     else if (macro == "%time%") contents = "'00:00:00'";
     else if (macro == "%fpcversion%") contents = "'0.0.0'";
-    else if (macro == "%fpctarget%") contents = "'i386-linux'";
-    else if (macro == "%fpcos%") contents = "'linux'";
+    else if (macro == "%fpctarget%") {
+#if defined(__alpha__)
+      contents = "'alpha'";
+#elif defined(__i386__)
+      contents = "'i386'";
+#elif defined(__m68k__)
+      contents = "'m68k'";
+#elif defined(__powerpc__) && !defined(__powerpc64__)
+      contents = "'powerpc'";
+#else
+#error unknown target CPU architecture
+#endif
+    } else if (macro == "%fpcos%") contents = "'linux'";
     else {
       report_error(where, "unsupported builtin include-macro {$I " + a + "}");
       return;
