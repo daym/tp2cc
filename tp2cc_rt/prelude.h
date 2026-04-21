@@ -1110,6 +1110,8 @@ inline void p_store_wait_status(int status) {
   p_doserror = 0;
   if (WIFEXITED(status)) {
     p_last_dosexitcode = WEXITSTATUS(status);
+    // glibc's posix_spawnp may defer exec failures to the child instead of reporting them synchronously, and in qemu transparent emulation this does happen.
+    if (p_last_dosexitcode == 127) p_doserror = 8;
   } else if (WIFSIGNALED(status)) {
     p_last_dosexitcode = 128 + WTERMSIG(status);
   } else {
