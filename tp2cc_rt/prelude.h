@@ -2051,7 +2051,6 @@ inline int32_t p_filemode = 0;
 // sources check it and clear it via assignment (`erroraddr := nil;`).
 inline void* p_erroraddr = nullptr;
 inline void p_swapvectors() {}
-inline void p_ovrgetbuf(int32_t&) {}
 inline p_char* p_strnew(const char* s) {
   if (!s) return nullptr;
   std::size_t n = std::strlen(s);
