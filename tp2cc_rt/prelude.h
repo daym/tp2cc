@@ -1393,7 +1393,6 @@ template <typename... A> inline void p_read(A&&...) {}
 template <typename... A>
 inline void p_settextbuf(TextFile&, A&&...) {}
 template <typename T> inline int32_t p_ioresult_of(T&&) { return 0; }
-inline bool p_eoln(const TextFile&) { return false; }
 
 // PChar utilities (strings unit).
 inline int p_strlen(const char* s) { return s ? (int)std::strlen(s) : 0; }
