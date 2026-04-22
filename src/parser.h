@@ -45,7 +45,8 @@ class Parser {
   void parse_type_section(std::vector<ast::DeclPtr>& out);
   void parse_var_section(std::vector<ast::DeclPtr>& out);
   void parse_label_section(std::vector<ast::DeclPtr>& out);
-  ast::DeclPtr parse_proc_decl(ast::ProcKind pk, bool in_interface);
+  std::shared_ptr<ast::ProcDecl> parse_proc_decl(ast::ProcKind pk,
+                                                 bool in_interface);
   void parse_proc_modifiers(ast::ProcDecl& pd);
 
   // Pascal "directives" are position-dependent keywords spelled as ordinary

@@ -468,8 +468,9 @@ struct ObjectMember {
   // field side
   std::vector<std::string> field_names;
   TypePtr field_type;
-  // method side
-  DeclPtr method;   // ProcDecl
+  // method side -- typed so the "it's a ProcDecl" invariant is
+  // enforced at the type level rather than via documented faith.
+  std::shared_ptr<ProcDecl> method;
 };
 
 struct TyObject : TypeExpr {

@@ -2235,7 +2235,7 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
       } else {
         // Method signature. We do NOT emit the body here -- bodies live in
         // the implementation .cc, emitted as `ret Class::method(...) { }`.
-        const auto& pd = static_cast<const ProcDecl&>(*m.method);
+        const auto& pd = *m.method;
         std::string ret;
         if (pd.pkind == ProcKind::Function && pd.return_type) {
           ret = type_to_cxx(*pd.return_type);

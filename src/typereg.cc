@@ -45,11 +45,10 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
       mem.field.type = m.field_type;
       for (const auto& n : m.field_names) ci.members[lc(n)] = mem;
     } else if (m.method) {
-      auto pd_sp = std::static_pointer_cast<const ProcDecl>(m.method);
-      const auto& pd = *pd_sp;
+      const auto& pd = *m.method;
       ClassInfo::Member mem;
       mem.is_method = true;
-      mem.method.decl = pd_sp;
+      mem.method.decl = m.method;
       mem.method.is_virtual = pd.is_virtual;
       mem.method.is_function = (pd.pkind == ProcKind::Function);
       if (pd.pkind == ProcKind::Constructor) mem.method.kind = SymKind::Constructor;

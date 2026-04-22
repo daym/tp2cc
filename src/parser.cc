@@ -544,7 +544,7 @@ void Parser::parse_proc_modifiers(ProcDecl& pd) {
   }
 }
 
-DeclPtr Parser::parse_proc_decl(ProcKind pk, bool in_interface) {
+std::shared_ptr<ProcDecl> Parser::parse_proc_decl(ProcKind pk, bool in_interface) {
   auto pd = std::make_shared<ProcDecl>();
   pd->loc = cur_.loc;
   pd->pkind = pk;
