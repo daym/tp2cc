@@ -2051,8 +2051,12 @@ inline constexpr double  p_pi         = 3.141592653589793;
 // don't model VMT values at emit time, so stub it as nullptr. Sites
 // that use it (stream registration, runtime class-id lookup) only need
 // the value to be comparable to other nullptrs, which holds.
-template <typename T> inline void* p_typeof(const T&) { return nullptr; }
-inline void* p_typeof(...) { return nullptr; }
+template <typename T> inline void* p_typeof(const T&) {
+  return nullptr;
+}
+inline void* p_typeof(...) {
+  return nullptr;
+}
 
 // Pascal `ofs(x)` / `seg(x)` return the 16-bit offset/segment of a
 // far pointer. On flat-model targets both are stubbed to 0.
