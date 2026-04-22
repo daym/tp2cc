@@ -517,49 +517,73 @@ Token Lexer::scan_number() {
   std::string text;
   char c = peek();
 
+  // Every integer-base path must reject literals that exceed a
+  // 64-bit unsigned value -- the largest magnitude any legal Pascal
+  // integer constant can denote.  `__builtin_{mul,add}_overflow'
+  // sets a flag on overflow without producing UB; we keep
+  // consuming digits so the whole token is absorbed (avoids
+  // cascading parse errors on the tail), and emit a single
+  // diagnostic.
+  auto accumulate_digit = [](uint64_t& v, uint64_t base, uint64_t digit,
+                             bool& ovf) {
+    if (ovf) return;
+    uint64_t tmp;
+    if (__builtin_mul_overflow(v, base, &tmp) ||
+        __builtin_add_overflow(tmp, digit, &v)) {
+      ovf = true;
+    }
+  };
+
   if (c == '$') {
     // Hex.
     text.push_back(get());
-    int64_t v = 0;
+    uint64_t v = 0;
+    bool ovf = false;
     while (!at_eof_of_current() && is_hex(peek())) {
       char d = get();
-      v = v * 16 + hex_val(d);
+      accumulate_digit(v, 16, static_cast<uint64_t>(hex_val(d)), ovf);
       text.push_back(d);
     }
-    t.int_value = v;
+    if (ovf) report_error(loc, "integer literal exceeds 64 bits");
+    t.int_value = static_cast<int64_t>(v);
     t.text = std::move(text);
     return t;
   }
   if (c == '%') {
     text.push_back(get());
-    int64_t v = 0;
+    uint64_t v = 0;
+    bool ovf = false;
     while (!at_eof_of_current() && (peek() == '0' || peek() == '1')) {
       char d = get();
-      v = v * 2 + (d - '0');
+      accumulate_digit(v, 2, static_cast<uint64_t>(d - '0'), ovf);
       text.push_back(d);
     }
-    t.int_value = v;
+    if (ovf) report_error(loc, "integer literal exceeds 64 bits");
+    t.int_value = static_cast<int64_t>(v);
     t.text = std::move(text);
     return t;
   }
   if (c == '&') {
     text.push_back(get());
-    int64_t v = 0;
+    uint64_t v = 0;
+    bool ovf = false;
     while (!at_eof_of_current() && peek() >= '0' && peek() <= '7') {
       char d = get();
-      v = v * 8 + (d - '0');
+      accumulate_digit(v, 8, static_cast<uint64_t>(d - '0'), ovf);
       text.push_back(d);
     }
-    t.int_value = v;
+    if (ovf) report_error(loc, "integer literal exceeds 64 bits");
+    t.int_value = static_cast<int64_t>(v);
     t.text = std::move(text);
     return t;
   }
 
   // Decimal, possibly real.
-  int64_t ivalue = 0;
+  uint64_t ivalue = 0;
+  bool ivalue_ovf = false;
   while (!at_eof_of_current() && is_digit(peek())) {
     char d = get();
-    ivalue = ivalue * 10 + (d - '0');
+    accumulate_digit(ivalue, 10, static_cast<uint64_t>(d - '0'), ivalue_ovf);
     text.push_back(d);
   }
   bool is_real = false;
@@ -579,7 +603,8 @@ Token Lexer::scan_number() {
   if (is_real) {
     t.kind = Tok::RealLit;
   } else {
-    t.int_value = ivalue;
+    if (ivalue_ovf) report_error(loc, "integer literal exceeds 64 bits");
+    t.int_value = static_cast<int64_t>(ivalue);
   }
   t.text = std::move(text);
   return t;
@@ -623,19 +648,38 @@ Token Lexer::scan_string() {
       continue;
     }
     if (c == '#') {
+      Location esc_loc = here();
       get();
-      int code = 0;
+      // `#NN' character escape denotes a byte.  Any input value
+      // outside [0,255] is a Pascal-level error; reject rather than
+      // silently truncating.  Overflow during accumulation is
+      // caught before the value is produced.
+      uint32_t code = 0;
+      bool ovf = false;
+      auto eat_digit = [&](uint32_t base, uint32_t digit) {
+        if (ovf) return;
+        uint32_t tmp;
+        if (__builtin_mul_overflow(code, base, &tmp) ||
+            __builtin_add_overflow(tmp, digit, &code)) {
+          ovf = true;
+        }
+      };
       if (peek() == '$') {
         get();
         while (!at_eof_of_current() && is_hex(peek())) {
-          code = code * 16 + hex_val(get());
+          eat_digit(16, static_cast<uint32_t>(hex_val(get())));
         }
       } else {
         while (!at_eof_of_current() && is_digit(peek())) {
-          code = code * 10 + (get() - '0');
+          eat_digit(10, static_cast<uint32_t>(get() - '0'));
         }
       }
-      out.push_back(static_cast<char>(code & 0xff));
+      if (ovf || code > 0xff) {
+        report_error(esc_loc,
+                     "character escape `#' value out of range (expected 0..255)");
+        code = 0;
+      }
+      out.push_back(static_cast<char>(code));
       continue;
     }
     break;
