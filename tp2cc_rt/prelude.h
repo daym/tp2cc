@@ -2088,8 +2088,6 @@ template <typename... A> inline void p_setdate(A&&...) {}
 struct DateTime { uint16_t p_year = 0, p_month = 0, p_day = 0,
                   p_hour = 0, p_min = 0, p_sec = 0, p_sec100 = 0; };
 using p_datetime = DateTime;
-inline int32_t p_segment(const void*) { return 0; }
-inline int32_t p_offset(const void*) { return 0; }
 inline int32_t p_extraoptions = 0;
 inline int32_t p_moduleindex = 0;
 template <int N, int M>
@@ -2138,7 +2136,6 @@ template <typename F>
 inline void p_pclose(F&) {}
 // STUB: heap-trace hook.
 template <typename F> inline void p_setheaptraceoutput(F&&) {}
-template <typename F> inline void p_setlocaltime(F&&) {}
 // STUB: file timestamp get/set used by assembler/link bookkeeping.
 template <typename F, typename T> inline void p_getftime(F&&, T&) {}
 template <typename F, typename T> inline void p_setftime(F&&, T) {}
