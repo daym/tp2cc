@@ -71,6 +71,9 @@ int UnitGraph::parse_recursive(const fs::path& path) {
   pu.ok = (errs == 0 && node != nullptr);
   if (node) pu.name = to_lower(node->name);
   pu.ast = std::move(node);
+  // Transfer source-file ownership out of the Lexer before it goes
+  // out of scope -- AST Locations reference these by raw pointer.
+  pu.sources = lex.release_sources();
 
   if (pu.name.empty()) {
     pu.name = std::string("__prog_") + path.stem().string();

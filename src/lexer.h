@@ -27,6 +27,13 @@ class Lexer {
   // Produce the next token. Returns Tok::Eof when all sources exhausted.
   Token next();
 
+  // Move out every SourceFile the lexer opened (root + all `{$I}`'d
+  // includes, both still on the input stack and already popped).  AST
+  // `Location`s produced during parsing hold raw `const SourceFile*`
+  // into these buffers, so the caller must keep the returned owners
+  // alive at least as long as the AST.
+  std::vector<std::unique_ptr<SourceFile>> release_sources();
+
  private:
   struct Input {
     std::unique_ptr<SourceFile> owned;  // may be null if borrowing root
@@ -71,6 +78,10 @@ class Lexer {
   static std::string lower(std::string_view s);
 
   std::vector<Input> stack_;
+  // SourceFiles whose Input has already been popped off stack_.  We
+  // keep them alive so that `Location`s in the AST stay valid -- see
+  // release_sources().
+  std::vector<std::unique_ptr<SourceFile>> retired_;
   std::vector<IfdefFrame> ifdef_stack_;
   std::unordered_set<std::string> defines_;           // lowercased
   std::unordered_map<std::string, Tok> keywords_;     // lowercased -> kind

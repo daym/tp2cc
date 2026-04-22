@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "ast.h"
+#include "source.h"
 
 namespace tp2cc {
 
@@ -27,6 +28,11 @@ struct ParsedUnit {
   std::filesystem::path path;
   std::unique_ptr<ast::UnitNode> ast;  // null on parse failure
   bool ok = false;                     // true if parsed without errors
+  // Root source file and every {$I}-included file opened while
+  // parsing this unit.  AST `Location`s hold `const SourceFile*`
+  // into these buffers, so the ParsedUnit must outlive any use of
+  // the AST (including emit-time diagnostics).
+  std::vector<std::unique_ptr<SourceFile>> sources;
 };
 
 class UnitGraph {

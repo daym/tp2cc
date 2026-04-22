@@ -154,6 +154,16 @@ Lexer::Lexer(std::unique_ptr<SourceFile> root,
 void Lexer::define(std::string name) { defines_.insert(lower(name)); }
 void Lexer::undefine(const std::string& name) { defines_.erase(lower(name)); }
 
+std::vector<std::unique_ptr<SourceFile>> Lexer::release_sources() {
+  std::vector<std::unique_ptr<SourceFile>> out;
+  out.swap(retired_);
+  for (auto& in : stack_) {
+    if (in.owned) out.push_back(std::move(in.owned));
+  }
+  stack_.clear();
+  return out;
+}
+
 bool Lexer::at_eof_of_current() const {
   const auto& in = stack_.back();
   return in.pos >= in.file->contents.size();
@@ -190,6 +200,11 @@ void Lexer::unget() {
 
 bool Lexer::pop_input_if_eof() {
   if (stack_.size() > 1 && at_eof_of_current()) {
+    // Retire the SourceFile rather than dropping it -- AST
+    // `Location`s still reference its contents by raw pointer.
+    if (stack_.back().owned) {
+      retired_.push_back(std::move(stack_.back().owned));
+    }
     stack_.pop_back();
     return true;
   }
