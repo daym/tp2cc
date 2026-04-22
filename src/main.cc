@@ -60,24 +60,46 @@ void configure_graph(UnitGraph& g, const CliOptions& opts) {
   for (const auto& p : opts.include_paths) g.add_include_path(p);
 }
 
+void visit_unit_init_dep(const UnitGraph& g,
+                         const std::string& dep,
+                         std::vector<std::string>* out,
+                         std::unordered_set<std::string>* active_stack,
+                         std::unordered_set<std::string>* emitted) {
+  std::string name = to_lower(dep);
+  const auto* pu = g.lookup(name);
+  if (!pu || !pu->ok || !pu->ast || pu->ast->is_program) return;
+  if (emitted->count(name)) return;
+
+  // Implementation uses may legitimately cycle. Unit startup still walks
+  // them because those units can carry initialization/finalization blocks,
+  // but a back-edge only means "this unit is already being expanded"; it
+  // must not recurse forever and it must still be emitted once afterward.
+  if (!active_stack->insert(name).second) return;
+
+  for (const auto& inner : pu->ast->interface_uses) {
+    visit_unit_init_dep(g, inner, out, active_stack, emitted);
+  }
+  for (const auto& inner : pu->ast->impl_uses) {
+    visit_unit_init_dep(g, inner, out, active_stack, emitted);
+  }
+  active_stack->erase(name);
+
+  if (emitted->insert(name).second) out->push_back(name);
+}
+
 void collect_unit_init_order(const UnitGraph& g,
                              const ast::UnitNode& u,
                              std::vector<std::string>* out,
-                             std::unordered_set<std::string>* visiting,
+                             std::unordered_set<std::string>* active_stack,
                              std::unordered_set<std::string>* emitted) {
-  auto visit = [&](const std::string& dep, auto&& self) -> void {
-    std::string name = to_lower(dep);
-    const auto* pu = g.lookup(name);
-    if (!pu || !pu->ok || !pu->ast || pu->ast->is_program) return;
-    if (emitted->count(name)) return;
-    if (!visiting->insert(name).second) return;
-    for (const auto& inner : pu->ast->interface_uses) self(inner, self);
-    for (const auto& inner : pu->ast->impl_uses) self(inner, self);
-    visiting->erase(name);
-    if (emitted->insert(name).second) out->push_back(name);
-  };
-  for (const auto& dep : u.interface_uses) visit(dep, visit);
-  for (const auto& dep : u.impl_uses) visit(dep, visit);
+  // Unit startup follows recursive uses-order, not the generic
+  // translation-unit topo order used for file emission.
+  for (const auto& dep : u.interface_uses) {
+    visit_unit_init_dep(g, dep, out, active_stack, emitted);
+  }
+  for (const auto& dep : u.impl_uses) {
+    visit_unit_init_dep(g, dep, out, active_stack, emitted);
+  }
 }
 
 int cmd_lex(const CliOptions& opts,

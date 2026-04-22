@@ -66,6 +66,125 @@ std::string ascii_lower(std::string_view text) {
   return s;
 }
 
+constexpr const char* kUnitInitName = "tp2cc_unit_init";
+constexpr const char* kUnitFiniName = "tp2cc_unit_fini";
+
+std::string encode_helper_ident(std::string_view name) {
+  std::string out;
+  if (name.empty()) return "empty";
+  for (char ch : name) {
+    if (ch >= 'A' && ch <= 'Z') {
+      out.push_back(static_cast<char>(ch - 'A' + 'a'));
+    } else if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) {
+      out.push_back(ch);
+    } else if (ch == '_') {
+      out += "_u";
+    } else {
+      out += "x";
+      constexpr char kHex[] = "0123456789abcdef";
+      out.push_back(kHex[(static_cast<unsigned char>(ch) >> 4) & 0xF]);
+      out.push_back(kHex[static_cast<unsigned char>(ch) & 0xF]);
+    }
+  }
+  return out;
+}
+
+std::string encode_helper_type(const TypeExpr& t);
+
+std::string encode_helper_param_mode(Param::Mode mode) {
+  switch (mode) {
+    case Param::Value: return "value";
+    case Param::Var: return "var";
+    case Param::Const: return "const";
+    case Param::Out: return "out";
+  }
+  return "value";
+}
+
+std::string encode_helper_params(const std::vector<Param>& params) {
+  if (params.empty()) return "noargs";
+  std::string out;
+  for (const auto& param : params) {
+    size_t repeats = param.names.empty() ? 1 : param.names.size();
+    std::string type_code =
+        param.type ? encode_helper_type(*param.type) : std::string("untyped");
+    for (size_t i = 0; i < repeats; ++i) {
+      if (!out.empty()) out += "_";
+      out += encode_helper_param_mode(param.mode);
+      out += "_";
+      out += type_code;
+    }
+  }
+  return out;
+}
+
+std::string encode_helper_type(const TypeExpr& t) {
+  switch (t.kind) {
+    case Kind::TyName:
+      return "name_" + encode_helper_ident(static_cast<const TyName&>(t).name);
+    case Kind::TyArray: {
+      const auto& a = static_cast<const TyArray&>(t);
+      std::string out = a.dims.empty() ? "openarr" : "arr";
+      if (!a.dims.empty()) out += std::to_string(a.dims.size());
+      out += "_";
+      out += a.element ? encode_helper_type(*a.element)
+                       : std::string("void");
+      return out;
+    }
+    case Kind::TyRecord:
+      return "record";
+    case Kind::TyObject: {
+      const auto& o = static_cast<const TyObject&>(t);
+      return o.is_reference_type ? "class" : "object";
+    }
+    case Kind::TySet:
+      return "set_" + encode_helper_type(*static_cast<const TySet&>(t).element);
+    case Kind::TyFile: {
+      const auto& f = static_cast<const TyFile&>(t);
+      if (f.is_text) return "text";
+      return f.element ? "file_" + encode_helper_type(*f.element)
+                       : std::string("file_untyped");
+    }
+    case Kind::TyPointer: {
+      const auto& p = static_cast<const TyPointer&>(t);
+      return p.target ? "ptr_" + encode_helper_type(*p.target)
+                      : std::string("ptr_void");
+    }
+    case Kind::TyProcedural: {
+      const auto& p = static_cast<const TyProcedural&>(t);
+      std::string out = p.is_method ? "method" : "proc";
+      out += p.is_function ? "_fn_" : "_proc_";
+      out += encode_helper_params(p.params);
+      out += "_ret_";
+      out += (p.is_function && p.return_type)
+                 ? encode_helper_type(*p.return_type)
+                 : std::string("void");
+      return out;
+    }
+    case Kind::TyEnum:
+      return "enum";
+    case Kind::TySubrange:
+      return "subrange";
+    case Kind::TyString: {
+      const auto& s = static_cast<const TyString&>(t);
+      return s.max_length ? "string_sized" : std::string("string");
+    }
+    case Kind::TyMetaclass:
+      return "metaclass_" +
+             encode_helper_ident(static_cast<const TyMetaclass&>(t).class_name);
+    case Kind::TyDistinct:
+      return "distinct_" +
+             encode_helper_type(*static_cast<const TyDistinct&>(t).underlying);
+    default:
+      return "type";
+  }
+}
+
+std::string enum_bound_name(std::string_view type_name, std::string_view which) {
+  return "tp2cc_enum_" + std::string(which) + "_" +
+         encode_helper_ident(type_name);
+}
+
 bool tyname_is(const TypeExpr* t, std::string_view expected) {
   return t && t->kind == Kind::TyName &&
          ascii_lower(static_cast<const TyName&>(*t).name) == expected;
@@ -394,9 +513,9 @@ struct Emitter {
   // driver. Drives member-access and ident-call decisions.
   const TypeRegistry* registry = nullptr;
 
-  // Topologically-sorted unit names whose `__unit_init()` must run at
-  // program start, before the program's `begin..end.` body. Set by
-  // the driver only when emitting the `program` unit.
+  // Ordered unit names whose lifecycle hooks must run before the
+  // program's `begin..end.` body. Set by the driver only when
+  // emitting the `program` unit.
   const std::vector<std::string>* unit_init_order = nullptr;
 
   void set_header() { out = &header; }
@@ -825,19 +944,15 @@ std::string Emitter::method_pointer_helper_name(const ProcDecl& pd) {
   // Emit one thunk per Pascal signature. Overloaded methods therefore need
   // distinct helper names, but the helper itself still has to be a valid
   // ordinary C++ identifier with no reserved `__...` spelling.
-  std::string sig = procedural_param_types_to_cxx(pd.params);
-  sig += "_ret_";
-  if (pd.pkind == ProcKind::Function && pd.return_type) {
-    sig += type_to_cxx(*pd.return_type);
-  } else {
-    sig += "void";
-  }
-  for (char& ch : sig) {
-    bool ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-              (ch >= '0' && ch <= '9');
-    if (!ok) ch = '_';
-  }
-  return "tp2cc_methodptr_" + mangle(pd.name) + "_" + sig;
+  std::string out = "tp2cc_methodptr_";
+  out += encode_helper_ident(pd.name);
+  out += "_";
+  out += encode_helper_params(pd.params);
+  out += "_ret_";
+  out += (pd.pkind == ProcKind::Function && pd.return_type)
+             ? encode_helper_type(*pd.return_type)
+             : std::string("void");
+  return out;
 }
 
 std::string Emitter::procedural_type_to_cxx(const TyProcedural& p) {
@@ -2366,23 +2481,23 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if ((n == "low" || n == "high") && c.args.size() == 1 &&
             c.args[0]->kind == Kind::Ident) {
           const auto& a = static_cast<const Ident&>(*c.args[0]);
-          // Function-local enum: the `__low`/`__high` constants live
+          // Function-local enum: the helper constants live
           // right alongside us in the current block scope.
           if (local_enums.count(a.name)) {
             is_low_high_type = true;
-            low_high_rewrite = mangle(a.name) + "__" + n;
+            low_high_rewrite = enum_bound_name(a.name, n);
           } else if (registry) {
             auto eit = registry->enums.find(a.name);
             if (eit != registry->enums.end()) {
-              // Enum's `__low` / `__high` constants live in its
+              // Enum helper constants live in their
               // defining unit's namespace; qualify unless it's ours.
               is_low_high_type = true;
               const std::string& def = eit->second.defining_unit;
               if (def == current_unit_name) {
-                low_high_rewrite = mangle(a.name) + "__" + n;
+                low_high_rewrite = enum_bound_name(a.name, n);
               } else {
-                low_high_rewrite = mangle(def) + "::" + mangle(a.name) +
-                                   "__" + n;
+                low_high_rewrite = mangle(def) + "::" +
+                                   enum_bound_name(a.name, n);
               }
             }
           }
@@ -2570,8 +2685,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           } else if (second.kind == Kind::Ident) {
             method = mangle(static_cast<const Ident&>(second).name);
           }
-          return "([&]{ auto __p = " + make + "; __p->" + method + "(" +
-                 margs + "); return __p; }())";
+          return "([&]{ auto tp2cc_ptr = " + make + "; tp2cc_ptr->" +
+                 method + "(" + margs + "); return tp2cc_ptr; }())";
         }
       }
       // Pointer cast `T(lv)` where T resolves to a pointer type AND
@@ -2723,27 +2838,27 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         first = expr_to_cxx(*s.elements.front());
       }
       // Value-init: `Set` has no default member initialisers, so a
-      // bare `Set __s;` would leave the bitmask uninitialised and
-      // `__s.add(...)` only sets specific bits -- every unset bit
+      // bare temporary would leave the bitmask uninitialised and
+      // `add(...)` only sets specific bits -- every unset bit
       // would be stack garbage, making `contains()` return true for
       // arbitrary values.
       std::string body =
-          "::rt::Set<decltype(" + first + ")> __s{};";
+          "::rt::Set<decltype(" + first + ")> tp2cc_set{};";
       for (const auto& el : s.elements) {
         if (el->kind == Kind::Range) {
           const auto& r = static_cast<const Range&>(*el);
           std::string lo = expr_to_cxx(*r.lo);
           std::string hi = expr_to_cxx(*r.hi);
-          body += " for (int64_t __v = (int64_t)(" + lo +
-                  "); __v <= (int64_t)(" + hi +
-                  "); ++__v) __s.add(static_cast<decltype(" + first +
-                  ")>(__v));";
+          body += " for (int64_t tp2cc_value = (int64_t)(" + lo +
+                  "); tp2cc_value <= (int64_t)(" + hi +
+                  "); ++tp2cc_value) tp2cc_set.add(static_cast<decltype(" +
+                  first + ")>(tp2cc_value));";
         } else {
-          body += " __s.add(" + expr_to_cxx(*el) + ");";
+          body += " tp2cc_set.add(" + expr_to_cxx(*el) + ");";
         }
       }
       const char* cap = (block_depth > 0) ? "[&]" : "[]";
-      return std::string("(") + cap + "{ " + body + " return __s; }())";
+      return std::string("(") + cap + "{ " + body + " return tp2cc_set; }())";
     }
     case Kind::Range: {
       const auto& r = static_cast<const Range&>(e);
@@ -3047,7 +3162,7 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
   // and are referenced directly. We emit a plain `enum` (not `enum class`)
   // with an explicit underlying type so the members are usable bare.
   //
-  // We also emit per-enum `__low` / `__high` constants -- Pascal's
+  // We also emit per-enum helper constants -- Pascal's
   // `low(T)` / `high(T)` take a type name as argument; we rewrite those
   // calls to the constants at emit time.
   if (td.type && td.type->kind == Kind::TyEnum) {
@@ -3065,10 +3180,12 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
       // `inline` is not permitted on block-scope variables, so omit it
       // when we're emitting inside a function body (local type decl).
       const char* lin = (block_depth > 0) ? "" : "inline ";
-      emitln(std::string(lin) + "constexpr " + name + " " + name +
-             "__low = " + mangle(te.members.front()) + ";");
-      emitln(std::string(lin) + "constexpr " + name + " " + name +
-             "__high = " + mangle(te.members.back()) + ";");
+      emitln(std::string(lin) + "constexpr " + name + " " +
+             enum_bound_name(td.name, "low") + " = " +
+             mangle(te.members.front()) + ";");
+      emitln(std::string(lin) + "constexpr " + name + " " +
+             enum_bound_name(td.name, "high") + " = " +
+             mangle(te.members.back()) + ";");
     }
     return;
   }
@@ -3735,8 +3852,8 @@ void Emitter::emit_stmt(const Stmt& s) {
     case Kind::While: {
       const auto& w = static_cast<const While&>(s);
       std::string n = std::to_string(++loop_label_counter);
-      std::string brk = "__ploop_brk_" + n;
-      std::string cont = "__ploop_cnt_" + n;
+      std::string brk = "tp2cc_loop_break_" + n;
+      std::string cont = "tp2cc_loop_continue_" + n;
       emitln("while (" + expr_to_cxx(*w.cond) + ") {");
       indent();
       loop_break_labels.push_back(brk);
@@ -3753,8 +3870,8 @@ void Emitter::emit_stmt(const Stmt& s) {
     case Kind::Repeat: {
       const auto& r = static_cast<const Repeat&>(s);
       std::string n = std::to_string(++loop_label_counter);
-      std::string brk = "__ploop_brk_" + n;
-      std::string cont = "__ploop_cnt_" + n;
+      std::string brk = "tp2cc_loop_break_" + n;
+      std::string cont = "tp2cc_loop_continue_" + n;
       emitln("do {");
       indent();
       loop_break_labels.push_back(brk);
@@ -3774,8 +3891,8 @@ void Emitter::emit_stmt(const Stmt& s) {
       std::string from = expr_to_cxx(*f.from);
       std::string to = expr_to_cxx(*f.to);
       std::string n = std::to_string(++loop_label_counter);
-      std::string brk = "__ploop_brk_" + n;
-      std::string cont = "__ploop_cnt_" + n;
+      std::string brk = "tp2cc_loop_break_" + n;
+      std::string cont = "tp2cc_loop_continue_" + n;
       // Pascal `for X := A to B do S` is NOT `for (X=A; X<=B; ++X)`:
       // when X's type is `byte` and B is 255, ++X wraps to 0 and the
       // condition never fails. True semantics: body runs for each X in
@@ -3783,13 +3900,13 @@ void Emitter::emit_stmt(const Stmt& s) {
       // bound so mid-body assignments to B don't alter the loop count.
       emitln("{");
       indent();
-      emitln("auto __pfrom = (" + from + ");");
-      emitln("auto __pto = (" + to + ");");
+      emitln("auto tp2cc_from = (" + from + ");");
+      emitln("auto tp2cc_to = (" + to + ");");
       const char* cmp = f.downto ? ">=" : "<=";
       const char* step = f.downto ? "::rt::p_dec" : "::rt::p_inc";
-      emitln(std::string("if (__pfrom ") + cmp + " __pto) {");
+      emitln(std::string("if (tp2cc_from ") + cmp + " tp2cc_to) {");
       indent();
-      emitln(var + " = __pfrom;");
+      emitln(var + " = tp2cc_from;");
       emitln("while (true) {");
       indent();
       loop_break_labels.push_back(brk);
@@ -3798,7 +3915,7 @@ void Emitter::emit_stmt(const Stmt& s) {
       emitln(cont + ":;");
       loop_continue_labels.pop_back();
       loop_break_labels.pop_back();
-      emitln("if (" + var + " == __pto) break;");
+      emitln("if (" + var + " == tp2cc_to) break;");
       emitln(step + std::string("(") + var + ");");
       dedent();
       emitln("}");
@@ -3854,17 +3971,17 @@ void Emitter::emit_stmt(const Stmt& s) {
     }
     case Kind::With: {
       // Pascal `with A, B do S` opens A's and B's fields (and methods)
-      // as unqualified names inside S. We alias each target as
-      // `__with<i>` and push its deduced type onto `with_stack`; bare
+      // as unqualified names inside S. We alias each target and push
+      // its deduced type onto `with_stack`; bare
       // idents inside S that match a field of any stacked type are
-      // rewritten by the expression emitter to `__with<i>.name`.
+      // rewritten by the expression emitter to that alias.
       const auto& w = static_cast<const With&>(s);
       emitln("{");
       indent();
       size_t pushed = 0;
       for (size_t i = 0; i < w.exprs.size(); ++i) {
         const TypeExpr* ty = deduce_type(*w.exprs[i]);
-        std::string nm = "__with" + std::to_string(with_stack.size());
+        std::string nm = "tp2cc_with_" + std::to_string(with_stack.size());
         emitln("auto& " + nm + " = " + expr_to_cxx(*w.exprs[i]) + ";");
         with_stack.push_back({nm, ty});
         ++pushed;
@@ -4375,11 +4492,12 @@ void Emitter::emit_unit(const UnitNode& u) {
     }
     flush();
   }
-  // Forward-declare __unit_init() in the header so the program's
-  // init chain in main() can call it across translation units.
+  // Forward-declare unit lifecycle hooks so program startup can
+  // initialize units and register their cleanup.
   if (!u.is_program) {
     nl();
-    emitln("void __unit_init();");
+    emitln(std::string("void ") + kUnitInitName + "();");
+    emitln(std::string("void ") + kUnitFiniName + "();");
   }
   nl();
   emitln("}  // namespace " + ns);
@@ -4391,9 +4509,8 @@ void Emitter::emit_unit(const UnitNode& u) {
   for (const auto& uu : u.impl_uses) {
     emitln("#include \"p_" + uu + ".h\"");
   }
-  // The program emits a `__unit_init()` call chain over every
-  // parsed unit; include all of their headers so the declarations
-  // are visible.
+  // The program emits a startup call chain over every parsed unit;
+  // include all of their headers so the declarations are visible.
   if (u.is_program && unit_init_order) {
     for (const auto& uu : *unit_init_order) {
       if (uu == u.name) continue;
@@ -4437,73 +4554,50 @@ void Emitter::emit_unit(const UnitNode& u) {
     }
     flush();
   }
-  // Emit the unit/program `begin..end.` body.
-  //
-  //  - program:  generate `int main(int argc, char** argv)` that
-  //    stashes argv for ParamStr/ParamCount, then runs the program
-  //    body inside an exception-catching IIFE. Pascal `Halt(n)` is
-  //    rt::p_halt, which longjmps back to main.
-  //  - unit:     emit a free `__init()` function holding the body.
-  //    TODO: chain these in a proper startup init list. For now,
-  //    unreferenced init bodies are dead-stripped by the linker.
-  if (!u.is_program) {
-    // Always emit a `__unit_init()` so the program's startup init
-    // chain can call every unit unconditionally (without checking
-    // whether this unit has a begin..end. body). Empty body if
-    // Pascal had none.
+  auto emit_unit_hook = [&](const char* name, const StmtPtr& body) {
     nl();
-    emitln("void __unit_init() {");
+    emitln(std::string("void ") + name + "() {");
     indent();
     ++block_depth;
-    if (u.init_body) emit_stmt(*u.init_body);
+    if (body) emit_stmt(*body);
     --block_depth;
     dedent();
     emitln("}");
+  };
+
+  // Emit the unit/program lifecycle bodies.
+  if (!u.is_program) {
+    emit_unit_hook(kUnitInitName, u.init_body);
+    emit_unit_hook(kUnitFiniName, u.final_body);
     nl();
     emitln("}  // namespace " + ns);
-  } else if (u.init_body) {
-    nl();
-    if (u.is_program) {
-      // Program entry point -- the one unprefixed name we emit.
-      emitln("}  // namespace " + ns);
-      nl();
-      emitln("int main(int argc, char** argv) {");
-      indent();
-      emitln("::rt::init_argv(argc, argv);");
-      // Run each uses'd unit's init body in topological order
-      // (dependencies before dependents). Pascal's unit init
-      // semantics: every unit's `begin..end.` at its tail fires
-      // exactly once, before the program body.
-      if (unit_init_order) {
-        for (const auto& uu : *unit_init_order) {
-          if (uu == u.name) continue;  // don't self-init the program
-          emitln(mangle(uu) + "::__unit_init();");
-        }
-      }
-      // Re-enter the namespace so the body sees in-unit names
-      // unqualified.
-      emitln("using namespace " + ns + ";");
-      emitln("using namespace ::rt;");
-      ++block_depth;
-      if (u.init_body) emit_stmt(*u.init_body);
-      --block_depth;
-      emitln("return 0;");
-      dedent();
-      emitln("}");
-    } else {
-      emitln("void __unit_init() {");
-      indent();
-      ++block_depth;
-      emit_stmt(*u.init_body);
-      --block_depth;
-      dedent();
-      emitln("}");
-      nl();
-      emitln("}  // namespace " + ns);
-    }
   } else {
     nl();
     emitln("}  // namespace " + ns);
+    nl();
+    emitln("int main(int argc, char** argv) {");
+    indent();
+    emitln("::rt::init_argv(argc, argv);");
+    if (unit_init_order) {
+      // Register each finalizer only after its init hook returns.
+      // That gives reverse-order teardown on normal exit/Halt and
+      // leaves never-finished units out of the finalization chain.
+      for (const auto& uu : *unit_init_order) {
+        if (uu == u.name) continue;
+        std::string ns_name = mangle(uu);
+        emitln(ns_name + "::" + kUnitInitName + "();");
+        emitln("if (std::atexit(" + ns_name + "::" + kUnitFiniName +
+               ") != 0) std::abort();");
+      }
+    }
+    emitln("using namespace " + ns + ";");
+    emitln("using namespace ::rt;");
+    ++block_depth;
+    if (u.init_body) emit_stmt(*u.init_body);
+    --block_depth;
+    emitln("return 0;");
+    dedent();
+    emitln("}");
   }
 }
 
@@ -4559,7 +4653,8 @@ void Emitter::emit_tpexcept_unit(const UnitNode& u) {
   emitln("inline p_pjmp_buf p_recoverpospointer = nullptr;");
   emitln("inline bool p_longjump_used = false;");
   nl();
-  emitln("void __unit_init();");
+  emitln(std::string("void ") + kUnitInitName + "();");
+  emitln(std::string("void ") + kUnitFiniName + "();");
   nl();
   emitln("}  // namespace p_tpexcept");
 
@@ -4599,7 +4694,10 @@ void Emitter::emit_tpexcept_unit(const UnitNode& u) {
   dedent();
   emitln("}");
   nl();
-  emitln("void __unit_init() {");
+  emitln(std::string("void ") + kUnitInitName + "() {");
+  emitln("}");
+  nl();
+  emitln(std::string("void ") + kUnitFiniName + "() {");
   emitln("}");
   nl();
   emitln("}  // namespace p_tpexcept");

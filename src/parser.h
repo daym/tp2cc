@@ -1,5 +1,6 @@
 #pragma once
 
+#include <initializer_list>
 #include <memory>
 
 #include "ast.h"
@@ -71,6 +72,7 @@ class Parser {
 
   // ---- statements ----
   ast::StmtPtr parse_statement();
+  ast::StmtPtr parse_statement_block_until(std::initializer_list<Tok> stops);
   ast::StmtPtr parse_compound_statement();
   ast::StmtPtr parse_if();
   ast::StmtPtr parse_while();

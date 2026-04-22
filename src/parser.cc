@@ -183,21 +183,14 @@ std::shared_ptr<UnitNode> Parser::parse_unit() {
   } else if (check(Tok::KwEnd)) {
     advance();
     expect(Tok::Dot, "unit tail");
-  } else if (check(Tok::KwInitialization)) {
-    // Treat initialization/finalization sections as a compound init body.
-    advance();
-    auto c = std::make_shared<Compound>();
-    c->loc = cur_.loc;
-    while (!at_end() && !check(Tok::KwFinalization) && !check(Tok::KwEnd)) {
-      auto s = parse_statement();
-      if (s) c->body.push_back(std::move(s));
-      if (!accept(Tok::Semi)) break;
+  } else if (check(Tok::KwInitialization) || check(Tok::KwFinalization)) {
+    if (accept(Tok::KwInitialization)) {
+      u->init_body = parse_statement_block_until(
+          {Tok::KwFinalization, Tok::KwEnd});
     }
     if (accept(Tok::KwFinalization)) {
-      // Discard for now.
-      while (!at_end() && !check(Tok::KwEnd)) advance();
+      u->final_body = parse_statement_block_until({Tok::KwEnd});
     }
-    u->init_body = std::move(c);
     expect(Tok::KwEnd, "unit tail");
     expect(Tok::Dot, "unit tail");
   } else {
@@ -220,6 +213,25 @@ void Parser::parse_uses_into(std::vector<std::string>& out) {
     }
     if (!accept(Tok::Comma)) break;
   }
+}
+
+StmtPtr Parser::parse_statement_block_until(std::initializer_list<Tok> stops) {
+  auto is_stop = [&]() {
+    if (at_end()) return true;
+    for (Tok stop : stops) {
+      if (check(stop)) return true;
+    }
+    return false;
+  };
+
+  auto c = std::make_shared<Compound>();
+  c->loc = cur_.loc;
+  while (!is_stop()) {
+    auto s = parse_statement();
+    if (s) c->body.push_back(std::move(s));
+    if (!accept(Tok::Semi)) break;
+  }
+  return c;
 }
 
 // ---------------------------------------------------------------------------

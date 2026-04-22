@@ -591,6 +591,7 @@ struct UnitNode : Node {
   std::vector<std::string> impl_uses;
   std::vector<DeclPtr> impl_decls;
   StmtPtr init_body;    // TP-7 style `begin..end.` at unit tail
+  StmtPtr final_body;   // Delphi/FPC `finalization` block
   bool is_program = false;
   UnitNode() : Node(Kind::UnitNode) {}
 };

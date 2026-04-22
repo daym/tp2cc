@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "diag.h"
 #include "emit.h"
@@ -47,6 +48,18 @@ EmittedUnit compile_snippet_with_registry(std::string text) {
   return emit_unit(*u, &reg);
 }
 
+EmittedUnit compile_snippet_with_init_order(
+    std::string text, std::vector<std::string> init_order) {
+  auto sf = std::make_unique<SourceFile>();
+  sf->path = "<mem>";
+  sf->contents = std::move(text);
+  Lexer lx(std::move(sf));
+  Parser p(lx);
+  auto u = p.parse();
+  if (!u) return {};
+  return emit_unit(*u, nullptr, &init_order);
+}
+
 bool contains(const std::string& s, std::string_view needle) {
   return s.find(needle) != std::string::npos;
 }
@@ -64,6 +77,28 @@ void test_empty_unit_skeleton() {
   // headers like <strings.h>.
   CHECK(contains(out.impl, "#include \"p_foo.h\""));
   CHECK(contains(out.impl, "namespace p_foo {"));
+  CHECK(contains(out.header, "void tp2cc_unit_init();"));
+  CHECK(contains(out.header, "void tp2cc_unit_fini();"));
+  CHECK(contains(out.impl, "void tp2cc_unit_init() {"));
+  CHECK(contains(out.impl, "void tp2cc_unit_fini() {"));
+  CHECK(!contains(out.header, "__unit_init"));
+  CHECK(!contains(out.impl, "__unit_init"));
+}
+
+void test_program_registers_unit_finalizers() {
+  auto out = compile_snippet_with_init_order(
+      "program demo;\n"
+      "begin\n"
+      "end.\n",
+      {"sysutils", "classes"});
+  CHECK(contains(out.impl, "p_sysutils::tp2cc_unit_init();"));
+  CHECK(contains(out.impl,
+                 "std::atexit(p_sysutils::tp2cc_unit_fini)"));
+  CHECK(contains(out.impl, "p_classes::tp2cc_unit_init();"));
+  CHECK(contains(out.impl,
+                 "std::atexit(p_classes::tp2cc_unit_fini)"));
+  CHECK(out.impl.find("p_sysutils::tp2cc_unit_init();") <
+        out.impl.find("p_classes::tp2cc_unit_init();"));
 }
 
 void test_uses_become_includes_and_usings() {
@@ -832,8 +867,9 @@ void test_method_pointer_type_and_bound_assignment_emit() {
       "end.\n");
   CHECK(contains(out.header, "using p_tcb = ::rt::MethodPtr<void(int32_t)>;"));
   CHECK(contains(out.header,
-                 "static void tp2cc_methodptr_p_fire_"));
-  CHECK(contains(out.impl, "::rt::p_method_code<&p_tobj::tp2cc_methodptr_p_fire_"));
+                 "static void tp2cc_methodptr_fire_value_name_integer_ret_void"));
+  CHECK(contains(out.impl,
+                 "::rt::p_method_code<&p_tobj::tp2cc_methodptr_fire_value_name_integer_ret_void"));
   CHECK(contains(out.impl, "p_cb = p_tcb("));
 }
 
@@ -877,7 +913,33 @@ void test_unbound_method_address_uses_thunk_code() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "p_addr = ::rt::p_method_code<&p_tobj::tp2cc_methodptr_p_fire_"));
+                 "p_addr = ::rt::p_method_code<&p_tobj::tp2cc_methodptr_fire_value_name_integer_ret_void"));
+}
+
+void test_internal_helpers_avoid_double_underscores() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tcolor = (red, green);\n"
+      "  tcb = procedure(x : integer) of object;\n"
+      "  tobj = object\n"
+      "    cb : tcb;\n"
+      "    procedure fire(x : integer);\n"
+      "    procedure run(var i : integer);\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tobj.fire(x : integer);\n"
+      "begin\n"
+      "end;\n"
+      "procedure tobj.run(var i : integer);\n"
+      "begin\n"
+      "  with self do cb := fire;\n"
+      "  for i := low(tcolor) to high(tcolor) do begin end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(!contains(out.header, "__"));
+  CHECK(!contains(out.impl, "__"));
 }
 
 void test_const_object_param_uses_mutable_ref() {
@@ -975,6 +1037,7 @@ void test_cxx_reserved_word_identifiers() {
 
 int main() {
   RUN_TEST(test_empty_unit_skeleton);
+  RUN_TEST(test_program_registers_unit_finalizers);
   RUN_TEST(test_uses_become_includes_and_usings);
   RUN_TEST(test_scalar_const);
   RUN_TEST(test_typed_scalar_const);
@@ -1019,6 +1082,7 @@ int main() {
   RUN_TEST(test_method_pointer_type_and_bound_assignment_emit);
   RUN_TEST(test_method_pointer_record_cast_reinterprets_same_storage);
   RUN_TEST(test_unbound_method_address_uses_thunk_code);
+  RUN_TEST(test_internal_helpers_avoid_double_underscores);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
   RUN_TEST(test_parameterless_procvar_stmt_autocalls);
   RUN_TEST(test_runtime_builtin_stmt_autocalls);

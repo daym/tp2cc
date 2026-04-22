@@ -93,6 +93,47 @@ void test_unit_uses_and_init() {
   }
 }
 
+void test_unit_initialization_and_finalization() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit foo;\n"
+      "interface\n"
+      "implementation\n"
+      "initialization\n"
+      "  x := 1;\n"
+      "finalization\n"
+      "  while x < 3 do begin\n"
+      "    x := x + 1;\n"
+      "  end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u) {
+    CHECK(u->init_body != nullptr);
+    CHECK(u->final_body != nullptr);
+    auto* fini = dynamic_cast<Compound*>(u->final_body.get());
+    CHECK(fini != nullptr);
+    if (fini) CHECK_EQ(fini->body.size(), size_t{1});
+  }
+}
+
+void test_unit_standalone_finalization() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit foo;\n"
+      "interface\n"
+      "implementation\n"
+      "finalization\n"
+      "  x := 1;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u) {
+    CHECK(u->init_body == nullptr);
+    CHECK(u->final_body != nullptr);
+  }
+}
+
 // Constants.
 void test_const_decls() {
   int before = error_count();
@@ -900,6 +941,8 @@ int main() {
   RUN_TEST(test_bare_body);
   RUN_TEST(test_empty_unit);
   RUN_TEST(test_unit_uses_and_init);
+  RUN_TEST(test_unit_initialization_and_finalization);
+  RUN_TEST(test_unit_standalone_finalization);
   RUN_TEST(test_const_decls);
   RUN_TEST(test_type_decls_named_and_enum);
   RUN_TEST(test_record_type);
