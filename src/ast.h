@@ -118,7 +118,11 @@ struct Ident : Expr {
 };
 
 struct IntLit : Expr {
-  int64_t value = 0;
+  // Magnitude only.  Negative integer expressions are modelled as
+  // `Unary(Neg, IntLit(magnitude))', so the sign is carried by the
+  // parent node, not this one.  uint64_t so the full unsigned range
+  // fits without bit-preserving casts.
+  uint64_t value = 0;
   IntLit() : Expr(Kind::IntLit) {}
 };
 

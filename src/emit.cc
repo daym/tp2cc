@@ -1218,7 +1218,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     case Kind::IntLit: {
       const auto& n = static_cast<const IntLit&>(e);
       char buf[32];
-      std::snprintf(buf, sizeof(buf), "%lld", (long long)n.value);
+      // IntLit holds an unsigned magnitude; a `-' prefix would arrive
+      // as a Unary(Neg) parent, not a negative IntLit.  Add a `ULL'
+      // suffix when the value's high bit is set so GCC doesn't
+      // complain "integer constant is so large that it is unsigned";
+      // smaller values stay plain so `-5' reaches the emitter as a
+      // signed literal (not `-5ULL', which would underflow to
+      // 0xFFFFFFFFFFFFFFFB).
+      const char* fmt =
+          (n.value > static_cast<uint64_t>(INT64_MAX)) ? "%lluULL" : "%llu";
+      std::snprintf(buf, sizeof(buf), fmt,
+                    static_cast<unsigned long long>(n.value));
       return buf;
     }
     case Kind::RealLit: {

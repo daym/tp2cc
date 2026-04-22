@@ -85,8 +85,12 @@ struct Token {
   // For Ident / StringLit / IntLit / RealLit: the literal text (unescaped for
   // strings, lowercased for Ident -- Pascal identifiers are case-insensitive).
   std::string text;
-  // For IntLit only: the parsed numeric value.
-  int64_t int_value = 0;
+  // For IntLit only: the parsed magnitude of the literal.  Pascal
+  // integer literals are always written unsigned; a leading `-' is
+  // a unary operator applied to the literal, not part of it.  Full
+  // 64-bit unsigned range is required for legitimate Pascal
+  // constants such as `$ffffffffffffffff'.
+  uint64_t int_value = 0;
 };
 
 const char* tok_name(Tok t);

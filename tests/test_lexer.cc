@@ -118,19 +118,19 @@ void test_operators_and_punctuation() {
 void test_numbers_decimal() {
   auto ts = lex_all("0 1 42 12345");
   CHECK_EQ(ts.size(), size_t{4});
-  CHECK_EQ(ts[0].int_value, int64_t{0});
-  CHECK_EQ(ts[1].int_value, int64_t{1});
-  CHECK_EQ(ts[2].int_value, int64_t{42});
-  CHECK_EQ(ts[3].int_value, int64_t{12345});
+  CHECK_EQ(ts[0].int_value, uint64_t{0});
+  CHECK_EQ(ts[1].int_value, uint64_t{1});
+  CHECK_EQ(ts[2].int_value, uint64_t{42});
+  CHECK_EQ(ts[3].int_value, uint64_t{12345});
 }
 
 void test_numbers_bases() {
   auto ts = lex_all("$ff $1A %1010 &17");
   CHECK_EQ(ts.size(), size_t{4});
-  CHECK_EQ(ts[0].int_value, int64_t{0xff});
-  CHECK_EQ(ts[1].int_value, int64_t{0x1A});
-  CHECK_EQ(ts[2].int_value, int64_t{10});
-  CHECK_EQ(ts[3].int_value, int64_t{15});
+  CHECK_EQ(ts[0].int_value, uint64_t{0xff});
+  CHECK_EQ(ts[1].int_value, uint64_t{0x1A});
+  CHECK_EQ(ts[2].int_value, uint64_t{10});
+  CHECK_EQ(ts[3].int_value, uint64_t{15});
 }
 
 void test_real_numbers() {
@@ -147,10 +147,10 @@ void test_dotdot_vs_real() {
   auto ts = lex_all("1..10");
   CHECK_EQ(ts.size(), size_t{3});
   CHECK(ts[0].kind == Tok::IntLit);
-  CHECK_EQ(ts[0].int_value, int64_t{1});
+  CHECK_EQ(ts[0].int_value, uint64_t{1});
   CHECK(ts[1].kind == Tok::DotDot);
   CHECK(ts[2].kind == Tok::IntLit);
-  CHECK_EQ(ts[2].int_value, int64_t{10});
+  CHECK_EQ(ts[2].int_value, uint64_t{10});
 }
 
 void test_strings_basic() {
@@ -341,7 +341,7 @@ void test_set_literal_and_in() {
   CHECK(ts[8].kind == Tok::KwThen);
   CHECK(ts[10].kind == Tok::Assign);
   CHECK(ts[11].kind == Tok::IntLit);
-  CHECK_EQ(ts[11].int_value, int64_t{1});
+  CHECK_EQ(ts[11].int_value, uint64_t{1});
 }
 
 void test_object_declaration_syntax() {

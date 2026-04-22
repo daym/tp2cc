@@ -545,7 +545,7 @@ Token Lexer::scan_number() {
       text.push_back(d);
     }
     if (ovf) report_error(loc, "integer literal exceeds 64 bits");
-    t.int_value = static_cast<int64_t>(v);
+    t.int_value = v;
     t.text = std::move(text);
     return t;
   }
@@ -559,7 +559,7 @@ Token Lexer::scan_number() {
       text.push_back(d);
     }
     if (ovf) report_error(loc, "integer literal exceeds 64 bits");
-    t.int_value = static_cast<int64_t>(v);
+    t.int_value = v;
     t.text = std::move(text);
     return t;
   }
@@ -573,7 +573,7 @@ Token Lexer::scan_number() {
       text.push_back(d);
     }
     if (ovf) report_error(loc, "integer literal exceeds 64 bits");
-    t.int_value = static_cast<int64_t>(v);
+    t.int_value = v;
     t.text = std::move(text);
     return t;
   }
@@ -604,7 +604,7 @@ Token Lexer::scan_number() {
     t.kind = Tok::RealLit;
   } else {
     if (ivalue_ovf) report_error(loc, "integer literal exceeds 64 bits");
-    t.int_value = static_cast<int64_t>(ivalue);
+    t.int_value = ivalue;
   }
   t.text = std::move(text);
   return t;
