@@ -46,6 +46,13 @@ struct ClassInfo {
   std::string name;
   std::string parent;                    // empty if none
   std::string defining_unit;
+  // TP-style `object' is a value type: lives on the stack by default,
+  // heap-allocated with `new(p, init(...))', destroyed via
+  // `dispose(p, done)'.  Delphi-style `class' is a reference type:
+  // variables of class type always hold pointers, instances are
+  // always heap-allocated, `TFoo.Create(...)' returns a pointer,
+  // destruction via `.Free'.  Emit decisions fork on this flag.
+  bool is_reference_type = false;
   // member_name -> (is_method, field_info | method_sig)
   struct Member {
     bool is_method = false;

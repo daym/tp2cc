@@ -34,7 +34,10 @@ const std::pair<const char*, Tok> kKeywordTable[] = {
     {"div", Tok::KwDiv},
     {"do", Tok::KwDo},
     {"downto", Tok::KwDownto},
-    {"dynamic", Tok::KwDynamic},
+    // `dynamic' is a method directive, not a reserved keyword -- per
+    // Pascal standard and FPC ref/refse4.html -- so it's not in this
+    // table.  Recognised at directive positions via
+    // is_directive("dynamic") in parse_proc_modifiers.
     {"else", Tok::KwElse},
     {"end", Tok::KwEnd},
     {"except", Tok::KwExcept},

@@ -50,7 +50,7 @@ enum class Tok : uint16_t {
   KwAbsolute, KwAbstract, KwAnd, KwArray, KwAs, KwAsm, KwAssembler,
   KwBegin, KwBreak,
   KwCase, KwCdecl, KwClass, KwConst, KwConstructor, KwContinue,
-  KwDefault, KwDestructor, KwDispose, KwDiv, KwDo, KwDownto, KwDynamic,
+  KwDefault, KwDestructor, KwDispose, KwDiv, KwDo, KwDownto,
   KwElse, KwEnd, KwExcept, KwExit, KwExport, KwExports, KwExternal,
   KwFail, KwFalse, KwFar, KwFile, KwFinalization, KwFinally, KwFor,
     KwForward, KwFunction,

@@ -83,6 +83,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
           ci.defining_unit = unit;
           const auto& to = static_cast<const TyObject&>(*td.type);
           ci.parent = lc(to.parent);
+          ci.is_reference_type = to.is_reference_type;
           add_class_members(ci, to);
           r.classes[nm] = std::move(ci);
         } else if (td.type->kind == Kind::TyRecord) {

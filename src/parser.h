@@ -76,6 +76,8 @@ class Parser {
   ast::StmtPtr parse_case();
   ast::StmtPtr parse_with();
   ast::StmtPtr parse_asm();
+  ast::StmtPtr parse_try();
+  ast::StmtPtr parse_raise();
   ast::StmtPtr parse_labeled_or_simple();
 
   // ---- expressions (precedence-climbing) ----

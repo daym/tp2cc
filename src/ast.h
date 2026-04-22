@@ -60,6 +60,8 @@ enum class Kind : uint16_t {
   ExitStmt,
   EmptyStmt,
   AsmStmt,
+  Try,
+  Raise,
   // Declarations
   ConstDecl,
   TypeDecl,
@@ -79,6 +81,7 @@ enum class Kind : uint16_t {
   TyEnum,
   TySubrange,
   TyString,
+  TyMetaclass,
   // Top-level
   UnitNode,
   ProgramNode,
@@ -307,6 +310,40 @@ struct AsmStmt : Stmt {
   AsmStmt() : Stmt(Kind::AsmStmt) {}
 };
 
+// One `on <var>: <Class> do <stmt>' arm inside `try ... except ... end'.
+// The variable name is optional (`on EFoo do ...' without bind).
+struct ExceptHandler {
+  std::string var_name;      // may be empty
+  std::string class_name;    // lowercased; empty means catch-all (rare)
+  StmtPtr body;
+};
+
+// Pascal `try ... except ... end' / `try ... finally ... end'.
+// A single try-block is either an except or a finally, not both
+// (nested try blocks handle the combined case -- see compiler/compiler.pas).
+struct Try : Stmt {
+  std::vector<StmtPtr> body;         // statements in the try-body
+  bool is_finally = false;           // false = except, true = finally
+  // except-form: per-class handlers, with optional catch-all via
+  // `else <stmt>' after the `on' arms.
+  std::vector<ExceptHandler> handlers;
+  StmtPtr except_else;               // else-clause of except, may be null
+  // finally-form: statements that always run on exit from body.
+  std::vector<StmtPtr> finally_body;
+  Try() : Stmt(Kind::Try) {}
+};
+
+// `raise' statement.  Two AST variants:
+//   raise EFoo.Create('msg');  -- raise an instance
+//   raise;                     -- bare, re-raise current exception
+//                                 (only valid inside an except handler)
+// Optional `at <address>' suffix (Delphi debug aid) is parsed and
+// discarded.
+struct Raise : Stmt {
+  ExprPtr value;                     // null for bare `raise;'
+  Raise() : Stmt(Kind::Raise) {}
+};
+
 // ---------------------------------------------------------------------------
 // Declarations
 
@@ -434,6 +471,12 @@ struct ObjectMember {
 struct TyObject : TypeExpr {
   std::string parent;              // base object type name; empty if none
   std::vector<ObjectMember> members;
+  // `false`: TP-style `object` -- value type, stack-OK, `new(p, init)` to
+  // heap-allocate, destructor via `dispose(p, done)`.
+  // `true`: Delphi-style `class` -- reference type, always heap, implicit
+  // TObject ancestor, constructor returns a pointer via `TFoo.Create(...)`,
+  // destruction via `.Free` (null-safe at the call site).
+  bool is_reference_type = false;
   TyObject() : TypeExpr(Kind::TyObject) {}
 };
 
@@ -451,6 +494,20 @@ struct TyFile : TypeExpr {
 struct TyPointer : TypeExpr {
   TypePtr target;
   TyPointer() : TypeExpr(Kind::TyPointer) {}
+};
+
+// Delphi `class of T' -- a metaclass reference.  A value of this
+// type names a class (as opposed to an instance of a class).  At
+// runtime it's a pointer to a class descriptor carrying a virtual
+// NewInstance etc.; `AClassVar.Create(args)' allocates an instance
+// of whichever concrete class AClassVar currently names.
+//
+// For emit purposes this is NOT a `T*' (pointer to instance) -- it's
+// a pointer to class-level metadata.  Kept syntactically minimal
+// for now: we just record the name of the referenced class.
+struct TyMetaclass : TypeExpr {
+  std::string class_name;
+  TyMetaclass() : TypeExpr(Kind::TyMetaclass) {}
 };
 
 struct TyProcedural : TypeExpr {

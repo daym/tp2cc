@@ -100,7 +100,9 @@ bool Parser::tok_is_directive_kw() const {
     case Tok::KwAbstract:
     case Tok::KwAssembler:
     case Tok::KwCdecl:
-    case Tok::KwDynamic:
+    // KwDynamic removed: `dynamic' is now a soft directive recognised
+    // via is_directive("dynamic"), so it arrives here as Tok::Ident
+    // and doesn't need a directive-kw branch.
     case Tok::KwExport:
     case Tok::KwExternal:
     case Tok::KwFar:
@@ -457,6 +459,24 @@ void Parser::parse_proc_modifiers(ProcDecl& pd) {
     if (cur_.kind == Tok::KwVirtual) { pd.is_virtual = true; advance(); }
     else if (cur_.kind == Tok::KwAbstract) { pd.is_abstract = true; advance(); }
     else if (cur_.kind == Tok::KwOverride) { pd.is_override = true; advance(); }
+    // `dynamic` in Delphi Win32 uses a separate dispatch table (DMT).
+    // FPC's implementation unifies dynamic and virtual through the VMT,
+    // so the two directives are semantically identical in FPC.  We set
+    // `is_virtual` and drop the distinction (see FPC reference manual
+    // and the ProfessionalsPoint summary of the dispatch difference).
+    else if (is_directive("dynamic")) { pd.is_virtual = true; advance(); }
+    // `message N` marks a method as a Windows message handler (or, in
+    // cross-platform code, a generic typed dispatch).  The mechanism
+    // shares DMT plumbing with `dynamic` in Delphi, and in FPC behaves
+    // as virtual with an associated message selector.  The selector is
+    // irrelevant to the bootstrap compiler's self-compile; swallow it.
+    else if (is_directive("message")) {
+      advance();
+      // integer constant or identifier for the message number/name.
+      if (cur_.kind == Tok::IntLit || cur_.kind == Tok::Ident
+          || cur_.kind == Tok::StringLit) advance();
+      pd.is_virtual = true;
+    }
     else if (cur_.kind == Tok::KwForward) { pd.is_forward = true; advance(); }
     else if (cur_.kind == Tok::KwInline) { pd.is_inline = true; advance(); }
     else if (cur_.kind == Tok::KwCdecl) { pd.is_cdecl = true; advance(); }
@@ -490,6 +510,27 @@ void Parser::parse_proc_modifiers(ProcDecl& pd) {
     }
     else if (is_directive("name")) {
       // Standalone `name 'foo'` (rarely on its own; usually after external).
+      advance();
+      if (cur_.kind == Tok::StringLit) advance();
+    }
+    else if (is_directive("overload")) {
+      // Delphi-style method overloading.  Emit-time handling: drop the
+      // directive; C++ overload resolution picks the right signature
+      // from the emitted `p_<Method>(...)' candidates automatically.
+      advance();
+    }
+    else if (is_directive("reintroduce")) {
+      // `reintroduce' hides an inherited virtual method at this
+      // overload-resolution level without marking it `override'.
+      // Emit-time: can be translated to a fresh `virtual' declaration
+      // on the derived class.  For now, recognise and skip.
+      advance();
+    }
+    else if (is_directive("deprecated")
+             || is_directive("platform")
+             || is_directive("library")
+             || is_directive("experimental")) {
+      // Purely advisory; swallow and keep going.
       advance();
       if (cur_.kind == Tok::StringLit) advance();
     }
@@ -593,6 +634,7 @@ static bool starts_type_tok(Tok t) {
     case Tok::KwArray:
     case Tok::KwRecord:
     case Tok::KwObject:
+    case Tok::KwClass:
     case Tok::KwSet:
     case Tok::KwFile:
     case Tok::KwString:
@@ -628,7 +670,23 @@ TypePtr Parser::parse_type() {
   switch (cur_.kind) {
     case Tok::KwArray:  return parse_array_type(packed);
     case Tok::KwRecord: return parse_record_type(packed);
-    case Tok::KwObject: return parse_object_type();
+    case Tok::KwObject:
+      return parse_object_type();
+    case Tok::KwClass: {
+      // `class' at type position can start either a class declaration
+      // (`class[(parent)] ... end') or a metaclass reference
+      // (`class of T').  Disambiguate by 1-token lookahead.
+      if (peek().kind == Tok::KwOf) {
+        Location mloc = cur_.loc;
+        advance();  // class
+        advance();  // of
+        auto tm = std::make_unique<TyMetaclass>();
+        tm->loc = mloc;
+        tm->class_name = consume_ident("metaclass target");
+        return tm;
+      }
+      return parse_object_type();
+    }
     case Tok::KwSet:    return parse_set_type();
     case Tok::KwFile:   return parse_file_type();
     case Tok::KwProcedure:
@@ -826,8 +884,19 @@ TypePtr Parser::parse_record_type(bool packed) {
 
 TypePtr Parser::parse_object_type() {
   Location loc = cur_.loc;
-  expect(Tok::KwObject, "object");
+  // Accept either TP-style `object` or Delphi-style `class`.  The
+  // grammar bodies are (almost) identical: inheritance via (parent),
+  // public/private/protected sections, field and method declarations.
+  // We record which keyword was used on the resulting TyObject so the
+  // emitter can pick value-semantics (object) vs reference-semantics
+  // (class).
   auto to = std::make_unique<TyObject>();
+  if (check(Tok::KwClass)) {
+    expect(Tok::KwClass, "class");
+    to->is_reference_type = true;
+  } else {
+    expect(Tok::KwObject, "object");
+  }
   to->loc = loc;
   if (accept(Tok::LParen)) {
     to->parent = consume_ident("parent class");
@@ -839,6 +908,46 @@ TypePtr Parser::parse_object_type() {
     if (accept(Tok::KwPublic)) { vis = Visibility::Public; continue; }
     if (accept(Tok::KwPrivate)) { vis = Visibility::Private; continue; }
     if (accept(Tok::KwProtected)) { vis = Visibility::Protected; continue; }
+
+    // Delphi `class procedure F(...);' / `class function F(...): T;'.
+    //
+    // Pascal class methods are NOT equivalent to C++ static methods.
+    // A Pascal class method:
+    //   - receives an implicit Self whose value is a metaclass (a
+    //     `class of TFoo' reference), not an instance;
+    //   - can be declared `virtual' and dispatched through that
+    //     metaclass, so `AClassVar.ClassMethod' picks the override
+    //     belonging to whichever concrete class AClassVar currently
+    //     refers to (e.g. `TObject.NewInstance' is a virtual class
+    //     method and is how metaclass allocation actually works);
+    //   - can call `inherited' to chain to the parent class method.
+    //
+    // A C++ static method has none of this -- no Self, no vtable,
+    // no dispatch through a runtime-known class pointer.  Treating
+    // Pascal class methods as C++ static methods would silently
+    // break polymorphic class-method dispatch at every call site.
+    //
+    // fpc-2.0.0 compiler source contains ~2 class-method decls
+    // (per the feature survey) and the bootstrap path probably
+    // doesn't exercise them at runtime.  We therefore swallow the
+    // `class' prefix and parse the method as an ordinary instance
+    // method -- accepts the source but emits wrong semantics if the
+    // method is ever invoked through a metaclass variable.  If/when
+    // the compiler's self-compile stumbles over this, we'll need
+    // to extend ProcDecl with an `is_class_method' flag and wire
+    // through metaclass-aware dispatch at emit time.  In a class
+    // body only `class procedure'/`class function' are meaningful
+    // -- `class of' is a type-declaration form, not a member form.
+    if (check(Tok::KwClass)) {
+      advance();
+      if (!(check(Tok::KwProcedure) || check(Tok::KwFunction))) {
+        // Not a class-method declaration; put us in an error state.
+        report_error(cur_.loc,
+                     "expected `procedure' or `function' after `class'");
+        break;
+      }
+      // fall through to the regular method-parse branch below
+    }
 
     if (check(Tok::KwProcedure) || check(Tok::KwFunction) ||
         check(Tok::KwConstructor) || check(Tok::KwDestructor)) {
@@ -992,6 +1101,8 @@ StmtPtr Parser::parse_statement() {
     // identifiers and are parsed as ordinary calls. Codegen recognises the
     // names.
     case Tok::KwAsm:    return parse_asm();
+    case Tok::KwTry:    return parse_try();
+    case Tok::KwRaise:  return parse_raise();
     case Tok::Semi:
     case Tok::KwEnd:
     case Tok::KwUntil:
@@ -1137,6 +1248,109 @@ StmtPtr Parser::parse_with() {
   while (accept(Tok::Comma)) n->exprs.push_back(parse_expr());
   expect(Tok::KwDo, "with");
   n->body = parse_statement();
+  return n;
+}
+
+// Pascal `try ... except/finally ... end'.
+//
+// Grammar:
+//   TryStmt := 'try' StatementList ('except' ExceptPart | 'finally' StatementList) 'end'
+//   ExceptPart := { 'on' [Ident ':'] ClassName 'do' Statement ';' } [ 'else' StatementList ]
+//              |  StatementList       { catch-all-with-no-on, legal shortform }
+//
+// fpc's compiler.pas nests `try try ... except ... end except ... end'
+// to combine finally + except.  That's not a new construct -- just the
+// outer is finally and the inner is except (or vice versa).  Our AST
+// models a single try as one or the other; nesting is composed by the
+// caller.
+StmtPtr Parser::parse_try() {
+  Location loc = cur_.loc;
+  expect(Tok::KwTry, "try");
+  auto n = std::make_unique<Try>();
+  n->loc = loc;
+  while (!at_end() && !check(Tok::KwExcept) && !check(Tok::KwFinally)) {
+    n->body.push_back(parse_statement());
+    if (!accept(Tok::Semi)) break;
+  }
+  if (accept(Tok::KwFinally)) {
+    n->is_finally = true;
+    while (!at_end() && !check(Tok::KwEnd)) {
+      n->finally_body.push_back(parse_statement());
+      if (!accept(Tok::Semi)) break;
+    }
+  } else if (accept(Tok::KwExcept)) {
+    n->is_finally = false;
+    // Zero or more `on ClassName [: Ident?] do Stmt;' arms.  If the
+    // first token isn't `on', the body is a catch-all statement list
+    // that runs on any exception (Delphi shorthand).
+    //
+    // `on' is a soft keyword -- used only in except arms, not in the
+    // lexer's reserved-words table -- so it arrives as Tok::Ident and
+    // we match it via is_directive.
+    if (is_directive("on")) {
+      while (is_directive("on")) {
+        advance();
+        ExceptHandler h;
+        // `on Ident : ClassName do' OR `on ClassName do' (bind omitted).
+        // Disambiguate by 1-token lookahead for `:'.
+        std::string first = consume_ident("exception handler");
+        if (accept(Tok::Colon)) {
+          h.var_name = first;
+          h.class_name = consume_ident("exception class");
+        } else {
+          h.class_name = first;
+        }
+        expect(Tok::KwDo, "exception handler");
+        h.body = parse_statement();
+        n->handlers.push_back(std::move(h));
+        accept(Tok::Semi);
+      }
+      // Optional else-branch after `on' arms: catch-all.
+      if (accept(Tok::KwElse)) {
+        auto compound = std::make_unique<Compound>();
+        compound->loc = cur_.loc;
+        while (!at_end() && !check(Tok::KwEnd)) {
+          compound->body.push_back(parse_statement());
+          if (!accept(Tok::Semi)) break;
+        }
+        n->except_else = std::move(compound);
+      }
+    } else {
+      // Catch-all shorthand: any statement list here runs on any
+      // exception.  Model as the else-branch of an handlerless except.
+      auto compound = std::make_unique<Compound>();
+      compound->loc = cur_.loc;
+      while (!at_end() && !check(Tok::KwEnd)) {
+        compound->body.push_back(parse_statement());
+        if (!accept(Tok::Semi)) break;
+      }
+      n->except_else = std::move(compound);
+    }
+  } else {
+    expect(Tok::KwExcept, "try");  // reports a useful error
+  }
+  expect(Tok::KwEnd, "try");
+  return n;
+}
+
+// `raise [Expr] [at Expr]' -- raise or re-raise an exception.
+// Bare `raise;' inside an except handler re-raises the current one.
+StmtPtr Parser::parse_raise() {
+  Location loc = cur_.loc;
+  expect(Tok::KwRaise, "raise");
+  auto n = std::make_unique<Raise>();
+  n->loc = loc;
+  // Optional expression -- the instance being raised.  Absent iff the
+  // next token ends the statement (`;', `end', `else', ...).
+  if (!check(Tok::Semi) && !check(Tok::KwEnd) && !check(Tok::KwElse)
+      && !check(Tok::KwUntil)) {
+    n->value = parse_expr();
+  }
+  // Optional `at <Expr>' suffix (Delphi debug aid); parsed and discarded.
+  if (is_directive("at")) {
+    advance();
+    parse_expr();
+  }
   return n;
 }
 

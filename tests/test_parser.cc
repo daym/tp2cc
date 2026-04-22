@@ -221,7 +221,150 @@ void test_object_inheritance() {
     if (td) {
       auto* to = dynamic_cast<TyObject*>(td->type.get());
       CHECK(to);
-      if (to) CHECK_EQ(to->parent, std::string("tbase"));
+      if (to) {
+        CHECK_EQ(to->parent, std::string("tbase"));
+        // TP-style object: value type, not a reference.
+        CHECK(!to->is_reference_type);
+      }
+    }
+  }
+}
+
+// Pascal try/except/finally + raise.
+//
+// Exercises parser support for try/except/finally/raise forms:
+//   - try ... except on E: TClass do ... end
+//   - try ... except on TClass do ... else ... end  (no bind)
+//   - try ... finally ... end
+//   - raise EFoo.Create(...)
+//   - bare `raise;' inside except arms
+//   - nested try (finally-wrapping-except)
+void test_try_except_finally_raise() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "program p;\n"
+      "begin\n"
+      "  try\n"
+      "    try\n"
+      "      doit\n"
+      "    except\n"
+      "      on e: efoo do raise;\n"
+      "      on ebar do writeln('bar');\n"
+      "    else\n"
+      "      writeln('other');\n"
+      "    end;\n"
+      "  finally\n"
+      "    cleanup;\n"
+      "  end;\n"
+      "  raise efoo.create('msg');\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+}
+
+// `class of T' metaclass reference -- a value of this type names a
+// class rather than an instance.  Different grammar from `class (...)
+// ... end': `of' disambiguates.
+void test_metaclass_type() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TBase = class\n"
+      "  end;\n"
+      "  TBaseClass = class of TBase;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && u->interface_decls.size() >= 2) {
+    auto* td_meta = dynamic_cast<TypeDecl*>(u->interface_decls[1].get());
+    CHECK(td_meta);
+    if (td_meta) {
+      auto* tm = dynamic_cast<TyMetaclass*>(td_meta->type.get());
+      CHECK(tm);
+      // Lexer lowercases identifiers; Pascal is case-insensitive.
+      if (tm) CHECK_EQ(tm->class_name, std::string("tbase"));
+    }
+  }
+}
+
+// Directives on class methods: dynamic, overload, reintroduce, and
+// the `class procedure'/`class function' prefix for metaclass methods.
+// FPC's `dynamic' is semantically identical to `virtual' (same VMT),
+// so we accept it and move on; we just need it to NOT derail parsing.
+void test_class_directives() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TFoo = class\n"
+      "    procedure A; dynamic;\n"
+      "    procedure B(x:integer); overload;\n"
+      "    procedure B(x:string);  overload;\n"
+      "    procedure C; reintroduce;\n"
+      "    class procedure Classy;\n"
+      "    class function  ClassyF: integer;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && !u->interface_decls.empty()) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    CHECK(td);
+    if (td) {
+      auto* to = dynamic_cast<TyObject*>(td->type.get());
+      CHECK(to);
+      if (to) {
+        // 2 overloads of B count as 2 distinct method entries; A, C,
+        // Classy, ClassyF are one each -- total 6.
+        CHECK_EQ(to->members.size(), size_t{6});
+      }
+    }
+  }
+}
+
+// Delphi-style `class' reuses the object-member parser, then records
+// reference-type semantics so the emitter can pick pointer storage and
+// heap allocation.
+void test_class_declaration() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    constructor Create;\n"
+      "    destructor Destroy; override;\n"
+      "    procedure m; virtual;\n"
+      "  end;\n"
+      "  tderived = class(tbase)\n"
+      "    procedure m; override;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && u->interface_decls.size() >= 2) {
+    auto* td_base = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    auto* td_der  = dynamic_cast<TypeDecl*>(u->interface_decls[1].get());
+    CHECK(td_base && td_der);
+    if (td_base && td_der) {
+      auto* to_base = dynamic_cast<TyObject*>(td_base->type.get());
+      auto* to_der  = dynamic_cast<TyObject*>(td_der->type.get());
+      CHECK(to_base && to_der);
+      if (to_base && to_der) {
+        // Both are `class', so both carry the reference-type marker.
+        CHECK(to_base->is_reference_type);
+        CHECK(to_der->is_reference_type);
+        CHECK(to_base->parent.empty());
+        CHECK_EQ(to_der->parent, std::string("tbase"));
+        // tbase has ctor, dtor, and one virtual method.
+        CHECK_EQ(to_base->members.size(), size_t{3});
+      }
     }
   }
 }
@@ -628,6 +771,10 @@ int main() {
   RUN_TEST(test_directive_as_method_name);
   RUN_TEST(test_unit_named_like_directive);
   RUN_TEST(test_error_recovery_basic);
+  RUN_TEST(test_class_declaration);
+  RUN_TEST(test_class_directives);
+  RUN_TEST(test_metaclass_type);
+  RUN_TEST(test_try_except_finally_raise);
 
   int n = tp2cc_test::failures();
   std::printf("%s: %d failure%s\n", (n == 0 ? "PASS" : "FAIL"), n,
