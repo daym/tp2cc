@@ -36,7 +36,7 @@ class Lexer {
   };
 
   // Read one char, advance; returns 0 on EOF of current input.
-  char peek(int ahead = 0) const;
+  char peek(size_t ahead = 0) const;
   char get();
   void unget();  // step back one (within current input; line/col rewinds)
 

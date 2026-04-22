@@ -158,9 +158,9 @@ bool Lexer::at_eof_of_current() const {
   return in.pos >= in.file->contents.size();
 }
 
-char Lexer::peek(int ahead) const {
+char Lexer::peek(size_t ahead) const {
   const auto& in = stack_.back();
-  size_t p = in.pos + static_cast<size_t>(ahead);
+  size_t p = in.pos + ahead;
   if (p >= in.file->contents.size()) return 0;
   return in.file->contents[p];
 }
