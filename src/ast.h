@@ -563,8 +563,13 @@ struct TyProcedural : TypeExpr {
   TyProcedural() : TypeExpr(Kind::TyProcedural) {}
 };
 
+struct EnumMember {
+  std::string name;
+  ExprPtr value;  // optional explicit ordinal value
+};
+
 struct TyEnum : TypeExpr {
-  std::vector<std::string> members;
+  std::vector<EnumMember> members;
   TyEnum() : TypeExpr(Kind::TyEnum) {}
 };
 

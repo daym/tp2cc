@@ -107,7 +107,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
           ei.name = nm;
           ei.defining_unit = unit;
           for (const auto& m : static_cast<const TyEnum&>(*td.type).members) {
-            std::string lm = lc(m);
+            std::string lm = lc(m.name);
             ei.members.push_back(lm);
             r.enum_members[lm] = unit;
             if (ui)

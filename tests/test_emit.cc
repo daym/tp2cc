@@ -172,6 +172,34 @@ void test_enum_type() {
   CHECK(contains(out.header, "p_blue"));
 }
 
+void test_enum_type_with_explicit_values() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  treg = (lo := low(longint), hi := high(longint));\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "enum p_treg : int32_t {"));
+  CHECK(contains(out.header,
+                 "p_lo = ::std::numeric_limits<int32_t>::min(),"));
+  CHECK(contains(out.header,
+                 "p_hi = ::std::numeric_limits<int32_t>::max()"));
+}
+
+void test_explicit_enum_array_bounds_use_ordinal_range() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  treg = (lo := low(longint), hi := high(longint));\n"
+      "  tmap = array[treg] of byte;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "using p_tmap = ::rt::Array<uint8_t, p_lo, ((::rt::p_ordinal_value(p_hi)) - (::rt::p_ordinal_value(p_lo)) + 1)>;"));
+}
+
 void test_named_type_alias() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -1043,6 +1071,8 @@ int main() {
   RUN_TEST(test_typed_scalar_const);
   RUN_TEST(test_typed_scalar_const_wraps_to_destination_value);
   RUN_TEST(test_enum_type);
+  RUN_TEST(test_enum_type_with_explicit_values);
+  RUN_TEST(test_explicit_enum_array_bounds_use_ordinal_range);
   RUN_TEST(test_named_type_alias);
   RUN_TEST(test_set_type_alias);
   RUN_TEST(test_var_extern_in_header_and_def_in_impl);

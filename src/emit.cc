@@ -275,6 +275,23 @@ std::string signed_bits_literal_text(uint64_t bits, const PrimitiveInfo& info) {
   return "-" + uint64_literal_text(magnitude);
 }
 
+std::string primitive_low_high_expr(std::string_view lowname, bool want_low) {
+  if (lowname == "char") {
+    return want_low ? "::rt::p_char_of(0)" : "::rt::p_char_of(255)";
+  }
+  if (lowname == "boolean" || lowname == "bytebool" ||
+      lowname == "wordbool" || lowname == "longbool") {
+    return want_low ? "false" : "true";
+  }
+  const PrimitiveInfo* info = primitive_info(lowname);
+  if (!info || info->int_kind == PrimitiveIntKind::None) return {};
+  if (want_low) {
+    if (info->int_kind == PrimitiveIntKind::Unsigned) return "0";
+    return "::std::numeric_limits<" + std::string(info->cxx) + ">::min()";
+  }
+  return "::std::numeric_limits<" + std::string(info->cxx) + ">::max()";
+}
+
 const ast::TyName* builtin_integer_type(std::string_view lowname) {
   auto make = [](const char* name) {
     ast::TyName n;
@@ -544,6 +561,8 @@ struct Emitter {
   std::string type_name_to_cxx(const TyName& n);
   std::string array_type_to_cxx(const TyArray& a);
   const ast::TypeExpr* canonicalize_type(const ast::TypeExpr* t);
+  bool enum_has_explicit_values(const TyEnum& e);
+  std::string enum_member_value_to_cxx(const TyEnum& e, size_t index);
   bool array_dim_bounds_to_cxx(const ast::TypeExpr& dim,
                                std::string* lo,
                                std::string* size_expr);
@@ -765,6 +784,32 @@ bool Emitter::const_param_needs_mutable_ref(const TypeExpr* t) {
   return t && (t->kind == Kind::TyRecord || t->kind == Kind::TyObject);
 }
 
+bool Emitter::enum_has_explicit_values(const TyEnum& e) {
+  for (const auto& member : e.members) {
+    if (member.value) return true;
+  }
+  return false;
+}
+
+std::string Emitter::enum_member_value_to_cxx(const TyEnum& e, size_t index) {
+  // Pascal/FPC enum ordinals are assigned left-to-right:
+  // the first implicit member is 0, each later implicit member is the
+  // previous ordinal plus 1, and any explicit assignment resets the
+  // running ordinal for following implicit members.
+  // Examples:
+  //   (a := 5, b, c)    => a=5,  b=6,  c=7
+  //   (a, b := 10, c)   => a=0,  b=10, c=11
+  std::string value = "0";
+  for (size_t i = 0; i <= index; ++i) {
+    if (e.members[i].value) {
+      value = const_value_to_cxx(*e.members[i].value);
+    } else if (i != 0) {
+      value = "((" + value + ") + 1)";
+    }
+  }
+  return value;
+}
+
 std::string Emitter::primitive_cast_lvalue_ref(const Call& c) {
   if (c.args.size() != 1 || c.callee->kind != Kind::Ident) return {};
   const auto& id = static_cast<const Ident&>(*c.callee);
@@ -796,6 +841,9 @@ bool Emitter::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
     std::string text = const_value_to_cxx(e);
     return expr_is_char(e) ? "::rt::p_ord(" + text + ")" : text;
   };
+  auto ordinal_text = [&](std::string text) -> std::string {
+    return "::rt::p_ordinal_value(" + text + ")";
+  };
   const TypeExpr* dim = canonicalize_type(&dim_in);
   if (!dim) return false;
   *lo = "0";
@@ -809,20 +857,45 @@ bool Emitter::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
   }
   if (dim->kind == Kind::TyEnum) {
     const auto& en = static_cast<const TyEnum&>(*dim);
-    *size_expr = std::to_string(en.members.size());
+    if (!enum_has_explicit_values(en)) {
+      *size_expr = std::to_string(en.members.size());
+    } else if (!en.members.empty()) {
+      *lo = enum_member_value_to_cxx(en, 0);
+      std::string hi = enum_member_value_to_cxx(en, en.members.size() - 1);
+      *size_expr = "((" + ordinal_text(hi) + ") - (" +
+                   ordinal_text(*lo) + ") + 1)";
+    }
     return true;
   }
   if (dim->kind != Kind::TyName) return false;
   const auto& tn = static_cast<const TyName&>(*dim);
   auto leit = local_enums.find(tn.name);
   if (leit != local_enums.end()) {
-    *size_expr = std::to_string(leit->second->members.size());
+    if (!leit->second->members.empty() &&
+        enum_has_explicit_values(*leit->second)) {
+      *lo = mangle(leit->second->members.front().name);
+      *size_expr = "((" +
+                   ordinal_text(mangle(leit->second->members.back().name)) +
+                   ") - (" + ordinal_text(*lo) + ") + 1)";
+    } else {
+      *size_expr = std::to_string(leit->second->members.size());
+    }
     return true;
   }
   if (registry) {
     auto eit = registry->enums.find(tn.name);
     if (eit != registry->enums.end()) {
-      *size_expr = std::to_string(eit->second.members.size());
+      if (!eit->second.members.empty()) {
+        std::string prefix;
+        if (eit->second.defining_unit != current_unit_name) {
+          prefix = mangle(eit->second.defining_unit) + "::";
+        }
+        auto first = prefix + mangle(eit->second.members.front());
+        auto last = prefix + mangle(eit->second.members.back());
+        *lo = first;
+        *size_expr = "((" + ordinal_text(last) + ") - (" +
+                     ordinal_text(*lo) + ") + 1)";
+      }
       return true;
     }
   }
@@ -2481,12 +2554,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if ((n == "low" || n == "high") && c.args.size() == 1 &&
             c.args[0]->kind == Kind::Ident) {
           const auto& a = static_cast<const Ident&>(*c.args[0]);
+          if (std::string primitive = primitive_low_high_expr(a.name, n == "low");
+              !primitive.empty()) {
+            is_low_high_type = true;
+            low_high_rewrite = std::move(primitive);
+          }
           // Function-local enum: the helper constants live
           // right alongside us in the current block scope.
-          if (local_enums.count(a.name)) {
+          if (!is_low_high_type && local_enums.count(a.name)) {
             is_low_high_type = true;
             low_high_rewrite = enum_bound_name(a.name, n);
-          } else if (registry) {
+          } else if (!is_low_high_type && registry) {
             auto eit = registry->enums.find(a.name);
             if (eit != registry->enums.end()) {
               // Enum helper constants live in their
@@ -3170,7 +3248,10 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     emitln("enum " + name + " : int32_t {");
     indent();
     for (size_t i = 0; i < te.members.size(); ++i) {
-      std::string m = mangle(te.members[i]);
+      std::string m = mangle(te.members[i].name);
+      if (te.members[i].value) {
+        m += " = " + const_value_to_cxx(*te.members[i].value);
+      }
       if (i + 1 < te.members.size()) m += ",";
       emitln(m);
     }
@@ -3182,10 +3263,10 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
       const char* lin = (block_depth > 0) ? "" : "inline ";
       emitln(std::string(lin) + "constexpr " + name + " " +
              enum_bound_name(td.name, "low") + " = " +
-             mangle(te.members.front()) + ";");
+             mangle(te.members.front().name) + ";");
       emitln(std::string(lin) + "constexpr " + name + " " +
              enum_bound_name(td.name, "high") + " = " +
-             mangle(te.members.back()) + ";");
+             mangle(te.members.back().name) + ";");
     }
     return;
   }

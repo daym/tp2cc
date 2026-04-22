@@ -167,6 +167,33 @@ void test_type_decls_named_and_enum() {
   if (u) CHECK_EQ(u->interface_decls.size(), size_t{5});
 }
 
+void test_enum_explicit_values() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  treg = (lo := low(longint), hi := high(longint));\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  if (u && !u->interface_decls.empty()) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    CHECK(td != nullptr);
+    if (td) {
+      auto* te = dynamic_cast<TyEnum*>(td->type.get());
+      CHECK(te != nullptr);
+      if (te) {
+        CHECK_EQ(te->members.size(), size_t{2});
+        CHECK_EQ(te->members[0].name, std::string("lo"));
+        CHECK(te->members[0].value != nullptr);
+        CHECK_EQ(te->members[1].name, std::string("hi"));
+        CHECK(te->members[1].value != nullptr);
+      }
+    }
+  }
+}
+
 void test_record_type() {
   // Uses `name` as a record field; verifies the directive-vs-keyword fix.
   int b = error_count();
@@ -945,6 +972,7 @@ int main() {
   RUN_TEST(test_unit_standalone_finalization);
   RUN_TEST(test_const_decls);
   RUN_TEST(test_type_decls_named_and_enum);
+  RUN_TEST(test_enum_explicit_values);
   RUN_TEST(test_record_type);
   RUN_TEST(test_variant_record);
   RUN_TEST(test_object_type);

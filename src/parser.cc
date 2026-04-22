@@ -734,10 +734,14 @@ TypePtr Parser::parse_simple_type() {
     auto te = std::make_shared<TyEnum>();
     te->loc = loc;
     while (cur_.kind == Tok::Ident) {
-      te->members.push_back(cur_.text);
+      EnumMember member;
+      member.name = cur_.text;
       advance();
-      // Enums with explicit values: `a = 1` -- swallow the value if present.
-      if (accept(Tok::Eq)) (void)parse_expr();
+      // FPC accepts both `:=` and `=` here.
+      if (accept(Tok::Assign) || accept(Tok::Eq)) {
+        member.value = parse_expr();
+      }
+      te->members.push_back(std::move(member));
       if (!accept(Tok::Comma)) break;
     }
     expect(Tok::RParen, "enumeration");
