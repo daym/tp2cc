@@ -7,7 +7,8 @@
 #   make clean
 
 CXX      ?= g++
-CXXFLAGS ?= -std=c++20 -O0 -g -Wall -Wextra -Wpedantic -Wno-unused-parameter
+CXXFLAGS ?= -std=c++20 -O0 -g -Wall -Wextra -Wpedantic -Wno-unused-parameter \
+            -fsanitize=address,undefined -fno-omit-frame-pointer
 PREFIX   ?= /usr
 INCLUDES := -Isrc
 
