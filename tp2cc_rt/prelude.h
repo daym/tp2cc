@@ -830,7 +830,6 @@ inline constexpr int32_t p_ord(T x) {
 inline constexpr p_char p_chr(int x) { return p_char_of(static_cast<uint8_t>(x)); }
 
 // Pascal `swap` -- byte-swap the two halves of a word or longint.
-// Real fpc emits it for endianness handling in .ppu file I/O.
 inline uint16_t p_swap(uint16_t w) {
   return static_cast<uint16_t>((w >> 8) | (w << 8));
 }
