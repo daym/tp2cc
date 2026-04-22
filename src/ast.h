@@ -465,16 +465,29 @@ struct TyRecord : TypeExpr {
 
 enum class Visibility : uint8_t { Public, Private, Protected };
 
+enum class ObjectMemberKind : uint8_t { Field, Method, Property };
+
+struct PropertyDecl {
+  std::string name;
+  std::vector<Param> params;
+  TypePtr type;
+  std::string read_name;
+  std::string write_name;
+  bool is_default = false;
+};
+
 struct ObjectMember {
-  // One of: field (names+type) | method (ProcDecl)
+  // One of: field (names+type) | method (ProcDecl) | property (PropertyDecl)
   Visibility vis = Visibility::Public;
-  bool is_field = true;
+  ObjectMemberKind kind = ObjectMemberKind::Field;
   // field side
   std::vector<std::string> field_names;
   TypePtr field_type;
   // method side -- typed so the "it's a ProcDecl" invariant is
   // enforced at the type level rather than via documented faith.
   std::shared_ptr<ProcDecl> method;
+  // property side
+  PropertyDecl property;
 };
 
 struct TyObject : TypeExpr {

@@ -91,46 +91,8 @@ bool Parser::is_directive(const char* name) const {
   return cur_.kind == Tok::Ident && cur_.text == name;
 }
 
-// Keywords that are directives in Pascal -- they have keyword status in
-// certain positions but can still be used as ordinary identifiers (e.g. as
-// field or member names). Consulted only by consume_name_or_directive.
-bool Parser::tok_is_directive_kw() const {
-  switch (cur_.kind) {
-    case Tok::KwAbsolute:
-    case Tok::KwAbstract:
-    case Tok::KwAssembler:
-    case Tok::KwCdecl:
-    // KwDynamic removed: `dynamic' is now a soft directive recognised
-    // via is_directive("dynamic"), so it arrives here as Tok::Ident
-    // and doesn't need a directive-kw branch.
-    case Tok::KwExport:
-    case Tok::KwExternal:
-    case Tok::KwFar:
-    case Tok::KwForward:
-    case Tok::KwInline:
-    case Tok::KwInterrupt:
-    case Tok::KwNear:
-    case Tok::KwOverride:
-    case Tok::KwPascal:
-    case Tok::KwPopstack:
-    case Tok::KwPrivate:
-    case Tok::KwProtected:
-    case Tok::KwPublic:
-    case Tok::KwPublished:
-    case Tok::KwRegister:
-    case Tok::KwResident:
-    case Tok::KwSafecall:
-    case Tok::KwStatic:
-    case Tok::KwStdcall:
-    case Tok::KwVirtual:
-      return true;
-    default:
-      return false;
-  }
-}
-
 std::string Parser::consume_name_or_directive(const char* ctx) {
-  if (cur_.kind == Tok::Ident || tok_is_directive_kw()) {
+  if (cur_.kind == Tok::Ident) {
     std::string s = cur_.text;
     advance();
     return s;
@@ -246,7 +208,7 @@ std::shared_ptr<UnitNode> Parser::parse_unit() {
 
 void Parser::parse_uses_into(std::vector<std::string>& out) {
   while (!at_end()) {
-    if (cur_.kind != Tok::Ident && !tok_is_directive_kw()) {
+    if (cur_.kind != Tok::Ident) {
       expect(Tok::Ident, "uses clause");
       break;
     }
@@ -327,9 +289,7 @@ ast::ExprPtr Parser::parse_const_value() {
   // Try to decide: advance past '(' and look at the first two inner tokens.
   // If we see `ident :` where `:` is the immediate next token, it's a record.
   advance();  // consume '('
-  bool is_record =
-      (cur_.kind == Tok::Ident || tok_is_directive_kw()) &&
-      peek().kind == Tok::Colon;
+  bool is_record = cur_.kind == Tok::Ident && peek().kind == Tok::Colon;
 
   if (is_record) {
     auto rc = std::make_shared<RecordConst>();
@@ -401,7 +361,8 @@ void Parser::parse_var_section(std::vector<DeclPtr>& out) {
     expect(Tok::Colon, "var decl");
     vd->type = parse_type();
     // absolute / external / initialiser tail
-    if (accept(Tok::KwAbsolute)) {
+    if (is_directive("absolute")) {
+      advance();
       vd->is_absolute = true;
       // `absolute Identifier` -- other forms (address literals) not needed yet
       if (cur_.kind == Tok::Ident) {
@@ -412,7 +373,8 @@ void Parser::parse_var_section(std::vector<DeclPtr>& out) {
       }
     } else if (accept(Tok::Eq)) {
       vd->init = parse_const_value();
-    } else if (accept(Tok::KwExternal)) {
+    } else if (is_directive("external")) {
+      advance();
       vd->is_external = true;
       vd->external_name = nullptr;
       if (cur_.kind == Tok::StringLit) {
@@ -452,24 +414,13 @@ void Parser::parse_label_section(std::vector<DeclPtr>& out) {
 // Procedure/function declarations
 
 void Parser::parse_proc_modifiers(ProcDecl& pd) {
-  // Pascal "directives" -- position-dependent keywords that follow a routine
-  // header, separated by `;`. Some are true reserved words; others are
-  // directives spelled as ordinary identifiers (name/alias/...).
+  // Pascal "directives" -- position-dependent modifiers that follow a
+  // routine header, separated by `;`.
   for (;;) {
-    if (cur_.kind == Tok::KwVirtual) { pd.is_virtual = true; advance(); }
-    else if (cur_.kind == Tok::KwAbstract) { pd.is_abstract = true; advance(); }
-    else if (cur_.kind == Tok::KwOverride) { pd.is_override = true; advance(); }
-    // `dynamic` in Delphi Win32 uses a separate dispatch table (DMT).
-    // FPC's implementation unifies dynamic and virtual through the VMT,
-    // so the two directives are semantically identical in FPC.  We set
-    // `is_virtual` and drop the distinction (see FPC reference manual
-    // and the ProfessionalsPoint summary of the dispatch difference).
+    if (is_directive("virtual")) { pd.is_virtual = true; advance(); }
+    else if (is_directive("abstract")) { pd.is_abstract = true; advance(); }
+    else if (is_directive("override")) { pd.is_override = true; advance(); }
     else if (is_directive("dynamic")) { pd.is_virtual = true; advance(); }
-    // `message N` marks a method as a Windows message handler (or, in
-    // cross-platform code, a generic typed dispatch).  The mechanism
-    // shares DMT plumbing with `dynamic` in Delphi, and in FPC behaves
-    // as virtual with an associated message selector.  The selector is
-    // irrelevant to the bootstrap compiler's self-compile; swallow it.
     else if (is_directive("message")) {
       advance();
       // integer constant or identifier for the message number/name.
@@ -477,22 +428,22 @@ void Parser::parse_proc_modifiers(ProcDecl& pd) {
           || cur_.kind == Tok::StringLit) advance();
       pd.is_virtual = true;
     }
-    else if (cur_.kind == Tok::KwForward) { pd.is_forward = true; advance(); }
-    else if (cur_.kind == Tok::KwInline) { pd.is_inline = true; advance(); }
-    else if (cur_.kind == Tok::KwCdecl) { pd.is_cdecl = true; advance(); }
-    else if (cur_.kind == Tok::KwAssembler) { pd.is_assembler = true; advance(); }
-    else if (cur_.kind == Tok::KwFar) { advance(); }
-    else if (cur_.kind == Tok::KwNear) { advance(); }
-    else if (cur_.kind == Tok::KwPascal) { advance(); }
-    else if (cur_.kind == Tok::KwRegister) { advance(); }
-    else if (cur_.kind == Tok::KwStdcall) { advance(); }
-    else if (cur_.kind == Tok::KwSafecall) { advance(); }
-    else if (cur_.kind == Tok::KwInterrupt) { advance(); }
-    else if (cur_.kind == Tok::KwPopstack) { advance(); }
-    else if (cur_.kind == Tok::KwExport) { advance(); }
-    else if (cur_.kind == Tok::KwPublic) { advance(); }
-    else if (cur_.kind == Tok::KwStatic) { advance(); }
-    else if (cur_.kind == Tok::KwExternal) {
+    else if (is_directive("forward")) { pd.is_forward = true; advance(); }
+    else if (is_directive("inline")) { pd.is_inline = true; advance(); }
+    else if (is_directive("cdecl")) { pd.is_cdecl = true; advance(); }
+    else if (is_directive("assembler")) { pd.is_assembler = true; advance(); }
+    else if (is_directive("far")) { advance(); }
+    else if (is_directive("near")) { advance(); }
+    else if (is_directive("pascal")) { advance(); }
+    else if (is_directive("register")) { advance(); }
+    else if (is_directive("stdcall")) { advance(); }
+    else if (is_directive("safecall")) { advance(); }
+    else if (is_directive("interrupt")) { advance(); }
+    else if (is_directive("popstack")) { advance(); }
+    else if (is_directive("export")) { advance(); }
+    else if (is_directive("public")) { advance(); }
+    else if (is_directive("static")) { advance(); }
+    else if (is_directive("external")) {
       pd.is_external = true;
       advance();
       if (cur_.kind == Tok::StringLit) { pd.external_lib = cur_.text; advance(); }
@@ -589,9 +540,9 @@ std::shared_ptr<ProcDecl> Parser::parse_proc_decl(ProcKind pk, bool in_interface
   return pd;
 }
 
-std::vector<Param> Parser::parse_formal_param_list() {
+std::vector<Param> Parser::parse_param_list(Tok close) {
   std::vector<Param> out;
-  while (!at_end() && !check(Tok::RParen)) {
+  while (!at_end() && !check(close)) {
     Param p;
     if (accept(Tok::KwVar)) p.mode = Param::Var;
     else if (accept(Tok::KwConst)) p.mode = Param::Const;
@@ -622,6 +573,10 @@ std::vector<Param> Parser::parse_formal_param_list() {
     if (!accept(Tok::Semi)) break;
   }
   return out;
+}
+
+std::vector<Param> Parser::parse_formal_param_list() {
+  return parse_param_list(Tok::RParen);
 }
 
 // ---------------------------------------------------------------------------
@@ -806,10 +761,10 @@ TypePtr Parser::parse_record_type(bool packed) {
   // Plain fields until `end` or `case`.
   while (!at_end() && !check(Tok::KwEnd) && !check(Tok::KwCase)) {
     RecordField f;
-    if (cur_.kind != Tok::Ident && !tok_is_directive_kw()) break;
+    if (cur_.kind != Tok::Ident) break;
     f.names.push_back(cur_.text); advance();
     while (accept(Tok::Comma)) {
-      if (cur_.kind != Tok::Ident && !tok_is_directive_kw()) break;
+      if (cur_.kind != Tok::Ident) break;
       f.names.push_back(cur_.text); advance();
     }
     expect(Tok::Colon, "record field");
@@ -820,8 +775,7 @@ TypePtr Parser::parse_record_type(bool packed) {
 
   if (accept(Tok::KwCase)) {
     tr->has_variant = true;
-    if ((cur_.kind == Tok::Ident || tok_is_directive_kw()) &&
-        peek().kind == Tok::Colon) {
+    if (cur_.kind == Tok::Ident && peek().kind == Tok::Colon) {
       tr->variant_tag_name = cur_.text;
       advance();
       advance();  // ':'
@@ -837,10 +791,10 @@ TypePtr Parser::parse_record_type(bool packed) {
       expect(Tok::LParen, "variant case");
       while (!at_end() && !check(Tok::RParen) && !check(Tok::KwCase)) {
         RecordField f;
-        if (cur_.kind != Tok::Ident && !tok_is_directive_kw()) break;
+        if (cur_.kind != Tok::Ident) break;
         f.names.push_back(cur_.text); advance();
         while (accept(Tok::Comma)) {
-          if (cur_.kind != Tok::Ident && !tok_is_directive_kw()) break;
+          if (cur_.kind != Tok::Ident) break;
           f.names.push_back(cur_.text); advance();
         }
         expect(Tok::Colon, "variant field");
@@ -855,8 +809,7 @@ TypePtr Parser::parse_record_type(bool packed) {
       // is active, and the emitter already emits one struct-in-union per
       // case -- so flattening preserves access semantics.
       if (accept(Tok::KwCase)) {
-        if ((cur_.kind == Tok::Ident || tok_is_directive_kw()) &&
-            peek().kind == Tok::Colon) {
+        if (cur_.kind == Tok::Ident && peek().kind == Tok::Colon) {
           advance(); advance();
         }
         (void)parse_type();
@@ -869,10 +822,10 @@ TypePtr Parser::parse_record_type(bool packed) {
           expect(Tok::LParen, "nested variant case");
           while (!at_end() && !check(Tok::RParen)) {
             RecordField nf;
-            if (cur_.kind != Tok::Ident && !tok_is_directive_kw()) break;
+            if (cur_.kind != Tok::Ident) break;
             nf.names.push_back(cur_.text); advance();
             while (accept(Tok::Comma)) {
-              if (cur_.kind != Tok::Ident && !tok_is_directive_kw()) break;
+              if (cur_.kind != Tok::Ident) break;
               nf.names.push_back(cur_.text); advance();
             }
             expect(Tok::Colon, "nested variant field");
@@ -926,9 +879,10 @@ TypePtr Parser::parse_object_type() {
   Visibility vis = Visibility::Public;
   while (!at_end() && !check(Tok::KwEnd)) {
     // visibility change
-    if (accept(Tok::KwPublic)) { vis = Visibility::Public; continue; }
-    if (accept(Tok::KwPrivate)) { vis = Visibility::Private; continue; }
-    if (accept(Tok::KwProtected)) { vis = Visibility::Protected; continue; }
+    if (is_directive("public")) { advance(); vis = Visibility::Public; continue; }
+    if (is_directive("private")) { advance(); vis = Visibility::Private; continue; }
+    if (is_directive("protected")) { advance(); vis = Visibility::Protected; continue; }
+    if (is_directive("published")) { advance(); vis = Visibility::Public; continue; }
 
     // Delphi `class procedure F(...);' / `class function F(...): T;'.
     //
@@ -978,7 +932,7 @@ TypePtr Parser::parse_object_type() {
       else if (check(Tok::KwDestructor)) pk = ProcKind::Destructor;
       ObjectMember m;
       m.vis = vis;
-      m.is_field = false;
+      m.kind = ObjectMemberKind::Method;
       // Method headers inside an object are always signatures only --
       // bodies live in the implementation section (TP 7.0 semantics).
       m.method = parse_proc_decl(pk, /*in_interface=*/true);
@@ -986,14 +940,62 @@ TypePtr Parser::parse_object_type() {
       continue;
     }
 
+    if (is_directive("property")) {
+      advance();
+      ObjectMember m;
+      m.vis = vis;
+      m.kind = ObjectMemberKind::Property;
+      m.property.name = consume_name_or_directive("property name");
+      if (accept(Tok::LBrack)) {
+        m.property.params = parse_param_list(Tok::RBrack);
+        expect(Tok::RBrack, "property index list");
+      }
+      expect(Tok::Colon, "property");
+      m.property.type = parse_type();
+      bool saw_accessor = false;
+      while (true) {
+        if (m.property.read_name.empty() && is_directive("read")) {
+          advance();
+          m.property.read_name =
+              consume_name_or_directive("property read accessor");
+          saw_accessor = true;
+          continue;
+        }
+        if (m.property.write_name.empty() && is_directive("write")) {
+          advance();
+          m.property.write_name =
+              consume_name_or_directive("property write accessor");
+          saw_accessor = true;
+          continue;
+        }
+        break;
+      }
+      if (!saw_accessor) {
+        report_error(cur_.loc, "expected property accessor in declaration");
+      }
+      bool consumed_tail_semi = false;
+      while (accept(Tok::Semi)) {
+        consumed_tail_semi = true;
+        if (is_directive("default")) {
+          advance();
+          m.property.is_default = true;
+          continue;
+        }
+        break;
+      }
+      if (!consumed_tail_semi) expect(Tok::Semi, "property");
+      to->members.push_back(std::move(m));
+      continue;
+    }
+
     // Field
-    if (cur_.kind != Tok::Ident && !tok_is_directive_kw()) break;
+    if (cur_.kind != Tok::Ident) break;
     ObjectMember m;
     m.vis = vis;
-    m.is_field = true;
+    m.kind = ObjectMemberKind::Field;
     m.field_names.push_back(cur_.text); advance();
     while (accept(Tok::Comma)) {
-      if (cur_.kind != Tok::Ident && !tok_is_directive_kw()) break;
+      if (cur_.kind != Tok::Ident) break;
       m.field_names.push_back(cur_.text); advance();
     }
     expect(Tok::Colon, "object field");
@@ -1039,8 +1041,9 @@ TypePtr Parser::parse_procedural_type() {
     tp->return_type = parse_type();
   }
   // Optional calling-convention modifier (no `;` required in type position).
-  while (check(Tok::KwCdecl) || check(Tok::KwPascal) || check(Tok::KwStdcall)) {
-    if (check(Tok::KwCdecl)) tp->is_cdecl = true;
+  while (is_directive("cdecl") || is_directive("pascal") ||
+         is_directive("stdcall")) {
+    if (is_directive("cdecl")) tp->is_cdecl = true;
     advance();
   }
   return tp;
@@ -1551,7 +1554,7 @@ ExprPtr Parser::parse_primary() {
       advance();
       auto base = std::make_shared<Ident>();
       base->loc = loc; base->name = "inherited";
-      if (cur_.kind == Tok::Ident || tok_is_directive_kw()) {
+      if (cur_.kind == Tok::Ident) {
         auto m = std::make_shared<Member>();
         m->loc = loc;
         m->base = std::move(base);
@@ -1568,14 +1571,6 @@ ExprPtr Parser::parse_primary() {
       return parse_postfix(std::move(id));
     }
     default: {
-      // Directives (virtual, register, abstract, ...) can appear as bare
-      // identifiers in expression/statement position -- e.g. `abstract;`
-      // as a stub method body.
-      if (tok_is_directive_kw()) {
-        auto id = std::make_shared<Ident>();
-        id->loc = loc; id->name = cur_.text; advance();
-        return parse_postfix(std::move(id));
-      }
       report_error(loc,
                    "expected expression, got '" + cur_.text + "'");
       auto n = std::make_shared<IntLit>();

@@ -39,25 +39,33 @@ void add_record_fields(RecordInfo& ri, const TyRecord& tr) {
 
 void add_class_members(ClassInfo& ci, const TyObject& to) {
   for (const auto& m : to.members) {
-    if (m.is_field) {
-      ClassInfo::Member mem;
-      mem.is_method = false;
-      mem.field.type = m.field_type;
-      for (const auto& n : m.field_names) ci.members[lc(n)] = mem;
-    } else if (m.method) {
+    if (m.kind == ObjectMemberKind::Field) {
+      FieldInfo fi;
+      fi.type = m.field_type;
+      for (const auto& n : m.field_names) ci.fields[lc(n)] = fi;
+    } else if (m.kind == ObjectMemberKind::Method && m.method) {
       const auto& pd = *m.method;
-      ClassInfo::Member mem;
-      mem.is_method = true;
-      mem.method.decl = m.method;
-      mem.method.is_virtual = pd.is_virtual;
-      mem.method.is_function = (pd.pkind == ProcKind::Function);
-      if (pd.pkind == ProcKind::Constructor) mem.method.kind = SymKind::Constructor;
-      else if (pd.pkind == ProcKind::Destructor) mem.method.kind = SymKind::Destructor;
-      else mem.method.kind = SymKind::Method;
+      MethodSig ms;
+      ms.decl = m.method;
+      ms.is_virtual = pd.is_virtual;
+      ms.is_function = (pd.pkind == ProcKind::Function);
+      if (pd.pkind == ProcKind::Constructor) ms.kind = SymKind::Constructor;
+      else if (pd.pkind == ProcKind::Destructor) ms.kind = SymKind::Destructor;
+      else ms.kind = SymKind::Method;
       size_t pc = 0;
       for (const auto& p : pd.params) pc += p.names.size();
-      mem.method.param_count = pc;
-      ci.members[lc(pd.name)] = mem;
+      ms.param_count = pc;
+      ci.methods[lc(pd.name)] = ms;
+    } else if (m.kind == ObjectMemberKind::Property) {
+      PropertyInfo pi;
+      pi.type = m.property.type;
+      pi.params = m.property.params;
+      pi.read_name = lc(m.property.read_name);
+      pi.write_name = lc(m.property.write_name);
+      pi.is_default = m.property.is_default;
+      std::string name = lc(m.property.name);
+      ci.properties[name] = pi;
+      if (pi.is_default) ci.default_property_name = name;
     }
   }
 }
@@ -262,7 +270,7 @@ std::string TypeRegistry::direct_type_name(const TypeExpr* te) const {
   return {};
 }
 
-const ClassInfo::Member* TypeRegistry::lookup_class_member(
+const FieldInfo* TypeRegistry::lookup_class_field(
     const std::string& class_name_in, const std::string& member) const {
   std::string class_name = lc(class_name_in);
   std::string key = lc(member);
@@ -271,8 +279,57 @@ const ClassInfo::Member* TypeRegistry::lookup_class_member(
     seen.insert(class_name);
     auto cit = classes.find(class_name);
     if (cit == classes.end()) return nullptr;
-    auto mit = cit->second.members.find(key);
-    if (mit != cit->second.members.end()) return &mit->second;
+    auto fit = cit->second.fields.find(key);
+    if (fit != cit->second.fields.end()) return &fit->second;
+    class_name = cit->second.parent;
+  }
+  return nullptr;
+}
+
+const MethodSig* TypeRegistry::lookup_class_method(
+    const std::string& class_name_in, const std::string& member) const {
+  std::string class_name = lc(class_name_in);
+  std::string key = lc(member);
+  std::unordered_set<std::string> seen;
+  while (!class_name.empty() && !seen.count(class_name)) {
+    seen.insert(class_name);
+    auto cit = classes.find(class_name);
+    if (cit == classes.end()) return nullptr;
+    auto mit = cit->second.methods.find(key);
+    if (mit != cit->second.methods.end()) return &mit->second;
+    class_name = cit->second.parent;
+  }
+  return nullptr;
+}
+
+const PropertyInfo* TypeRegistry::lookup_class_property(
+    const std::string& class_name_in, const std::string& member) const {
+  std::string class_name = lc(class_name_in);
+  std::string key = lc(member);
+  std::unordered_set<std::string> seen;
+  while (!class_name.empty() && !seen.count(class_name)) {
+    seen.insert(class_name);
+    auto cit = classes.find(class_name);
+    if (cit == classes.end()) return nullptr;
+    auto pit = cit->second.properties.find(key);
+    if (pit != cit->second.properties.end()) return &pit->second;
+    class_name = cit->second.parent;
+  }
+  return nullptr;
+}
+
+const PropertyInfo* TypeRegistry::lookup_default_property(
+    const std::string& class_name_in) const {
+  std::string class_name = lc(class_name_in);
+  std::unordered_set<std::string> seen;
+  while (!class_name.empty() && !seen.count(class_name)) {
+    seen.insert(class_name);
+    auto cit = classes.find(class_name);
+    if (cit == classes.end()) return nullptr;
+    if (!cit->second.default_property_name.empty()) {
+      auto pit = cit->second.properties.find(cit->second.default_property_name);
+      if (pit != cit->second.properties.end()) return &pit->second;
+    }
     class_name = cit->second.parent;
   }
   return nullptr;

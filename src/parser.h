@@ -65,6 +65,7 @@ class Parser {
   ast::TypePtr parse_set_type();
   ast::TypePtr parse_file_type();
   ast::TypePtr parse_procedural_type();
+  std::vector<ast::Param> parse_param_list(Tok close);
   std::vector<ast::Param> parse_formal_param_list();
 
   // ---- statements ----
@@ -93,11 +94,9 @@ class Parser {
   // Helpers
   std::string consume_ident(const char* ctx);
   // Accepts Tok::Ident OR any reserved word that Pascal treats as a
-  // directive (virtual, register, near, far, name, ...). Used where an
-  // identifier is required but a directive-word happens to be used (e.g.
-  // `p^.register` as a field name).
+  // directive-like word. Those arrive from the lexer as Tok::Ident too, so
+  // this helper just documents the intent at those call sites.
   std::string consume_name_or_directive(const char* ctx);
-  bool tok_is_directive_kw() const;
   bool tok_starts_type() const;
 
   // Typed-constant value (on the RHS of `ident : type = ...`). Handles

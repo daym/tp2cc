@@ -630,6 +630,131 @@ void test_absolute_typed_const_alias_reinterprets_same_storage() {
                  "p_parr& p_view = ::rt::p_reinterpret_storage_ref<p_parr>(p_raw);"));
 }
 
+void test_property_getter_setter_lowering() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tlist = class\n"
+      "    function getcount : longint;\n"
+      "    procedure setcount(value : longint);\n"
+      "    property count : longint read getcount write setcount;\n"
+      "  end;\n"
+      "procedure demo(lst : tlist);\n"
+      "implementation\n"
+      "function tlist.getcount : longint;\n"
+      "begin\n"
+      "  getcount := 0;\n"
+      "end;\n"
+      "procedure tlist.setcount(value : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo(lst : tlist);\n"
+      "var\n"
+      "  n : longint;\n"
+      "begin\n"
+      "  n := lst.count;\n"
+      "  lst.count := 3;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_n = p_lst.p_getcount();"));
+  CHECK(contains(out.impl, "p_lst.p_setcount(3);"));
+  CHECK(!contains(out.header, " p_count("));
+  CHECK(!contains(out.header, " p_count;"));
+}
+
+void test_property_field_and_default_index_lowering() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tlist = class\n"
+      "  private\n"
+      "    fsize : longint;\n"
+      "    function get(index : longint) : pointer;\n"
+      "    procedure put(index : longint; value : pointer);\n"
+      "  public\n"
+      "    property size : longint read fsize write fsize;\n"
+      "    property items[index : longint] : pointer read get write put; default;\n"
+      "  end;\n"
+      "procedure demo(lst : tlist; p : pointer);\n"
+      "implementation\n"
+      "function tlist.get(index : longint) : pointer;\n"
+      "begin\n"
+      "  get := nil;\n"
+      "end;\n"
+      "procedure tlist.put(index : longint; value : pointer);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo(lst : tlist; p : pointer);\n"
+      "begin\n"
+      "  lst.size := 1;\n"
+      "  p := lst[1];\n"
+      "  lst[2] := p;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_lst.p_fsize = 1;"));
+  CHECK(contains(out.impl, "p_p = p_lst.p_get(1);"));
+  CHECK(contains(out.impl, "p_lst.p_put(2, p_p);"));
+}
+
+void test_procvar_property_stmt_and_value_context() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tproc = procedure;\n"
+      "  tbox = class\n"
+      "  private\n"
+      "    ffoo : tproc;\n"
+      "    function getfoo : tproc;\n"
+      "  public\n"
+      "    property foo : tproc read getfoo write ffoo;\n"
+      "  end;\n"
+      "procedure demo(box : tbox; p : tproc);\n"
+      "implementation\n"
+      "function tbox.getfoo : tproc;\n"
+      "begin\n"
+      "  getfoo := ffoo;\n"
+      "end;\n"
+      "procedure demo(box : tbox; p : tproc);\n"
+      "begin\n"
+      "  box.foo;\n"
+      "  box.foo();\n"
+      "  p := box.foo;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_box.p_getfoo()();"));
+  CHECK(contains(out.impl, "p_p = p_box.p_getfoo();"));
+  CHECK(!contains(out.impl, "p_p = p_box.p_getfoo()();"));
+}
+
+void test_default_indexed_procvar_property_stmt_autocalls() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tproc = procedure;\n"
+      "  tbox = class\n"
+      "    function getitem(index : longint) : tproc;\n"
+      "    property items[index : longint] : tproc read getitem; default;\n"
+      "  end;\n"
+      "procedure demo(box : tbox);\n"
+      "implementation\n"
+      "function tbox.getitem(index : longint) : tproc;\n"
+      "begin\n"
+      "  getitem := nil;\n"
+      "end;\n"
+      "procedure demo(box : tbox);\n"
+      "begin\n"
+      "  box[1];\n"
+      "  box[2]();\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_box.p_getitem(1)();"));
+  CHECK(contains(out.impl, "p_box.p_getitem(2)();"));
+}
+
 void test_const_object_param_uses_mutable_ref() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -760,6 +885,10 @@ int main() {
   RUN_TEST(test_absolute_pointer_target_reinterprets_pointee_storage);
   RUN_TEST(test_absolute_pointer_alias_reinterprets_pointer_storage);
   RUN_TEST(test_absolute_typed_const_alias_reinterprets_same_storage);
+  RUN_TEST(test_property_getter_setter_lowering);
+  RUN_TEST(test_property_field_and_default_index_lowering);
+  RUN_TEST(test_procvar_property_stmt_and_value_context);
+  RUN_TEST(test_default_indexed_procvar_property_stmt_autocalls);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
   RUN_TEST(test_parameterless_procvar_stmt_autocalls);
   RUN_TEST(test_runtime_builtin_stmt_autocalls);

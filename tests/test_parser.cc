@@ -398,6 +398,80 @@ void test_class_declaration() {
   }
 }
 
+void test_class_properties() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tlist = class\n"
+      "  private\n"
+      "    fcount : integer;\n"
+      "    function get(index : integer) : pointer;\n"
+      "    procedure put(index : integer; value : pointer);\n"
+      "  public\n"
+      "    property Count : integer read fcount;\n"
+      "    property Items[index : integer] : pointer read get write put; default;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && !u->interface_decls.empty()) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    CHECK(td);
+    if (td) {
+      auto* to = dynamic_cast<TyObject*>(td->type.get());
+      CHECK(to);
+      if (to) {
+        CHECK_EQ(to->members.size(), size_t{5});
+        CHECK_EQ(to->members[3].kind, ObjectMemberKind::Property);
+        CHECK_EQ(to->members[3].property.name, std::string("count"));
+        CHECK_EQ(to->members[3].property.read_name, std::string("fcount"));
+        CHECK_EQ(to->members[3].property.params.size(), size_t{0});
+        CHECK_EQ(to->members[4].kind, ObjectMemberKind::Property);
+        CHECK_EQ(to->members[4].property.name, std::string("items"));
+        CHECK_EQ(to->members[4].property.params.size(), size_t{1});
+        CHECK_EQ(to->members[4].property.read_name, std::string("get"));
+        CHECK_EQ(to->members[4].property.write_name, std::string("put"));
+        CHECK(to->members[4].property.is_default);
+      }
+    }
+  }
+}
+
+void test_write_only_property() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tflag = class\n"
+      "  private\n"
+      "    fvalue : boolean;\n"
+      "  public\n"
+      "    property value : boolean write fvalue;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && !u->interface_decls.empty()) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    CHECK(td);
+    if (td) {
+      auto* to = dynamic_cast<TyObject*>(td->type.get());
+      CHECK(to);
+      if (to) {
+        CHECK_EQ(to->members.size(), size_t{2});
+        CHECK_EQ(to->members[1].kind, ObjectMemberKind::Property);
+        CHECK_EQ(to->members[1].property.write_name, std::string("fvalue"));
+        CHECK_EQ(to->members[1].property.read_name, std::string(""));
+      }
+    }
+  }
+}
+
 void test_var_decls() {
   int before = error_count();
   auto u = parse_snippet(
@@ -801,6 +875,8 @@ int main() {
   RUN_TEST(test_unit_named_like_directive);
   RUN_TEST(test_error_recovery_basic);
   RUN_TEST(test_class_declaration);
+  RUN_TEST(test_class_properties);
+  RUN_TEST(test_write_only_property);
   RUN_TEST(test_class_directives);
   RUN_TEST(test_metaclass_type);
   RUN_TEST(test_try_except_finally_raise);

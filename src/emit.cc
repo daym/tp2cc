@@ -507,6 +507,17 @@ struct Emitter {
   std::string lower_call_arg(const ast::Expr& arg,
                              const ast::TypeExpr* param_type,
                              bool untyped_arg);
+  std::string lower_property_read(Location where,
+                                  const std::string& base_cxx,
+                                  const std::string& class_name,
+                                  const PropertyInfo& prop,
+                                  const std::vector<const ast::Expr*>& indices);
+  std::string lower_property_write(Location where,
+                                   const std::string& base_cxx,
+                                   const std::string& class_name,
+                                   const PropertyInfo& prop,
+                                   const std::vector<const ast::Expr*>& indices,
+                                   const ast::Expr& value);
 
   // ---------------------------------------------------------------------
   // Pascal name resolution (one function, every emit path goes through
@@ -1089,8 +1100,10 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       }
       // Class member (inside method body of a known class).
       if (!current_class_name.empty()) {
-        auto* m = registry->lookup_class_member(current_class_name, id.name);
-        if (m && !m->is_method) return m->field.type.get();
+        if (auto* f = registry->lookup_class_field(current_class_name, id.name))
+          return f->type.get();
+        if (auto* p = registry->lookup_class_property(current_class_name, id.name))
+          return p->type.get();
       }
       // `with X do` bindings contribute fields of their target type --
       // the ident might name such a field.
@@ -1099,8 +1112,10 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
                                         registry->canonicalize(it->type))
                                   : std::string{};
         if (ac.empty()) continue;
-        auto* m = registry->lookup_class_member(ac, id.name);
-        if (m && !m->is_method) return m->field.type.get();
+        if (auto* f = registry->lookup_class_field(ac, id.name))
+          return f->type.get();
+        if (auto* p = registry->lookup_class_property(ac, id.name))
+          return p->type.get();
         auto* rf = registry->lookup_record_field(ac, id.name);
         if (rf) return rf->type.get();
       }
@@ -1165,20 +1180,35 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
         if (bt) cls = registry->direct_type_name(registry->canonicalize(bt));
       }
       if (cls.empty()) return nullptr;
-      if (auto* cm = registry->lookup_class_member(cls, m.name)) {
-        if (cm->is_method) {
-          if (cm->method.decl.get() && cm->method.decl.get()->return_type)
-            return cm->method.decl.get()->return_type.get();
-          return nullptr;
-        }
-        return cm->field.type.get();
+      if (auto* pm = registry->lookup_class_method(cls, m.name)) {
+        if (pm->decl.get() && pm->decl.get()->return_type)
+          return pm->decl.get()->return_type.get();
+        return nullptr;
       }
+      if (auto* pf = registry->lookup_class_field(cls, m.name))
+        return pf->type.get();
+      if (auto* pp = registry->lookup_class_property(cls, m.name))
+        return pp->type.get();
       if (auto* rf = registry->lookup_record_field(cls, m.name))
         return rf->type.get();
       return nullptr;
     }
     case Kind::Index: {
       const auto& ix = static_cast<const Index&>(e);
+      if (registry && ix.base->kind == Kind::Member) {
+        const auto& mem = static_cast<const Member&>(*ix.base);
+        std::string cls;
+        if (mem.base->kind == Kind::Ident &&
+            static_cast<const Ident&>(*mem.base).name == "self") {
+          cls = current_class_name;
+        } else {
+          cls = deduce_class_alias(*mem.base);
+        }
+        if (!cls.empty()) {
+          if (auto* prop = registry->lookup_class_property(cls, mem.name))
+            return prop->type.get();
+        }
+      }
       const TypeExpr* bt = deduce_type(*ix.base);
       if (!bt) return nullptr;
       bt = registry->canonicalize(bt);
@@ -1187,6 +1217,13 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       if (tyname_is(bt, "ppchar")) return builtin_pchar_type();
       if (bt && bt->kind == Kind::TyArray)
         return static_cast<const TyArray&>(*bt).element.get();
+      if (registry) {
+        std::string cls = registry->direct_type_name(bt);
+        if (!cls.empty()) {
+          if (auto* prop = registry->lookup_default_property(cls))
+            return prop->type.get();
+        }
+      }
       return nullptr;
     }
     case Kind::Call: {
@@ -1227,9 +1264,9 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
           if (bt) cls = registry->direct_type_name(registry->canonicalize(bt));
         }
         if (!cls.empty()) {
-          if (auto* cm = registry->lookup_class_member(cls, mem.name)) {
-            if (cm->is_method && cm->method.decl.get() && cm->method.decl.get()->return_type)
-              return cm->method.decl.get()->return_type.get();
+          if (auto* cm = registry->lookup_class_method(cls, mem.name)) {
+            if (cm->decl.get() && cm->decl.get()->return_type)
+              return cm->decl.get()->return_type.get();
           }
         }
       }
@@ -1311,8 +1348,9 @@ bool Emitter::expr_is_storage_lvalue(const Expr& e) {
     const auto& m = static_cast<const Member&>(root);
     std::string cls = deduce_class_alias(*m.base);
     if (!cls.empty()) {
-      if (auto* mem = registry->lookup_class_member(cls, m.name)) {
-        if (mem->is_method && mem->method.param_count == 0) return false;
+      if (registry->lookup_class_property(cls, m.name)) return false;
+      if (const auto* method = registry->lookup_class_method(cls, m.name)) {
+        if (method->param_count == 0) return false;
       }
     }
   }
@@ -1433,10 +1471,9 @@ std::optional<Emitter::AbsoluteTargetInfo> Emitter::resolve_absolute_target(
   ResolveResult rr = resolve_name(vd.absolute_target);
   if (rr.kind == ResolvedKind::ClassField && registry &&
       !current_class_name.empty()) {
-    if (auto* m = registry->lookup_class_member(current_class_name,
-                                                vd.absolute_target);
-        m && !m->is_method) {
-      info.type = m->field.type.get();
+    if (auto* f = registry->lookup_class_field(current_class_name,
+                                               vd.absolute_target)) {
+      info.type = f->type.get();
       info.is_pointerish = type_is_pointerish(info.type);
       return info;
     }
@@ -1495,12 +1532,9 @@ void Emitter::collect_call_param_info(
   if (callee.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(callee);
     if (!current_class_name.empty()) {
-      if (auto* m = registry->lookup_class_member(current_class_name,
-                                                  id.name)) {
-        if (m->is_method) {
-          mark_call_param_info(m->method.decl.get(), untyped_arg, param_types);
-          return;
-        }
+      if (auto* m = registry->lookup_class_method(current_class_name, id.name)) {
+        mark_call_param_info(m->decl.get(), untyped_arg, param_types);
+        return;
       }
     }
     ResolveResult rr = resolve_name(id.name);
@@ -1517,10 +1551,8 @@ void Emitter::collect_call_param_info(
     cls = deduce_class_alias(*mem.base);
   }
   if (cls.empty()) return;
-  if (auto* m = registry->lookup_class_member(cls, mem.name)) {
-    if (m->is_method) {
-      mark_call_param_info(m->method.decl.get(), untyped_arg, param_types);
-    }
+  if (auto* m = registry->lookup_class_method(cls, mem.name)) {
+    mark_call_param_info(m->decl.get(), untyped_arg, param_types);
   }
 }
 
@@ -1552,6 +1584,74 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
     return arg_text;
   }
   return "((void*)&(" + arg_text + "))";
+}
+
+std::string Emitter::lower_property_read(
+    Location where, const std::string& base_cxx, const std::string& class_name,
+    const PropertyInfo& prop, const std::vector<const Expr*>& indices) {
+  // Properties are Pascal-side metadata only. Reads/writes rewrite to the
+  // declared backing field/getter/setter so we do not invent extra C++
+  // members whose names could collide in ways Pascal itself forbids.
+  if (!registry) return base_cxx;
+  if (const auto* field = registry->lookup_class_field(class_name, prop.read_name)) {
+    (void)field;
+    std::string text = base_cxx + "." + mangle(prop.read_name);
+    for (const auto* idx : indices) {
+      text += "[" + expr_to_cxx(*idx) + "]";
+    }
+    return text;
+  }
+  if (const auto* method = registry->lookup_class_method(class_name, prop.read_name)) {
+    (void)method;
+    std::string text = base_cxx + "." + mangle(prop.read_name) + "(";
+    for (size_t i = 0; i < indices.size(); ++i) {
+      if (i) text += ", ";
+      text += expr_to_cxx(*indices[i]);
+    }
+    text += ")";
+    return text;
+  }
+  report_error(where, "unsupported property read accessor '" + prop.read_name + "'");
+  return base_cxx + "." + mangle(prop.read_name);
+}
+
+std::string Emitter::lower_property_write(
+    Location where, const std::string& base_cxx, const std::string& class_name,
+    const PropertyInfo& prop, const std::vector<const Expr*>& indices,
+    const Expr& value) {
+  if (!registry) return base_cxx;
+  if (prop.write_name.empty()) {
+    report_error(where, "property is read-only");
+    return base_cxx;
+  }
+  std::string rhs = const_value_to_cxx(value, prop.type.get());
+  if (type_is_stringish(prop.type.get()) && expr_is_charish(value)) {
+    rhs = "::rt::ShortString<>(" + rhs + ")";
+  }
+  if (const auto* field = registry->lookup_class_field(class_name, prop.write_name)) {
+    (void)field;
+    std::string text = base_cxx + "." + mangle(prop.write_name);
+    for (const auto* idx : indices) {
+      text += "[" + expr_to_cxx(*idx) + "]";
+    }
+    return text + " = " + rhs;
+  }
+  if (const auto* method = registry->lookup_class_method(class_name, prop.write_name)) {
+    (void)method;
+    std::string text = base_cxx + "." + mangle(prop.write_name) + "(";
+    bool first = true;
+    for (const auto* idx : indices) {
+      if (!first) text += ", ";
+      text += expr_to_cxx(*idx);
+      first = false;
+    }
+    if (!first) text += ", ";
+    text += rhs;
+    text += ")";
+    return text;
+  }
+  report_error(where, "unsupported property write accessor '" + prop.write_name + "'");
+  return base_cxx + "." + mangle(prop.write_name) + " = " + rhs;
 }
 
 size_t procedural_param_count(const TyProcedural& p) {
@@ -1601,15 +1701,16 @@ Emitter::ResolveResult Emitter::resolve_name(
   }
   if (qk == QualifierKind::Class) {
     if (registry) {
-      if (auto* m = registry->lookup_class_member(qualifier, name)) {
-        if (m->is_method) {
-          r.kind = ResolvedKind::ClassMethod;
-          r.proc = m->method.decl.get();
-          r.is_callable = true;
-          r.is_parameterless = (m->method.param_count == 0);
-        } else {
-          r.kind = ResolvedKind::ClassField;
-        }
+      if (auto* m = registry->lookup_class_method(qualifier, name)) {
+        r.kind = ResolvedKind::ClassMethod;
+        r.proc = m->decl.get();
+        r.is_callable = true;
+        r.is_parameterless = (m->param_count == 0);
+        r.cxx = mangle(name);  // caller emits the `base.` prefix
+        return r;
+      }
+      if (registry->lookup_class_field(qualifier, name)) {
+        r.kind = ResolvedKind::ClassField;
         r.cxx = mangle(name);  // caller emits the `base.` prefix
         return r;
       }
@@ -1637,16 +1738,17 @@ Emitter::ResolveResult Emitter::resolve_name(
                                   registry->canonicalize(it->type))
                             : std::string{};
       if (cls.empty()) continue;
-      if (auto* m = registry->lookup_class_member(cls, name)) {
+      if (auto* m = registry->lookup_class_method(cls, name)) {
         r.cxx = it->cxx_text + "." + mangle(name);
-        if (m->is_method) {
-          r.kind = ResolvedKind::WithMethod;
-          r.proc = m->method.decl.get();
-          r.is_callable = true;
-          r.is_parameterless = (m->method.param_count == 0);
-        } else {
-          r.kind = ResolvedKind::WithField;
-        }
+        r.kind = ResolvedKind::WithMethod;
+        r.proc = m->decl.get();
+        r.is_callable = true;
+        r.is_parameterless = (m->param_count == 0);
+        return r;
+      }
+      if (registry->lookup_class_field(cls, name)) {
+        r.cxx = it->cxx_text + "." + mangle(name);
+        r.kind = ResolvedKind::WithField;
         return r;
       }
       if (auto* f = registry->lookup_record_field(cls, name)) {
@@ -1677,16 +1779,17 @@ Emitter::ResolveResult Emitter::resolve_name(
   }
   // 5. Current class's members (chain).
   if (!current_class_name.empty() && registry) {
-    if (auto* m = registry->lookup_class_member(current_class_name, name)) {
+    if (auto* m = registry->lookup_class_method(current_class_name, name)) {
       r.cxx = mangle(name);
-      if (m->is_method) {
-        r.kind = ResolvedKind::ClassMethod;
-        r.proc = m->method.decl.get();
-        r.is_callable = true;
-        r.is_parameterless = (m->method.param_count == 0);
-      } else {
-        r.kind = ResolvedKind::ClassField;
-      }
+      r.kind = ResolvedKind::ClassMethod;
+      r.proc = m->decl.get();
+      r.is_callable = true;
+      r.is_parameterless = (m->param_count == 0);
+      return r;
+    }
+    if (registry->lookup_class_field(current_class_name, name)) {
+      r.cxx = mangle(name);
+      r.kind = ResolvedKind::ClassField;
       return r;
     }
   }
@@ -2054,7 +2157,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (registry && base_is_ident(base_name)) {
         bool shadowed = local_scope.count(base_name) > 0;
         if (!shadowed && !current_class_name.empty() &&
-            registry->lookup_class_member(current_class_name, base_name))
+            (registry->lookup_class_method(current_class_name, base_name) ||
+             registry->lookup_class_field(current_class_name, base_name) ||
+             registry->lookup_class_property(current_class_name, base_name)))
           shadowed = true;
         if (!shadowed) {
           for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
@@ -2063,7 +2168,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                                         registry->canonicalize(it->type))
                                   : std::string{};
             if (!cls.empty() &&
-                (registry->lookup_class_member(cls, base_name) ||
+                (registry->lookup_class_method(cls, base_name) ||
+                 registry->lookup_class_field(cls, base_name) ||
+                 registry->lookup_class_property(cls, base_name) ||
                  registry->lookup_record_field(cls, base_name))) {
               shadowed = true; break;
             }
@@ -2105,12 +2212,21 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // and auto-call if the deduced class has `name` as a
       // parameterless method.
       std::string base_cxx = expr_to_cxx(*m.base);
+      std::string bcls = deduce_class_alias(*m.base);
+      if (registry && !bcls.empty()) {
+        if (auto* prop = registry->lookup_class_property(bcls, m.name)) {
+          if (prop->params.empty()) {
+            std::vector<const Expr*> no_indices;
+            return lower_property_read(m.loc, base_cxx, bcls, *prop, no_indices);
+          }
+        }
+      }
       std::string text = base_cxx + "." + mangle(m.name);
       if (is_callee_context_ || !registry) return text;
-      std::string bcls = deduce_class_alias(*m.base);
       if (bcls.empty()) return text;
-      ResolveResult rr = resolve_name(m.name, QualifierKind::Class, bcls);
-      if (rr.is_callable && rr.is_parameterless) text += "()";
+      if (const auto* method = registry->lookup_class_method(bcls, m.name)) {
+        if (method->param_count == 0) text += "()";
+      }
       return text;
     }
     case Kind::Deref: {
@@ -2474,6 +2590,35 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Index: {
       const auto& i = static_cast<const Index&>(e);
+      if (registry && i.base->kind == Kind::Member) {
+        const auto& mem = static_cast<const Member&>(*i.base);
+        std::string cls;
+        if (mem.base->kind == Kind::Ident &&
+            static_cast<const Ident&>(*mem.base).name == "self") {
+          cls = current_class_name;
+        } else {
+          cls = deduce_class_alias(*mem.base);
+        }
+        if (!cls.empty()) {
+          if (auto* prop = registry->lookup_class_property(cls, mem.name)) {
+            std::vector<const Expr*> indices;
+            for (const auto& idx : i.indices) indices.push_back(idx.get());
+            return lower_property_read(i.loc, expr_to_cxx(*mem.base), cls, *prop,
+                                       indices);
+          }
+        }
+      }
+      if (registry) {
+        std::string cls = deduce_class_alias(*i.base);
+        if (!cls.empty()) {
+          if (auto* prop = registry->lookup_default_property(cls)) {
+            std::vector<const Expr*> indices;
+            for (const auto& idx : i.indices) indices.push_back(idx.get());
+            return lower_property_read(i.loc, expr_to_cxx(*i.base), cls, *prop,
+                                       indices);
+          }
+        }
+      }
       std::string out = expr_to_cxx(*i.base);
       for (const auto& idx : i.indices) out += "[" + expr_to_cxx(*idx) + "]";
       return out;
@@ -2896,13 +3041,13 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     }
     bool has_virtual = false;
     for (const auto& m : to.members) {
-      if (m.is_field) {
+      if (m.kind == ObjectMemberKind::Field) {
         std::string ft = m.field_type ? type_to_cxx(*m.field_type)
                                       : std::string("int32_t");
         for (const auto& fn : m.field_names) {
           emitln(ft + " " + mangle(fn) + ";");
         }
-      } else {
+      } else if (m.kind == ObjectMemberKind::Method) {
         // Method signature. We do NOT emit the body here -- bodies live in
         // the implementation .cc, emitted as `ret Class::method(...) { }`.
         const auto& pd = *m.method;
@@ -3141,6 +3286,57 @@ void Emitter::emit_stmt(const Stmt& s) {
           }
         }
       }
+      if (registry && a.target->kind == Kind::Member) {
+        const auto& mem = static_cast<const Member&>(*a.target);
+        std::string cls;
+        if (mem.base->kind == Kind::Ident &&
+            static_cast<const Ident&>(*mem.base).name == "self") {
+          cls = current_class_name;
+        } else {
+          cls = deduce_class_alias(*mem.base);
+        }
+        if (!cls.empty()) {
+          if (auto* prop = registry->lookup_class_property(cls, mem.name)) {
+            std::vector<const Expr*> no_indices;
+            emitln(lower_property_write(a.loc, expr_to_cxx(*mem.base), cls, *prop,
+                                        no_indices, *a.value) +
+                   ";");
+            break;
+          }
+        }
+      }
+      if (registry && a.target->kind == Kind::Index) {
+        const auto& ix = static_cast<const Index&>(*a.target);
+        std::vector<const Expr*> indices;
+        for (const auto& idx : ix.indices) indices.push_back(idx.get());
+        if (ix.base->kind == Kind::Member) {
+          const auto& mem = static_cast<const Member&>(*ix.base);
+          std::string cls;
+          if (mem.base->kind == Kind::Ident &&
+              static_cast<const Ident&>(*mem.base).name == "self") {
+            cls = current_class_name;
+          } else {
+            cls = deduce_class_alias(*mem.base);
+          }
+          if (!cls.empty()) {
+            if (auto* prop = registry->lookup_class_property(cls, mem.name)) {
+              emitln(lower_property_write(a.loc, expr_to_cxx(*mem.base), cls, *prop,
+                                          indices, *a.value) +
+                     ";");
+              break;
+            }
+          }
+        }
+        std::string cls = deduce_class_alias(*ix.base);
+        if (!cls.empty()) {
+          if (auto* prop = registry->lookup_default_property(cls)) {
+            emitln(lower_property_write(a.loc, expr_to_cxx(*ix.base), cls, *prop,
+                                        indices, *a.value) +
+                   ";");
+            break;
+          }
+        }
+      }
       // Enable LHS-rewrite for the function name so that Pascal
       // `funcname := x`, `funcname[i] := x`, `funcname.field := x` etc.
       // all route to the result slot. We only scope the rewrite to the
@@ -3275,15 +3471,25 @@ void Emitter::emit_stmt(const Stmt& s) {
         // Parameterless procedural variables are callable in statement
         // position (`olddo_stop;`) but must stay as plain values in
         // assignments like `do_stop := olddo_stop;`. Detect that only here.
-        if ((es.expr->kind == Kind::Ident || es.expr->kind == Kind::Member) &&
-            !text.empty() && text.back() != ')') {
-          if (const TypeExpr* t = deduce_type(*es.expr);
+        auto stmt_autocalls_procvar = [&](const Expr& expr) -> bool {
+          switch (expr.kind) {
+            case Kind::Ident:
+            case Kind::Member:
+            case Kind::Index:
+            case Kind::Deref:
+              break;
+            default:
+              return false;
+          }
+          if (const TypeExpr* t = deduce_type(expr);
               t && (t = canonicalize_type(t)) &&
               t->kind == Kind::TyProcedural) {
             const auto& p = static_cast<const TyProcedural&>(*t);
-            if (procedural_param_count(p) == 0) text += "()";
+            return procedural_param_count(p) == 0;
           }
-        }
+          return false;
+        };
+        if (stmt_autocalls_procvar(*es.expr)) text += "()";
         emitln(text + ";");
       }
       break;
@@ -3786,7 +3992,14 @@ static void collect_type_refs(const TypeExpr& t,
       const auto& o = static_cast<const TyObject&>(t);
       if (!o.parent.empty()) out.insert(o.parent);
       for (const auto& m : o.members) {
-        if (m.is_field && m.field_type) collect_type_refs(*m.field_type, out);
+        if (m.kind == ObjectMemberKind::Field && m.field_type) {
+          collect_type_refs(*m.field_type, out);
+        } else if (m.kind == ObjectMemberKind::Property) {
+          if (m.property.type) collect_type_refs(*m.property.type, out);
+          for (const auto& p : m.property.params) {
+            if (p.type) collect_type_refs(*p.type, out);
+          }
+        }
       }
       return;
     }

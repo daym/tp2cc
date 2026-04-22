@@ -350,19 +350,27 @@ void test_object_declaration_syntax() {
       "    constructor init;\n"
       "    destructor done; virtual;\n"
       "  end;\n");
-  // Spot-check key keywords.
-  bool saw_object = false, saw_constructor = false, saw_destructor = false,
-       saw_virtual = false;
+  // Spot-check hard keywords while keeping declaration directives soft.
+  bool saw_object = false, saw_constructor = false, saw_destructor = false;
+  bool saw_virtual_ident = false;
   for (auto& t : ts) {
     if (t.kind == Tok::KwObject) saw_object = true;
     if (t.kind == Tok::KwConstructor) saw_constructor = true;
     if (t.kind == Tok::KwDestructor) saw_destructor = true;
-    if (t.kind == Tok::KwVirtual) saw_virtual = true;
+    if (t.kind == Tok::Ident && t.text == "virtual") saw_virtual_ident = true;
   }
   CHECK(saw_object);
   CHECK(saw_constructor);
   CHECK(saw_destructor);
-  CHECK(saw_virtual);
+  CHECK(saw_virtual_ident);
+}
+
+void test_directive_words_stay_identifiers() {
+  auto ts = lex_all(
+      "virtual abstract override property read write default stored index "
+      "register external cdecl stdcall private protected public");
+  CHECK_EQ(ts.size(), size_t{16});
+  for (const auto& t : ts) CHECK_EQ(t.kind, Tok::Ident);
 }
 
 void test_location_tracking() {
@@ -408,6 +416,7 @@ int main() {
   RUN_TEST(test_enum_and_set_of_type);
   RUN_TEST(test_set_literal_and_in);
   RUN_TEST(test_object_declaration_syntax);
+  RUN_TEST(test_directive_words_stay_identifiers);
   RUN_TEST(test_location_tracking);
 
   int n = tp2cc_test::failures();

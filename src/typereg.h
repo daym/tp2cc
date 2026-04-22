@@ -51,6 +51,14 @@ struct FieldInfo {
   std::shared_ptr<const ast::TypeExpr> type;   // declared field type
 };
 
+struct PropertyInfo {
+  std::shared_ptr<const ast::TypeExpr> type;
+  std::vector<ast::Param> params;
+  std::string read_name;
+  std::string write_name;
+  bool is_default = false;
+};
+
 struct ClassInfo {
   std::string name;
   std::string parent;                    // empty if none
@@ -62,13 +70,10 @@ struct ClassInfo {
   // always heap-allocated, `TFoo.Create(...)' returns a pointer,
   // destruction via `.Free'.  Emit decisions fork on this flag.
   bool is_reference_type = false;
-  // member_name -> (is_method, field_info | method_sig)
-  struct Member {
-    bool is_method = false;
-    FieldInfo field;
-    MethodSig method;
-  };
-  std::unordered_map<std::string, Member> members;
+  std::unordered_map<std::string, FieldInfo> fields;
+  std::unordered_map<std::string, MethodSig> methods;
+  std::unordered_map<std::string, PropertyInfo> properties;
+  std::string default_property_name;
 };
 
 struct RecordInfo {
@@ -219,10 +224,17 @@ struct TypeRegistry {
   // If `te` canonicalizes to a class/record, return its type-alias name.
   std::string direct_type_name(const ast::TypeExpr* te) const;
 
-  // Look up a member in `class_name` (or any ancestor). Returns nullptr
-  // if not found. Ancestor chain stops on the first hit.
-  const ClassInfo::Member* lookup_class_member(
+  const FieldInfo* lookup_class_field(
       const std::string& class_name, const std::string& member) const;
+
+  const MethodSig* lookup_class_method(
+      const std::string& class_name, const std::string& member) const;
+
+  const PropertyInfo* lookup_class_property(
+      const std::string& class_name, const std::string& member) const;
+
+  const PropertyInfo* lookup_default_property(
+      const std::string& class_name) const;
 
   const FieldInfo* lookup_record_field(
       const std::string& record_name, const std::string& member) const;
