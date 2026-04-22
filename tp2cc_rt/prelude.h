@@ -2134,8 +2134,6 @@ inline void p_pclose(TextFile& f) {
 }
 template <typename F>
 inline void p_pclose(F&) {}
-// STUB: heap-trace hook.
-template <typename F> inline void p_setheaptraceoutput(F&&) {}
 // STUB: file timestamp get/set used by assembler/link bookkeeping.
 template <typename F, typename T> inline void p_getftime(F&&, T&) {}
 template <typename F, typename T> inline void p_setftime(F&&, T) {}
