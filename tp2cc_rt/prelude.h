@@ -29,7 +29,9 @@
 #include <string>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/time.h>
 #include <sys/wait.h>
+#include <ctime>
 #include <type_traits>
 #include <unistd.h>
 #include <utility>
@@ -1286,8 +1288,26 @@ inline void p_fsplit(const ShortString<>& input, ShortString<>& dir,
 }
 inline ShortString<> p_fexpand(const ShortString<>& s) { return s; }
 
-inline void p_epochtolocal(int32_t, uint16_t&, uint16_t&, uint16_t&,
-                           uint16_t&, uint16_t&, uint16_t&) {}
+// `EpochToLocal(epoch, var year,month,day,hour,minute,second)`
+// breaks a Unix epoch second-count into local-time calendar fields.
+// Out-of-range epochs (libc returning nullptr) zero every field
+// rather than leaving them undefined.
+inline void p_epochtolocal(int32_t epoch, uint16_t& year, uint16_t& month,
+                           uint16_t& day, uint16_t& hour, uint16_t& minute,
+                           uint16_t& second) {
+  std::time_t t = static_cast<std::time_t>(epoch);
+  std::tm lt{};
+  if (!::localtime_r(&t, &lt)) {
+    year = month = day = hour = minute = second = 0;
+    return;
+  }
+  year   = static_cast<uint16_t>(lt.tm_year + 1900);
+  month  = static_cast<uint16_t>(lt.tm_mon + 1);
+  day    = static_cast<uint16_t>(lt.tm_mday);
+  hour   = static_cast<uint16_t>(lt.tm_hour);
+  minute = static_cast<uint16_t>(lt.tm_min);
+  second = static_cast<uint16_t>(lt.tm_sec);
+}
 
 template <typename File>
 inline int32_t p_filepos(const File& f) {
