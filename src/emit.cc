@@ -1204,6 +1204,8 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       if (m.base->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*m.base);
         if (id.name == "self") cls = current_class_name;
+        else if (registry->classes.count(id.name) ||
+                 registry->records.count(id.name)) cls = id.name;
       }
       if (cls.empty()) {
         const TypeExpr* bt = deduce_type(*m.base);
@@ -1286,9 +1288,11 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       } else if (c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         std::string cls;
-        if (mem.base->kind == Kind::Ident &&
-            static_cast<const Ident&>(*mem.base).name == "self") {
-          cls = current_class_name;
+        if (mem.base->kind == Kind::Ident) {
+          const auto& id = static_cast<const Ident&>(*mem.base);
+          if (id.name == "self") cls = current_class_name;
+          else if (registry->classes.count(id.name) ||
+                   registry->records.count(id.name)) cls = id.name;
         } else {
           const TypeExpr* bt = deduce_type(*mem.base);
           if (bt) cls = registry->direct_type_name(registry->canonicalize(bt));
@@ -1574,9 +1578,14 @@ void Emitter::collect_call_param_info(
   if (callee.kind != Kind::Member) return;
   const auto& mem = static_cast<const Member&>(callee);
   std::string cls;
-  if (mem.base->kind == Kind::Ident &&
-      static_cast<const Ident&>(*mem.base).name == "self") {
-    cls = current_class_name;
+  if (mem.base->kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(*mem.base);
+    if (id.name == "self") {
+      cls = current_class_name;
+    } else if (registry->classes.count(id.name) ||
+               registry->records.count(id.name)) {
+      cls = id.name;
+    }
   } else {
     cls = deduce_class_alias(*mem.base);
   }
@@ -2280,7 +2289,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (registry && (registry->classes.count(id.name) ||
                            registry->records.count(id.name))) {
             if (auto* method = registry->lookup_class_method(id.name, m.name);
-                method && method->decl) {
+                method && method->decl && !method->decl->is_class_method) {
               return "::rt::p_method_code<&" + mangle(id.name) + "::" +
                      method_pointer_helper_name(*method->decl) + ">()";
             }
@@ -2893,7 +2902,7 @@ std::optional<std::string> Emitter::maybe_convert_proc_value(
       -> std::optional<std::string> {
     if (current_class_name.empty()) return std::nullopt;
     if (auto* method = registry->lookup_class_method(current_class_name, name);
-        method && method->decl) {
+        method && method->decl && !method->decl->is_class_method) {
       return bind_method("(*this)", current_class_name, *method->decl);
     }
     return std::nullopt;
@@ -2909,7 +2918,7 @@ std::optional<std::string> Emitter::maybe_convert_proc_value(
     }
     if (cls.empty()) return std::nullopt;
     if (auto* method = registry->lookup_class_method(cls, m.name);
-        method && method->decl) {
+        method && method->decl && !method->decl->is_class_method) {
       return bind_method(expr_to_cxx(*m.base), cls, *method->decl);
     }
     return std::nullopt;
@@ -3204,16 +3213,24 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
           ret = "void";
         }
         std::string prefix;
-        if (pd.is_virtual || pd.is_abstract || pd.is_override) {
+        if (pd.is_class_method) {
+          // Current class-method support is the non-virtual subset only:
+          // emit a real C++ static so `TClass.Method(...)` and unqualified
+          // in-class calls resolve directly, and reject metaclass-only
+          // Pascal features earlier in the parser.
+          prefix = "static ";
+        } else if (pd.is_virtual || pd.is_abstract || pd.is_override) {
           prefix = "virtual ";
           has_virtual = true;
         }
         std::string suffix;
-        if (pd.is_abstract) suffix = " = 0";
-        else if (pd.is_override) suffix = " override";
+        if (!pd.is_class_method) {
+          if (pd.is_abstract) suffix = " = 0";
+          else if (pd.is_override) suffix = " override";
+        }
         emitln(prefix + ret + " " + mangle(pd.name) + "(" +
                param_list_to_cxx(pd.params) + ")" + suffix + ";");
-        emit_method_pointer_thunk(name, pd, ret);
+        if (!pd.is_class_method) emit_method_pointer_thunk(name, pd, ret);
       }
     }
     // Polymorphic objects must have a virtual C++ destructor, otherwise
@@ -3331,6 +3348,7 @@ std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
 void Emitter::emit_method_pointer_thunk(const std::string& owner_name,
                                         const ProcDecl& pd,
                                         const std::string& ret) {
+  if (pd.is_class_method) return;
   if (pd.pkind != ProcKind::Procedure && pd.pkind != ProcKind::Function) {
     return;
   }

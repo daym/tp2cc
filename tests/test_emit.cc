@@ -755,6 +755,38 @@ void test_default_indexed_procvar_property_stmt_autocalls() {
   CHECK(contains(out.impl, "p_box.p_getitem(2)();"));
 }
 
+void test_class_method_static_emission_and_calls() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tx = class\n"
+      "    class function bar : integer;\n"
+      "    function foo : integer;\n"
+      "  end;\n"
+      "procedure demo(x : tx);\n"
+      "implementation\n"
+      "class function tx.bar : integer;\n"
+      "begin\n"
+      "  bar := 7;\n"
+      "end;\n"
+      "function tx.foo : integer;\n"
+      "begin\n"
+      "  foo := bar;\n"
+      "end;\n"
+      "procedure demo(x : tx);\n"
+      "begin\n"
+      "  x.bar;\n"
+      "  tx.bar;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "static int32_t p_bar();"));
+  CHECK(contains(out.impl, "int32_t p_tx::p_bar() {"));
+  CHECK(contains(out.impl, "result = p_bar();"));
+  CHECK(contains(out.impl, "p_x.p_bar();"));
+  CHECK(contains(out.impl, "p_tx::p_bar();"));
+}
+
 void test_parameterless_proc_assignment_keeps_designator() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -982,6 +1014,7 @@ int main() {
   RUN_TEST(test_property_field_and_default_index_lowering);
   RUN_TEST(test_procvar_property_stmt_and_value_context);
   RUN_TEST(test_default_indexed_procvar_property_stmt_autocalls);
+  RUN_TEST(test_class_method_static_emission_and_calls);
   RUN_TEST(test_parameterless_proc_assignment_keeps_designator);
   RUN_TEST(test_method_pointer_type_and_bound_assignment_emit);
   RUN_TEST(test_method_pointer_record_cast_reinterprets_same_storage);

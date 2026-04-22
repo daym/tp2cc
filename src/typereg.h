@@ -34,7 +34,7 @@ enum class SymKind : uint8_t {
   Unknown,
   Field,
   Method,           // procedure or function with/without params
-  ClassMethod,      // (future) class method
+  ClassMethod,
   Constructor,
   Destructor,
 };

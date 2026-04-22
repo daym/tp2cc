@@ -51,6 +51,7 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
       ms.is_function = (pd.pkind == ProcKind::Function);
       if (pd.pkind == ProcKind::Constructor) ms.kind = SymKind::Constructor;
       else if (pd.pkind == ProcKind::Destructor) ms.kind = SymKind::Destructor;
+      else if (pd.is_class_method) ms.kind = SymKind::ClassMethod;
       else ms.kind = SymKind::Method;
       size_t pc = 0;
       for (const auto& p : pd.params) pc += p.names.size();

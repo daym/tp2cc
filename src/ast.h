@@ -400,6 +400,7 @@ struct ProcDecl : Decl {
   // For methods: the object/record type this belongs to, if parsed as
   // `procedure TFoo.Bar(...)`. Empty otherwise.
   std::string of_type;
+  bool is_class_method;
   std::vector<Param> params;
   TypePtr return_type;  // only for Function/Constructor; null otherwise
   // Modifiers (unordered list in source; we capture the important ones):
@@ -416,7 +417,8 @@ struct ProcDecl : Decl {
   // Body (present only for the implementation-side definition):
   std::vector<DeclPtr> locals;
   StmtPtr body;                // null for forward / abstract / external
-  ProcDecl() : Decl(Kind::ProcDecl) {}
+  explicit ProcDecl(bool class_method)
+      : Decl(Kind::ProcDecl), is_class_method(class_method) {}
 };
 
 struct UsesClause : Decl {

@@ -319,10 +319,8 @@ void test_metaclass_type() {
   }
 }
 
-// Directives on class methods: dynamic, overload, reintroduce, and
-// the `class procedure'/`class function' prefix for metaclass methods.
-// FPC's `dynamic' is semantically identical to `virtual' (same VMT),
-// so we accept it and move on; we just need it to NOT derail parsing.
+// Class methods parse as distinct declarations, while regular method
+// directives like `dynamic` and `reintroduce` still stay soft.
 void test_class_directives() {
   int before = error_count();
   auto u = parse_snippet(
@@ -351,9 +349,53 @@ void test_class_directives() {
         // 2 overloads of B count as 2 distinct method entries; A, C,
         // Classy, ClassyF are one each -- total 6.
         CHECK_EQ(to->members.size(), size_t{6});
+        CHECK(to->members[4].method->is_class_method);
+        CHECK(to->members[5].method->is_class_method);
       }
     }
   }
+}
+
+void test_class_method_impl_decl() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tfoo = class\n"
+      "    class procedure classy;\n"
+      "  end;\n"
+      "implementation\n"
+      "class procedure tfoo.classy;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && !u->impl_decls.empty()) {
+    auto* pd = dynamic_cast<ProcDecl*>(u->impl_decls[0].get());
+    CHECK(pd);
+    if (pd) {
+      CHECK(pd->is_class_method);
+      CHECK_EQ(pd->of_type, std::string("tfoo"));
+      CHECK_EQ(pd->name, std::string("classy"));
+    }
+  }
+}
+
+void test_virtual_class_method_is_rejected() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tfoo = class\n"
+      "    class procedure classy; virtual;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(u != nullptr);
+  CHECK(error_count() - before > 0);
 }
 
 // Delphi-style `class' reuses the object-member parser, then records
@@ -889,6 +931,8 @@ int main() {
   RUN_TEST(test_class_properties);
   RUN_TEST(test_write_only_property);
   RUN_TEST(test_class_directives);
+  RUN_TEST(test_class_method_impl_decl);
+  RUN_TEST(test_virtual_class_method_is_rejected);
   RUN_TEST(test_metaclass_type);
   RUN_TEST(test_try_except_finally_raise);
   RUN_TEST(test_distinct_type);

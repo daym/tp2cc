@@ -233,12 +233,24 @@ void Parser::parse_decl_block(std::vector<DeclPtr>& out, bool in_interface) {
       case Tok::KwVar:   parse_var_section(out); break;
       case Tok::KwLabel: parse_label_section(out); break;
       case Tok::KwProcedure: {
-        auto d = parse_proc_decl(ProcKind::Procedure, in_interface);
+        auto d = parse_proc_decl(ProcKind::Procedure, in_interface,
+                                 /*is_class_method=*/false);
         if (d) out.push_back(std::move(d));
         break;
       }
       case Tok::KwFunction: {
-        auto d = parse_proc_decl(ProcKind::Function, in_interface);
+        auto d = parse_proc_decl(ProcKind::Function, in_interface,
+                                 /*is_class_method=*/false);
+        if (d) out.push_back(std::move(d));
+        break;
+      }
+      case Tok::KwClass: {
+        Tok next = peek().kind;
+        if (next != Tok::KwProcedure && next != Tok::KwFunction) return;
+        advance();
+        auto pk = check(Tok::KwFunction) ? ProcKind::Function
+                                         : ProcKind::Procedure;
+        auto d = parse_proc_decl(pk, in_interface, /*is_class_method=*/true);
         if (d) out.push_back(std::move(d));
         break;
       }
@@ -246,7 +258,8 @@ void Parser::parse_decl_block(std::vector<DeclPtr>& out, bool in_interface) {
       case Tok::KwDestructor: {
         auto pk = check(Tok::KwConstructor) ? ProcKind::Constructor
                                             : ProcKind::Destructor;
-        auto d = parse_proc_decl(pk, in_interface);
+        auto d = parse_proc_decl(pk, in_interface,
+                                 /*is_class_method=*/false);
         if (d) out.push_back(std::move(d));
         break;
       }
@@ -416,17 +429,42 @@ void Parser::parse_label_section(std::vector<DeclPtr>& out) {
 void Parser::parse_proc_modifiers(ProcDecl& pd) {
   // Pascal "directives" -- position-dependent modifiers that follow a
   // routine header, separated by `;`.
+  // Class methods currently lower only to the non-virtual/static subset.
+  // Reject modifiers that would require metaclass dispatch instead of
+  // silently pretending they mean the same thing in C++.
+  auto reject_class_modifier = [&](const char* name) {
+    report_error(cur_.loc,
+                 std::string("class methods with `") + name +
+                     "` are unsupported");
+  };
   for (;;) {
-    if (is_directive("virtual")) { pd.is_virtual = true; advance(); }
-    else if (is_directive("abstract")) { pd.is_abstract = true; advance(); }
-    else if (is_directive("override")) { pd.is_override = true; advance(); }
-    else if (is_directive("dynamic")) { pd.is_virtual = true; advance(); }
+    if (is_directive("virtual")) {
+      if (pd.is_class_method) reject_class_modifier("virtual");
+      else pd.is_virtual = true;
+      advance();
+    }
+    else if (is_directive("abstract")) {
+      if (pd.is_class_method) reject_class_modifier("abstract");
+      else pd.is_abstract = true;
+      advance();
+    }
+    else if (is_directive("override")) {
+      if (pd.is_class_method) reject_class_modifier("override");
+      else pd.is_override = true;
+      advance();
+    }
+    else if (is_directive("dynamic")) {
+      if (pd.is_class_method) reject_class_modifier("dynamic");
+      else pd.is_virtual = true;
+      advance();
+    }
     else if (is_directive("message")) {
+      if (pd.is_class_method) reject_class_modifier("message");
       advance();
       // integer constant or identifier for the message number/name.
       if (cur_.kind == Tok::IntLit || cur_.kind == Tok::Ident
           || cur_.kind == Tok::StringLit) advance();
-      pd.is_virtual = true;
+      if (!pd.is_class_method) pd.is_virtual = true;
     }
     else if (is_directive("forward")) { pd.is_forward = true; advance(); }
     else if (is_directive("inline")) { pd.is_inline = true; advance(); }
@@ -495,8 +533,9 @@ void Parser::parse_proc_modifiers(ProcDecl& pd) {
   }
 }
 
-std::shared_ptr<ProcDecl> Parser::parse_proc_decl(ProcKind pk, bool in_interface) {
-  auto pd = std::make_shared<ProcDecl>();
+std::shared_ptr<ProcDecl> Parser::parse_proc_decl(
+    ProcKind pk, bool in_interface, bool is_class_method) {
+  auto pd = std::make_shared<ProcDecl>(is_class_method);
   pd->loc = cur_.loc;
   pd->pkind = pk;
   advance();  // consume procedure/function/constructor/destructor
@@ -884,44 +923,15 @@ TypePtr Parser::parse_object_type() {
     if (is_directive("protected")) { advance(); vis = Visibility::Protected; continue; }
     if (is_directive("published")) { advance(); vis = Visibility::Public; continue; }
 
-    // Delphi `class procedure F(...);' / `class function F(...): T;'.
-    //
-    // Pascal class methods are NOT equivalent to C++ static methods.
-    // A Pascal class method:
-    //   - receives an implicit Self whose value is a metaclass (a
-    //     `class of TFoo' reference), not an instance;
-    //   - can be declared `virtual' and dispatched through that
-    //     metaclass, so `AClassVar.ClassMethod' picks the override
-    //     belonging to whichever concrete class AClassVar currently
-    //     refers to (e.g. `TObject.NewInstance' is a virtual class
-    //     method and is how metaclass allocation actually works);
-    //   - can call `inherited' to chain to the parent class method.
-    //
-    // A C++ static method has none of this -- no Self, no vtable,
-    // no dispatch through a runtime-known class pointer.  Treating
-    // Pascal class methods as C++ static methods would silently
-    // break polymorphic class-method dispatch at every call site.
-    //
-    // fpc-2.0.0 compiler source contains ~2 class-method decls
-    // (per the feature survey) and the bootstrap path probably
-    // doesn't exercise them at runtime.  We therefore swallow the
-    // `class' prefix and parse the method as an ordinary instance
-    // method -- accepts the source but emits wrong semantics if the
-    // method is ever invoked through a metaclass variable.  If/when
-    // the compiler's self-compile stumbles over this, we'll need
-    // to extend ProcDecl with an `is_class_method' flag and wire
-    // through metaclass-aware dispatch at emit time.  In a class
-    // body only `class procedure'/`class function' are meaningful
-    // -- `class of' is a type-declaration form, not a member form.
+    bool is_class_method = false;
     if (check(Tok::KwClass)) {
       advance();
       if (!(check(Tok::KwProcedure) || check(Tok::KwFunction))) {
-        // Not a class-method declaration; put us in an error state.
         report_error(cur_.loc,
                      "expected `procedure' or `function' after `class'");
         break;
       }
-      // fall through to the regular method-parse branch below
+      is_class_method = true;
     }
 
     if (check(Tok::KwProcedure) || check(Tok::KwFunction) ||
@@ -935,7 +945,7 @@ TypePtr Parser::parse_object_type() {
       m.kind = ObjectMemberKind::Method;
       // Method headers inside an object are always signatures only --
       // bodies live in the implementation section (TP 7.0 semantics).
-      m.method = parse_proc_decl(pk, /*in_interface=*/true);
+      m.method = parse_proc_decl(pk, /*in_interface=*/true, is_class_method);
       to->members.push_back(std::move(m));
       continue;
     }
