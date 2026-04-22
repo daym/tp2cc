@@ -146,6 +146,10 @@ struct ShortString {
   // bearing now that `data` has no default member initialiser, or callers
   // that memcpy/bytewise-compare a returned ShortString would see stack
   // garbage in positions >= length.
+  //
+  // Input longer than N chars is truncated silently (scan stops at
+  // `n < N`), matching Pascal shortstring assignment semantics: no
+  // error, no IOResult.
   constexpr ShortString(const char* s) : data{} {
     int n = 0;
     if (s) {
