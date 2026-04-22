@@ -111,6 +111,7 @@ struct VarInfo {
 struct ConstInfo {
   std::string defining_unit;
   std::shared_ptr<const ast::TypeExpr> type;   // nullptr if untyped
+  std::shared_ptr<const ast::Expr> value;      // constant expression AST
 };
 
 struct UnitInfo {

@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -70,50 +71,233 @@ bool tyname_is(const TypeExpr* t, std::string_view expected) {
          ascii_lower(static_cast<const TyName&>(*t).name) == expected;
 }
 
-// Pascal primitive type names recognised by name lookup during type emission.
-// Keys are lowercased; values are the C++ expansion.
-const std::unordered_map<std::string, std::string>& primitive_type_map() {
-  static const std::unordered_map<std::string, std::string> m = {
-      {"integer",   "int32_t"},
-      {"longint",   "int32_t"},
-      {"cardinal",  "uint32_t"},
-      {"longword",  "uint32_t"},
-      {"smallint",  "int16_t"},
-      {"word",      "uint16_t"},
-      {"shortint",  "int8_t"},
-      {"byte",      "uint8_t"},
-      {"char",      "::rt::p_char"},
-      {"boolean",   "bool"},
-      {"bytebool",  "uint8_t"},
-      {"wordbool",  "uint16_t"},
-      {"longbool",  "uint32_t"},
-      {"single",    "float"},
-      {"double",    "double"},
-      {"real",      "double"},
-      {"extended",  "long double"},
-      {"comp",      "long double"},
-      {"pointer",   "void*"},
-      {"pchar",     "::rt::p_char*"},
-      {"ppchar",    "::rt::p_char**"},
-      {"text",      "::rt::TextFile"},
-      {"int64",     "int64_t"},
-      {"qword",     "uint64_t"},
-      {"dword",     "uint32_t"},
-      {"string",    "::rt::ShortString<>"},
-      {"shortstring", "::rt::ShortString<>"},
+enum class PrimitiveIntKind : uint8_t { None, Signed, Unsigned };
+
+// Pascal primitive-type table. Single source of truth for every
+// property callers need: the C++ spelling plus, for integer
+// primitives, the signedness and width used when lowering untyped
+// integer literals into a typed context.
+struct PrimitiveInfo {
+  const char* cxx;
+  PrimitiveIntKind int_kind;
+  uint8_t bits;
+};
+
+const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
+  static const std::unordered_map<std::string, PrimitiveInfo> m = {
+      {"integer",     {"int32_t",         PrimitiveIntKind::Signed,   32}},
+      {"longint",     {"int32_t",         PrimitiveIntKind::Signed,   32}},
+      {"cardinal",    {"uint32_t",        PrimitiveIntKind::Unsigned, 32}},
+      {"longword",    {"uint32_t",        PrimitiveIntKind::Unsigned, 32}},
+      {"smallint",    {"int16_t",         PrimitiveIntKind::Signed,   16}},
+      {"word",        {"uint16_t",        PrimitiveIntKind::Unsigned, 16}},
+      {"shortint",    {"int8_t",          PrimitiveIntKind::Signed,    8}},
+      {"byte",        {"uint8_t",         PrimitiveIntKind::Unsigned,  8}},
+      {"char",        {"::rt::p_char",    PrimitiveIntKind::None,      0}},
+      {"boolean",     {"bool",            PrimitiveIntKind::None,      0}},
+      {"bytebool",    {"uint8_t",         PrimitiveIntKind::Unsigned,  8}},
+      {"wordbool",    {"uint16_t",        PrimitiveIntKind::Unsigned, 16}},
+      {"longbool",    {"uint32_t",        PrimitiveIntKind::Unsigned, 32}},
+      {"single",      {"float",           PrimitiveIntKind::None,      0}},
+      {"double",      {"double",          PrimitiveIntKind::None,      0}},
+      {"real",        {"double",          PrimitiveIntKind::None,      0}},
+      {"extended",    {"long double",     PrimitiveIntKind::None,      0}},
+      {"comp",        {"long double",     PrimitiveIntKind::None,      0}},
+      {"pointer",     {"void*",           PrimitiveIntKind::None,      0}},
+      {"pchar",       {"::rt::p_char*",   PrimitiveIntKind::None,      0}},
+      {"ppchar",      {"::rt::p_char**",  PrimitiveIntKind::None,      0}},
+      {"text",        {"::rt::TextFile",  PrimitiveIntKind::None,      0}},
+      {"int64",       {"int64_t",         PrimitiveIntKind::Signed,   64}},
+      {"qword",       {"uint64_t",        PrimitiveIntKind::Unsigned, 64}},
+      {"dword",       {"uint32_t",        PrimitiveIntKind::Unsigned, 32}},
+      {"string",      {"::rt::ShortString<>", PrimitiveIntKind::None,  0}},
+      {"shortstring", {"::rt::ShortString<>", PrimitiveIntKind::None,  0}},
   };
   return m;
 }
 
+const PrimitiveInfo* primitive_info(std::string_view lowname) {
+  auto it = primitive_type_map().find(std::string(lowname));
+  return it == primitive_type_map().end() ? nullptr : &it->second;
+}
+
 bool is_primitive_type(std::string_view lowname) {
-  return primitive_type_map().count(std::string(lowname)) > 0;
+  return primitive_info(lowname) != nullptr;
 }
 
 std::string primitive_type_cxx(std::string_view lowname) {
-  auto it = primitive_type_map().find(std::string(lowname));
-  if (it == primitive_type_map().end()) return {};
-  return it->second;
+  auto* info = primitive_info(lowname);
+  return info ? info->cxx : std::string();
 }
+
+uint64_t low_bits(uint64_t value, uint8_t bits) {
+  if (bits >= 64) return value;
+  return value & ((uint64_t{1} << bits) - 1);
+}
+
+std::string uint64_literal_text(uint64_t value) {
+  char buf[32];
+  const char* fmt =
+      (value > static_cast<uint64_t>(INT64_MAX)) ? "%lluULL" : "%llu";
+  std::snprintf(buf, sizeof(buf), fmt,
+                static_cast<unsigned long long>(value));
+  return buf;
+}
+
+std::string signed_bits_literal_text(uint64_t bits, const PrimitiveInfo& info) {
+  if (info.bits == 0) return "0";
+  uint64_t sign_bit = uint64_t{1} << (info.bits - 1);
+  if ((bits & sign_bit) == 0) return uint64_literal_text(bits);
+  if (info.bits == 64 && bits == sign_bit) {
+    return "::std::numeric_limits<" + std::string(info.cxx) + ">::min()";
+  }
+  uint64_t magnitude =
+      (info.bits == 64) ? (uint64_t{0} - bits) : low_bits(~bits + 1, info.bits);
+  return "-" + uint64_literal_text(magnitude);
+}
+
+const ast::TyName* builtin_integer_type(std::string_view lowname) {
+  auto make = [](const char* name) {
+    ast::TyName n;
+    n.name = name;
+    return n;
+  };
+  static const ast::TyName t_shortint = make("shortint");
+  static const ast::TyName t_byte = make("byte");
+  static const ast::TyName t_smallint = make("smallint");
+  static const ast::TyName t_word = make("word");
+  static const ast::TyName t_longint = make("longint");
+  static const ast::TyName t_cardinal = make("cardinal");
+  static const ast::TyName t_int64 = make("int64");
+  static const ast::TyName t_qword = make("qword");
+
+  if (lowname == "shortint") return &t_shortint;
+  if (lowname == "byte") return &t_byte;
+  if (lowname == "smallint") return &t_smallint;
+  if (lowname == "word") return &t_word;
+  if (lowname == "longint" || lowname == "integer") return &t_longint;
+  if (lowname == "cardinal" || lowname == "longword" || lowname == "dword")
+    return &t_cardinal;
+  if (lowname == "int64") return &t_int64;
+  if (lowname == "qword") return &t_qword;
+  return nullptr;
+}
+
+const PrimitiveInfo* primitive_info_for_value(int64_t value) {
+  if (value >= -128 && value <= 127) return primitive_info("shortint");
+  if (value >= 0 && value <= 255) return primitive_info("byte");
+  if (value >= -32768 && value <= 32767) return primitive_info("smallint");
+  if (value >= 0 && value <= 65535) return primitive_info("word");
+  if (value >= INT32_MIN && value <= INT32_MAX) return primitive_info("longint");
+  if (value >= 0) return primitive_info("cardinal");
+  return primitive_info("int64");
+}
+
+const ast::TyName* builtin_integer_type(const PrimitiveInfo* info) {
+  if (info == primitive_info("shortint")) return builtin_integer_type("shortint");
+  if (info == primitive_info("byte")) return builtin_integer_type("byte");
+  if (info == primitive_info("smallint")) return builtin_integer_type("smallint");
+  if (info == primitive_info("word")) return builtin_integer_type("word");
+  if (info == primitive_info("longint")) return builtin_integer_type("longint");
+  if (info == primitive_info("cardinal")) return builtin_integer_type("cardinal");
+  if (info == primitive_info("int64")) return builtin_integer_type("int64");
+  if (info == primitive_info("qword")) return builtin_integer_type("qword");
+  return nullptr;
+}
+
+bool checked_add_int64(int64_t a, int64_t b, int64_t* out) {
+  if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b))
+    return false;
+  *out = a + b;
+  return true;
+}
+
+bool checked_sub_int64(int64_t a, int64_t b, int64_t* out) {
+  if ((b < 0 && a > INT64_MAX + b) || (b > 0 && a < INT64_MIN + b))
+    return false;
+  *out = a - b;
+  return true;
+}
+
+bool checked_mul_int64(int64_t a, int64_t b, int64_t* out) {
+  if (a == 0 || b == 0) {
+    *out = 0;
+    return true;
+  }
+  if (a == -1) {
+    if (b == INT64_MIN) return false;
+    *out = -b;
+    return true;
+  }
+  if (b == -1) {
+    if (a == INT64_MIN) return false;
+    *out = -a;
+    return true;
+  }
+  if (a > 0) {
+    if (b > 0) {
+      if (a > INT64_MAX / b) return false;
+    } else {
+      if (b < INT64_MIN / a) return false;
+    }
+  } else {
+    if (b > 0) {
+      if (a < INT64_MIN / b) return false;
+    } else {
+      if (a != 0 && b < INT64_MAX / a) return false;
+    }
+  }
+  *out = a * b;
+  return true;
+}
+
+bool checked_div_int64(int64_t a, int64_t b, int64_t* out) {
+  if (b == 0) return false;
+  if (a == INT64_MIN && b == -1) return false;
+  *out = a / b;
+  return true;
+}
+
+bool checked_mod_int64(int64_t a, int64_t b, int64_t* out) {
+  if (b == 0) return false;
+  if (a == INT64_MIN && b == -1) {
+    *out = 0;
+    return true;
+  }
+  *out = a % b;
+  return true;
+}
+
+bool checked_shift_count(int64_t shift) {
+  return shift >= 0 && shift < 64;
+}
+
+bool checked_shl_int64(int64_t a, int64_t shift, int64_t* out) {
+  if (!checked_shift_count(shift)) return false;
+  uint64_t bits = static_cast<uint64_t>(a);
+  bits = low_bits(bits << static_cast<unsigned>(shift), 64);
+  *out = static_cast<int64_t>(bits);
+  return true;
+}
+
+bool checked_shr_int64(int64_t a, int64_t shift, int64_t* out) {
+  if (!checked_shift_count(shift)) return false;
+  uint64_t bits = static_cast<uint64_t>(a);
+  bits >>= static_cast<unsigned>(shift);
+  *out = static_cast<int64_t>(bits);
+  return true;
+}
+
+struct ConstIntExprInfo {
+  int64_t value = 0;
+  const PrimitiveInfo* type = nullptr;
+};
+
+struct ConvertedConstInt {
+  int64_t value = 0;
+  uint64_t bits = 0;
+  const PrimitiveInfo* type = nullptr;
+};
 
 // ---------------------------------------------------------------------------
 // Emitter state
@@ -162,6 +346,11 @@ struct Emitter {
   // can answer "what class does this variable belong to?" and the
   // Member-access emitter can auto-call only actual methods.
   std::unordered_map<std::string, const ast::TypeExpr*> local_types;
+
+  // Function-local const declarations. Needed so integer constant
+  // expressions can fold through local const references instead of
+  // falling back to C++'s type rules.
+  std::unordered_map<std::string, const ast::ConstDecl*> local_consts;
 
   // Names of the current scope's parameters that are Pascal's untyped
   // `var X` / `const X` / `X` form. Their C++ type is `void*` (not
@@ -248,7 +437,19 @@ struct Emitter {
 
   // Expressions -> C++ expression.
   std::string expr_to_cxx(const Expr& e);
-  std::string const_value_to_cxx(const Expr& e);
+  // When a target type is provided, rewrites integer constant
+  // expressions to the exact value the destination type would hold,
+  // and descends into ArrayConst / RecordConst with the per-element /
+  // per-field type.
+  std::string const_value_to_cxx(const Expr& e,
+                                 const TypeExpr* target = nullptr,
+                                 bool explicit_conversion = false);
+  // If `e` is an integer constant expression and `target` is an
+  // integer primitive, return the exact destination value as a C++
+  // literal. Implicit conversions diagnose range errors; explicit
+  // Pascal casts do not.
+  std::optional<std::string> maybe_convert_const_int_expr(
+      const Expr& e, const TypeExpr* target, bool explicit_conversion);
 
   // Small helpers.
   bool const_param_needs_mutable_ref(const ast::TypeExpr* t);
@@ -263,6 +464,17 @@ struct Emitter {
   // expression has, or nullptr when unknown. Consults the TypeRegistry
   // for globals and the current scope tables for locals/self-class.
   const ast::TypeExpr* deduce_type(const ast::Expr& e);
+  const ast::TypeExpr* deduce_const_decl_type(const ast::ConstDecl& cd);
+  const ast::TypeExpr* deduce_const_info_type(const ConstInfo& c);
+  std::optional<ConstIntExprInfo> eval_const_int_expr(
+      const ast::Expr& e,
+      std::unordered_set<std::string>* visiting_const_names = nullptr);
+  std::optional<ConstIntExprInfo> eval_const_int_cast(
+      const ast::Call& c,
+      std::unordered_set<std::string>* visiting_const_names);
+  std::optional<ConvertedConstInt> convert_const_int_value(
+      Location where, int64_t value, const ast::TypeExpr* target,
+      bool explicit_conversion, bool diagnose);
 
   // Class/record alias name ("tfoo") of `e`, lowercased, if detectable.
   // Empty if the type can't be narrowed to a named object/record type.
@@ -336,6 +548,7 @@ struct Emitter {
   std::string current_fn_name;
   bool current_fn_is_function = false;
   bool current_fn_is_ctor = false;
+  const ast::TypeExpr* current_fn_result_type = nullptr;
   // Stack of loop-exit labels. Pascal `break` inside a `case` arm must
   // exit the enclosing loop, but C++ `break` inside `switch` exits the
   // switch -- so we emit Pascal `break` as `goto` to a fresh label
@@ -613,14 +826,241 @@ std::string Emitter::type_to_cxx(const TypeExpr& t) {
 // decisions like "is `obj.name` a method call or a field read?" come
 // from the actual type tree, not name-matching heuristics.
 
+const TypeExpr* Emitter::deduce_const_decl_type(const ConstDecl& cd) {
+  if (cd.type) return cd.type.get();
+  auto info = eval_const_int_expr(*cd.value);
+  if (!info || !info->type) return nullptr;
+  return builtin_integer_type(info->type);
+}
+
+const TypeExpr* Emitter::deduce_const_info_type(const ConstInfo& c) {
+  if (c.type) return c.type.get();
+  if (!c.value) return nullptr;
+  auto info = eval_const_int_expr(*c.value);
+  if (!info || !info->type) return nullptr;
+  return builtin_integer_type(info->type);
+}
+
+std::optional<ConvertedConstInt> Emitter::convert_const_int_value(
+    Location where, int64_t value, const TypeExpr* target,
+    bool explicit_conversion, bool diagnose) {
+  if (!target) return std::nullopt;
+  const TypeExpr* canon = canonicalize_type(target);
+  if (!canon || canon->kind != Kind::TyName) return std::nullopt;
+  std::string name = ascii_lower(static_cast<const TyName&>(*canon).name);
+  auto* info = primitive_info(name);
+  if (!info || info->int_kind == PrimitiveIntKind::None) return std::nullopt;
+
+  bool fits = true;
+  if (info->int_kind == PrimitiveIntKind::Unsigned) {
+    if (value < 0) {
+      fits = false;
+    } else if (info->bits < 64) {
+      fits = static_cast<uint64_t>(value) <= ((uint64_t{1} << info->bits) - 1);
+    }
+  } else {
+    int64_t lo = 0;
+    int64_t hi = 0;
+    if (info->bits == 64) {
+      lo = INT64_MIN;
+      hi = INT64_MAX;
+    } else {
+      lo = -(int64_t{1} << (info->bits - 1));
+      hi = (int64_t{1} << (info->bits - 1)) - 1;
+    }
+    fits = value >= lo && value <= hi;
+  }
+  if (!fits && diagnose && !explicit_conversion) {
+    report_warning(where, "range check error while evaluating constants");
+  }
+
+  ConvertedConstInt converted;
+  converted.type = info;
+  converted.bits = low_bits(static_cast<uint64_t>(value), info->bits);
+  if (info->int_kind == PrimitiveIntKind::Unsigned) {
+    converted.value = static_cast<int64_t>(converted.bits);
+    return converted;
+  }
+  if (info->bits == 64) {
+    converted.value = static_cast<int64_t>(converted.bits);
+    return converted;
+  }
+  uint64_t sign_bit = uint64_t{1} << (info->bits - 1);
+  if ((converted.bits & sign_bit) == 0) {
+    converted.value = static_cast<int64_t>(converted.bits);
+  } else {
+    converted.value =
+        static_cast<int64_t>(converted.bits | ~low_bits(UINT64_MAX, info->bits));
+  }
+  return converted;
+}
+
+std::optional<ConstIntExprInfo> Emitter::eval_const_int_cast(
+    const Call& c, std::unordered_set<std::string>* visiting_const_names) {
+  if (c.args.size() != 1 || c.callee->kind != Kind::Ident) return std::nullopt;
+  const auto& callee = static_cast<const Ident&>(*c.callee);
+  if (!is_primitive_type(callee.name)) return std::nullopt;
+  auto* cast_type = builtin_integer_type(callee.name);
+  if (!cast_type) return std::nullopt;
+  auto arg = eval_const_int_expr(*c.args[0], visiting_const_names);
+  if (!arg) return std::nullopt;
+  auto converted =
+      convert_const_int_value(c.loc, arg->value, cast_type, true, false);
+  if (!converted) return std::nullopt;
+  return ConstIntExprInfo{converted->value, converted->type};
+}
+
+std::optional<ConstIntExprInfo> Emitter::eval_const_int_expr(
+    const Expr& e, std::unordered_set<std::string>* visiting_const_names) {
+  switch (e.kind) {
+    case Kind::IntLit: {
+      const auto& n = static_cast<const IntLit&>(e);
+      if (n.value > static_cast<uint64_t>(INT64_MAX)) return std::nullopt;
+      int64_t value = static_cast<int64_t>(n.value);
+      return ConstIntExprInfo{value, primitive_info_for_value(value)};
+    }
+    case Kind::Unary: {
+      const auto& u = static_cast<const Unary&>(e);
+      auto operand = eval_const_int_expr(*u.operand, visiting_const_names);
+      if (!operand) return std::nullopt;
+      if (u.op == UnOp::Plus) return operand;
+      if (u.op != UnOp::Neg) return std::nullopt;
+      int64_t value = 0;
+      if (!checked_sub_int64(0, operand->value, &value)) return std::nullopt;
+      return ConstIntExprInfo{value, primitive_info_for_value(value)};
+    }
+    case Kind::Binary: {
+      const auto& b = static_cast<const Binary&>(e);
+      auto lhs = eval_const_int_expr(*b.lhs, visiting_const_names);
+      auto rhs = eval_const_int_expr(*b.rhs, visiting_const_names);
+      if (!lhs || !rhs) return std::nullopt;
+      int64_t value = 0;
+      switch (b.op) {
+        case BinOp::Add:
+          if (!checked_add_int64(lhs->value, rhs->value, &value)) return std::nullopt;
+          break;
+        case BinOp::Sub:
+          if (!checked_sub_int64(lhs->value, rhs->value, &value)) return std::nullopt;
+          break;
+        case BinOp::Mul:
+          if (!checked_mul_int64(lhs->value, rhs->value, &value)) return std::nullopt;
+          break;
+        case BinOp::IntDiv:
+          if (!checked_div_int64(lhs->value, rhs->value, &value)) return std::nullopt;
+          break;
+        case BinOp::Mod:
+          if (!checked_mod_int64(lhs->value, rhs->value, &value)) return std::nullopt;
+          break;
+        case BinOp::Shl:
+          if (!checked_shl_int64(lhs->value, rhs->value, &value)) return std::nullopt;
+          break;
+        case BinOp::Shr:
+          if (!checked_shr_int64(lhs->value, rhs->value, &value)) return std::nullopt;
+          break;
+        case BinOp::And:
+          value = static_cast<int64_t>(static_cast<uint64_t>(lhs->value) &
+                                       static_cast<uint64_t>(rhs->value));
+          break;
+        case BinOp::Or:
+          value = static_cast<int64_t>(static_cast<uint64_t>(lhs->value) |
+                                       static_cast<uint64_t>(rhs->value));
+          break;
+        case BinOp::Xor:
+          value = static_cast<int64_t>(static_cast<uint64_t>(lhs->value) ^
+                                       static_cast<uint64_t>(rhs->value));
+          break;
+        default:
+          return std::nullopt;
+      }
+      return ConstIntExprInfo{value, primitive_info_for_value(value)};
+    }
+    case Kind::Call:
+      return eval_const_int_cast(static_cast<const Call&>(e),
+                                 visiting_const_names);
+    case Kind::Ident: {
+      const auto& id = static_cast<const Ident&>(e);
+      if (!visiting_const_names) {
+        std::unordered_set<std::string> local_visiting;
+        return eval_const_int_expr(e, &local_visiting);
+      }
+      if (!visiting_const_names->insert(id.name).second) return std::nullopt;
+      auto pop = [&]() { visiting_const_names->erase(id.name); };
+
+      auto maybe_fold_const_decl =
+          [&](const ConstDecl& cd) -> std::optional<ConstIntExprInfo> {
+        // Untyped `const X = ...` is a compile-time constant.
+        // Typed `const X: T = ...` is writable storage in this dialect and
+        // must not be folded through its initializer.
+        if (cd.type || !cd.value) return std::nullopt;
+        return eval_const_int_expr(*cd.value, visiting_const_names);
+      };
+
+      auto maybe_fold_const_info =
+          [&](const ConstInfo& c) -> std::optional<ConstIntExprInfo> {
+        if (c.type || !c.value) return std::nullopt;
+        return eval_const_int_expr(*c.value, visiting_const_names);
+      };
+
+      auto lit = local_consts.find(id.name);
+      if (lit != local_consts.end() && lit->second && lit->second->value) {
+        std::optional<ConstIntExprInfo> out =
+            maybe_fold_const_decl(*lit->second);
+        pop();
+        return out;
+      }
+
+      auto lookup_const = [&](const UnitInfo& u, bool export_only)
+          -> const ConstInfo* {
+        return export_only ? u.find_export_const(id.name) : u.find_const(id.name);
+      };
+
+      if (registry) {
+        auto cur = registry->units.find(current_unit_name);
+        if (cur != registry->units.end()) {
+          if (const auto* c = lookup_const(cur->second, false)) {
+            std::optional<ConstIntExprInfo> out = maybe_fold_const_info(*c);
+            pop();
+            return out;
+          }
+          for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
+               ++it) {
+            auto uit = registry->units.find(*it);
+            if (uit == registry->units.end()) continue;
+            if (const auto* c = lookup_const(uit->second, true)) {
+              std::optional<ConstIntExprInfo> out = maybe_fold_const_info(*c);
+              pop();
+              return out;
+            }
+          }
+        }
+      }
+      pop();
+      return std::nullopt;
+    }
+    default:
+      return std::nullopt;
+  }
+}
+
 const TypeExpr* Emitter::deduce_type(const Expr& e) {
   if (!registry) return nullptr;
   switch (e.kind) {
+    case Kind::IntLit:
+    case Kind::Unary:
+    case Kind::Binary:
+      if (auto info = eval_const_int_expr(e); info && info->type) {
+        return builtin_integer_type(info->type);
+      }
+      if (e.kind != Kind::Binary) return nullptr;
+      break;
     case Kind::Ident: {
       const auto& id = static_cast<const Ident&>(e);
       // Local variables and parameters shadow everything.
       auto lit = local_types.find(id.name);
       if (lit != local_types.end()) return lit->second;
+      auto lcit = local_consts.find(id.name);
+      if (lcit != local_consts.end() && lcit->second)
+        return deduce_const_decl_type(*lcit->second);
       // Nested functions live in `local_nested_fns`, not `local_types`.
       // Type deduction still needs to see their result type so boolean
       // expressions like `if ready and flag then` lower to `&&` even
@@ -661,7 +1101,7 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       // interface-exports only.
       auto lookup_own = [&](const UnitInfo& u) -> const TypeExpr* {
         if (auto* v = u.find_var(id.name)) return v->type.get();
-        if (auto* c = u.find_const(id.name); c && c->type.get()) return c->type.get();
+        if (auto* c = u.find_const(id.name)) return deduce_const_info_type(*c);
         if (auto* p = u.find_proc(id.name);
             p && p->decl && p->decl->return_type)
           return p->decl->return_type.get();
@@ -669,7 +1109,7 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       };
       auto lookup_export = [&](const UnitInfo& u) -> const TypeExpr* {
         if (auto* v = u.find_export_var(id.name)) return v->type.get();
-        if (auto* c = u.find_export_const(id.name); c && c->type.get()) return c->type.get();
+        if (auto* c = u.find_export_const(id.name)) return deduce_const_info_type(*c);
         if (auto* p = u.find_export_proc(id.name);
             p && p->decl && p->decl->return_type)
           return p->decl->return_type.get();
@@ -796,6 +1236,7 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
     default:
       return nullptr;
   }
+  return nullptr;
 }
 
 std::string Emitter::deduce_class_alias(const Expr& e) {
@@ -959,7 +1400,7 @@ void Emitter::collect_call_param_info(
 
 std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
                                     bool untyped_arg) {
-  std::string arg_text = expr_to_cxx(arg);
+  std::string arg_text = const_value_to_cxx(arg, param_type);
   if (type_is_stringish(param_type) && expr_is_charish(arg)) {
     arg_text = "::rt::ShortString<>(" + arg_text + ")";
   }
@@ -1217,19 +1658,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
   switch (e.kind) {
     case Kind::IntLit: {
       const auto& n = static_cast<const IntLit&>(e);
-      char buf[32];
-      // IntLit holds an unsigned magnitude; a `-' prefix would arrive
-      // as a Unary(Neg) parent, not a negative IntLit.  Add a `ULL'
-      // suffix when the value's high bit is set so GCC doesn't
-      // complain "integer constant is so large that it is unsigned";
-      // smaller values stay plain so `-5' reaches the emitter as a
-      // signed literal (not `-5ULL', which would underflow to
-      // 0xFFFFFFFFFFFFFFFB).
-      const char* fmt =
-          (n.value > static_cast<uint64_t>(INT64_MAX)) ? "%lluULL" : "%llu";
-      std::snprintf(buf, sizeof(buf), fmt,
-                    static_cast<unsigned long long>(n.value));
-      return buf;
+      return uint64_literal_text(n.value);
     }
     case Kind::RealLit: {
       const auto& n = static_cast<const RealLit&>(e);
@@ -1439,6 +1868,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         // Pascal `not` is logical for bool, bitwise for int. Dispatch
         // at compile time via a runtime helper.
         return "::rt::p_not(" + expr_to_cxx(*n.operand) + ")";
+      }
+      if (n.op == UnOp::Neg && n.operand &&
+          n.operand->kind == Kind::IntLit &&
+          static_cast<const IntLit&>(*n.operand).value ==
+              (uint64_t{1} << 63)) {
+        return "::std::numeric_limits<int64_t>::min()";
       }
       const char* op = (n.op == UnOp::Neg) ? "-" : "+";
       return std::string(op) + expr_to_cxx(*n.operand);
@@ -1734,6 +2169,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "((" + primitive_type_cxx(n) + ")(::rt::p_ord(" +
                    arg0() + ")))";
           }
+          TyName target;
+          target.name = n;
+          if (auto lit =
+                  maybe_convert_const_int_expr(*c.args[0], &target, true)) {
+            return *lit;
+          }
           return "((" + primitive_type_cxx(n) + ")(" + arg0() + "))";
         } else if (c.args.size() == 1 && n != "inc" && n != "dec") {
           const TypeExpr* cast_ty = nullptr;
@@ -1998,14 +2439,86 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
   }
 }
 
-std::string Emitter::const_value_to_cxx(const Expr& e) { return expr_to_cxx(e); }
+std::string Emitter::const_value_to_cxx(const Expr& e,
+                                        const TypeExpr* target,
+                                        bool explicit_conversion) {
+  if (!target) return expr_to_cxx(e);
+  // Aggregate initialisers recurse into their element/field type.
+  if (e.kind == Kind::ArrayConst) {
+    const TypeExpr* canon = canonicalize_type(target);
+    const TypeExpr* elem_type = nullptr;
+    if (canon && canon->kind == Kind::TyArray) {
+      elem_type = static_cast<const TyArray&>(*canon).element.get();
+    }
+    const auto& ac = static_cast<const ArrayConst&>(e);
+    std::string out = "{";
+    for (size_t i = 0; i < ac.elements.size(); ++i) {
+      if (i) out += ", ";
+      out += const_value_to_cxx(*ac.elements[i], elem_type,
+                                explicit_conversion);
+    }
+    out += "}";
+    return out;
+  }
+  if (e.kind == Kind::RecordConst) {
+    const TypeExpr* canon = canonicalize_type(target);
+    const TyRecord* tr = nullptr;
+    if (canon && canon->kind == Kind::TyRecord) {
+      tr = &static_cast<const TyRecord&>(*canon);
+    }
+    const auto& rc = static_cast<const RecordConst&>(e);
+    std::string out = "{";
+    for (size_t i = 0; i < rc.fields.size(); ++i) {
+      if (i) out += ", ";
+      const TypeExpr* field_type = nullptr;
+      if (tr) {
+        std::string lf = ascii_lower(rc.fields[i].first);
+        for (const auto& f : tr->fields) {
+          for (const auto& n : f.names) {
+            if (ascii_lower(n) == lf) { field_type = f.type.get(); break; }
+          }
+          if (field_type) break;
+        }
+      }
+      out += "." + mangle(rc.fields[i].first) + " = " +
+             const_value_to_cxx(*rc.fields[i].second, field_type,
+                                explicit_conversion);
+    }
+    out += "}";
+    return out;
+  }
+  if (auto text =
+          maybe_convert_const_int_expr(e, target, explicit_conversion)) {
+    return *text;
+  }
+  return expr_to_cxx(e);
+}
+
+// FPC constant conversions first evaluate the integer constant
+// expression, then convert that value to the destination type. Keep
+// the same split here so assignments/calls/typed consts all share one
+// checked path instead of ad-hoc literal special cases.
+std::optional<std::string> Emitter::maybe_convert_const_int_expr(
+    const Expr& e, const TypeExpr* target, bool explicit_conversion) {
+  if (!target) return std::nullopt;
+  auto value = eval_const_int_expr(e);
+  if (!value) return std::nullopt;
+  auto converted =
+      convert_const_int_value(e.loc, value->value, target, explicit_conversion,
+                              /*diagnose=*/true);
+  if (!converted || !converted->type) return std::nullopt;
+  if (converted->type->int_kind == PrimitiveIntKind::Unsigned) {
+    return uint64_literal_text(converted->bits);
+  }
+  return signed_bits_literal_text(converted->bits, *converted->type);
+}
 
 // ---------------------------------------------------------------------------
 // Declarations
 
 void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
   const std::string name = mangle(cd.name);
-  std::string val = const_value_to_cxx(*cd.value);
+  std::string val = const_value_to_cxx(*cd.value, cd.type.get());
 
   // Two things drive the qualifiers:
   //   `inline` -- required on definitions at namespace scope in a header so
@@ -2048,7 +2561,9 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
 generic_emit:;
 
   if (cd.type) {
-    // Typed Pascal const -- writable.
+    // Typed Pascal const -- writable.  `val' was produced by
+    // const_value_to_cxx with cd.type as the target, so aggregate
+    // and scalar leaves are already lowered to the destination value.
     if (typed_const_ty && typed_const_ty->kind == Kind::TyArray &&
         cd.value->kind != Kind::StringLit) {
       emitln(linkage + type_to_cxx(*cd.type) + " " + name + " = {" + val +
@@ -2078,6 +2593,19 @@ generic_emit:;
              val + ";");
     }
     return;
+  }
+  if (const TypeExpr* inferred_ty = deduce_const_decl_type(cd)) {
+    const TypeExpr* canon = canonicalize_type(inferred_ty);
+    if (canon && canon->kind == Kind::TyName) {
+      std::string nm = ascii_lower(static_cast<const TyName&>(*canon).name);
+      if (auto* info = primitive_info(nm);
+          info && info->int_kind != PrimitiveIntKind::None) {
+        val = const_value_to_cxx(*cd.value, inferred_ty);
+        emitln(linkage + "const " + type_to_cxx(*inferred_ty) + " " + name +
+               " = " + val + ";");
+        return;
+      }
+    }
   }
   emitln(linkage + "const auto " + name + " = " + val + ";");
 }
@@ -2300,7 +2828,8 @@ void Emitter::emit_var_decl(const VarDecl& vd, bool in_header) {
     if (in_header) {
       emitln("extern " + ty + " " + name + ";");
     } else if (vd.init) {
-      emitln(ty + " " + name + " = " + expr_to_cxx(*vd.init) + ";");
+      std::string rhs = const_value_to_cxx(*vd.init, vd.type.get());
+      emitln(ty + " " + name + " = " + rhs + ";");
     } else if (block_depth > 0) {
       // Function-local `var X : T;` with no initialiser. Pascal itself
       // leaves locals undefined, but lots of FPC code still expects
@@ -2475,9 +3004,9 @@ void Emitter::emit_stmt(const Stmt& s) {
       lhs_fn_rewrite = current_fn_name;
       std::string target_cxx = expr_to_cxx(*a.target);
       lhs_fn_rewrite.clear();
-      std::string rhs_cxx = expr_to_cxx(*a.value);
-      if (type_is_stringish(deduce_type(*a.target)) &&
-          expr_is_charish(*a.value)) {
+      const TypeExpr* target_ty = deduce_type(*a.target);
+      std::string rhs_cxx = const_value_to_cxx(*a.value, target_ty);
+      if (type_is_stringish(target_ty) && expr_is_charish(*a.value)) {
         rhs_cxx = "::rt::ShortString<>(" + rhs_cxx + ")";
       }
       emitln(target_cxx + " = " + rhs_cxx + ";");
@@ -2517,7 +3046,9 @@ void Emitter::emit_stmt(const Stmt& s) {
         // exit or exit(v). In a Function, fill the result slot and return;
         // in a Procedure, return; in a Constructor, return the status.
         if (call_expr && !call_expr->args.empty() && current_fn_is_function) {
-          emitln("result = " + expr_to_cxx(*call_expr->args[0]) + ";");
+          emitln("result = " +
+                 const_value_to_cxx(*call_expr->args[0], current_fn_result_type) +
+                 ";");
           emitln("return result;");
         } else if (current_fn_is_function || current_fn_is_ctor) {
           emitln("return result;");
@@ -2817,11 +3348,13 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
   std::string saved_name = current_fn_name;
   bool saved_fn = current_fn_is_function;
   bool saved_ctor = current_fn_is_ctor;
+  const ast::TypeExpr* saved_result_type = current_fn_result_type;
   std::string saved_class = current_class_name;
   auto saved_locals = local_scope;
   current_fn_name = pd.name;
   current_fn_is_function = (pd.pkind == ProcKind::Function);
   current_fn_is_ctor = (pd.pkind == ProcKind::Constructor);
+  current_fn_result_type = pd.return_type.get();
   current_class_name = pd.of_type;  // empty for free functions
   ++block_depth;
 
@@ -2831,6 +3364,7 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
   // record declared types so `.field` / `.method` access on those
   // locals can be resolved from the type registry.
   auto saved_types = local_types;
+  auto saved_consts = local_consts;
   auto saved_nested = local_nested_fns;
   auto saved_untyped = local_untyped_params;
   auto saved_local_enums = local_enums;
@@ -2855,7 +3389,10 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
     } else if (l->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
       local_scope.insert(cd.name);
-      if (cd.type) local_types[cd.name] = cd.type.get();
+      local_consts[cd.name] = &cd;
+      if (const TypeExpr* ct = deduce_const_decl_type(cd)) {
+        local_types[cd.name] = ct;
+      }
     } else if (l->kind == Kind::TypeDecl) {
       // Pascal's local `type` section is statically visible to the
       // translator too -- record enums (for array-dim sizing and
@@ -2904,9 +3441,11 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
   current_fn_name = std::move(saved_name);
   current_fn_is_function = saved_fn;
   current_fn_is_ctor = saved_ctor;
+  current_fn_result_type = saved_result_type;
   current_class_name = std::move(saved_class);
   local_scope = std::move(saved_locals);
   local_types = std::move(saved_types);
+  local_consts = std::move(saved_consts);
   local_nested_fns = std::move(saved_nested);
   local_untyped_params = std::move(saved_untyped);
   local_enums = std::move(saved_local_enums);
@@ -2964,8 +3503,10 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   std::string saved_name = current_fn_name;
   bool saved_fn = current_fn_is_function;
   bool saved_ctor = current_fn_is_ctor;
+  const ast::TypeExpr* saved_result_type = current_fn_result_type;
   auto saved_locals = local_scope;
   auto saved_types = local_types;
+  auto saved_consts = local_consts;
   auto saved_nested = local_nested_fns;
   auto saved_untyped = local_untyped_params;
   auto saved_local_enums = local_enums;
@@ -2973,6 +3514,7 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   current_fn_name = pd.name;
   current_fn_is_function = (pd.pkind == ProcKind::Function);
   current_fn_is_ctor = false;
+  current_fn_result_type = pd.return_type.get();
   ++block_depth;
 
   for (const auto& p : pd.params) {
@@ -2992,7 +3534,10 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
     } else if (l->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
       local_scope.insert(cd.name);
-      if (cd.type) local_types[cd.name] = cd.type.get();
+      local_consts[cd.name] = &cd;
+      if (const TypeExpr* ct = deduce_const_decl_type(cd)) {
+        local_types[cd.name] = ct;
+      }
     } else if (l->kind == Kind::TypeDecl) {
       const auto& td = static_cast<const TypeDecl&>(*l);
       if (td.type) {
@@ -3027,8 +3572,10 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   current_fn_name = std::move(saved_name);
   current_fn_is_function = saved_fn;
   current_fn_is_ctor = saved_ctor;
+  current_fn_result_type = saved_result_type;
   local_scope = std::move(saved_locals);
   local_types = std::move(saved_types);
+  local_consts = std::move(saved_consts);
   local_nested_fns = std::move(saved_nested);
   local_untyped_params = std::move(saved_untyped);
   local_enums = std::move(saved_local_enums);
@@ -3198,6 +3745,7 @@ void Emitter::emit_unit(const UnitNode& u) {
   emitln("#include <cstdint>");
   emitln("#include <cstddef>");
   emitln("#include <array>");
+  emitln("#include <limits>");
   emitln("#include \"tp2cc_rt/prelude.h\"");
   // Emitted headers are prefixed `p_` so the filename never collides with
   // a C/C++ standard header (e.g. Pascal unit `strings` vs libc strings.h).

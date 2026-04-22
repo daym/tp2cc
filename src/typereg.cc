@@ -146,6 +146,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         ConstInfo c;
         c.defining_unit = unit;
         c.type = cd.type;
+        c.value = cd.value;
         r.consts[lc(cd.name)] = c;
         if (ui)
           (is_interface ? ui->iface_consts : ui->impl_consts)[lc(cd.name)] = c;

@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 
+#include "diag.h"
 #include "emit.h"
 #include "lexer.h"
 #include "parser.h"
@@ -105,6 +106,20 @@ void test_typed_scalar_const() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header, "int32_t p_n = 42"));
+}
+
+void test_typed_scalar_const_wraps_to_destination_value() {
+  int before = error_count();
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  N : longint = $FFFFFFFF;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.header, "int32_t p_n = -1;"));
+  CHECK(!contains(out.header, "bit_cast"));
 }
 
 void test_enum_type() {
@@ -245,6 +260,159 @@ void test_parenthesized_record_const() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header, "inline p_r p_x = {.p_a = 1};"));
+}
+
+void test_call_arg_literal_is_lowered_to_parameter_value() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure take(x : longint);\n"
+      "implementation\n"
+      "procedure take(x : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  take($FFFFFFFF);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.impl, "p_take(-1);"));
+}
+
+void test_explicit_integer_cast_literal_uses_converted_value() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  s : smallint;\n"
+      "  b : byte;\n"
+      "begin\n"
+      "  s := smallint($8000);\n"
+      "  b := byte(-1);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.impl, "p_s = -32768;"));
+  CHECK(contains(out.impl, "p_b = 255;"));
+}
+
+void test_assignment_const_expr_is_lowered_to_target_value() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  b : byte;\n"
+      "begin\n"
+      "  b := $4000 - $3F01;\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.impl, "p_b = 255;"));
+}
+
+void test_implicit_const_expr_wraps_without_emit_error() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  b : byte;\n"
+      "begin\n"
+      "  b := $4000;\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.impl, "p_b = 0;"));
+}
+
+void test_explicit_integer_cast_const_expr_wraps_without_error() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  b : byte;\n"
+      "begin\n"
+      "  b := byte($4000);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.impl, "p_b = 0;"));
+}
+
+void test_untyped_integer_const_uses_pascal_initial_type() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  x = $4000 - $3F01;\n"
+      "  y = $FFFFFFFF;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  b : byte;\n"
+      "begin\n"
+      "  b := x;\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.header, "const uint8_t p_x = 255;"));
+  CHECK(contains(out.header, "const uint32_t p_y = 4294967295;"));
+  CHECK(contains(out.impl, "p_b = 255;"));
+}
+
+void test_typed_const_read_is_not_folded_through_initializer() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  nextlabelnr : longint = 1;\n"
+      "procedure bump;\n"
+      "implementation\n"
+      "procedure bump;\n"
+      "begin\n"
+      "  nextlabelnr := nextlabelnr + 1;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "int32_t p_nextlabelnr = 1;"));
+  CHECK(contains(out.impl, "p_nextlabelnr = (p_nextlabelnr + 1);"));
+  CHECK(!contains(out.impl, "p_nextlabelnr = 2;"));
+}
+
+void test_exit_literal_uses_function_result_type() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function f : int64;\n"
+      "implementation\n"
+      "function f : int64;\n"
+      "begin\n"
+      "  exit(-$8000000000000000);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.header, "#include <limits>"));
+  CHECK(contains(out.impl,
+                 "result = ::std::numeric_limits<int64_t>::min();"));
 }
 
 void test_char_plus_cast_uses_string_concat() {
@@ -499,6 +667,7 @@ int main() {
   RUN_TEST(test_uses_become_includes_and_usings);
   RUN_TEST(test_scalar_const);
   RUN_TEST(test_typed_scalar_const);
+  RUN_TEST(test_typed_scalar_const_wraps_to_destination_value);
   RUN_TEST(test_enum_type);
   RUN_TEST(test_named_type_alias);
   RUN_TEST(test_set_type_alias);
@@ -510,6 +679,14 @@ int main() {
   RUN_TEST(test_named_subrange_array_type);
   RUN_TEST(test_packed_record_keeps_packed_layout);
   RUN_TEST(test_parenthesized_record_const);
+  RUN_TEST(test_call_arg_literal_is_lowered_to_parameter_value);
+  RUN_TEST(test_explicit_integer_cast_literal_uses_converted_value);
+  RUN_TEST(test_assignment_const_expr_is_lowered_to_target_value);
+  RUN_TEST(test_implicit_const_expr_wraps_without_emit_error);
+  RUN_TEST(test_explicit_integer_cast_const_expr_wraps_without_error);
+  RUN_TEST(test_untyped_integer_const_uses_pascal_initial_type);
+  RUN_TEST(test_typed_const_read_is_not_folded_through_initializer);
+  RUN_TEST(test_exit_literal_uses_function_result_type);
   RUN_TEST(test_char_plus_cast_uses_string_concat);
   RUN_TEST(test_integer_and_or_stays_bitwise);
   RUN_TEST(test_nested_boolean_function_and_short_circuits);
