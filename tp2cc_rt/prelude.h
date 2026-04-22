@@ -2080,8 +2080,6 @@ inline bool p_chmod(const ShortString<>& path, int32_t newmode) {
                  static_cast<mode_t>(newmode)) == 0;
 }
 template <typename... A> inline void p_getdate(A&&...) {}
-template <typename... A> inline void p_settime(A&&...) {}
-template <typename... A> inline void p_setdate(A&&...) {}
 // STUB: `datetime` is a record type in fpc's dos unit. Accept common
 // field accesses (year, month, day, hour, min, sec) since owar.pas
 // names them unprefixed.
