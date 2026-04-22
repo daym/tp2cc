@@ -3,13 +3,11 @@
 // Minimal runtime for tp2cc-emitted code.
 //
 // This header is deliberately small -- we only provide the pieces the
-// translator currently emits references to. It will grow alongside M3/M4/M5
-// as more Pascal features get translated.
+// translator currently emits references to.
 //
-// Target: Linux/i386. Translated Pascal primitive types map to fixed-width
+// Target: Linux 32-bit. Translated Pascal primitive types map to fixed-width
 // C++ types (see emit.cc's primitive_type_map); short strings, sets, and a
 // few I/O helpers are implemented here.
-
 #include <algorithm>
 #include <array>
 #include <cerrno>
