@@ -247,7 +247,7 @@ void test_proc_signature_in_header() {
       "function bar(a, b : longint) : longint;\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "void p_foo(int32_t p_x, int32_t& p_y);"));
+  CHECK(contains(out.header, "void p_foo(int32_t p_x, int32_t &p_y);"));
   CHECK(contains(out.header, "int32_t p_bar(int32_t p_a, int32_t p_b);"));
 }
 
@@ -475,7 +475,23 @@ void test_exit_literal_uses_function_result_type() {
   CHECK_EQ(error_count() - before, 0);
   CHECK(contains(out.header, "#include <limits>"));
   CHECK(contains(out.impl,
-                 "result = ::std::numeric_limits<int64_t>::min();"));
+                 "p_result = ::std::numeric_limits<int64_t>::min();"));
+}
+
+void test_local_result_name_is_rejected_in_function_body() {
+  int before = error_count();
+  (void)compile_snippet(
+      "unit foo;\n"
+      "interface\n"
+      "implementation\n"
+      "function f : integer;\n"
+      "var\n"
+      "  Result : integer;\n"
+      "begin\n"
+      "  Result := 3;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() - before > 0);
 }
 
 void test_char_plus_cast_uses_string_concat() {
@@ -650,7 +666,7 @@ void test_absolute_pointer_target_reinterprets_pointee_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_titem& p_item = ::rt::p_reinterpret_ref<p_titem>(p_raw);"));
+                 "p_titem &p_item = ::rt::p_reinterpret_ref<p_titem>(p_raw);"));
 }
 
 void test_absolute_pointer_alias_reinterprets_pointer_storage() {
@@ -669,7 +685,7 @@ void test_absolute_pointer_alias_reinterprets_pointer_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_pint& p_value = ::rt::p_reinterpret_storage_ref<p_pint>(p_raw);"));
+                 "p_pint &p_value = ::rt::p_reinterpret_storage_ref<p_pint>(p_raw);"));
 }
 
 void test_absolute_typed_const_alias_reinterprets_same_storage() {
@@ -690,7 +706,7 @@ void test_absolute_typed_const_alias_reinterprets_same_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_parr& p_view = ::rt::p_reinterpret_storage_ref<p_parr>(p_raw);"));
+                 "p_parr &p_view = ::rt::p_reinterpret_storage_ref<p_parr>(p_raw);"));
 }
 
 void test_property_getter_setter_lowering() {
@@ -845,7 +861,7 @@ void test_class_method_static_emission_and_calls() {
       "end.\n");
   CHECK(contains(out.header, "static int32_t p_bar();"));
   CHECK(contains(out.impl, "int32_t p_tx::p_bar() {"));
-  CHECK(contains(out.impl, "result = p_bar();"));
+  CHECK(contains(out.impl, "p_result = p_bar();"));
   CHECK(contains(out.impl, "p_x.p_bar();"));
   CHECK(contains(out.impl, "p_tx::p_bar();"));
 }
@@ -984,8 +1000,8 @@ void test_const_object_param_uses_mutable_ref() {
       "begin\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "void p_take(p_tobj& p_x);"));
-  CHECK(!contains(out.header, "void p_take(const p_tobj& p_x);"));
+  CHECK(contains(out.header, "void p_take(p_tobj &p_x);"));
+  CHECK(!contains(out.header, "void p_take(p_tobj const &p_x);"));
 }
 
 void test_parameterless_procvar_stmt_autocalls() {
@@ -1004,6 +1020,17 @@ void test_parameterless_procvar_stmt_autocalls() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "p_oldstop();"));
+}
+
+void test_direct_procvar_var_decl_uses_named_function_pointer_syntax() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "var\n"
+      "  hook : procedure(i : longint);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "extern void (*p_hook)(int32_t);"));
 }
 
 void test_runtime_builtin_stmt_autocalls() {
@@ -1091,6 +1118,7 @@ int main() {
   RUN_TEST(test_untyped_integer_const_uses_pascal_initial_type);
   RUN_TEST(test_typed_const_read_is_not_folded_through_initializer);
   RUN_TEST(test_exit_literal_uses_function_result_type);
+  RUN_TEST(test_local_result_name_is_rejected_in_function_body);
   RUN_TEST(test_char_plus_cast_uses_string_concat);
   RUN_TEST(test_integer_and_or_stays_bitwise);
   RUN_TEST(test_nested_boolean_function_and_short_circuits);
@@ -1115,6 +1143,7 @@ int main() {
   RUN_TEST(test_internal_helpers_avoid_double_underscores);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
   RUN_TEST(test_parameterless_procvar_stmt_autocalls);
+  RUN_TEST(test_direct_procvar_var_decl_uses_named_function_pointer_syntax);
   RUN_TEST(test_runtime_builtin_stmt_autocalls);
   RUN_TEST(test_bool_procvar_call_uses_logical_and);
   RUN_TEST(test_cxx_reserved_word_identifiers);

@@ -68,6 +68,12 @@ std::string ascii_lower(std::string_view text) {
 
 constexpr const char* kUnitInitName = "tp2cc_unit_init";
 constexpr const char* kUnitFiniName = "tp2cc_unit_fini";
+constexpr const char* kPascalResultSlotName = "p_result";
+constexpr const char* kCtorStatusSlotName = "tp2cc_ctor_ok";
+
+bool is_pascal_result_ident(std::string_view name) {
+  return ascii_lower(name) == "result";
+}
 
 std::string encode_helper_ident(std::string_view name) {
   std::string out;
@@ -465,9 +471,9 @@ struct Emitter {
   bool is_callee_context_ = false;
 
   // When emitting an LHS expression, if set, any bare Ident whose name
-  // equals this value is rewritten to `p_result`. Used so that Pascal's
-  // `funcname := x`, `funcname[i] := x`, `funcname.field := x` all route
-  // to the result slot rather than trying to mutate the function.
+  // equals this value is rewritten to the Pascal-visible implicit result
+  // variable. `Result` is in the Pascal identifier namespace, so it uses
+  // the ordinary `p_...` mangling rather than an internal helper name.
   std::string lhs_fn_rewrite;
 
   // Names bound in the current function's scope (parameters + locals).
@@ -573,6 +579,8 @@ struct Emitter {
   std::string pointer_type_to_cxx(const TyPointer& p);
   std::string procedural_type_to_cxx(const TyProcedural& p);
   std::string procedural_param_types_to_cxx(const std::vector<Param>& params);
+  std::string named_type_to_cxx(const TypeExpr* t, std::string_view name,
+                                std::string_view name_prefix = {});
   std::string method_pointer_helper_name(const ast::ProcDecl& pd);
 
   // Expressions -> C++ expression.
@@ -1035,6 +1043,42 @@ std::string Emitter::procedural_type_to_cxx(const TyProcedural& p) {
     return "::rt::MethodPtr<" + ret + "(" + params + ")>";
   }
   return ret + " (*)(" + params + ")";
+}
+
+std::string Emitter::named_type_to_cxx(const TypeExpr* t, std::string_view name,
+                                       std::string_view name_prefix) {
+  if (!t) {
+    if (name.empty()) {
+      return name_prefix.empty() ? std::string("int32_t")
+                                 : std::string("int32_t ") +
+                                       std::string(name_prefix);
+    }
+    return std::string("int32_t ") + std::string(name_prefix) + std::string(name);
+  }
+
+  // Direct procvar declarations need the identifier inside the `(*)`
+  // declarator. `void (*hook)(int)` is valid C++; `void (*)(int) hook`
+  // is not.
+  if (t->kind == Kind::TyProcedural) {
+    const auto& p = static_cast<const TyProcedural&>(*t);
+    if (!p.is_method) {
+      std::string ret =
+          p.is_function ? type_to_cxx(*p.return_type) : std::string("void");
+      std::string params = procedural_param_types_to_cxx(p.params);
+      if (name.empty()) {
+        return ret + " (*" + std::string(name_prefix) + ")(" + params + ")";
+      }
+      return ret + " (*" + std::string(name_prefix) + std::string(name) +
+             ")(" + params + ")";
+    }
+  }
+
+  std::string ty = type_to_cxx(*t);
+  if (name.empty()) {
+    return name_prefix.empty() ? ty
+                               : ty + " " + std::string(name_prefix);
+  }
+  return ty + " " + std::string(name_prefix) + std::string(name);
 }
 
 std::string Emitter::type_to_cxx(const TypeExpr& t) {
@@ -1949,10 +1993,11 @@ Emitter::ResolveResult Emitter::resolve_name(
 
   // ----- Unqualified lookup. -----
 
-  // 1. Function-name-as-read inside its own body -> `result`.
+  // 1. Function-name-as-read inside its own body -> the implicit Pascal
+  //    result variable.
   if (current_fn_is_function && !current_fn_name.empty() &&
       name == current_fn_name) {
-    r.cxx = "result";
+    r.cxx = kPascalResultSlotName;
     r.kind = ResolvedKind::ResultSlot;
     return r;
   }
@@ -2187,7 +2232,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // emission. We handle this BEFORE resolve_name so recursive
       // calls using `funcname(...)` still see the function name.
       if (!lhs_fn_rewrite.empty() && n.name == lhs_fn_rewrite) {
-        return "result";
+        return kPascalResultSlotName;
       }
       // The function-name-as-read rewrite is already in resolve_name
       // (only fires outside is_callee_context_), but we need to
@@ -3298,8 +3343,9 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     // Pascal source asked for. To turn this into a hard compile-time error
     // at the precise field, emit a per-field `static_assert` on packed
     // records.
-    auto emit_field = [&](const std::string& ft, const std::string& fn) {
-      emitln(ft + " " + mangle(fn) + ";");
+    auto emit_field =
+        [&](const TypeExpr* field_type, const std::string& ft, const std::string& fn) {
+      emitln(named_type_to_cxx(field_type, mangle(fn)) + ";");
       if (tr.is_packed) {
         // The predicate below is what GCC actually uses to decide whether
         // to honour `[[gnu::packed]]` on a field. I measured it by
@@ -3339,7 +3385,7 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     for (const auto& f : tr.fields) {
       std::string ft = f.type ? type_to_cxx(*f.type) : std::string("int32_t");
       for (const auto& fn : f.names) {
-        emit_field(ft, fn);
+        emit_field(f.type.get(), ft, fn);
       }
     }
     if (tr.has_variant) {
@@ -3348,7 +3394,8 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
       // We match that by emitting one anonymous struct per case inside an
       // anonymous union. GCC accepts this as an extension.
       if (!tr.variant_tag_name.empty() && tr.variant_tag_type) {
-        emit_field(type_to_cxx(*tr.variant_tag_type), tr.variant_tag_name);
+        emit_field(tr.variant_tag_type.get(),
+                   type_to_cxx(*tr.variant_tag_type), tr.variant_tag_name);
       }
       emitln("union {");
       indent();
@@ -3359,7 +3406,7 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
         for (const auto& f : vc.fields) {
           std::string ft = f.type ? type_to_cxx(*f.type) : std::string("int32_t");
           for (const auto& fn : f.names) {
-            emit_field(ft, fn);
+            emit_field(f.type.get(), ft, fn);
           }
         }
         dedent();
@@ -3393,10 +3440,8 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     bool has_virtual = false;
     for (const auto& m : to.members) {
       if (m.kind == ObjectMemberKind::Field) {
-        std::string ft = m.field_type ? type_to_cxx(*m.field_type)
-                                      : std::string("int32_t");
         for (const auto& fn : m.field_names) {
-          emitln(ft + " " + mangle(fn) + ";");
+          emitln(named_type_to_cxx(m.field_type.get(), mangle(fn)) + ";");
         }
       } else if (m.kind == ObjectMemberKind::Method) {
         // Method signature. We do NOT emit the body here -- bodies live in
@@ -3458,10 +3503,11 @@ void Emitter::emit_var_decl(const VarDecl& vd, bool in_header) {
     bool pointee_view = target->is_pointerish && !type_is_pointerish(vd.type.get());
     for (const auto& n : vd.names) {
       std::string name = mangle(n);
+      std::string decl = named_type_to_cxx(vd.type.get(), name, "&");
       if (in_header) {
-        emitln("extern " + ty + "& " + name + ";");
+        emitln("extern " + decl + ";");
       } else {
-        emitln(ty + "& " + name + " = " +
+        emitln(decl + " = " +
                reinterpret_ref_text(ty, target->cxx, pointee_view) + ";");
       }
     }
@@ -3471,14 +3517,14 @@ void Emitter::emit_var_decl(const VarDecl& vd, bool in_header) {
     report_error(vd.loc, "external variables are unsupported");
     return;
   }
-  std::string ty = vd.type ? type_to_cxx(*vd.type) : std::string("int32_t");
   for (const auto& n : vd.names) {
     std::string name = mangle(n);
+    std::string decl = named_type_to_cxx(vd.type.get(), name);
     if (in_header) {
-      emitln("extern " + ty + " " + name + ";");
+      emitln("extern " + decl + ";");
     } else if (vd.init) {
       std::string rhs = const_value_to_cxx(*vd.init, vd.type.get());
-      emitln(ty + " " + name + " = " + rhs + ";");
+      emitln(decl + " = " + rhs + ";");
     } else if (block_depth > 0) {
       // Function-local `var X : T;` with no initialiser. Pascal itself
       // leaves locals undefined, but lots of FPC code still expects
@@ -3493,13 +3539,13 @@ void Emitter::emit_var_decl(const VarDecl& vd, bool in_header) {
       // zero-init behaviour that existing emitted code depends on, we
       // emit `T name{};` (value-initialisation) for locals instead of
       // `T name;` (default-initialisation, which would leave primitive
-      emitln(ty + " " + name + "{};");
+      emitln(decl + "{};");
     } else {
       // File-scope / unit-level `var X : T;` with no initialiser.
       // C++ zero-initialises static-storage objects before any dynamic
       // init, so plain `T name;` is already equivalent to value-init
       // for the trivial types we emit.
-      emitln(ty + " " + name + ";");
+      emitln(decl + ";");
     }
   }
 }
@@ -3514,6 +3560,7 @@ std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
     // `X` (the pointer itself). At call sites we wrap the argument
     // with `(void*)&(arg)` to pass the caller's storage address.
     std::string pt;
+    std::string name_prefix;
     if (!p.type) {
       pt = "void*";
     } else {
@@ -3523,21 +3570,23 @@ std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
       } else {
         pt = type_to_cxx(*p.type);
       }
-      if (p.mode == Param::Var || p.mode == Param::Out) pt += "&";
+      if (p.mode == Param::Var || p.mode == Param::Out) name_prefix = "&";
       else if (p.mode == Param::Const) {
-        if (const_param_needs_mutable_ref(p.type.get())) pt += "&";
-        else pt = std::string("const ") + pt + "&";
+        if (const_param_needs_mutable_ref(p.type.get())) name_prefix = "&";
+        else name_prefix = "const &";
       }
     }
     for (const auto& n : p.names) {
       if (!first) out += ", ";
       first = false;
-      out += pt + " " + mangle(n);
+      if (!p.type) out += pt + " " + mangle(n);
+      else out += named_type_to_cxx(p.type.get(), mangle(n), name_prefix);
     }
     if (p.names.empty()) {
       if (!first) out += ", ";
       first = false;
-      out += pt;
+      if (!p.type) out += pt;
+      else out += named_type_to_cxx(p.type.get(), "", name_prefix);
     }
   }
   return out;
@@ -3808,19 +3857,22 @@ void Emitter::emit_stmt(const Stmt& s) {
         // exit or exit(v). In a Function, fill the result slot and return;
         // in a Procedure, return; in a Constructor, return the status.
         if (call_expr && !call_expr->args.empty() && current_fn_is_function) {
-          emitln("result = " +
+          emitln(std::string(kPascalResultSlotName) + " = " +
                  const_value_to_cxx(*call_expr->args[0], current_fn_result_type) +
                  ";");
-          emitln("return result;");
+          emitln(std::string("return ") + kPascalResultSlotName + ";");
         } else if (current_fn_is_function || current_fn_is_ctor) {
-          emitln("return result;");
+          emitln(std::string("return ") +
+                 (current_fn_is_function ? kPascalResultSlotName
+                                         : kCtorStatusSlotName) +
+                 ";");
         } else {
           emitln("return;");
         }
       } else if (name == "fail") {
         if (current_fn_is_ctor) {
-          emitln("result = false;");
-          emitln("return result;");
+          emitln(std::string(kCtorStatusSlotName) + " = false;");
+          emitln(std::string("return ") + kCtorStatusSlotName + ";");
         } else {
           report_error(es.loc, "`fail` outside constructors is unsupported");
         }
@@ -4141,9 +4193,19 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
   auto saved_untyped = local_untyped_params;
   auto saved_local_enums = local_enums;
   auto saved_local_aliases = local_type_aliases_scoped;
+  auto insert_local_name = [&](Location where, const std::string& name) {
+    // Pascal functions already own an implicit `Result` variable, so any
+    // local/parameter/const nested in that body may not reuse the name.
+    if (current_fn_is_function && is_pascal_result_ident(name)) {
+      report_error(where, "duplicate identifier `Result`");
+      return false;
+    }
+    local_scope.insert(name);
+    return true;
+  };
   for (const auto& p : pd.params) {
     for (const auto& nm : p.names) {
-      local_scope.insert(nm);
+      if (!insert_local_name(pd.loc, nm)) continue;
       if (p.type) {
         local_types[nm] = p.type.get();
       } else {
@@ -4155,12 +4217,12 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
     if (l->kind == Kind::VarDecl) {
       const auto& vd = static_cast<const VarDecl&>(*l);
       for (const auto& nm : vd.names) {
-        local_scope.insert(nm);
+        if (!insert_local_name(vd.loc, nm)) continue;
         if (vd.type) local_types[nm] = vd.type.get();
       }
     } else if (l->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
-      local_scope.insert(cd.name);
+      if (!insert_local_name(cd.loc, cd.name)) continue;
       local_consts[cd.name] = &cd;
       if (const TypeExpr* ct = deduce_const_decl_type(cd)) {
         local_types[cd.name] = ct;
@@ -4180,7 +4242,7 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
       }
     } else if (l->kind == Kind::ProcDecl) {
       const auto& npd = static_cast<const ProcDecl&>(*l);
-      local_scope.insert(npd.name);
+      if (!insert_local_name(npd.loc, npd.name)) continue;
       NestedFn nf;
       for (const auto& p : npd.params) nf.param_count += p.names.size();
       nf.is_function = (npd.pkind == ProcKind::Function);
@@ -4194,20 +4256,21 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
   // the function body.
   emit_forward_struct_decls(*this, pd.locals);
   for (const auto& l : pd.locals) emit_decl(*l, /*in_header=*/false);
-  // Pascal result variable. We use an internal slot named `result`
-  // (unprefixed) so it won't collide with a Pascal-level variable
-  // named `result` (which would emit as `p_result`). Shadowing the
-  // function itself is avoided because we don't use the function's
-  // name for the slot.
+  // `Result` is a Pascal-visible implicit variable in functions, so it
+  // uses ordinary Pascal name mangling. Constructors still need a private
+  // success flag for `fail`, so that one stays under an internal prefix.
   if (pd.pkind == ProcKind::Function && pd.return_type) {
-    emitln(ret + " result{};");
+    emitln(ret + " " + kPascalResultSlotName + "{};");
   } else if (pd.pkind == ProcKind::Constructor) {
-    emitln("bool result = true;");
+    emitln(std::string("bool ") + kCtorStatusSlotName + " = true;");
   }
   if (pd.body) emit_stmt(*pd.body);
   if (pd.pkind == ProcKind::Function ||
       pd.pkind == ProcKind::Constructor) {
-    emitln("return result;");
+    emitln(std::string("return ") +
+           (pd.pkind == ProcKind::Function ? kPascalResultSlotName
+                                           : kCtorStatusSlotName) +
+           ";");
   }
 
   current_fn_name = std::move(saved_name);
@@ -4283,6 +4346,14 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   auto saved_untyped = local_untyped_params;
   auto saved_local_enums = local_enums;
   auto saved_local_aliases = local_type_aliases_scoped;
+  auto insert_local_name = [&](Location where, const std::string& name) {
+    if (current_fn_is_function && is_pascal_result_ident(name)) {
+      report_error(where, "duplicate identifier `Result`");
+      return false;
+    }
+    local_scope.insert(name);
+    return true;
+  };
   current_fn_name = pd.name;
   current_fn_is_function = (pd.pkind == ProcKind::Function);
   current_fn_is_ctor = false;
@@ -4291,7 +4362,7 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
 
   for (const auto& p : pd.params) {
     for (const auto& nm : p.names) {
-      local_scope.insert(nm);
+      if (!insert_local_name(pd.loc, nm)) continue;
       if (p.type) local_types[nm] = p.type.get();
       else local_untyped_params.insert(nm);
     }
@@ -4300,12 +4371,12 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
     if (l->kind == Kind::VarDecl) {
       const auto& vd = static_cast<const VarDecl&>(*l);
       for (const auto& nm : vd.names) {
-        local_scope.insert(nm);
+        if (!insert_local_name(vd.loc, nm)) continue;
         if (vd.type) local_types[nm] = vd.type.get();
       }
     } else if (l->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
-      local_scope.insert(cd.name);
+      if (!insert_local_name(cd.loc, cd.name)) continue;
       local_consts[cd.name] = &cd;
       if (const TypeExpr* ct = deduce_const_decl_type(cd)) {
         local_types[cd.name] = ct;
@@ -4322,7 +4393,7 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
       }
     } else if (l->kind == Kind::ProcDecl) {
       const auto& npd = static_cast<const ProcDecl&>(*l);
-      local_scope.insert(npd.name);
+      if (!insert_local_name(npd.loc, npd.name)) continue;
       NestedFn nf;
       for (const auto& p : npd.params) nf.param_count += p.names.size();
       nf.is_function = (npd.pkind == ProcKind::Function);
@@ -4334,11 +4405,11 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   emit_forward_struct_decls(*this, pd.locals);
   for (const auto& l : pd.locals) emit_decl(*l, /*in_header=*/false);
   if (pd.pkind == ProcKind::Function && pd.return_type) {
-    emitln(ret + " result{};");
+    emitln(ret + " " + kPascalResultSlotName + "{};");
   }
   if (pd.body) emit_stmt(*pd.body);
   if (pd.pkind == ProcKind::Function) {
-    emitln("return result;");
+    emitln(std::string("return ") + kPascalResultSlotName + ";");
   }
 
   current_fn_name = std::move(saved_name);
