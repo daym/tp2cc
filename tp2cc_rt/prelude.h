@@ -2127,8 +2127,6 @@ inline void p_exclude(Set<E1>& s, E2 v) {
   }
 }
 
-// STUB: misc small dos/system builtins used by the compiler sources.
-inline int32_t p_winstackpagesize = 4096;
 inline void p_popen(TextFile& f, const ShortString<>& cmd, p_char mode) {
   char m[2] = {static_cast<char>(std::tolower(p_char_to_c(mode))), '\0'};
   f.f = ::popen(p_to_std_string(cmd).c_str(), m);
