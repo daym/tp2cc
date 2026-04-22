@@ -2185,6 +2185,29 @@ inline bool p_chmod(const ShortString<>& path, int32_t newmode) {
   return ::chmod(p_to_std_string(path).c_str(),
                  static_cast<mode_t>(newmode)) == 0;
 }
+inline void p_gettime(uint16_t& hour, uint16_t& minute, uint16_t& second,
+                      uint16_t& msec, uint16_t& usec) {
+  struct timeval tv{};
+  ::gettimeofday(&tv, nullptr);
+  std::time_t t = static_cast<std::time_t>(tv.tv_sec);
+  std::tm lt{};
+  ::localtime_r(&t, &lt);
+  hour   = static_cast<uint16_t>(lt.tm_hour);
+  minute = static_cast<uint16_t>(lt.tm_min);
+  second = static_cast<uint16_t>(lt.tm_sec);
+  msec   = static_cast<uint16_t>(tv.tv_usec / 1000);
+  usec   = static_cast<uint16_t>(tv.tv_usec % 1000);
+}
+inline void p_gettime(uint16_t& hour, uint16_t& minute, uint16_t& second,
+                      uint16_t& sec100) {
+  uint16_t msec = 0, usec = 0;
+  p_gettime(hour, minute, second, msec, usec);
+  sec100 = static_cast<uint16_t>(msec / 10);  // ms -> hundredths
+}
+inline void p_gettime(uint16_t& hour, uint16_t& minute, uint16_t& second) {
+  uint16_t msec = 0, usec = 0;
+  p_gettime(hour, minute, second, msec, usec);
+}
 template <typename... A> inline void p_getdate(A&&...) {}
 // STUB: `datetime` is a record type in fpc's dos unit. Accept common
 // field accesses (year, month, day, hour, min, sec) since owar.pas
