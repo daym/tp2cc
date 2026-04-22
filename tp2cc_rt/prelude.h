@@ -2146,8 +2146,8 @@ inline void* p_typeof(...) {
 
 // Pascal `ofs(x)` / `seg(x)` return the 16-bit offset/segment of a
 // far pointer. On flat-model targets both are stubbed to 0.
-template <typename... A> inline int32_t p_ofs(A&&...) { return 0; }
-template <typename... A> inline int32_t p_seg(A&&...) { return 0; }
+template <typename... A> inline int32_t p_ofs(A&&...) { return 0; } // FPC 1: for browse info streaming
+template <typename... A> inline int32_t p_seg(A&&...) { return 0; } // FPC 1: for browse info streaming
 
 // Stubs for DOS/system symbols referenced by the compiler. They are
 // invoked in defensive paths (error reporting, cross-check prints,
