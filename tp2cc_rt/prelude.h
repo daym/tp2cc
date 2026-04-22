@@ -2137,9 +2137,6 @@ inline void p_pclose(F&) {}
 // STUB: file timestamp get/set used by assembler/link bookkeeping.
 template <typename F, typename T> inline void p_getftime(F&&, T&) {}
 template <typename F, typename T> inline void p_setftime(F&&, T) {}
-// STUB: heap-trace extra-info hook. Accept any arity (the real one
-// takes a size + function pointer).
-template <typename... A> inline void p_setextrainfo(A&&...) {}
 // STUB: stderr is the fpc standard error TextFile.
 inline TextFile p_stderr;
 // (No global `tprocdefcoll` -- it's a function-local record type in
@@ -2183,7 +2180,6 @@ using p_tlinkergo32v1 = StubTargetLib;
 using p_plinkergo32v1 = StubTargetLib*;
 using p_tlinkergo32v2 = StubTargetLib;
 using p_plinkergo32v2 = StubTargetLib*;
-template <typename... A> inline int32_t p_getversion(A&&...) { return 0; }
 // DOS file-attribute flags (from fpc's dos unit). Used in
 // FindFirst(mask, attrs, rec) calls for file enumeration.
 inline constexpr int32_t p_readonly  = 0x01;
