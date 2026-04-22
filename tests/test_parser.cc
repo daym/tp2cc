@@ -709,10 +709,21 @@ void test_procedural_type_decl() {
       "interface\n"
       "type\n"
       "  tcb = procedure(x : integer);\n"
+      "  tob = procedure(a : integer) of object;\n"
       "  tfn = function(a : integer) : integer;\n"
       "implementation\n"
       "end.\n");
   CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && u->interface_decls.size() >= 2) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[1].get());
+    CHECK(td != nullptr);
+    if (td) {
+      auto* tp = dynamic_cast<TyProcedural*>(td->type.get());
+      CHECK(tp != nullptr);
+      if (tp) CHECK(tp->is_method);
+    }
+  }
 }
 
 // Pascal directives are position-dependent keywords; they must work as

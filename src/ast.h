@@ -557,6 +557,7 @@ struct TyProcedural : TypeExpr {
   std::vector<Param> params;
   TypePtr return_type;    // for function types
   bool is_cdecl = false;
+  bool is_method = false; // `procedure/function ... of object`
   TyProcedural() : TypeExpr(Kind::TyProcedural) {}
 };
 

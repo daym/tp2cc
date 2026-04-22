@@ -17,6 +17,14 @@ using namespace tp2cc_test;
 
 namespace {
 
+struct MethodPtrCounter {
+  int value = 0;
+};
+
+inline void method_ptr_add(void* self, int32_t delta) {
+  static_cast<MethodPtrCounter*>(self)->value += delta;
+}
+
 void test_val_accepts_prefixed_integers() {
   int32_t v = 0;
   int32_t code = -1;
@@ -123,6 +131,33 @@ void test_reinterpret_ref_views_pointee_bytes_of_pointer_value() {
   CHECK_EQ(box.value, 29);
 }
 
+void test_method_ptr_calls_bound_thunk() {
+  MethodPtrCounter counter;
+  MethodPtr<void(int32_t)> cb(p_method_code<&method_ptr_add>(), &counter);
+
+  CHECK(p_assigned(cb));
+  cb(7);
+  CHECK_EQ(counter.value, 7);
+}
+
+void test_method_ptr_storage_matches_two_pointer_slots() {
+  struct Slots {
+    void* procpointer;
+    void* self;
+  };
+
+  MethodPtrCounter counter;
+  MethodPtr<void(int32_t)> cb{};
+  auto& slots = p_reinterpret_storage_ref<Slots>(cb);
+
+  slots.procpointer = p_method_code<&method_ptr_add>();
+  slots.self = &counter;
+
+  CHECK(cb != nullptr);
+  cb(9);
+  CHECK_EQ(counter.value, 9);
+}
+
 void test_blockread_writes_to_void_buffer() {
   TypedFile<uint8_t> f;
   uint8_t got[5] = {};
@@ -210,6 +245,8 @@ int main() {
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
   RUN_TEST(test_reinterpret_storage_ref_views_pointer_variable_bytes);
   RUN_TEST(test_reinterpret_ref_views_pointee_bytes_of_pointer_value);
+  RUN_TEST(test_method_ptr_calls_bound_thunk);
+  RUN_TEST(test_method_ptr_storage_matches_two_pointer_slots);
   RUN_TEST(test_blockread_writes_to_void_buffer);
   RUN_TEST(test_strnew_allocates_and_disposes_pchar);
   RUN_TEST(test_textfile_reset_closes_previous_handle);

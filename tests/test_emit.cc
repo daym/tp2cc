@@ -755,6 +755,99 @@ void test_default_indexed_procvar_property_stmt_autocalls() {
   CHECK(contains(out.impl, "p_box.p_getitem(2)();"));
 }
 
+void test_parameterless_proc_assignment_keeps_designator() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tproc = procedure;\n"
+      "var\n"
+      "  p : tproc;\n"
+      "procedure foo;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure foo;\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  p := foo;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_p = p_foo;"));
+  CHECK(!contains(out.impl, "p_p = p_foo();"));
+}
+
+void test_method_pointer_type_and_bound_assignment_emit() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tcb = procedure(x : integer) of object;\n"
+      "  tobj = object\n"
+      "    cb : tcb;\n"
+      "    procedure fire(x : integer);\n"
+      "    procedure setcb;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tobj.fire(x : integer);\n"
+      "begin\n"
+      "end;\n"
+      "procedure tobj.setcb;\n"
+      "begin\n"
+      "  cb := fire;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "using p_tcb = ::rt::MethodPtr<void(int32_t)>;"));
+  CHECK(contains(out.header,
+                 "static void tp2cc_methodptr_p_fire_"));
+  CHECK(contains(out.impl, "::rt::p_method_code<&p_tobj::tp2cc_methodptr_p_fire_"));
+  CHECK(contains(out.impl, "p_cb = p_tcb("));
+}
+
+void test_method_pointer_record_cast_reinterprets_same_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tcb = procedure(x : integer) of object;\n"
+      "  trec = record\n"
+      "    procpointer : pointer;\n"
+      "    s : pointer;\n"
+      "  end;\n"
+      "procedure setslots(var p : tcb; addr : pointer; selfp : pointer);\n"
+      "implementation\n"
+      "procedure setslots(var p : tcb; addr : pointer; selfp : pointer);\n"
+      "begin\n"
+      "  trec(p).procpointer := addr;\n"
+      "  trec(p).s := selfp;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::p_reinterpret_storage_ref<p_trec>(p_p).p_procpointer = p_addr;"));
+  CHECK(contains(out.impl,
+                 "::rt::p_reinterpret_storage_ref<p_trec>(p_p).p_s = p_selfp;"));
+}
+
+void test_unbound_method_address_uses_thunk_code() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tobj = object\n"
+      "    procedure fire(x : integer);\n"
+      "  end;\n"
+      "const\n"
+      "  addr : pointer = @tobj.fire;\n"
+      "implementation\n"
+      "procedure tobj.fire(x : integer);\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "p_addr = ::rt::p_method_code<&p_tobj::tp2cc_methodptr_p_fire_"));
+}
+
 void test_const_object_param_uses_mutable_ref() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -889,6 +982,10 @@ int main() {
   RUN_TEST(test_property_field_and_default_index_lowering);
   RUN_TEST(test_procvar_property_stmt_and_value_context);
   RUN_TEST(test_default_indexed_procvar_property_stmt_autocalls);
+  RUN_TEST(test_parameterless_proc_assignment_keeps_designator);
+  RUN_TEST(test_method_pointer_type_and_bound_assignment_emit);
+  RUN_TEST(test_method_pointer_record_cast_reinterprets_same_storage);
+  RUN_TEST(test_unbound_method_address_uses_thunk_code);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
   RUN_TEST(test_parameterless_procvar_stmt_autocalls);
   RUN_TEST(test_runtime_builtin_stmt_autocalls);

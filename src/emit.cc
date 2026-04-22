@@ -434,6 +434,8 @@ struct Emitter {
   std::string string_type_to_cxx(const TyString& s);
   std::string pointer_type_to_cxx(const TyPointer& p);
   std::string procedural_type_to_cxx(const TyProcedural& p);
+  std::string procedural_param_types_to_cxx(const std::vector<Param>& params);
+  std::string method_pointer_helper_name(const ast::ProcDecl& pd);
 
   // Expressions -> C++ expression.
   std::string expr_to_cxx(const Expr& e);
@@ -450,11 +452,16 @@ struct Emitter {
   // Pascal casts do not.
   std::optional<std::string> maybe_convert_const_int_expr(
       const Expr& e, const TypeExpr* target, bool explicit_conversion);
+  std::optional<std::string> maybe_convert_proc_value(
+      const Expr& e, const TypeExpr* target);
 
   // Small helpers.
   bool const_param_needs_mutable_ref(const ast::TypeExpr* t);
   std::string primitive_cast_lvalue_ref(const ast::Call& c);
   std::string param_list_to_cxx(const std::vector<Param>& params);
+  void emit_method_pointer_thunk(const std::string& owner_name,
+                                 const ast::ProcDecl& pd,
+                                 const std::string& ret);
   void emit_proc_body(const ProcDecl& pd);
   void emit_nested_proc_lambda(const ProcDecl& pd);
   void emit_stmt(const Stmt& s);
@@ -793,28 +800,51 @@ std::string Emitter::array_type_to_cxx(const TyArray& a) {
   return ty;
 }
 
-std::string Emitter::procedural_type_to_cxx(const TyProcedural& p) {
-  std::string ret = p.is_function ? type_to_cxx(*p.return_type) : std::string("void");
-  std::string params;
+std::string Emitter::procedural_param_types_to_cxx(
+    const std::vector<Param>& params) {
+  std::string out;
   bool first = true;
-  for (const auto& pp : p.params) {
+  for (const auto& pp : params) {
     std::string pt = pp.type ? type_to_cxx(*pp.type) : std::string("void*");
     if (pp.mode == Param::Var || pp.mode == Param::Out) pt += "&";
     else if (pp.mode == Param::Const) {
       if (const_param_needs_mutable_ref(pp.type.get())) pt += "&";
       else pt = std::string("const ") + pt + "&";
     }
-    for (const auto& n : pp.names) {
-      (void)n;
-      if (!first) params += ", ";
+    size_t repeats = pp.names.empty() ? 1 : pp.names.size();
+    for (size_t i = 0; i < repeats; ++i) {
+      if (!first) out += ", ";
       first = false;
-      params += pt;
+      out += pt;
     }
-    if (pp.names.empty()) {
-      if (!first) params += ", ";
-      first = false;
-      params += pt;
-    }
+  }
+  return out;
+}
+
+std::string Emitter::method_pointer_helper_name(const ProcDecl& pd) {
+  // Emit one thunk per Pascal signature. Overloaded methods therefore need
+  // distinct helper names, but the helper itself still has to be a valid
+  // ordinary C++ identifier with no reserved `__...` spelling.
+  std::string sig = procedural_param_types_to_cxx(pd.params);
+  sig += "_ret_";
+  if (pd.pkind == ProcKind::Function && pd.return_type) {
+    sig += type_to_cxx(*pd.return_type);
+  } else {
+    sig += "void";
+  }
+  for (char& ch : sig) {
+    bool ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+              (ch >= '0' && ch <= '9');
+    if (!ok) ch = '_';
+  }
+  return "tp2cc_methodptr_" + mangle(pd.name) + "_" + sig;
+}
+
+std::string Emitter::procedural_type_to_cxx(const TyProcedural& p) {
+  std::string ret = p.is_function ? type_to_cxx(*p.return_type) : std::string("void");
+  std::string params = procedural_param_types_to_cxx(p.params);
+  if (p.is_method) {
+    return "::rt::MethodPtr<" + ret + "(" + params + ")>";
   }
   return ret + " (*)(" + params + ")";
 }
@@ -2239,17 +2269,21 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     case Kind::AddrOf: {
       const auto& a = static_cast<const AddrOf&>(e);
       // `@TClass.method` is an unbound-method pointer in Pascal; the
-      // C++ spelling uses `::` instead of `.`. Detect the AST pattern
+      // compiler subset we handle lowers that to the thunk code slot,
+      // not to a C++ member-function pointer. Detect the AST pattern
       // `AddrOf(Member(Ident=TypeName, method))` where TypeName is a
       // known class/record alias in the registry.
       if (a.operand && a.operand->kind == Kind::Member) {
         const auto& m = static_cast<const Member&>(*a.operand);
         if (m.base && m.base->kind == Kind::Ident) {
           const auto& id = static_cast<const Ident&>(*m.base);
-          if (registry &&
-              (registry->classes.count(id.name) ||
-               registry->records.count(id.name))) {
-            return "(&" + mangle(id.name) + "::" + mangle(m.name) + ")";
+          if (registry && (registry->classes.count(id.name) ||
+                           registry->records.count(id.name))) {
+            if (auto* method = registry->lookup_class_method(id.name, m.name);
+                method && method->decl) {
+              return "::rt::p_method_code<&" + mangle(id.name) + "::" +
+                     method_pointer_helper_name(*method->decl) + ">()";
+            }
           }
         }
       }
@@ -2430,18 +2464,34 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               cast_ty = canonicalize_type(ait->second.target.get());
             }
           }
+          const Expr* peeled = peel_primitive_casts(c.args[0].get());
+          bool named_storage_view_type =
+              registry && (registry->records.count(n) || registry->classes.count(n));
+          if (cast_ty && peeled && expr_is_storage_lvalue(*c.args[0]) &&
+              (cast_ty->kind == Kind::TyArray ||
+               cast_ty->kind == Kind::TyRecord ||
+               cast_ty->kind == Kind::TyObject ||
+               cast_ty->kind == Kind::TyProcedural)) {
+            const TypeExpr* source_ty = deduce_type(*peeled);
+            bool pointee_view =
+                expr_is_untyped_storage_ref(*c.args[0]) ||
+                type_is_pointerish(source_ty);
+            return reinterpret_ref_text(expr_to_cxx(*c.callee),
+                                        expr_to_cxx(*peeled),
+                                        pointee_view);
+          }
+          if (named_storage_view_type && peeled &&
+              expr_is_storage_lvalue(*c.args[0])) {
+            const TypeExpr* source_ty = deduce_type(*peeled);
+            bool pointee_view =
+                expr_is_untyped_storage_ref(*c.args[0]) ||
+                type_is_pointerish(source_ty);
+            return reinterpret_ref_text(expr_to_cxx(*c.callee),
+                                        expr_to_cxx(*peeled),
+                                        pointee_view);
+          }
           if (cast_ty && cast_ty->kind == Kind::TyArray) {
             const auto& arr = static_cast<const TyArray&>(*cast_ty);
-            const Expr* peeled = peel_primitive_casts(c.args[0].get());
-            if (peeled && expr_is_storage_lvalue(*c.args[0])) {
-              const TypeExpr* source_ty = deduce_type(*peeled);
-              bool pointee_view =
-                  expr_is_untyped_storage_ref(*c.args[0]) ||
-                  type_is_pointerish(source_ty);
-              return reinterpret_ref_text(expr_to_cxx(*c.callee),
-                                          expr_to_cxx(*peeled),
-                                          pointee_view);
-            }
             const TypeExpr* elem =
                 arr.element ? canonicalize_type(arr.element.get()) : nullptr;
             if (arr.dims.size() == 1 &&
@@ -2768,6 +2818,9 @@ std::string Emitter::const_value_to_cxx(const Expr& e,
           maybe_convert_const_int_expr(e, target, explicit_conversion)) {
     return *text;
   }
+  if (auto text = maybe_convert_proc_value(e, target)) {
+    return *text;
+  }
   return expr_to_cxx(e);
 }
 
@@ -2788,6 +2841,97 @@ std::optional<std::string> Emitter::maybe_convert_const_int_expr(
     return uint64_literal_text(converted->bits);
   }
   return signed_bits_literal_text(converted->bits, *converted->type);
+}
+
+std::optional<std::string> Emitter::maybe_convert_proc_value(
+    const Expr& e, const TypeExpr* target) {
+  if (!target) return std::nullopt;
+  const TypeExpr* canon = canonicalize_type(target);
+  if (!(canon && canon->kind == Kind::TyProcedural)) return std::nullopt;
+  const auto& proc = static_cast<const TyProcedural&>(*canon);
+
+  // Typed procvar destinations want the callable value itself. In ordinary
+  // value context the emitter auto-calls parameterless routines, so turn that
+  // off here before deciding whether we also need to bind `self`.
+  auto no_autocall = [&](const Expr& src) {
+    bool saved = is_callee_context_;
+    is_callee_context_ = true;
+    std::string text = expr_to_cxx(src);
+    is_callee_context_ = saved;
+    return text;
+  };
+
+  if (!proc.is_method) {
+    switch (e.kind) {
+      case Kind::Ident:
+      case Kind::Member:
+      case Kind::AddrOf:
+        return no_autocall(e);
+      default:
+        return std::nullopt;
+    }
+  }
+
+  if (!registry) return std::nullopt;
+  const std::string target_cxx = type_to_cxx(*target);
+
+  // `... of object` lowers to the runtime MethodPtr wrapper, which stores
+  // the method thunk separately from the bound object pointer.
+  auto method_code_text = [&](const std::string& cls,
+                              const ProcDecl& pd) -> std::string {
+    return "::rt::p_method_code<&" + mangle(cls) + "::" +
+           method_pointer_helper_name(pd) + ">()";
+  };
+
+  auto bind_method = [&](const std::string& base_cxx, const std::string& cls,
+                         const ProcDecl& pd) -> std::string {
+    return target_cxx + "(" + method_code_text(cls, pd) +
+           ", (void*)(&(" + base_cxx + ")))";
+  };
+
+  auto bind_current_method = [&](const std::string& name)
+      -> std::optional<std::string> {
+    if (current_class_name.empty()) return std::nullopt;
+    if (auto* method = registry->lookup_class_method(current_class_name, name);
+        method && method->decl) {
+      return bind_method("(*this)", current_class_name, *method->decl);
+    }
+    return std::nullopt;
+  };
+
+  auto bind_member = [&](const Member& m) -> std::optional<std::string> {
+    std::string cls;
+    if (m.base->kind == Kind::Ident &&
+        static_cast<const Ident&>(*m.base).name == "self") {
+      cls = current_class_name;
+    } else {
+      cls = deduce_class_alias(*m.base);
+    }
+    if (cls.empty()) return std::nullopt;
+    if (auto* method = registry->lookup_class_method(cls, m.name);
+        method && method->decl) {
+      return bind_method(expr_to_cxx(*m.base), cls, *method->decl);
+    }
+    return std::nullopt;
+  };
+
+  if (e.kind == Kind::Ident) {
+    return bind_current_method(static_cast<const Ident&>(e).name);
+  }
+  if (e.kind == Kind::Member) {
+    return bind_member(static_cast<const Member&>(e));
+  }
+  if (e.kind == Kind::AddrOf) {
+    const auto& a = static_cast<const AddrOf&>(e);
+    if (!a.operand) return std::nullopt;
+    if (a.operand->kind == Kind::Ident) {
+      return bind_current_method(static_cast<const Ident&>(*a.operand).name);
+    }
+    if (a.operand->kind == Kind::Member) {
+      return bind_member(static_cast<const Member&>(*a.operand));
+    }
+  }
+  return std::nullopt;
 }
 
 // ---------------------------------------------------------------------------
@@ -3069,6 +3213,7 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
         else if (pd.is_override) suffix = " override";
         emitln(prefix + ret + " " + mangle(pd.name) + "(" +
                param_list_to_cxx(pd.params) + ")" + suffix + ";");
+        emit_method_pointer_thunk(name, pd, ret);
       }
     }
     // Polymorphic objects must have a virtual C++ destructor, otherwise
@@ -3181,6 +3326,66 @@ std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
     }
   }
   return out;
+}
+
+void Emitter::emit_method_pointer_thunk(const std::string& owner_name,
+                                        const ProcDecl& pd,
+                                        const std::string& ret) {
+  if (pd.pkind != ProcKind::Procedure && pd.pkind != ProcKind::Function) {
+    return;
+  }
+
+  // Pascal `... of object` values are `(code,self)` pairs, not C++
+  // member-function pointers. Each method therefore gets a plain static
+  // thunk with explicit `self`, and the runtime stores the thunk address
+  // plus the bound object pointer as the method-pointer value.
+  std::string helper_params = "void* tp2cc_self";
+  std::string helper_args;
+  bool first_arg = true;
+  int unnamed_index = 0;
+  auto append_arg = [&](const std::string& pt, const std::string& name) {
+    helper_params += ", " + pt + " " + name;
+    if (!first_arg) helper_args += ", ";
+    first_arg = false;
+    helper_args += name;
+  };
+
+  for (const auto& par : pd.params) {
+    std::string pt;
+    if (!par.type) {
+      pt = "void*";
+    } else if (par.type->kind == Kind::TyArray &&
+               static_cast<const TyArray&>(*par.type).dims.empty()) {
+      pt = open_array_type_to_cxx(*par.type);
+    } else {
+      pt = type_to_cxx(*par.type);
+    }
+    // The thunk must preserve the method's real parameter ABI so
+    // `var`/`out`/`const` and open-array calls behave identically
+    // whether they go through a method pointer or a direct call.
+    if (par.mode == Param::Var || par.mode == Param::Out) pt += "&";
+    else if (par.mode == Param::Const) {
+      if (const_param_needs_mutable_ref(par.type.get())) pt += "&";
+      else pt = std::string("const ") + pt + "&";
+    }
+    if (par.names.empty()) {
+      append_arg(pt, "tp2cc_arg" + std::to_string(++unnamed_index));
+      continue;
+    }
+    for (const auto& pn : par.names) {
+      append_arg(pt, mangle(pn));
+    }
+  }
+
+  std::string call = "static_cast<" + owner_name + "*>(tp2cc_self)->" +
+                     mangle(pd.name) + "(" + helper_args + ")";
+  if (pd.pkind == ProcKind::Function) {
+    emitln("static " + ret + " " + method_pointer_helper_name(pd) + "(" +
+           helper_params + ") { return " + call + "; }");
+  } else {
+    emitln("static void " + method_pointer_helper_name(pd) + "(" +
+           helper_params + ") { " + call + "; }");
+  }
 }
 
 void Emitter::emit_proc_decl_signature(const ProcDecl& pd) {
@@ -4006,7 +4211,15 @@ static void collect_type_refs(const TypeExpr& t,
     case Kind::TySubrange:
     case Kind::TyString:
     case Kind::TyEnum:
-    case Kind::TyProcedural:
+      return;
+    case Kind::TyProcedural: {
+      const auto& p = static_cast<const TyProcedural&>(t);
+      if (p.return_type) collect_type_refs(*p.return_type, out);
+      for (const auto& par : p.params) {
+        if (par.type) collect_type_refs(*par.type, out);
+      }
+      return;
+    }
     default:
       return;
   }

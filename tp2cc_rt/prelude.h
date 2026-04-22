@@ -10,6 +10,7 @@
 // few I/O helpers are implemented here.
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cerrno>
 #include <cmath>
 #include <cctype>
@@ -76,6 +77,86 @@ inline p_char* p_from_c_str_copy(const char* s) {
   for (size_t i = 0; i < n; ++i) buf[i] = p_char_of(s[i]);
   buf[n] = p_char_of('\0');
   return buf.data();
+}
+
+template <typename Fn>
+inline void* p_funptr_bits(Fn fn) {
+  static_assert(std::is_pointer_v<Fn>,
+                "method thunks must use plain function pointers");
+  static_assert(sizeof(Fn) == sizeof(void*),
+                "function-pointer and pointer sizes must match");
+  return std::bit_cast<void*>(fn);
+}
+
+template <typename Fn>
+inline Fn p_funptr_from_bits(void* bits) {
+  static_assert(std::is_pointer_v<Fn>,
+                "method thunks must use plain function pointers");
+  static_assert(sizeof(Fn) == sizeof(void*),
+                "function-pointer and pointer sizes must match");
+  return std::bit_cast<Fn>(bits);
+}
+
+template <typename Signature>
+struct MethodPtr;
+
+template <typename Ret, typename... Args>
+struct MethodPtr<Ret(Args...)> {
+  using Thunk = Ret (*)(void*, Args...);
+
+  // Keep the layout as two pointer-sized slots so Pascal code that
+  // reinterprets a method pointer as `record(pointer, pointer)` still
+  // sees the expected bytes.
+  void* code = nullptr;
+  void* self = nullptr;
+
+  constexpr MethodPtr() = default;
+  constexpr MethodPtr(std::nullptr_t) {}
+  constexpr MethodPtr(void* thunk_code, void* bound_self)
+      : code(thunk_code), self(bound_self) {}
+
+  constexpr MethodPtr& operator=(std::nullptr_t) {
+    code = nullptr;
+    self = nullptr;
+    return *this;
+  }
+
+  constexpr explicit operator bool() const { return code != nullptr; }
+
+  Ret operator()(Args... args) const {
+    if (!code) std::abort();
+    Thunk thunk = p_funptr_from_bits<Thunk>(code);
+    if constexpr (std::is_void_v<Ret>) {
+      thunk(self, std::forward<Args>(args)...);
+      return;
+    } else {
+      return thunk(self, std::forward<Args>(args)...);
+    }
+  }
+
+  friend constexpr bool operator==(const MethodPtr& a, const MethodPtr& b) {
+    return a.code == b.code && a.self == b.self;
+  }
+  friend constexpr bool operator!=(const MethodPtr& a, const MethodPtr& b) {
+    return !(a == b);
+  }
+  friend constexpr bool operator==(const MethodPtr& a, std::nullptr_t) {
+    return a.code == nullptr;
+  }
+  friend constexpr bool operator==(std::nullptr_t, const MethodPtr& a) {
+    return a == nullptr;
+  }
+  friend constexpr bool operator!=(const MethodPtr& a, std::nullptr_t) {
+    return !(a == nullptr);
+  }
+  friend constexpr bool operator!=(std::nullptr_t, const MethodPtr& a) {
+    return !(a == nullptr);
+  }
+};
+
+template <auto Fn>
+inline void* p_method_code() {
+  return p_funptr_bits(Fn);
 }
 
 struct CharConst;
@@ -880,6 +961,9 @@ inline char& p_deref(void* p) { return *static_cast<char*>(p); }
 inline const char& p_deref(const void* p) { return *static_cast<const char*>(p); }
 
 template <typename T> inline bool p_assigned(T* p) { return p != nullptr; }
+template <typename Sig> inline bool p_assigned(const MethodPtr<Sig>& p) {
+  return static_cast<bool>(p);
+}
 template <typename T> inline bool p_odd(T x) { return (static_cast<int64_t>(x) & 1) != 0; }
 
 // Pascal `not` is polymorphic: logical-not for bool, bit-not for int.

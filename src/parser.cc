@@ -1040,6 +1040,10 @@ TypePtr Parser::parse_procedural_type() {
     expect(Tok::Colon, "function type");
     tp->return_type = parse_type();
   }
+  if (accept(Tok::KwOf)) {
+    expect(Tok::KwObject, "procedural type");
+    tp->is_method = true;
+  }
   // Optional calling-convention modifier (no `;` required in type position).
   while (is_directive("cdecl") || is_directive("pascal") ||
          is_directive("stdcall")) {
