@@ -182,10 +182,15 @@ UnitGraph::TopoResult UnitGraph::topo_sort() const {
     }
   }
 
-  // Anything left with indeg > 0 is on a cycle.
+  // Anything left with indeg > 0 is either on a cycle or downstream of
+  // one.  Downstream-of-cycle nodes may have zero outgoing edges, in
+  // which case they are absent from `deps' -- use find() rather than
+  // at() to avoid throwing.
   for (const auto& [name, d] : indeg) {
     if (d > 0) {
-      for (const auto& dep : deps.at(name)) {
+      auto it = deps.find(name);
+      if (it == deps.end()) continue;
+      for (const auto& dep : it->second) {
         out.cycle_edges.emplace_back(name, dep);
       }
     }
