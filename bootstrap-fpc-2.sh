@@ -22,9 +22,28 @@ set -eu
 cd "$(dirname "$0")"
 ROOT=$(pwd)
 
+JOBS="${JOBS:-8}"
+CXX="${CXX:-g++}"
 SOURCE_DIR="${FPC200_SRC:-$ROOT/../fpc-2.0.0/src}"
 SCOUT_DIR="${SCOUT_DIR:-$ROOT/build/fpc-2.0.0-scout}"
 ENTRY_FILE="$SOURCE_DIR/compiler/pp.pas"
+
+# Scout timings are only meaningful when tp2cc is always built under
+# the same toolchain as the downstream bootstrap scripts (which run
+# under `guix shell -s i686-linux`). Without this guard the host
+# toolchain leaked in and the numbers were incomparable.
+require_i386_toolchain() {
+  machine="$($CXX -dumpmachine 2>/dev/null || true)"
+  case "$machine" in
+    i?86-*|i86pc-*)
+      ;;
+    *)
+      echo "error: CXX='$CXX' targets '$machine', expected an i386/i686 toolchain" >&2
+      echo "hint: guix shell -s i686-linux binutils gcc-toolchain -- ./bootstrap-fpc-2.sh" >&2
+      exit 1
+      ;;
+  esac
+}
 
 if [ ! -f "$ENTRY_FILE" ]; then
   echo "error: set FPC200_SRC to an fpc-2.0.0 source tree containing compiler/pp.pas" >&2
@@ -32,7 +51,7 @@ if [ ! -f "$ENTRY_FILE" ]; then
   exit 1
 fi
 
-JOBS="${JOBS:-8}"
+require_i386_toolchain
 
 echo "== build tp2cc translator =="
 make -j"$JOBS" build/bin/tp2cc
