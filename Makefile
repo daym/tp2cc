@@ -25,11 +25,14 @@ ALL_BINS  := $(BINDIR)/tp2cc $(TEST_BINS)
 .PHONY: all clean check distcheck
 all: $(ALL_BINS)
 
-$(OBJDIR)/%.o: src/%.cc src/%.h
+# Make every source file (in src/ or tests/) depend on every header.
+ALL_HEADERS := $(wildcard src/*.h)
+
+$(OBJDIR)/%.o: src/%.cc $(ALL_HEADERS)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(OBJDIR)/tests/%.o: tests/%.cc
+$(OBJDIR)/tests/%.o: tests/%.cc $(ALL_HEADERS)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -Itests -c $< -o $@
 
