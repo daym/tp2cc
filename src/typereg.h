@@ -21,6 +21,15 @@
 
 namespace tp2cc {
 
+// Upper bound on the length of a TyName -> TyName alias chain that
+// `canonicalize' is willing to follow.  A well-formed Pascal program
+// has short chains (typically 1--3 hops: alias -> concrete type);
+// hitting this limit means either the registry has a cycle (bug) or the
+// source declared a genuinely pathological set of aliases. Either way,
+// silently returning an intermediate would hide the fault, so
+// callers are expected to treat exceeding this limit as fatal.
+constexpr int kMaxAliasChainHops = 32;
+
 enum class SymKind : uint8_t {
   Unknown,
   Field,

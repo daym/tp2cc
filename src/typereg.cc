@@ -1,6 +1,7 @@
 #include "typereg.h"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace tp2cc {
 
@@ -227,7 +228,12 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
 
 const TypeExpr* TypeRegistry::canonicalize(const TypeExpr* te) const {
   int hops = 0;
-  while (te && te->kind == Kind::TyName && hops++ < 32) {
+  while (te && te->kind == Kind::TyName) {
+    if (hops++ >= kMaxAliasChainHops) {
+      throw std::runtime_error(
+          "TypeRegistry::canonicalize: alias chain exceeds "
+          "kMaxAliasChainHops; cycle or registry corruption");
+    }
     const auto& n = static_cast<const TyName&>(*te);
     auto it = aliases.find(lc(n.name));
     if (it == aliases.end()) return te;  // unknown alias; leave as-is

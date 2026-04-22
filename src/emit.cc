@@ -364,7 +364,12 @@ std::string Emitter::type_name_to_cxx(const TyName& n) {
 
 const TypeExpr* Emitter::canonicalize_type(const TypeExpr* t) {
   int hops = 0;
-  while (t && t->kind == Kind::TyName && hops++ < 32) {
+  while (t && t->kind == Kind::TyName) {
+    if (hops++ >= kMaxAliasChainHops) {
+      throw std::runtime_error(
+          "Emitter::canonicalize_type: alias chain exceeds "
+          "kMaxAliasChainHops; cycle or registry corruption");
+    }
     const auto& n = static_cast<const TyName&>(*t);
     auto lit = local_type_aliases_scoped.find(n.name);
     if (lit != local_type_aliases_scoped.end() && lit->second &&
