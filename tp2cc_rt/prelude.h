@@ -2073,9 +2073,12 @@ inline void p_strdispose(p_char*& p) {
   std::free(static_cast<void*>(p));
   p = nullptr;
 }
-inline void p_chmod(const ShortString<>&, int32_t) {}
 template <typename... A> inline int32_t p_execmd(A&&...) { return 0; }
 template <typename... A> inline void p_gettime(A&&...) {}
+inline bool p_chmod(const ShortString<>& path, int32_t newmode) {
+  return ::chmod(p_to_std_string(path).c_str(),
+                 static_cast<mode_t>(newmode)) == 0;
+}
 template <typename... A> inline void p_getdate(A&&...) {}
 template <typename... A> inline void p_settime(A&&...) {}
 template <typename... A> inline void p_setdate(A&&...) {}
