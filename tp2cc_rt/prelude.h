@@ -1333,7 +1333,7 @@ inline void p_seek(File& f, int32_t pos) {
   }
   p_set_ioresult(f, std::fseek(f.f, pos, SEEK_SET) == 0 ? 0 : 103);
 }
-inline void p_truncate(TextFile&) {}
+//inline void p_truncate(TextFile&) {}
 inline void p_flush(const TextFile& f) {
   if (f.f) std::fflush(f.f);
 }
