@@ -914,8 +914,8 @@ template <typename T, typename N> inline void p_dec(T& x, N n) {
 // --- Missing small RTL procedures ------------------------------------------
 
 inline int32_t p_memavail() { return 1 << 30; }   // stub: "lots of memory"
-inline int32_t p_heapavail() { return 1 << 30; }
-inline int32_t p_maxavail()  { return 1 << 30; }
+//inline int32_t p_heapavail() { return 1 << 30; }
+//inline int32_t p_maxavail()  { return 1 << 30; }
 
 inline int32_t p_last_ioresult = 0;
 
