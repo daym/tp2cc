@@ -96,6 +96,33 @@ void test_reinterpret_bytes_copies_raw_object_bytes() {
   }
 }
 
+void test_reinterpret_storage_ref_views_pointer_variable_bytes() {
+  int first = 11;
+  int second = 22;
+  void* p = &first;
+
+  auto& alias = p_reinterpret_storage_ref<void*>(p);
+  CHECK_EQ(alias, static_cast<void*>(&first));
+
+  alias = &second;
+  CHECK_EQ(p, static_cast<void*>(&second));
+}
+
+void test_reinterpret_ref_views_pointee_bytes_of_pointer_value() {
+  struct Box {
+    int value;
+  };
+
+  Box box{17};
+  void* p = &box;
+
+  auto& alias = p_reinterpret_ref<Box>(p);
+  CHECK_EQ(alias.value, 17);
+
+  alias.value = 29;
+  CHECK_EQ(box.value, 29);
+}
+
 void test_blockread_writes_to_void_buffer() {
   TypedFile<uint8_t> f;
   uint8_t got[5] = {};
@@ -181,6 +208,8 @@ int main() {
   RUN_TEST(test_move_reads_from_const_shortstring_storage);
   RUN_TEST(test_str_formats_real_values);
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
+  RUN_TEST(test_reinterpret_storage_ref_views_pointer_variable_bytes);
+  RUN_TEST(test_reinterpret_ref_views_pointee_bytes_of_pointer_value);
   RUN_TEST(test_blockread_writes_to_void_buffer);
   RUN_TEST(test_strnew_allocates_and_disposes_pchar);
   RUN_TEST(test_textfile_reset_closes_previous_handle);

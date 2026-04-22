@@ -484,8 +484,20 @@ struct Emitter {
   bool expr_is_untyped_storage_ref(const ast::Expr& e);
   bool expr_is_charish(const ast::Expr& e);
   bool type_is_stringish(const ast::TypeExpr* t);
+  bool type_is_pointerish(const ast::TypeExpr* t);
   bool type_is_open_array(const ast::TypeExpr* t);
   std::string open_array_type_to_cxx(const ast::TypeExpr& t);
+  std::string reinterpret_ref_text(const std::string& ty_cxx,
+                                   const std::string& source_cxx,
+                                   bool pointee_view);
+  const VarInfo* find_visible_unit_var(const std::string& name);
+  const ConstInfo* find_visible_unit_const(const std::string& name);
+  struct AbsoluteTargetInfo {
+    std::string cxx;
+    const ast::TypeExpr* type = nullptr;
+    bool is_pointerish = false;
+  };
+  std::optional<AbsoluteTargetInfo> resolve_absolute_target(const ast::VarDecl& vd);
   void mark_call_param_info(const ast::ProcDecl* decl,
                             std::vector<bool>& untyped_arg,
                             std::vector<const ast::TypeExpr*>& param_types);
@@ -631,8 +643,8 @@ std::string Emitter::primitive_cast_lvalue_ref(const Call& c) {
   }
   // Pascal `T(lv)` used as an lvalue aliases the same storage with a
   // different type. Emit that reinterpretation directly.
-  return "::rt::p_reinterpret_ref<" + primitive_type_cxx(id.name) + ">(" +
-         expr_to_cxx(*peeled) + ")";
+  return reinterpret_ref_text(primitive_type_cxx(id.name), expr_to_cxx(*peeled),
+                              expr_is_untyped_storage_ref(*c.args[0]));
 }
 
 bool Emitter::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
@@ -1329,11 +1341,125 @@ bool Emitter::type_is_stringish(const TypeExpr* t) {
   return tyname_is(t, "string") || tyname_is(t, "shortstring");
 }
 
+bool Emitter::type_is_pointerish(const TypeExpr* t) {
+  if (!t) return false;
+  t = canonicalize_type(t);
+  if (!t) return false;
+  if (t->kind == Kind::TyPointer) return true;
+  if (t->kind == Kind::TyObject) {
+    return static_cast<const TyObject&>(*t).is_reference_type;
+  }
+  return tyname_is(t, "pointer") || tyname_is(t, "pchar") ||
+         tyname_is(t, "ppchar");
+}
+
 bool Emitter::type_is_open_array(const TypeExpr* t) {
   if (!t) return false;
   t = canonicalize_type(t);
   return t && t->kind == Kind::TyArray &&
          static_cast<const TyArray&>(*t).dims.empty();
+}
+
+std::string Emitter::reinterpret_ref_text(const std::string& ty_cxx,
+                                          const std::string& source_cxx,
+                                          bool pointee_view) {
+  // Two distinct Pascal operations lower through this helper:
+  //   - "same storage, new type" (`absolute`, typed lvalue casts) =>
+  //     p_reinterpret_storage_ref<T>(x)
+  //   - "pointer points at T" (`absolute p` where p is pointer-ish) =>
+  //     p_reinterpret_ref<T>(p)
+  // They currently compile to the same cast sequence in the runtime, but
+  // the emitter must keep the intent separate so later runtime tightening
+  // does not blur "reinterpret the pointer slot" with "reinterpret pointee".
+  const char* helper = pointee_view ? "::rt::p_reinterpret_ref<"
+                                    : "::rt::p_reinterpret_storage_ref<";
+  return std::string(helper) + ty_cxx + ">(" + source_cxx + ")";
+}
+
+const VarInfo* Emitter::find_visible_unit_var(const std::string& name) {
+  if (!registry) return nullptr;
+  auto cur = registry->units.find(current_unit_name);
+  if (cur == registry->units.end()) return nullptr;
+  if (const auto* v = cur->second.find_var(name)) return v;
+  for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend(); ++it) {
+    auto uit = registry->units.find(*it);
+    if (uit == registry->units.end()) continue;
+    if (const auto* v = uit->second.find_export_var(name)) return v;
+  }
+  return nullptr;
+}
+
+const ConstInfo* Emitter::find_visible_unit_const(const std::string& name) {
+  if (!registry) return nullptr;
+  auto cur = registry->units.find(current_unit_name);
+  if (cur == registry->units.end()) return nullptr;
+  if (const auto* c = cur->second.find_const(name)) return c;
+  for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend(); ++it) {
+    auto uit = registry->units.find(*it);
+    if (uit == registry->units.end()) continue;
+    if (const auto* c = uit->second.find_export_const(name)) return c;
+  }
+  return nullptr;
+}
+
+std::optional<Emitter::AbsoluteTargetInfo> Emitter::resolve_absolute_target(
+    const VarDecl& vd) {
+  AbsoluteTargetInfo info;
+  info.cxx = resolve_name(vd.absolute_target).cxx;
+
+  if (local_untyped_params.count(vd.absolute_target)) {
+    info.is_pointerish = true;
+    return info;
+  }
+
+  auto lit = local_consts.find(vd.absolute_target);
+  if (lit != local_consts.end()) {
+    if (!lit->second || !lit->second->type) {
+      report_error(vd.loc, "absolute target must be a variable or typed const");
+      return std::nullopt;
+    }
+    info.type = lit->second->type.get();
+    info.is_pointerish = type_is_pointerish(info.type);
+    return info;
+  }
+
+  auto tit = local_types.find(vd.absolute_target);
+  if (tit != local_types.end()) {
+    info.type = tit->second;
+    info.is_pointerish = type_is_pointerish(info.type);
+    return info;
+  }
+
+  ResolveResult rr = resolve_name(vd.absolute_target);
+  if (rr.kind == ResolvedKind::ClassField && registry &&
+      !current_class_name.empty()) {
+    if (auto* m = registry->lookup_class_member(current_class_name,
+                                                vd.absolute_target);
+        m && !m->is_method) {
+      info.type = m->field.type.get();
+      info.is_pointerish = type_is_pointerish(info.type);
+      return info;
+    }
+  }
+
+  if (const auto* v = find_visible_unit_var(vd.absolute_target)) {
+    info.type = v->type.get();
+    info.is_pointerish = type_is_pointerish(info.type);
+    return info;
+  }
+
+  if (const auto* c = find_visible_unit_const(vd.absolute_target)) {
+    if (!c->type) {
+      report_error(vd.loc, "absolute target must be a variable or typed const");
+      return std::nullopt;
+    }
+    info.type = c->type.get();
+    info.is_pointerish = type_is_pointerish(info.type);
+    return info;
+  }
+
+  report_error(vd.loc, "absolute target must be a variable or typed const");
+  return std::nullopt;
 }
 
 std::string Emitter::open_array_type_to_cxx(const TypeExpr& t) {
@@ -2161,8 +2287,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           if (n == "pointer" || n == "pchar" || n == "ppchar") {
             if (peeled && expr_is_storage_lvalue(*c.args[0])) {
-              return "::rt::p_reinterpret_ref<" + primitive_type_cxx(n) +
-                     ">(" + expr_to_cxx(*peeled) + ")";
+              return reinterpret_ref_text(primitive_type_cxx(n),
+                                          expr_to_cxx(*peeled),
+                                          expr_is_untyped_storage_ref(*c.args[0]));
             }
           }
           if (expr_is_charish(*c.args[0])) {
@@ -2191,8 +2318,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             const auto& arr = static_cast<const TyArray&>(*cast_ty);
             const Expr* peeled = peel_primitive_casts(c.args[0].get());
             if (peeled && expr_is_storage_lvalue(*c.args[0])) {
-              return "::rt::p_reinterpret_ref<" + expr_to_cxx(*c.callee) +
-                     ">(" + expr_to_cxx(*peeled) + ")";
+              const TypeExpr* source_ty = deduce_type(*peeled);
+              bool pointee_view =
+                  expr_is_untyped_storage_ref(*c.args[0]) ||
+                  type_is_pointerish(source_ty);
+              return reinterpret_ref_text(expr_to_cxx(*c.callee),
+                                          expr_to_cxx(*peeled),
+                                          pointee_view);
             }
             const TypeExpr* elem =
                 arr.element ? canonicalize_type(arr.element.get()) : nullptr;
@@ -2297,8 +2429,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if (cast_to_pointer) {
           const Expr* peeled = peel_primitive_casts(c.args[0].get());
           if (peeled && expr_is_storage_lvalue(*c.args[0])) {
-            return "(*(" + cast_type_cxx + "*)&(" +
-                   expr_to_cxx(*peeled) + "))";
+            return reinterpret_ref_text(cast_type_cxx, expr_to_cxx(*peeled),
+                                        expr_is_untyped_storage_ref(*c.args[0]));
           }
         }
       }
@@ -2815,7 +2947,19 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
 
 void Emitter::emit_var_decl(const VarDecl& vd, bool in_header) {
   if (vd.is_absolute) {
-    report_error(vd.loc, "absolute variables are unsupported");
+    auto target = resolve_absolute_target(vd);
+    if (!target) return;
+    std::string ty = vd.type ? type_to_cxx(*vd.type) : std::string("int32_t");
+    bool pointee_view = target->is_pointerish && !type_is_pointerish(vd.type.get());
+    for (const auto& n : vd.names) {
+      std::string name = mangle(n);
+      if (in_header) {
+        emitln("extern " + ty + "& " + name + ";");
+      } else {
+        emitln(ty + "& " + name + " = " +
+               reinterpret_ref_text(ty, target->cxx, pointee_view) + ";");
+      }
+    }
     return;
   }
   if (vd.is_external) {
@@ -2988,8 +3132,9 @@ void Emitter::emit_stmt(const Stmt& s) {
               if (tgt && tgt->kind == Kind::TyPointer) {
                 std::string lv = expr_to_cxx(*c.args[0]);
                 std::string rhs = expr_to_cxx(*a.value);
-                emitln("(*(" + mangle(id.name) + "*)&(" + lv + ")) = " +
-                       rhs + ";");
+                emitln(reinterpret_ref_text(mangle(id.name), lv,
+                                            expr_is_untyped_storage_ref(*c.args[0])) +
+                       " = " + rhs + ";");
                 break;
               }
             }
@@ -3825,7 +3970,7 @@ void Emitter::emit_unit(const UnitNode& u) {
   for (const auto& d : u.interface_decls) {
     if (d->kind == Kind::VarDecl) {
       const auto& vd = static_cast<const VarDecl&>(*d);
-      if (vd.is_absolute || vd.is_external) continue;
+      if (vd.is_external) continue;
       emit_decl(*d, /*in_header=*/false);
     }
   }

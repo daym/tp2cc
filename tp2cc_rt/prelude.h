@@ -591,6 +591,29 @@ inline Arr p_reinterpret_bytes(const Src& src) {
   return ByteReinterpreter<Arr>::cast(src);
 }
 
+// View the bytes of the source object itself as a different type.
+// This is the helper used for Pascal `absolute` aliases and typed lvalue
+// casts, where the source object already is the storage being re-viewed.
+template <typename T, typename Src>
+inline T& p_reinterpret_storage_ref(Src& src) {
+  return *reinterpret_cast<T*>(&src);
+}
+template <typename T, typename Src>
+inline const T& p_reinterpret_storage_ref(const Src& src) {
+  return *reinterpret_cast<const T*>(&src);
+}
+template <typename T>
+inline T& p_reinterpret_storage_ref(ShortStringCharRef src) {
+  return *reinterpret_cast<T*>(src.byte);
+}
+template <typename T>
+inline const T& p_reinterpret_storage_ref(ShortStringCharValue src) {
+  return *reinterpret_cast<const T*>(src.byte);
+}
+
+// View the storage pointed at by `src` as a different type. This is a
+// different Pascal operation from p_reinterpret_storage_ref even though the
+// current implementation uses the same cast sequence for non-pointer inputs.
 template <typename T, typename Src>
 inline T& p_reinterpret_ref(Src& src) {
   return *reinterpret_cast<T*>(&src);

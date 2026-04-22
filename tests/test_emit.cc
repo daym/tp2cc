@@ -497,7 +497,7 @@ void test_byte_array_typecast_reinterprets_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_reinterpret_ref<p_t80bitarray>(p_e)[p_i]"));
+                 "::rt::p_reinterpret_storage_ref<p_t80bitarray>(p_e)[p_i]"));
   CHECK(!contains(out.impl, "p_t80bitarray(p_e)[p_i]"));
 }
 
@@ -515,7 +515,7 @@ void test_local_byte_array_typecast_reinterprets_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_reinterpret_ref<p_t80bitarray>(p_e)[p_i]"));
+                 "::rt::p_reinterpret_storage_ref<p_t80bitarray>(p_e)[p_i]"));
   CHECK(!contains(out.impl, "p_t80bitarray(p_e)[p_i]"));
 }
 
@@ -565,8 +565,69 @@ void test_inc_primitive_cast_reinterprets_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_inc(::rt::p_reinterpret_ref<int32_t>(p_p))"));
+                 "::rt::p_inc(::rt::p_reinterpret_storage_ref<int32_t>(p_p))"));
   CHECK(!contains(out.impl, "p_p = ((int32_t)(p_p) + 1)"));
+}
+
+void test_absolute_pointer_target_reinterprets_pointee_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = record\n"
+      "    value : longint;\n"
+      "  end;\n"
+      "procedure demo(raw : pointer);\n"
+      "implementation\n"
+      "procedure demo(raw : pointer);\n"
+      "var\n"
+      "  item : titem absolute raw;\n"
+      "begin\n"
+      "  writeln(item.value);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_titem& p_item = ::rt::p_reinterpret_ref<p_titem>(p_raw);"));
+}
+
+void test_absolute_pointer_alias_reinterprets_pointer_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pint = ^longint;\n"
+      "procedure demo(raw : pointer);\n"
+      "implementation\n"
+      "procedure demo(raw : pointer);\n"
+      "var\n"
+      "  value : pint absolute raw;\n"
+      "begin\n"
+      "  writeln(value^);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_pint& p_value = ::rt::p_reinterpret_storage_ref<p_pint>(p_raw);"));
+}
+
+void test_absolute_typed_const_alias_reinterprets_same_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "type\n"
+      "  pint = ^longint;\n"
+      "  parr = array[0..1] of pint;\n"
+      "const\n"
+      "  raw : array[0..1] of pointer = (nil, nil);\n"
+      "var\n"
+      "  view : parr absolute raw;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_parr& p_view = ::rt::p_reinterpret_storage_ref<p_parr>(p_raw);"));
 }
 
 void test_const_object_param_uses_mutable_ref() {
@@ -696,6 +757,9 @@ int main() {
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
   RUN_TEST(test_primitive_cast_read_reinterprets_storage);
   RUN_TEST(test_inc_primitive_cast_reinterprets_storage);
+  RUN_TEST(test_absolute_pointer_target_reinterprets_pointee_storage);
+  RUN_TEST(test_absolute_pointer_alias_reinterprets_pointer_storage);
+  RUN_TEST(test_absolute_typed_const_alias_reinterprets_same_storage);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
   RUN_TEST(test_parameterless_procvar_stmt_autocalls);
   RUN_TEST(test_runtime_builtin_stmt_autocalls);
