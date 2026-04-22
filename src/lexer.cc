@@ -12,21 +12,15 @@ namespace tp2cc {
 
 namespace {
 
-// Hard-reserved keywords. Other Pascal "keywords" (name, index, read, write,
-// stored, default, message, alias, cvar, result, operator, on) are
-// context-sensitive and are lexed as Ident; the parser recognizes them by
-// text at the specific points where they matter.
+// Hard-reserved keywords only. Declaration directives and modifiers stay as
+// identifiers and are recognized by the parser only where they are valid.
 const std::pair<const char*, Tok> kKeywordTable[] = {
-    {"absolute", Tok::KwAbsolute},
-    {"abstract", Tok::KwAbstract},
     {"and", Tok::KwAnd},
     {"array", Tok::KwArray},
     {"as", Tok::KwAs},
     {"asm", Tok::KwAsm},
-    {"assembler", Tok::KwAssembler},
     {"begin", Tok::KwBegin},
     {"case", Tok::KwCase},
-    {"cdecl", Tok::KwCdecl},
     {"class", Tok::KwClass},
     {"const", Tok::KwConst},
     {"constructor", Tok::KwConstructor},
@@ -34,23 +28,15 @@ const std::pair<const char*, Tok> kKeywordTable[] = {
     {"div", Tok::KwDiv},
     {"do", Tok::KwDo},
     {"downto", Tok::KwDownto},
-    // `dynamic' is a method directive, not a reserved keyword -- per
-    // Pascal standard and FPC ref/refse4.html -- so it's not in this
-    // table.  Recognised at directive positions via
-    // is_directive("dynamic") in parse_proc_modifiers.
     {"else", Tok::KwElse},
     {"end", Tok::KwEnd},
     {"except", Tok::KwExcept},
-    {"export", Tok::KwExport},
     {"exports", Tok::KwExports},
-    {"external", Tok::KwExternal},
     {"false", Tok::KwFalse},
-    {"far", Tok::KwFar},
     {"file", Tok::KwFile},
     {"finalization", Tok::KwFinalization},
     {"finally", Tok::KwFinally},
     {"for", Tok::KwFor},
-    {"forward", Tok::KwForward},
     {"function", Tok::KwFunction},
     {"goto", Tok::KwGoto},
     {"if", Tok::KwIf},
@@ -58,45 +44,29 @@ const std::pair<const char*, Tok> kKeywordTable[] = {
     {"in", Tok::KwIn},
     {"inherited", Tok::KwInherited},
     {"initialization", Tok::KwInitialization},
-    {"inline", Tok::KwInline},
     {"interface", Tok::KwInterface},
-    {"interrupt", Tok::KwInterrupt},
     {"is", Tok::KwIs},
     {"label", Tok::KwLabel},
     {"library", Tok::KwLibrary},
     {"mod", Tok::KwMod},
-    {"near", Tok::KwNear},
     {"nil", Tok::KwNil},
     {"not", Tok::KwNot},
     {"object", Tok::KwObject},
     {"of", Tok::KwOf},
     {"or", Tok::KwOr},
     {"otherwise", Tok::KwOtherwise},
-    {"override", Tok::KwOverride},
     {"packed", Tok::KwPacked},
-    {"pascal", Tok::KwPascal},
-    {"popstack", Tok::KwPopstack},
-    {"private", Tok::KwPrivate},
     {"procedure", Tok::KwProcedure},
     {"program", Tok::KwProgram},
-    {"property", Tok::KwProperty},
-    {"protected", Tok::KwProtected},
-    {"public", Tok::KwPublic},
-    {"published", Tok::KwPublished},
     {"raise", Tok::KwRaise},
     {"record", Tok::KwRecord},
-    {"register", Tok::KwRegister},
     {"repeat", Tok::KwRepeat},
-    {"resident", Tok::KwResident},
     {"resourcestring", Tok::KwResourcestring},
-    {"safecall", Tok::KwSafecall},
     {"self", Tok::KwSelf},
     {"set", Tok::KwSet},
     {"shl", Tok::KwShl},
     {"shortstring", Tok::KwShortstring},
     {"shr", Tok::KwShr},
-    {"static", Tok::KwStatic},
-    {"stdcall", Tok::KwStdcall},
     {"string", Tok::KwString},
     {"then", Tok::KwThen},
     {"threadvar", Tok::KwThreadvar},
@@ -108,7 +78,6 @@ const std::pair<const char*, Tok> kKeywordTable[] = {
     {"until", Tok::KwUntil},
     {"uses", Tok::KwUses},
     {"var", Tok::KwVar},
-    {"virtual", Tok::KwVirtual},
     {"while", Tok::KwWhile},
     {"with", Tok::KwWith},
     {"xor", Tok::KwXor},
@@ -457,10 +426,26 @@ void Lexer::skip_ws_and_comments() {
         handle_directive_at_brace();
         continue;
       }
-      // Regular brace comment.
+      // Brace comments can nest. Consume the opening `{` first so
+      // `depth == 1` always means "inside the outermost comment".
       get();
-      while (!at_eof_of_current() && peek() != '}') get();
-      if (!at_eof_of_current()) get();  // consume '}'
+      int depth = 1;
+      while (depth > 0) {
+        if (pop_input_if_eof()) continue;
+        char cc = peek();
+        if (cc == 0) break;
+        if (cc == '{' && peek(1) != '$') {
+          ++depth;
+          get();
+          continue;
+        }
+        if (cc == '}') {
+          --depth;
+          get();
+          continue;
+        }
+        get();
+      }
       continue;
     }
 

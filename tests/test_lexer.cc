@@ -179,11 +179,8 @@ void test_comments_all_styles() {
   CHECK(ts[1].kind == Tok::KwEnd);
 }
 
-void test_brace_comments_not_nested() {
-  // Turbo Pascal `{ ... }` does NOT nest -- the first `}` closes the comment.
-  // So `{ a { b } c` produces: end-of-comment at the first `}`, then `c`
-  // is a plain identifier.
-  auto ts = lex_all("a { comment { still comment } c");
+void test_brace_comments_nested() {
+  auto ts = lex_all("a { comment { still comment } still outer } c");
   CHECK_EQ(ts.size(), size_t{2});
   CHECK(ts[0].kind == Tok::Ident);
   CHECK_EQ(ts[0].text, std::string("a"));
@@ -399,7 +396,7 @@ int main() {
   RUN_TEST(test_strings_basic);
   RUN_TEST(test_strings_char_codes);
   RUN_TEST(test_comments_all_styles);
-  RUN_TEST(test_brace_comments_not_nested);
+  RUN_TEST(test_brace_comments_nested);
   RUN_TEST(test_directive_ifdef_taken);
   RUN_TEST(test_directive_ifdef_not_taken);
   RUN_TEST(test_directive_ifndef);
