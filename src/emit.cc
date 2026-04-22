@@ -633,7 +633,7 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       // Class member (inside method body of a known class).
       if (!current_class_name.empty()) {
         auto* m = registry->lookup_class_member(current_class_name, id.name);
-        if (m && !m->is_method) return m->field.type;
+        if (m && !m->is_method) return m->field.type.get();
       }
       // `with X do` bindings contribute fields of their target type --
       // the ident might name such a field.
@@ -643,9 +643,9 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
                                   : std::string{};
         if (ac.empty()) continue;
         auto* m = registry->lookup_class_member(ac, id.name);
-        if (m && !m->is_method) return m->field.type;
+        if (m && !m->is_method) return m->field.type.get();
         auto* rf = registry->lookup_record_field(ac, id.name);
-        if (rf) return rf->type;
+        if (rf) return rf->type.get();
       }
       // Unit-level lookup: own unit first, then each `uses` entry
       // (right-to-left). The global last-wins maps on TypeRegistry
@@ -655,16 +655,16 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       // Own-unit: both interface and impl visible. Other units:
       // interface-exports only.
       auto lookup_own = [&](const UnitInfo& u) -> const TypeExpr* {
-        if (auto* v = u.find_var(id.name)) return v->type;
-        if (auto* c = u.find_const(id.name); c && c->type) return c->type;
+        if (auto* v = u.find_var(id.name)) return v->type.get();
+        if (auto* c = u.find_const(id.name); c && c->type.get()) return c->type.get();
         if (auto* p = u.find_proc(id.name);
             p && p->decl && p->decl->return_type)
           return p->decl->return_type.get();
         return nullptr;
       };
       auto lookup_export = [&](const UnitInfo& u) -> const TypeExpr* {
-        if (auto* v = u.find_export_var(id.name)) return v->type;
-        if (auto* c = u.find_export_const(id.name); c && c->type) return c->type;
+        if (auto* v = u.find_export_var(id.name)) return v->type.get();
+        if (auto* c = u.find_export_const(id.name); c && c->type.get()) return c->type.get();
         if (auto* p = u.find_export_proc(id.name);
             p && p->decl && p->decl->return_type)
           return p->decl->return_type.get();
@@ -710,14 +710,14 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       if (cls.empty()) return nullptr;
       if (auto* cm = registry->lookup_class_member(cls, m.name)) {
         if (cm->is_method) {
-          if (cm->method.decl && cm->method.decl->return_type)
-            return cm->method.decl->return_type.get();
+          if (cm->method.decl.get() && cm->method.decl.get()->return_type)
+            return cm->method.decl.get()->return_type.get();
           return nullptr;
         }
-        return cm->field.type;
+        return cm->field.type.get();
       }
       if (auto* rf = registry->lookup_record_field(cls, m.name))
-        return rf->type;
+        return rf->type.get();
       return nullptr;
     }
     case Kind::Index: {
@@ -753,7 +753,7 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
         // Type cast `T(expr)` -- target type is the alias's own type.
         auto ait = registry->aliases.find(id.name);
         if (ait != registry->aliases.end() && c.args.size() == 1)
-          return ait->second.target;
+          return ait->second.target.get();
         // Function call -> return type. Per-unit resolution avoids
         // the last-wins global-map pitfall.
         ResolveResult rr = resolve_name(id.name);
@@ -771,8 +771,8 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
         }
         if (!cls.empty()) {
           if (auto* cm = registry->lookup_class_member(cls, mem.name)) {
-            if (cm->is_method && cm->method.decl && cm->method.decl->return_type)
-              return cm->method.decl->return_type.get();
+            if (cm->is_method && cm->method.decl.get() && cm->method.decl.get()->return_type)
+              return cm->method.decl.get()->return_type.get();
           }
         }
       }
@@ -926,7 +926,7 @@ void Emitter::collect_call_param_info(
       if (auto* m = registry->lookup_class_member(current_class_name,
                                                   id.name)) {
         if (m->is_method) {
-          mark_call_param_info(m->method.decl, untyped_arg, param_types);
+          mark_call_param_info(m->method.decl.get(), untyped_arg, param_types);
           return;
         }
       }
@@ -947,7 +947,7 @@ void Emitter::collect_call_param_info(
   if (cls.empty()) return;
   if (auto* m = registry->lookup_class_member(cls, mem.name)) {
     if (m->is_method) {
-      mark_call_param_info(m->method.decl, untyped_arg, param_types);
+      mark_call_param_info(m->method.decl.get(), untyped_arg, param_types);
     }
   }
 }
@@ -1010,7 +1010,7 @@ Emitter::ResolveResult Emitter::resolve_name(
         const UnitInfo& u = uit->second;
         if (auto* pi = u.find_export_proc(name)) {
           r.kind = ResolvedKind::UnitProc;
-          r.proc = pi->decl;
+          r.proc = pi->decl.get();
           r.is_callable = true;
           r.is_parameterless = (pi->param_count == 0);
           return r;
@@ -1032,7 +1032,7 @@ Emitter::ResolveResult Emitter::resolve_name(
       if (auto* m = registry->lookup_class_member(qualifier, name)) {
         if (m->is_method) {
           r.kind = ResolvedKind::ClassMethod;
-          r.proc = m->method.decl;
+          r.proc = m->method.decl.get();
           r.is_callable = true;
           r.is_parameterless = (m->method.param_count == 0);
         } else {
@@ -1069,7 +1069,7 @@ Emitter::ResolveResult Emitter::resolve_name(
         r.cxx = it->cxx_text + "." + mangle(name);
         if (m->is_method) {
           r.kind = ResolvedKind::WithMethod;
-          r.proc = m->method.decl;
+          r.proc = m->method.decl.get();
           r.is_callable = true;
           r.is_parameterless = (m->method.param_count == 0);
         } else {
@@ -1109,7 +1109,7 @@ Emitter::ResolveResult Emitter::resolve_name(
       r.cxx = mangle(name);
       if (m->is_method) {
         r.kind = ResolvedKind::ClassMethod;
-        r.proc = m->method.decl;
+        r.proc = m->method.decl.get();
         r.is_callable = true;
         r.is_parameterless = (m->method.param_count == 0);
       } else {
@@ -1130,7 +1130,7 @@ Emitter::ResolveResult Emitter::resolve_name(
       if (auto* pi = ui->find_proc(name)) {
         r.cxx = mangle(name);
         r.kind = ResolvedKind::UnitProc;
-        r.proc = pi->decl;
+        r.proc = pi->decl.get();
         r.is_callable = true;
         r.is_parameterless = (pi->param_count == 0);
         return r;
@@ -1166,7 +1166,7 @@ Emitter::ResolveResult Emitter::resolve_name(
         r.cxx = prefix + mangle(name);
         r.kind = (un == "__rt__") ? ResolvedKind::RtBuiltin
                                   : ResolvedKind::UnitProc;
-        r.proc = pi->decl;
+        r.proc = pi->decl.get();
         r.is_callable = true;
         r.is_parameterless = (pi->param_count == 0);
         return true;
@@ -1727,8 +1727,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             cast_ty = canonicalize_type(lit->second);
           } else if (registry) {
             auto ait = registry->aliases.find(n);
-            if (ait != registry->aliases.end() && ait->second.target) {
-              cast_ty = canonicalize_type(ait->second.target);
+            if (ait != registry->aliases.end() && ait->second.target.get()) {
+              cast_ty = canonicalize_type(ait->second.target.get());
             }
           }
           if (cast_ty && cast_ty->kind == Kind::TyArray) {
@@ -1830,8 +1830,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           cast_type_cxx = "void*";
         } else if (registry) {
           auto ait = registry->aliases.find(id.name);
-          if (ait != registry->aliases.end() && ait->second.target) {
-            const TypeExpr* tgt = registry->canonicalize(ait->second.target);
+          if (ait != registry->aliases.end() && ait->second.target.get()) {
+            const TypeExpr* tgt = registry->canonicalize(ait->second.target.get());
             if (tgt && tgt->kind == Kind::TyPointer) {
               cast_to_pointer = true;
               cast_type_cxx = mangle(id.name);
@@ -2439,8 +2439,8 @@ void Emitter::emit_stmt(const Stmt& s) {
           const auto& id = static_cast<const Ident&>(*c.callee);
           if (registry) {
             auto ait = registry->aliases.find(id.name);
-            if (ait != registry->aliases.end() && ait->second.target) {
-              const TypeExpr* tgt = registry->canonicalize(ait->second.target);
+            if (ait != registry->aliases.end() && ait->second.target.get()) {
+              const TypeExpr* tgt = registry->canonicalize(ait->second.target.get());
               if (tgt && tgt->kind == Kind::TyPointer) {
                 std::string lv = expr_to_cxx(*c.args[0]);
                 std::string rhs = expr_to_cxx(*a.value);

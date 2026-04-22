@@ -25,7 +25,7 @@ namespace tp2cc {
 struct ParsedUnit {
   std::string name;                    // lowercased canonical name
   std::filesystem::path path;
-  std::unique_ptr<ast::UnitNode> ast;  // null on parse failure
+  std::shared_ptr<ast::UnitNode> ast;  // null on parse failure
   bool ok = false;                     // true if parsed without errors
 };
 

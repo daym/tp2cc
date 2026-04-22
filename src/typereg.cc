@@ -17,20 +17,20 @@ std::string lc(std::string s) {
 void add_record_fields(RecordInfo& ri, const TyRecord& tr) {
   for (const auto& f : tr.fields) {
     FieldInfo fi;
-    fi.type = f.type.get();
+    fi.type = f.type;
     for (const auto& n : f.names) ri.fields[lc(n)] = fi;
   }
   // Variant-record tag (`case typ : toptype of ...`) -- `typ` is an
   // actual field in the emitted struct, so it must be indexed as one.
   if (tr.has_variant && !tr.variant_tag_name.empty()) {
     FieldInfo fi;
-    fi.type = tr.variant_tag_type.get();
+    fi.type = tr.variant_tag_type;
     ri.fields[lc(tr.variant_tag_name)] = fi;
   }
   for (const auto& vc : tr.variant_cases) {
     for (const auto& f : vc.fields) {
       FieldInfo fi;
-      fi.type = f.type.get();
+      fi.type = f.type;
       for (const auto& n : f.names) ri.fields[lc(n)] = fi;
     }
   }
@@ -41,13 +41,14 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
     if (m.is_field) {
       ClassInfo::Member mem;
       mem.is_method = false;
-      mem.field.type = m.field_type.get();
+      mem.field.type = m.field_type;
       for (const auto& n : m.field_names) ci.members[lc(n)] = mem;
     } else if (m.method) {
-      const auto& pd = static_cast<const ProcDecl&>(*m.method);
+      auto pd_sp = std::static_pointer_cast<const ProcDecl>(m.method);
+      const auto& pd = *pd_sp;
       ClassInfo::Member mem;
       mem.is_method = true;
-      mem.method.decl = &pd;
+      mem.method.decl = pd_sp;
       mem.method.is_virtual = pd.is_virtual;
       mem.method.is_function = (pd.pkind == ProcKind::Function);
       if (pd.pkind == ProcKind::Constructor) mem.method.kind = SymKind::Constructor;
@@ -109,17 +110,18 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
           // Alias (possibly pointer / array / primitive).
           AliasInfo a;
           a.defining_unit = unit;
-          a.target = td.type.get();
+          a.target = td.type;
           r.aliases[nm] = a;
         }
         break;
       }
       case Kind::ProcDecl: {
-        const auto& pd = static_cast<const ProcDecl&>(*d);
+        auto pd_sp = std::static_pointer_cast<const ProcDecl>(d);
+        const auto& pd = *pd_sp;
         if (!pd.of_type.empty()) continue;  // method body -- class handles it
         ProcInfo p;
         p.defining_unit = unit;
-        p.decl = &pd;
+        p.decl = pd_sp;
         p.is_function = (pd.pkind == ProcKind::Function);
         size_t pc = 0;
         for (const auto& par : pd.params) pc += par.names.size();
@@ -132,7 +134,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         const auto& vd = static_cast<const VarDecl&>(*d);
         VarInfo v;
         v.defining_unit = unit;
-        v.type = vd.type.get();
+        v.type = vd.type;
         for (const auto& n : vd.names) {
           r.vars[lc(n)] = v;
           if (ui) (is_interface ? ui->iface_vars : ui->impl_vars)[lc(n)] = v;
@@ -143,7 +145,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         const auto& cd = static_cast<const ConstDecl&>(*d);
         ConstInfo c;
         c.defining_unit = unit;
-        c.type = cd.type.get();
+        c.type = cd.type;
         r.consts[lc(cd.name)] = c;
         if (ui)
           (is_interface ? ui->iface_consts : ui->impl_consts)[lc(cd.name)] = c;
@@ -229,7 +231,7 @@ const TypeExpr* TypeRegistry::canonicalize(const TypeExpr* te) const {
     const auto& n = static_cast<const TyName&>(*te);
     auto it = aliases.find(lc(n.name));
     if (it == aliases.end()) return te;  // unknown alias; leave as-is
-    te = it->second.target;
+    te = it->second.target.get();
   }
   return te;
 }

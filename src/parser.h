@@ -14,7 +14,7 @@ class Parser {
 
   // Parse one compilation unit. Returns null on fatal errors (errors are
   // also reported via diag.h).
-  std::unique_ptr<ast::UnitNode> parse();
+  std::shared_ptr<ast::UnitNode> parse();
 
  private:
   // ---- token stream ----
@@ -34,8 +34,8 @@ class Parser {
   void sync_to(std::initializer_list<Tok> stops);
 
   // ---- top level ----
-  std::unique_ptr<ast::UnitNode> parse_program();
-  std::unique_ptr<ast::UnitNode> parse_unit();
+  std::shared_ptr<ast::UnitNode> parse_program();
+  std::shared_ptr<ast::UnitNode> parse_unit();
   void parse_uses_into(std::vector<std::string>& out);
   // in_interface:  suppress parsing of proc bodies (interface signatures only)
   void parse_decl_block(std::vector<ast::DeclPtr>& out, bool in_interface);

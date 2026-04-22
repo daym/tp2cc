@@ -35,11 +35,11 @@ struct MethodSig {
   size_t param_count = 0;
   bool is_function = false;       // returns a value
   bool is_virtual = false;
-  const ast::ProcDecl* decl = nullptr;
+  std::shared_ptr<const ast::ProcDecl> decl;
 };
 
 struct FieldInfo {
-  const ast::TypeExpr* type = nullptr;   // declared field type
+  std::shared_ptr<const ast::TypeExpr> type;   // declared field type
 };
 
 struct ClassInfo {
@@ -77,12 +77,12 @@ struct EnumInfoReg {
 
 struct AliasInfo {
   std::string defining_unit;
-  const ast::TypeExpr* target = nullptr; // may itself be a TyName (chain)
+  std::shared_ptr<const ast::TypeExpr> target; // may itself be a TyName (chain)
 };
 
 struct ProcInfo {
   std::string defining_unit;
-  const ast::ProcDecl* decl = nullptr;
+  std::shared_ptr<const ast::ProcDecl> decl;
   size_t param_count = 0;
   bool is_function = false;
   // For rt builtins that accept `foo;` with zero args (writeln,
@@ -96,12 +96,12 @@ struct ProcInfo {
 
 struct VarInfo {
   std::string defining_unit;
-  const ast::TypeExpr* type = nullptr;
+  std::shared_ptr<const ast::TypeExpr> type;
 };
 
 struct ConstInfo {
   std::string defining_unit;
-  const ast::TypeExpr* type = nullptr;   // nullptr if untyped
+  std::shared_ptr<const ast::TypeExpr> type;   // nullptr if untyped
 };
 
 struct UnitInfo {

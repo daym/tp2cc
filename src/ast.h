@@ -9,7 +9,10 @@
 //   * Every concrete node ends with a `Kind` enum value so we can dispatch
 //     without RTTI if we want to later; for now `dynamic_cast`/`if constexpr`
 //     is fine.
-//   * Ownership: `std::unique_ptr<Node>` throughout.
+//   * Ownership: `std::shared_ptr<Node>` throughout -- TypeRegistry and
+//     EmitCtx hold long-lived non-owning references into AST subtrees,
+//     so shared ownership removes the implicit "AST must outlive its
+//     consumers" invariant.
 //
 // We grow this file feature-by-feature. The current cut covers what's
 // needed to parse a trivial program and a simple unit; parser tests pin
@@ -101,10 +104,10 @@ struct Stmt : Node { using Node::Node; };
 struct Decl : Node { using Node::Node; };
 struct TypeExpr : Node { using Node::Node; };
 
-using ExprPtr = std::unique_ptr<Expr>;
-using StmtPtr = std::unique_ptr<Stmt>;
-using DeclPtr = std::unique_ptr<Decl>;
-using TypePtr = std::unique_ptr<TypeExpr>;
+using ExprPtr = std::shared_ptr<Expr>;
+using StmtPtr = std::shared_ptr<Stmt>;
+using DeclPtr = std::shared_ptr<Decl>;
+using TypePtr = std::shared_ptr<TypeExpr>;
 
 // ---------------------------------------------------------------------------
 // Expressions

@@ -22,8 +22,8 @@ using namespace tp2cc_test;
 
 namespace {
 
-std::unique_ptr<UnitNode> parse_snippet(std::string text) {
-  auto sf = std::make_unique<SourceFile>();
+std::shared_ptr<UnitNode> parse_snippet(std::string text) {
+  auto sf = std::make_shared<SourceFile>();
   sf->path = "<mem>";
   sf->contents = std::move(text);
   Lexer lx(std::move(sf));

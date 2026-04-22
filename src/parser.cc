@@ -142,13 +142,13 @@ std::string Parser::consume_name_or_directive(const char* ctx) {
 // ---------------------------------------------------------------------------
 // Entry
 
-std::unique_ptr<UnitNode> Parser::parse() {
+std::shared_ptr<UnitNode> Parser::parse() {
   if (cur_.kind == Tok::KwUnit) return parse_unit();
   if (cur_.kind == Tok::KwProgram) return parse_program();
   // Some sources are `.inc` files or program-body-only; treat as program
   // without a header.
   if (cur_.kind == Tok::KwBegin) {
-    auto u = std::make_unique<UnitNode>();
+    auto u = std::make_shared<UnitNode>();
     u->loc = cur_.loc;
     u->is_program = true;
     u->init_body = parse_compound_statement();
@@ -160,8 +160,8 @@ std::unique_ptr<UnitNode> Parser::parse() {
   return nullptr;
 }
 
-std::unique_ptr<UnitNode> Parser::parse_program() {
-  auto u = std::make_unique<UnitNode>();
+std::shared_ptr<UnitNode> Parser::parse_program() {
+  auto u = std::make_shared<UnitNode>();
   u->loc = cur_.loc;
   u->is_program = true;
   expect(Tok::KwProgram, "program header");
@@ -190,8 +190,8 @@ std::unique_ptr<UnitNode> Parser::parse_program() {
   return u;
 }
 
-std::unique_ptr<UnitNode> Parser::parse_unit() {
-  auto u = std::make_unique<UnitNode>();
+std::shared_ptr<UnitNode> Parser::parse_unit() {
+  auto u = std::make_shared<UnitNode>();
   u->loc = cur_.loc;
   u->is_program = false;
   expect(Tok::KwUnit, "unit header");
@@ -224,7 +224,7 @@ std::unique_ptr<UnitNode> Parser::parse_unit() {
   } else if (check(Tok::KwInitialization)) {
     // Treat initialization/finalization sections as a compound init body.
     advance();
-    auto c = std::make_unique<Compound>();
+    auto c = std::make_shared<Compound>();
     c->loc = cur_.loc;
     while (!at_end() && !check(Tok::KwFinalization) && !check(Tok::KwEnd)) {
       auto s = parse_statement();
@@ -300,7 +300,7 @@ void Parser::parse_decl_block(std::vector<DeclPtr>& out, bool in_interface) {
 void Parser::parse_const_section(std::vector<DeclPtr>& out) {
   expect(Tok::KwConst, "const section");
   while (check(Tok::Ident)) {
-    auto cd = std::make_unique<ConstDecl>();
+    auto cd = std::make_shared<ConstDecl>();
     cd->loc = cur_.loc;
     cd->name = cur_.text;
     advance();
@@ -332,7 +332,7 @@ ast::ExprPtr Parser::parse_const_value() {
       peek().kind == Tok::Colon;
 
   if (is_record) {
-    auto rc = std::make_unique<RecordConst>();
+    auto rc = std::make_shared<RecordConst>();
     rc->loc = loc;
     while (!at_end() && !check(Tok::RParen)) {
       std::string fname = consume_name_or_directive("record-constant field");
@@ -349,14 +349,14 @@ ast::ExprPtr Parser::parse_const_value() {
   // Array constant or a single parenthesised expression.
   if (check(Tok::RParen)) {
     // Empty `()` -- treat as empty array constant.
-    auto ac = std::make_unique<ArrayConst>();
+    auto ac = std::make_shared<ArrayConst>();
     ac->loc = loc;
     advance();
     return ac;
   }
   auto first = parse_const_value();
   if (accept(Tok::Comma)) {
-    auto ac = std::make_unique<ArrayConst>();
+    auto ac = std::make_shared<ArrayConst>();
     ac->loc = loc;
     ac->elements.push_back(std::move(first));
     ac->elements.push_back(parse_const_value());
@@ -375,7 +375,7 @@ ast::ExprPtr Parser::parse_const_value() {
 void Parser::parse_type_section(std::vector<DeclPtr>& out) {
   expect(Tok::KwType, "type section");
   while (check(Tok::Ident)) {
-    auto td = std::make_unique<TypeDecl>();
+    auto td = std::make_shared<TypeDecl>();
     td->loc = cur_.loc;
     td->name = cur_.text;
     advance();
@@ -389,7 +389,7 @@ void Parser::parse_type_section(std::vector<DeclPtr>& out) {
 void Parser::parse_var_section(std::vector<DeclPtr>& out) {
   expect(Tok::KwVar, "var section");
   while (check(Tok::Ident)) {
-    auto vd = std::make_unique<VarDecl>();
+    auto vd = std::make_shared<VarDecl>();
     vd->loc = cur_.loc;
     vd->names.push_back(cur_.text);
     advance();
@@ -422,7 +422,7 @@ void Parser::parse_var_section(std::vector<DeclPtr>& out) {
       if (is_directive("name")) {
         advance();
         if (cur_.kind == Tok::StringLit) {
-          auto s = std::make_unique<StringLit>();
+          auto s = std::make_shared<StringLit>();
           s->loc = cur_.loc;
           s->value = cur_.text;
           vd->external_name = std::move(s);
@@ -437,7 +437,7 @@ void Parser::parse_var_section(std::vector<DeclPtr>& out) {
 
 void Parser::parse_label_section(std::vector<DeclPtr>& out) {
   expect(Tok::KwLabel, "label section");
-  auto ld = std::make_unique<LabelDecl>();
+  auto ld = std::make_shared<LabelDecl>();
   ld->loc = cur_.loc;
   while (check(Tok::Ident) || check(Tok::IntLit)) {
     ld->labels.push_back(cur_.text);
@@ -545,7 +545,7 @@ void Parser::parse_proc_modifiers(ProcDecl& pd) {
 }
 
 DeclPtr Parser::parse_proc_decl(ProcKind pk, bool in_interface) {
-  auto pd = std::make_unique<ProcDecl>();
+  auto pd = std::make_shared<ProcDecl>();
   pd->loc = cur_.loc;
   pd->pkind = pk;
   advance();  // consume procedure/function/constructor/destructor
@@ -609,7 +609,7 @@ std::vector<Param> Parser::parse_formal_param_list() {
       // `array of T` open-array form
       if (accept(Tok::KwArray)) {
         expect(Tok::KwOf, "open array parameter");
-        auto ta = std::make_unique<TyArray>();
+        auto ta = std::make_shared<TyArray>();
         ta->loc = cur_.loc;
         ta->element = parse_type();
         p.type = std::move(ta);
@@ -659,7 +659,7 @@ TypePtr Parser::parse_type() {
   Location loc = cur_.loc;
   // Pointer form: ^T
   if (accept(Tok::Caret)) {
-    auto tp = std::make_unique<TyPointer>();
+    auto tp = std::make_shared<TyPointer>();
     tp->loc = loc;
     tp->target = parse_type();
     return tp;
@@ -672,7 +672,7 @@ TypePtr Parser::parse_type() {
   // preserving Pascal's type discipline (an integer variable can
   // NOT silently receive a TSuperRegister value).
   if (accept(Tok::KwType)) {
-    auto td = std::make_unique<TyDistinct>();
+    auto td = std::make_shared<TyDistinct>();
     td->loc = loc;
     td->underlying = parse_type();
     return td;
@@ -693,7 +693,7 @@ TypePtr Parser::parse_type() {
         Location mloc = cur_.loc;
         advance();  // class
         advance();  // of
-        auto tm = std::make_unique<TyMetaclass>();
+        auto tm = std::make_shared<TyMetaclass>();
         tm->loc = mloc;
         tm->class_name = consume_ident("metaclass target");
         return tm;
@@ -708,7 +708,7 @@ TypePtr Parser::parse_type() {
     case Tok::KwString:
     case Tok::KwShortstring: {
       advance();
-      auto ts = std::make_unique<TyString>();
+      auto ts = std::make_shared<TyString>();
       ts->loc = loc;
       if (accept(Tok::LBrack)) {
         ts->max_length = parse_expr();
@@ -725,7 +725,7 @@ TypePtr Parser::parse_simple_type() {
   Location loc = cur_.loc;
   // Enum: `( a, b, c )`
   if (accept(Tok::LParen)) {
-    auto te = std::make_unique<TyEnum>();
+    auto te = std::make_shared<TyEnum>();
     te->loc = loc;
     while (cur_.kind == Tok::Ident) {
       te->members.push_back(cur_.text);
@@ -746,14 +746,14 @@ TypePtr Parser::parse_simple_type() {
     // Could still be subrange like `a .. b` where a is an ident.
     // Look-ahead.
     if (peek().kind == Tok::DotDot) {
-      auto sr = std::make_unique<TySubrange>();
+      auto sr = std::make_shared<TySubrange>();
       sr->loc = loc;
       sr->lo = parse_expr();     // will read the ident as primary
       expect(Tok::DotDot, "subrange");
       sr->hi = parse_expr();
       return sr;
     }
-    auto tn = std::make_unique<TyName>();
+    auto tn = std::make_shared<TyName>();
     tn->loc = loc;
     tn->name = cur_.text;
     advance();
@@ -770,7 +770,7 @@ TypePtr Parser::parse_simple_type() {
     return tn;
   }
   // Otherwise, treat as subrange.
-  auto sr = std::make_unique<TySubrange>();
+  auto sr = std::make_shared<TySubrange>();
   sr->loc = loc;
   sr->lo = parse_expr();
   expect(Tok::DotDot, "subrange");
@@ -781,7 +781,7 @@ TypePtr Parser::parse_simple_type() {
 TypePtr Parser::parse_array_type(bool packed) {
   Location loc = cur_.loc;
   expect(Tok::KwArray, "array");
-  auto ta = std::make_unique<TyArray>();
+  auto ta = std::make_shared<TyArray>();
   ta->loc = loc;
   ta->is_packed = packed;
   if (accept(Tok::LBrack)) {
@@ -799,7 +799,7 @@ TypePtr Parser::parse_array_type(bool packed) {
 TypePtr Parser::parse_record_type(bool packed) {
   Location loc = cur_.loc;
   expect(Tok::KwRecord, "record");
-  auto tr = std::make_unique<TyRecord>();
+  auto tr = std::make_shared<TyRecord>();
   tr->loc = loc;
   tr->is_packed = packed;
 
@@ -903,7 +903,7 @@ TypePtr Parser::parse_object_type() {
   // We record which keyword was used on the resulting TyObject so the
   // emitter can pick value-semantics (object) vs reference-semantics
   // (class).
-  auto to = std::make_unique<TyObject>();
+  auto to = std::make_shared<TyObject>();
   if (check(Tok::KwClass)) {
     expect(Tok::KwClass, "class");
     to->is_reference_type = true;
@@ -1009,7 +1009,7 @@ TypePtr Parser::parse_set_type() {
   Location loc = cur_.loc;
   expect(Tok::KwSet, "set");
   expect(Tok::KwOf, "set");
-  auto ts = std::make_unique<TySet>();
+  auto ts = std::make_shared<TySet>();
   ts->loc = loc;
   ts->element = parse_simple_type();
   return ts;
@@ -1018,7 +1018,7 @@ TypePtr Parser::parse_set_type() {
 TypePtr Parser::parse_file_type() {
   Location loc = cur_.loc;
   expect(Tok::KwFile, "file");
-  auto tf = std::make_unique<TyFile>();
+  auto tf = std::make_shared<TyFile>();
   tf->loc = loc;
   if (accept(Tok::KwOf)) tf->element = parse_type();
   return tf;
@@ -1026,7 +1026,7 @@ TypePtr Parser::parse_file_type() {
 
 TypePtr Parser::parse_procedural_type() {
   Location loc = cur_.loc;
-  auto tp = std::make_unique<TyProcedural>();
+  auto tp = std::make_shared<TyProcedural>();
   tp->loc = loc;
   tp->is_function = check(Tok::KwFunction);
   advance();  // procedure/function
@@ -1052,7 +1052,7 @@ TypePtr Parser::parse_procedural_type() {
 StmtPtr Parser::parse_compound_statement() {
   Location loc = cur_.loc;
   expect(Tok::KwBegin, "compound statement");
-  auto c = std::make_unique<Compound>();
+  auto c = std::make_shared<Compound>();
   c->loc = loc;
   while (!at_end() && !check(Tok::KwEnd)) {
     auto s = parse_statement();
@@ -1083,7 +1083,7 @@ StmtPtr Parser::parse_statement() {
     // are never ascribing, so the following heuristic is safe.
     advance();
     advance();  // ':'
-    auto lbl = std::make_unique<Labeled>();
+    auto lbl = std::make_shared<Labeled>();
     lbl->loc = loc;
     lbl->label = lab;
     lbl->body = parse_statement();
@@ -1093,7 +1093,7 @@ StmtPtr Parser::parse_statement() {
     std::string lab = cur_.text;
     Location loc = cur_.loc;
     advance(); advance();
-    auto lbl = std::make_unique<Labeled>();
+    auto lbl = std::make_shared<Labeled>();
     lbl->loc = loc;
     lbl->label = lab;
     lbl->body = parse_statement();
@@ -1109,7 +1109,7 @@ StmtPtr Parser::parse_statement() {
     case Tok::KwCase:   return parse_case();
     case Tok::KwWith:   return parse_with();
     case Tok::KwGoto: {
-      auto g = std::make_unique<Goto>(); g->loc = cur_.loc; advance();
+      auto g = std::make_shared<Goto>(); g->loc = cur_.loc; advance();
       if (cur_.kind == Tok::Ident || cur_.kind == Tok::IntLit) {
         g->label = cur_.text; advance();
       } else {
@@ -1129,7 +1129,7 @@ StmtPtr Parser::parse_statement() {
     case Tok::KwUntil:
     case Tok::KwElse: {
       // Empty statement.
-      auto e = std::make_unique<EmptyStmt>(); e->loc = cur_.loc;
+      auto e = std::make_shared<EmptyStmt>(); e->loc = cur_.loc;
       return e;
     }
     default:
@@ -1142,13 +1142,13 @@ StmtPtr Parser::parse_labeled_or_simple() {
   Location loc = cur_.loc;
   auto lhs = parse_expr();
   if (accept(Tok::Assign)) {
-    auto a = std::make_unique<Assign>();
+    auto a = std::make_shared<Assign>();
     a->loc = loc;
     a->target = std::move(lhs);
     a->value = parse_expr();
     return a;
   }
-  auto es = std::make_unique<ExprStmt>();
+  auto es = std::make_shared<ExprStmt>();
   es->loc = loc;
   es->expr = std::move(lhs);
   return es;
@@ -1157,7 +1157,7 @@ StmtPtr Parser::parse_labeled_or_simple() {
 StmtPtr Parser::parse_if() {
   Location loc = cur_.loc;
   expect(Tok::KwIf, "if");
-  auto n = std::make_unique<If>();
+  auto n = std::make_shared<If>();
   n->loc = loc;
   n->cond = parse_expr();
   expect(Tok::KwThen, "if");
@@ -1169,7 +1169,7 @@ StmtPtr Parser::parse_if() {
 StmtPtr Parser::parse_while() {
   Location loc = cur_.loc;
   expect(Tok::KwWhile, "while");
-  auto n = std::make_unique<While>();
+  auto n = std::make_shared<While>();
   n->loc = loc;
   n->cond = parse_expr();
   expect(Tok::KwDo, "while");
@@ -1180,7 +1180,7 @@ StmtPtr Parser::parse_while() {
 StmtPtr Parser::parse_repeat() {
   Location loc = cur_.loc;
   expect(Tok::KwRepeat, "repeat");
-  auto n = std::make_unique<Repeat>();
+  auto n = std::make_shared<Repeat>();
   n->loc = loc;
   while (!at_end() && !check(Tok::KwUntil)) {
     auto s = parse_statement();
@@ -1195,7 +1195,7 @@ StmtPtr Parser::parse_repeat() {
 StmtPtr Parser::parse_for() {
   Location loc = cur_.loc;
   expect(Tok::KwFor, "for");
-  auto n = std::make_unique<For>();
+  auto n = std::make_shared<For>();
   n->loc = loc;
   n->var = consume_ident("for variable");
   expect(Tok::Assign, "for");
@@ -1212,7 +1212,7 @@ StmtPtr Parser::parse_for() {
 StmtPtr Parser::parse_case() {
   Location loc = cur_.loc;
   expect(Tok::KwCase, "case");
-  auto n = std::make_unique<CaseStmt>();
+  auto n = std::make_shared<CaseStmt>();
   n->loc = loc;
   n->selector = parse_expr();
   expect(Tok::KwOf, "case");
@@ -1222,7 +1222,7 @@ StmtPtr Parser::parse_case() {
     arm.labels.push_back(parse_expr());
     if (accept(Tok::DotDot)) {
       // Rewrite as Range on last label.
-      auto r = std::make_unique<Range>();
+      auto r = std::make_shared<Range>();
       r->loc = arm.labels.back()->loc;
       r->lo = std::move(arm.labels.back());
       arm.labels.pop_back();
@@ -1232,7 +1232,7 @@ StmtPtr Parser::parse_case() {
     while (accept(Tok::Comma)) {
       auto lab = parse_expr();
       if (accept(Tok::DotDot)) {
-        auto r = std::make_unique<Range>();
+        auto r = std::make_shared<Range>();
         r->loc = lab->loc;
         r->lo = std::move(lab);
         r->hi = parse_expr();
@@ -1247,7 +1247,7 @@ StmtPtr Parser::parse_case() {
   }
   if (accept(Tok::KwElse) || accept(Tok::KwOtherwise)) {
     // Body is a statement sequence up to end.
-    auto c = std::make_unique<Compound>();
+    auto c = std::make_shared<Compound>();
     c->loc = cur_.loc;
     while (!at_end() && !check(Tok::KwEnd)) {
       auto s = parse_statement();
@@ -1263,7 +1263,7 @@ StmtPtr Parser::parse_case() {
 StmtPtr Parser::parse_with() {
   Location loc = cur_.loc;
   expect(Tok::KwWith, "with");
-  auto n = std::make_unique<With>();
+  auto n = std::make_shared<With>();
   n->loc = loc;
   n->exprs.push_back(parse_expr());
   while (accept(Tok::Comma)) n->exprs.push_back(parse_expr());
@@ -1287,7 +1287,7 @@ StmtPtr Parser::parse_with() {
 StmtPtr Parser::parse_try() {
   Location loc = cur_.loc;
   expect(Tok::KwTry, "try");
-  auto n = std::make_unique<Try>();
+  auto n = std::make_shared<Try>();
   n->loc = loc;
   while (!at_end() && !check(Tok::KwExcept) && !check(Tok::KwFinally)) {
     n->body.push_back(parse_statement());
@@ -1328,7 +1328,7 @@ StmtPtr Parser::parse_try() {
       }
       // Optional else-branch after `on' arms: catch-all.
       if (accept(Tok::KwElse)) {
-        auto compound = std::make_unique<Compound>();
+        auto compound = std::make_shared<Compound>();
         compound->loc = cur_.loc;
         while (!at_end() && !check(Tok::KwEnd)) {
           compound->body.push_back(parse_statement());
@@ -1339,7 +1339,7 @@ StmtPtr Parser::parse_try() {
     } else {
       // Catch-all shorthand: any statement list here runs on any
       // exception.  Model as the else-branch of an handlerless except.
-      auto compound = std::make_unique<Compound>();
+      auto compound = std::make_shared<Compound>();
       compound->loc = cur_.loc;
       while (!at_end() && !check(Tok::KwEnd)) {
         compound->body.push_back(parse_statement());
@@ -1359,7 +1359,7 @@ StmtPtr Parser::parse_try() {
 StmtPtr Parser::parse_raise() {
   Location loc = cur_.loc;
   expect(Tok::KwRaise, "raise");
-  auto n = std::make_unique<Raise>();
+  auto n = std::make_shared<Raise>();
   n->loc = loc;
   // Optional expression -- the instance being raised.  Absent iff the
   // next token ends the statement (`;', `end', `else', ...).
@@ -1378,7 +1378,7 @@ StmtPtr Parser::parse_raise() {
 StmtPtr Parser::parse_asm() {
   Location loc = cur_.loc;
   expect(Tok::KwAsm, "asm");
-  auto n = std::make_unique<AsmStmt>();
+  auto n = std::make_shared<AsmStmt>();
   n->loc = loc;
   // We do not tokenize asm bodies. Drain lexer tokens until matching `end`.
   // Because the lexer doesn't know we're in asm, this strategy only works
@@ -1426,7 +1426,7 @@ ExprPtr Parser::parse_expr() {
     }
     Location loc = cur_.loc; advance();
     auto rhs = parse_simple_expr();
-    auto b = std::make_unique<Binary>();
+    auto b = std::make_shared<Binary>();
     b->loc = loc; b->op = op;
     b->lhs = std::move(lhs); b->rhs = std::move(rhs);
     lhs = std::move(b);
@@ -1439,7 +1439,7 @@ ExprPtr Parser::parse_simple_expr() {
   if (check(Tok::Plus) || check(Tok::Minus)) {
     UnOp op = check(Tok::Minus) ? UnOp::Neg : UnOp::Plus;
     Location loc = cur_.loc; advance();
-    auto u = std::make_unique<Unary>();
+    auto u = std::make_shared<Unary>();
     u->loc = loc; u->op = op;
     u->operand = parse_term();
     lhs = std::move(u);
@@ -1458,7 +1458,7 @@ ExprPtr Parser::parse_simple_expr() {
     }
     Location loc = cur_.loc; advance();
     auto rhs = parse_term();
-    auto b = std::make_unique<Binary>();
+    auto b = std::make_shared<Binary>();
     b->loc = loc; b->op = op;
     b->lhs = std::move(lhs); b->rhs = std::move(rhs);
     lhs = std::move(b);
@@ -1481,7 +1481,7 @@ ExprPtr Parser::parse_term() {
     }
     Location loc = cur_.loc; advance();
     auto rhs = parse_factor();
-    auto b = std::make_unique<Binary>();
+    auto b = std::make_shared<Binary>();
     b->loc = loc; b->op = op;
     b->lhs = std::move(lhs); b->rhs = std::move(rhs);
     lhs = std::move(b);
@@ -1491,7 +1491,7 @@ ExprPtr Parser::parse_term() {
 ExprPtr Parser::parse_factor() {
   if (check(Tok::KwNot)) {
     Location loc = cur_.loc; advance();
-    auto u = std::make_unique<Unary>();
+    auto u = std::make_shared<Unary>();
     u->loc = loc; u->op = UnOp::Not;
     u->operand = parse_factor();
     return u;
@@ -1500,7 +1500,7 @@ ExprPtr Parser::parse_factor() {
     Location loc = cur_.loc;
     bool dbl = (cur_.kind == Tok::AtAt);
     advance();
-    auto a = std::make_unique<AddrOf>();
+    auto a = std::make_shared<AddrOf>();
     a->loc = loc; a->double_addr = dbl;
     a->operand = parse_factor();
     return a;
@@ -1512,28 +1512,28 @@ ExprPtr Parser::parse_primary() {
   Location loc = cur_.loc;
   switch (cur_.kind) {
     case Tok::IntLit: {
-      auto n = std::make_unique<IntLit>();
+      auto n = std::make_shared<IntLit>();
       n->loc = loc; n->value = cur_.int_value; advance();
       return parse_postfix(std::move(n));
     }
     case Tok::RealLit: {
-      auto n = std::make_unique<RealLit>();
+      auto n = std::make_shared<RealLit>();
       n->loc = loc; n->text = cur_.text; advance();
       return parse_postfix(std::move(n));
     }
     case Tok::StringLit: {
-      auto n = std::make_unique<StringLit>();
+      auto n = std::make_shared<StringLit>();
       n->loc = loc; n->value = cur_.text; advance();
       return parse_postfix(std::move(n));
     }
     case Tok::KwNil: {
-      auto n = std::make_unique<NilLit>();
+      auto n = std::make_shared<NilLit>();
       n->loc = loc; advance();
       return parse_postfix(std::move(n));
     }
     case Tok::KwTrue:
     case Tok::KwFalse: {
-      auto n = std::make_unique<BoolLit>();
+      auto n = std::make_shared<BoolLit>();
       n->loc = loc; n->value = (cur_.kind == Tok::KwTrue); advance();
       return parse_postfix(std::move(n));
     }
@@ -1549,10 +1549,10 @@ ExprPtr Parser::parse_primary() {
       // `inherited Method[(...)]` -> Member(Ident("inherited"), "method").
       // Bare `inherited;` stays as Ident("inherited").
       advance();
-      auto base = std::make_unique<Ident>();
+      auto base = std::make_shared<Ident>();
       base->loc = loc; base->name = "inherited";
       if (cur_.kind == Tok::Ident || tok_is_directive_kw()) {
-        auto m = std::make_unique<Member>();
+        auto m = std::make_shared<Member>();
         m->loc = loc;
         m->base = std::move(base);
         m->name = cur_.text;
@@ -1563,7 +1563,7 @@ ExprPtr Parser::parse_primary() {
     }
     case Tok::Ident:
     case Tok::KwSelf: {
-      auto id = std::make_unique<Ident>();
+      auto id = std::make_shared<Ident>();
       id->loc = loc; id->name = cur_.text; advance();
       return parse_postfix(std::move(id));
     }
@@ -1572,13 +1572,13 @@ ExprPtr Parser::parse_primary() {
       // identifiers in expression/statement position -- e.g. `abstract;`
       // as a stub method body.
       if (tok_is_directive_kw()) {
-        auto id = std::make_unique<Ident>();
+        auto id = std::make_shared<Ident>();
         id->loc = loc; id->name = cur_.text; advance();
         return parse_postfix(std::move(id));
       }
       report_error(loc,
                    "expected expression, got '" + cur_.text + "'");
-      auto n = std::make_unique<IntLit>();
+      auto n = std::make_shared<IntLit>();
       n->loc = loc;
       advance();
       return n;
@@ -1590,7 +1590,7 @@ ExprPtr Parser::parse_postfix(ExprPtr lhs) {
   for (;;) {
     Location loc = cur_.loc;
     if (accept(Tok::Dot)) {
-      auto m = std::make_unique<Member>();
+      auto m = std::make_shared<Member>();
       m->loc = loc;
       m->base = std::move(lhs);
       m->name = consume_name_or_directive("member name");
@@ -1598,13 +1598,13 @@ ExprPtr Parser::parse_postfix(ExprPtr lhs) {
       continue;
     }
     if (accept(Tok::Caret)) {
-      auto d = std::make_unique<Deref>();
+      auto d = std::make_shared<Deref>();
       d->loc = loc; d->operand = std::move(lhs);
       lhs = std::move(d);
       continue;
     }
     if (accept(Tok::LBrack)) {
-      auto ix = std::make_unique<Index>();
+      auto ix = std::make_shared<Index>();
       ix->loc = loc; ix->base = std::move(lhs);
       ix->indices.push_back(parse_expr());
       while (accept(Tok::Comma)) ix->indices.push_back(parse_expr());
@@ -1613,7 +1613,7 @@ ExprPtr Parser::parse_postfix(ExprPtr lhs) {
       continue;
     }
     if (accept(Tok::LParen)) {
-      auto c = std::make_unique<Call>();
+      auto c = std::make_shared<Call>();
       c->loc = loc; c->callee = std::move(lhs);
       while (!at_end() && !check(Tok::RParen)) {
         auto arg = parse_expr();
@@ -1638,12 +1638,12 @@ ExprPtr Parser::parse_postfix(ExprPtr lhs) {
 ExprPtr Parser::parse_set_literal() {
   Location loc = cur_.loc;
   expect(Tok::LBrack, "set literal");
-  auto s = std::make_unique<SetLit>();
+  auto s = std::make_shared<SetLit>();
   s->loc = loc;
   while (!at_end() && !check(Tok::RBrack)) {
     auto lo = parse_expr();
     if (accept(Tok::DotDot)) {
-      auto r = std::make_unique<Range>();
+      auto r = std::make_shared<Range>();
       r->loc = lo->loc;
       r->lo = std::move(lo);
       r->hi = parse_expr();
