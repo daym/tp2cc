@@ -82,6 +82,7 @@ enum class Kind : uint16_t {
   TySubrange,
   TyString,
   TyMetaclass,
+  TyDistinct,
   // Top-level
   UnitNode,
   ProgramNode,
@@ -477,6 +478,14 @@ struct TyObject : TypeExpr {
   // TObject ancestor, constructor returns a pointer via `TFoo.Create(...)`,
   // destruction via `.Free` (null-safe at the call site).
   bool is_reference_type = false;
+  // Delphi-style forward declaration `T = class;' -- the body comes
+  // later in the same type block (or same unit section).  A forward
+  // declaration carries no members, no parent; the real TyObject is
+  // produced when the actual `class ... end' follows.  Used in
+  // fpc-2.0.0 for mutually-referential classes (tprocdef/tobjectdef/
+  // timplementedinterfaces in symdef.pas, TAsmSection/TAsmObjectData
+  // in aasmbase.pas).
+  bool is_forward = false;
   TyObject() : TypeExpr(Kind::TyObject) {}
 };
 
@@ -494,6 +503,18 @@ struct TyFile : TypeExpr {
 struct TyPointer : TypeExpr {
   TypePtr target;
   TyPointer() : TypeExpr(Kind::TyPointer) {}
+};
+
+// Delphi distinct-type alias: `T = type <Underlying>'.  Creates a new
+// type that is layout-compatible with its underlying but NOT
+// assignment-compatible -- Pascal rejects `var x:T; var i:Integer;
+// i:=x' without an explicit `Integer(x)' cast.  Emit-time target is a
+// C++ wrapper struct with an `explicit' constructor and an `explicit
+// operator Underlying()' so implicit conversions are rejected at
+// compile time, preserving the type discipline the author intended.
+struct TyDistinct : TypeExpr {
+  TypePtr underlying;
+  TyDistinct() : TypeExpr(Kind::TyDistinct) {}
 };
 
 // Delphi `class of T' -- a metaclass reference.  A value of this

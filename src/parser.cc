@@ -664,6 +664,19 @@ TypePtr Parser::parse_type() {
     tp->target = parse_type();
     return tp;
   }
+  // Delphi distinct-type alias: `T = type <Underlying>;'.  Creates
+  // a new type that is layout-compatible with its underlying but
+  // NOT assignment-compatible without an explicit cast.  We keep a
+  // TyDistinct wrapper node so emit-time can produce a C++ struct
+  // with an explicit ctor and explicit conversion operator,
+  // preserving Pascal's type discipline (an integer variable can
+  // NOT silently receive a TSuperRegister value).
+  if (accept(Tok::KwType)) {
+    auto td = std::make_unique<TyDistinct>();
+    td->loc = loc;
+    td->underlying = parse_type();
+    return td;
+  }
   bool packed = false;
   if (accept(Tok::KwPacked)) packed = true;
 
@@ -898,6 +911,14 @@ TypePtr Parser::parse_object_type() {
     expect(Tok::KwObject, "object");
   }
   to->loc = loc;
+  // Delphi forward class declaration: `T = class;' (body follows in a
+  // later type declaration within the same section).  Only legal for
+  // `class' -- TP `object;' with no body is not idiomatic.  Detect by
+  // `class' immediately followed by `;'; no parent, no body, no end.
+  if (to->is_reference_type && check(Tok::Semi)) {
+    to->is_forward = true;
+    return to;
+  }
   if (accept(Tok::LParen)) {
     to->parent = consume_ident("parent class");
     expect(Tok::RParen, "parent class");
