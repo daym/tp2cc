@@ -11,7 +11,7 @@ They do support the following targets:
 * alpha
 * powerpc
 
-Bootstrap the FPC 0.99.14 compiler sources under `../fpc-1.0.6/source` with:
+Bootstrap the FPC 0.99.14 compiler sources under `../rpm` with:
 
 `./bootstrap-fpc-0.sh`
 
