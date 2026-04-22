@@ -1287,7 +1287,90 @@ inline void p_fsplit(const ShortString<>& input, ShortString<>& dir,
   name = ShortString<>(name_part.c_str());
   ext = ShortString<>(ext_part.c_str());
 }
-inline ShortString<> p_fexpand(const ShortString<>& s) { return s; }
+// FExpand: produce a fully-qualified, lexically normalised form of
+// `path`.  This is a string operation: GetDir is read once for the
+// cwd, and otherwise the filesystem is not touched.  Non-existent
+// paths round-trip unchanged; symlinks are NOT resolved.  Matches
+// the semantic of Kylix/Delphi SysUtils.ExpandFileName, GNU Pascal
+// FExpand, and FPC rtl/inc/fexpand.inc: the point is to produce a
+// qualified name the caller can feed to Assign/Rewrite before the
+// target necessarily exists.  Callers that need symlink resolution
+// should use a separate routine (realpath(3), not FExpand).
+//
+// Rules:
+//  - Empty input returns the current working directory.
+//  - Leading `~/` or bare `~` expands to $HOME (matches FPC's
+//    FPC_FEXPAND_TILDE on Linux).  If $HOME is unset or empty, the
+//    `~` is left in place.
+//  - Relative inputs are resolved against GetDir(0).
+//  - `.` components are dropped; `..` pops the previous component;
+//    `..` at the root is a no-op.
+//  - Result is capped to 255 chars by ShortString's constructor
+//    (silent truncation, Pascal shortstring semantics).
+inline ShortString<> p_fexpand(const ShortString<>& s) {
+  std::string in = p_to_std_string(s);
+
+  // Read cwd up-front.  getcwd(3) with a too-small buffer returns
+  // NULL and sets errno=ERANGE; grow and retry.  Cap the growth so a
+  // broken cwd doesn't blow up memory.
+  std::string cwd;
+  for (size_t sz = 4096; sz <= (1u << 20); sz *= 2) {
+    std::string buf(sz, '\0');
+    if (::getcwd(buf.data(), buf.size())) {
+      cwd.assign(buf.c_str());
+      break;
+    }
+    if (errno != ERANGE) break;
+  }
+
+  if (in.empty()) return ShortString<>(cwd.c_str());
+
+  std::string path = in;
+
+  // Tilde expansion.
+  if (path[0] == '~' && (path.size() == 1 || path[1] == '/')) {
+    if (const char* home = std::getenv("HOME"); home && *home) {
+      std::string h = home;
+      while (h.size() > 1 && h.back() == '/') h.pop_back();
+      path = h + path.substr(1);
+    }
+  }
+
+  // Make absolute if still relative after tilde expansion.
+  if (path.empty() || path[0] != '/') {
+    std::string base = cwd.empty() ? std::string("/") : cwd;
+    if (base.back() != '/') base += '/';
+    path = base + path;
+  }
+
+  // Lexical collapse of `.` and `..` components.  Everything between
+  // `/`s is a component; empty components (from `//`) are ignored.
+  std::vector<std::string> comps;
+  for (size_t i = 0; i < path.size(); ) {
+    while (i < path.size() && path[i] == '/') ++i;
+    size_t j = i;
+    while (j < path.size() && path[j] != '/') ++j;
+    if (j > i) {
+      std::string c = path.substr(i, j - i);
+      if (c == ".") {
+        // drop
+      } else if (c == "..") {
+        if (!comps.empty()) comps.pop_back();
+      } else {
+        comps.push_back(std::move(c));
+      }
+    }
+    i = j;
+  }
+
+  std::string out = "/";
+  for (size_t k = 0; k < comps.size(); ++k) {
+    if (k > 0) out += '/';
+    out += comps[k];
+  }
+
+  return ShortString<>(out.c_str());
+}
 
 // `EpochToLocal(epoch, var year,month,day,hour,minute,second)`
 // breaks a Unix epoch second-count into local-time calendar fields.
