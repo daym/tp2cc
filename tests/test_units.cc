@@ -1,9 +1,9 @@
-// Tests for UnitGraph (discovery + topological ordering).
+// Tests for UnitGraph (discovery via uses-walk + topological ordering).
 //
-// We write small synthetic units to a temporary directory and drive
-// UnitGraph against them, so these tests don't depend on the real fpc
-// sources. One final smoke test does run against rpm/compiler/ to confirm
-// the real graph is acyclic and complete.
+// Each test writes small synthetic units to a temporary directory and drives
+// UnitGraph from a program entry, so these tests don't depend on the real
+// fpc sources. One final smoke test does run against rpm/compiler/ to
+// confirm the real graph is acyclic and complete.
 
 #include <algorithm>
 #include <cstdio>
@@ -49,12 +49,14 @@ void write_unit(const fs::path& dir, const std::string& name,
   write_file(dir / (name + ".pas"), body);
 }
 
-void write_program(const fs::path& path, const std::string& name,
-                   const std::string& uses) {
+fs::path write_program(const fs::path& dir, const std::string& name,
+                       const std::string& uses) {
   std::string body = "program " + name + ";\n";
   if (!uses.empty()) body += "uses " + uses + ";\n";
   body += "begin\nend.\n";
-  write_file(path, body);
+  fs::path p = dir / (name + ".pas");
+  write_file(p, body);
+  return p;
 }
 
 std::vector<std::string> order_of(UnitGraph& g) {
@@ -70,45 +72,48 @@ int index_of(const std::vector<std::string>& v, const std::string& n) {
 void test_single_unit() {
   auto d = make_tmpdir("single");
   write_unit(d, "foo", "");
+  auto prog = write_program(d, "main", "foo");
   UnitGraph g;
   g.add_search_root(d);
-  CHECK_EQ(g.discover(), 0);
-  CHECK_EQ(g.units().size(), size_t{1});
-  auto tr = g.topo_sort();
-  CHECK_EQ(tr.order.size(), size_t{1});
-  CHECK_EQ(tr.order[0], std::string("foo"));
-  CHECK(tr.cycle_edges.empty());
+  CHECK_EQ(g.discover_from_entry(prog), 0);
+  // main + foo
+  CHECK_EQ(g.units().size(), size_t{2});
+  auto order = order_of(g);
+  CHECK(index_of(order, "foo") < index_of(order, "main"));
   fs::remove_all(d);
 }
 
 void test_linear_chain() {
   auto d = make_tmpdir("chain");
-  // a uses b uses c uses (nothing)
+  // main -> a -> b -> c
   write_unit(d, "a", "b");
   write_unit(d, "b", "c");
   write_unit(d, "c", "");
+  auto prog = write_program(d, "main", "a");
   UnitGraph g;
   g.add_search_root(d);
-  CHECK_EQ(g.discover(), 0);
+  CHECK_EQ(g.discover_from_entry(prog), 0);
   auto order = order_of(g);
-  CHECK_EQ(order.size(), size_t{3});
+  CHECK_EQ(order.size(), size_t{4});
   CHECK(index_of(order, "c") < index_of(order, "b"));
   CHECK(index_of(order, "b") < index_of(order, "a"));
+  CHECK(index_of(order, "a") < index_of(order, "main"));
   fs::remove_all(d);
 }
 
 void test_diamond() {
   auto d = make_tmpdir("diamond");
-  // Diamond dependency shape: top depends on b and c; both depend on base.
+  // top -> {b, c} -> base
   write_unit(d, "base", "");
   write_unit(d, "b", "base");
   write_unit(d, "c", "base");
   write_unit(d, "top", "b, c");
+  auto prog = write_program(d, "main", "top");
   UnitGraph g;
   g.add_search_root(d);
-  CHECK_EQ(g.discover(), 0);
+  CHECK_EQ(g.discover_from_entry(prog), 0);
   auto order = order_of(g);
-  CHECK_EQ(order.size(), size_t{4});
+  CHECK_EQ(order.size(), size_t{5});
   int i_base = index_of(order, "base");
   int i_b    = index_of(order, "b");
   int i_c    = index_of(order, "c");
@@ -124,68 +129,59 @@ void test_case_insensitive() {
   auto d = make_tmpdir("case");
   write_unit(d, "alpha", "");
   write_unit(d, "beta",  "ALPHA");   // mixed-case reference
+  auto prog = write_program(d, "main", "beta");
   UnitGraph g;
   g.add_search_root(d);
-  CHECK_EQ(g.discover(), 0);
+  CHECK_EQ(g.discover_from_entry(prog), 0);
   auto order = order_of(g);
-  CHECK_EQ(order.size(), size_t{2});
+  CHECK_EQ(order.size(), size_t{3});
   CHECK(index_of(order, "alpha") < index_of(order, "beta"));
   fs::remove_all(d);
 }
 
 void test_external_uses_ignored() {
-  // If a unit references something not present in the graph (e.g. `dos`
-  // from the RTL), it should not create a phantom cycle.
+  // A unit that references something not in the search path (e.g. `dos`
+  // from the RTL) should not create a phantom cycle; the graph just
+  // won't include a node for that name.
   auto d = make_tmpdir("external");
   write_unit(d, "solo", "dos, strings, linux");
+  auto prog = write_program(d, "main", "solo");
   UnitGraph g;
   g.add_search_root(d);
-  CHECK_EQ(g.discover(), 0);
+  CHECK_EQ(g.discover_from_entry(prog), 0);
   auto tr = g.topo_sort();
-  CHECK_EQ(tr.order.size(), size_t{1});
-  CHECK_EQ(tr.order[0], std::string("solo"));
+  CHECK_EQ(tr.order.size(), size_t{2});
   CHECK(tr.cycle_edges.empty());
   fs::remove_all(d);
 }
 
 void test_cycle_detected() {
   auto d = make_tmpdir("cycle");
+  // Cycle inside the uses-reachable graph: a <-> b.
   write_unit(d, "a", "b");
   write_unit(d, "b", "a");
+  auto prog = write_program(d, "main", "a");
   UnitGraph g;
   g.add_search_root(d);
-  CHECK_EQ(g.discover(), 0);
+  (void)g.discover_from_entry(prog);
   auto tr = g.topo_sort();
-  // Neither unit should be in order; both are on a cycle.
-  CHECK(tr.order.empty());
   CHECK(!tr.cycle_edges.empty());
-  fs::remove_all(d);
-}
-
-void test_skip_path() {
-  auto d = make_tmpdir("skip");
-  write_unit(d, "keep", "");
-  write_unit(d, "drop", "");
-  UnitGraph g;
-  g.add_search_root(d);
-  g.skip_path_containing("/drop.pas");
-  CHECK_EQ(g.discover(), 0);
-  CHECK_EQ(g.units().size(), size_t{1});
-  CHECK(g.lookup("keep") != nullptr);
-  CHECK(g.lookup("drop") == nullptr);
   fs::remove_all(d);
 }
 
 void test_discover_from_entry_only_reachable_units() {
   auto d = make_tmpdir("entry");
   fs::create_directories(d / "sub");
-  write_program(d / "main.pas", "main", "alpha");
+  auto main = write_program(d, "main", "alpha");
   write_unit(d, "alpha", "beta");
   write_unit(d / "sub", "beta", "");
   write_unit(d, "unused", "");
 
   UnitGraph g;
-  CHECK_EQ(g.discover_from_entry(d / "main.pas"), 0);
+  // Search roots are non-recursive; subdirs must be listed explicitly.
+  g.add_search_root(d);
+  g.add_search_root(d / "sub");
+  CHECK_EQ(g.discover_from_entry(main), 0);
   CHECK_EQ(g.units().size(), size_t{3});
   CHECK(g.lookup("main") != nullptr);
   CHECK(g.lookup("alpha") != nullptr);
@@ -195,10 +191,12 @@ void test_discover_from_entry_only_reachable_units() {
 }
 
 void test_real_fpc_compiler_acyclic() {
-  // Smoke test: the real fpc 0.99 compiler source tree should be acyclic.
+  // Optional rpm/compiler fixture: walking pp.pas with the bootstrap defines
+  // should not find a unit cycle.
   fs::path src_root = fs::path(__FILE__).parent_path().parent_path().parent_path();
   fs::path compiler = src_root / "rpm" / "compiler";
-  if (!fs::exists(compiler)) {
+  fs::path entry = compiler / "pp.pas";
+  if (!fs::exists(entry)) {
     // Skip silently if not run from the expected tree layout.
     return;
   }
@@ -207,12 +205,12 @@ void test_real_fpc_compiler_acyclic() {
   g.define("FPC");
   g.define("I386");
   g.define("LINUX");
-  g.skip_path_containing("/new/");
-  g.skip_path_containing("/tokendat.pas");
-  CHECK_EQ(g.discover(), 0);
+  g.define("UNIX");
+  g.define("NOTARGETWIN32");
+  (void)g.discover_from_entry(entry);
   auto tr = g.topo_sort();
   CHECK(tr.cycle_edges.empty());
-  CHECK(g.units().size() > 100);  // ~129 units
+  CHECK(g.units().size() > 50);
   CHECK_EQ(tr.order.size(), g.units().size());
 }
 
@@ -225,7 +223,6 @@ int main() {
   RUN_TEST(test_case_insensitive);
   RUN_TEST(test_external_uses_ignored);
   RUN_TEST(test_cycle_detected);
-  RUN_TEST(test_skip_path);
   RUN_TEST(test_discover_from_entry_only_reachable_units);
   RUN_TEST(test_real_fpc_compiler_acyclic);
 

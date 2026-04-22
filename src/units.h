@@ -33,19 +33,16 @@ class UnitGraph {
  public:
   UnitGraph();
 
-  // Add a search root. Called before `discover()`.
+  // Add a unit search path (equivalent of FPC's -Fu<dir>). Non-recursive;
+  // first-match-wins across paths in insertion order.
   void add_search_root(std::filesystem::path p);
+
+  // Add an include search path (equivalent of FPC's -Fi<dir>) for {$I}
+  // directives encountered while parsing units.
+  void add_include_path(std::filesystem::path p);
 
   // Predefine a preprocessor symbol used when parsing each unit.
   void define(std::string name);
-
-  // Skip a file (by substring match of its path). Used for build-utilities
-  // like `tokendat.pas` that aren't part of the compiler proper.
-  void skip_path_containing(std::string needle);
-
-  // Find all candidate .pas/.pp files under the roots and parse each into a
-  // ParsedUnit. Returns the number of parse errors across all files.
-  int discover();
 
   // Parse a single program/unit file and recursively discover only the units
   // reachable through its `uses` graph. Search roots are still used to locate
@@ -71,16 +68,14 @@ class UnitGraph {
 
  private:
   std::vector<std::filesystem::path> roots_;
+  std::vector<std::filesystem::path> include_paths_;
   std::vector<std::string> defines_;
-  std::vector<std::string> skip_needles_;
 
   // Map lowercased unit name -> ParsedUnit.
   std::unordered_map<std::string, ParsedUnit> units_;
-  std::unordered_map<std::string, std::vector<std::filesystem::path>>
-      unit_path_index_;
+  std::unordered_map<std::string, std::filesystem::path> unit_path_index_;
   bool unit_path_index_ready_ = false;
 
-  bool skipped(const std::string& path) const;
   static std::string to_lower(std::string_view s);
   void build_unit_path_index();
   std::filesystem::path find_unit_path(std::string_view name);

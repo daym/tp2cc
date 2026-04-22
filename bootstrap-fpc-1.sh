@@ -105,7 +105,19 @@ build_stage1() {
   echo "== [3/7] translate FPC 1.0.6 compiler to C++ =="
   rm -rf "$STAGE1_DIR" "$STAGE1_LOGDIR"
   mkdir -p "$STAGE1_DIR"
-  ./build/bin/tp2cc emit-all "$ENTRY_FILE" "$STAGE1_DIR"
+  ./build/bin/tp2cc emit-all \
+    -dFPC -dI386 -dLINUX -dUNIX \
+    -dNOTARGETAMIGA -dNOTARGETBEOS -dNOTARGETFREEBSD \
+    -dNOTARGETGO32V1 -dNOTARGETGO32V2 -dNOTARGETOS2 \
+    -dNOTARGETPALMOS -dNOTARGETQNX -dNOTARGETSUNOS \
+    -dNOTARGETWIN32 \
+    -Fu"$CLEAN_SRC/compiler" \
+    -Fu"$CLEAN_SRC/compiler/i386" \
+    -Fu"$CLEAN_SRC/compiler/targets" \
+    -Fi"$CLEAN_SRC/rtl/inc" \
+    -Fi"$CLEAN_SRC/rtl/i386" \
+    -Fi"$CLEAN_SRC/rtl/linux" \
+    "$ENTRY_FILE" "$STAGE1_DIR"
   write_bootstrap_cfg
   install_support_files "$STAGE1_DIR"
 

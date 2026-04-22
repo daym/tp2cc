@@ -16,18 +16,11 @@ UnitGraph::UnitGraph() = default;
 
 void UnitGraph::add_search_root(fs::path p) { roots_.push_back(std::move(p)); }
 
+void UnitGraph::add_include_path(fs::path p) {
+  include_paths_.push_back(std::move(p));
+}
+
 void UnitGraph::define(std::string name) { defines_.push_back(std::move(name)); }
-
-void UnitGraph::skip_path_containing(std::string needle) {
-  skip_needles_.push_back(std::move(needle));
-}
-
-bool UnitGraph::skipped(const std::string& path) const {
-  for (const auto& n : skip_needles_) {
-    if (path.find(n) != std::string::npos) return true;
-  }
-  return false;
-}
 
 std::string UnitGraph::to_lower(std::string_view s) {
   std::string r(s);
@@ -40,22 +33,17 @@ std::string UnitGraph::to_lower(std::string_view s) {
 void UnitGraph::build_unit_path_index() {
   if (unit_path_index_ready_) return;
   unit_path_index_.clear();
+  // Non-recursive, first-match-wins: roots are probed in insertion order,
+  // and the first file discovered for a given unit name is kept.
   for (const auto& root : roots_) {
     if (!fs::exists(root)) continue;
-    for (auto& e : fs::recursive_directory_iterator(root)) {
+    for (auto& e : fs::directory_iterator(root)) {
       if (!e.is_regular_file()) continue;
       auto ext = e.path().extension();
       if (ext != ".pas" && ext != ".pp") continue;
-      auto s = e.path().string();
-      if (skipped(s)) continue;
-      unit_path_index_[to_lower(e.path().stem().string())].push_back(e.path());
+      std::string stem = to_lower(e.path().stem().string());
+      unit_path_index_.try_emplace(stem, e.path());
     }
-  }
-  for (auto& [_, paths] : unit_path_index_) {
-    std::sort(paths.begin(), paths.end(),
-              [](const fs::path& a, const fs::path& b) {
-                return a.string() < b.string();
-              });
   }
   unit_path_index_ready_ = true;
 }
@@ -63,8 +51,8 @@ void UnitGraph::build_unit_path_index() {
 fs::path UnitGraph::find_unit_path(std::string_view name) {
   build_unit_path_index();
   auto it = unit_path_index_.find(to_lower(name));
-  if (it == unit_path_index_.end() || it->second.empty()) return {};
-  return it->second.front();
+  if (it == unit_path_index_.end()) return {};
+  return it->second;
 }
 
 int UnitGraph::parse_recursive(const fs::path& path) {
@@ -72,7 +60,7 @@ int UnitGraph::parse_recursive(const fs::path& path) {
   if (!sf) return 1;
 
   int errs_before = error_count();
-  Lexer lex(std::move(sf));
+  Lexer lex(std::move(sf), include_paths_);
   for (const auto& d : defines_) lex.define(d);
   Parser parser(lex);
   auto node = parser.parse();
@@ -122,72 +110,11 @@ int UnitGraph::parse_recursive(const fs::path& path) {
   return errors;
 }
 
-int UnitGraph::discover() {
-  units_.clear();
-  unit_path_index_.clear();
-  unit_path_index_ready_ = false;
-  int errors = 0;
-  for (const auto& root : roots_) {
-    if (!fs::exists(root)) continue;
-    for (auto& e : fs::recursive_directory_iterator(root)) {
-      if (!e.is_regular_file()) continue;
-      auto ext = e.path().extension();
-      if (ext != ".pas" && ext != ".pp") continue;
-      auto s = e.path().string();
-      if (skipped(s)) continue;
-
-      auto sf = SourceFile::load(e.path());
-      if (!sf) { ++errors; continue; }
-
-      int errs_before = error_count();
-      Lexer lex(std::move(sf));
-      for (const auto& d : defines_) lex.define(d);
-      Parser parser(lex);
-      auto node = parser.parse();
-      int errs = error_count() - errs_before;
-
-      ParsedUnit pu;
-      pu.path = e.path();
-      pu.ok = (errs == 0 && node != nullptr);
-      if (node) pu.name = to_lower(node->name);
-      pu.ast = std::move(node);
-
-      if (!pu.ok) { errors += errs > 0 ? errs : 1; }
-
-      if (pu.name.empty()) {
-        // A program, or a failed parse. Use the filename stem as a fallback
-        // key so programs don't collide with each other. Programs are not
-        // referenced via `uses`, so this key won't match any dependency.
-        pu.name = std::string("__prog_") + e.path().stem().string();
-      }
-
-      auto it = units_.find(pu.name);
-      if (it != units_.end()) {
-        // Duplicate unit name -- could happen if someone has two copies of
-        // a unit on the search path. Report and keep the first.
-        Location loc;
-        if (pu.ast) loc = pu.ast->loc;
-        report_warning(loc, "duplicate unit '" + pu.name + "' at " +
-                                 e.path().string() + " (first seen at " +
-                                 it->second.path.string() + ")");
-        continue;
-      }
-      units_.emplace(pu.name, std::move(pu));
-    }
-  }
-  return errors;
-}
-
 int UnitGraph::discover_from_entry(fs::path entry_path) {
   units_.clear();
   unit_path_index_.clear();
   unit_path_index_ready_ = false;
   if (!entry_path.is_absolute()) entry_path = fs::absolute(entry_path);
-  if (!entry_path.parent_path().empty() &&
-      std::find(roots_.begin(), roots_.end(), entry_path.parent_path()) ==
-          roots_.end()) {
-    add_search_root(entry_path.parent_path());
-  }
   return parse_recursive(entry_path);
 }
 

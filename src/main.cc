@@ -1,8 +1,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <fstream>
 #include <set>
@@ -29,21 +31,33 @@ std::string to_lower(std::string_view s) {
   return r;
 }
 
-void define_default_symbols(Lexer& lex) {
-  // Match the baseline bootstrap environment we target: Free Pascal on
-  // linux/i386. `UNIX` matters for 1.0.x compiler conditionals such as
-  // `globals.pas` choosing `DirSep = '/'`.
-  lex.define("FPC");
-  lex.define("I386");
-  lex.define("LINUX");
-  lex.define("UNIX");
+struct CliOptions {
+  std::vector<std::string> defines;
+  std::vector<fs::path> unit_paths;     // -Fu<dir>
+  std::vector<fs::path> include_paths;  // -Fi<dir>
+};
+
+// Reserved extension point: if tp2cc ever needs to predefine symbols
+// unconditionally, add them here. Callers are expected to pass their
+// own set via -dSYMBOL flags.
+void define_default_symbols(Lexer&) {}
+void define_default_symbols(UnitGraph&) {}
+
+std::unique_ptr<Lexer> make_lexer(const std::string& path,
+                                  const CliOptions& opts) {
+  auto sf = SourceFile::load(path);
+  if (!sf) return nullptr;
+  auto lex = std::make_unique<Lexer>(std::move(sf), opts.include_paths);
+  define_default_symbols(*lex);
+  for (const auto& d : opts.defines) lex->define(d);
+  return lex;
 }
 
-void define_default_symbols(UnitGraph& g) {
-  g.define("FPC");
-  g.define("I386");
-  g.define("LINUX");
-  g.define("UNIX");
+void configure_graph(UnitGraph& g, const CliOptions& opts) {
+  define_default_symbols(g);
+  for (const auto& d : opts.defines) g.define(d);
+  for (const auto& p : opts.unit_paths) g.add_search_root(p);
+  for (const auto& p : opts.include_paths) g.add_include_path(p);
 }
 
 void collect_unit_init_order(const UnitGraph& g,
@@ -66,44 +80,42 @@ void collect_unit_init_order(const UnitGraph& g,
   for (const auto& dep : u.impl_uses) visit(dep, visit);
 }
 
-int cmd_lex(const std::string& path) {
-  auto sf = SourceFile::load(path);
-  if (!sf) { std::fprintf(stderr, "cannot read %s\n", path.c_str()); return 2; }
-  Lexer lex(std::move(sf));
-  define_default_symbols(lex);
-  for (;;) {
-    Token t = lex.next();
-    std::printf("%-4u:%-3u  %-3u  %s\n", t.loc.line, t.loc.col,
-                static_cast<unsigned>(t.kind), t.text.c_str());
-    if (t.kind == Tok::Eof) break;
+int cmd_lex(const CliOptions& opts,
+            const std::vector<std::string>& files) {
+  if (files.empty()) { std::fprintf(stderr, "lex: no input files\n"); return 2; }
+  int fails = 0;
+  for (const auto& path : files) {
+    auto lex = make_lexer(path, opts);
+    if (!lex) {
+      std::fprintf(stderr, "cannot read %s\n", path.c_str());
+      ++fails;
+      continue;
+    }
+    for (;;) {
+      Token t = lex->next();
+      std::printf("%s  %-4u:%-3u  %-3u  %s\n", path.c_str(), t.loc.line,
+                  t.loc.col, static_cast<unsigned>(t.kind), t.text.c_str());
+      if (t.kind == Tok::Eof) break;
+    }
   }
-  return error_count() == 0 ? 0 : 1;
+  return (fails == 0 && error_count() == 0) ? 0 : 1;
 }
 
-// Files we never translate and therefore never try to lex:
-//   - tokendat.pas:  a TP7-only build utility; its own {$fatal} rejects FPC.
-//     Not part of the compiler proper.
-static bool is_skipped(const std::string& path) {
-  if (path.find("/new/") != std::string::npos) return true;  // newer WIP tree
-  if (path.find("/tokendat.pas") != std::string::npos) return true;
-  return false;
-}
-
-int cmd_lex_all(const std::string& dir) {
+int cmd_lex_all(const CliOptions& opts,
+                const std::vector<std::string>& files) {
+  if (files.empty()) {
+    std::fprintf(stderr, "lex-all: no input files\n");
+    return 2;
+  }
   int fails = 0;
   int ok = 0;
-  for (auto& e : fs::recursive_directory_iterator(dir)) {
-    if (!e.is_regular_file()) continue;
-    auto ext = e.path().extension();
-    if (ext != ".pas" && ext != ".pp" && ext != ".inc") continue;
-    auto s = e.path().string();
-    if (is_skipped(s)) continue;
-
-    auto sf = SourceFile::load(e.path());
-    if (!sf) { ++fails; continue; }
+  for (const auto& path : files) {
+    auto sf = SourceFile::load(path);
+    if (!sf) { ++fails; std::printf("FAIL %s (cannot read)\n", path.c_str()); continue; }
     int errs_before = error_count();
-    Lexer lex(std::move(sf));
+    Lexer lex(std::move(sf), opts.include_paths);
     define_default_symbols(lex);
+    for (const auto& d : opts.defines) lex.define(d);
     int tokens = 0;
     for (;;) {
       Token t = lex.next();
@@ -115,7 +127,8 @@ int cmd_lex_all(const std::string& dir) {
     if (errs == 0) {
       ++ok;
     } else {
-      std::printf("FAIL %s (%d errors, %d tokens)\n", s.c_str(), errs, tokens);
+      std::printf("FAIL %s (%d errors, %d tokens)\n", path.c_str(), errs,
+                  tokens);
       ++fails;
     }
   }
@@ -123,42 +136,48 @@ int cmd_lex_all(const std::string& dir) {
   return fails == 0 ? 0 : 1;
 }
 
-int cmd_parse(const std::string& path) {
-  auto sf = SourceFile::load(path);
-  if (!sf) { std::fprintf(stderr, "cannot read %s\n", path.c_str()); return 2; }
-  Lexer lex(std::move(sf));
-  define_default_symbols(lex);
-  Parser parser(lex);
-  auto u = parser.parse();
-  if (!u) return 1;
-  if (error_count() > 0) return 1;
-  std::printf("parse ok: %s '%s'\n",
-              u->is_program ? "program" : "unit", u->name.c_str());
-  return 0;
+int cmd_parse(const CliOptions& opts,
+              const std::vector<std::string>& files) {
+  if (files.empty()) { std::fprintf(stderr, "parse: no input files\n"); return 2; }
+  int fails = 0;
+  for (const auto& path : files) {
+    auto lex = make_lexer(path, opts);
+    if (!lex) {
+      std::fprintf(stderr, "cannot read %s\n", path.c_str());
+      ++fails;
+      continue;
+    }
+    Parser parser(*lex);
+    auto u = parser.parse();
+    if (!u || error_count() > 0) { ++fails; continue; }
+    std::printf("parse ok: %s '%s'\n",
+                u->is_program ? "program" : "unit", u->name.c_str());
+  }
+  return fails == 0 ? 0 : 1;
 }
 
-int cmd_parse_all(const std::string& dir) {
+int cmd_parse_all(const CliOptions& opts,
+                  const std::vector<std::string>& files) {
+  if (files.empty()) {
+    std::fprintf(stderr, "parse-all: no input files\n");
+    return 2;
+  }
   int fails = 0;
   int ok = 0;
-  for (auto& e : fs::recursive_directory_iterator(dir)) {
-    if (!e.is_regular_file()) continue;
-    auto ext = e.path().extension();
-    if (ext != ".pas" && ext != ".pp") continue;   // skip .inc here
-    auto s = e.path().string();
-    if (is_skipped(s)) continue;
-
-    auto sf = SourceFile::load(e.path());
-    if (!sf) { ++fails; continue; }
+  for (const auto& path : files) {
+    auto sf = SourceFile::load(path);
+    if (!sf) { ++fails; std::printf("FAIL %s (cannot read)\n", path.c_str()); continue; }
     int errs_before = error_count();
-    Lexer lex(std::move(sf));
+    Lexer lex(std::move(sf), opts.include_paths);
     define_default_symbols(lex);
+    for (const auto& d : opts.defines) lex.define(d);
     Parser parser(lex);
     auto u = parser.parse();
     int errs = error_count() - errs_before;
     if (errs == 0 && u) {
       ++ok;
     } else {
-      std::printf("FAIL %s (%d errors)\n", s.c_str(), errs);
+      std::printf("FAIL %s (%d errors)\n", path.c_str(), errs);
       ++fails;
     }
   }
@@ -166,78 +185,27 @@ int cmd_parse_all(const std::string& dir) {
   return fails == 0 ? 0 : 1;
 }
 
-int cmd_emit_all(const std::string& input_path, const std::string& outdir) {
+int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
+                 const std::string& outdir) {
   UnitGraph g;
-  define_default_symbols(g);
-  g.define("CPU86");   // version.pas guards `source_cpu_string` on CPU86.
+  configure_graph(g, opts);
+  // version.pas guards `source_cpu_string` on CPU86, which is implied by
+  // I386. Keep it hardcoded so callers don't have to know this internal
+  // detail.
+  g.define("CPU86");
   // Skip compiling the huge msgtxt.inc message-text table into the
-  // binary. Under EXTERN_MSG the compiler loads `errore.msg` from
-  // disk at startup instead. Avoids the awkward-to-translate
-  // `@msgtxt` on an `array[N] of string[240]` in verbose.pas:488.
+  // binary. Under EXTERN_MSG the compiler loads `errore.msg` from disk
+  // at startup instead. Avoids the awkward-to-translate `@msgtxt` on an
+  // `array[N] of string[240]` in verbose.pas:488. Build-model decision,
+  // not a caller-tunable.
   g.define("EXTERN_MSG");
-  g.skip_path_containing("/new/");
-  g.skip_path_containing("/tokendat.pas");
-  // ppovin.pas is TP7-only overlay glue (pp.pas does
-  // `{$ifdef FPC}{$UNDEF USEOVERLAY}{$ENDIF}`; under FPC it's never
-  // `uses`d). Emitting it independently drags in an undeclared
-  // `ovrgetbuf` -- skip it entirely.
-  g.skip_path_containing("/ppovin.pas");
-  // Utility *programs* bundled in the compiler source but not part
-  // of the compiler itself -- each has its own `program begin..end.`
-  // -> `int main()`, which would collide with pp.pas's main. They
-  // build independently from this bootstrap.
-  g.skip_path_containing("/fixlog.pas");
-  g.skip_path_containing("/fixnasm.pas");
-  g.skip_path_containing("/messagedif.pas");
-  g.skip_path_containing("/msg2inc.pas");
-  g.skip_path_containing("/nasmconv.pas");
-  // og386elf.pas is unreferenced (og386cff.pas is the live version
-  // used by ag386bin). The elf variant has latent `inherited init;`
-  // bugs where the parent ctor took a param the child didn't pass;
-  // the original fpc compiled it by accident. Skip.
-  g.skip_path_containing("/og386elf.pas");
-  // dmisc.pas is a Delphi-only drop-in for the dos unit (wraps
-  // Kernel32 APIs). Every `uses dmisc` in the compiler sits under
-  // `{$ifdef Delphi}`, so it's dead code under FPC.
-  g.skip_path_containing("/dmisc.pas");
-  // Non-Linux target-specific units. We're emitting for linux/i386,
-  // so dos-extender / os2 / win32 back-ends are dead code for the
-  // bootstrap path.
-  g.skip_path_containing("/t_go32v1.pas");
-  g.skip_path_containing("/t_go32v2.pas");
-  g.skip_path_containing("/t_os2.pas");
-  g.skip_path_containing("/t_win32.pas");
-  // Browser units are only pulled in under `{$ifdef BrowserCol}` /
-  // `{$ifdef BrowserLog}` by compiler.pas -- neither is defined by
-  // default under FPC, so these are dead code for bootstrap.
-  g.skip_path_containing("/browcol.pas");
-  g.skip_path_containing("/browlog.pas");
-  g.skip_path_containing("/m68k/");
-  g.skip_path_containing("/alpha/");
-  g.skip_path_containing("/powerpc/");
-  // We target i386. Non-i386 CPU back-end modules reference registers
-  // (R_D0 etc.) defined only in their own cpubase; on i386 they are dead
-  // code. Skip 68k code generator + assembler files in the compiler root.
-  for (const char* p : {
-           "/cg68k",   "/ag68k",  "/cga68k",  "/tgen68k",
-           "/opts68k", "/ra68k",  "/og68k"}) {
-    g.skip_path_containing(p);
-  }
   fs::path input = input_path;
-  int derr = 0;
-  if (!fs::exists(input)) {
-    std::fprintf(stderr, "cannot read %s\n", input_path.c_str());
+  if (!fs::is_regular_file(input)) {
+    std::fprintf(stderr, "emit-all: not a regular file: %s\n",
+                 input_path.c_str());
     return 2;
   }
-  if (fs::is_regular_file(input)) {
-    derr = g.discover_from_entry(input);
-  } else if (fs::is_directory(input)) {
-    g.add_search_root(input);
-    derr = g.discover();
-  } else {
-    std::fprintf(stderr, "unsupported input path %s\n", input_path.c_str());
-    return 2;
-  }
+  int derr = g.discover_from_entry(input);
   if (derr) std::fprintf(stderr, "discover saw %d errors\n", derr);
   auto tr = g.topo_sort();
   if (!tr.cycle_edges.empty()) {
@@ -246,12 +214,8 @@ int cmd_emit_all(const std::string& input_path, const std::string& outdir) {
   }
   fs::create_directories(outdir);
   int emitted = 0, failed = 0;
-  std::set<std::string> rtl_refs;  // external-RTL unit names seen in uses
+  std::set<std::string> rtl_refs;
 
-  // Reified type/symbol tree spanning every parsed unit. The emitter
-  // consults it to decide, per Pascal-level semantics, whether an
-  // expression `obj.name` refers to a field or a parameterless method
-  // (and similarly for bare identifier auto-call).
   std::vector<const ast::UnitNode*> asts;
   for (const auto& [_, pu] : g.units()) {
     if (pu.ast) asts.push_back(pu.ast.get());
@@ -262,11 +226,6 @@ int cmd_emit_all(const std::string& input_path, const std::string& outdir) {
   for (const auto& name : tr.order) {
     const auto* pu = g.lookup(name);
     if (!pu || !pu->ok || !pu->ast) { ++failed; continue; }
-    // For the program unit, pass the topo-sorted list of non-program
-    // units so the emitter can generate a `__unit_init()` chain at
-    // the start of `main()`. Pascal runs each unit's tail
-    // `begin..end.` exactly once, in dependency order, before the
-    // program body.
     const std::vector<std::string>* init_order = nullptr;
     std::vector<std::string> init_list;
     if (pu->ast->is_program) {
@@ -292,13 +251,9 @@ int cmd_emit_all(const std::string& input_path, const std::string& outdir) {
       std::ofstream c(fs::path(outdir) / ("p_" + name + ".cc"));
       c << out.impl;
     }
-    // Collect external (not in the graph) uses names.
     auto scan = [&](const std::vector<std::string>& uses) {
       for (const auto& u : uses) {
-        std::string lu = u;
-        for (auto& ch : lu) {
-          if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
-        }
+        std::string lu = to_lower(u);
         if (!g.lookup(lu)) rtl_refs.insert(lu);
       }
     };
@@ -306,19 +261,11 @@ int cmd_emit_all(const std::string& input_path, const std::string& outdir) {
     scan(pu->ast->impl_uses);
     ++emitted;
   }
-  // Emit stub headers for external RTL units so `#include "unit.h"` resolves.
-  // They declare an empty namespace with the expected name; real symbols come
-  // from tp2cc_rt/prelude.h (or are added later as the runtime grows).
   for (const auto& u : rtl_refs) {
     std::ofstream h(fs::path(outdir) / ("p_" + u + ".h"));
     h << "// tp2cc: RTL stub for external unit '" << u << "'.\n";
     h << "#pragma once\n";
     h << "#include \"tp2cc_rt/prelude.h\"\n";
-    // Namespace alias makes `p_UNIT::name` resolve to `rt::name`, which
-    // is what qualified lookups from other units expect. A
-    // `using namespace ::rt` inside a namespace body would only bring
-    // those names in for UNQUALIFIED lookups done inside that
-    // namespace -- not for external `p_UNIT::name` access.
     h << "namespace rt {}\n";
     h << "namespace p_" << u << " = ::rt;\n";
   }
@@ -328,12 +275,11 @@ int cmd_emit_all(const std::string& input_path, const std::string& outdir) {
   return failed == 0 ? 0 : 1;
 }
 
-int cmd_emit(const std::string& path, const std::string& outdir) {
-  auto sf = SourceFile::load(path);
-  if (!sf) { std::fprintf(stderr, "cannot read %s\n", path.c_str()); return 2; }
-  Lexer lex(std::move(sf));
-  define_default_symbols(lex);
-  Parser parser(lex);
+int cmd_emit(const CliOptions& opts, const std::string& path,
+             const std::string& outdir) {
+  auto lex = make_lexer(path, opts);
+  if (!lex) { std::fprintf(stderr, "cannot read %s\n", path.c_str()); return 2; }
+  Parser parser(*lex);
   auto u = parser.parse();
   if (!u || error_count() > 0) return 1;
   int errs_before = error_count();
@@ -354,31 +300,20 @@ int cmd_emit(const std::string& path, const std::string& outdir) {
   return 0;
 }
 
-int cmd_topo(const std::string& input_path) {
+int cmd_topo(const CliOptions& opts,
+             const std::vector<std::string>& files) {
+  if (files.size() != 1) {
+    std::fprintf(stderr, "topo: expected exactly one entry file\n");
+    return 2;
+  }
   UnitGraph g;
-  define_default_symbols(g);
-  g.skip_path_containing("/new/");
-  g.skip_path_containing("/tokendat.pas");
-  // Non-i386 CPU subtrees carry units with the same names as the i386
-  // versions (e.g. cpubase.pas); skip them so the discovery map is clean.
-  g.skip_path_containing("/m68k/");
-  g.skip_path_containing("/alpha/");
-  g.skip_path_containing("/powerpc/");
-  fs::path input = input_path;
-  int errs = 0;
-  if (!fs::exists(input)) {
-    std::fprintf(stderr, "cannot read %s\n", input_path.c_str());
+  configure_graph(g, opts);
+  fs::path input = files[0];
+  if (!fs::is_regular_file(input)) {
+    std::fprintf(stderr, "topo: not a regular file: %s\n", files[0].c_str());
     return 2;
   }
-  if (fs::is_regular_file(input)) {
-    errs = g.discover_from_entry(input);
-  } else if (fs::is_directory(input)) {
-    g.add_search_root(input);
-    errs = g.discover();
-  } else {
-    std::fprintf(stderr, "unsupported input path %s\n", input_path.c_str());
-    return 2;
-  }
+  int errs = g.discover_from_entry(input);
   auto tr = g.topo_sort();
   std::printf("units discovered: %zu\n", g.units().size());
   std::printf("topo order:\n");
@@ -394,35 +329,77 @@ int cmd_topo(const std::string& input_path) {
 
 void usage() {
   std::fprintf(stderr,
-               "usage:\n"
-               "  tp2cc lex <file>\n"
-               "  tp2cc lex-all <dir>\n"
-               "  tp2cc parse <file>\n"
-               "  tp2cc parse-all <dir>\n"
-               "  tp2cc topo <dir|entry.pas>\n"
-               "  tp2cc emit <file> <outdir>\n"
-               "  tp2cc emit-all <dir|entry.pas> <outdir>\n");
+    "usage:\n"
+    "  tp2cc <subcommand> [-h] [-dSYMBOL]... [-Fu<dir>]... [-Fi<dir>]... "
+    "[--] <args>...\n"
+    "\n"
+    "subcommands:\n"
+    "  lex <file>...                  tokenize each file, dump tokens\n"
+    "  lex-all <file>...              tokenize each file, summary only\n"
+    "  parse <file>...                parse each file\n"
+    "  parse-all <file>...            parse each file, summary only\n"
+    "  topo <entry.pas>               walk `uses`, print topo order\n"
+    "  emit <file> <outdir>           translate a single unit\n"
+    "  emit-all <entry.pas> <outdir>  translate entry + uses tree\n"
+    "\n"
+    "options (anywhere after <subcommand>, interleavable with positional):\n"
+    "  -h, --help   show this help and exit\n"
+    "  -dSYMBOL     predefine SYMBOL for {$ifdef}\n"
+    "  -Fu<dir>     add <dir> to unit search path (for `uses`)\n"
+    "  -Fi<dir>     add <dir> to include search path (for {$I})\n"
+    "  --           end of options (subsequent args are positional)\n");
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 3) { usage(); return 2; }
+  if (argc < 2) { usage(); return 2; }
   std::string cmd = argv[1];
-  std::string arg = argv[2];
-  if (cmd == "lex") return cmd_lex(arg);
-  if (cmd == "lex-all") return cmd_lex_all(arg);
-  if (cmd == "parse") return cmd_parse(arg);
-  if (cmd == "parse-all") return cmd_parse_all(arg);
-  if (cmd == "topo") return cmd_topo(arg);
+  if (cmd == "-h" || cmd == "--help") { usage(); return 0; }
+
+  CliOptions opts;
+  std::vector<std::string> positional;
+  bool end_of_opts = false;
+  for (int i = 2; i < argc; ++i) {
+    std::string_view a = argv[i];
+    if (!end_of_opts) {
+      if (a == "--") { end_of_opts = true; continue; }
+      if (a == "-h" || a == "--help") { usage(); return 0; }
+      if (a.size() > 2 && a[0] == '-' && a[1] == 'd') {
+        opts.defines.emplace_back(a.substr(2));
+        continue;
+      }
+      if (a.size() > 3 && a[0] == '-' && a[1] == 'F' && a[2] == 'u') {
+        opts.unit_paths.emplace_back(std::string(a.substr(3)));
+        continue;
+      }
+      if (a.size() > 3 && a[0] == '-' && a[1] == 'F' && a[2] == 'i') {
+        opts.include_paths.emplace_back(std::string(a.substr(3)));
+        continue;
+      }
+      if (!a.empty() && a[0] == '-') {
+        std::fprintf(stderr, "unknown option: %s\n", argv[i]);
+        usage();
+        return 2;
+      }
+    }
+    positional.emplace_back(argv[i]);
+  }
+
+  if (cmd == "lex")       return cmd_lex(opts, positional);
+  if (cmd == "lex-all")   return cmd_lex_all(opts, positional);
+  if (cmd == "parse")     return cmd_parse(opts, positional);
+  if (cmd == "parse-all") return cmd_parse_all(opts, positional);
+  if (cmd == "topo")      return cmd_topo(opts, positional);
   if (cmd == "emit") {
-    if (argc < 4) { usage(); return 2; }
-    return cmd_emit(arg, argv[3]);
+    if (positional.size() != 2) { usage(); return 2; }
+    return cmd_emit(opts, positional[0], positional[1]);
   }
   if (cmd == "emit-all") {
-    if (argc < 4) { usage(); return 2; }
-    return cmd_emit_all(arg, argv[3]);
+    if (positional.size() != 2) { usage(); return 2; }
+    return cmd_emit_all(opts, positional[0], positional[1]);
   }
+  std::fprintf(stderr, "unknown subcommand: %s\n", cmd.c_str());
   usage();
   return 2;
 }
