@@ -13,7 +13,7 @@ They do support the following targets:
 
 Bootstrap the FPC 0.99.14 compiler sources under `../fpc-1.0.6/source` with:
 
-`./bootstap-fpc-0.sh`
+`./bootstrap-fpc-0.sh`
 
 Or bootstrap the FPC 1.0.6 compiler sources under `../fpc-1.0.6/source` with:
 
