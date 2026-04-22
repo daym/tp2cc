@@ -140,12 +140,11 @@ std::string Lexer::lower(std::string_view s) {
   return r;
 }
 
-Lexer::Lexer(std::unique_ptr<SourceFile> root,
+Lexer::Lexer(std::shared_ptr<SourceFile> root,
              std::vector<std::filesystem::path> include_dirs)
     : include_dirs_(std::move(include_dirs)) {
   Input in;
-  in.file = root.get();
-  in.owned = std::move(root);
+  in.file = std::move(root);
   stack_.push_back(std::move(in));
 
   for (auto& kv : kKeywordTable) keywords_.emplace(kv.first, kv.second);
@@ -153,16 +152,6 @@ Lexer::Lexer(std::unique_ptr<SourceFile> root,
 
 void Lexer::define(std::string name) { defines_.insert(lower(name)); }
 void Lexer::undefine(const std::string& name) { defines_.erase(lower(name)); }
-
-std::vector<std::unique_ptr<SourceFile>> Lexer::release_sources() {
-  std::vector<std::unique_ptr<SourceFile>> out;
-  out.swap(retired_);
-  for (auto& in : stack_) {
-    if (in.owned) out.push_back(std::move(in.owned));
-  }
-  stack_.clear();
-  return out;
-}
 
 bool Lexer::at_eof_of_current() const {
   const auto& in = stack_.back();
@@ -200,11 +189,6 @@ void Lexer::unget() {
 
 bool Lexer::pop_input_if_eof() {
   if (stack_.size() > 1 && at_eof_of_current()) {
-    // Retire the SourceFile rather than dropping it -- AST
-    // `Location`s still reference its contents by raw pointer.
-    if (stack_.back().owned) {
-      retired_.push_back(std::move(stack_.back().owned));
-    }
     stack_.pop_back();
     return true;
   }
@@ -367,12 +351,11 @@ void Lexer::do_include(std::string_view arg, Location where) {
       report_error(where, "unsupported builtin include-macro {$I " + a + "}");
       return;
     }
-    auto sf = std::make_unique<SourceFile>();
+    auto sf = std::make_shared<SourceFile>();
     sf->path = stack_.back().file->path + ":{$I " + a + "}";
     sf->contents = std::move(contents);
     Input in;
-    in.file = sf.get();
-    in.owned = std::move(sf);
+    in.file = std::move(sf);
     stack_.push_back(std::move(in));
     return;
   }
@@ -416,8 +399,7 @@ void Lexer::do_include(std::string_view arg, Location where) {
     return;
   }
   Input in;
-  in.file = sf.get();
-  in.owned = std::move(sf);
+  in.file = std::move(sf);
   stack_.push_back(std::move(in));
 }
 

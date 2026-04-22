@@ -6,12 +6,12 @@
 
 namespace tp2cc {
 
-std::unique_ptr<SourceFile> SourceFile::load(const std::filesystem::path& p) {
+std::shared_ptr<SourceFile> SourceFile::load(const std::filesystem::path& p) {
   std::ifstream f(p, std::ios::binary);
   if (!f) return nullptr;
   std::ostringstream ss;
   ss << f.rdbuf();
-  auto sf = std::make_unique<SourceFile>();
+  auto sf = std::make_shared<SourceFile>();
   sf->path = p.string();
   sf->contents = ss.str();
   return sf;
