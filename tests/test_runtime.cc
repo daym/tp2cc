@@ -292,6 +292,18 @@ void test_fillword_and_compareword_operate_on_word_counts() {
   CHECK(p_compareword(words[0], different[0], 4) < 0);
 }
 
+void test_indexword_searches_prefix_only() {
+  Array<uint16_t, 0, 5> words{};
+  words[0] = 0x10;
+  words[1] = 0x20;
+  words[2] = 0x30;
+  words[3] = 0x20;
+  words[4] = 0x50;
+
+  CHECK_EQ(p_indexword(words, 3, static_cast<uint16_t>(0x20)), 1);
+  CHECK_EQ(p_indexword(words, 3, static_cast<uint16_t>(0x50)), -1);
+}
+
 void test_comparebyte_operates_on_byte_counts() {
   uint8_t a[4] = {1, 2, 3, 4};
   uint8_t b[4] = {1, 2, 3, 4};
@@ -402,6 +414,7 @@ int main() {
   RUN_TEST(test_class_free_dispatches_virtual_freeinstance);
   RUN_TEST(test_hi_lo_split_ordinal_halves);
   RUN_TEST(test_fillword_and_compareword_operate_on_word_counts);
+  RUN_TEST(test_indexword_searches_prefix_only);
   RUN_TEST(test_comparebyte_operates_on_byte_counts);
   RUN_TEST(test_blockread_writes_to_void_buffer);
   RUN_TEST(test_strnew_allocates_and_disposes_pchar);

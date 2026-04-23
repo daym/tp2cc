@@ -817,6 +817,23 @@ void test_absolute_typed_const_alias_reinterprets_same_storage() {
                  "p_parr &p_view = ::rt::p_reinterpret_storage_ref<p_parr>(p_raw);"));
 }
 
+void test_absolute_const_param_alias_stays_const_reference() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo(const s : string);\n"
+      "implementation\n"
+      "procedure demo(const s : string);\n"
+      "var\n"
+      "  view : string absolute s;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "const ::rt::ShortString<>& p_view = "
+                 "::rt::p_reinterpret_storage_ref<::rt::ShortString<>>(p_s);"));
+}
+
 void test_property_getter_setter_lowering() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1005,6 +1022,33 @@ void test_class_method_static_emission_and_calls() {
   CHECK(contains(out.impl, "p_result = p_bar();"));
   CHECK(contains(out.impl, "p_x->p_bar();"));
   CHECK(contains(out.impl, "p_tx::p_bar();"));
+}
+
+void test_tobject_runtime_helpers_lower_in_method_body() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class\n"
+      "    function metaptr : pointer;\n"
+      "    function bytes : integer;\n"
+      "  end;\n"
+      "implementation\n"
+      "function titem.metaptr : pointer;\n"
+      "begin\n"
+      "  metaptr := classtype;\n"
+      "end;\n"
+      "function titem.bytes : integer;\n"
+      "begin\n"
+      "  bytes := instancesize;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "virtual const void* p_classtype() override;"));
+  CHECK(contains(out.header, "virtual int32_t p_instancesize() override;"));
+  CHECK(contains(out.header, "inline const void* p_titem::p_classtype() {"));
+  CHECK(contains(out.header, "inline int32_t p_titem::p_instancesize() {"));
+  CHECK(contains(out.impl, "p_result = p_classtype();"));
+  CHECK(contains(out.impl, "p_result = p_instancesize();"));
 }
 
 void test_parameterless_proc_assignment_keeps_designator() {
@@ -1811,12 +1855,14 @@ int main() {
   RUN_TEST(test_absolute_pointer_target_reinterprets_pointee_storage);
   RUN_TEST(test_absolute_pointer_alias_reinterprets_pointer_storage);
   RUN_TEST(test_absolute_typed_const_alias_reinterprets_same_storage);
+  RUN_TEST(test_absolute_const_param_alias_stays_const_reference);
   RUN_TEST(test_property_getter_setter_lowering);
   RUN_TEST(test_property_field_and_default_index_lowering);
   RUN_TEST(test_implicit_property_lookup_in_method_body);
   RUN_TEST(test_procvar_property_stmt_and_value_context);
   RUN_TEST(test_default_indexed_procvar_property_stmt_autocalls);
   RUN_TEST(test_class_method_static_emission_and_calls);
+  RUN_TEST(test_tobject_runtime_helpers_lower_in_method_body);
   RUN_TEST(test_parameterless_proc_assignment_keeps_designator);
   RUN_TEST(test_method_pointer_type_and_bound_assignment_emit);
   RUN_TEST(test_method_pointer_record_cast_reinterprets_same_storage);

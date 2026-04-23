@@ -159,6 +159,8 @@ inline void* p_method_code() {
   return p_funptr_bits(Fn);
 }
 
+template <int N> struct ShortString;
+
 // Delphi/FPC `class` types are references to heap objects whose base
 // contract is `TObject`. Keep the runtime base explicit rather than
 // letting each translated unit invent its own ad-hoc root.
@@ -167,6 +169,11 @@ struct p_tobject {
   // implementation just succeeds; translated derived constructors chain to
   // it via `inherited Create`.
   virtual bool p_create() { return true; }
+  // Old Delphi/FPC object code queries the dynamic class descriptor and
+  // instance byte size via TObject.ClassType / InstanceSize. Derived
+  // translated classes override these with concrete answers.
+  virtual const void* p_classtype() { return nullptr; }
+  virtual int32_t p_instancesize() { return static_cast<int32_t>(sizeof(*this)); }
   virtual void p_destroy() {}
   // `FreeInstance` is the raw storage-release hook underneath `Free`.
   // Old compiler code overrides it directly (for refcounted symbol-table
@@ -188,7 +195,14 @@ struct p_tobject {
   }
 };
 
-template <int N> struct ShortString;
+inline void p_assert(bool ok) {
+  if (!ok) std::abort();
+}
+
+template <int N>
+inline void p_assert(bool ok, const ShortString<N>&) {
+  if (!ok) std::abort();
+}
 
 // The translated `sysutils` stub aliases into `rt::`, and compiler units
 // declare exception subclasses against that alias. Keep a minimal base
@@ -2247,6 +2261,26 @@ template <typename A, typename B>
 inline int32_t p_comparebyte(const A& a, const B& b, int32_t count) {
   return p_comparebyte(static_cast<const void*>(std::addressof(a)),
                        static_cast<const void*>(std::addressof(b)), count);
+}
+
+template <typename Elem, typename Needle>
+inline int32_t p_indexword(const Elem* data, int32_t count, Needle needle) {
+  for (int32_t i = 0; i < count; ++i) {
+    if (data[i] == needle) return i;
+  }
+  return -1;
+}
+
+// `indexword` walks a word array and returns the first matching ordinal.
+// Keep array values as first-class Pascal arrays here; callers that already
+// have an indexable array object use this overload directly instead of
+// relying on any array-to-pointer decay.
+template <typename Arr, typename Needle>
+inline int32_t p_indexword(const Arr& arr, int32_t count, Needle needle) {
+  for (int32_t i = 0; i < count; ++i) {
+    if (arr[static_cast<std::size_t>(i)] == needle) return i;
+  }
+  return -1;
 }
 // `readln(f, s)` reads a line into `s`. `readln` (no args) reads and
 // discards a line. `readln(f)` reads/discards a line from `f`.

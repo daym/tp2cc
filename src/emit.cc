@@ -541,6 +541,10 @@ struct Emitter {
   // unit-wide TypeRegistry (which only indexes interface/impl top-
   // level decls), so we layer them on here while emitting the proc.
   std::unordered_map<std::string, const ast::TyEnum*> local_enums;
+  // `const` parameters stay read-only storage. An `absolute` alias over one
+  // must therefore bind a `const T&`, not a mutable `T&`, or C++ rejects the
+  // alias and Pascal source that only reads through it stops compiling.
+  std::unordered_set<std::string> local_const_params;
   // Function-local type aliases: `type pi = ^integer;` style.
   std::unordered_map<std::string, const ast::TypeExpr*>
       local_type_aliases_scoped;
@@ -700,6 +704,7 @@ struct Emitter {
     std::string cxx;
     const ast::TypeExpr* type = nullptr;
     bool is_pointerish = false;
+    bool is_const_storage = false;
   };
   std::optional<AbsoluteTargetInfo> resolve_absolute_target(const ast::VarDecl& vd);
   void mark_call_param_info(const ast::ProcDecl* decl,
@@ -1691,6 +1696,11 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       }
       // Class member (inside method body of a known class).
       if (!current_class_name.empty()) {
+        if (const auto* ci = class_info_for_type_name(current_class_name);
+            ci && ci->is_reference_type) {
+          if (id.name == "instancesize") return builtin_integer_type("longint");
+          if (id.name == "classtype") return nullptr;
+        }
         if (auto* f = registry->lookup_class_field(current_class_name, id.name))
           return f->type.get();
         if (auto* p = registry->lookup_class_property(current_class_name, id.name))
@@ -1705,6 +1715,11 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
         const std::string& ac = it->class_name;
         if (ac.empty()) continue;
+        if (const auto* ci = class_info_for_type_name(ac);
+            ci && ci->is_reference_type) {
+          if (id.name == "instancesize") return builtin_integer_type("longint");
+          if (id.name == "classtype") return nullptr;
+        }
         if (auto* f = registry->lookup_class_field(ac, id.name))
           return f->type.get();
         if (auto* p = registry->lookup_class_property(ac, id.name))
@@ -1786,6 +1801,11 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
         cls = deduce_class_alias(*m.base);
       }
       if (cls.empty()) return nullptr;
+      if (const auto* ci = class_info_for_type_name(cls);
+          ci && ci->is_reference_type) {
+        if (m.name == "instancesize") return builtin_integer_type("longint");
+        if (m.name == "classtype") return nullptr;
+      }
       if (auto* pm = registry->lookup_class_method(cls, m.name)) {
         if (pm->decl.get() && pm->decl.get()->return_type)
           return pm->decl.get()->return_type.get();
@@ -2148,6 +2168,7 @@ std::optional<Emitter::AbsoluteTargetInfo> Emitter::resolve_absolute_target(
   if (tit != local_types.end()) {
     info.type = tit->second;
     info.is_pointerish = type_is_pointerish(info.type);
+    info.is_const_storage = local_const_params.count(vd.absolute_target) > 0;
     return info;
   }
 
@@ -2623,6 +2644,15 @@ Emitter::ResolveResult Emitter::resolve_name(
       const std::string& cls = it->class_name;
       if (cls.empty()) continue;
       const std::string& access = it->access_op;
+      if (const auto* ci = class_info_for_type_name(cls);
+          ci && ci->is_reference_type &&
+          (name == "classtype" || name == "instancesize")) {
+        r.cxx = it->cxx_text + access + mangle(name);
+        r.kind = ResolvedKind::WithMethod;
+        r.is_callable = true;
+        r.is_parameterless = true;
+        return r;
+      }
       if (auto* m = registry->lookup_class_method(cls, name)) {
         r.cxx = it->cxx_text + access + mangle(name);
         r.kind = ResolvedKind::WithMethod;
@@ -2665,6 +2695,15 @@ Emitter::ResolveResult Emitter::resolve_name(
   if (auto prop = maybe_resolve_implicit_property(name)) return *prop;
   // 5. Current class's members (chain).
   if (!current_class_name.empty() && registry) {
+    if (const auto* ci = class_info_for_type_name(current_class_name);
+        ci && ci->is_reference_type &&
+        (name == "classtype" || name == "instancesize")) {
+      r.cxx = mangle(name);
+      r.kind = ResolvedKind::ClassMethod;
+      r.is_callable = true;
+      r.is_parameterless = true;
+      return r;
+    }
     if (auto* m = registry->lookup_class_method(current_class_name, name)) {
       r.cxx = mangle(name);
       r.kind = ResolvedKind::ClassMethod;
@@ -3187,6 +3226,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
       }
       std::string bcls = deduce_class_alias(*m.base);
+      if (const auto* ci = class_info_for_type_name(bcls);
+          ci && ci->is_reference_type &&
+          (m.name == "classtype" || m.name == "instancesize")) {
+        std::string text = base_cxx + member_access_op(*m.base) + mangle(m.name);
+        return is_callee_context_ ? text : text + "()";
+      }
       if (registry && !bcls.empty()) {
         if (auto* prop = registry->lookup_class_property(bcls, m.name)) {
           if (prop->params.empty()) {
@@ -4255,6 +4300,10 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     } else if (to.is_reference_type) {
       emitln("using inherited = ::rt::p_tobject;");
     }
+    if (to.is_reference_type) {
+      emitln("virtual const void* p_classtype() override;");
+      emitln("virtual int32_t p_instancesize() override;");
+    }
     bool has_virtual = false;
     for (const auto& m : to.members) {
       if (m.kind == ObjectMemberKind::Field) {
@@ -4551,6 +4600,16 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
       emitln("return &value;");
       dedent();
       emitln("}");
+      emitln("inline const void* " + name + "::p_classtype() {");
+      indent();
+      emitln("return " + value_fn + "();");
+      dedent();
+      emitln("}");
+      emitln("inline int32_t " + name + "::p_instancesize() {");
+      indent();
+      emitln("return sizeof(" + name + ");");
+      dedent();
+      emitln("}");
     }
     return;
   }
@@ -4568,7 +4627,8 @@ void Emitter::emit_var_decl(const VarDecl& vd, bool in_header) {
     bool pointee_view = target->is_pointerish && !type_is_pointerish(vd.type.get());
     for (const auto& n : vd.names) {
       std::string name = mangle(n);
-      std::string decl = named_type_to_cxx(vd.type.get(), name, "&");
+      std::string decl = attach_named_cxx_type(
+          ty, name, target->is_const_storage ? "const &" : "&");
       if (in_header) {
         emitln("extern " + decl + ";");
       } else {
@@ -5352,6 +5412,7 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
   auto saved_nested = local_nested_fns;
   auto saved_untyped = local_untyped_params;
   auto saved_local_enums = local_enums;
+  auto saved_local_const_params = local_const_params;
   auto saved_local_aliases = local_type_aliases_scoped;
   auto insert_local_name = [&](Location where, const std::string& name) {
     // Pascal functions already own an implicit `Result` variable, so any
@@ -5368,6 +5429,7 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
       if (!insert_local_name(pd.loc, nm)) continue;
       if (p.type) {
         local_types[nm] = p.type.get();
+        if (p.mode == Param::Const) local_const_params.insert(nm);
       } else {
         local_untyped_params.insert(nm);
       }
@@ -5444,6 +5506,7 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
   local_nested_fns = std::move(saved_nested);
   local_untyped_params = std::move(saved_untyped);
   local_enums = std::move(saved_local_enums);
+  local_const_params = std::move(saved_local_const_params);
   local_type_aliases_scoped = std::move(saved_local_aliases);
   --block_depth;
 
@@ -5505,6 +5568,7 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   auto saved_nested = local_nested_fns;
   auto saved_untyped = local_untyped_params;
   auto saved_local_enums = local_enums;
+  auto saved_local_const_params = local_const_params;
   auto saved_local_aliases = local_type_aliases_scoped;
   auto insert_local_name = [&](Location where, const std::string& name) {
     if (current_fn_is_function && is_pascal_result_ident(name)) {
@@ -5523,8 +5587,12 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   for (const auto& p : pd.params) {
     for (const auto& nm : p.names) {
       if (!insert_local_name(pd.loc, nm)) continue;
-      if (p.type) local_types[nm] = p.type.get();
-      else local_untyped_params.insert(nm);
+      if (p.type) {
+        local_types[nm] = p.type.get();
+        if (p.mode == Param::Const) local_const_params.insert(nm);
+      } else {
+        local_untyped_params.insert(nm);
+      }
     }
   }
   for (const auto& l : pd.locals) {
@@ -5582,6 +5650,7 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
   local_nested_fns = std::move(saved_nested);
   local_untyped_params = std::move(saved_untyped);
   local_enums = std::move(saved_local_enums);
+  local_const_params = std::move(saved_local_const_params);
   local_type_aliases_scoped = std::move(saved_local_aliases);
   --block_depth;
 
