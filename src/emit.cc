@@ -2883,9 +2883,16 @@ std::string Emitter::set_literal_to_cxx(const SetLit& s,
     for (const auto& el : s.elements) {
       if (el->kind == Kind::Range) {
         const auto& r = static_cast<const Range&>(*el);
-        body += " for (auto tp2cc_i = " + const_value_to_cxx(*r.lo, elem_type) +
-                "; tp2cc_i <= " + const_value_to_cxx(*r.hi, elem_type) +
-                "; ++tp2cc_i) tp2cc_set.add(tp2cc_i);";
+        // Pascal set elements are ordinal, so a range like ['a'..'z'] means
+        // "walk the ordinal values from low to high". Iterate in integer
+        // space and cast back to the set element type instead of depending on
+        // wrapper types (e.g. `p_char`) to provide `++`.
+        body += " for (int64_t tp2cc_value = (int64_t)(" +
+                const_value_to_cxx(*r.lo, elem_type) +
+                "); tp2cc_value <= (int64_t)(" +
+                const_value_to_cxx(*r.hi, elem_type) +
+                "); ++tp2cc_value) tp2cc_set.add(static_cast<" + elem_cxx +
+                ">(tp2cc_value));";
       } else {
         body += " tp2cc_set.add(" + const_value_to_cxx(*el, elem_type) + ");";
       }
@@ -2936,8 +2943,12 @@ std::string Emitter::set_literal_to_cxx(const SetLit& s,
   for (const auto& el : s.elements) {
     if (el->kind == Kind::Range) {
       const auto& r = static_cast<const Range&>(*el);
-      body += " for (auto tp2cc_i = " + expr_to_cxx(*r.lo) + "; tp2cc_i <= " +
-              expr_to_cxx(*r.hi) + "; ++tp2cc_i) tp2cc_set.add(tp2cc_i);";
+      // Untyped set literals follow the same ordinal rule; `first` supplies
+      // the chosen element type once we have inferred it from context.
+      body += " for (int64_t tp2cc_value = (int64_t)(" + expr_to_cxx(*r.lo) +
+              "); tp2cc_value <= (int64_t)(" + expr_to_cxx(*r.hi) +
+              "); ++tp2cc_value) tp2cc_set.add(static_cast<decltype(" + first +
+              ")>(tp2cc_value));";
     } else {
       body += " tp2cc_set.add(" + expr_to_cxx(*el) + ");";
     }

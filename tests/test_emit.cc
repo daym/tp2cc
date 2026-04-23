@@ -1355,6 +1355,21 @@ void test_explicit_set_cast_uses_runtime_helper() {
   CHECK(contains(out.impl, "::rt::p_set_cast<::rt::Set<uint8_t>>(p_small)"));
 }
 
+void test_set_range_literal_uses_integer_ordinal_loop() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  if 'm' in ['a'..'z'] then begin end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "for (int64_t tp2cc_value = (int64_t)(::rt::p_char_of('a'))"));
+  CHECK(!contains(out.impl, "++tp2cc_i"));
+}
+
 void test_untyped_const_method_thunk_keeps_raw_storage_pointer() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1949,6 +1964,7 @@ int main() {
   RUN_TEST(test_high_low_on_open_array_use_runtime_length);
   RUN_TEST(test_typed_set_literal_uses_surrounding_set_type);
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
+  RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
   RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);
   RUN_TEST(test_class_types_lower_to_pointers_and_implicit_tobject);
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
