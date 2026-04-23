@@ -1,0 +1,46 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Use an explicit aword temporary in rautils val instead of casting the result var in place
+License: expat
+
+`rautils.pas` parses an integer literal by trying signed `val(...,
+result, code)`, then on failure trying unsigned via `val(prefix+s,
+aword(result), code)`. The second call casts the `var` parameter
+target itself: `aword(result)` reinterprets the storage of an `int64`
+result variable as if it were an `aword` for the duration of the call.
+
+That is UB-adjacent at best. A reinterpret cast does not produce a
+stable lvalue you can bind a `var` parameter to: the callee writes
+through a reference whose declared type is `aword` while the storage's
+true type is `int64`. Native FPC happens to compile it because both
+fit in 8 bytes and FPC pokes the bytes directly, but lowered literally
+to C++ it would need a reference to a `reinterpret_cast` result, which
+the language does not let you take and which would alias UB-ly even if
+it did. Use a plain `uresult: aword` temporary, parse into it, then
+assign back. Same outcome, no reference to a reinterpret.
+
+--- a/compiler/rautils.pas
++++ b/compiler/rautils.pas
+@@ -572,6 +572,7 @@
+   code : integer;
+   errmsg : word;
+   prefix : string[2];
++  uresult : aword;
+ Begin
+   case base of
+     2 :
+@@ -600,12 +601,13 @@
+   val(prefix+s,result,code);
+   if code<>0 then
+     begin
+-      val(prefix+s,aword(result),code);
++      val(prefix+s,uresult,code);
+       if code<>0 then
+         begin
+           Message1(errmsg,s);
+           result:=0;
+         end;
++      result:=uresult;
+     end;
+ end;
+
