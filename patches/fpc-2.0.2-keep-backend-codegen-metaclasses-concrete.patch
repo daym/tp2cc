@@ -1,0 +1,787 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Override inherited virtual abstract det_temp and pass-2 slots on backend ncg* classes
+License: expat
+
+Same root cause as the front-end `det_temp` patch, on the backend
+side. The `ncg*` codegen units derive from base node classes that
+declare `det_temp` and a couple of `pass_2`-related delegates as
+`virtual; abstract;`. Native FPC reaches these methods only on
+codegen-specialised metaclass subclasses; the bare backend classes
+themselves are never asked to dispatch them.
+
+tp2cc lowers each abstract Pascal method as a pure-virtual C++ method,
+which makes the class non-instantiable in C++. Since the bootstrap
+flow does construct these `ncg*` classes directly, the abstract slots
+have to be filled. Add no-op `det_temp` overrides and the few trivial
+`pass_2` delegates needed to keep each metaclass concrete. Behaviour
+is unchanged in either compiler -- the methods just exist instead of
+being abstract placeholders.
+
+--- a/compiler/ncgbas.pas
++++ b/compiler/ncgbas.pas
+@@ -31,26 +31,32 @@
+ 
+     type
+        tcgnothingnode = class(tnothingnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgasmnode = class(tasmnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgstatementnode = class(tstatementnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgblocknode = class(tblocknode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgtempcreatenode = class(ttempcreatenode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgtemprefnode = class(ttemprefnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+           { Changes the location of this temp to ref. Useful when assigning }
+           { another temp to this one. The current location will be freed.   }
+@@ -60,6 +66,7 @@
+        end;
+ 
+        tcgtempdeletenode = class(ttempdeletenode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+@@ -80,6 +87,13 @@
+                                  TNOTHING
+ *****************************************************************************}
+ 
++    procedure tcgnothingnode.det_temp;
++      begin
++        { Codegen nodes are installed after temp analysis has already
++          populated the tree. Keep the factory concrete without trying
++          to rerun det_temp here. }
++      end;
++
+     procedure tcgnothingnode.pass_2;
+       begin
+          location_reset(location,LOC_VOID,OS_NO);
+@@ -92,6 +106,13 @@
+                                TSTATEMENTNODE
+ *****************************************************************************}
+ 
++    procedure tcgstatementnode.det_temp;
++      begin
++        { Statement wrappers are created during pass 2 through
++          cstatementnode.create, but temp analysis was already completed
++          on the first-pass nodes. }
++      end;
++
+     procedure tcgstatementnode.pass_2;
+       var
+          hp : tstatementnode;
+@@ -116,6 +137,12 @@
+                                TASMNODE
+ *****************************************************************************}
+ 
++    procedure tcgasmnode.det_temp;
++      begin
++        { Inline-asm nodes carry their temp usage from pass 1; pass 2 only
++          lowers references and emits instructions. }
++      end;
++
+     procedure tcgasmnode.pass_2;
+ 
+       procedure ReLabel(var p:tasmsymbol);
+@@ -327,6 +354,12 @@
+                              TBLOCKNODE
+ *****************************************************************************}
+ 
++    procedure tcgblocknode.det_temp;
++      begin
++        { Internal statement blocks are instantiated during pass 2 after
++          their child statements already ran det_temp. }
++      end;
++
+     procedure tcgblocknode.pass_2;
+       var
+         hp : tstatementnode;
+@@ -370,6 +403,13 @@
+                           TTEMPCREATENODE
+ *****************************************************************************}
+ 
++    procedure tcgtempcreatenode.det_temp;
++      begin
++        { Temp-creation nodes exist precisely to hold the result of the
++          earlier temp-analysis pass. The codegen variant only materializes
++          that already-chosen storage in pass 2. }
++      end;
++
+     procedure tcgtempcreatenode.pass_2;
+       begin
+         location_reset(location,LOC_VOID,OS_NO);
+@@ -424,6 +464,12 @@
+                              TTEMPREFNODE
+ *****************************************************************************}
+ 
++    procedure tcgtemprefnode.det_temp;
++      begin
++        { Temp references inherit their storage decision from the owning
++          tempcreate node; pass 2 only reloads that location. }
++      end;
++
+     procedure tcgtemprefnode.pass_2;
+       begin
+         { check if the temp is valid }
+@@ -457,6 +503,12 @@
+                            TTEMPDELETENODE
+ *****************************************************************************}
+ 
++    procedure tcgtempdeletenode.det_temp;
++      begin
++        { Temp deletion likewise uses the storage chosen earlier; pass 2
++          simply releases or downgrades that existing allocation. }
++      end;
++
+     procedure tcgtempdeletenode.pass_2;
+       begin
+         location_reset(location,LOC_VOID,OS_NO);
+--- a/compiler/ncgcal.pas
++++ b/compiler/ncgcal.pas
+@@ -40,6 +40,8 @@
+        public
+           constructor create(expr,next : tnode);override;
+           destructor destroy;override;
++          procedure det_temp;override;
++          procedure pass_2;override;
+           procedure secondcallparan;override;
+        end;
+ 
+@@ -71,6 +73,7 @@
+           procedure extra_post_call_code;virtual;
+           procedure do_syscall;virtual;abstract;
+        public
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+@@ -114,6 +117,23 @@
+       end;
+ 
+ 
++    procedure tcgcallparanode.det_temp;
++      begin
++        { Call-parameter codegen nodes are installed after pass 1 already
++          computed temp usage for the call tree. Keep the common factory
++          concrete without rerunning det_temp here. }
++      end;
++
++
++    procedure tcgcallparanode.pass_2;
++      begin
++        { Call lowering drives parameter nodes through secondcallparan.
++          Delegate here as well so direct pass_2 callers keep the same
++          semantics instead of leaving this class abstract. }
++        secondcallparan;
++      end;
++
++
+     procedure tcgcallparanode.push_addr_para;
+       begin
+         if not(left.location.loc in [LOC_CREFERENCE,LOC_REFERENCE]) then
+@@ -486,6 +506,14 @@
+       end;
+ 
+ 
++    procedure tcgcallnode.det_temp;
++      begin
++        { Call nodes finish their temp/register analysis in tcallnode.pass_1,
++          including parameter-area sizing and any inlining rewrite. The
++          codegen subclass only needs to stay concrete for pass 2. }
++      end;
++
++
+     procedure tcgcallnode.pop_parasize(pop_size:longint);
+       begin
+       end;
+--- a/compiler/ncgcnv.pas
++++ b/compiler/ncgcnv.pas
+@@ -32,24 +32,30 @@
+     type
+        tcgtypeconvnode = class(ttypeconvnode)
+          procedure second_int_to_int;override;
++         procedure second_string_to_string;override;
+          procedure second_cstring_to_pchar;override;
++         procedure second_cstring_to_int;override;
+          procedure second_string_to_chararray;override;
+          procedure second_array_to_pointer;override;
+          procedure second_pointer_to_array;override;
++         procedure second_chararray_to_string;override;
+          procedure second_char_to_string;override;
+          procedure second_real_to_real;override;
+          procedure second_cord_to_pointer;override;
+          procedure second_proc_to_procvar;override;
+          procedure second_bool_to_int;override;
+          procedure second_bool_to_bool;override;
++         procedure second_load_smallset;override;
+          procedure second_ansistring_to_pchar;override;
+          procedure second_class_to_intf;override;
+          procedure second_char_to_char;override;
+          procedure second_nothing;override;
++         procedure det_temp;override;
+          procedure pass_2;override;
+        end;
+ 
+        tcgasnode = class(tasnode)
++         procedure det_temp;override;
+          procedure pass_2;override;
+        end;
+ 
+@@ -223,6 +229,25 @@
+       end;
+ 
+ 
++    procedure tcgtypeconvnode.second_cstring_to_int;
++      begin
++        { Constant string-to-integer conversions are folded in pass 1 before the
++          generic code generator ever sees this node kind. Keep the class
++          concrete for class-ref assignments, but fail loudly if this path ever
++          becomes reachable. }
++        internalerror(200510013);
++      end;
++
++
++    procedure tcgtypeconvnode.second_string_to_string;
++      begin
++        { second_call_helper already routes string-to-string conversions through
++          second_nothing after resulttype pass has normalized them. Keep the
++          vtable slot concrete for class-ref assignments. }
++        second_nothing;
++      end;
++
++
+     procedure tcgtypeconvnode.second_pointer_to_array;
+ 
+       begin
+@@ -279,6 +304,15 @@
+       end;
+ 
+ 
++    procedure tcgtypeconvnode.second_chararray_to_string;
++      begin
++        { Char-array-to-string conversions are also normalized before generic
++          code generation. Reuse second_nothing for the unreachable pass_2
++          slot so the node class stays concrete. }
++        second_nothing;
++      end;
++
++
+     procedure tcgtypeconvnode.second_real_to_real;
+       begin
+          location_reset(location,LOC_FPUREGISTER,def_cgsize(resulttype.def));
+@@ -494,6 +528,14 @@
+       end;
+ 
+ 
++    procedure tcgtypeconvnode.second_load_smallset;
++      begin
++        { Small-set loads are folded to a plain value during first pass; pass_2
++          keeps the existing location via second_nothing. }
++        second_nothing;
++      end;
++
++
+     procedure tcgtypeconvnode.second_nothing;
+       var
+         newsize : tcgsize;
+@@ -530,6 +572,13 @@
+ {$endif TESTOBJEXT2}
+ 
+ 
++    procedure tcgtypeconvnode.det_temp;
++      begin
++        { Type-conversion temp usage is already settled during the generic
++          ncnv first pass. The codegen subclass only supplies pass_2. }
++      end;
++
++
+     procedure tcgtypeconvnode.pass_2;
+       begin
+         { the boolean routines can be called with LOC_JUMP and
+@@ -556,6 +605,13 @@
+       end;
+ 
+ 
++    procedure tcgasnode.det_temp;
++      begin
++        { The generic `as`-node first pass accounts for temp/register needs;
++          the backend subclass only forwards pass_2 to the helper call. }
++      end;
++
++
+     procedure tcgasnode.pass_2;
+       begin
+         secondpass(call);
+--- a/compiler/ncgflw.pas
++++ b/compiler/ncgflw.pas
+@@ -31,30 +31,37 @@
+ 
+     type
+        tcgwhilerepeatnode = class(twhilerepeatnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgifnode = class(tifnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgfornode = class(tfornode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgexitnode = class(texitnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgbreaknode = class(tbreaknode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgcontinuenode = class(tcontinuenode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcggotonode = class(tgotonode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+@@ -63,22 +70,27 @@
+           asmlabel : tasmlabel;
+        public
+           function getasmlabel : tasmlabel;
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgraisenode = class(traisenode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgtryexceptnode = class(ttryexceptnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgtryfinallynode = class(ttryfinallynode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgonnode = class(tonnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+@@ -100,6 +112,13 @@
+                          Second_While_RepeatN
+ *****************************************************************************}
+ 
++    procedure tcgwhilerepeatnode.det_temp;
++      begin
++        { Codegen flow nodes are installed after temp analysis completed on
++          the front-end tree. Keep the metaclass factory concrete without
++          rerunning det_temp here. }
++      end;
++
+     procedure tcgwhilerepeatnode.pass_2;
+       var
+          lcont,lbreak,lloop,
+@@ -171,6 +190,12 @@
+                                tcgIFNODE
+ *****************************************************************************}
+ 
++    procedure tcgifnode.det_temp;
++      begin
++        { If nodes are replaced by codegen nodes after the first-pass temp
++          walk. Pass 2 only lowers control flow and labels. }
++      end;
++
+     procedure tcgifnode.pass_2;
+ 
+       var
+@@ -328,6 +353,12 @@
+                               SecondFor
+ *****************************************************************************}
+ 
++    procedure tcgfornode.det_temp;
++      begin
++        { Loop codegen nodes inherit their temp decisions from the original
++          front-end nodes. The pass-2 factory only needs a concrete class. }
++      end;
++
+     procedure tcgfornode.pass_2;
+       var
+          l3,oldclabel,oldblabel : tasmlabel;
+@@ -686,6 +717,11 @@
+                               SecondExitN
+ *****************************************************************************}
+ 
++    procedure tcgexitnode.det_temp;
++      begin
++        { Exit nodes do not add temp requirements during pass 2. }
++      end;
++
+     procedure tcgexitnode.pass_2;
+       begin
+          location_reset(location,LOC_VOID,OS_NO);
+@@ -702,6 +738,11 @@
+                               SecondBreakN
+ *****************************************************************************}
+ 
++    procedure tcgbreaknode.det_temp;
++      begin
++        { Break nodes only lower control flow labels in pass 2. }
++      end;
++
+     procedure tcgbreaknode.pass_2;
+       begin
+          location_reset(location,LOC_VOID,OS_NO);
+@@ -723,6 +764,11 @@
+                               SecondContinueN
+ *****************************************************************************}
+ 
++    procedure tcgcontinuenode.det_temp;
++      begin
++        { Continue nodes only lower control flow labels in pass 2. }
++      end;
++
+     procedure tcgcontinuenode.pass_2;
+       begin
+          location_reset(location,LOC_VOID,OS_NO);
+@@ -744,6 +790,12 @@
+                              SecondGoto
+ *****************************************************************************}
+ 
++    procedure tcggotonode.det_temp;
++      begin
++        { Goto nodes keep the label chosen during pass 1; no extra temps are
++          introduced when lowering them in pass 2. }
++      end;
++
+     procedure tcggotonode.pass_2;
+ 
+        begin
+@@ -767,6 +819,11 @@
+         result:=asmlabel
+       end;
+ 
++    procedure tcglabelnode.det_temp;
++      begin
++        { Labels themselves do not participate in temp analysis. }
++      end;
++
+ 
+     procedure tcglabelnode.pass_2;
+       begin
+@@ -784,6 +841,12 @@
+                              SecondRaise
+ *****************************************************************************}
+ 
++    procedure tcgraisenode.det_temp;
++      begin
++        { Raise nodes consume the already-analysed child temporaries and only
++          marshal runtime helper arguments in pass 2. }
++      end;
++
+     procedure tcgraisenode.pass_2;
+ 
+       var
+@@ -890,6 +953,12 @@
+          paraloc1.done;
+       end;
+ 
++    procedure tcgtryexceptnode.det_temp;
++      begin
++        { Try/except lowering creates labels and helper calls after the main
++          temp walk already processed the nested statement tree. }
++      end;
++
+ 
+     procedure tcgtryexceptnode.pass_2;
+ 
+@@ -1139,6 +1208,11 @@
+       end;
+ 
+ 
++    procedure tcgonnode.det_temp;
++      begin
++        { On-handlers only test exception state and branch in pass 2. }
++      end;
++
+     procedure tcgonnode.pass_2;
+       var
+          nextonlabel,
+@@ -1295,6 +1369,12 @@
+                              SecondTryFinally
+ *****************************************************************************}
+ 
++    procedure tcgtryfinallynode.det_temp;
++      begin
++        { Try/finally lowering is introduced in pass 2 after temp analysis
++          has already run on the original nodes. }
++      end;
++
+     procedure tcgtryfinallynode.pass_2;
+       var
+          reraiselabel,
+--- a/compiler/ncgld.pas
++++ b/compiler/ncgld.pas
+@@ -31,19 +31,23 @@
+ 
+     type
+        tcgloadnode = class(tloadnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+           procedure generate_picvaraccess;virtual;
+        end;
+ 
+        tcgassignmentnode = class(tassignmentnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgarrayconstructornode = class(tarrayconstructornode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgrttinode = class(trttinode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+@@ -77,6 +81,13 @@
+       end;
+ 
+ 
++    procedure tcgloadnode.det_temp;
++      begin
++        { The generic nld.pass_1 logic already computes the temporary/register
++          pressure for load nodes. The codegen half only supplies pass_2. }
++      end;
++
++
+     procedure tcgloadnode.pass_2;
+       var
+         hregister : tregister;
+@@ -367,6 +378,13 @@
+       end;
+ 
+ 
++    procedure tcgassignmentnode.det_temp;
++      begin
++        { Generic assignment pass_1 already reserves the temp/register needs.
++          The codegen subclass only fills in the backend pass_2 step. }
++      end;
++
++
+ {*****************************************************************************
+                              SecondAssignment
+ *****************************************************************************}
+@@ -677,6 +695,13 @@
+       end;
+ 
+ 
++    procedure tcgarrayconstructornode.det_temp;
++      begin
++        { Array-constructor temporaries are accounted for during the generic
++          pass_1 walk. The backend specialization only adds pass_2 emission. }
++      end;
++
++
+ {*****************************************************************************
+                            SecondArrayConstruct
+ *****************************************************************************}
+@@ -694,6 +719,7 @@
+         vtWideChar   = 9;
+         vtPWideChar  = 10;
+         vtAnsiString32 = 11;
++        vtAnsiString = vtAnsiString32;
+         vtCurrency   = 12;
+         vtVariant    = 13;
+         vtInterface  = 14;
+@@ -898,6 +924,13 @@
+       end;
+ 
+ 
++    procedure tcgrttinode.det_temp;
++      begin
++        { RTTI nodes lower to constant references in pass_2 and do not need
++          additional temp allocation beyond the generic pass_1 bookkeeping. }
++      end;
++
++
+ {*****************************************************************************
+                            SecondRTTI
+ *****************************************************************************}
+--- a/compiler/ncgmem.pas
++++ b/compiler/ncgmem.pas
+@@ -32,26 +32,32 @@
+ 
+     type
+        tcgloadvmtaddrnode = class(tloadvmtaddrnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgloadparentfpnode = class(tloadparentfpnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgaddrnode = class(taddrnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgderefnode = class(tderefnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgsubscriptnode = class(tsubscriptnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+        tcgwithnode = class(twithnode)
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+ 
+@@ -70,6 +76,7 @@
+          procedure second_wideansistring;virtual;
+          procedure second_dynamicarray;virtual;
+        public
++         procedure det_temp;override;
+          procedure pass_2;override;
+        end;
+ 
+@@ -114,6 +121,13 @@
+       end;
+ 
+ 
++    procedure tcgloadvmtaddrnode.det_temp;
++      begin
++        { The generic nmem pass_1 walk already computes the temp/register
++          pressure for VMT loads. The codegen subclass only adds pass_2. }
++      end;
++
++
+ {*****************************************************************************
+                         TCGLOADPARENTFPNODE
+ *****************************************************************************}
+@@ -159,6 +173,13 @@
+       end;
+ 
+ 
++    procedure tcgloadparentfpnode.det_temp;
++      begin
++        { Parent-frame loads reserve their registers during the generic
++          memory-node first pass; no extra temp bookkeeping happens here. }
++      end;
++
++
+ {*****************************************************************************
+                              TCGADDRNODE
+ *****************************************************************************}
+@@ -173,6 +194,13 @@
+       end;
+ 
+ 
++    procedure tcgaddrnode.det_temp;
++      begin
++        { Address nodes get their temp/register needs from nmem.pass_1; this
++          backend layer only supplies the pass_2 code emission. }
++      end;
++
++
+ {*****************************************************************************
+                            TCGDEREFNODE
+ *****************************************************************************}
+@@ -230,6 +258,13 @@
+       end;
+ 
+ 
++    procedure tcgderefnode.det_temp;
++      begin
++        { Dereference nodes do not add temp bookkeeping beyond the generic
++          pass_1 logic in nmem. }
++      end;
++
++
+ {*****************************************************************************
+                           TCGSUBSCRIPTNODE
+ *****************************************************************************}
+@@ -310,6 +345,13 @@
+       end;
+ 
+ 
++    procedure tcgsubscriptnode.det_temp;
++      begin
++        { Subscript temp usage is settled during the generic first pass; the
++          codegen subclass only needs to provide pass_2 emission. }
++      end;
++
++
+ {*****************************************************************************
+                             TCGWITHNODE
+ *****************************************************************************}
+@@ -382,6 +424,12 @@
+        end;
+ 
+ 
++    procedure tcgwithnode.det_temp;
++      begin
++        { With-node temporaries are accounted for in the generic pass_1 walk. }
++      end;
++
++
+ {*****************************************************************************
+                             TCGVECNODE
+ *****************************************************************************}
+@@ -811,8 +859,15 @@
+            end;
+ 
+         location.size:=newsize;
+-        paraloc1.done;
+-        paraloc2.done;
++         paraloc1.done;
++         paraloc2.done;
++      end;
++
++
++    procedure tcgvecnode.det_temp;
++      begin
++        { Vector/index nodes compute their temp/register needs during the
++          generic pass_1 traversal; backend codegen only contributes pass_2. }
+       end;
+ 
+ 
