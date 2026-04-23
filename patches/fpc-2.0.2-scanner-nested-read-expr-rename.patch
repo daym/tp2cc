@@ -1,0 +1,75 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Rename scanner's nested read_expr to read_compare_expr
+License: expat
+
+Inside `parse_compiler_expr`, a nested function is forward-declared as
+`read_expr` and later defined under the same name. Pascal's scoping
+rule resolves recursive calls inside the body to the same nested
+function, but the bootstrap compiler also defines other identifiers in
+overlapping scopes whose disambiguation through name shadowing makes
+the lowered C++ harder to follow.
+
+Rename the nested function to `read_compare_expr` (which is what it
+actually does -- parses a comparison-level expression) so each scope
+has at most one identifier with that spelling and the lowered code
+needs no shadowing rules to stay correct.
+
+--- a/compiler/scanner.pas
++++ b/compiler/scanner.pas
+@@ -542,7 +542,7 @@
+
+     function parse_compiler_expr(var compileExprType: TCTETypeSet):string;
+
+-        function read_expr(var exprType: TCTETypeSet) : string; forward;
++        function read_compare_expr(var exprType: TCTETypeSet) : string; forward;
+
+         procedure preproc_consume(t : ttoken);
+         begin
+@@ -930,7 +930,7 @@
+            else if current_scanner.preproc_token =_LKLAMMER then
+              begin
+                 preproc_consume(_LKLAMMER);
+-                read_factor:=read_expr(factorType);
++                read_factor:=read_compare_expr(factorType);
+                 preproc_consume(_RKLAMMER);
+              end
+            else if current_scanner.preproc_token = _LECKKLAMMER then
+@@ -1024,7 +1024,7 @@
+           read_simple_expr:=hs1;
+         end;
+
+-        function read_expr(var exprType: TCTETypeSet) : string;
++        function read_compare_expr(var exprType: TCTETypeSet) : string;
+         var
+            hs1,hs2 : string;
+            b : boolean;
+@@ -1039,7 +1039,7 @@
+              op := _IN;
+            if not (op in [_IN,_EQUAL,_UNEQUAL,_LT,_GT,_LTE,_GTE]) then
+              begin
+-                read_expr:=hs1;
++                read_compare_expr:=hs1;
+                 exit;
+              end;
+
+@@ -1107,16 +1107,16 @@
+              end;
+
+            if b then
+-             read_expr:='1'
++             read_compare_expr:='1'
+            else
+-             read_expr:='0';
++             read_compare_expr:='0';
+            exprType:= [ctetBoolean];
+         end;
+      begin
+         current_scanner.skipspace;
+         { start preproc expression scanner }
+         current_scanner.preproc_token:=current_scanner.readpreproc;
+-        parse_compiler_expr:=read_expr(compileExprType);
++        parse_compiler_expr:=read_compare_expr(compileExprType);
+      end;
+
+     function boolean_compile_time_expr(var valuedescr: String): Boolean;
