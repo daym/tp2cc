@@ -210,6 +210,19 @@ void test_explicit_enum_array_bounds_use_ordinal_range() {
                  "using p_tmap = ::rt::Array<uint8_t, p_lo, ((::rt::p_ordinal_value(p_hi)) - (::rt::p_ordinal_value(p_lo)) + 1)>;"));
 }
 
+void test_distinct_ordinal_array_bounds_use_underlying_range() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tindex = type word;\n"
+      "  tmap = array[tindex] of byte;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "using p_tmap = ::rt::Array<uint8_t, 0, 65536>;"));
+}
+
 void test_low_high_use_resolved_pascal_type() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1620,6 +1633,55 @@ void test_parameterless_method_result_keeps_arrow_member_access() {
   CHECK(contains(out.impl, "p_result = p_ps->p_first_procdef()->p_mangledname;"));
 }
 
+void test_with_parameterless_method_result_keeps_arrow_member_access() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tprocdef = class\n"
+      "    mangledname : string;\n"
+      "  end;\n"
+      "  tprocsym = class\n"
+      "    function first_procdef : tprocdef;\n"
+      "  end;\n"
+      "function getname(ps : tprocsym) : string;\n"
+      "implementation\n"
+      "function tprocsym.first_procdef : tprocdef;\n"
+      "begin\n"
+      "  first_procdef := nil;\n"
+      "end;\n"
+      "function getname(ps : tprocsym) : string;\n"
+      "begin\n"
+      "  with ps do\n"
+      "    getname := first_procdef.mangledname;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_result = tp2cc_with_0->p_first_procdef()->p_mangledname;"));
+}
+
+void test_type_order_sees_method_signature_dependencies() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = record\n"
+      "    value : integer;\n"
+      "  end;\n"
+      "  titems = array[word] of titem;\n"
+      "  tbox = class\n"
+      "    procedure fill(var items : titems);\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  size_t alias_pos = out.header.find(
+      "using p_titems = ::rt::Array<p_titem, 0, 65536>;");
+  size_t class_pos = out.header.find("struct p_tbox : public ::rt::p_tobject");
+  CHECK(alias_pos != std::string::npos);
+  CHECK(class_pos != std::string::npos);
+  CHECK(alias_pos < class_pos);
+}
+
 void test_reference_class_typecast_is_pointer_cast() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1713,6 +1775,7 @@ int main() {
   RUN_TEST(test_enum_type);
   RUN_TEST(test_enum_type_with_explicit_values);
   RUN_TEST(test_explicit_enum_array_bounds_use_ordinal_range);
+  RUN_TEST(test_distinct_ordinal_array_bounds_use_underlying_range);
   RUN_TEST(test_low_high_use_resolved_pascal_type);
   RUN_TEST(test_named_type_alias);
   RUN_TEST(test_ansistring_builtin_maps_to_runtime_type);
@@ -1783,6 +1846,8 @@ int main() {
   RUN_TEST(test_statement_context_member_destroy_autocalls);
   RUN_TEST(test_var_arg_class_cast_reinterprets_storage_slot);
   RUN_TEST(test_parameterless_method_result_keeps_arrow_member_access);
+  RUN_TEST(test_with_parameterless_method_result_keeps_arrow_member_access);
+  RUN_TEST(test_type_order_sees_method_signature_dependencies);
   RUN_TEST(test_reference_class_typecast_is_pointer_cast);
   RUN_TEST(test_reference_class_cast_keeps_pointer_member_access);
   RUN_TEST(test_is_as_use_pointer_target_types);

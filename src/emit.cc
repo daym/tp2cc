@@ -1084,6 +1084,14 @@ bool Emitter::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
   };
   const TypeExpr* dim = canonicalize_type(&dim_in);
   if (!dim) return false;
+  if (dim->kind == Kind::TyDistinct) {
+    // `type TIndex = type word; array[TIndex] of ...` keeps TIndex distinct
+    // for assignment compatibility, but its ordinal range is still the same
+    // as the underlying type's range. Recurse through the underlying type
+    // here so fixed arrays do not silently degrade to pointer aliases.
+    return array_dim_bounds_to_cxx(
+        *static_cast<const TyDistinct&>(*dim).underlying, lo, size_expr);
+  }
   *lo = "0";
   size_expr->clear();
   if (dim->kind == Kind::TySubrange) {
@@ -1687,6 +1695,10 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
           return f->type.get();
         if (auto* p = registry->lookup_class_property(current_class_name, id.name))
           return p->type.get();
+        if (auto* m = registry->lookup_class_method(current_class_name, id.name);
+            m && m->decl && m->decl->return_type) {
+          return m->decl->return_type.get();
+        }
       }
       // `with X do` bindings contribute fields of their target type --
       // the ident might name such a field.
@@ -1697,6 +1709,10 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
           return f->type.get();
         if (auto* p = registry->lookup_class_property(ac, id.name))
           return p->type.get();
+        if (auto* m = registry->lookup_class_method(ac, id.name);
+            m && m->decl && m->decl->return_type) {
+          return m->decl->return_type.get();
+        }
         auto* rf = registry->lookup_record_field(ac, id.name);
         if (rf) return rf->type.get();
       }
@@ -5634,6 +5650,11 @@ static void collect_type_refs(const TypeExpr& t,
       for (const auto& m : o.members) {
         if (m.kind == ObjectMemberKind::Field && m.field_type) {
           collect_type_refs(*m.field_type, out);
+        } else if (m.kind == ObjectMemberKind::Method && m.method) {
+          if (m.method->return_type) collect_type_refs(*m.method->return_type, out);
+          for (const auto& p : m.method->params) {
+            if (p.type) collect_type_refs(*p.type, out);
+          }
         } else if (m.kind == ObjectMemberKind::Property) {
           if (m.property.type) collect_type_refs(*m.property.type, out);
           for (const auto& p : m.property.params) {
