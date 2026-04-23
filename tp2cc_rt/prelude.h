@@ -3765,13 +3765,11 @@ inline TextFile p_input = [] {
 // tccal.pas and gets emitted there. An earlier stub here was taking
 // name precedence over the real thing via `using namespace ::rt`.)
 
-// STUB: target-platform import/export/linker types from the skipped
-// t_win32.pas / t_os2.pas / t_go32v*.pas back-ends. The call sites
-// that reference them are inside `case target_info.target of` arms
-// guarded for non-linux targets and therefore unreachable at
-// bootstrap runtime. We alias them to a tag struct with an implicit
-// conversion to any pointer type so `importlib := new(pimportlibwin32,
-// Init)` assignments into base-class pointer variables type-check.
+// STUB: target-platform import/export/linker types from back-ends we still
+// skip entirely. Keep the aliases only for units that are not translated at
+// all; once a real unit exists (e.g. `t_win32.pas`), a duplicate runtime
+// alias would collide with the translated class name through `using
+// namespace ::rt`.
 struct StubTargetLib {
   void p_init() {}
   // Explicit conversion of the tag struct's address to any pointer
@@ -3782,20 +3780,14 @@ struct StubTargetLib {
   // reinterpret_cast to the receiver type -- which it does when the
   // target alias resolves here (see emit.cc `new(T,Init)` lowering).
 };
-using p_timportlibwin32 = StubTargetLib;
-using p_pimportlibwin32 = StubTargetLib*;
 using p_timportlibos2 = StubTargetLib;
 using p_pimportlibos2 = StubTargetLib*;
 using p_timportlibgo32v2 = StubTargetLib;
 using p_pimportlibgo32v2 = StubTargetLib*;
-using p_texportlibwin32 = StubTargetLib;
-using p_pexportlibwin32 = StubTargetLib*;
 using p_texportlibos2 = StubTargetLib;
 using p_pexportlibos2 = StubTargetLib*;
 using p_texportlibgo32v2 = StubTargetLib;
 using p_pexportlibgo32v2 = StubTargetLib*;
-using p_tlinkerwin32 = StubTargetLib;
-using p_plinkerwin32 = StubTargetLib*;
 using p_tlinkeros2 = StubTargetLib;
 using p_plinkeros2 = StubTargetLib*;
 using p_tlinkergo32v1 = StubTargetLib;
