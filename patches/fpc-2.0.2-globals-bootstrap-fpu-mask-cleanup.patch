@@ -1,0 +1,180 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Simplify bootstrap FPU-mask setup in globals.pas
+License: expat
+
+The 2.0.2 compiler masks FP traps in `pp.pas` before it starts folding
+real constants.  In `compiler/globals.pas` the i386 implementation
+open-codes that through local inline-assembler `Get8087CW` /
+`Set8087CW` helpers and then narrows the Pascal set value via
+`Byte(Longint(Mask))`.  The same unit also carries a separate x86_64
+inline-assembler implementation that touches both the x87 control word
+and MXCSR.
+
+In tp2cc, we want to avoid having to implement an inline assembler.
+
+For the tp2cc bootstrap we expose Pascal-visible `System`
+control-word helpers on the C++ side, and this bootstrap tree is
+so far i386-only.  Route the i386 code through those helpers,
+spell the mask-bit mapping out explicitly, and drop the unused x86_64
+inline-assembler block from the bootstrap patch set.
+
+--- a/compiler/globals.pas
++++ b/compiler/globals.pas
+@@ -1557,140 +1557,29 @@
+ 
+ {$ifdef CPUI386}
+   {$define HASSETFPUEXCEPTIONMASK}
+-      { later, this should be replaced by the math unit }
+-      const
+-        Default8087CW : word = $1332;
+-
+-      procedure Set8087CW(cw:word);assembler;
+-        asm
+-          movw cw,%ax
+-          movw %ax,default8087cw
+-          fnclex
+-          fldcw default8087cw
+-        end;
+-
+-
+-      function Get8087CW:word;assembler;
+-        asm
+-          pushl $0
+-          fnstcw (%esp)
+-          popl %eax
+-        end;
+-
+-
+       procedure SetFPUExceptionMask(const Mask: TFPUExceptionMask);
+         var
+           CtlWord: Word;
++          MaskBits: Byte;
+         begin
+-          CtlWord:=Get8087CW;
+-          Set8087CW( (CtlWord and $FFC0) or Byte(Longint(Mask)) );
++          MaskBits:=0;
++          if exInvalidOp in Mask then
++            MaskBits:=MaskBits or 1;
++          if exDenormalized in Mask then
++            MaskBits:=MaskBits or 2;
++          if exZeroDivide in Mask then
++            MaskBits:=MaskBits or 4;
++          if exOverflow in Mask then
++            MaskBits:=MaskBits or 8;
++          if exUnderflow in Mask then
++            MaskBits:=MaskBits or 16;
++          if exPrecision in Mask then
++            MaskBits:=MaskBits or 32;
++          CtlWord:=Get8087CW();
++          Set8087CW((CtlWord and $FFC0) or MaskBits);
+         end;
+ {$endif CPUI386}
+ 
+-{$ifdef CPUX86_64}
+-  {$define HASSETFPUEXCEPTIONMASK}
+-      { later, this should be replaced by the math unit }
+-      const
+-        Default8087CW : word = $1332;
+-
+-      procedure Set8087CW(cw:word);assembler;
+-        asm
+-          movw cw,%ax
+-          movw %ax,default8087cw
+-          fnclex
+-          fldcw default8087cw
+-        end;
+-
+-
+-      function Get8087CW:word;assembler;
+-        asm
+-          pushq $0
+-          fnstcw (%rsp)
+-          popq %rax
+-        end;
+-
+-
+-      procedure SetSSECSR(w : dword);
+-        var
+-          _w : dword;
+-        begin
+-          _w:=w;
+-          asm
+-            ldmxcsr _w
+-          end;
+-        end;
+-
+-
+-      function GetSSECSR : dword;
+-          var
+-            _w : dword;
+-          begin
+-            asm
+-              stmxcsr _w
+-            end;
+-            result:=_w;
+-          end;
+-
+-
+-      procedure SetFPUExceptionMask(const Mask: TFPUExceptionMask);
+-        var
+-          CtlWord: Word;
+-          newmask : dword;
+-        const
+-          MM_MaskInvalidOp = %0000000010000000;
+-          MM_MaskDenorm    = %0000000100000000;
+-          MM_MaskDivZero   = %0000001000000000;
+-          MM_MaskOverflow  = %0000010000000000;
+-          MM_MaskUnderflow = %0000100000000000;
+-          MM_MaskPrecision = %0001000000000000;
+-        begin
+-          { classic FPU }
+-          CtlWord:=Get8087CW;
+-          Set8087CW( (CtlWord and $FFC0) or Byte(Longint(Mask)) );
+-
+-          { SSE }
+-
+-          newmask:=GetSSECSR;
+-
+-          { invalid operation }
+-          if (exInvalidOp in mask) then
+-            newmask:=newmask or MM_MaskInvalidOp
+-          else
+-            newmask:=newmask and not(MM_MaskInvalidOp);
+-
+-          { denormals }
+-          if (exDenormalized in mask) then
+-            newmask:=newmask or MM_MaskDenorm
+-          else
+-            newmask:=newmask and not(MM_MaskDenorm);
+-
+-          { zero divide }
+-          if (exZeroDivide in mask) then
+-            newmask:=newmask or MM_MaskDivZero
+-          else
+-            newmask:=newmask and not(MM_MaskDivZero);
+-
+-          { overflow }
+-          if (exOverflow in mask) then
+-            newmask:=newmask or MM_MaskOverflow
+-          else
+-            newmask:=newmask and not(MM_MaskOverflow);
+-
+-          { underflow }
+-          if (exUnderflow in mask) then
+-            newmask:=newmask or MM_MaskUnderflow
+-          else
+-            newmask:=newmask and not(MM_MaskUnderflow);
+-
+-          { Precision (inexact result) }
+-          if (exPrecision in mask) then
+-            newmask:=newmask or MM_MaskPrecision
+-          else
+-            newmask:=newmask and not(MM_MaskPrecision);
+-          SetSSECSR(newmask);
+-        end;
+-{$endif CPUX86_64}
+-
+ {$ifdef CPUPOWERPC}
+   {$define HASSETFPUEXCEPTIONMASK}
+       procedure SetFPUExceptionMask(const Mask: TFPUExceptionMask);
