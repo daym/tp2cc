@@ -239,6 +239,21 @@ void test_var_extern_in_header_and_def_in_impl() {
   CHECK(contains(out.impl, "int32_t p_h;"));
 }
 
+void test_out_parameter_emits_like_var_reference() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "procedure fill(out x : integer);\n"
+      "implementation\n"
+      "procedure fill(out x : integer);\n"
+      "begin\n"
+      "  x := 1;\n"
+      "end.\n");
+  CHECK(contains(out.header, "void p_fill(int32_t &p_x);"));
+  CHECK(contains(out.impl, "void p_fill(int32_t &p_x) {"));
+  CHECK(contains(out.impl, "p_x = 1;"));
+}
+
 void test_proc_signature_in_header() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -1103,6 +1118,7 @@ int main() {
   RUN_TEST(test_named_type_alias);
   RUN_TEST(test_set_type_alias);
   RUN_TEST(test_var_extern_in_header_and_def_in_impl);
+  RUN_TEST(test_out_parameter_emits_like_var_reference);
   RUN_TEST(test_proc_signature_in_header);
   RUN_TEST(test_typed_array_const);
   RUN_TEST(test_singleton_typed_array_const);

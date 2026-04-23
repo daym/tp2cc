@@ -597,6 +597,12 @@ std::vector<Param> Parser::parse_param_list(Tok close) {
     Param p;
     if (accept(Tok::KwVar)) p.mode = Param::Var;
     else if (accept(Tok::KwConst)) p.mode = Param::Const;
+    else if (is_directive("out") && peek().kind == Tok::Ident) {
+      // `out` is a soft keyword here: consume it as a modifier only when a
+      // parameter name follows, so bare identifiers named `out` stay legal.
+      p.mode = Param::Out;
+      advance();
+    }
     // (Open-array `array of ...` -- accepted as a type later.)
     if (cur_.kind == Tok::Ident) {
       p.names.push_back(cur_.text);

@@ -952,6 +952,35 @@ void test_unit_named_like_directive() {
   CHECK(u && u->name == "export");
 }
 
+void test_out_parameter_is_soft_and_parsed_in_formal_params() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "procedure fill(out r : integer);\n"
+      "procedure keep(out : integer);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && u->interface_decls.size() >= 2) {
+    auto* fill = dynamic_cast<ProcDecl*>(u->interface_decls[0].get());
+    auto* keep = dynamic_cast<ProcDecl*>(u->interface_decls[1].get());
+    CHECK(fill != nullptr);
+    CHECK(keep != nullptr);
+    if (fill && !fill->params.empty()) {
+      CHECK(fill->params[0].mode == Param::Out);
+      CHECK_EQ(fill->params[0].names.size(), size_t{1});
+      CHECK_EQ(fill->params[0].names[0], std::string("r"));
+    }
+    if (keep && !keep->params.empty()) {
+      CHECK(keep->params[0].mode == Param::Value);
+      CHECK_EQ(keep->params[0].names.size(), size_t{1});
+      CHECK_EQ(keep->params[0].names[0], std::string("out"));
+    }
+  }
+}
+
 void test_error_recovery_basic() {
   int before = error_count();
   // Missing semicolon after unit name.
@@ -997,6 +1026,7 @@ int main() {
   RUN_TEST(test_inherited_method_call);
   RUN_TEST(test_directive_as_method_name);
   RUN_TEST(test_unit_named_like_directive);
+  RUN_TEST(test_out_parameter_is_soft_and_parsed_in_formal_params);
   RUN_TEST(test_error_recovery_basic);
   RUN_TEST(test_class_declaration);
   RUN_TEST(test_class_properties);
