@@ -1,0 +1,51 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Tighten pdecobj parent-class lookup and rename object_dec local to result
+License: expat
+
+Two cleanups in the class-declaration parser:
+
+- The original parent-class lookup eagerly downcasts `tt.def` to
+  `tobjectdef` *before* checking that the def actually has
+  `deftype = objectdef`. The downcast on a wrong-typed def is
+  technically OK in Pascal (it's just a typed-pointer reinterpretation)
+  but the surrounding error path then references the downcast pointer
+  via `childof.typename` even when `childof` was set from a non-class
+  def. Restructure so the downcast only happens after the deftype check
+  and the error message reads from `tt.def.typename` directly.
+
+- The function's own name `object_dec` was being assigned to set its
+  result. Rewrite as `result := aktclass;` to match the rest of the
+  bootstrap subset's idiom.
+
+--- a/compiler/pdecobj.pas
++++ b/compiler/pdecobj.pas
+@@ -386,12 +386,14 @@
+            if try_to_consume(_LKLAMMER) then
+              begin
+                 id_type(tt,false);
+-                childof:=tobjectdef(tt.def);
+-                if (not assigned(childof)) or
+-                   (childof.deftype<>objectdef) then
++                if assigned(tt.def) and (tt.def.deftype=objectdef) then
++                  childof:=tobjectdef(tt.def)
++                else
++                  childof:=nil;
++                if not assigned(childof) then
+                  begin
+-                   if assigned(childof) then
+-                     Message1(type_e_class_type_expected,childof.typename);
++                   if assigned(tt.def) then
++                     Message1(type_e_class_type_expected,tt.def.typename);
+                    childof:=nil;
+                    aktclass:=tobjectdef.create(classtype,n,nil);
+                  end
+@@ -756,7 +758,7 @@
+         aktobjectdef:=nil;
+         current_object_option:=old_object_option;
+
+-         object_dec:=aktclass;
++         result:=aktclass;
+       end;
+
+ end.
