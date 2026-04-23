@@ -872,6 +872,39 @@ void test_property_field_and_default_index_lowering() {
   CHECK(contains(out.impl, "p_lst->p_put(2, p_p);"));
 }
 
+void test_implicit_property_lookup_in_method_body() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "  private\n"
+      "    fcount : longint;\n"
+      "    function getname : string;\n"
+      "  public\n"
+      "    property count : longint read fcount write fcount;\n"
+      "    property name : string read getname;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    procedure bump;\n"
+      "  end;\n"
+      "implementation\n"
+      "function tbase.getname : string;\n"
+      "begin\n"
+      "  getname := '';\n"
+      "end;\n"
+      "procedure tchild.bump;\n"
+      "begin\n"
+      "  count := count + 1;\n"
+      "  if name <> '' then begin end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "this->p_fcount = (this->p_fcount + 1);"));
+  CHECK(contains(out.impl, "if ((this->p_getname() != ::rt::ShortString<>(\"\")))"));
+  CHECK(!contains(out.impl, "p_count ="));
+  CHECK(!contains(out.impl, "p_name !="));
+}
+
 void test_procvar_property_stmt_and_value_context() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1407,6 +1440,7 @@ int main() {
   RUN_TEST(test_absolute_typed_const_alias_reinterprets_same_storage);
   RUN_TEST(test_property_getter_setter_lowering);
   RUN_TEST(test_property_field_and_default_index_lowering);
+  RUN_TEST(test_implicit_property_lookup_in_method_body);
   RUN_TEST(test_procvar_property_stmt_and_value_context);
   RUN_TEST(test_default_indexed_procvar_property_stmt_autocalls);
   RUN_TEST(test_class_method_static_emission_and_calls);

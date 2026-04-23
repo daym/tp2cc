@@ -705,6 +705,22 @@ struct Emitter {
                                    const PropertyInfo& prop,
                                    const std::vector<const ast::Expr*>& indices,
                                    const ast::Expr& value);
+  std::optional<std::string> maybe_property_read_text(
+      const std::string& base_cxx,
+      const std::string& class_name,
+      const PropertyInfo& prop,
+      const std::vector<const ast::Expr*>& indices);
+  std::optional<std::string> maybe_property_write_text(
+      const std::string& base_cxx,
+      const std::string& class_name,
+      const PropertyInfo& prop,
+      const std::vector<const ast::Expr*>& indices,
+      const ast::Expr& value);
+  std::string implicit_self_cxx();
+  std::optional<std::string> maybe_lower_implicit_property_write(
+      Location where,
+      std::string_view name,
+      const ast::Expr& value);
   std::optional<std::string> maybe_lower_class_free_member(
       const ast::Expr& base, std::string_view member_name);
   std::optional<std::string> maybe_lower_class_constructor_call(
@@ -736,8 +752,10 @@ struct Emitter {
     NestedFn,         // a parameterless nested function value
     WithField,        // field under a `with X do` binding
     WithMethod,       // method under a `with X do` binding
+    WithProperty,     // property under a `with X do` binding
     ClassField,       // member of current class (or ancestor)
     ClassMethod,      // method of current class (or ancestor)
+    ClassProperty,    // property of current class (or ancestor)
     UnitVar,
     UnitConst,
     UnitProc,
@@ -752,6 +770,8 @@ struct Emitter {
     bool is_callable = false;
     const ast::ProcDecl* proc = nullptr;   // for call-site analysis
   };
+  std::optional<ResolveResult> maybe_resolve_implicit_property(
+      std::string_view name);
   // Qualifier: empty means unqualified lookup.  Otherwise it's a
   // unit name or a class/record alias name (both lowercased).
   enum class QualifierKind { None, Unit, Class };
@@ -1794,6 +1814,10 @@ bool Emitter::expr_is_storage_lvalue(const Expr& e) {
     const auto& id = static_cast<const Ident&>(root);
     ResolveResult rr = resolve_name(id.name);
     if (rr.is_callable && rr.is_parameterless) return false;
+    if (rr.kind == ResolvedKind::WithProperty ||
+        rr.kind == ResolvedKind::ClassProperty) {
+      return false;
+    }
   } else if (root.kind == Kind::Member) {
     const auto& m = static_cast<const Member&>(root);
     std::string cls = deduce_class_alias(*m.base);
@@ -2083,10 +2107,20 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
 std::string Emitter::lower_property_read(
     Location where, const std::string& base_cxx, const std::string& class_name,
     const PropertyInfo& prop, const std::vector<const Expr*>& indices) {
+  if (auto text = maybe_property_read_text(base_cxx, class_name, prop, indices)) {
+    return *text;
+  }
+  report_error(where, "unsupported property read accessor '" + prop.read_name + "'");
+  return base_cxx + "." + mangle(prop.read_name);
+}
+
+std::optional<std::string> Emitter::maybe_property_read_text(
+    const std::string& base_cxx, const std::string& class_name,
+    const PropertyInfo& prop, const std::vector<const Expr*>& indices) {
   // Properties are Pascal-side metadata only. Reads/writes rewrite to the
   // declared backing field/getter/setter so we do not invent extra C++
   // members whose names could collide in ways Pascal itself forbids.
-  if (!registry) return base_cxx;
+  if (!registry) return std::nullopt;
   const std::string access =
       (registry->classes.count(class_name) &&
        registry->classes.at(class_name).is_reference_type)
@@ -2098,7 +2132,7 @@ std::string Emitter::lower_property_read(
     for (const auto* idx : indices) {
       text += "[" + expr_to_cxx(*idx) + "]";
     }
-    return text;
+    return {text};
   }
   if (const auto* method = registry->lookup_class_method(class_name, prop.read_name)) {
     (void)method;
@@ -2108,25 +2142,40 @@ std::string Emitter::lower_property_read(
       text += expr_to_cxx(*indices[i]);
     }
     text += ")";
-    return text;
+    return {text};
   }
-  report_error(where, "unsupported property read accessor '" + prop.read_name + "'");
-  return base_cxx + "." + mangle(prop.read_name);
+  return std::nullopt;
 }
 
 std::string Emitter::lower_property_write(
     Location where, const std::string& base_cxx, const std::string& class_name,
     const PropertyInfo& prop, const std::vector<const Expr*>& indices,
     const Expr& value) {
-  if (!registry) return base_cxx;
+  if (auto text = maybe_property_write_text(base_cxx, class_name, prop, indices,
+                                            value)) {
+    return *text;
+  }
+  if (prop.write_name.empty()) {
+    report_error(where, "property is read-only");
+  } else {
+    report_error(where, "unsupported property write accessor '" + prop.write_name +
+                            "'");
+  }
+  return base_cxx;
+}
+
+std::optional<std::string> Emitter::maybe_property_write_text(
+    const std::string& base_cxx, const std::string& class_name,
+    const PropertyInfo& prop, const std::vector<const Expr*>& indices,
+    const Expr& value) {
+  if (!registry) return std::nullopt;
   const std::string access =
       (registry->classes.count(class_name) &&
        registry->classes.at(class_name).is_reference_type)
           ? "->"
           : ".";
   if (prop.write_name.empty()) {
-    report_error(where, "property is read-only");
-    return base_cxx;
+    return std::nullopt;
   }
   std::string rhs = const_value_to_cxx(value, prop.type.get());
   if (type_is_stringish(prop.type.get()) && expr_is_charish(value)) {
@@ -2138,7 +2187,7 @@ std::string Emitter::lower_property_write(
     for (const auto* idx : indices) {
       text += "[" + expr_to_cxx(*idx) + "]";
     }
-    return text + " = " + rhs;
+    return {text + " = " + rhs};
   }
   if (const auto* method = registry->lookup_class_method(class_name, prop.write_name)) {
     (void)method;
@@ -2152,10 +2201,97 @@ std::string Emitter::lower_property_write(
     if (!first) text += ", ";
     text += rhs;
     text += ")";
-    return text;
+    return {text};
   }
-  report_error(where, "unsupported property write accessor '" + prop.write_name + "'");
-  return base_cxx + access + mangle(prop.write_name) + " = " + rhs;
+  return std::nullopt;
+}
+
+std::string Emitter::implicit_self_cxx() {
+  if (!current_class_name.empty()) {
+    if (const auto* ci = class_info_for_type_name(current_class_name)) {
+      return ci->is_reference_type ? "this" : "(*this)";
+    }
+  }
+  return "(*this)";
+}
+
+std::optional<Emitter::ResolveResult> Emitter::maybe_resolve_implicit_property(
+    std::string_view name) {
+  if (!registry) return std::nullopt;
+
+  // Bare member names inside a method body must resolve the same way as
+  // `self.Name`. Without that, inherited properties silently fall out as
+  // undeclared locals (`p_count`, `p_name`, `p_currsec`) in the translated
+  // bootstrap compiler instead of reading the declared property accessor.
+  for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
+    std::string cls = it->type
+                          ? registry->direct_type_name(
+                                registry->canonicalize(it->type))
+                          : std::string{};
+    if (cls.empty()) continue;
+    if (auto* prop = registry->lookup_class_property(cls, std::string(name))) {
+      if (!prop->params.empty()) continue;
+      std::vector<const Expr*> no_indices;
+      if (auto text = maybe_property_read_text(it->cxx_text, cls, *prop,
+                                               no_indices)) {
+        ResolveResult r;
+        r.kind = ResolvedKind::WithProperty;
+        r.cxx = *text;
+        return r;
+      }
+    }
+  }
+
+  if (!current_class_name.empty()) {
+    if (auto* prop = registry->lookup_class_property(current_class_name,
+                                                     std::string(name))) {
+      if (!prop->params.empty()) return std::nullopt;
+      std::vector<const Expr*> no_indices;
+      if (auto text = maybe_property_read_text(implicit_self_cxx(),
+                                               current_class_name, *prop,
+                                               no_indices)) {
+        ResolveResult r;
+        r.kind = ResolvedKind::ClassProperty;
+        r.cxx = *text;
+        return r;
+      }
+    }
+  }
+
+  return std::nullopt;
+}
+
+std::optional<std::string> Emitter::maybe_lower_implicit_property_write(
+    Location where, std::string_view name, const Expr& value) {
+  if (!registry) return std::nullopt;
+
+  for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
+    std::string cls = it->type
+                          ? registry->direct_type_name(
+                                registry->canonicalize(it->type))
+                          : std::string{};
+    if (cls.empty()) continue;
+    if (auto* prop = registry->lookup_class_property(cls, std::string(name))) {
+      if (!prop->params.empty()) continue;
+      std::vector<const Expr*> no_indices;
+      return lower_property_write(where, it->cxx_text, cls, *prop, no_indices,
+                                  value);
+    }
+  }
+
+  if (local_scope.count(std::string(name))) return std::nullopt;
+
+  if (!current_class_name.empty()) {
+    if (auto* prop = registry->lookup_class_property(current_class_name,
+                                                     std::string(name))) {
+      if (!prop->params.empty()) return std::nullopt;
+      std::vector<const Expr*> no_indices;
+      return lower_property_write(where, implicit_self_cxx(), current_class_name,
+                                  *prop, no_indices, value);
+    }
+  }
+
+  return std::nullopt;
 }
 
 std::optional<std::string> Emitter::maybe_lower_class_free_member(
@@ -2321,6 +2457,7 @@ Emitter::ResolveResult Emitter::resolve_name(
     r.cxx = mangle(name);
     return r;
   }
+  if (auto prop = maybe_resolve_implicit_property(name)) return *prop;
   // 5. Current class's members (chain).
   if (!current_class_name.empty() && registry) {
     if (auto* m = registry->lookup_class_method(current_class_name, name)) {
@@ -4104,6 +4241,14 @@ void Emitter::emit_stmt(const Stmt& s) {
                    ";");
             break;
           }
+        }
+      }
+      if (registry && a.target->kind == Kind::Ident) {
+        const auto& id = static_cast<const Ident&>(*a.target);
+        if (auto text = maybe_lower_implicit_property_write(a.loc, id.name,
+                                                            *a.value)) {
+          emitln(*text + ";");
+          break;
         }
       }
       if (registry && a.target->kind == Kind::Index) {
