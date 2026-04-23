@@ -20,17 +20,19 @@ INCLUDES := -Isrc
 BUILD    := build
 OBJDIR   := $(BUILD)/obj
 BINDIR   := $(BUILD)/bin
+LIBDIR   := $(BUILD)/lib
 
 LIB_SRCS := src/diag.cc src/source.cc src/lexer.cc src/parser.cc src/units.cc src/typereg.cc src/emit.cc
 LIB_OBJS := $(patsubst src/%.cc,$(OBJDIR)/%.o,$(LIB_SRCS))
 RUNTIME_OBJS := $(OBJDIR)/tp2cc_rt/fenv_shim.o
+RUNTIME_LIB := $(LIBDIR)/libtp2cc_rt.a
 
 TEST_BINS := $(BINDIR)/test_lexer $(BINDIR)/test_parser $(BINDIR)/test_units $(BINDIR)/test_emit $(BINDIR)/test_runtime
 
 ALL_BINS  := $(BINDIR)/tp2cc $(TEST_BINS)
 
 .PHONY: all clean check distcheck
-all: $(ALL_BINS)
+all: $(ALL_BINS) $(RUNTIME_LIB)
 
 # Make every source file (in src/ or tests/) depend on every header.
 ALL_HEADERS := $(wildcard src/*.h) tp2cc_rt/prelude.h
@@ -46,6 +48,10 @@ $(OBJDIR)/tests/%.o: tests/%.cc $(ALL_HEADERS)
 $(OBJDIR)/tp2cc_rt/%.o: tp2cc_rt/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(RUNTIME_LIB): $(RUNTIME_OBJS)
+	@mkdir -p $(@D)
+	ar rcs $@ $^
 
 $(BINDIR)/tp2cc: $(LIB_OBJS) $(OBJDIR)/main.o
 	@mkdir -p $(@D)
@@ -87,6 +93,7 @@ install: all
 	install -m 755 -d $(DESTDIR)$(PREFIX)/bin
 	install -m 755 -d $(DESTDIR)$(PREFIX)/include
 	install -m 755 -d $(DESTDIR)$(PREFIX)/include/tp2cc_rt
+	install -m 755 -d $(DESTDIR)$(PREFIX)/lib
 	install -m 755 $(BINDIR)/tp2cc $(DESTDIR)$(PREFIX)/bin/tp2cc
+	install -m 644 $(RUNTIME_LIB) $(DESTDIR)$(PREFIX)/lib/libtp2cc_rt.a
 	install -m 644 tp2cc_rt/prelude.h $(DESTDIR)$(PREFIX)/include/tp2cc_rt/prelude.h
-	install -m 644 tp2cc_rt/fenv_shim.c $(DESTDIR)$(PREFIX)/include/tp2cc_rt/fenv_shim.c
