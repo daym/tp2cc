@@ -204,6 +204,28 @@ inline void p_assert(bool ok, const ShortString<N>&) {
   if (!ok) std::abort();
 }
 
+// The translated compiler adjusts the x87 exception mask before it starts
+// folding real constants. Keep these as the Pascal-visible `System`
+// entry points instead of dragging the whole `Math` unit into stage1.
+inline uint16_t p_get8087cw() {
+#if defined(__i386__) || defined(__x86_64__)
+  uint16_t cw = 0;
+  asm volatile("fnstcw %0" : "=m"(cw));
+  return cw;
+#else
+  std::abort();
+#endif
+}
+
+inline void p_set8087cw(uint16_t cw) {
+#if defined(__i386__) || defined(__x86_64__)
+  asm volatile("fnclex\n\tfldcw %0" : : "m"(cw));
+#else
+  (void)cw;
+  std::abort();
+#endif
+}
+
 // The translated `sysutils` stub aliases into `rt::`, and compiler units
 // declare exception subclasses against that alias. Keep a minimal base
 // available here so those classes compile before a full SysUtils exists.

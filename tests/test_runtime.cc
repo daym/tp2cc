@@ -119,6 +119,19 @@ void test_getmem_typed_pointer_keeps_requested_prefix_size() {
   CHECK(p == nullptr);
 }
 
+void test_8087_control_word_roundtrips() {
+#if defined(__i386__) || defined(__x86_64__)
+  const uint16_t original = p_get8087cw();
+  const uint16_t masked = static_cast<uint16_t>((original & 0xFFC0u) | 0x003Fu);
+
+  p_set8087cw(masked);
+  CHECK_EQ(static_cast<uint16_t>(p_get8087cw() & 0x003Fu), uint16_t{0x003Fu});
+
+  p_set8087cw(original);
+  CHECK_EQ(p_get8087cw(), original);
+#endif
+}
+
 void test_ansistring_copy_on_write_preserves_original() {
   AnsiString original("abc");
   AnsiString copy = original;
@@ -534,6 +547,7 @@ int main() {
   RUN_TEST(test_val_rejects_compiler_unsupported_integer_forms);
   RUN_TEST(test_bootstrap_pointer_sized_aliases_are_32bit);
   RUN_TEST(test_getmem_typed_pointer_keeps_requested_prefix_size);
+  RUN_TEST(test_8087_control_word_roundtrips);
   RUN_TEST(test_ansistring_copy_on_write_preserves_original);
   RUN_TEST(test_ansistring_storage_slot_holds_payload_pointer);
   RUN_TEST(test_new_and_dispose_share_malloc_storage_family);
