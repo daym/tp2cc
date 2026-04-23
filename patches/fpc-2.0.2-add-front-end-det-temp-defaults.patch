@@ -1,0 +1,367 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Override the inherited virtual abstract det_temp on front-end node base classes
+License: expat
+
+The base node class declares `det_temp` as `virtual; abstract;`. Several
+front-end node classes (`taddnode`, the constant nodes in `ncon.pas`,
+etc.) compute their register and temp requirements entirely in `pass_1`
+and never need a separate `det_temp` body. Native FPC tolerates the
+unfilled abstract slot because its codegen path swaps in concrete
+backend subclasses (via the `cnodeclass` metaclass dispatch) that
+*do* override `det_temp`; the bases themselves are never reached as
+concrete instances.
+
+tp2cc lowers the bootstrap subset without that metaclass swap -- the
+front-end nodes are the concrete instances. In C++ a class with a
+pure-virtual method cannot be instantiated, so the abstract slot has
+to be filled with something. Add no-op `det_temp` overrides on each
+of these node classes (the bodies are empty because temps are already
+handled in `pass_1`); semantics are unchanged for both compilers.
+
+--- a/compiler/nadd.pas
++++ b/compiler/nadd.pas
+@@ -35,6 +35,7 @@
+           constructor create(tt : tnodetype;l,r : tnode);override;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+     {$ifdef state_tracking}
+       function track_state_pass(exec_known:boolean):boolean;override;
+     {$endif}
+@@ -1911,8 +1912,9 @@
+                      begin
+                        expectloc:=LOC_REGISTER;
+                        calcregisters(self,0,0,0);
+-                     end;
+-                 end;
++         end;
++      end;
++
+               end
+              else
+              { Both are chars? only convert to shortstrings for addn }
+@@ -2164,6 +2165,11 @@
+            end;
+       end;
+ 
++    procedure taddnode.det_temp;
++      begin
++        { Arithmetic nodes compute their register and child pressure in pass_1. }
++      end;
++
+ {$ifdef state_tracking}
+     function Taddnode.track_state_pass(exec_known:boolean):boolean;
+ 
+--- a/compiler/ncon.pas
++++ b/compiler/ncon.pas
+@@ -44,6 +44,7 @@
+           function getcopy : tnode;override;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+           function docompare(p: tnode) : boolean; override;
+           procedure printnodedata(var t:text);override;
+        end;
+@@ -65,6 +66,7 @@
+           function getcopy : tnode;override;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+           function docompare(p: tnode) : boolean; override;
+           procedure printnodedata(var t:text);override;
+        end;
+@@ -81,6 +83,7 @@
+           function getcopy : tnode;override;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+           function docompare(p: tnode) : boolean; override;
+        end;
+        tpointerconstnodeclass = class of tpointerconstnode;
+@@ -101,6 +104,7 @@
+           function getcopy : tnode;override;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+           function getpcharcopy : pchar;
+           function docompare(p: tnode) : boolean; override;
+        end;
+@@ -119,6 +123,7 @@
+           function getcopy : tnode;override;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+           function docompare(p: tnode) : boolean; override;
+        end;
+        tsetconstnodeclass = class of tsetconstnode;
+@@ -127,6 +132,7 @@
+           constructor create;virtual;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+        end;
+        tnilnodeclass = class of tnilnode;
+ 
+@@ -138,6 +144,7 @@
+           function getcopy : tnode;override;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+           function docompare(p: tnode) : boolean; override;
+        end;
+        tguidconstnodeclass = class of tguidconstnode;
+@@ -332,6 +339,11 @@
+          registersfpu:=1;
+       end;
+ 
++    procedure trealconstnode.det_temp;
++      begin
++        { Constant nodes do not need evaluation temporaries. }
++      end;
++
+     function trealconstnode.docompare(p: tnode): boolean;
+       begin
+         docompare :=
+@@ -425,6 +437,11 @@
+          expectloc:=LOC_CONSTANT;
+       end;
+ 
++    procedure tordconstnode.det_temp;
++      begin
++        { Ordinal constants are immediate values and need no temps. }
++      end;
++
+     function tordconstnode.docompare(p: tnode): boolean;
+       begin
+         docompare :=
+@@ -507,6 +524,11 @@
+          expectloc:=LOC_CONSTANT;
+       end;
+ 
++    procedure tpointerconstnode.det_temp;
++      begin
++        { Pointer constants are immediate values and need no temps. }
++      end;
++
+     function tpointerconstnode.docompare(p: tnode): boolean;
+       begin
+         docompare :=
+@@ -710,6 +732,11 @@
+          expectloc:=LOC_CREFERENCE;
+       end;
+ 
++    procedure tstringconstnode.det_temp;
++      begin
++        { String constants come from constant storage, not temporary values. }
++      end;
++
+     function tstringconstnode.getpcharcopy : pchar;
+       var
+          pc : pchar;
+@@ -824,6 +851,11 @@
+           expectloc:=LOC_CREFERENCE;
+       end;
+ 
++    procedure tsetconstnode.det_temp;
++      begin
++        { Set constants are emitted from constant storage without temps. }
++      end;
++
+ 
+     function tsetconstnode.docompare(p: tnode): boolean;
+       begin
+@@ -854,6 +886,11 @@
+         expectloc:=LOC_CONSTANT;
+       end;
+ 
++    procedure tnilnode.det_temp;
++      begin
++        { Nil is an immediate constant and needs no temp storage. }
++      end;
++
+ {*****************************************************************************
+                             TGUIDCONSTNODE
+ *****************************************************************************}
+@@ -902,6 +939,11 @@
+          expectloc:=LOC_CREFERENCE;
+       end;
+ 
++    procedure tguidconstnode.det_temp;
++      begin
++        { GUID constants live in constant storage and need no temps. }
++      end;
++
+     function tguidconstnode.docompare(p: tnode): boolean;
+       begin
+         docompare :=
+--- a/compiler/ninl.pas
++++ b/compiler/ninl.pas
+@@ -39,6 +39,7 @@
+           function getcopy : tnode;override;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+           function docompare(p: tnode): boolean; override;
+           { All the following routines currently
+             call compilerproc's, unless they are
+@@ -2397,9 +2398,14 @@
+ 
+           else
+             internalerror(8);
+-          end;
++         end;
+          dec(parsing_para_level);
+        end;
++
++    procedure tinlinenode.det_temp;
++      begin
++        { Inline nodes account for child/register pressure during pass_1. }
++      end;
+ {$ifdef fpc}
+ {$maxfpuregisters default}
+ {$endif fpc}
+--- a/compiler/nmat.pas
++++ b/compiler/nmat.pas
+@@ -32,6 +32,7 @@
+        tmoddivnode = class(tbinopnode)
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+          protected
+ {$ifndef cpu64bit}
+           { override the following if you want to implement }
+@@ -46,6 +47,7 @@
+        tshlshrnode = class(tbinopnode)
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+ {$ifndef cpu64bit}
+           { override the following if you want to implement }
+           { parts explicitely in the code generator (CEC)
+@@ -61,6 +63,7 @@
+           constructor create(expr : tnode);virtual;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+        end;
+        tunaryminusnodeclass = class of tunaryminusnode;
+ 
+@@ -68,6 +71,7 @@
+           constructor create(expr : tnode);virtual;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+        {$ifdef state_tracking}
+           function track_state_pass(exec_known:boolean):boolean;override;
+        {$endif}
+@@ -419,6 +423,11 @@
+          expectloc:=LOC_REGISTER;
+       end;
+ 
++    procedure tmoddivnode.det_temp;
++      begin
++        { Mod/div nodes account for their register pressure during pass_1. }
++      end;
++
+ 
+ 
+ {****************************************************************************
+@@ -524,6 +533,11 @@
+          calcregisters(self,regs,0,0);
+       end;
+ 
++    procedure tshlshrnode.det_temp;
++      begin
++        { Shift nodes account for their register pressure during pass_1. }
++      end;
++
+ 
+ {****************************************************************************
+                             TUNARYMINUSNODE
+@@ -650,6 +664,11 @@
+            end;
+       end;
+ 
++    procedure tunaryminusnode.det_temp;
++      begin
++        { Unary minus nodes keep no separate evaluation temps. }
++      end;
++
+ 
+ {****************************************************************************
+                                TNOTNODE
+@@ -834,6 +853,11 @@
+              end;
+       end;
+ 
++    procedure tnotnode.det_temp;
++      begin
++        { Not-nodes account for their register pressure during pass_1. }
++      end;
++
+ {$ifdef state_tracking}
+     function Tnotnode.track_state_pass(exec_known:boolean):boolean;
+       begin
+--- a/compiler/nset.pas
++++ b/compiler/nset.pas
+@@ -55,6 +55,7 @@
+           constructor create(l,r : tnode);virtual;
+           function det_resulttype:tnode;override;
+           function pass_1 : tnode;override;
++          procedure det_temp;override;
+        end;
+        tsetelementnodeclass = class of tsetelementnode;
+ 
+@@ -62,6 +63,7 @@
+           constructor create(l,r : tnode);virtual;
+           function det_resulttype:tnode;override;
+           function pass_1 : tnode;override;
++          procedure det_temp;override;
+        end;
+        tinnodeclass = class of tinnode;
+ 
+@@ -86,6 +88,7 @@
+           procedure insertintolist(l : tnodelist);override;
+           function det_resulttype:tnode;override;
+           function pass_1 : tnode;override;
++          procedure det_temp;override;
+           function docompare(p: tnode): boolean; override;
+           procedure addlabel(blockid:longint;l,h : TConstExprInt);
+           procedure addblock(blockid:longint;instr:tnode);
+@@ -164,6 +167,11 @@
+          calcregisters(self,0,0,0);
+       end;
+ 
++    procedure tsetelementnode.det_temp;
++      begin
++        { Set-element nodes consume their children directly and keep no temps. }
++      end;
++
+ 
+ {*****************************************************************************
+                               TINNODE
+@@ -327,6 +335,11 @@
+            end;
+       end;
+ 
++    procedure tinnode.det_temp;
++      begin
++        { The generic "in" node computes register needs in pass_1 itself. }
++      end;
++
+ 
+ {*****************************************************************************
+                               TRANGENODE
+@@ -654,6 +667,11 @@
+            registersint:=1;
+       end;
+ 
++    procedure tcasenode.det_temp;
++      begin
++        { Case nodes account for child register pressure during pass_1. }
++      end;
++
+ 
+     function tcasenode.getcopy : tnode;
+ 
