@@ -463,6 +463,16 @@ using p_extstr  = ShortString<255>;
 using p_pathstr = ShortString<255>;
 using p_comstr  = ShortString<255>;
 
+// The current tp2cc bootstrap runtime targets 32-bit hosts only. Match
+// FPC's CPU32 aliases here so translated compiler code sees pointer-sized
+// integers as `longint`/`dword` equivalents.
+using p_longint  = int32_t;
+using p_dword    = uint32_t;
+using p_sizeint  = p_longint;
+using p_sizeuint = p_dword;
+using p_ptrint   = p_longint;
+using p_ptruint  = p_dword;
+
 // objects unit
 using p_sw_integer = int32_t;
 using p_sw_word    = uint32_t;
@@ -2238,6 +2248,7 @@ constexpr std::size_t low(const std::array<T, N>&)  { return 0; }
 
 // Pascal numeric constants.
 inline constexpr int32_t p_maxlongint = 2147483647;
+inline constexpr p_sizeint p_maxint = p_maxlongint;
 inline constexpr double  p_pi         = 3.141592653589793;
 
 // Pascal `typeof(T)` returns a pointer to T's virtual method table. We
