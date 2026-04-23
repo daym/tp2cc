@@ -86,17 +86,26 @@ void test_val_accepts_decimal_min_longint() {
   CHECK_EQ(v, std::numeric_limits<int32_t>::min());
 }
 
-void test_val_rejects_compiler_unsupported_integer_forms() {
+void test_val_handles_bootstrap_integer_forms() {
   int32_t v = 123;
   int32_t code = -1;
 
   p_val(ShortString<>("&77"), v, code);
-  CHECK_EQ(code, 1);
-  CHECK_EQ(v, 0);
+  CHECK_EQ(code, 0);
+  CHECK_EQ(v, 63);
 
   p_val(ShortString<>("2147483648"), v, code);
   CHECK_EQ(code, 10);
   CHECK_EQ(v, 0);
+}
+
+void test_val_keeps_leading_zero_decimals_decimal() {
+  uint32_t v = 0;
+  int32_t code = -1;
+
+  p_val(ShortString<>("01012"), v, code);
+  CHECK_EQ(code, 0);
+  CHECK_EQ(v, 1012u);
 }
 
 void test_bootstrap_pointer_sized_aliases_are_32bit() {
@@ -340,6 +349,58 @@ void test_open_array_helper_owns_temporary_storage() {
   CHECK_EQ(view[0], 1);
   CHECK_EQ(view[1], 2);
   CHECK_EQ(view[2], 3);
+}
+
+void test_dos_pack_unpack_time_matches_bit_layout() {
+  DateTime in{};
+  in.p_year = 2004;
+  in.p_month = 5;
+  in.p_day = 6;
+  in.p_hour = 7;
+  in.p_min = 8;
+  in.p_sec = 10;
+
+  int32_t packed = 0;
+  p_packtime(in, packed);
+  CHECK_EQ(packed,
+           (((2004 - 1980) << 25) | (5 << 21) | (6 << 16) |
+            (7 << 11) | (8 << 5) | (10 / 2)));
+
+  DateTime out{};
+  p_unpacktime(packed, out);
+  CHECK_EQ(out.p_year, in.p_year);
+  CHECK_EQ(out.p_month, in.p_month);
+  CHECK_EQ(out.p_day, in.p_day);
+  CHECK_EQ(out.p_hour, in.p_hour);
+  CHECK_EQ(out.p_min, in.p_min);
+  CHECK_EQ(out.p_sec, in.p_sec);
+}
+
+void test_getfattr_reports_directory_bit() {
+  char dir_template[] = "/tmp/tp2cc-dir-XXXXXX";
+  char file_template[] = "/tmp/tp2cc-file-XXXXXX";
+  char* dir = ::mkdtemp(dir_template);
+  CHECK(dir != nullptr);
+  int fd = ::mkstemp(file_template);
+  CHECK(fd >= 0);
+  ::close(fd);
+
+  TypedFile<uint8_t> dir_file{};
+  p_assign(dir_file, ShortString<>(dir));
+  uint16_t dir_attr = 0;
+  p_getfattr(dir_file, dir_attr);
+  CHECK_EQ(p_doserror, 0);
+  CHECK((dir_attr & p_directory) == p_directory);
+
+  TypedFile<uint8_t> plain_file{};
+  p_assign(plain_file, ShortString<>(file_template));
+  uint16_t plain_attr = 0;
+  p_getfattr(plain_file, plain_attr);
+  CHECK_EQ(p_doserror, 0);
+  CHECK((plain_attr & p_directory) == 0);
+
+  ::rmdir(dir);
+  ::unlink(file_template);
 }
 
 void test_set_superset_operator_matches_pascal() {
@@ -615,7 +676,8 @@ void test_shell_tracks_exit_status() {
 int main() {
   RUN_TEST(test_val_accepts_prefixed_integers);
   RUN_TEST(test_val_accepts_decimal_min_longint);
-  RUN_TEST(test_val_rejects_compiler_unsupported_integer_forms);
+  RUN_TEST(test_val_handles_bootstrap_integer_forms);
+  RUN_TEST(test_val_keeps_leading_zero_decimals_decimal);
   RUN_TEST(test_bootstrap_pointer_sized_aliases_are_32bit);
   RUN_TEST(test_getmem_typed_pointer_keeps_requested_prefix_size);
   RUN_TEST(test_8087_control_word_roundtrips);
@@ -638,6 +700,8 @@ int main() {
   RUN_TEST(test_reinterpret_storage_ref_views_pointer_variable_bytes);
   RUN_TEST(test_reinterpret_ref_views_pointee_bytes_of_pointer_value);
   RUN_TEST(test_open_array_helper_owns_temporary_storage);
+  RUN_TEST(test_dos_pack_unpack_time_matches_bit_layout);
+  RUN_TEST(test_getfattr_reports_directory_bit);
   RUN_TEST(test_set_superset_operator_matches_pascal);
   RUN_TEST(test_explicit_set_cast_copies_bits);
   RUN_TEST(test_method_ptr_calls_bound_thunk);

@@ -1926,6 +1926,10 @@ inline void p_parse_pascal_integer(const std::string& buf, Int& out,
         ++i;
         while ((i + 1) < buf.size() && buf[i] == '0') ++i;
         break;
+      case '&':
+        base = 8;
+        ++i;
+        break;
       case '%':
         base = 2;
         ++i;
@@ -2147,6 +2151,27 @@ inline int32_t p_findnext(SearchRec& rec) {
 inline void p_findclose(SearchRec& rec) {
   rec.p_matches.clear();
   rec.p_index = 0;
+}
+inline void p_getfattr(TextFile& f, uint16_t& attr) {
+  struct stat st{};
+  if (::stat(p_to_std_string(f.name).c_str(), &st) != 0) {
+    p_doserror = errno;
+    attr = 0;
+    return;
+  }
+  attr = static_cast<uint16_t>(S_ISDIR(st.st_mode) ? 0x10 : 0);
+  p_doserror = 0;
+}
+template <typename T>
+inline void p_getfattr(TypedFile<T>& f, uint16_t& attr) {
+  struct stat st{};
+  if (::stat(p_to_std_string(f.name).c_str(), &st) != 0) {
+    p_doserror = errno;
+    attr = 0;
+    return;
+  }
+  attr = static_cast<uint16_t>(S_ISDIR(st.st_mode) ? 0x10 : 0);
+  p_doserror = 0;
 }
 inline void p_mkdir(const ShortString<>& path) {
   p_last_ioresult = ::mkdir(p_to_std_string(path).c_str(), 0777) == 0 ? 0 : 5;
@@ -3438,6 +3463,24 @@ template <int N>
 inline void p_val(const ShortString<N>& s, int32_t& out, int32_t& code) {
   p_parse_pascal_integer(p_to_std_string(s), out, code);
 }
+template <int N, typename UInt>
+requires (std::is_integral_v<UInt> && std::is_unsigned_v<UInt> &&
+          !std::is_same_v<UInt, bool> && !std::is_same_v<UInt, uint8_t>)
+inline void p_val(const ShortString<N>& s, UInt& out, int32_t& code) {
+  // Pascal keeps a leading-zero decimal literal decimal. Reusing the shared
+  // parser here avoids C's base-0 rule turning `01012` into octal `522`.
+  using ParseUInt =
+      std::conditional_t<(sizeof(UInt) <= sizeof(uint32_t)), uint32_t, uint64_t>;
+  ParseUInt parsed = 0;
+  p_parse_pascal_integer(p_to_std_string(s), parsed, code);
+  if (code != 0 ||
+      parsed > static_cast<ParseUInt>(std::numeric_limits<UInt>::max())) {
+    out = 0;
+    if (code == 0) code = 1;
+    return;
+  }
+  out = static_cast<UInt>(parsed);
+}
 inline void p_val(const AnsiString& s, int32_t& out, int32_t& code) {
   p_parse_pascal_integer(p_to_std_string(s), out, code);
 }
@@ -3613,13 +3656,52 @@ inline void p_gettime(uint16_t& hour, uint16_t& minute, uint16_t& second) {
   uint16_t msec = 0, usec = 0;
   p_gettime(hour, minute, second, msec, usec);
 }
-template <typename... A> inline void p_getdate(A&&...) {}
-// STUB: `datetime` is a record type in fpc's dos unit. Accept common
-// field accesses (year, month, day, hour, min, sec) since owar.pas
-// names them unprefixed.
-struct DateTime { uint16_t p_year = 0, p_month = 0, p_day = 0,
-                  p_hour = 0, p_min = 0, p_sec = 0, p_sec100 = 0; };
+inline void p_getdate(uint16_t& year, uint16_t& month, uint16_t& mday,
+                      uint16_t& wday) {
+  std::time_t t = std::time(nullptr);
+  std::tm lt{};
+  ::localtime_r(&t, &lt);
+  year = static_cast<uint16_t>(lt.tm_year + 1900);
+  month = static_cast<uint16_t>(lt.tm_mon + 1);
+  mday = static_cast<uint16_t>(lt.tm_mday);
+  wday = static_cast<uint16_t>(lt.tm_wday);
+}
+// FPC's DOS unit uses a packed DOS timestamp record here, not Unix epoch
+// seconds. Compiler units decode those bitfields directly via UnpackTime.
+struct DateTime {
+  uint16_t p_year = 0;
+  uint16_t p_month = 0;
+  uint16_t p_day = 0;
+  uint16_t p_hour = 0;
+  uint16_t p_min = 0;
+  uint16_t p_sec = 0;
+};
 using p_datetime = DateTime;
+inline void p_unpacktime(int32_t p, DateTime& t) {
+  t.p_sec = static_cast<uint16_t>((p & 31) * 2);
+  p >>= 5;
+  t.p_min = static_cast<uint16_t>(p & 63);
+  p >>= 6;
+  t.p_hour = static_cast<uint16_t>(p & 31);
+  p >>= 5;
+  t.p_day = static_cast<uint16_t>(p & 31);
+  p >>= 5;
+  t.p_month = static_cast<uint16_t>(p & 15);
+  p >>= 4;
+  t.p_year = static_cast<uint16_t>(p + 1980);
+}
+inline void p_packtime(DateTime& t, int32_t& p) {
+  int32_t zs = t.p_hour;
+  p = ((static_cast<int32_t>(t.p_year) - 1980) & 127);
+  p = (p << 4) + t.p_month;
+  p = (p << 5) + t.p_day;
+  p <<= 16;
+  zs = (zs << 6) + t.p_min;
+  zs = (zs << 5) + (t.p_sec / 2);
+  p += (zs & 0xffff);
+}
+inline constexpr p_char p_directoryseparator = p_char_of('/');
+inline constexpr p_char p_driveseparator = p_char_of(':');
 inline int32_t p_extraoptions = 0;
 inline int32_t p_moduleindex = 0;
 template <int N, int M>
@@ -3669,6 +3751,16 @@ template <typename F, typename T> inline void p_getftime(F&&, T&) {}
 template <typename F, typename T> inline void p_setftime(F&&, T) {}
 // STUB: stderr is the fpc standard error TextFile.
 inline TextFile p_stderr;
+inline TextFile p_output = [] {
+  TextFile f;
+  f.f = stdout;
+  return f;
+}();
+inline TextFile p_input = [] {
+  TextFile f;
+  f.f = stdin;
+  return f;
+}();
 // (No global `tprocdefcoll` -- it's a function-local record type in
 // tccal.pas and gets emitted there. An earlier stub here was taking
 // name precedence over the real thing via `using namespace ::rt`.)
