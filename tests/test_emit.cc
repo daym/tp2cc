@@ -1369,6 +1369,208 @@ void test_class_self_and_free_use_pointer_semantics() {
   CHECK(!contains(out.impl, "this->p_next->p_free()"));
 }
 
+void test_metaclass_alias_and_concrete_class_value_lowering() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    constructor create(n : integer);\n"
+      "    class function load(n : integer) : integer;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "  end;\n"
+      "  tbaseclass = class of tbase;\n"
+      "var\n"
+      "  cls : tbaseclass;\n"
+      "  inst : tbase;\n"
+      "implementation\n"
+      "constructor tbase.create(n : integer);\n"
+      "begin\n"
+      "end;\n"
+      "class function tbase.load(n : integer) : integer;\n"
+      "begin\n"
+      "  load := n;\n"
+      "end;\n"
+      "begin\n"
+      "  cls := tchild;\n"
+      "  inst := cls.create(1);\n"
+      "  if assigned(cls) then\n"
+      "    inst := cls.create(2);\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "using p_tbaseclass = const tp2cc_metaclass_p_tbase*;"));
+  CHECK(contains(out.header,
+                 "struct tp2cc_metaclass_p_tchild : public tp2cc_metaclass_p_tbase {"));
+  CHECK(contains(out.header,
+                 "inline const tp2cc_metaclass_p_tchild* tp2cc_metaclass_value_p_tchild() {"));
+  CHECK(contains(out.impl, "p_cls = tp2cc_metaclass_value_p_tchild();"));
+  CHECK(contains(out.impl, "p_inst = p_cls->p_create(1);"));
+  CHECK(contains(out.impl, "if (p_assigned(p_cls))"));
+}
+
+void test_metaclass_cast_keeps_concrete_descriptor() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    constructor create;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "  end;\n"
+      "  tbaseclass = class of tbase;\n"
+      "  tchildclass = class of tchild;\n"
+      "var\n"
+      "  basecls : tbaseclass;\n"
+      "  childcls : tchildclass;\n"
+      "implementation\n"
+      "constructor tbase.create;\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  basecls := tchild;\n"
+      "  childcls := tchildclass(basecls);\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_basecls = tp2cc_metaclass_value_p_tchild();"));
+  CHECK(contains(out.impl, "p_childcls = ((p_tchildclass)(p_basecls));"));
+}
+
+void test_metaclass_derived_constructor_surface_stays_visible() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    constructor create(n : integer);\n"
+      "  end;\n"
+      "  tchildclass = class of tchild;\n"
+      "var\n"
+      "  cls : tchildclass;\n"
+      "  inst : tchild;\n"
+      "implementation\n"
+      "constructor tchild.create(n : integer);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  inst := cls.create(7);\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "struct tp2cc_metaclass_p_tchild : public tp2cc_metaclass_p_tbase {"));
+  CHECK(contains(out.header,
+                 "p_tchild* (*p_create)(int32_t);"));
+  CHECK(contains(out.header,
+                 "tp2cc_metaclass_p_tchild(tp2cc_metaclass_p_tbase tp2cc_parent, p_tchild* (*tp2cc_p_create)(int32_t))"));
+  CHECK(contains(out.impl, "p_inst = p_cls->p_create(7);"));
+}
+
+void test_indexed_implicit_property_in_method_body() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tlist = class\n"
+      "  private\n"
+      "    function get(i : integer) : integer;\n"
+      "  public\n"
+      "    function first : integer;\n"
+      "    property items[i : integer] : integer read get; default;\n"
+      "  end;\n"
+      "implementation\n"
+      "function tlist.get(i : integer) : integer;\n"
+      "begin\n"
+      "  get := i;\n"
+      "end;\n"
+      "function tlist.first : integer;\n"
+      "begin\n"
+      "  first := items[0];\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = this->p_get(0);"));
+  CHECK(!contains(out.impl, "p_items[0]"));
+}
+
+void test_function_result_member_access_uses_pointer_semantics() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class\n"
+      "    next : tnode;\n"
+      "  end;\n"
+      "function clone(n : tnode) : tnode;\n"
+      "implementation\n"
+      "function clone(n : tnode) : tnode;\n"
+      "begin\n"
+      "  clone := n;\n"
+      "  clone.next := nil;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = p_n;"));
+  CHECK(contains(out.impl, "p_result->p_next = nullptr;"));
+}
+
+void test_reference_class_typecast_is_pointer_cast() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class end;\n"
+      "  tchild = class(tbase) end;\n"
+      "function cast_child(p : tbase) : tchild;\n"
+      "implementation\n"
+      "function cast_child(p : tbase) : tchild;\n"
+      "begin\n"
+      "  cast_child := tchild(p);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = ((p_tchild*)(p_p));"));
+}
+
+void test_reference_class_cast_keeps_pointer_member_access() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class end;\n"
+      "  tchild = class(tbase)\n"
+      "    next : tchild;\n"
+      "  end;\n"
+      "function fetch_next(p : tbase) : tchild;\n"
+      "implementation\n"
+      "function fetch_next(p : tbase) : tchild;\n"
+      "begin\n"
+      "  fetch_next := tchild(p).next;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = ((p_tchild*)(p_p))->p_next;"));
+}
+
+void test_is_as_use_pointer_target_types() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class end;\n"
+      "  tchild = class(tbase) end;\n"
+      "function is_child(p : tbase) : boolean;\n"
+      "function as_child(p : tbase) : tchild;\n"
+      "implementation\n"
+      "function is_child(p : tbase) : boolean;\n"
+      "begin\n"
+      "  is_child := p is tchild;\n"
+      "end;\n"
+      "function as_child(p : tbase) : tchild;\n"
+      "begin\n"
+      "  as_child := p as tchild;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "dynamic_cast<p_tchild*>(p_p) != nullptr"));
+  CHECK(contains(out.impl, "p_result = dynamic_cast<p_tchild*>(p_p);"));
+}
+
 // Pascal identifiers that happen to be C++ reserved words (but are NOT
 // Pascal keywords) must survive translation thanks to the `p_` prefix.
 void test_cxx_reserved_word_identifiers() {
@@ -1463,6 +1665,14 @@ int main() {
   RUN_TEST(test_implicit_tobject_inherited_constructor_autocalls);
   RUN_TEST(test_inherited_destroy_autocalls_through_non_overriding_parent);
   RUN_TEST(test_class_self_and_free_use_pointer_semantics);
+  RUN_TEST(test_metaclass_alias_and_concrete_class_value_lowering);
+  RUN_TEST(test_metaclass_cast_keeps_concrete_descriptor);
+  RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
+  RUN_TEST(test_indexed_implicit_property_in_method_body);
+  RUN_TEST(test_function_result_member_access_uses_pointer_semantics);
+  RUN_TEST(test_reference_class_typecast_is_pointer_cast);
+  RUN_TEST(test_reference_class_cast_keeps_pointer_member_access);
+  RUN_TEST(test_is_as_use_pointer_target_types);
   RUN_TEST(test_cxx_reserved_word_identifiers);
 
   int n = tp2cc_test::failures();

@@ -1,5 +1,6 @@
 #include "emit.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -555,6 +556,12 @@ struct Emitter {
   };
   std::vector<WithBind> with_stack;
 
+  struct MetaclassCallable {
+    std::string name;
+    const MethodSig* sig = nullptr;
+    bool implicit_root_create = false;
+  };
+
   // Reified type/symbol tree spanning all parsed units. Set by the
   // driver. Drives member-access and ident-call decisions.
   const TypeRegistry* registry = nullptr;
@@ -589,6 +596,10 @@ struct Emitter {
   std::string type_to_cxx(const TypeExpr& t);
   std::string type_name_to_cxx(const TyName& n);
   std::string named_type_struct_cxx(std::string_view name);
+  std::string metaclass_struct_cxx(std::string_view class_name);
+  std::string metaclass_value_fn_cxx(std::string_view class_name);
+  std::vector<MetaclassCallable> collect_metaclass_callables(
+      std::string_view class_name);
   std::string array_type_to_cxx(const TyArray& a);
   const ast::TypeExpr* canonicalize_type(const ast::TypeExpr* t);
   bool enum_has_explicit_values(const TyEnum& e);
@@ -628,10 +639,13 @@ struct Emitter {
       const Expr& e, const TypeExpr* target, bool explicit_conversion);
   std::optional<std::string> maybe_convert_proc_value(
       const Expr& e, const TypeExpr* target);
+  std::optional<std::string> maybe_lower_metaclass_value(
+      const Expr& e, const TypeExpr* target);
 
   // Small helpers.
   bool const_param_needs_mutable_ref(const ast::TypeExpr* t);
   const ClassInfo* class_info_for_type_name(std::string_view name);
+  std::string metaclass_target_name(const ast::TypeExpr* t);
   bool type_is_value_object_or_record(const ast::TypeExpr* t);
   std::string primitive_cast_lvalue_ref(const ast::Call& c);
   std::string param_list_to_cxx(const std::vector<Param>& params);
@@ -666,6 +680,7 @@ struct Emitter {
   bool expr_is_storage_lvalue(const ast::Expr& e);
   bool expr_is_untyped_storage_ref(const ast::Expr& e);
   bool expr_is_charish(const ast::Expr& e);
+  bool type_is_metaclass(const ast::TypeExpr* t);
   bool type_is_reference_class(const ast::TypeExpr* t);
   bool expr_is_reference_class(const ast::Expr& e);
   std::string member_access_op(const ast::TypeExpr* t);
@@ -840,6 +855,87 @@ std::string Emitter::named_type_struct_cxx(std::string_view name) {
   return mangle(name);
 }
 
+std::string Emitter::metaclass_struct_cxx(std::string_view class_name) {
+  auto dot = class_name.find('.');
+  std::string tail =
+      (dot == std::string_view::npos) ? std::string(class_name)
+                                      : std::string(class_name.substr(dot + 1));
+  std::string prefix;
+  if (const auto* ci = class_info_for_type_name(class_name);
+      ci && !ci->defining_unit.empty() &&
+      ci->defining_unit != current_unit_name) {
+    prefix = mangle(ci->defining_unit) + "::";
+  }
+  return prefix + "tp2cc_metaclass_" + mangle(tail);
+}
+
+std::string Emitter::metaclass_value_fn_cxx(std::string_view class_name) {
+  auto dot = class_name.find('.');
+  std::string tail =
+      (dot == std::string_view::npos) ? std::string(class_name)
+                                      : std::string(class_name.substr(dot + 1));
+  std::string prefix;
+  if (const auto* ci = class_info_for_type_name(class_name);
+      ci && !ci->defining_unit.empty() &&
+      ci->defining_unit != current_unit_name) {
+    prefix = mangle(ci->defining_unit) + "::";
+  }
+  return prefix + "tp2cc_metaclass_value_" + mangle(tail);
+}
+
+std::vector<Emitter::MetaclassCallable> Emitter::collect_metaclass_callables(
+    std::string_view class_name) {
+  std::vector<MetaclassCallable> out;
+  if (!registry) return out;
+
+  std::string cls = ascii_lower(std::string(class_name));
+  std::vector<std::string> chain;
+  std::unordered_set<std::string> seen;
+  while (!cls.empty() && !seen.count(cls)) {
+    seen.insert(cls);
+    auto it = registry->classes.find(cls);
+    if (it == registry->classes.end()) break;
+    chain.push_back(cls);
+    cls = it->second.parent;
+  }
+  std::reverse(chain.begin(), chain.end());
+
+  std::unordered_map<std::string, size_t> pos;
+  for (const auto& current : chain) {
+    auto it = registry->classes.find(current);
+    if (it == registry->classes.end()) continue;
+    std::vector<std::string> names;
+    names.reserve(it->second.methods.size());
+    for (const auto& [name, sig] : it->second.methods) {
+      if (sig.kind == SymKind::Constructor || sig.kind == SymKind::ClassMethod) {
+        names.push_back(name);
+      }
+    }
+    std::sort(names.begin(), names.end());
+    for (const auto& name : names) {
+      const MethodSig* sig = &it->second.methods.at(name);
+      auto pit = pos.find(name);
+      if (pit == pos.end()) {
+        pos[name] = out.size();
+        out.push_back({name, sig, false});
+      } else {
+        out[pit->second].sig = sig;
+        out[pit->second].implicit_root_create = false;
+      }
+    }
+  }
+
+  if (const auto* ci = class_info_for_type_name(class_name);
+      ci && ci->is_reference_type && !pos.count("create")) {
+    // Every Delphi/FPC class inherits `TObject.Create` even if the source
+    // does not redeclare a constructor. Class-value calls like
+    // `TDLLScannerClass(x).Create` therefore still need a zero-arg metaclass
+    // entry instead of falling out as an unsupported member.
+    out.push_back({"create", nullptr, true});
+  }
+  return out;
+}
+
 const TypeExpr* Emitter::canonicalize_type(const TypeExpr* t) {
   int hops = 0;
   while (t && t->kind == Kind::TyName) {
@@ -892,6 +988,12 @@ const ClassInfo* Emitter::class_info_for_type_name(std::string_view name) {
   auto it = registry->classes.find(tail);
   if (it == registry->classes.end()) return nullptr;
   return it->second.defining_unit == unit ? &it->second : nullptr;
+}
+
+std::string Emitter::metaclass_target_name(const TypeExpr* t) {
+  t = canonicalize_type(t);
+  if (!t || t->kind != Kind::TyMetaclass) return {};
+  return static_cast<const TyMetaclass&>(*t).class_name;
 }
 
 bool Emitter::type_is_value_object_or_record(const TypeExpr* t) {
@@ -1220,6 +1322,10 @@ std::string Emitter::type_to_cxx(const TypeExpr& t) {
     case Kind::TyEnum:       return enum_type_to_cxx(static_cast<const TyEnum&>(t), "");
     case Kind::TyDistinct:   return type_to_cxx(*static_cast<const TyDistinct&>(t).underlying);
     case Kind::TyProcedural: return procedural_type_to_cxx(static_cast<const TyProcedural&>(t));
+    case Kind::TyMetaclass:
+      return "const " +
+             metaclass_struct_cxx(static_cast<const TyMetaclass&>(t).class_name) +
+             "*";
     case Kind::TyFile: {
       // Pascal `text`, `file`, `file of T`.
       const auto& tf = static_cast<const TyFile&>(t);
@@ -1564,6 +1670,10 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
         // handling via `current_class_name` in the caller.
         return nullptr;
       }
+      if (current_fn_is_function && !current_fn_name.empty() &&
+          id.name == current_fn_name) {
+        return current_fn_result_type;
+      }
       // Class member (inside method body of a known class).
       if (!current_class_name.empty()) {
         if (auto* f = registry->lookup_class_field(current_class_name, id.name))
@@ -1645,7 +1755,12 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       }
       if (cls.empty()) {
         const TypeExpr* bt = deduce_type(*m.base);
-        if (bt) cls = registry->direct_type_name(registry->canonicalize(bt));
+        if (bt) {
+          cls = metaclass_target_name(bt);
+          if (cls.empty()) {
+            cls = registry->direct_type_name(registry->canonicalize(bt));
+          }
+        }
       }
       if (cls.empty()) return nullptr;
       if (auto* pm = registry->lookup_class_method(cls, m.name)) {
@@ -1731,7 +1846,12 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
                    registry->records.count(id.name)) cls = id.name;
         } else {
           const TypeExpr* bt = deduce_type(*mem.base);
-          if (bt) cls = registry->direct_type_name(registry->canonicalize(bt));
+          if (bt) {
+            cls = metaclass_target_name(bt);
+            if (cls.empty()) {
+              cls = registry->direct_type_name(registry->canonicalize(bt));
+            }
+          }
         }
         if (!cls.empty()) {
           if (auto* cm = registry->lookup_class_method(cls, mem.name)) {
@@ -1764,6 +1884,15 @@ std::string Emitter::deduce_class_alias(const Expr& e) {
   if (e.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(e);
     if (id.name == "self") return current_class_name;
+  } else if (e.kind == Kind::Call) {
+    const auto& c = static_cast<const Call&>(e);
+    if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
+      const auto& id = static_cast<const Ident&>(*c.callee);
+      auto cit = registry->classes.find(id.name);
+      if (cit != registry->classes.end() && cit->second.is_reference_type) {
+        return id.name;
+      }
+    }
   }
   const TypeExpr* t = deduce_type(e);
   if (!t) return {};
@@ -1845,6 +1974,10 @@ bool Emitter::expr_is_charish(const Expr& e) {
   return tyname_is(t, "char");
 }
 
+bool Emitter::type_is_metaclass(const TypeExpr* t) {
+  return !metaclass_target_name(t).empty();
+}
+
 bool Emitter::type_is_reference_class(const TypeExpr* t) {
   if (!t) return false;
   t = canonicalize_type(t);
@@ -1867,16 +2000,26 @@ bool Emitter::expr_is_reference_class(const Expr& e) {
       auto it = registry->classes.find(current_class_name);
       return it != registry->classes.end() && it->second.is_reference_type;
     }
+  } else if (e.kind == Kind::Call && registry) {
+    const auto& c = static_cast<const Call&>(e);
+    if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
+      const auto& id = static_cast<const Ident&>(*c.callee);
+      auto it = registry->classes.find(id.name);
+      if (it != registry->classes.end() && it->second.is_reference_type) {
+        return true;
+      }
+    }
   }
   return type_is_reference_class(deduce_type(e));
 }
 
 std::string Emitter::member_access_op(const TypeExpr* t) {
-  return type_is_reference_class(t) ? "->" : ".";
+  return (type_is_reference_class(t) || type_is_metaclass(t)) ? "->" : ".";
 }
 
 std::string Emitter::member_access_op(const Expr& e) {
-  return expr_is_reference_class(e) ? "->" : ".";
+  const TypeExpr* t = deduce_type(e);
+  return (expr_is_reference_class(e) || type_is_metaclass(t)) ? "->" : ".";
 }
 
 bool Emitter::type_is_stringish(const TypeExpr* t) {
@@ -1892,6 +2035,7 @@ bool Emitter::type_is_pointerish(const TypeExpr* t) {
   if (!t) return false;
   t = canonicalize_type(t);
   if (!t) return false;
+  if (type_is_metaclass(t)) return true;
   if (type_is_reference_class(t)) return true;
   if (t->kind == Kind::TyPointer) return true;
   return tyname_is(t, "pointer") || tyname_is(t, "pchar") ||
@@ -2313,8 +2457,14 @@ std::optional<std::string> Emitter::maybe_lower_class_constructor_call(
   if (!registry) return std::nullopt;
   const auto* method = registry->lookup_class_method(std::string(class_name),
                                                      std::string(member_name));
+  bool implicit_root_create = false;
   if (!method || method->kind != SymKind::Constructor) {
-    return std::nullopt;
+    if (ascii_lower(std::string(member_name)) != "create" || !args.empty()) {
+      return std::nullopt;
+    }
+    const auto* ci = class_info_for_type_name(class_name);
+    if (!ci || !ci->is_reference_type) return std::nullopt;
+    implicit_root_create = true;
   }
 
   // Pascal constructor calls on a class value (`TNode.Create`) allocate a
@@ -2328,7 +2478,9 @@ std::optional<std::string> Emitter::maybe_lower_class_constructor_call(
   }
   std::string struct_ty = named_type_struct_cxx(class_name);
   return "([&]{ auto tp2cc_ptr = new " + struct_ty + "{}; tp2cc_ptr->" +
-         mangle(std::string(member_name)) + "(" + args_cxx +
+         (implicit_root_create ? std::string("p_create")
+                               : mangle(std::string(member_name))) +
+         "(" + args_cxx +
          "); return tp2cc_ptr; }())";
 }
 
@@ -2680,11 +2832,39 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (n.op == BinOp::Is) {
         // `class` names lower to pointer types, so `x is TChild` becomes a
         // pointer dynamic_cast rather than address-taking the lhs storage.
-        return "(dynamic_cast<" + expr_to_cxx(*n.rhs) + ">(" +
+        auto rhs_type = [&]() {
+          if (n.rhs->kind == Kind::Ident) {
+            const auto& id = static_cast<const Ident&>(*n.rhs);
+            if (registry) {
+              auto it = registry->classes.find(id.name);
+              if (it != registry->classes.end() && it->second.is_reference_type) {
+                TyName tn;
+                tn.name = id.name;
+                return type_name_to_cxx(tn);
+              }
+            }
+          }
+          return expr_to_cxx(*n.rhs);
+        }();
+        return "(dynamic_cast<" + rhs_type + ">(" +
                expr_to_cxx(*n.lhs) + ") != nullptr)";
       }
       if (n.op == BinOp::As) {
-        return "dynamic_cast<" + expr_to_cxx(*n.rhs) + ">(" +
+        auto rhs_type = [&]() {
+          if (n.rhs->kind == Kind::Ident) {
+            const auto& id = static_cast<const Ident&>(*n.rhs);
+            if (registry) {
+              auto it = registry->classes.find(id.name);
+              if (it != registry->classes.end() && it->second.is_reference_type) {
+                TyName tn;
+                tn.name = id.name;
+                return type_name_to_cxx(tn);
+              }
+            }
+          }
+          return expr_to_cxx(*n.rhs);
+        }();
+        return "dynamic_cast<" + rhs_type + ">(" +
                expr_to_cxx(*n.lhs) + ")";
       }
       // Pascal `+` on `char` operands means string concatenation
@@ -2918,6 +3098,34 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
       }
 
+      // A `class of T` value is a pointer to a metaclass descriptor, so its
+      // callable surface is the descriptor's constructor/class-method thunks
+      // rather than instance fields. Emit `klass->p_create` / `klass->p_load`
+      // here so ordinary call lowering can treat the result like any other
+      // function pointer expression.
+      if (registry) {
+        const std::string metaclass = metaclass_target_name(deduce_type(*m.base));
+        if (!metaclass.empty()) {
+          std::string base_cxx = expr_to_cxx(*m.base);
+          if (const auto* method =
+                  registry->lookup_class_method(metaclass, m.name)) {
+            if (method->kind == SymKind::Constructor ||
+                method->kind == SymKind::ClassMethod) {
+              std::string text = base_cxx + "->" + mangle(m.name);
+              bool want_call = !is_callee_context_ && method->param_count == 0;
+              return want_call ? text + "()" : text;
+            }
+          }
+          if (ascii_lower(m.name) == "create") {
+            std::string text = base_cxx + "->p_create";
+            bool want_call = !is_callee_context_;
+            return want_call ? text + "()" : text;
+          }
+          report_error(m.loc, "unsupported metaclass member '" + m.name + "'");
+          return base_cxx + "->" + mangle(m.name);
+        }
+      }
+
       // Otherwise: object/record field/method access. Emit `base.name`
       // and auto-call if the deduced class has `name` as a
       // parameterless method.
@@ -3125,6 +3333,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           return "((" + primitive_type_cxx(n) + ")(" + arg0() + "))";
         } else if (c.args.size() == 1 && n != "inc" && n != "dec") {
+          if (registry) {
+            auto cit = registry->classes.find(n);
+            if (cit != registry->classes.end() && cit->second.is_reference_type) {
+              // Direct named class casts (`TNode(p)`) do not go through the
+              // alias table, because reference classes are registered as
+              // classes rather than aliases. Treat them as pointer casts here.
+              TyName cast_name;
+              cast_name.name = n;
+              return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
+            }
+          }
           const TypeExpr* cast_ty = nullptr;
           auto lit = local_type_aliases_scoped.find(n);
           if (lit != local_type_aliases_scoped.end()) {
@@ -3134,6 +3353,21 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (ait != registry->aliases.end() && ait->second.target.get()) {
               cast_ty = canonicalize_type(ait->second.target.get());
             }
+          }
+          if (cast_ty && cast_ty->kind == Kind::TyMetaclass) {
+            return "((" + expr_to_cxx(*c.callee) + ")(" +
+                   const_value_to_cxx(*c.args[0], cast_ty,
+                                      /*explicit_conversion=*/true) +
+                   "))";
+          }
+          if (cast_ty && type_is_reference_class(cast_ty)) {
+            // `TClass(expr)` is a class-pointer cast in Pascal, not a C++
+            // direct-initialisation attempt. Emit an explicit pointer cast so
+            // bootstrap casts like `TLinkedListItemClass(ClassType)` keep
+            // pointer semantics instead of turning into constructor calls.
+            TyName cast_name;
+            cast_name.name = n;
+            return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
           }
           const Expr* peeled = peel_primitive_casts(c.args[0].get());
           bool named_storage_view_type =
@@ -3336,6 +3570,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Index: {
       const auto& i = static_cast<const Index&>(e);
+      std::vector<const Expr*> indices;
+      for (const auto& idx : i.indices) indices.push_back(idx.get());
       if (registry && i.base->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*i.base);
         std::string cls;
@@ -3347,19 +3583,42 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
         if (!cls.empty()) {
           if (auto* prop = registry->lookup_class_property(cls, mem.name)) {
-            std::vector<const Expr*> indices;
-            for (const auto& idx : i.indices) indices.push_back(idx.get());
             return lower_property_read(i.loc, expr_to_cxx(*mem.base), cls, *prop,
                                        indices);
           }
         }
       }
+      if (registry && i.base->kind == Kind::Ident) {
+        const auto& id = static_cast<const Ident&>(*i.base);
+        auto implicit_property_read =
+            [&](std::string_view name) -> std::optional<std::string> {
+          if (local_scope.count(std::string(name))) return std::nullopt;
+          for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
+            std::string cls = it->type
+                                  ? registry->direct_type_name(
+                                        registry->canonicalize(it->type))
+                                  : std::string{};
+            if (cls.empty()) continue;
+            if (auto* prop =
+                    registry->lookup_class_property(cls, std::string(name))) {
+              return lower_property_read(i.loc, it->cxx_text, cls, *prop,
+                                         indices);
+            }
+          }
+          if (current_class_name.empty()) return std::nullopt;
+          if (auto* prop = registry->lookup_class_property(current_class_name,
+                                                           std::string(name))) {
+            return lower_property_read(i.loc, implicit_self_cxx(),
+                                       current_class_name, *prop, indices);
+          }
+          return std::nullopt;
+        };
+        if (auto text = implicit_property_read(id.name)) return *text;
+      }
       if (registry) {
         std::string cls = deduce_class_alias(*i.base);
         if (!cls.empty()) {
           if (auto* prop = registry->lookup_default_property(cls)) {
-            std::vector<const Expr*> indices;
-            for (const auto& idx : i.indices) indices.push_back(idx.get());
             return lower_property_read(i.loc, expr_to_cxx(*i.base), cls, *prop,
                                        indices);
           }
@@ -3514,6 +3773,9 @@ std::string Emitter::const_value_to_cxx(const Expr& e,
           maybe_convert_const_int_expr(e, target, explicit_conversion)) {
     return *text;
   }
+  if (auto text = maybe_lower_metaclass_value(e, target)) {
+    return *text;
+  }
   if (auto text = maybe_convert_proc_value(e, target)) {
     return *text;
   }
@@ -3628,6 +3890,45 @@ std::optional<std::string> Emitter::maybe_convert_proc_value(
     }
   }
   return std::nullopt;
+}
+
+std::optional<std::string> Emitter::maybe_lower_metaclass_value(
+    const Expr& e, const TypeExpr* target) {
+  const std::string base_name = metaclass_target_name(target);
+  if (base_name.empty()) return std::nullopt;
+
+  auto concrete_class_name = [&](const Expr& src) -> std::string {
+    if (src.kind == Kind::Ident) {
+      const auto& id = static_cast<const Ident&>(src);
+      if (const auto* ci = class_info_for_type_name(id.name);
+          ci && ci->is_reference_type) {
+        return id.name;
+      }
+      return {};
+    }
+    if (src.kind == Kind::Member) {
+      const auto& mem = static_cast<const Member&>(src);
+      if (mem.base->kind != Kind::Ident) return {};
+      const auto& base = static_cast<const Ident&>(*mem.base);
+      const std::string qualified = base.name + "." + mem.name;
+      if (const auto* ci = class_info_for_type_name(qualified);
+          ci && ci->is_reference_type) {
+        return qualified;
+      }
+    }
+    return {};
+  };
+
+  const std::string concrete_name = concrete_class_name(e);
+  if (concrete_name.empty()) return std::nullopt;
+  if (!class_info_for_type_name(base_name)) return std::nullopt;
+
+  // A Pascal class identifier used as a value means "the metaclass value for
+  // that exact concrete class", not the instance type itself. Preserve the
+  // concrete class here so a later cast back to a more specific `class of T`
+  // can recover the derived metaclass descriptor instead of collapsing the
+  // value down to the current assignment target's base type.
+  return metaclass_value_fn_cxx(concrete_name) + "()";
 }
 
 // ---------------------------------------------------------------------------
@@ -3950,6 +4251,253 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     }
     dedent();
     emitln("};");
+
+    if (to.is_reference_type) {
+      const std::string meta_name = "tp2cc_metaclass_" + name;
+      const std::string value_fn = "tp2cc_metaclass_value_" + name;
+      const bool has_parent_meta =
+          !to.parent.empty() && class_info_for_type_name(to.parent) &&
+          class_info_for_type_name(to.parent)->is_reference_type;
+      const std::string parent_meta =
+          has_parent_meta ? metaclass_struct_cxx(to.parent) : std::string{};
+      const auto visible_callables = collect_metaclass_callables(td.name);
+      const auto parent_callables =
+          has_parent_meta ? collect_metaclass_callables(to.parent)
+                          : std::vector<MetaclassCallable>{};
+      auto callable_param_types = [&](const MetaclassCallable& callable) {
+        if (callable.implicit_root_create || !callable.sig) return std::string{};
+        return procedural_param_types_to_cxx(callable.sig->decl->params);
+      };
+      auto same_callable_surface = [&](const MetaclassCallable& lhs,
+                                       const MetaclassCallable& rhs) {
+        if (lhs.name != rhs.name) return false;
+        if (lhs.implicit_root_create || rhs.implicit_root_create) {
+          return lhs.implicit_root_create == rhs.implicit_root_create;
+        }
+        if (!lhs.sig || !rhs.sig) return lhs.sig == rhs.sig;
+        return lhs.sig->kind == rhs.sig->kind &&
+               callable_param_types(lhs) == callable_param_types(rhs);
+      };
+      std::unordered_map<std::string, MetaclassCallable> parent_surface;
+      for (const auto& callable : parent_callables) {
+        parent_surface.emplace(callable.name, callable);
+      }
+      std::vector<MetaclassCallable> own_callables;
+      for (const auto& callable : visible_callables) {
+        auto pit = parent_surface.find(callable.name);
+        // A derived metaclass only reuses the parent slot when the visible
+        // callable surface is identical. If `TChild.Create(name, mode)` hides
+        // the parent's zero-arg `Create`, `class of TChild` needs its own
+        // `p_create(filename, mode)` entry while `class of TBase` keeps the
+        // original zero-arg slot.
+        if (pit == parent_surface.end() ||
+            !same_callable_surface(callable, pit->second)) {
+          own_callables.push_back(callable);
+        }
+      }
+
+      auto callable_return_type = [&](std::string_view target_class,
+                                      const MetaclassCallable& callable) {
+        if (callable.implicit_root_create ||
+            (callable.sig && callable.sig->kind == SymKind::Constructor)) {
+          return named_type_struct_cxx(target_class) + "*";
+        }
+        const auto& pd = *callable.sig->decl;
+        if (pd.pkind == ProcKind::Function && pd.return_type) {
+          return type_to_cxx(*pd.return_type);
+        }
+        return std::string("void");
+      };
+      auto callable_param_list = [&](const MetaclassCallable& callable) {
+        if (callable.implicit_root_create || !callable.sig) return std::string{};
+        return param_list_to_cxx(callable.sig->decl->params);
+      };
+      auto callable_arg_list = [&](const MetaclassCallable& callable) {
+        if (callable.implicit_root_create || !callable.sig) return std::string{};
+        std::string out;
+        bool first = true;
+        size_t unnamed_index = 0;
+        for (const auto& par : callable.sig->decl->params) {
+          if (par.names.empty()) {
+            if (!first) out += ", ";
+            out += "tp2cc_arg" + std::to_string(unnamed_index++);
+            first = false;
+            continue;
+          }
+          for (const auto& pn : par.names) {
+            if (!first) out += ", ";
+            out += mangle(pn);
+            first = false;
+          }
+        }
+        return out;
+      };
+      auto callable_ctor_param = [&](std::string_view target_class,
+                                     const MetaclassCallable& callable) {
+        return callable_return_type(target_class, callable) + " (*tp2cc_" +
+               mangle(callable.name) + ")(" + callable_param_types(callable) +
+               ")";
+      };
+      auto callable_ctor_init = [&](const MetaclassCallable& callable) {
+        return mangle(callable.name) + "(tp2cc_" + mangle(callable.name) + ")";
+      };
+
+      // Pascal `class of T` values must preserve the concrete class they
+      // came from so an upcast to `class of TBase` and a later downcast back
+      // to `class of TDerived` still sees the same constructor/class-method
+      // table. Mirror the class hierarchy here: each metaclass descriptor
+      // inherits the parent's descriptor and only adds newly visible
+      // constructor/class-method entries of its own.
+      std::string meta_decl = "struct " + meta_name;
+      if (has_parent_meta) meta_decl += " : public " + parent_meta;
+      meta_decl += " {";
+      emitln(meta_decl);
+      indent();
+      for (const auto& callable : own_callables) {
+        emitln(callable_return_type(td.name, callable) + " (*" +
+               mangle(callable.name) + ")(" +
+               callable_param_types(callable) + ");");
+      }
+      if (!has_parent_meta && own_callables.empty()) {
+        emitln("constexpr " + meta_name + "() = default;");
+      } else {
+        std::string ctor_params;
+        bool first = true;
+        if (has_parent_meta) {
+          ctor_params += parent_meta + " tp2cc_parent";
+          first = false;
+        }
+        for (const auto& callable : own_callables) {
+          if (!first) ctor_params += ", ";
+          ctor_params += callable_ctor_param(td.name, callable);
+          first = false;
+        }
+        std::string init_list;
+        if (has_parent_meta) {
+          init_list = " : " + parent_meta + "(tp2cc_parent)";
+        }
+        for (const auto& callable : own_callables) {
+          init_list += (init_list.empty() ? " : " : ", ") +
+                       callable_ctor_init(callable);
+        }
+        emitln("constexpr " + meta_name + "(" + ctor_params + ")" +
+               init_list + " {}");
+      }
+      dedent();
+      emitln("};");
+
+      std::function<std::string(std::string_view, std::string_view)>
+          build_metaclass_ctor_expr =
+              [&](std::string_view target_class,
+                  std::string_view concrete_class) -> std::string {
+        const auto target_callables = collect_metaclass_callables(target_class);
+        std::string current = ascii_lower(std::string(target_class));
+        std::string parent_class;
+        if (const auto* ci = class_info_for_type_name(current)) {
+          parent_class = ci->parent;
+        }
+        const bool has_parent =
+            !parent_class.empty() && class_info_for_type_name(parent_class) &&
+            class_info_for_type_name(parent_class)->is_reference_type;
+        const auto parent_visible =
+            has_parent ? collect_metaclass_callables(parent_class)
+                       : std::vector<MetaclassCallable>{};
+        std::unordered_map<std::string, MetaclassCallable> parent_surface;
+        for (const auto& callable : parent_visible) {
+          parent_surface.emplace(callable.name, callable);
+        }
+        auto concrete_matches_surface = [&](const MetaclassCallable& target,
+                                            const MethodSig& concrete_sig) {
+          if (concrete_sig.kind != (target.implicit_root_create
+                                        ? SymKind::Constructor
+                                        : target.sig->kind)) {
+            return false;
+          }
+          if (!concrete_sig.decl) return false;
+          if (target.implicit_root_create) {
+            return concrete_sig.param_count == 0;
+          }
+          return callable_param_types(target) ==
+                 procedural_param_types_to_cxx(concrete_sig.decl->params);
+        };
+        std::string out = metaclass_struct_cxx(target_class) + "(";
+        bool first = true;
+        if (has_parent) {
+          out += build_metaclass_ctor_expr(parent_class, concrete_class);
+          first = false;
+        }
+        for (const auto& callable : target_callables) {
+          auto pit = parent_surface.find(callable.name);
+          if (pit != parent_surface.end() &&
+              same_callable_surface(callable, pit->second)) {
+            continue;
+          }
+          if (!first) out += ", ";
+          const auto* concrete_sig =
+              registry->lookup_class_method(std::string(concrete_class),
+                                            callable.name);
+          const bool concrete_matches =
+              concrete_sig &&
+              concrete_matches_surface(callable, *concrete_sig);
+          const bool use_implicit_root_create =
+              callable.implicit_root_create && !concrete_sig;
+          if (!use_implicit_root_create && !concrete_matches) {
+            // A `class of TBase` value can hold `TChild`, but a hidden
+            // constructor/class-method is not callable through the base
+            // metaclass surface anymore. Keep such entries as "fail loudly"
+            // thunks instead of guessing a mismatched signature.
+            const std::string ret =
+                callable_return_type(target_class, callable);
+            out += "+[](" + callable_param_list(callable) + ") -> " + ret +
+                   " { ::std::abort();";
+            if (ret != "void") out += " return {};";
+            out += " }";
+            first = false;
+            continue;
+          }
+          if (!use_implicit_root_create &&
+              (!concrete_sig || !concrete_sig->decl)) {
+            continue;
+          }
+          if (use_implicit_root_create ||
+              concrete_sig->kind == SymKind::Constructor) {
+            out += "+[](" + callable_param_list(callable) + ") -> " +
+                   callable_return_type(target_class, callable) + " { auto "
+                   "tp2cc_ptr = new " +
+                   named_type_struct_cxx(concrete_class) + "{}; ";
+            const std::string ctor_name =
+                use_implicit_root_create ? "p_create"
+                                         : mangle(callable.name);
+            out += "tp2cc_ptr->" + ctor_name + "(" +
+                   callable_arg_list(callable) + "); return tp2cc_ptr; }";
+          } else {
+            std::string ret = callable_return_type(target_class, callable);
+            out += "+[](" + callable_param_list(callable) + ") -> " + ret +
+                   " { ";
+            if (ret != "void") out += "return ";
+            out += named_type_struct_cxx(concrete_class) + "::" +
+                   mangle(callable.name) + "(" +
+                   callable_arg_list(callable) + ");";
+            out += " }";
+          }
+          first = false;
+        }
+        out += ")";
+        return out;
+      };
+
+      emitln("inline const " + meta_name + "* " + value_fn + "() {");
+      indent();
+      if (visible_callables.empty() && !has_parent_meta) {
+        emitln("static const " + meta_name + " value{};");
+      } else {
+        emitln("static const " + meta_name + " value = " +
+               build_metaclass_ctor_expr(td.name, td.name) + ";");
+      }
+      emitln("return &value;");
+      dedent();
+      emitln("}");
+    }
     return;
   }
 
@@ -4271,6 +4819,37 @@ void Emitter::emit_stmt(const Stmt& s) {
                      ";");
               break;
             }
+          }
+        }
+        if (ix.base->kind == Kind::Ident) {
+          const auto& id = static_cast<const Ident&>(*ix.base);
+          auto implicit_property_write =
+              [&](std::string_view name) -> std::optional<std::string> {
+            if (local_scope.count(std::string(name))) return std::nullopt;
+            for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
+              std::string cls = it->type
+                                    ? registry->direct_type_name(
+                                          registry->canonicalize(it->type))
+                                    : std::string{};
+              if (cls.empty()) continue;
+              if (auto* prop = registry->lookup_class_property(
+                      cls, std::string(name))) {
+                return lower_property_write(a.loc, it->cxx_text, cls, *prop,
+                                            indices, *a.value);
+              }
+            }
+            if (current_class_name.empty()) return std::nullopt;
+            if (auto* prop = registry->lookup_class_property(
+                    current_class_name, std::string(name))) {
+              return lower_property_write(a.loc, implicit_self_cxx(),
+                                          current_class_name, *prop, indices,
+                                          *a.value);
+            }
+            return std::nullopt;
+          };
+          if (auto text = implicit_property_write(id.name)) {
+            emitln(*text + ";");
+            break;
           }
         }
         std::string cls = deduce_class_alias(*ix.base);
@@ -4945,6 +5524,10 @@ static void emit_forward_struct_decls(Emitter& e,
     if (!td.type) continue;
     if (td.type->kind == Kind::TyRecord || td.type->kind == Kind::TyObject) {
       e.emitln("struct " + std::string("p_") + td.name + ";");
+      if (td.type->kind == Kind::TyObject &&
+          static_cast<const TyObject&>(*td.type).is_reference_type) {
+        e.emitln("struct tp2cc_metaclass_" + std::string("p_") + td.name + ";");
+      }
     }
   }
 }
