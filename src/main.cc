@@ -102,6 +102,47 @@ void collect_unit_init_order(const UnitGraph& g,
   }
 }
 
+void write_external_stub(std::ostream& h, std::string_view unit_name) {
+  h << "// tp2cc: RTL stub for external unit '" << unit_name << "'.\n";
+  h << "#pragma once\n";
+  h << "#include \"tp2cc_rt/prelude.h\"\n";
+
+  if (unit_name == "sysutils") {
+    h << "namespace p_sysutils {\n";
+    h << "using p_exception = ::rt::p_exception;\n";
+    h << "\n";
+    h << "// Compiler units catch a small SysUtils exception hierarchy even\n";
+    h << "// when the full SysUtils unit is not translated. Keep just the\n";
+    h << "// classes the compiler sources reference, with the same inheritance\n";
+    h << "// shape they get from rtl/objpas/sysutils/sysutilh.inc.\n";
+    struct StubClass {
+      const char* name;
+      const char* parent;
+      bool has_error_code;
+    };
+    static constexpr StubClass kStubClasses[] = {
+        {"p_eexternal", "p_exception", false},
+        {"p_einterror", "p_eexternal", false},
+        {"p_eintoverflow", "p_einterror", false},
+        {"p_eoserror", "p_exception", true},
+    };
+    for (const auto& cls : kStubClasses) {
+      h << "struct " << cls.name << " : public " << cls.parent << " {\n";
+      h << "  using inherited = " << cls.parent << ";\n";
+      h << "  using inherited::p_create;\n";
+      if (cls.has_error_code) {
+        h << "  int32_t p_errorcode = 0;\n";
+      }
+      h << "};\n";
+    }
+    h << "}  // namespace p_sysutils\n";
+    return;
+  }
+
+  h << "namespace rt {}\n";
+  h << "namespace p_" << unit_name << " = ::rt;\n";
+}
+
 int cmd_lex(const CliOptions& opts,
             const std::vector<std::string>& files) {
   if (files.empty()) { std::fprintf(stderr, "lex: no input files\n"); return 2; }
@@ -285,11 +326,7 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
   }
   for (const auto& u : rtl_refs) {
     std::ofstream h(fs::path(outdir) / ("p_" + u + ".h"));
-    h << "// tp2cc: RTL stub for external unit '" << u << "'.\n";
-    h << "#pragma once\n";
-    h << "#include \"tp2cc_rt/prelude.h\"\n";
-    h << "namespace rt {}\n";
-    h << "namespace p_" << u << " = ::rt;\n";
+    write_external_stub(h, u);
   }
   std::printf("emit-all: %d emitted, %d failed (of %zu units), "
               "%zu rtl stubs\n",
