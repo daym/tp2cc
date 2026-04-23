@@ -981,6 +981,36 @@ void test_out_parameter_is_soft_and_parsed_in_formal_params() {
   }
 }
 
+void test_open_and_dynamic_array_forms_stay_distinct() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tints = array of integer;\n"
+      "procedure demo(const xs : array of integer);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && u->interface_decls.size() >= 2) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    auto* pd = dynamic_cast<ProcDecl*>(u->interface_decls[1].get());
+    CHECK(td != nullptr);
+    CHECK(pd != nullptr);
+    if (td) {
+      auto* arr = dynamic_cast<TyArray*>(td->type.get());
+      CHECK(arr != nullptr);
+      if (arr) CHECK(arr->array_kind == ArrayKind::Dynamic);
+    }
+    if (pd && !pd->params.empty()) {
+      auto* arr = dynamic_cast<TyArray*>(pd->params[0].type.get());
+      CHECK(arr != nullptr);
+      if (arr) CHECK(arr->array_kind == ArrayKind::Open);
+    }
+  }
+}
+
 void test_error_recovery_basic() {
   int before = error_count();
   // Missing semicolon after unit name.
@@ -1027,6 +1057,7 @@ int main() {
   RUN_TEST(test_directive_as_method_name);
   RUN_TEST(test_unit_named_like_directive);
   RUN_TEST(test_out_parameter_is_soft_and_parsed_in_formal_params);
+  RUN_TEST(test_open_and_dynamic_array_forms_stay_distinct);
   RUN_TEST(test_error_recovery_basic);
   RUN_TEST(test_class_declaration);
   RUN_TEST(test_class_properties);

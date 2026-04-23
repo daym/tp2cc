@@ -172,8 +172,19 @@ std::string encode_helper_type(const TypeExpr& t) {
       return "name_" + encode_helper_ident(static_cast<const TyName&>(t).name);
     case Kind::TyArray: {
       const auto& a = static_cast<const TyArray&>(t);
-      std::string out = a.dims.empty() ? "openarr" : "arr";
-      if (!a.dims.empty()) out += std::to_string(a.dims.size());
+      std::string out;
+      switch (a.array_kind) {
+        case ArrayKind::Open:
+          out = "openarr";
+          break;
+        case ArrayKind::Dynamic:
+          out = "dynarr";
+          break;
+        case ArrayKind::Fixed:
+          out = "arr";
+          out += std::to_string(a.dims.size());
+          break;
+      }
       out += "_";
       out += a.element ? encode_helper_type(*a.element)
                        : std::string("void");
@@ -1125,11 +1136,11 @@ bool Emitter::const_param_needs_const_ref(const TypeExpr* t) {
   if (!t) return false;
   if (t->kind != Kind::TyArray) return false;
   const auto& arr = static_cast<const TyArray&>(*t);
-  if (arr.dims.empty()) return false;
+  if (arr.array_kind != ArrayKind::Fixed) return false;
   // Keep fixed-array `const` params as `const T&`.
   //
-  // The bootstrap compiler uses typed pointers to arrays whose backing
-  // storage only holds the live prefix:
+  // Before the compiler sources were cleaned up, bootstrap used typed
+  // pointers to arrays whose backing storage only held the live prefix:
   //   spill_temps : ^Tspill_temp_list;
   //   spill_temps := allocmem(sizeof(treference) * maxreg);
   //   instr_spill_register(..., spill_temps^);
@@ -1437,11 +1448,14 @@ std::string Emitter::enum_type_to_cxx(const TyEnum& e, const std::string&) {
 }
 
 std::string Emitter::array_type_to_cxx(const TyArray& a) {
-  // `array[D1, D2, ...] of T` emits as nested ::rt::Array<T, Lo, N>
-  // wrappers. Open arrays (no dims) stay as a plain pointer.
-  if (a.dims.empty()) {
-    return type_to_cxx(*a.element) + "*";
+  if (a.array_kind == ArrayKind::Open) {
+    return open_array_type_to_cxx(a);
   }
+  if (a.array_kind == ArrayKind::Dynamic) {
+    return "::rt::DynArray<" + type_to_cxx(*a.element) + ">";
+  }
+  // `array[D1, D2, ...] of T` emits as nested ::rt::Array<T, Lo, N>`
+  // wrappers with the Pascal bounds preserved at the type level.
   std::string ty = type_to_cxx(*a.element);
   // Wrap from innermost to outermost.
   for (auto it = a.dims.rbegin(); it != a.dims.rend(); ++it) {
@@ -1463,8 +1477,7 @@ std::string Emitter::procedural_param_types_to_cxx(
     std::string pt;
     if (!pp.type) {
       pt = "void*";
-    } else if (pp.type->kind == Kind::TyArray &&
-               static_cast<const TyArray&>(*pp.type).dims.empty()) {
+    } else if (type_is_open_array(pp.type.get())) {
       pt = open_array_type_to_cxx(*pp.type);
     } else {
       pt = type_to_cxx(*pp.type);
@@ -2405,7 +2418,7 @@ bool Emitter::type_is_open_array(const TypeExpr* t) {
   if (!t) return false;
   t = canonicalize_type(t);
   return t && t->kind == Kind::TyArray &&
-         static_cast<const TyArray&>(*t).dims.empty();
+         static_cast<const TyArray&>(*t).array_kind == ArrayKind::Open;
 }
 
 std::string Emitter::reinterpret_ref_text(const std::string& ty_cxx,
@@ -2670,8 +2683,7 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
   }
   if (type_is_open_array(param_type)) {
     const TypeExpr* at = arg_type;
-    if (!(at && at->kind == Kind::TyArray &&
-          static_cast<const TyArray&>(*at).dims.empty())) {
+    if (!type_is_open_array(at)) {
       arg_text = open_array_type_to_cxx(*param_type) + "(" + arg_text + ")";
     }
   }
@@ -3870,7 +3882,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             const TypeExpr* canon = canonicalize_type(at);
             if (canon && canon->kind == Kind::TyArray) {
               const auto& arr = static_cast<const TyArray&>(*canon);
-              if (arr.dims.empty()) {
+              if (arr.array_kind != ArrayKind::Fixed) {
                 return want_low ? "0"
                                 : "(::rt::p_length(" + expr_to_cxx(*c.args[0]) +
                                       ") - 1)";
@@ -5167,8 +5179,7 @@ std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
     if (!p.type) {
       pt = "void*";
     } else {
-      if (p.type->kind == Kind::TyArray &&
-          static_cast<const TyArray&>(*p.type).dims.empty()) {
+      if (type_is_open_array(p.type.get())) {
         pt = open_array_type_to_cxx(*p.type);
       } else {
         pt = type_to_cxx(*p.type);
@@ -5224,8 +5235,7 @@ void Emitter::emit_method_pointer_thunk(const std::string& owner_name,
     std::string pt;
     if (!par.type) {
       pt = "void*";
-    } else if (par.type->kind == Kind::TyArray &&
-               static_cast<const TyArray&>(*par.type).dims.empty()) {
+    } else if (type_is_open_array(par.type.get())) {
       pt = open_array_type_to_cxx(*par.type);
     } else {
       pt = type_to_cxx(*par.type);

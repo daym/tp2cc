@@ -619,6 +619,7 @@ std::vector<Param> Parser::parse_param_list(Tok close) {
         expect(Tok::KwOf, "open array parameter");
         auto ta = std::make_shared<TyArray>();
         ta->loc = cur_.loc;
+        ta->array_kind = ArrayKind::Open;
         ta->element = parse_type();
         p.type = std::move(ta);
       } else {
@@ -806,6 +807,8 @@ TypePtr Parser::parse_array_type(bool packed) {
       if (!accept(Tok::Comma)) break;
     }
     expect(Tok::RBrack, "array dimensions");
+  } else {
+    ta->array_kind = ArrayKind::Dynamic;
   }
   expect(Tok::KwOf, "array");
   ta->element = parse_type();

@@ -436,10 +436,17 @@ struct TyName : TypeExpr {
   TyName() : TypeExpr(Kind::TyName) {}
 };
 
+enum class ArrayKind : uint8_t {
+  Fixed,
+  Open,
+  Dynamic,
+};
+
 struct TyArray : TypeExpr {
   std::vector<TypePtr> dims;  // each is a TySubrange or TyName
   TypePtr element;
   bool is_packed = false;
+  ArrayKind array_kind = ArrayKind::Fixed;
   TyArray() : TypeExpr(Kind::TyArray) {}
 };
 

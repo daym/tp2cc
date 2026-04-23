@@ -1649,6 +1649,46 @@ void test_high_low_on_open_array_use_runtime_length() {
   CHECK(!contains(out.impl, "int32_t*::high()"));
 }
 
+void test_dynamic_array_type_uses_runtime_carrier() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tints = array of longint;\n"
+      "procedure demo(const xs : array of longint; ys : tints);\n"
+      "implementation\n"
+      "procedure demo(const xs : array of longint; ys : tints);\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "using p_tints = ::rt::DynArray<int32_t>;"));
+  CHECK(contains(out.header,
+                 "void p_demo(::rt::OpenArray<int32_t> p_xs, p_tints p_ys);"));
+}
+
+void test_dynamic_array_actual_converts_to_open_array_view() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tints = array of longint;\n"
+      "procedure log(const xs : array of longint);\n"
+      "implementation\n"
+      "procedure log(const xs : array of longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "var\n"
+      "  ys : tints;\n"
+      "begin\n"
+      "  setlength(ys, 2);\n"
+      "  log(ys);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_log(::rt::OpenArray<int32_t>(p_ys))"));
+}
+
 void test_typed_set_literal_uses_surrounding_set_type() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2555,6 +2595,8 @@ int main() {
   RUN_TEST(test_open_array_procvar_signature_keeps_wrapper_type);
   RUN_TEST(test_open_array_call_uses_owning_temporary_wrapper);
   RUN_TEST(test_high_low_on_open_array_use_runtime_length);
+  RUN_TEST(test_dynamic_array_type_uses_runtime_carrier);
+  RUN_TEST(test_dynamic_array_actual_converts_to_open_array_view);
   RUN_TEST(test_typed_set_literal_uses_surrounding_set_type);
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
