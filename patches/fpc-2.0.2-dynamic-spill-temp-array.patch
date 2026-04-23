@@ -1,0 +1,67 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Use a dynamic array for spills
+License: expat
+
+diff -u /tmp/fpc-2.0.2-patched.RxxmE8/compiler/aasmtai.pas /home/dannym/src/lazarus/pas/fpc-2.0.2/compiler/aasmtai.pas
+--- a/compiler/aasmtai.pas
++++ b/compiler/aasmtai.pas
+@@ -242,7 +242,7 @@
+        { Buffer type used for alignment }
+        tfillbuffer = array[0..63] of char;
+ 
+-       Tspill_temp_list=array[tsuperregister] of Treference;
++       Tspill_temp_list=array of Treference;
+ 
+        { abstract assembler item }
+        tai = class(TLinkedListItem)
+diff -u /tmp/fpc-2.0.2-patched.RxxmE8/compiler/rgobj.pas /home/dannym/src/lazarus/pas/fpc-2.0.2/compiler/rgobj.pas
+--- a/compiler/rgobj.pas
++++ b/compiler/rgobj.pas
+@@ -1642,7 +1642,7 @@
+         t : tsuperregister;
+         p,q : Tai;
+         regs_to_spill_set:Tsuperregisterset;
+-        spill_temps : ^Tspill_temp_list;
++        spill_temps : Tspill_temp_list;
+         supreg : tsuperregister;
+         templist : taasmoutput;
+       begin
+@@ -1650,7 +1650,7 @@
+         live_registers.clear;
+         for i:=first_imaginary to maxreg-1 do
+           exclude(reginfo[i].flags,ri_selected);
+-        spill_temps:=allocmem(sizeof(treference)*maxreg);
++        SetLength(spill_temps,maxreg);
+         supregset_reset(regs_to_spill_set,false,$ffff);
+         { Allocate temps and insert in front of the list }
+         templist:=taasmoutput.create;
+@@ -1669,7 +1669,7 @@
+               tg.gettemp(templist,
+                          max(tcgsize2size[reg_cgsize(newreg(regtype,t,R_SUBWHOLE))],
+                              tcgsize2size[reg_cgsize(newreg(regtype,t,reginfo[t].subreg))]),
+-                         tt_noreuse,spill_temps^[t]);
++                         tt_noreuse,spill_temps[t]);
+             end;
+         list.insertlistafter(headertai,templist);
+         templist.free;
+@@ -1709,7 +1709,7 @@
+                 with Taicpu(p) do
+                   begin
+                     aktfilepos:=fileinfo;
+-                    if instr_spill_register(list,taicpu(p),regs_to_spill_set,spill_temps^) then
++                    if instr_spill_register(list,taicpu(p),regs_to_spill_set,spill_temps) then
+                       spill_registers:=true;
+                   end;
+             end;
+@@ -1719,8 +1719,8 @@
+         {Safe: this procedure is only called if there are spilled nodes.}
+         with spillednodes do
+           for i:=0 to length-1 do
+-            tg.ungettemp(list,spill_temps^[buf^[i]]);
+-        freemem(spill_temps);
++            tg.ungettemp(list,spill_temps[buf^[i]]);
++        spill_temps:=nil;
+       end;
+ 
+ 

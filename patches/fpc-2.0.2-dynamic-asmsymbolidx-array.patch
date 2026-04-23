@@ -1,0 +1,133 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-24
+Subject: Replace aasmbase's lying asmsymbolidx pointer-array with a dynamic array
+License: expat
+
+`compiler/aasmbase.pas` declares
+
+  tasmsymbolidxarr = array[0..($7fffffff div sizeof(pointer))-1] of tasmsymbol;
+  pasmsymbolidxarr = ^tasmsymbolidxarr;
+
+That's a ~500 M-element array type that is never really allocated at
+its declared size. `asmsymbolidx : pasmsymbolidxarr` is then populated
+via `getmem(..., asmsymbolppuidx*sizeof(pointer))` -- only as many
+entries as the module actually has -- and indexed as
+`asmsymbolidx^[i-1]`. Same "declared type lies about storage size"
+pattern as the cclasses `tdynamicblock.data` case: works in native
+FPC because accesses stay inside the small allocation and the
+declared bound is never bounds-checked; lowered literally to C++ the
+pointer-to-(~4 GB-type) is meaningless and any operation that keys
+on the declared size walks off the allocation.
+
+Pascal has a dynamic array type that does exactly what this code is
+hand-rolling with getmem/freemem/fillchar. Switch `tasmsymbolidxarr`
+to `array of tasmsymbol`, store `asmsymbolidx` as the dynamic array
+directly (drop `pasmsymbolidxarr`), allocate with `SetLength`, and
+index without the `^` deref. `Freeasmsymbolidx` becomes
+`asmsymbolidx := nil` -- Pascal dynamic arrays clean themselves up.
+
+--- a/compiler/aasmbase.pas
++++ b/compiler/aasmbase.pas
+@@ -203,8 +203,7 @@
+        end;
+        TAsmObjectDataClass = class of TAsmObjectData;
+
+-       tasmsymbolidxarr = array[0..($7fffffff div sizeof(pointer))-1] of tasmsymbol;
+-       pasmsymbolidxarr = ^tasmsymbolidxarr;
++       tasmsymbolidxarr = array of tasmsymbol;
+
+        TAsmLibraryData = class(TLinkedListItem)
+        private
+@@ -217,7 +216,7 @@
+          usedasmsymbollist : tsinglelist;
+          { ppu }
+          asmsymbolppuidx : longint;
+-         asmsymbolidx : pasmsymbolidxarr; { used for translating ppu index->asmsymbol }
++         asmsymbolidx : tasmsymbolidxarr; { used for translating ppu index->asmsymbol }
+          constructor create(const n:string);
+          destructor  destroy;override;
+          procedure Freeasmsymbolidx;
+@@ -768,11 +767,7 @@
+
+     procedure TAsmLibraryData.Freeasmsymbolidx;
+       begin
+-        if assigned(asmsymbolidx) then
+-         begin
+-           Freemem(asmsymbolidx);
+-           asmsymbolidx:=nil;
+-         end;
++        asmsymbolidx:=nil;
+       end;
+
+
+@@ -780,11 +775,11 @@
+       begin
+         if assigned(s) then
+          begin
+-           if not assigned(asmsymbolidx) then
++           if asmsymbolidx=nil then
+              internalerror(200208072);
+            if (ptrint(pointer(s))<1) or (ptrint(pointer(s))>asmsymbolppuidx) then
+              internalerror(200208073);
+-           s:=asmsymbolidx^[ptrint(pointer(s))-1];
++           s:=asmsymbolidx[ptrint(pointer(s))-1];
+          end;
+       end;
+
+--- a/compiler/fppu.pas
++++ b/compiler/fppu.pas
+@@ -573,7 +573,7 @@
+     procedure tppumodule.putasmsymbol_in_idx(s:tnamedindexitem;arg:pointer);
+       begin
+         if tasmsymbol(s).ppuidx<>-1 then
+-         librarydata.asmsymbolidx^[tasmsymbol(s).ppuidx-1]:=tasmsymbol(s);
++         librarydata.asmsymbolidx[tasmsymbol(s).ppuidx-1]:=tasmsymbol(s);
+       end;
+
+
+@@ -584,15 +584,14 @@
+         asmsymtype : byte;
+       begin
+         { get an ordered list of all symbols to put in the ppu }
+-        getmem(librarydata.asmsymbolidx,librarydata.asmsymbolppuidx*sizeof(pointer));
+-        fillchar(librarydata.asmsymbolidx^,librarydata.asmsymbolppuidx*sizeof(pointer),0);
++        SetLength(librarydata.asmsymbolidx,librarydata.asmsymbolppuidx);
+         librarydata.symbolsearch.foreach(@putasmsymbol_in_idx,nil);
+         { write the number of symbols }
+         ppufile.putlongint(librarydata.asmsymbolppuidx);
+         { write the symbols from the indexed list to the ppu }
+         for i:=1 to librarydata.asmsymbolppuidx do
+          begin
+-           s:=librarydata.asmsymbolidx^[i-1];
++           s:=librarydata.asmsymbolidx[i-1];
+            if not assigned(s) then
+             internalerror(200208071);
+            asmsymtype:=1;
+@@ -861,8 +860,7 @@
+         librarydata.asmsymbolppuidx:=ppufile.getlongint;
+         if librarydata.asmsymbolppuidx>0 then
+          begin
+-           getmem(librarydata.asmsymbolidx,librarydata.asmsymbolppuidx*sizeof(pointer));
+-           fillchar(librarydata.asmsymbolidx^,librarydata.asmsymbolppuidx*sizeof(pointer),0);
++           SetLength(librarydata.asmsymbolidx,librarydata.asmsymbolppuidx);
+            for i:=1 to librarydata.asmsymbolppuidx do
+             begin
+               asmsymtype:=ppufile.getbyte;
+@@ -878,13 +876,13 @@
+               typ:=tasmsymtype(ppufile.getbyte);
+               case asmsymtype of
+                 1 :
+-                 librarydata.asmsymbolidx^[i-1]:=librarydata.newasmsymbol(name,bind,typ);
++                 librarydata.asmsymbolidx[i-1]:=librarydata.newasmsymbol(name,bind,typ);
+                 2 :
+-                 librarydata.asmsymbolidx^[i-1]:=librarydata.newasmlabel(labelnr,false,false);
++                 librarydata.asmsymbolidx[i-1]:=librarydata.newasmlabel(labelnr,false,false);
+                 3 :
+-                 librarydata.asmsymbolidx^[i-1]:=librarydata.newasmlabel(labelnr,false,true);
++                 librarydata.asmsymbolidx[i-1]:=librarydata.newasmlabel(labelnr,false,true);
+                 4 :
+-                 librarydata.asmsymbolidx^[i-1]:=librarydata.newasmlabel(labelnr,true,false);
++                 librarydata.asmsymbolidx[i-1]:=librarydata.newasmlabel(labelnr,true,false);
+               end;
+             end;
+          end;
