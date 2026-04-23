@@ -255,6 +255,16 @@ void test_reinterpret_bytes_copies_raw_object_bytes() {
   }
 }
 
+void test_scope_exit_runs_on_exception_unwind() {
+  int value = 0;
+  try {
+    auto guard = tp2cc_make_scope_exit([&]() { value = 7; });
+    throw 1;
+  } catch (int) {
+  }
+  CHECK_EQ(value, 7);
+}
+
 void test_reinterpret_storage_ref_views_pointer_variable_bytes() {
   int first = 11;
   int second = 22;
@@ -560,6 +570,7 @@ int main() {
   RUN_TEST(test_move_reads_from_const_shortstring_storage);
   RUN_TEST(test_str_formats_real_values);
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
+  RUN_TEST(test_scope_exit_runs_on_exception_unwind);
   RUN_TEST(test_reinterpret_storage_ref_views_pointer_variable_bytes);
   RUN_TEST(test_reinterpret_ref_views_pointee_bytes_of_pointer_value);
   RUN_TEST(test_open_array_helper_owns_temporary_storage);

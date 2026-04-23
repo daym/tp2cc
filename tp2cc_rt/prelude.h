@@ -238,6 +238,35 @@ struct p_exception : p_tobject {
   }
 };
 
+// Pascal `try .. finally` runs the cleanup block on every exit path:
+// ordinary fallthrough, `Exit`, loop control, and exception unwinding.
+// Keep that behaviour explicit with a small C++ scope guard instead of
+// duplicating the finally-body at each translated exit site.
+template <typename F>
+class tp2cc_scope_exit {
+ public:
+  explicit tp2cc_scope_exit(F fn) : fn_(std::move(fn)) {}
+  tp2cc_scope_exit(const tp2cc_scope_exit&) = delete;
+  tp2cc_scope_exit& operator=(const tp2cc_scope_exit&) = delete;
+  tp2cc_scope_exit(tp2cc_scope_exit&& other) noexcept(
+      std::is_nothrow_move_constructible_v<F>)
+      : fn_(std::move(other.fn_)), active_(other.active_) {
+    other.active_ = false;
+  }
+  ~tp2cc_scope_exit() {
+    if (active_) fn_();
+  }
+
+ private:
+  F fn_;
+  bool active_ = true;
+};
+
+template <typename F>
+tp2cc_scope_exit<F> tp2cc_make_scope_exit(F fn) {
+  return tp2cc_scope_exit<F>(std::move(fn));
+}
+
 struct CharConst;
 
 struct ShortStringCharValue {
