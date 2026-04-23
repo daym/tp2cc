@@ -243,6 +243,48 @@ void test_shortstring_char_concat_grows_capacity() {
   CHECK_EQ(p_to_std_string(label), std::string(".Le0"));
 }
 
+void test_shortstring_single_nul_char_keeps_length_one() {
+  ShortString<> s(p_char_of('\0'));
+
+  CHECK_EQ(p_length(s), 1);
+  CHECK_EQ(p_char_byte(s.data[0]), 0);
+}
+
+void test_shortstring_nul_char_concat_preserves_embedded_zero() {
+  auto s = ShortString<>(p_char_of('\0')) + p_char_of('A');
+
+  CHECK_EQ(p_length(s), 2);
+  CHECK_EQ(p_char_byte(s.data[0]), 0);
+  CHECK_EQ(p_char_byte(s.data[1]), static_cast<uint8_t>('A'));
+}
+
+void test_shortstring_literal_helper_preserves_embedded_nuls() {
+  auto s = p_shortstring_literal<255>(p_char_of('\x8d'), p_char_of('\xb4'),
+                                      p_char_of('&'), p_char_of('\0'),
+                                      p_char_of('\0'), p_char_of('\0'),
+                                      p_char_of('\0'));
+
+  CHECK_EQ(p_length(s), 7);
+  CHECK_EQ(p_char_byte(s.data[0]), 0x8d);
+  CHECK_EQ(p_char_byte(s.data[1]), 0xb4);
+  CHECK_EQ(p_char_byte(s.data[2]), static_cast<uint8_t>('&'));
+  CHECK_EQ(p_char_byte(s.data[3]), 0);
+  CHECK_EQ(p_char_byte(s.data[4]), 0);
+  CHECK_EQ(p_char_byte(s.data[5]), 0);
+  CHECK_EQ(p_char_byte(s.data[6]), 0);
+}
+
+void test_ansistring_from_shortstring_keeps_trailing_nul_storage() {
+  AnsiString s = p_shortstring_literal<255>(p_char_of('A'), p_char_of('\0'),
+                                            p_char_of('B'));
+
+  CHECK_EQ(s.length(), 3);
+  CHECK_EQ(p_char_byte(s.bytes()[0]), static_cast<uint8_t>('A'));
+  CHECK_EQ(p_char_byte(s.bytes()[1]), 0);
+  CHECK_EQ(p_char_byte(s.bytes()[2]), static_cast<uint8_t>('B'));
+  CHECK_EQ(p_char_byte(s.bytes()[3]), 0);
+}
+
 void test_shortstring_charref_inc_and_dec_update_length_slot_storage() {
   ShortString<> s("A");
 
@@ -754,6 +796,10 @@ int main() {
   RUN_TEST(test_ansistring_setlength_and_insert_delete_keep_bytes_stable);
   RUN_TEST(test_ansistring_converts_to_shortstring_with_pascal_truncation);
   RUN_TEST(test_shortstring_char_concat_grows_capacity);
+  RUN_TEST(test_shortstring_single_nul_char_keeps_length_one);
+  RUN_TEST(test_shortstring_nul_char_concat_preserves_embedded_zero);
+  RUN_TEST(test_shortstring_literal_helper_preserves_embedded_nuls);
+  RUN_TEST(test_ansistring_from_shortstring_keeps_trailing_nul_storage);
   RUN_TEST(test_shortstring_charref_inc_and_dec_update_length_slot_storage);
   RUN_TEST(test_octstr_formats_octal_with_zero_padding);
   RUN_TEST(test_move_reads_from_const_shortstring_storage);

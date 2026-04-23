@@ -2717,6 +2717,19 @@ template <int N>
 inline ShortString<N> p_strpas_s(const p_char* s) {
   return ShortString<N>(s);
 }
+template <int N, typename... Cs>
+requires ((std::is_same_v<std::remove_cvref_t<Cs>, p_char>) && ...)
+constexpr ShortString<N> p_shortstring_literal(Cs... chars) {
+  ShortString<N> out{};
+  constexpr std::size_t literal_len = sizeof...(Cs);
+  constexpr std::size_t copy_len =
+      literal_len < static_cast<std::size_t>(N) ? literal_len
+                                                : static_cast<std::size_t>(N);
+  const p_char src[] = {chars..., p_char_of('\0')};
+  out.length = static_cast<uint8_t>(copy_len);
+  for (std::size_t i = 0; i < copy_len; ++i) out.data[i] = src[i];
+  return out;
+}
 inline char* p_strpcopy(char* dest, const ShortString<>& src) {
   for (int i = 0; i < src.length; ++i) dest[i] = p_char_to_c(src.data[i]);
   dest[src.length] = 0;

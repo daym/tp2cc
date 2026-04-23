@@ -3336,27 +3336,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (n.value.size() == 1) {
         return "::rt::p_char_of('" + escape_char_body(n.value[0], true) + "')";
       }
-      // C++ `\xHH` escapes are greedy: any following hex digit gets
-      // pulled into the escape ("\x01" + "7" would parse as "\x017"
-      // which overflows). We close and reopen the string literal
-      // between a non-printable (emitted as hex) and any subsequent
-      // hex-digit character.
-      auto is_hex_digit = [](char c) {
-        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
-               (c >= 'A' && c <= 'F');
-      };
-      std::string out = "::rt::ShortString<>(\"";
-      bool prev_was_hex_escape = false;
+      std::string out = "::rt::p_shortstring_literal<255>(";
+      bool first = true;
       for (char c : n.value) {
-        bool is_printable = (unsigned char)c >= 0x20 && (unsigned char)c < 0x7f
-                            && c != '"' && c != '\\';
-        if (prev_was_hex_escape && is_hex_digit(c)) {
-          out += "\" \"";  // split into adjacent literals
-        }
-        out += escape_char_body(c, false);
-        prev_was_hex_escape = !is_printable;
+        if (!first) out += ", ";
+        first = false;
+        out += "::rt::p_char_of('";
+        out += escape_char_body(c, true);
+        out += "')";
       }
-      out += "\")";
+      out += ")";
       return out;
     }
     case Kind::NilLit: return "nullptr";

@@ -137,9 +137,10 @@ void test_scalar_const() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header, "p_a = 5"));
-  // Multi-character string literal is wrapped in ShortString so `+` is
-  // concatenation, not pointer arithmetic.
-  CHECK(contains(out.header, "p_s = ::rt::ShortString<>(\"hello\")"));
+  CHECK(contains(out.header,
+                 "p_s = ::rt::p_shortstring_literal<255>(::rt::p_char_of('h'), "
+                 "::rt::p_char_of('e'), ::rt::p_char_of('l'), "
+                 "::rt::p_char_of('l'), ::rt::p_char_of('o'))"));
 }
 
 void test_typed_scalar_const() {
@@ -838,6 +839,31 @@ void test_char_plus_cast_uses_string_concat() {
   CHECK(!contains(out.header, "'\\x01' + (("));
 }
 
+void test_nul_char_plus_cast_uses_string_concat() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  s = #0 + char(byte(66));\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "::rt::ShortString<>(::rt::p_char_of('\\0'))"));
+  CHECK(!contains(out.header, "::rt::ShortString<>(\"\\0\")"));
+}
+
+void test_embedded_nul_string_literal_uses_explicit_length_builder() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  S = #141#180#38#0#0#0#0;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "p_s = ::rt::p_shortstring_literal<255>("));
+  CHECK(contains(out.header, "::rt::p_char_of('\\0')"));
+  CHECK(!contains(out.header, "p_s = ::rt::ShortString<>(\""));
+}
+
 void test_integer_and_or_stays_bitwise() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1238,7 +1264,7 @@ void test_implicit_property_lookup_in_method_body() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "this->p_fcount = (this->p_fcount + 1);"));
-  CHECK(contains(out.impl, "if ((this->p_getname() != ::rt::ShortString<>(\"\")))"));
+  CHECK(contains(out.impl, "if ((this->p_getname() != ::rt::p_shortstring_literal<255>()))"));
   CHECK(!contains(out.impl, "p_count ="));
   CHECK(!contains(out.impl, "p_name !="));
 }
@@ -1758,6 +1784,31 @@ void test_untyped_const_method_thunk_keeps_raw_storage_pointer() {
   CHECK(contains(out.header, "int32_t p_write(void* p_buffer, int32_t p_count);"));
   CHECK(contains(out.header,
                  "static int32_t tp2cc_methodptr_write_const_untyped_value_name_longint_ret_name_longint(void* tp2cc_self, void* p_buffer, int32_t p_count)"));
+}
+
+void test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure sink(const b; len : longint);\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure sink(const b; len : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "var\n"
+      "  p : pchar;\n"
+      "begin\n"
+      "  sink(p, 1);\n"
+      "  sink(p^, 1);\n"
+      "end;\n"
+      "end.\n");
+  // Untyped `const` receives the storage address of the actual argument. A
+  // pointer variable and the bytes it points to are different storage
+  // locations, and byte-buffer writers rely on that distinction.
+  CHECK(contains(out.impl, "p_sink(((void*)&(p_p)), 1);"));
+  CHECK(contains(out.impl, "p_sink(((void*)&(::rt::p_deref(p_p))), 1);"));
 }
 
 void test_class_types_lower_to_pointers_and_implicit_tobject() {
@@ -2557,6 +2608,8 @@ int main() {
   RUN_TEST(test_try_except_raises_and_matches_exception_class);
   RUN_TEST(test_try_except_multiple_handlers_start_with_if_and_base_pointer_cast);
   RUN_TEST(test_char_plus_cast_uses_string_concat);
+  RUN_TEST(test_nul_char_plus_cast_uses_string_concat);
+  RUN_TEST(test_embedded_nul_string_literal_uses_explicit_length_builder);
   RUN_TEST(test_integer_and_or_stays_bitwise);
   RUN_TEST(test_nested_boolean_function_and_short_circuits);
   RUN_TEST(test_nested_untyped_var_forwarding_stays_pointer_value);
@@ -2601,6 +2654,7 @@ int main() {
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
   RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);
+  RUN_TEST(test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes);
   RUN_TEST(test_class_types_lower_to_pointers_and_implicit_tobject);
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
   RUN_TEST(test_class_constructor_call_allocates_instance);
