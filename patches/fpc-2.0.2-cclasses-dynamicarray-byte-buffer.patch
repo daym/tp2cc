@@ -1,0 +1,133 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Give cclasses tdynamicblock an explicit pchar buffer and dereference it at writer call sites
+License: expat
+
+`compiler/cclasses.pas` declared `tdynamicblock.data` as a huge fixed
+array but actually allocated it as a heap byte buffer of varying size.
+That works in native Pascal because the code treats it like raw storage,
+but once lowered literally it becomes a lying aggregate type. Make the
+buffer explicit as `pchar` and pass the pointed-to bytes at the object
+writer call sites in `ogcoff` and `ogelf`.
+
+--- a/compiler/cclasses.pas
++++ b/compiler/cclasses.pas
+@@ -313,17 +313,14 @@
+               DynamicArray
+ ********************************************}
+ 
+-     const
+-       dynamicblockbasesize = 12;
+-
+      type
+        pdynamicblock = ^tdynamicblock;
+        tdynamicblock = record
+          pos,
+          used : integer;
+          Next : pdynamicblock;
+-         { can't use sizeof(integer) because it crashes gdb }
+-         data : array[0..1024*1024] of byte;
++         { Keep the payload in a separately allocated byte buffer. }
++         data : pchar;
+        end;
+ 
+        tdynamicarray = class
+@@ -2121,6 +2118,7 @@
+          begin
+            hp:=FFirstblock;
+            FFirstblock:=FFirstblock^.Next;
++           Freemem(hp^.data);
+            Freemem(hp);
+          end;
+       end;
+@@ -2143,6 +2141,7 @@
+          begin
+            hp:=FFirstblock;
+            FFirstblock:=FFirstblock^.Next;
++           Freemem(hp^.data);
+            Freemem(hp);
+          end;
+         FPosn:=0;
+@@ -2157,7 +2156,7 @@
+       var
+         nblock : pdynamicblock;
+       begin
+-        Getmem(nblock,blocksize+dynamicblockbasesize);
++        Getmem(nblock,sizeof(tdynamicblock));
+         if not assigned(FFirstblock) then
+          begin
+            FFirstblock:=nblock;
+@@ -2171,7 +2170,8 @@
+          end;
+         nblock^.used:=0;
+         nblock^.Next:=nil;
+-        fillchar(nblock^.data,blocksize,0);
++        Getmem(nblock^.data,blocksize);
++        fillchar(nblock^.data^,blocksize,0);
+         FLastblock:=nblock;
+       end;
+ 
+@@ -2343,7 +2343,7 @@
+         hp:=FFirstblock;
+         while assigned(hp) do
+          begin
+-           f.Write(hp^.data,hp^.used);
++           f.Write(hp^.data^,hp^.used);
+            hp:=hp^.Next;
+          end;
+       end;
+--- a/compiler/ogcoff.pas
++++ b/compiler/ogcoff.pas
+@@ -1044,7 +1044,10 @@
+         hp:=tasmsection(p).data.firstblock;
+         while assigned(hp) do
+           begin
+-            FWriter.write(hp^.data,hp^.used);
++            { `data` now names a heap byte buffer, not inline record
++              storage, so pass the pointed-to bytes to the untyped
++              `const` writer. }
++            FWriter.write(hp^.data^,hp^.used);
+             hp:=hp^.next;
+           end;
+       end;
+@@ -1123,7 +1126,7 @@
+            hp:=FCoffStrs.firstblock;
+            while assigned(hp) do
+             begin
+-              FWriter.write(hp^.data,hp^.used);
++              FWriter.write(hp^.data^,hp^.used);
+               hp:=hp^.next;
+             end;
+          end;
+@@ -1367,7 +1370,7 @@
+                   hp:=objdata.sects[sec].data.firstblock;
+                   while assigned(hp) do
+                    begin
+-                     FWriter.write(hp^.data,hp^.used);
++                     FWriter.write(hp^.data^,hp^.used);
+                      hp:=hp^.next;
+                    end;
+                 end;
+@@ -1385,7 +1388,7 @@
+            hp:=FCoffStrs.firstblock;
+            while assigned(hp) do
+             begin
+-              FWriter.write(hp^.data,hp^.used);
++              FWriter.write(hp^.data^,hp^.used);
+               hp:=hp^.next;
+             end;
+          end;
+--- a/compiler/ogelf.pas
++++ b/compiler/ogelf.pas
+@@ -703,7 +703,10 @@
+         hp:=s.data.firstblock;
+         while assigned(hp) do
+           begin
+-            FWriter.write(hp^.data,hp^.used);
++            { `data` is a `pchar` byte buffer, so the untyped `const`
++              parameter must receive the pointed-to payload, not the
++              storage slot of the pointer field itself. }
++            FWriter.write(hp^.data^,hp^.used);
+             hp:=hp^.next;
+           end;
+       end;
