@@ -1,0 +1,25 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Use make_mangledname in cresstr instead of dereffing a PString and concatenating
+License: expat
+
+`cresstr.pas` builds the resourcestring-list end symbol by hand:
+
+  current_module.modulename^ + '_' + 'RESOURCESTRINGLIST'
+
+`current_module.modulename` is a `PString` (pointer to shortstring); the
+`^` deref + string concatenation is a DIY mangler that bypasses the
+compiler's standard symbol-naming helper. Use `make_mangledname` so the
+end symbol matches every other mangled name in the same module.
+
+--- a/compiler/cresstr.pas	2005-12-04 21:24:46.000000000 +0000
++++ b/compiler/cresstr.pas	2026-04-23 14:51:31.183648268 +0000
+@@ -192,7 +192,7 @@
+      AppendToAsmResList(R);
+      R:=TResourceStringItem(R.Next);
+    end;
+-  resourcestringlist.concat(tai_symbol_end.createname(current_module.modulename^+'_'+'RESOURCESTRINGLIST'));
++  resourcestringlist.concat(tai_symbol_end.createname(make_mangledname('RESOURCESTRINGLIST',current_module.localsymtable,'')));
+ end;
+ 
+ 
