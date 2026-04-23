@@ -48,6 +48,22 @@ const ast::TyName* builtin_pchar_type() {
   return &t;
 }
 
+const ast::TyName* builtin_boolean_type() {
+  static const ast::TyName t = [] {
+    ast::TyName n;
+    n.name = "boolean";
+    return n;
+  }();
+  return &t;
+}
+
+const ast::TyName* named_pascal_type(std::string_view name) {
+  static std::unordered_map<std::string, ast::TyName> cache;
+  auto [it, inserted] = cache.emplace(std::string(name), ast::TyName{});
+  if (inserted) it->second.name = std::string(name);
+  return &it->second;
+}
+
 // ---------------------------------------------------------------------------
 // Name mangling
 
@@ -241,6 +257,11 @@ const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
       {"shortint",    {"int8_t",          PrimitiveIntKind::Signed,    8}},
       {"byte",        {"uint8_t",         PrimitiveIntKind::Unsigned,  8}},
       {"char",        {"::rt::p_char",    PrimitiveIntKind::None,      0}},
+      // FPC's WideChar is still a 16-bit ordinal code unit in 2.0.x.
+      // Keep it as a plain 16-bit value type here; the compiler-side
+      // bootstrap helper in compiler/widestr.pas handles wide string
+      // storage/decoding separately.
+      {"widechar",    {"uint16_t",        PrimitiveIntKind::Unsigned, 16}},
       {"boolean",     {"bool",            PrimitiveIntKind::None,      0}},
       {"bytebool",    {"uint8_t",         PrimitiveIntKind::Unsigned,  8}},
       {"wordbool",    {"uint16_t",        PrimitiveIntKind::Unsigned, 16}},
@@ -532,6 +553,7 @@ struct Emitter {
     size_t param_count = 0;
     bool is_function = false;
     const ast::TypeExpr* return_type = nullptr;
+    const ast::ProcDecl* decl = nullptr;
   };
   std::unordered_map<std::string, NestedFn> local_nested_fns;
 
@@ -680,6 +702,15 @@ struct Emitter {
   std::optional<ConvertedConstInt> convert_const_int_value(
       Location where, int64_t value, const ast::TypeExpr* target,
       bool explicit_conversion, bool diagnose);
+
+  // `with` targets can be anonymous local records, so name-based
+  // registry lookup is not enough. These helpers walk the stacked
+  // bound type itself and recover the member type/text directly.
+  const ast::TypeExpr* lookup_record_field_type_in_type(
+      const ast::TypeExpr* type, std::string_view field_name);
+  const ast::TypeExpr* lookup_record_field_type_in_with(
+      const WithBind& wb, std::string_view field_name);
+  bool with_bind_has_visible_member(const WithBind& wb, std::string_view name);
 
   // Class/record alias name ("tfoo") of `e`, lowercased, if detectable.
   // Empty if the type can't be narrowed to a named object/record type.
@@ -1265,7 +1296,6 @@ std::string Emitter::procedural_param_types_to_cxx(
       if (pp.mode == Param::Var || pp.mode == Param::Out) pt += "&";
       else if (pp.mode == Param::Const) {
         if (const_param_needs_mutable_ref(pp.type.get())) pt += "&";
-        else pt = std::string("const ") + pt + "&";
       }
     }
     size_t repeats = pp.names.empty() ? 1 : pp.names.size();
@@ -1670,6 +1700,19 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
         return builtin_integer_type(info->type);
       }
       if (e.kind != Kind::Binary) return nullptr;
+      {
+        const auto& b = static_cast<const Binary&>(e);
+        if (b.op == BinOp::Is) return builtin_boolean_type();
+        if (b.op == BinOp::As) {
+          if (b.rhs->kind == Kind::Ident) {
+            const auto& id = static_cast<const Ident&>(*b.rhs);
+            auto ait = registry->aliases.find(id.name);
+            if (ait != registry->aliases.end()) return ait->second.target.get();
+            if (class_info_for_type_name(id.name)) return named_pascal_type(id.name);
+          }
+          return nullptr;
+        }
+      }
       break;
     case Kind::Ident: {
       const auto& id = static_cast<const Ident&>(e);
@@ -1718,22 +1761,23 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       // the ident might name such a field.
       for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
         const std::string& ac = it->class_name;
-        if (ac.empty()) continue;
         if (const auto* ci = class_info_for_type_name(ac);
             ci && ci->is_reference_type) {
           if (id.name == "instancesize") return builtin_integer_type("longint");
           if (id.name == "classtype") return nullptr;
         }
-        if (auto* f = registry->lookup_class_field(ac, id.name))
-          return f->type.get();
-        if (auto* p = registry->lookup_class_property(ac, id.name))
-          return p->type.get();
-        if (auto* m = registry->lookup_class_method(ac, id.name);
-            m && m->decl && m->decl->return_type) {
-          return m->decl->return_type.get();
+        if (!ac.empty()) {
+          if (auto* f = registry->lookup_class_field(ac, id.name))
+            return f->type.get();
+          if (auto* p = registry->lookup_class_property(ac, id.name))
+            return p->type.get();
+          if (auto* m = registry->lookup_class_method(ac, id.name);
+              m && m->decl && m->decl->return_type) {
+            return m->decl->return_type.get();
+          }
         }
-        auto* rf = registry->lookup_record_field(ac, id.name);
-        if (rf) return rf->type.get();
+        if (const TypeExpr* rf = lookup_record_field_type_in_with(*it, id.name))
+          return rf;
       }
       // Unit-level lookup: own unit first, then each `uses` entry
       // (right-to-left). The global last-wins maps on TypeRegistry
@@ -1774,7 +1818,7 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       const auto& d = static_cast<const Deref&>(e);
       const TypeExpr* t = deduce_type(*d.operand);
       if (!t) return nullptr;
-      t = registry->canonicalize(t);
+      t = canonicalize_type(t);
       if (tyname_is(t, "pchar")) return builtin_char_type();
       if (tyname_is(t, "ppchar")) return builtin_pchar_type();
       if (t && t->kind == Kind::TyPointer) {
@@ -1841,12 +1885,14 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       }
       const TypeExpr* bt = deduce_type(*ix.base);
       if (!bt) return nullptr;
-      bt = registry->canonicalize(bt);
+      bt = canonicalize_type(bt);
       if (bt && bt->kind == Kind::TyString) return builtin_char_type();
       if (tyname_is(bt, "pchar")) return builtin_char_type();
       if (tyname_is(bt, "ppchar")) return builtin_pchar_type();
       if (bt && bt->kind == Kind::TyArray)
         return static_cast<const TyArray&>(*bt).element.get();
+      if (bt && bt->kind == Kind::TyPointer)
+        return static_cast<const TyPointer&>(*bt).target.get();
       if (registry) {
         std::string cls = registry->direct_type_name(bt);
         if (!cls.empty()) {
@@ -1943,6 +1989,70 @@ std::string Emitter::deduce_class_alias(const Expr& e) {
   if (auto cls = metaclass_target_name(t); !cls.empty()) return cls;
   if (auto cls = registry->direct_type_name(t); !cls.empty()) return cls;
   return registry->direct_type_name(registry->canonicalize(t));
+}
+
+const TypeExpr* Emitter::lookup_record_field_type_in_type(
+    const TypeExpr* type, std::string_view field_name) {
+  if (!registry || !type) return nullptr;
+  type = canonicalize_type(type);
+  if (!type) return nullptr;
+  if (type->kind == Kind::TyPointer) {
+    const auto& ptr = static_cast<const TyPointer&>(*type);
+    return lookup_record_field_type_in_type(ptr.target.get(), field_name);
+  }
+  if (type->kind == Kind::TyName) {
+    const auto& tn = static_cast<const TyName&>(*type);
+    if (auto* rf = registry->lookup_record_field(tn.name,
+                                                 std::string(field_name))) {
+      return rf->type.get();
+    }
+  }
+  if (type->kind != Kind::TyRecord) return nullptr;
+
+  const auto& rec = static_cast<const TyRecord&>(*type);
+  auto match_field = [&](const RecordField& rf) -> const TypeExpr* {
+    for (const auto& name : rf.names) {
+      if (ascii_lower(name) == ascii_lower(field_name)) return rf.type.get();
+    }
+    return nullptr;
+  };
+
+  for (const auto& rf : rec.fields) {
+    if (const TypeExpr* ft = match_field(rf)) return ft;
+  }
+  for (const auto& vc : rec.variant_cases) {
+    for (const auto& rf : vc.fields) {
+      if (const TypeExpr* ft = match_field(rf)) return ft;
+    }
+  }
+  return nullptr;
+}
+
+const TypeExpr* Emitter::lookup_record_field_type_in_with(
+    const WithBind& wb, std::string_view field_name) {
+  if (const TypeExpr* ft = lookup_record_field_type_in_type(
+          wb.type, field_name)) {
+    return ft;
+  }
+  if (!registry || wb.class_name.empty()) return nullptr;
+  if (auto* rf = registry->lookup_record_field(wb.class_name,
+                                               std::string(field_name))) {
+    return rf->type.get();
+  }
+  return nullptr;
+}
+
+bool Emitter::with_bind_has_visible_member(const WithBind& wb,
+                                           std::string_view name) {
+  if (!registry) return false;
+  if (!wb.class_name.empty()) {
+    if (registry->lookup_class_method(wb.class_name, std::string(name)) ||
+        registry->lookup_class_field(wb.class_name, std::string(name)) ||
+        registry->lookup_class_property(wb.class_name, std::string(name))) {
+      return true;
+    }
+  }
+  return lookup_record_field_type_in_with(wb, name) != nullptr;
 }
 
 // Strip a chain of primitive casts like `pointer(longint(x))` down to the
@@ -2320,10 +2430,13 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
     return open_array_constructor_to_cxx(static_cast<const SetLit&>(arg),
                                          *param_type);
   }
+  const TypeExpr* arg_type = deduce_type(arg);
+  if (arg_type) arg_type = canonicalize_type(arg_type);
+  const TypeExpr* canon_param_type = canonicalize_type(param_type);
   if (mutable_ref_arg && arg.kind == Kind::Call &&
       static_cast<const Call&>(arg).args.size() == 1 &&
       static_cast<const Call&>(arg).callee->kind == Kind::Ident &&
-      param_type) {
+      canon_param_type) {
     const auto& cast = static_cast<const Call&>(arg);
     const auto& id = static_cast<const Ident&>(*cast.callee);
     bool is_type_cast = is_primitive_type(id.name);
@@ -2337,13 +2450,25 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
                                   expr_to_cxx(*cast.args[0]), false);
     }
   }
+  if (mutable_ref_arg && canon_param_type && arg_type &&
+      expr_is_storage_lvalue(arg) &&
+      type_is_pointerish(canon_param_type) &&
+      type_is_pointerish(arg_type) &&
+      type_to_cxx(*canon_param_type) != type_to_cxx(*arg_type)) {
+    // Pascal `var`/`out` parameters alias the caller's storage slot. When
+    // the slot holds a more specific pointer type than the formal parameter
+    // (e.g. `var p: TNode` called with a `TBlockNode` field), C++'s normal
+    // derived-to-base conversion produces an rvalue and loses that aliasing.
+    // Reinterpret the slot itself so the callee still sees writable storage.
+    return reinterpret_ref_text(type_to_cxx(*param_type), expr_to_cxx(arg),
+                                false);
+  }
   std::string arg_text = const_value_to_cxx(arg, param_type);
   if (type_is_stringish(param_type) && expr_is_charish(arg)) {
     arg_text = "::rt::ShortString<>(" + arg_text + ")";
   }
   if (type_is_open_array(param_type)) {
-    const TypeExpr* at = deduce_type(arg);
-    if (at) at = canonicalize_type(at);
+    const TypeExpr* at = arg_type;
     if (!(at && at->kind == Kind::TyArray &&
           static_cast<const TyArray&>(*at).dims.empty())) {
       arg_text = open_array_type_to_cxx(*param_type) + "(" + arg_text + ")";
@@ -2679,7 +2804,6 @@ Emitter::ResolveResult Emitter::resolve_name(
   if (registry) {
     for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
       const std::string& cls = it->class_name;
-      if (cls.empty()) continue;
       const std::string& access = it->access_op;
       if (const auto* ci = class_info_for_type_name(cls);
           ci && ci->is_reference_type &&
@@ -2690,21 +2814,22 @@ Emitter::ResolveResult Emitter::resolve_name(
         r.is_parameterless = true;
         return r;
       }
-      if (auto* m = registry->lookup_class_method(cls, name)) {
-        r.cxx = it->cxx_text + access + mangle(name);
-        r.kind = ResolvedKind::WithMethod;
-        r.proc = m->decl.get();
-        r.is_callable = true;
-        r.is_parameterless = (m->param_count == 0);
-        return r;
+      if (!cls.empty()) {
+        if (auto* m = registry->lookup_class_method(cls, name)) {
+          r.cxx = it->cxx_text + access + mangle(name);
+          r.kind = ResolvedKind::WithMethod;
+          r.proc = m->decl.get();
+          r.is_callable = true;
+          r.is_parameterless = (m->param_count == 0);
+          return r;
+        }
+        if (registry->lookup_class_field(cls, name)) {
+          r.cxx = it->cxx_text + access + mangle(name);
+          r.kind = ResolvedKind::WithField;
+          return r;
+        }
       }
-      if (registry->lookup_class_field(cls, name)) {
-        r.cxx = it->cxx_text + access + mangle(name);
-        r.kind = ResolvedKind::WithField;
-        return r;
-      }
-      if (auto* f = registry->lookup_record_field(cls, name)) {
-        (void)f;
+      if (lookup_record_field_type_in_with(*it, name)) {
         r.cxx = it->cxx_text + access + mangle(name);
         r.kind = ResolvedKind::WithField;
         return r;
@@ -2718,6 +2843,7 @@ Emitter::ResolveResult Emitter::resolve_name(
     if (nit != local_nested_fns.end()) {
       r.kind = ResolvedKind::NestedFn;
       r.cxx = mangle(name);
+       r.proc = nit->second.decl;
       r.is_callable = true;
       r.is_parameterless = (nit->second.param_count == 0);
       return r;
@@ -3077,13 +3203,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         auto rhs_type = [&]() {
           if (n.rhs->kind == Kind::Ident) {
             const auto& id = static_cast<const Ident&>(*n.rhs);
-            if (registry) {
-              auto it = registry->classes.find(id.name);
-              if (it != registry->classes.end() && it->second.is_reference_type) {
-                TyName tn;
-                tn.name = id.name;
-                return type_name_to_cxx(tn);
-              }
+            if (class_info_for_type_name(id.name)) {
+              TyName tn;
+              tn.name = id.name;
+              return type_name_to_cxx(tn);
             }
           }
           return expr_to_cxx(*n.rhs);
@@ -3095,13 +3218,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         auto rhs_type = [&]() {
           if (n.rhs->kind == Kind::Ident) {
             const auto& id = static_cast<const Ident&>(*n.rhs);
-            if (registry) {
-              auto it = registry->classes.find(id.name);
-              if (it != registry->classes.end() && it->second.is_reference_type) {
-                TyName tn;
-                tn.name = id.name;
-                return type_name_to_cxx(tn);
-              }
+            if (class_info_for_type_name(id.name)) {
+              TyName tn;
+              tn.name = id.name;
+              return type_name_to_cxx(tn);
             }
           }
           return expr_to_cxx(*n.rhs);
@@ -3296,12 +3416,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           shadowed = true;
         if (!shadowed) {
           for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
-            const std::string& cls = it->class_name;
-            if (!cls.empty() &&
-                (registry->lookup_class_method(cls, base_name) ||
-                 registry->lookup_class_field(cls, base_name) ||
-                 registry->lookup_class_property(cls, base_name) ||
-                 registry->lookup_record_field(cls, base_name))) {
+            if (with_bind_has_visible_member(*it, base_name)) {
               shadowed = true; break;
             }
           }
@@ -3380,7 +3495,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // Otherwise: object/record field/method access. Emit `base.name`
       // and auto-call if the deduced class has `name` as a
       // parameterless method.
+      bool saved_callee = is_callee_context_;
+      is_callee_context_ = false;
       std::string base_cxx = expr_to_cxx(*m.base);
+      is_callee_context_ = saved_callee;
       if (!is_callee_context_) {
         if (auto free_call = maybe_lower_class_free_member(*m.base, m.name)) {
           return *free_call;
@@ -3573,6 +3691,20 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (peeled && expr_is_untyped_storage_ref(*c.args[0])) {
             return "::rt::p_reinterpret_ref<" + primitive_type_cxx(n) +
                    ">(" + expr_to_cxx(*peeled) + ")";
+          }
+          if (peeled && expr_is_storage_lvalue(*c.args[0])) {
+            const TypeExpr* source_ty = canonicalize_type(deduce_type(*peeled));
+            if (source_ty &&
+                (source_ty->kind == Kind::TyArray ||
+                 source_ty->kind == Kind::TyRecord ||
+                 source_ty->kind == Kind::TyObject ||
+                 source_ty->kind == Kind::TyProcedural)) {
+              // Aggregate-to-primitive typecasts in Pascal are byte
+              // reinterpretations, not numeric conversions. `double(MathInf)`
+              // in the compiler sources depends on preserving the byte pattern.
+              return "::rt::p_reinterpret_copy<" + primitive_type_cxx(n) +
+                     ">(" + expr_to_cxx(*peeled) + ")";
+            }
           }
           if (n == "char") {
             return "::rt::p_chr(" + arg0() + ")";
@@ -4810,10 +4942,9 @@ std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
         pt = type_to_cxx(*p.type);
       }
       if (p.mode == Param::Var || p.mode == Param::Out) name_prefix = "&";
-      else if (p.mode == Param::Const) {
-        if (const_param_needs_mutable_ref(p.type.get())) name_prefix = "&";
-        else name_prefix = "const &";
-      }
+      else if (p.mode == Param::Const &&
+               const_param_needs_mutable_ref(p.type.get()))
+        name_prefix = "&";
     }
     for (const auto& n : p.names) {
       if (!first) out += ", ";
@@ -4872,10 +5003,9 @@ void Emitter::emit_method_pointer_thunk(const std::string& owner_name,
       // even for `const`, so method-pointer thunks must keep the raw
       // `void*` ABI instead of inventing `const void*&`.
       if (par.mode == Param::Var || par.mode == Param::Out) pt += "&";
-      else if (par.mode == Param::Const) {
-        if (const_param_needs_mutable_ref(par.type.get())) pt += "&";
-        else pt = std::string("const ") + pt + "&";
-      }
+      else if (par.mode == Param::Const &&
+               const_param_needs_mutable_ref(par.type.get()))
+        pt += "&";
     }
     if (par.names.empty()) {
       append_arg(pt, "tp2cc_arg" + std::to_string(++unnamed_index));
@@ -5438,6 +5568,7 @@ void Emitter::emit_stmt(const Stmt& s) {
       for (size_t i = 0; i < w.exprs.size(); ++i) {
         const Expr& with_expr = *w.exprs[i];
         const TypeExpr* ty = deduce_type(with_expr);
+        if (ty) ty = canonicalize_type(ty);
         std::string nm = "tp2cc_with_" + std::to_string(with_stack.size());
         std::string init = expr_to_cxx(with_expr);
         bool bind_by_ref = expr_is_storage_lvalue(with_expr);
@@ -5583,6 +5714,7 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
       for (const auto& p : npd.params) nf.param_count += p.names.size();
       nf.is_function = (npd.pkind == ProcKind::Function);
       nf.return_type = npd.return_type.get();
+      nf.decl = &npd;
       local_nested_fns[npd.name] = nf;
     }
   }
@@ -5646,10 +5778,9 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
       } else {
         pt = type_to_cxx(*p.type);
         if (p.mode == Param::Var || p.mode == Param::Out) pt += "&";
-        else if (p.mode == Param::Const) {
-          if (const_param_needs_mutable_ref(p.type.get())) pt += "&";
-          else pt = std::string("const ") + pt + "&";
-        }
+        else if (p.mode == Param::Const &&
+                 const_param_needs_mutable_ref(p.type.get()))
+          pt += "&";
       }
       for (const auto& n : p.names) {
         (void)n;
@@ -5740,6 +5871,7 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
       for (const auto& p : npd.params) nf.param_count += p.names.size();
       nf.is_function = (npd.pkind == ProcKind::Function);
       nf.return_type = npd.return_type.get();
+      nf.decl = &npd;
       local_nested_fns[npd.name] = nf;
     }
   }

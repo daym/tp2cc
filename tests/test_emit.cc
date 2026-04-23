@@ -281,6 +281,21 @@ void test_ansistring_builtin_maps_to_runtime_type() {
   CHECK(!contains(out.header, "p_ansistring"));
 }
 
+void test_widechar_builtin_maps_to_16bit_ordinal() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type twide = widechar;\n"
+      "var w : widechar;\n"
+      "procedure take(x : widechar);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "using p_twide = uint16_t;"));
+  CHECK(contains(out.header, "extern uint16_t p_w;"));
+  CHECK(contains(out.header, "void p_take(uint16_t p_x);"));
+  CHECK(!contains(out.header, "p_widechar"));
+}
+
 void test_set_type_alias() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -318,6 +333,36 @@ void test_out_parameter_emits_like_var_reference() {
   CHECK(contains(out.header, "void p_fill(int32_t &p_x);"));
   CHECK(contains(out.impl, "void p_fill(int32_t &p_x) {"));
   CHECK(contains(out.impl, "p_x = 1;"));
+}
+
+void test_const_pointer_parameter_stays_value_abi() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure take(const p : pointer);\n"
+      "function pick : pointer;\n"
+      "implementation\n"
+      "procedure take(const p : pointer);\n"
+      "begin\n"
+      "end;\n"
+      "function pick : pointer;\n"
+      "begin\n"
+      "  pick := nil;\n"
+      "end;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  take(pick);\n"
+      "end;\n"
+      "end.\n");
+  // Pascal `const p: pointer` is a read-only pointer value, not an alias
+  // to the caller's pointer slot. Emit a plain value parameter so calls may
+  // pass function results, fields, and other non-lvalues.
+  CHECK(contains(out.header, "void p_take(void* p_p);"));
+  CHECK(contains(out.impl, "void p_take(void* p_p) {"));
+  CHECK(contains(out.impl, "p_take(p_pick());"));
+  CHECK(!contains(out.header, "const void* &p_p"));
+  CHECK(!contains(out.header, "const void*& p_p"));
+  CHECK(!contains(out.impl, "p_take(const "));
 }
 
 void test_proc_signature_in_header() {
@@ -754,6 +799,27 @@ void test_inc_primitive_cast_reinterprets_storage() {
   CHECK(contains(out.impl,
                  "::rt::p_inc(::rt::p_reinterpret_storage_ref<int32_t>(p_p))"));
   CHECK(!contains(out.impl, "p_p = ((int32_t)(p_p) + 1)"));
+}
+
+void test_aggregate_to_primitive_cast_reinterprets_bytes() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tdoublearray = array[0..7] of byte;\n"
+      "const\n"
+      "  bits : tdoublearray = (0,0,0,0,0,0,240,127);\n"
+      "procedure fetch;\n"
+      "implementation\n"
+      "procedure fetch;\n"
+      "var\n"
+      "  d : double;\n"
+      "begin\n"
+      "  d := double(bits);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_d = ::rt::p_reinterpret_copy<double>(p_bits);"));
+  CHECK(!contains(out.impl, "p_d = ((double)(p_bits));"));
 }
 
 void test_absolute_pointer_target_reinterprets_pointee_storage() {
@@ -1268,9 +1334,9 @@ void test_open_array_method_signature_keeps_wrapper_type() {
   // `OpenArray<T>` for a parameter, it must keep that exact C++ carrier
   // type instead of falling back to the generic `array of T -> T*` path.
   CHECK(contains(out.header,
-                 "::rt::ShortString<> p_get(int32_t p_nr, const ::rt::OpenArray<::rt::ShortString<>>& p_args);"));
+                 "::rt::ShortString<> p_get(int32_t p_nr, ::rt::OpenArray<::rt::ShortString<>> p_args);"));
   CHECK(contains(out.header,
-                 "static ::rt::ShortString<> tp2cc_methodptr_get_value_name_integer_const_openarr_string_ret_string(void* tp2cc_self, int32_t p_nr, const ::rt::OpenArray<::rt::ShortString<>>& p_args)"));
+                 "static ::rt::ShortString<> tp2cc_methodptr_get_value_name_integer_const_openarr_string_ret_string(void* tp2cc_self, int32_t p_nr, ::rt::OpenArray<::rt::ShortString<>> p_args)"));
 }
 
 void test_open_array_procvar_signature_keeps_wrapper_type() {
@@ -1282,7 +1348,7 @@ void test_open_array_procvar_signature_keeps_wrapper_type() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "using p_tcb = void (*)(const ::rt::OpenArray<::rt::ShortString<>>&);"));
+                 "using p_tcb = void (*)(::rt::OpenArray<::rt::ShortString<>>);"));
 }
 
 void test_open_array_call_uses_owning_temporary_wrapper() {
@@ -1737,6 +1803,53 @@ void test_var_arg_class_cast_reinterprets_storage_slot() {
                  "p_take(::rt::p_reinterpret_storage_ref<p_tsym*>(p_l));"));
 }
 
+void test_var_arg_derived_pointer_slot_reinterprets_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "  end;\n"
+      "procedure take(var b : tbase);\n"
+      "procedure demo(c : tchild);\n"
+      "implementation\n"
+      "procedure take(var b : tbase);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo(c : tchild);\n"
+      "begin\n"
+      "  take(c);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_take(::rt::p_reinterpret_storage_ref<p_tbase*>(p_c));"));
+}
+
+void test_nested_proc_var_arg_keeps_storage_semantics() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsym = class\n"
+      "  end;\n"
+      "  tlabel = class(tsym)\n"
+      "  end;\n"
+      "procedure demo(l : tlabel);\n"
+      "implementation\n"
+      "procedure demo(l : tlabel);\n"
+      "  procedure touch(var s : tsym);\n"
+      "  begin\n"
+      "  end;\n"
+      "begin\n"
+      "  touch(tsym(l));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_touch(::rt::p_reinterpret_storage_ref<p_tsym*>(p_l));"));
+}
+
 void test_parameterless_method_result_keeps_arrow_member_access() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1760,6 +1873,35 @@ void test_parameterless_method_result_keeps_arrow_member_access() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "p_result = p_ps->p_first_procdef()->p_mangledname;"));
+}
+
+void test_parameterless_method_result_autocalls_in_outer_callee_context() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tprocdef = class\n"
+      "    function flag(x : integer) : boolean;\n"
+      "  end;\n"
+      "  tprocsym = class\n"
+      "    function first_procdef : tprocdef;\n"
+      "  end;\n"
+      "function ok(ps : tprocsym) : boolean;\n"
+      "implementation\n"
+      "function tprocdef.flag(x : integer) : boolean;\n"
+      "begin\n"
+      "  flag := false;\n"
+      "end;\n"
+      "function tprocsym.first_procdef : tprocdef;\n"
+      "begin\n"
+      "  first_procdef := nil;\n"
+      "end;\n"
+      "function ok(ps : tprocsym) : boolean;\n"
+      "begin\n"
+      "  ok := ps.first_procdef.flag(1);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = p_ps->p_first_procdef()->p_flag(1);"));
 }
 
 void test_with_parameterless_method_result_keeps_arrow_member_access() {
@@ -1787,6 +1929,82 @@ void test_with_parameterless_method_result_keeps_arrow_member_access() {
       "end.\n");
   CHECK(contains(out.impl,
                  "p_result = tp2cc_with_0->p_first_procdef()->p_mangledname;"));
+}
+
+void test_pointer_indexed_class_field_chain_keeps_arrow_access() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tmodule = class\n"
+      "    modulename : string;\n"
+      "  end;\n"
+      "  tderefmaprec = record\n"
+      "    u : tmodule;\n"
+      "  end;\n"
+      "  pderefmap = ^tderefmaprec;\n"
+      "function getname(m : pderefmap) : string;\n"
+      "implementation\n"
+      "function getname(m : pderefmap) : string;\n"
+      "begin\n"
+      "  getname := m[0].u.modulename;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = p_m[0].p_u->p_modulename;"));
+}
+
+void test_as_cast_member_chain_keeps_arrow_access() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tinlininginfo = class\n"
+      "    flags : integer;\n"
+      "  end;\n"
+      "  tabstractprocdef = class\n"
+      "  end;\n"
+      "  tprocdef = class(tabstractprocdef)\n"
+      "    inlininginfo : tinlininginfo;\n"
+      "  end;\n"
+      "function getflags(pd : tabstractprocdef) : integer;\n"
+      "implementation\n"
+      "function getflags(pd : tabstractprocdef) : integer;\n"
+      "begin\n"
+      "  getflags := (pd as tprocdef).inlininginfo.flags;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_result = dynamic_cast<p_tprocdef*>(p_pd)->p_inlininginfo->p_flags;"));
+}
+
+void test_with_local_record_pointer_uses_bound_storage_for_fields() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "type\n"
+      "  pdata = ^tdata;\n"
+      "  tdata = record\n"
+      "    x, y : integer;\n"
+      "  end;\n"
+      "var\n"
+      "  d : pdata;\n"
+      "begin\n"
+      "  new(d);\n"
+      "  with d^ do\n"
+      "  begin\n"
+      "    x := 1;\n"
+      "    y := x;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "auto& tp2cc_with_0 = ::rt::p_deref(p_d);"));
+  CHECK(contains(out.impl, "tp2cc_with_0.p_x = 1;"));
+  CHECK(contains(out.impl, "tp2cc_with_0.p_y = tp2cc_with_0.p_x;"));
+  CHECK(!contains(out.impl, "\n        p_x = 1;"));
+  CHECK(!contains(out.impl, "\n        p_y = p_x;"));
 }
 
 void test_type_order_sees_method_signature_dependencies() {
@@ -1908,9 +2126,11 @@ int main() {
   RUN_TEST(test_low_high_use_resolved_pascal_type);
   RUN_TEST(test_named_type_alias);
   RUN_TEST(test_ansistring_builtin_maps_to_runtime_type);
+  RUN_TEST(test_widechar_builtin_maps_to_16bit_ordinal);
   RUN_TEST(test_set_type_alias);
   RUN_TEST(test_var_extern_in_header_and_def_in_impl);
   RUN_TEST(test_out_parameter_emits_like_var_reference);
+  RUN_TEST(test_const_pointer_parameter_stays_value_abi);
   RUN_TEST(test_proc_signature_in_header);
   RUN_TEST(test_typed_array_const);
   RUN_TEST(test_singleton_typed_array_const);
@@ -1937,6 +2157,7 @@ int main() {
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
   RUN_TEST(test_primitive_cast_read_reinterprets_storage);
   RUN_TEST(test_inc_primitive_cast_reinterprets_storage);
+  RUN_TEST(test_aggregate_to_primitive_cast_reinterprets_bytes);
   RUN_TEST(test_absolute_pointer_target_reinterprets_pointee_storage);
   RUN_TEST(test_absolute_pointer_alias_reinterprets_pointer_storage);
   RUN_TEST(test_absolute_typed_const_alias_reinterprets_same_storage);
@@ -1981,8 +2202,14 @@ int main() {
   RUN_TEST(test_with_cast_binds_pointer_rvalue_by_value);
   RUN_TEST(test_statement_context_member_destroy_autocalls);
   RUN_TEST(test_var_arg_class_cast_reinterprets_storage_slot);
+  RUN_TEST(test_var_arg_derived_pointer_slot_reinterprets_storage);
+  RUN_TEST(test_nested_proc_var_arg_keeps_storage_semantics);
   RUN_TEST(test_parameterless_method_result_keeps_arrow_member_access);
+  RUN_TEST(test_parameterless_method_result_autocalls_in_outer_callee_context);
   RUN_TEST(test_with_parameterless_method_result_keeps_arrow_member_access);
+  RUN_TEST(test_pointer_indexed_class_field_chain_keeps_arrow_access);
+  RUN_TEST(test_as_cast_member_chain_keeps_arrow_access);
+  RUN_TEST(test_with_local_record_pointer_uses_bound_storage_for_fields);
   RUN_TEST(test_type_order_sees_method_signature_dependencies);
   RUN_TEST(test_reference_class_typecast_is_pointer_cast);
   RUN_TEST(test_reference_class_cast_keeps_pointer_member_access);
