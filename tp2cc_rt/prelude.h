@@ -100,6 +100,13 @@ inline Fn p_funptr_from_bits(void* bits) {
 template <typename Signature>
 struct MethodPtr;
 
+// Raw `{Code,Data}` storage used by Pascal code that reinterprets method
+// pointers as plain records instead of invoking them through `... of object`.
+struct p_tmethod {
+  void* p_code = nullptr;
+  void* p_data = nullptr;
+};
+
 template <typename Ret, typename... Args>
 struct MethodPtr<Ret(Args...)> {
   using Thunk = Ret (*)(void*, Args...);
@@ -225,6 +232,8 @@ inline void p_set8087cw(uint16_t cw) {
   std::abort();
 #endif
 }
+
+using p_ppointer = void**;
 
 // The translated `sysutils` stub aliases into `rt::`, and compiler units
 // declare exception subclasses against that alias. Keep a minimal base

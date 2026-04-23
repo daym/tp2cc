@@ -346,6 +346,27 @@ void test_method_ptr_storage_matches_two_pointer_slots() {
   CHECK_EQ(counter.value, 9);
 }
 
+void test_tmethod_storage_matches_two_pointer_slots() {
+  MethodPtrCounter counter;
+  MethodPtr<void(int32_t)> cb{};
+  auto& raw = p_reinterpret_storage_ref<p_tmethod>(cb);
+
+  raw.p_code = p_method_code<&method_ptr_add>();
+  raw.p_data = &counter;
+
+  CHECK(cb != nullptr);
+  cb(5);
+  CHECK_EQ(counter.value, 5);
+}
+
+void test_ppointer_alias_updates_pointer_slot() {
+  void* slot = nullptr;
+  int value = 0;
+
+  p_deref(p_ppointer(&slot)) = &value;
+  CHECK(slot == static_cast<void*>(&value));
+}
+
 void test_class_free_accepts_null_pointer() {
   DestroyProbe* p = nullptr;
 
@@ -578,6 +599,8 @@ int main() {
   RUN_TEST(test_explicit_set_cast_copies_bits);
   RUN_TEST(test_method_ptr_calls_bound_thunk);
   RUN_TEST(test_method_ptr_storage_matches_two_pointer_slots);
+  RUN_TEST(test_tmethod_storage_matches_two_pointer_slots);
+  RUN_TEST(test_ppointer_alias_updates_pointer_slot);
   RUN_TEST(test_class_free_accepts_null_pointer);
   RUN_TEST(test_class_free_dispatches_virtual_destroy);
   RUN_TEST(test_class_free_dispatches_virtual_freeinstance);
