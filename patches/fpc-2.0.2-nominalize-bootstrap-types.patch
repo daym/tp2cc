@@ -1,0 +1,145 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Give bootstrap-only helper types explicit names
+License: expat
+
+The compiler sources lean on a few anonymous enums, record types, and
+array-index declarations that are legal in FPC but awkward for the
+bootstrap translator to lower directly.  These changes keep the same
+types, but give them explicit names or ranges so the generated C++ sees
+the same structure more directly.
+
+--- a/compiler/i386/daopt386.pas
++++ b/compiler/i386/daopt386.pas
+@@ -79,7 +79,7 @@
+ {the possible states of a flag}
+   TFlagContents = (F_Unknown, F_notSet, F_Set);
+ 
+-  TContent = Packed Record
++  TContent = Record
+       {start and end of block instructions that defines the
+        content of this register.}
+                StartMod: tai;
+--- a/compiler/i386/ra386int.pas
++++ b/compiler/i386/ra386int.pas
+@@ -118,7 +118,7 @@
+         'LOW','OFFSET','SIZEOF','SEG','TYPE','PTR','MOD','SHL','SHR','NOT','AND',
+         'OR','XOR');
+ 
+-      token2str : array[tasmtoken] of string[10] = (
++      token2str : array[AS_NONE..AS_XOR] of string[10] = (
+         '','Label','LLabel','String','Integer',
+         ',','[',']','(',
+         ')',':','.','+','-','*',
+--- a/compiler/symdef.pas
++++ b/compiler/symdef.pas
+@@ -5141,6 +5141,7 @@
+       var
+          implintfcount : longint;
+          i : longint;
++         intfderef : tderef;
+       begin
+          inherited ppuwritedef(ppufile);
+          ppufile.putbyte(byte(objecttype));
+@@ -5164,7 +5165,8 @@
+               ppufile.putlongint(implintfcount);
+               for i:=1 to implintfcount do
+                 begin
+-                   ppufile.putderef(implementedinterfaces.interfacesderef(i));
++                   intfderef:=implementedinterfaces.interfacesderef(i);
++                   ppufile.putderef(intfderef);
+                    ppufile.putlongint(implementedinterfaces.ioffsets(i));
+                 end;
+            end;
+@@ -6067,14 +6069,8 @@
+                  { interface: write flags, iid and iidstr }
+                  begin
+                    rttiList.concat(Tai_const.Create_32bit(
+-                     { ugly, but working }
+-                     longint([
+-                       TCompilerIntfFlag(ord(ifHasGuid)*ord(assigned(iidguid))),
+-                       TCompilerIntfFlag(ord(ifHasStrGUID)*ord(assigned(iidstr)))
+-                     ])
+-                     {
+-                     ifDispInterface,
+-                     ifDispatch, }
++                     ord(ifHasGuid)*ord(assigned(iidguid))+
++                     ord(ifHasStrGUID)*ord(assigned(iidstr))
+                      ));
+ {$ifdef cpurequiresproperalignment}
+                    rttilist.concat(Tai_align.Create(sizeof(TConstPtrUInt)));
+--- a/compiler/systems/t_linux.pas
++++ b/compiler/systems/t_linux.pas
+@@ -31,6 +31,8 @@
+     import,export,link;
+ 
+   type
++    tlibctype = (libc5,glibc2,glibc21,uclibc);
++
+     timportliblinux=class(timportlib)
+       procedure preparelib(const s:string);override;
+       procedure importprocedure(aprocdef:tprocdef;const module:string;index:longint;const name:string);override;
+@@ -47,7 +49,7 @@
+ 
+     tlinkerlinux=class(texternallinker)
+     private
+-      libctype:(libc5,glibc2,glibc21,uclibc);
++      libctype:tlibctype;
+       Function  WriteResponseFile(isdll:boolean) : Boolean;
+     public
+       constructor Create;override;
+--- a/compiler/systems/t_wdosx.pas
++++ b/compiler/systems/t_wdosx.pas
+@@ -37,7 +37,8 @@
+     timportlibwdosx=class(timportlibwin32)
+     end;
+ 
+-    texportlibwdosx=texportlibwin32;
++    texportlibwdosx=class(texportlibwin32)
++    end;
+ 
+     tlinkerwdosx=class(tlinkerwin32)
+     public
+--- a/compiler/systems/t_win32.pas
++++ b/compiler/systems/t_win32.pas
+@@ -1482,6 +1482,19 @@
+  procedure ProcessEdata;
+   type
+    a8=array[0..7]of char;
++   TExportDir=packed record
++    flag,
++    stamp:cardinal;
++    Major,
++    Minor:word;
++    Name,
++    Base,
++    NumFuncs,
++    NumNames,
++    AddrFuncs,
++    AddrNames,
++    AddrOrds:cardinal;
++   end;
+   function GetSectionName(rva:cardinal;var Flags:cardinal):a8;
+    var
+     i:cardinal;
+@@ -1507,19 +1520,7 @@
+    ulongval,procEntry:cardinal;
+    Ordinal:word;
+    isData:longbool;
+-   ExpDir:packed record
+-    flag,
+-    stamp:cardinal;
+-    Major,
+-    Minor:word;
+-    Name,
+-    Base,
+-    NumFuncs,
+-    NumNames,
+-    AddrFuncs,
+-    AddrNames,
+-    AddrOrds:cardinal;
+-   end;
++   ExpDir:TExportDir;
+   begin
+    with Obj do
+     begin
