@@ -9,6 +9,11 @@
 CXX      ?= g++
 CXXFLAGS ?= -std=c++20 -O0 -g -Wall -Wextra -Wpedantic -Wno-unused-parameter \
             -fsanitize=address,undefined -fno-omit-frame-pointer
+CFLAGS   ?= -std=gnu11 -O0 -g -Wall -Wextra -Wpedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer
+ifeq ($(origin CC), default)
+CC = gcc
+endif
 PREFIX   ?= /usr
 INCLUDES := -Isrc
 
@@ -18,6 +23,7 @@ BINDIR   := $(BUILD)/bin
 
 LIB_SRCS := src/diag.cc src/source.cc src/lexer.cc src/parser.cc src/units.cc src/typereg.cc src/emit.cc
 LIB_OBJS := $(patsubst src/%.cc,$(OBJDIR)/%.o,$(LIB_SRCS))
+RUNTIME_OBJS := $(OBJDIR)/tp2cc_rt/fenv_shim.o
 
 TEST_BINS := $(BINDIR)/test_lexer $(BINDIR)/test_parser $(BINDIR)/test_units $(BINDIR)/test_emit $(BINDIR)/test_runtime
 
@@ -36,6 +42,10 @@ $(OBJDIR)/%.o: src/%.cc $(ALL_HEADERS)
 $(OBJDIR)/tests/%.o: tests/%.cc $(ALL_HEADERS)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -Itests -c $< -o $@
+
+$(OBJDIR)/tp2cc_rt/%.o: tp2cc_rt/%.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BINDIR)/tp2cc: $(LIB_OBJS) $(OBJDIR)/main.o
 	@mkdir -p $(@D)
@@ -57,9 +67,9 @@ $(BINDIR)/test_emit: $(LIB_OBJS) $(OBJDIR)/tests/test_emit.o
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $^ -o $@
 
-$(BINDIR)/test_runtime: $(OBJDIR)/tests/test_runtime.o
+$(BINDIR)/test_runtime: $(OBJDIR)/tests/test_runtime.o $(RUNTIME_OBJS)
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $^ -o $@
+	$(CXX) $(CXXFLAGS) $^ -lm -o $@
 
 check: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do \
@@ -79,3 +89,4 @@ install: all
 	install -m 755 -d $(DESTDIR)$(PREFIX)/include/tp2cc_rt
 	install -m 755 $(BINDIR)/tp2cc $(DESTDIR)$(PREFIX)/bin/tp2cc
 	install -m 644 tp2cc_rt/prelude.h $(DESTDIR)$(PREFIX)/include/tp2cc_rt/prelude.h
+	install -m 644 tp2cc_rt/fenv_shim.c $(DESTDIR)$(PREFIX)/include/tp2cc_rt/fenv_shim.c

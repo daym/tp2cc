@@ -18,13 +18,16 @@ ROOT=$(pwd)
 
 JOBS="${JOBS:-8}"
 CXX="${CXX:-g++}"
+CC="${CC:-gcc}"
 SOURCE_DIR="${FPC2_SRC:-${FPC200_SRC:-$ROOT/../fpc-2/src}}"
 
 # Keep the translated compiler under the same instrumentation as the older
 # bootstrap scripts so runtime failures show up as concrete UB/safety reports.
 SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer}"
 CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -fms-extensions -fpermissive -Wno-narrowing -Wno-microsoft-anon-tag -Wno-permissive $SAN"
+CFLAGS="-std=gnu11 -O0 -g -pipe $SAN"
 export CXXFLAGS
+export CFLAGS
 
 # FPC frees most global state only at process exit. LSan then turns a normal
 # compile into a nonzero exit status, which confuses the stage2/stage3 driver.
@@ -40,6 +43,7 @@ STAGE1_LOGDIR="$BOOT_ROOT/compile-logs-stage1"
 ENTRY_FILE="$SOURCE_DIR/compiler/pp.pas"
 MSG_FILE="$SOURCE_DIR/compiler/msg/errore.msg"
 STARTUP_AS="$CLEAN_SRC/rtl/linux/i386/prt0.as"
+RUNTIME_SHIM="$ROOT/tp2cc_rt/fenv_shim.c"
 
 compiler_dir_flags() {
   printf '%s ' "-Fu$CLEAN_SRC/compiler" "-Fi$CLEAN_SRC/compiler"
@@ -142,7 +146,8 @@ build_stage1() {
   fi
   (
     cd "$STAGE1_DIR"
-    "$CXX" -O0 -g3 $SAN p_*.o -o pp
+    "$CC" $CFLAGS -c "$RUNTIME_SHIM" -o tp2cc_fenv_shim.o
+    "$CXX" -O0 -g3 $SAN p_*.o tp2cc_fenv_shim.o -lm -o pp
   )
 }
 
@@ -193,6 +198,11 @@ fi
 
 if [ ! -f "$MSG_FILE" ]; then
   echo "error: message file not found: $MSG_FILE" >&2
+  exit 1
+fi
+
+if [ ! -f "$RUNTIME_SHIM" ]; then
+  echo "error: runtime shim not found: $RUNTIME_SHIM" >&2
   exit 1
 fi
 

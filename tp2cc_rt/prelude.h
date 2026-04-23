@@ -212,51 +212,21 @@ inline void p_assert(bool ok, const ShortString<N>&) {
   if (!ok) std::abort();
 }
 
-// Keep the raw control-word access private to the runtime. Pascal code calls
-// the higher-level `GetExceptionMask` / `SetExceptionMask` helpers below.
-inline uint16_t tp2cc_get_x87_control_word() {
-#if defined(__i386__) || defined(__x86_64__)
-  uint16_t cw = 0;
-  asm volatile("fnstcw %0" : "=m"(cw));
-  return cw;
-#else
-  std::abort();
-#endif
-}
-
-inline void tp2cc_set_x87_control_word(uint16_t cw) {
-#if defined(__i386__) || defined(__x86_64__)
-  asm volatile("fnclex\n\tfldcw %0" : : "m"(cw));
-#else
-  (void)cw;
-  std::abort();
-#endif
-}
-
-inline uint32_t tp2cc_get_mxcsr() {
-#if defined(__x86_64__)
-  uint32_t csr = 0;
-  asm volatile("stmxcsr %0" : "=m"(csr));
-  return csr;
-#else
-  std::abort();
-#endif
-}
-
-inline void tp2cc_set_mxcsr(uint32_t csr) {
-#if defined(__x86_64__)
-  asm volatile("ldmxcsr %0" : : "m"(csr));
-#else
-  (void)csr;
-  std::abort();
-#endif
-}
+// GNU `feenableexcept` / `fedisableexcept` are public in glibc's C headers,
+// but this toolchain's libstdc++ `<fenv.h>` wrapper does not surface them to
+// C++ consistently. Keep the backend in a tiny C translation unit and expose
+// just the Pascal-level mask bits here.
+extern "C" uint8_t tp2cc_get_exception_mask_bits(void);
+extern "C" uint8_t tp2cc_set_exception_mask_bits(uint8_t bits);
+extern "C" uint16_t tp2cc_get_8087_control_word(void);
+extern "C" void tp2cc_set_8087_control_word(uint16_t cw);
 
 // Keep the old Pascal-visible low-level control-word hooks available for the
-// bootstrap compiler sources. Higher-level code should prefer
-// `GetExceptionMask` / `SetExceptionMask`.
-inline uint16_t p_get8087cw() { return tp2cc_get_x87_control_word(); }
-inline void p_set8087cw(uint16_t cw) { tp2cc_set_x87_control_word(cw); }
+// bootstrap compiler sources. That compatibility path only carries the six
+// exception-mask bits that `globals.pas` still edits; higher-level code
+// should prefer `GetExceptionMask` / `SetExceptionMask`.
+inline uint16_t p_get8087cw() { return tp2cc_get_8087_control_word(); }
+inline void p_set8087cw(uint16_t cw) { tp2cc_set_8087_control_word(cw); }
 
 using p_ppointer = void**;
 
@@ -1622,42 +1592,23 @@ Set<Elem> set_of(std::initializer_list<Elem> xs) {
   return Set<Elem>::from_list(xs);
 }
 
-// Pascal `Math.GetExceptionMask` / `SetExceptionMask` treat
-// `TFPUExceptionMask = set of (exInvalidOp .. exPrecision)` as the six low
-// x87 mask bits. Keep that API in the runtime so the translated compiler does
-// not need the full `Math` unit just to mask FP traps before constant folding.
+// Pascal `Math.GetExceptionMask` / `SetExceptionMask` use the same six-bit
+// exception-mask layout across targets. Keep that API in the runtime so the
+// translated compiler does not need the full `Math` unit just to mask FP
+// traps before constant folding.
 template <typename Elem>
 inline Set<Elem> p_getexceptionmask() {
-#if defined(__i386__) || defined(__x86_64__)
   Set<Elem> mask{};
-  mask.bits[0] = static_cast<unsigned char>(tp2cc_get_x87_control_word() & 0x3Fu);
+  mask.bits[0] = static_cast<unsigned char>(tp2cc_get_exception_mask_bits() & 0x3Fu);
   return mask;
-#else
-  std::abort();
-#endif
 }
 
 template <typename Elem>
 inline Set<Elem> p_setexceptionmask(Set<Elem> mask) {
-#if defined(__i386__) || defined(__x86_64__)
-  const uint16_t ctl_word = tp2cc_get_x87_control_word();
   Set<Elem> previous{};
-  const uint16_t mask_bits = static_cast<uint16_t>(mask.bits[0] & 0x3Fu);
-  previous.bits[0] = static_cast<unsigned char>(ctl_word & 0x3Fu);
-  tp2cc_set_x87_control_word(static_cast<uint16_t>((ctl_word & 0xFFC0u) | mask_bits));
-#if defined(__x86_64__)
-  // x86_64 also carries the exception masks in MXCSR bits 7..12. Keep the
-  // SSE view in sync with the x87 control word the same way Pascal's math
-  // helper does.
-  uint32_t mxcsr = tp2cc_get_mxcsr();
-  mxcsr = (mxcsr & ~0x00001F80u) | (static_cast<uint32_t>(mask_bits) << 7);
-  tp2cc_set_mxcsr(mxcsr);
-#endif
+  previous.bits[0] = static_cast<unsigned char>(
+      tp2cc_set_exception_mask_bits(static_cast<uint8_t>(mask.bits[0] & 0x3Fu)));
   return previous;
-#else
-  (void)mask;
-  std::abort();
-#endif
 }
 
 template <typename DstSet, typename SrcElem>

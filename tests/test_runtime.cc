@@ -129,7 +129,7 @@ void test_getmem_typed_pointer_keeps_requested_prefix_size() {
 }
 
 void test_exception_mask_roundtrips() {
-#if defined(__i386__) || defined(__x86_64__)
+#if defined(__linux__)
   enum TestFPUException : uint8_t {
     ExInvalidOp,
     ExDenormalized,
@@ -148,6 +148,20 @@ void test_exception_mask_roundtrips() {
 
   CHECK_EQ(p_setexceptionmask(original), masked);
   CHECK_EQ(p_getexceptionmask<TestFPUException>(), original);
+#endif
+}
+
+void test_8087cw_compatibility_tracks_mask_bits() {
+#if defined(__linux__)
+  const uint16_t original = p_get8087cw();
+  const uint16_t updated = static_cast<uint16_t>((original & 0xFFC0u) | 0x25u);
+
+  p_set8087cw(updated);
+  CHECK_EQ(static_cast<uint8_t>(p_get8087cw() & 0x3Fu), 0x25u);
+
+  p_set8087cw(original);
+  CHECK_EQ(static_cast<uint8_t>(p_get8087cw() & 0x3Fu),
+           static_cast<uint8_t>(original & 0x3Fu));
 #endif
 }
 
@@ -732,6 +746,7 @@ int main() {
   RUN_TEST(test_bootstrap_pointer_sized_aliases_are_32bit);
   RUN_TEST(test_getmem_typed_pointer_keeps_requested_prefix_size);
   RUN_TEST(test_exception_mask_roundtrips);
+  RUN_TEST(test_8087cw_compatibility_tracks_mask_bits);
   RUN_TEST(test_ansistring_copy_on_write_preserves_original);
   RUN_TEST(test_ansistring_storage_slot_holds_payload_pointer);
   RUN_TEST(test_new_and_dispose_share_malloc_storage_family);
