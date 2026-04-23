@@ -66,6 +66,27 @@ std::string ascii_lower(std::string_view text) {
   return s;
 }
 
+// Some emit paths already know the exact C++ carrier type they need,
+// for example `OpenArray<T>` instead of the generic array-to-pointer
+// decay used elsewhere. In those cases we must only attach the name and
+// any `&` / `const &` declarator text here, not re-derive the type from
+// the Pascal AST and lose the chosen ABI.
+std::string attach_named_cxx_type(std::string_view ty, std::string_view name,
+                                  std::string_view name_prefix) {
+  if (name_prefix == "const &") {
+    std::string out = "const " + std::string(ty) + "&";
+    if (!name.empty()) out += " " + std::string(name);
+    return out;
+  }
+  if (name.empty()) {
+    return name_prefix.empty() ? std::string(ty)
+                               : std::string(ty) + " " +
+                                     std::string(name_prefix);
+  }
+  return std::string(ty) + " " + std::string(name_prefix) +
+         std::string(name);
+}
+
 constexpr const char* kUnitInitName = "tp2cc_unit_init";
 constexpr const char* kUnitFiniName = "tp2cc_unit_fini";
 constexpr const char* kPascalResultSlotName = "p_result";
@@ -567,6 +588,7 @@ struct Emitter {
   // Types -> C++ type string.
   std::string type_to_cxx(const TypeExpr& t);
   std::string type_name_to_cxx(const TyName& n);
+  std::string named_type_struct_cxx(std::string_view name);
   std::string array_type_to_cxx(const TyArray& a);
   const ast::TypeExpr* canonicalize_type(const ast::TypeExpr* t);
   bool enum_has_explicit_values(const TyEnum& e);
@@ -605,6 +627,8 @@ struct Emitter {
 
   // Small helpers.
   bool const_param_needs_mutable_ref(const ast::TypeExpr* t);
+  const ClassInfo* class_info_for_type_name(std::string_view name);
+  bool type_is_value_object_or_record(const ast::TypeExpr* t);
   std::string primitive_cast_lvalue_ref(const ast::Call& c);
   std::string param_list_to_cxx(const std::vector<Param>& params);
   void emit_method_pointer_thunk(const std::string& owner_name,
@@ -638,6 +662,10 @@ struct Emitter {
   bool expr_is_storage_lvalue(const ast::Expr& e);
   bool expr_is_untyped_storage_ref(const ast::Expr& e);
   bool expr_is_charish(const ast::Expr& e);
+  bool type_is_reference_class(const ast::TypeExpr* t);
+  bool expr_is_reference_class(const ast::Expr& e);
+  std::string member_access_op(const ast::TypeExpr* t);
+  std::string member_access_op(const ast::Expr& e);
   bool type_is_stringish(const ast::TypeExpr* t);
   bool type_is_pointerish(const ast::TypeExpr* t);
   bool type_is_open_array(const ast::TypeExpr* t);
@@ -673,6 +701,13 @@ struct Emitter {
                                    const PropertyInfo& prop,
                                    const std::vector<const ast::Expr*>& indices,
                                    const ast::Expr& value);
+  std::optional<std::string> maybe_lower_class_free_member(
+      const ast::Expr& base, std::string_view member_name);
+  std::optional<std::string> maybe_lower_class_constructor_call(
+      std::string_view class_name, std::string_view member_name,
+      const std::vector<const ast::Expr*>& args,
+      const std::vector<const ast::TypeExpr*>& param_types,
+      const std::vector<bool>& untyped_arg);
 
   // ---------------------------------------------------------------------
   // Pascal name resolution (one function, every emit path goes through
@@ -744,13 +779,41 @@ struct Emitter {
 
 std::string Emitter::type_name_to_cxx(const TyName& n) {
   if (is_primitive_type(n.name)) return primitive_type_cxx(n.name);
-  // Qualified name `unitname.Type` -> `p_unitname::p_type`
-  auto dot = n.name.find('.');
-  if (dot != std::string::npos) {
-    return mangle(std::string_view(n.name).substr(0, dot)) +
-           "::" + mangle(std::string_view(n.name).substr(dot + 1));
+  // Delphi/FPC `class` names denote references to heap objects, so
+  // plain uses of the type name lower to a pointer type. The raw struct
+  // spelling is kept separate in `named_type_struct_cxx()` for places
+  // like base-class lists and `TClass.Method`.
+  if (n.name == "tobject") return "::rt::p_tobject*";
+  if (registry) {
+    auto mark_if_class_ref = [&](std::string_view lookup_name,
+                                 std::string_view defining_unit) -> bool {
+      auto cit = registry->classes.find(std::string(lookup_name));
+      return cit != registry->classes.end() && cit->second.is_reference_type &&
+             (defining_unit.empty() || cit->second.defining_unit == defining_unit);
+    };
+    auto dot = n.name.find('.');
+    if (dot != std::string::npos) {
+      std::string_view unit = std::string_view(n.name).substr(0, dot);
+      std::string_view tail = std::string_view(n.name).substr(dot + 1);
+      if (mark_if_class_ref(tail, unit)) {
+        return named_type_struct_cxx(n.name) + "*";
+      }
+    } else if (mark_if_class_ref(n.name, {})) {
+      return named_type_struct_cxx(n.name) + "*";
+    }
   }
-  return mangle(n.name);
+  return named_type_struct_cxx(n.name);
+}
+
+std::string Emitter::named_type_struct_cxx(std::string_view name) {
+  if (name == "tobject") return "::rt::p_tobject";
+  // Qualified name `unitname.Type` -> `p_unitname::p_type`
+  auto dot = name.find('.');
+  if (dot != std::string_view::npos) {
+    return mangle(name.substr(0, dot)) +
+           "::" + mangle(name.substr(dot + 1));
+  }
+  return mangle(name);
 }
 
 const TypeExpr* Emitter::canonicalize_type(const TypeExpr* t) {
@@ -781,17 +844,50 @@ const TypeExpr* Emitter::canonicalize_type(const TypeExpr* t) {
 }
 
 bool Emitter::const_param_needs_mutable_ref(const TypeExpr* t) {
-  t = canonicalize_type(t);
-  if (t && t->kind == Kind::TyName && registry) {
-    const auto& name = static_cast<const TyName&>(*t).name;
-    if (registry->classes.count(name) || registry->records.count(name)) {
-      return true;
-    }
-  }
+  if (type_is_reference_class(t)) return false;
   // In old Turbo Pascal/FPC object-style code, `const` on records and
   // objects is mainly a calling-convention hint. Treating it as C++
   // deep immutability breaks method calls and container updates.
-  return t && (t->kind == Kind::TyRecord || t->kind == Kind::TyObject);
+  return type_is_value_object_or_record(t);
+}
+
+const ClassInfo* Emitter::class_info_for_type_name(std::string_view name) {
+  if (!registry) return nullptr;
+  std::string low = ascii_lower(std::string(name));
+  auto dot = low.find('.');
+  if (dot == std::string::npos) {
+    auto it = registry->classes.find(low);
+    return it == registry->classes.end() ? nullptr : &it->second;
+  }
+
+  // TypeRegistry indexes classes by unqualified Pascal name. Qualified
+  // references like `unitname.tfoo` therefore need a second defining-unit
+  // check here so `u1.tnode` and `u2.tnode` stay distinguishable.
+  std::string unit = low.substr(0, dot);
+  std::string tail = low.substr(dot + 1);
+  auto it = registry->classes.find(tail);
+  if (it == registry->classes.end()) return nullptr;
+  return it->second.defining_unit == unit ? &it->second : nullptr;
+}
+
+bool Emitter::type_is_value_object_or_record(const TypeExpr* t) {
+  t = canonicalize_type(t);
+  if (!t) return false;
+  if (t->kind == Kind::TyRecord) return true;
+  if (t->kind == Kind::TyObject) {
+    return !static_cast<const TyObject&>(*t).is_reference_type;
+  }
+  if (t->kind != Kind::TyName) return false;
+
+  const auto& n = static_cast<const TyName&>(*t);
+  if (const auto* ci = class_info_for_type_name(n.name)) {
+    return !ci->is_reference_type;
+  }
+
+  std::string low = ascii_lower(n.name);
+  auto dot = low.find('.');
+  if (dot != std::string::npos) low = low.substr(dot + 1);
+  return registry && registry->records.count(low) > 0;
 }
 
 bool Emitter::enum_has_explicit_values(const TyEnum& e) {
@@ -1007,7 +1103,15 @@ std::string Emitter::procedural_param_types_to_cxx(
   std::string out;
   bool first = true;
   for (const auto& pp : params) {
-    std::string pt = pp.type ? type_to_cxx(*pp.type) : std::string("void*");
+    std::string pt;
+    if (!pp.type) {
+      pt = "void*";
+    } else if (pp.type->kind == Kind::TyArray &&
+               static_cast<const TyArray&>(*pp.type).dims.empty()) {
+      pt = open_array_type_to_cxx(*pp.type);
+    } else {
+      pt = type_to_cxx(*pp.type);
+    }
     if (pp.mode == Param::Var || pp.mode == Param::Out) pt += "&";
     else if (pp.mode == Param::Const) {
       if (const_param_needs_mutable_ref(pp.type.get())) pt += "&";
@@ -1076,11 +1180,7 @@ std::string Emitter::named_type_to_cxx(const TypeExpr* t, std::string_view name,
   }
 
   std::string ty = type_to_cxx(*t);
-  if (name.empty()) {
-    return name_prefix.empty() ? ty
-                               : ty + " " + std::string(name_prefix);
-  }
-  return ty + " " + std::string(name_prefix) + std::string(name);
+  return attach_named_cxx_type(ty, name, name_prefix);
 }
 
 std::string Emitter::type_to_cxx(const TypeExpr& t) {
@@ -1639,6 +1739,40 @@ bool Emitter::expr_is_charish(const Expr& e) {
   return tyname_is(t, "char");
 }
 
+bool Emitter::type_is_reference_class(const TypeExpr* t) {
+  if (!t) return false;
+  t = canonicalize_type(t);
+  if (!t) return false;
+  if (t->kind == Kind::TyObject) {
+    return static_cast<const TyObject&>(*t).is_reference_type;
+  }
+  if (t->kind != Kind::TyName) return false;
+  const auto& n = static_cast<const TyName&>(*t);
+  if (const auto* ci = class_info_for_type_name(n.name)) {
+    return ci->is_reference_type;
+  }
+  return ascii_lower(n.name) == "tobject";
+}
+
+bool Emitter::expr_is_reference_class(const Expr& e) {
+  if (e.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(e);
+    if (id.name == "self" && !current_class_name.empty() && registry) {
+      auto it = registry->classes.find(current_class_name);
+      return it != registry->classes.end() && it->second.is_reference_type;
+    }
+  }
+  return type_is_reference_class(deduce_type(e));
+}
+
+std::string Emitter::member_access_op(const TypeExpr* t) {
+  return type_is_reference_class(t) ? "->" : ".";
+}
+
+std::string Emitter::member_access_op(const Expr& e) {
+  return expr_is_reference_class(e) ? "->" : ".";
+}
+
 bool Emitter::type_is_stringish(const TypeExpr* t) {
   if (!t) return false;
   t = canonicalize_type(t);
@@ -1652,10 +1786,8 @@ bool Emitter::type_is_pointerish(const TypeExpr* t) {
   if (!t) return false;
   t = canonicalize_type(t);
   if (!t) return false;
+  if (type_is_reference_class(t)) return true;
   if (t->kind == Kind::TyPointer) return true;
-  if (t->kind == Kind::TyObject) {
-    return static_cast<const TyObject&>(*t).is_reference_type;
-  }
   return tyname_is(t, "pointer") || tyname_is(t, "pchar") ||
          tyname_is(t, "ppchar");
 }
@@ -1820,6 +1952,12 @@ void Emitter::collect_call_param_info(
     } else if (registry->classes.count(id.name) ||
                registry->records.count(id.name)) {
       cls = id.name;
+    } else {
+      // Method calls through a variable/parameter receiver (`source.read`)
+      // still need the receiver's declared Pascal type here. Without this
+      // fallback we miss untyped/open-array parameter metadata for such
+      // calls and start passing plain values where Pascal expects storage.
+      cls = deduce_class_alias(*mem.base);
     }
   } else {
     cls = deduce_class_alias(*mem.base);
@@ -1867,9 +2005,14 @@ std::string Emitter::lower_property_read(
   // declared backing field/getter/setter so we do not invent extra C++
   // members whose names could collide in ways Pascal itself forbids.
   if (!registry) return base_cxx;
+  const std::string access =
+      (registry->classes.count(class_name) &&
+       registry->classes.at(class_name).is_reference_type)
+          ? "->"
+          : ".";
   if (const auto* field = registry->lookup_class_field(class_name, prop.read_name)) {
     (void)field;
-    std::string text = base_cxx + "." + mangle(prop.read_name);
+    std::string text = base_cxx + access + mangle(prop.read_name);
     for (const auto* idx : indices) {
       text += "[" + expr_to_cxx(*idx) + "]";
     }
@@ -1877,7 +2020,7 @@ std::string Emitter::lower_property_read(
   }
   if (const auto* method = registry->lookup_class_method(class_name, prop.read_name)) {
     (void)method;
-    std::string text = base_cxx + "." + mangle(prop.read_name) + "(";
+    std::string text = base_cxx + access + mangle(prop.read_name) + "(";
     for (size_t i = 0; i < indices.size(); ++i) {
       if (i) text += ", ";
       text += expr_to_cxx(*indices[i]);
@@ -1894,6 +2037,11 @@ std::string Emitter::lower_property_write(
     const PropertyInfo& prop, const std::vector<const Expr*>& indices,
     const Expr& value) {
   if (!registry) return base_cxx;
+  const std::string access =
+      (registry->classes.count(class_name) &&
+       registry->classes.at(class_name).is_reference_type)
+          ? "->"
+          : ".";
   if (prop.write_name.empty()) {
     report_error(where, "property is read-only");
     return base_cxx;
@@ -1904,7 +2052,7 @@ std::string Emitter::lower_property_write(
   }
   if (const auto* field = registry->lookup_class_field(class_name, prop.write_name)) {
     (void)field;
-    std::string text = base_cxx + "." + mangle(prop.write_name);
+    std::string text = base_cxx + access + mangle(prop.write_name);
     for (const auto* idx : indices) {
       text += "[" + expr_to_cxx(*idx) + "]";
     }
@@ -1912,7 +2060,7 @@ std::string Emitter::lower_property_write(
   }
   if (const auto* method = registry->lookup_class_method(class_name, prop.write_name)) {
     (void)method;
-    std::string text = base_cxx + "." + mangle(prop.write_name) + "(";
+    std::string text = base_cxx + access + mangle(prop.write_name) + "(";
     bool first = true;
     for (const auto* idx : indices) {
       if (!first) text += ", ";
@@ -1925,7 +2073,45 @@ std::string Emitter::lower_property_write(
     return text;
   }
   report_error(where, "unsupported property write accessor '" + prop.write_name + "'");
-  return base_cxx + "." + mangle(prop.write_name) + " = " + rhs;
+  return base_cxx + access + mangle(prop.write_name) + " = " + rhs;
+}
+
+std::optional<std::string> Emitter::maybe_lower_class_free_member(
+    const Expr& base, std::string_view member_name) {
+  if (member_name != "free" || !expr_is_reference_class(base)) {
+    return std::nullopt;
+  }
+  // Pascal `obj.Free` is the null-safe TObject cleanup entrypoint, not a
+  // normal instance call. Lower it to the runtime static helper so the
+  // null check happens before any C++ member dispatch.
+  return "::rt::p_tobject::p_free(" + expr_to_cxx(base) + ")";
+}
+
+std::optional<std::string> Emitter::maybe_lower_class_constructor_call(
+    std::string_view class_name, std::string_view member_name,
+    const std::vector<const Expr*>& args,
+    const std::vector<const TypeExpr*>& param_types,
+    const std::vector<bool>& untyped_arg) {
+  if (!registry) return std::nullopt;
+  const auto* method = registry->lookup_class_method(std::string(class_name),
+                                                     std::string(member_name));
+  if (!method || method->kind != SymKind::Constructor) {
+    return std::nullopt;
+  }
+
+  // Pascal constructor calls on a class value (`TNode.Create`) allocate a
+  // fresh instance and then run the constructor body on that instance. They
+  // are not plain static method calls, even though the emitted C++ helper
+  // itself lives on the struct type.
+  std::string args_cxx;
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (i) args_cxx += ", ";
+    args_cxx += lower_call_arg(*args[i], param_types[i], untyped_arg[i]);
+  }
+  std::string struct_ty = named_type_struct_cxx(class_name);
+  return "([&]{ auto tp2cc_ptr = new " + struct_ty + "{}; tp2cc_ptr->" +
+         mangle(std::string(member_name)) + "(" + args_cxx +
+         "); return tp2cc_ptr; }())";
 }
 
 size_t procedural_param_count(const TyProcedural& p) {
@@ -2013,8 +2199,9 @@ Emitter::ResolveResult Emitter::resolve_name(
                                   registry->canonicalize(it->type))
                             : std::string{};
       if (cls.empty()) continue;
+      std::string access = member_access_op(it->type);
       if (auto* m = registry->lookup_class_method(cls, name)) {
-        r.cxx = it->cxx_text + "." + mangle(name);
+        r.cxx = it->cxx_text + access + mangle(name);
         r.kind = ResolvedKind::WithMethod;
         r.proc = m->decl.get();
         r.is_callable = true;
@@ -2022,13 +2209,13 @@ Emitter::ResolveResult Emitter::resolve_name(
         return r;
       }
       if (registry->lookup_class_field(cls, name)) {
-        r.cxx = it->cxx_text + "." + mangle(name);
+        r.cxx = it->cxx_text + access + mangle(name);
         r.kind = ResolvedKind::WithField;
         return r;
       }
       if (auto* f = registry->lookup_record_field(cls, name)) {
         (void)f;
-        r.cxx = it->cxx_text + "." + mangle(name);
+        r.cxx = it->cxx_text + access + mangle(name);
         r.kind = ResolvedKind::WithField;
         return r;
       }
@@ -2230,7 +2417,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     case Kind::Ident: {
       const auto& n = static_cast<const Ident&>(e);
       if (n.name == "inherited") return "inherited{}";
-      if (n.name == "self") return "(*this)";
+      if (n.name == "self") {
+        return expr_is_reference_class(e) ? "this" : "(*this)";
+      }
       // LHS rewrite for `funcname := ...` assignments during Assign target
       // emission. We handle this BEFORE resolve_name so recursive
       // calls using `funcname(...)` still see the function name.
@@ -2270,13 +2459,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return "((" + a + " + " + b + ") - (" + a + " * " + b + "))";
       }
       if (n.op == BinOp::Is) {
-        // `x is T` -> dynamic-cast-based check. Requires T as a type name.
-        return "(dynamic_cast<" + expr_to_cxx(*n.rhs) + "*>(&(" +
-               expr_to_cxx(*n.lhs) + ")) != nullptr)";
+        // `class` names lower to pointer types, so `x is TChild` becomes a
+        // pointer dynamic_cast rather than address-taking the lhs storage.
+        return "(dynamic_cast<" + expr_to_cxx(*n.rhs) + ">(" +
+               expr_to_cxx(*n.lhs) + ") != nullptr)";
       }
       if (n.op == BinOp::As) {
-        return "(*dynamic_cast<" + expr_to_cxx(*n.rhs) + "*>(&(" +
-               expr_to_cxx(*n.lhs) + ")))";
+        return "dynamic_cast<" + expr_to_cxx(*n.rhs) + ">(" +
+               expr_to_cxx(*n.lhs) + ")";
       }
       // Pascal `+` on `char` operands means string concatenation
       // (produces a 2-char string). C++ `char + char` is int
@@ -2409,14 +2599,27 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         std::string parent;
         if (registry && !current_class_name.empty()) {
           auto cit = registry->classes.find(current_class_name);
-          if (cit != registry->classes.end()) parent = cit->second.parent;
+          if (cit != registry->classes.end()) {
+            parent = cit->second.parent;
+            if (parent.empty() && cit->second.is_reference_type) {
+              parent = "tobject";
+            }
+          }
         }
         std::string text = "inherited::" + mangle(m.name);
         if (parent.empty()) return text;
         ResolveResult rr =
             resolve_name(m.name, QualifierKind::Class, parent);
+        // The implicit TObject ancestor lives in the runtime, not in the
+        // Pascal registry. `inherited Create;` / `inherited Destroy;` still
+        // need statement-form auto-call even though name resolution cannot
+        // see their zero-argument signatures there.
+        bool implicit_tobject_root =
+            parent == "tobject" &&
+            (ascii_lower(m.name) == "create" || ascii_lower(m.name) == "destroy");
         bool want_call = !is_callee_context_ &&
-                         rr.is_callable && rr.is_parameterless;
+                         ((rr.is_callable && rr.is_parameterless) ||
+                          implicit_tobject_root);
         return want_call ? text + "()" : text;
       }
 
@@ -2473,6 +2676,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // inside an override). Emit `TClass::method`.
           if (registry->classes.count(base_name) ||
               registry->records.count(base_name)) {
+            if (!is_callee_context_) {
+              std::vector<const Expr*> no_args;
+              std::vector<const TypeExpr*> no_param_types;
+              std::vector<bool> no_untyped_arg;
+              if (auto ctor_call = maybe_lower_class_constructor_call(
+                      base_name, m.name, no_args, no_param_types,
+                      no_untyped_arg)) {
+                return *ctor_call;
+              }
+            }
             ResolveResult rr =
                 resolve_name(m.name, QualifierKind::Class, base_name);
             std::string text = mangle(base_name) + "::" + mangle(m.name);
@@ -2487,6 +2700,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // and auto-call if the deduced class has `name` as a
       // parameterless method.
       std::string base_cxx = expr_to_cxx(*m.base);
+      if (!is_callee_context_) {
+        if (auto free_call = maybe_lower_class_free_member(*m.base, m.name)) {
+          return *free_call;
+        }
+      }
       std::string bcls = deduce_class_alias(*m.base);
       if (registry && !bcls.empty()) {
         if (auto* prop = registry->lookup_class_property(bcls, m.name)) {
@@ -2496,7 +2714,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
         }
       }
-      std::string text = base_cxx + "." + mangle(m.name);
+      std::string text = base_cxx + member_access_op(*m.base) + mangle(m.name);
       if (is_callee_context_ || !registry) return text;
       if (bcls.empty()) return text;
       if (const auto* method = registry->lookup_class_method(bcls, m.name)) {
@@ -2847,6 +3065,31 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (peeled && expr_is_storage_lvalue(*c.args[0])) {
             return reinterpret_ref_text(cast_type_cxx, expr_to_cxx(*peeled),
                                         expr_is_untyped_storage_ref(*c.args[0]));
+          }
+        }
+      }
+      if (c.args.empty() && c.callee->kind == Kind::Member) {
+        const auto& mem = static_cast<const Member&>(*c.callee);
+        if (auto free_call = maybe_lower_class_free_member(*mem.base, mem.name)) {
+          return *free_call;
+        }
+      }
+      if (c.callee->kind == Kind::Member) {
+        const auto& mem = static_cast<const Member&>(*c.callee);
+        if (mem.base->kind == Kind::Ident && registry) {
+          const auto& id = static_cast<const Ident&>(*mem.base);
+          auto cit = registry->classes.find(id.name);
+          if (cit != registry->classes.end()) {
+            std::vector<bool> untyped_arg(c.args.size(), false);
+            std::vector<const TypeExpr*> param_types(c.args.size(), nullptr);
+            collect_call_param_info(*c.callee, untyped_arg, param_types);
+            std::vector<const Expr*> args;
+            args.reserve(c.args.size());
+            for (const auto& arg : c.args) args.push_back(arg.get());
+            if (auto ctor_call = maybe_lower_class_constructor_call(
+                    id.name, mem.name, args, param_types, untyped_arg)) {
+              return *ctor_call;
+            }
           }
         }
       }
@@ -3425,8 +3668,20 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
 
   if (td.type && td.type->kind == Kind::TyObject) {
     const auto& to = static_cast<const TyObject&>(*td.type);
+    if (to.is_forward) {
+      // `T = class;` only reserves the name for later use in the same type
+      // section. `emit_forward_struct_decls` already emitted the necessary
+      // C++ `struct T;`, so the forward declaration itself has no body here.
+      return;
+    }
     std::string line = "struct " + name;
-    if (!to.parent.empty()) line += " : public " + mangle(to.parent);
+    if (!to.parent.empty()) {
+      line += " : public " + named_type_struct_cxx(to.parent);
+    } else if (to.is_reference_type) {
+      // Delphi/FPC `class` types implicitly inherit `TObject` even when
+      // the source omits an explicit ancestor.
+      line += " : public ::rt::p_tobject";
+    }
     line += " {";
     emitln(line);
     indent();
@@ -3438,7 +3693,9 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     // declare a field or variable with that name, so the alias is
     // guaranteed collision-free.
     if (!to.parent.empty()) {
-      emitln("using inherited = " + mangle(to.parent) + ";");
+      emitln("using inherited = " + named_type_struct_cxx(to.parent) + ";");
+    } else if (to.is_reference_type) {
+      emitln("using inherited = ::rt::p_tobject;");
     }
     bool has_virtual = false;
     for (const auto& m : to.members) {
@@ -3583,13 +3840,13 @@ std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
       if (!first) out += ", ";
       first = false;
       if (!p.type) out += pt + " " + mangle(n);
-      else out += named_type_to_cxx(p.type.get(), mangle(n), name_prefix);
+      else out += attach_named_cxx_type(pt, mangle(n), name_prefix);
     }
     if (p.names.empty()) {
       if (!first) out += ", ";
       first = false;
       if (!p.type) out += pt;
-      else out += named_type_to_cxx(p.type.get(), "", name_prefix);
+      else out += attach_named_cxx_type(pt, "", name_prefix);
     }
   }
   return out;
@@ -3924,6 +4181,33 @@ void Emitter::emit_stmt(const Stmt& s) {
         }
         emitln("delete " + p + ";");
         emitln(p + " = nullptr;");
+      } else if (es.expr->kind == Kind::Member) {
+        const auto& mem = static_cast<const Member&>(*es.expr);
+        if (auto free_call = maybe_lower_class_free_member(*mem.base, mem.name)) {
+          emitln(*free_call + ";");
+        } else {
+          std::string text = expr_to_cxx(*es.expr);
+          auto stmt_autocalls_procvar = [&](const Expr& expr) -> bool {
+            switch (expr.kind) {
+              case Kind::Ident:
+              case Kind::Member:
+              case Kind::Index:
+              case Kind::Deref:
+                break;
+              default:
+                return false;
+            }
+            if (const TypeExpr* t = deduce_type(expr);
+                t && (t = canonicalize_type(t)) &&
+                t->kind == Kind::TyProcedural) {
+              const auto& p = static_cast<const TyProcedural&>(*t);
+              return procedural_param_count(p) == 0;
+            }
+            return false;
+          };
+          if (stmt_autocalls_procvar(*es.expr)) text += "()";
+          emitln(text + ";");
+        }
       } else {
         // `expr_to_cxx` auto-calls parameterless procs/methods in
         // value context via `resolve_name`. The one extra case we

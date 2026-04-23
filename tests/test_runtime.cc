@@ -21,6 +21,16 @@ struct MethodPtrCounter {
   int value = 0;
 };
 
+struct DestroyProbe : p_tobject {
+  int* destroys = nullptr;
+
+  explicit DestroyProbe(int* count) : destroys(count) {}
+
+  void p_destroy() override {
+    ++(*destroys);
+  }
+};
+
 inline void method_ptr_add(void* self, int32_t delta) {
   static_cast<MethodPtrCounter*>(self)->value += delta;
 }
@@ -204,6 +214,21 @@ void test_method_ptr_storage_matches_two_pointer_slots() {
   CHECK_EQ(counter.value, 9);
 }
 
+void test_class_free_accepts_null_pointer() {
+  DestroyProbe* p = nullptr;
+
+  p_tobject::p_free(p);
+  CHECK(p == nullptr);
+}
+
+void test_class_free_dispatches_virtual_destroy() {
+  int destroys = 0;
+  auto* p = new DestroyProbe(&destroys);
+
+  p_tobject::p_free(p);
+  CHECK_EQ(destroys, 1);
+}
+
 void test_blockread_writes_to_void_buffer() {
   TypedFile<uint8_t> f;
   uint8_t got[5] = {};
@@ -297,6 +322,8 @@ int main() {
   RUN_TEST(test_reinterpret_ref_views_pointee_bytes_of_pointer_value);
   RUN_TEST(test_method_ptr_calls_bound_thunk);
   RUN_TEST(test_method_ptr_storage_matches_two_pointer_slots);
+  RUN_TEST(test_class_free_accepts_null_pointer);
+  RUN_TEST(test_class_free_dispatches_virtual_destroy);
   RUN_TEST(test_blockread_writes_to_void_buffer);
   RUN_TEST(test_strnew_allocates_and_disposes_pchar);
   RUN_TEST(test_textfile_reset_closes_previous_handle);

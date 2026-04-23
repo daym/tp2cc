@@ -159,6 +159,31 @@ inline void* p_method_code() {
   return p_funptr_bits(Fn);
 }
 
+// Delphi/FPC `class` types are references to heap objects whose base
+// contract is `TObject`. Keep the runtime base explicit rather than
+// letting each translated unit invent its own ad-hoc root.
+struct p_tobject {
+  // Pascal class construction starts at TObject.Create. The default root
+  // implementation just succeeds; translated derived constructors chain to
+  // it via `inherited Create`.
+  virtual bool p_create() { return true; }
+  virtual void p_destroy() {}
+  virtual ~p_tobject() = default;
+  // Pascal `obj.Free` is null-safe. That cannot be a normal C++ member
+  // call on a pointer, because `obj->p_free()` is already UB when `obj`
+  // is null. The emitter therefore lowers Pascal `Free` to this static
+  // helper, which owns the null check and only then dispatches the
+  // virtual Pascal destructor hook.
+  template <typename T>
+  static void p_free(T* p) {
+    static_assert(std::is_base_of_v<p_tobject, T>,
+                  "p_tobject::p_free expects a translated Pascal class type");
+    if (!p) return;
+    p->p_destroy();
+    delete p;
+  }
+};
+
 struct CharConst;
 
 struct ShortStringCharValue {

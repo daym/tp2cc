@@ -64,6 +64,16 @@ bool contains(const std::string& s, std::string_view needle) {
   return s.find(needle) != std::string::npos;
 }
 
+size_t count_substring(const std::string& s, std::string_view needle) {
+  size_t count = 0;
+  size_t pos = 0;
+  while ((pos = s.find(needle, pos)) != std::string::npos) {
+    ++count;
+    pos += needle.size();
+  }
+  return count;
+}
+
 void test_empty_unit_skeleton() {
   auto out = compile_snippet(
       "unit foo;\n"
@@ -592,6 +602,33 @@ void test_nested_untyped_var_forwarding_stays_pointer_value() {
   CHECK(!contains(out.impl, "p_inner(((void*)&(p_y)))"));
 }
 
+void test_untyped_method_call_on_variable_uses_storage_address() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tstream = object\n"
+      "    function read(var buffer; count : longint) : longint;\n"
+      "    function copyfrom(source : tstream; count : longint) : longint;\n"
+      "  end;\n"
+      "implementation\n"
+      "function tstream.read(var buffer; count : longint) : longint;\n"
+      "begin\n"
+      "end;\n"
+      "function tstream.copyfrom(source : tstream; count : longint) : longint;\n"
+      "var\n"
+      "  buffer : array[0..3] of byte;\n"
+      "begin\n"
+      "  copyfrom := source.read(buffer, count);\n"
+      "end;\n"
+      "end.\n");
+  // `var buffer` passes the storage address of the local array value.
+  // The receiver being a variable (`source.read`) must not lose that
+  // metadata and accidentally pass the whole value expression instead.
+  CHECK(contains(out.impl, "p_result = p_source.p_read(((void*)&(p_buffer)), p_count);"));
+  CHECK(!contains(out.impl, "p_source.p_read(p_buffer, p_count);"));
+}
+
 void test_byte_array_typecast_reinterprets_storage() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -766,8 +803,8 @@ void test_property_getter_setter_lowering() {
       "  lst.count := 3;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_n = p_lst.p_getcount();"));
-  CHECK(contains(out.impl, "p_lst.p_setcount(3);"));
+  CHECK(contains(out.impl, "p_n = p_lst->p_getcount();"));
+  CHECK(contains(out.impl, "p_lst->p_setcount(3);"));
   CHECK(!contains(out.header, " p_count("));
   CHECK(!contains(out.header, " p_count;"));
 }
@@ -802,9 +839,9 @@ void test_property_field_and_default_index_lowering() {
       "  lst[2] := p;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_lst.p_fsize = 1;"));
-  CHECK(contains(out.impl, "p_p = p_lst.p_get(1);"));
-  CHECK(contains(out.impl, "p_lst.p_put(2, p_p);"));
+  CHECK(contains(out.impl, "p_lst->p_fsize = 1;"));
+  CHECK(contains(out.impl, "p_p = p_lst->p_get(1);"));
+  CHECK(contains(out.impl, "p_lst->p_put(2, p_p);"));
 }
 
 void test_procvar_property_stmt_and_value_context() {
@@ -833,9 +870,9 @@ void test_procvar_property_stmt_and_value_context() {
       "  p := box.foo;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_box.p_getfoo()();"));
-  CHECK(contains(out.impl, "p_p = p_box.p_getfoo();"));
-  CHECK(!contains(out.impl, "p_p = p_box.p_getfoo()();"));
+  CHECK(contains(out.impl, "p_box->p_getfoo()();"));
+  CHECK(contains(out.impl, "p_p = p_box->p_getfoo();"));
+  CHECK(!contains(out.impl, "p_p = p_box->p_getfoo()();"));
 }
 
 void test_default_indexed_procvar_property_stmt_autocalls() {
@@ -860,8 +897,8 @@ void test_default_indexed_procvar_property_stmt_autocalls() {
       "  box[2]();\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_box.p_getitem(1)();"));
-  CHECK(contains(out.impl, "p_box.p_getitem(2)();"));
+  CHECK(contains(out.impl, "p_box->p_getitem(1)();"));
+  CHECK(contains(out.impl, "p_box->p_getitem(2)();"));
 }
 
 void test_class_method_static_emission_and_calls() {
@@ -892,7 +929,7 @@ void test_class_method_static_emission_and_calls() {
   CHECK(contains(out.header, "static int32_t p_bar();"));
   CHECK(contains(out.impl, "int32_t p_tx::p_bar() {"));
   CHECK(contains(out.impl, "p_result = p_bar();"));
-  CHECK(contains(out.impl, "p_x.p_bar();"));
+  CHECK(contains(out.impl, "p_x->p_bar();"));
   CHECK(contains(out.impl, "p_tx::p_bar();"));
 }
 
@@ -1096,6 +1133,135 @@ void test_bool_procvar_call_uses_logical_and() {
   CHECK(!contains(out.impl, "p_pred() & true"));
 }
 
+void test_open_array_method_signature_keeps_wrapper_type() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tmsg = object\n"
+      "    function get(nr : integer; const args : array of string) : string;\n"
+      "  end;\n"
+      "implementation\n"
+      "function tmsg.get(nr : integer; const args : array of string) : string;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  // Open arrays carry pointer-plus-length state. Once the emitter picks
+  // `OpenArray<T>` for a parameter, it must keep that exact C++ carrier
+  // type instead of falling back to the generic `array of T -> T*` path.
+  CHECK(contains(out.header,
+                 "::rt::ShortString<> p_get(int32_t p_nr, const ::rt::OpenArray<::rt::ShortString<>>& p_args);"));
+  CHECK(contains(out.header,
+                 "static ::rt::ShortString<> tp2cc_methodptr_get_value_name_integer_const_openarr_string_ret_string(void* tp2cc_self, int32_t p_nr, const ::rt::OpenArray<::rt::ShortString<>>& p_args)"));
+}
+
+void test_open_array_procvar_signature_keeps_wrapper_type() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tcb = procedure(const args : array of string);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "using p_tcb = void (*)(const ::rt::OpenArray<::rt::ShortString<>>&);"));
+}
+
+void test_class_types_lower_to_pointers_and_implicit_tobject() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class\n"
+      "    next : tnode;\n"
+      "    destructor destroy; override;\n"
+      "  end;\n"
+      "var\n"
+      "  head : tnode;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "struct p_tnode : public ::rt::p_tobject {"));
+  CHECK(contains(out.header, "using inherited = ::rt::p_tobject;"));
+  CHECK(contains(out.header, "p_tnode* p_next;"));
+  CHECK(contains(out.header, "extern p_tnode* p_head;"));
+}
+
+void test_forward_class_decl_only_emits_one_struct_body() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class;\n"
+      "  tbox = class\n"
+      "    next : tnode;\n"
+      "  end;\n"
+      "  tnode = class\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(count_substring(out.header, "struct p_tnode : public ::rt::p_tobject {"),
+           1u);
+  CHECK(contains(out.header, "p_tnode* p_next;"));
+}
+
+void test_class_constructor_call_allocates_instance() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class\n"
+      "    constructor create;\n"
+      "  end;\n"
+      "function build : tnode;\n"
+      "implementation\n"
+      "constructor tnode.create;\n"
+      "begin\n"
+      "end;\n"
+      "function build : tnode;\n"
+      "begin\n"
+      "  build := tnode.create;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "auto tp2cc_ptr = new p_tnode{};"));
+  CHECK(contains(out.impl, "tp2cc_ptr->p_create();"));
+}
+
+void test_implicit_tobject_inherited_constructor_autocalls() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class\n"
+      "    constructor create;\n"
+      "  end;\n"
+      "implementation\n"
+      "constructor tnode.create;\n"
+      "begin\n"
+      "  inherited create;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "inherited::p_create();"));
+}
+
+void test_class_self_and_free_use_pointer_semantics() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class\n"
+      "    next : tnode;\n"
+      "    procedure zap;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tnode.zap;\n"
+      "begin\n"
+      "  self.next.free;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_tobject::p_free(this->p_next);"));
+  CHECK(!contains(out.impl, "this->p_next->p_free()"));
+}
+
 // Pascal identifiers that happen to be C++ reserved words (but are NOT
 // Pascal keywords) must survive translation thanks to the `p_` prefix.
 void test_cxx_reserved_word_identifiers() {
@@ -1155,6 +1321,7 @@ int main() {
   RUN_TEST(test_integer_and_or_stays_bitwise);
   RUN_TEST(test_nested_boolean_function_and_short_circuits);
   RUN_TEST(test_nested_untyped_var_forwarding_stays_pointer_value);
+  RUN_TEST(test_untyped_method_call_on_variable_uses_storage_address);
   RUN_TEST(test_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_local_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
@@ -1178,6 +1345,13 @@ int main() {
   RUN_TEST(test_direct_procvar_var_decl_uses_named_function_pointer_syntax);
   RUN_TEST(test_runtime_builtin_stmt_autocalls);
   RUN_TEST(test_bool_procvar_call_uses_logical_and);
+  RUN_TEST(test_open_array_method_signature_keeps_wrapper_type);
+  RUN_TEST(test_open_array_procvar_signature_keeps_wrapper_type);
+  RUN_TEST(test_class_types_lower_to_pointers_and_implicit_tobject);
+  RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
+  RUN_TEST(test_class_constructor_call_allocates_instance);
+  RUN_TEST(test_implicit_tobject_inherited_constructor_autocalls);
+  RUN_TEST(test_class_self_and_free_use_pointer_semantics);
   RUN_TEST(test_cxx_reserved_word_identifiers);
 
   int n = tp2cc_test::failures();
