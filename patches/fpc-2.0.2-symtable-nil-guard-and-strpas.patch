@@ -1,0 +1,40 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Guard symtable's withrefnode free against nil and strpas the messageinf compare
+License: expat
+
+Two narrow fixes in `symtable.pas`:
+
+- `twithsymtable.destroy` calls `tobject(withrefnode).free` unconditionally.
+  In native FPC `TObject.Free` is null-safe (the method itself short-circuits
+  on `Self = nil`), but tp2cc does not model that null-safe-method-on-nil
+  contract. Wrap the call with `if assigned(withrefnode) then` so the call
+  site never reaches the method on a nil instance.
+
+- The message-method search compares `tprocdef(def).messageinf.str` (a
+  `pchar`) directly against `s` (a Pascal string). That equality relies on
+  Pascal's implicit `pchar`-to-string conversion, which the bootstrap subset
+  does not fold automatically. Wrap with `strpas(...)` so the comparison is
+  string-to-string with no implicit conversion involved.
+
+--- a/compiler/symtable.pas
++++ b/compiler/symtable.pas
+@@ -1685,7 +1685,8 @@
+
+     destructor twithsymtable.destroy;
+       begin
+-        tobject(withrefnode).free;
++        if assigned(withrefnode) then
++          tobject(withrefnode).free;
+         symsearch:=nil;
+         inherited destroy;
+       end;
+@@ -2035,7 +2036,7 @@
+              begin
+                if (def.deftype=procdef) and
+                   (po_msgstr in tprocdef(def).procoptions) and
+-                  (tprocdef(def).messageinf.str=s) then
++                  (strpas(tprocdef(def).messageinf.str)=s) then
+                 begin
+                   sym:=tprocdef(def).procsym;
+                   if assigned(topclassh) then
