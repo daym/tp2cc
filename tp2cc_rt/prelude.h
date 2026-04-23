@@ -188,6 +188,20 @@ struct p_tobject {
   }
 };
 
+template <int N> struct ShortString;
+
+// The translated `sysutils` stub aliases into `rt::`, and compiler units
+// declare exception subclasses against that alias. Keep a minimal base
+// available here so those classes compile before a full SysUtils exists.
+struct p_exception : p_tobject {
+  using inherited = p_tobject;
+  using inherited::p_create;
+
+  bool p_create(const ShortString<255>&) {
+    return true;
+  }
+};
+
 struct CharConst;
 
 struct ShortStringCharValue {
@@ -696,6 +710,19 @@ class AnsiString {
   operator p_char*() {
     ensure_unique();
     return data;
+  }
+
+  // Pascal freely passes ansistrings to `string` parameters when that
+  // means materialising a shortstring temporary, so keep this conversion
+  // implicit and let the destination capacity truncate as Pascal does.
+  template <int N = 255>
+  operator ShortString<N>() const {
+    ShortString<N> out{};
+    int32_t copy = length();
+    if (copy > N) copy = N;
+    out.length = static_cast<uint8_t>(copy);
+    for (int32_t i = 0; i < copy; ++i) out.data[i] = data[i];
+    return out;
   }
 
   AnsiStringCharRef operator[](int i) {
@@ -1552,18 +1579,28 @@ template <typename T> inline void p_inc(T& x) {
     x = static_cast<T>(static_cast<int64_t>(x) + 1);
   else ++x;
 }
+inline void p_inc(ShortStringCharRef x) { ++(*x.byte); }
 template <typename T, typename N> inline void p_inc(T& x, N n) {
   if constexpr (std::is_pointer_v<T>) x += n;
   else x = static_cast<T>(static_cast<int64_t>(x) + n);
+}
+template <typename N>
+inline void p_inc(ShortStringCharRef x, N n) {
+  *x.byte = static_cast<uint8_t>(static_cast<int64_t>(*x.byte) + n);
 }
 template <typename T> inline void p_dec(T& x) {
   if constexpr (std::is_enum_v<T>)
     x = static_cast<T>(static_cast<int64_t>(x) - 1);
   else --x;
 }
+inline void p_dec(ShortStringCharRef x) { --(*x.byte); }
 template <typename T, typename N> inline void p_dec(T& x, N n) {
   if constexpr (std::is_pointer_v<T>) x -= n;
   else x = static_cast<T>(static_cast<int64_t>(x) - n);
+}
+template <typename N>
+inline void p_dec(ShortStringCharRef x, N n) {
+  *x.byte = static_cast<uint8_t>(static_cast<int64_t>(*x.byte) - n);
 }
 
 // No rvalue `p_inc`/`p_dec` overloads here: casted-lvalue forms like
@@ -2197,6 +2234,20 @@ inline int32_t p_compareword(const A& a, const B& b, int32_t count) {
   return p_compareword(static_cast<const void*>(std::addressof(a)),
                        static_cast<const void*>(std::addressof(b)), count);
 }
+inline int32_t p_comparebyte(const void* a, const void* b, int32_t count) {
+  auto* pa = static_cast<const uint8_t*>(a);
+  auto* pb = static_cast<const uint8_t*>(b);
+  for (int32_t i = 0; i < count; ++i) {
+    if (pa[i] < pb[i]) return -1;
+    if (pa[i] > pb[i]) return 1;
+  }
+  return 0;
+}
+template <typename A, typename B>
+inline int32_t p_comparebyte(const A& a, const B& b, int32_t count) {
+  return p_comparebyte(static_cast<const void*>(std::addressof(a)),
+                       static_cast<const void*>(std::addressof(b)), count);
+}
 // `readln(f, s)` reads a line into `s`. `readln` (no args) reads and
 // discards a line. `readln(f)` reads/discards a line from `f`.
 inline void p_readln(TextFile& f) {
@@ -2504,6 +2555,9 @@ inline p_signalhandler p_signal(int32_t sig, p_signalhandler h) {
   return reinterpret_cast<p_signalhandler>(
       std::signal(sig, reinterpret_cast<void (*)(int)>(h)));
 }
+inline p_signalhandler p_fpsignal(int32_t sig, p_signalhandler h) {
+  return p_signal(sig, h);
+}
 
 // `FindFirst` attribute mask -- any file (every attribute bit set).
 inline constexpr int32_t p_faanyfile = 0x3F;
@@ -2799,7 +2853,24 @@ inline void p_insert(const char* src, ShortString<N>& s, int pos) {
 
 template <int N>
 inline void p_insert(const AnsiString& src, ShortString<N>& s, int pos) {
-  p_insert(ShortString<N>(src.bytes()), s, pos);
+  p_insert(static_cast<ShortString<N>>(src), s, pos);
+}
+
+template <typename Int>
+inline ShortString<> p_octstr(Int value, int width) {
+  using U = std::make_unsigned_t<Int>;
+  U bits = static_cast<U>(value);
+  char buf[65];
+  int len = 0;
+  do {
+    buf[len++] = static_cast<char>('0' + (bits & 7));
+    bits >>= 3;
+  } while (bits != 0);
+  while (len < width) buf[len++] = '0';
+  ShortString<> out{};
+  out.length = static_cast<uint8_t>(len);
+  for (int i = 0; i < len; ++i) out.data[i] = p_char_of(buf[len - 1 - i]);
+  return out;
 }
 
 inline p_char p_upcase(p_char c) {

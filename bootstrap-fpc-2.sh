@@ -42,6 +42,18 @@ ENTRY_FILE="$SOURCE_DIR/compiler/pp.pas"
 MSG_FILE="$SOURCE_DIR/compiler/msg/errore.msg"
 STARTUP_AS="$CLEAN_SRC/rtl/linux/i386/prt0.as"
 
+compiler_dir_flags() {
+  printf '%s ' "-Fu$CLEAN_SRC/compiler" "-Fi$CLEAN_SRC/compiler"
+  printf '%s ' "-Fu$CLEAN_SRC/compiler/i386" "-Fi$CLEAN_SRC/compiler/i386"
+  # FPC 2.0.2 moved the shared x86 units (cpubase, result-flag enums,
+  # common register metadata) under compiler/x86. Keep the older i386
+  # path too: 2.0.0 still needs it and 2.0.2 needs both.
+  if [ -d "$CLEAN_SRC/compiler/x86" ]; then
+    printf '%s ' "-Fu$CLEAN_SRC/compiler/x86" "-Fi$CLEAN_SRC/compiler/x86"
+  fi
+  printf '%s ' "-Fu$CLEAN_SRC/compiler/systems" "-Fi$CLEAN_SRC/compiler/systems"
+}
+
 require_i386_toolchain() {
   machine="$($CXX -dumpmachine 2>/dev/null || true)"
   case "$machine" in
@@ -107,11 +119,7 @@ build_stage1() {
     -dNOTARGETPALMOS -dNOTARGETQNX -dNOTARGETSUNOS \
     -dNOTARGETWIN32 -dNOTARGETNETBSD -dNOTARGETOPENBSD \
     -dNOTARGETDARWIN -dNOTARGETNETWARE -dNOTARGETEMX \
-    -Fu"$CLEAN_SRC/compiler" \
-    -Fu"$CLEAN_SRC/compiler/i386" \
-    -Fu"$CLEAN_SRC/compiler/systems" \
-    -Fi"$CLEAN_SRC/compiler" \
-    -Fi"$CLEAN_SRC/compiler/i386" \
+    $(compiler_dir_flags) \
     -Fi"$CLEAN_SRC/rtl/inc" \
     -Fi"$CLEAN_SRC/rtl/i386" \
     -Fi"$CLEAN_SRC/rtl/linux" \
@@ -146,12 +154,7 @@ compile_pp_stage() {
   FPCDIR="$CLEAN_SRC" \
   STARTUP_AS="$STARTUP_AS" \
     "$ROOT/use-fpc.sh" \
-      "-Fi$CLEAN_SRC/compiler" \
-      "-Fi$CLEAN_SRC/compiler/i386" \
-      "-Fi$CLEAN_SRC/compiler/systems" \
-      "-Fu$CLEAN_SRC/compiler" \
-      "-Fu$CLEAN_SRC/compiler/i386" \
-      "-Fu$CLEAN_SRC/compiler/systems" \
+      $(compiler_dir_flags) \
       "-o$out_dir/pp" \
       "$CLEAN_SRC/compiler/pp.pas"
   install_support_files "$out_dir"

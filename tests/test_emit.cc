@@ -210,6 +210,34 @@ void test_explicit_enum_array_bounds_use_ordinal_range() {
                  "using p_tmap = ::rt::Array<uint8_t, p_lo, ((::rt::p_ordinal_value(p_hi)) - (::rt::p_ordinal_value(p_lo)) + 1)>;"));
 }
 
+void test_low_high_use_resolved_pascal_type() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tindex = type word;\n"
+      "  tarr = array[0..2] of byte;\n"
+      "const\n"
+      "  maxindex = high(tindex);\n"
+      "procedure take(a : tindex; const arr : tarr);\n"
+      "implementation\n"
+      "procedure take(a : tindex; const arr : tarr);\n"
+      "begin\n"
+      "  if a = high(a) then begin end;\n"
+      "  while low(arr) <= high(arr) do break;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "using p_tindex = uint16_t;"));
+  CHECK(contains(out.header,
+                 "const auto p_maxindex = ::std::numeric_limits<uint16_t>::max();"));
+  CHECK(contains(out.impl,
+                 "if ((p_a == ::std::numeric_limits<uint16_t>::max()))"));
+  CHECK(contains(out.impl, "while ((p_tarr::low() <= p_tarr::high()))"));
+  CHECK(!contains(out.impl, "p_high(p_a)"));
+  CHECK(!contains(out.impl, "p_low(p_arr)"));
+  CHECK(!contains(out.impl, "p_high(p_arr)"));
+}
+
 void test_named_type_alias() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -1342,6 +1370,7 @@ int main() {
   RUN_TEST(test_enum_type);
   RUN_TEST(test_enum_type_with_explicit_values);
   RUN_TEST(test_explicit_enum_array_bounds_use_ordinal_range);
+  RUN_TEST(test_low_high_use_resolved_pascal_type);
   RUN_TEST(test_named_type_alias);
   RUN_TEST(test_ansistring_builtin_maps_to_runtime_type);
   RUN_TEST(test_set_type_alias);

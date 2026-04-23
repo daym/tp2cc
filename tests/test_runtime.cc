@@ -138,9 +138,30 @@ void test_ansistring_setlength_and_insert_delete_keep_bytes_stable() {
   CHECK_EQ(p_to_std_string(s), std::string("abcd"));
 }
 
+void test_ansistring_converts_to_shortstring_with_pascal_truncation() {
+  AnsiString s("abcdef");
+  auto shorty = static_cast<ShortString<4>>(s);
+
+  CHECK_EQ(p_to_std_string(shorty), std::string("abcd"));
+}
+
 void test_shortstring_char_concat_grows_capacity() {
   auto label = ShortString<2>(".L") + p_char_of('e') + p_char_of('0');
   CHECK_EQ(p_to_std_string(label), std::string(".Le0"));
+}
+
+void test_shortstring_charref_inc_and_dec_update_length_slot_storage() {
+  ShortString<> s("A");
+
+  p_inc(s[1]);
+  CHECK_EQ(p_to_std_string(s), std::string("B"));
+
+  p_dec(s[1], 1);
+  CHECK_EQ(p_to_std_string(s), std::string("A"));
+}
+
+void test_octstr_formats_octal_with_zero_padding() {
+  CHECK_EQ(p_to_std_string(p_octstr(9, 4)), std::string("0011"));
 }
 
 void test_move_reads_from_const_shortstring_storage() {
@@ -271,6 +292,15 @@ void test_fillword_and_compareword_operate_on_word_counts() {
   CHECK(p_compareword(words[0], different[0], 4) < 0);
 }
 
+void test_comparebyte_operates_on_byte_counts() {
+  uint8_t a[4] = {1, 2, 3, 4};
+  uint8_t b[4] = {1, 2, 3, 4};
+  uint8_t c[4] = {1, 2, 4, 4};
+
+  CHECK_EQ(p_comparebyte(a[0], b[0], 4), 0);
+  CHECK(p_comparebyte(a[0], c[0], 4) < 0);
+}
+
 void test_blockread_writes_to_void_buffer() {
   TypedFile<uint8_t> f;
   uint8_t got[5] = {};
@@ -356,7 +386,10 @@ int main() {
   RUN_TEST(test_ansistring_copy_on_write_preserves_original);
   RUN_TEST(test_ansistring_storage_slot_holds_payload_pointer);
   RUN_TEST(test_ansistring_setlength_and_insert_delete_keep_bytes_stable);
+  RUN_TEST(test_ansistring_converts_to_shortstring_with_pascal_truncation);
   RUN_TEST(test_shortstring_char_concat_grows_capacity);
+  RUN_TEST(test_shortstring_charref_inc_and_dec_update_length_slot_storage);
+  RUN_TEST(test_octstr_formats_octal_with_zero_padding);
   RUN_TEST(test_move_reads_from_const_shortstring_storage);
   RUN_TEST(test_str_formats_real_values);
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
@@ -369,6 +402,7 @@ int main() {
   RUN_TEST(test_class_free_dispatches_virtual_freeinstance);
   RUN_TEST(test_hi_lo_split_ordinal_halves);
   RUN_TEST(test_fillword_and_compareword_operate_on_word_counts);
+  RUN_TEST(test_comparebyte_operates_on_byte_counts);
   RUN_TEST(test_blockread_writes_to_void_buffer);
   RUN_TEST(test_strnew_allocates_and_disposes_pchar);
   RUN_TEST(test_textfile_reset_closes_previous_handle);

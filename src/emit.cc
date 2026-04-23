@@ -606,6 +606,10 @@ struct Emitter {
   std::string named_type_to_cxx(const TypeExpr* t, std::string_view name,
                                 std::string_view name_prefix = {});
   std::string method_pointer_helper_name(const ast::ProcDecl& pd);
+  std::string low_high_expr_for_named_type(std::string_view name,
+                                           bool want_low);
+  std::string low_high_expr_for_type(const ast::TypeExpr* t,
+                                     bool want_low);
 
   // Expressions -> C++ expression.
   std::string expr_to_cxx(const Expr& e);
@@ -1194,6 +1198,7 @@ std::string Emitter::type_to_cxx(const TypeExpr& t) {
     case Kind::TySubrange:   return subrange_type_to_cxx(static_cast<const TySubrange&>(t));
     case Kind::TyString:     return string_type_to_cxx(static_cast<const TyString&>(t));
     case Kind::TyEnum:       return enum_type_to_cxx(static_cast<const TyEnum&>(t), "");
+    case Kind::TyDistinct:   return type_to_cxx(*static_cast<const TyDistinct&>(t).underlying);
     case Kind::TyProcedural: return procedural_type_to_cxx(static_cast<const TyProcedural&>(t));
     case Kind::TyFile: {
       // Pascal `text`, `file`, `file of T`.
@@ -1208,6 +1213,81 @@ std::string Emitter::type_to_cxx(const TypeExpr& t) {
       return "/* inline-record */ int32_t";
     default:                 return "/* unsupported-type */ int32_t";
   }
+}
+
+std::string Emitter::low_high_expr_for_named_type(std::string_view name,
+                                                  bool want_low) {
+  if (std::string primitive = primitive_low_high_expr(name, want_low);
+      !primitive.empty()) {
+    return primitive;
+  }
+
+  auto emit_enum_bound = [&](std::string_view enum_name,
+                             std::string_view defining_unit) -> std::string {
+    if (defining_unit.empty() || defining_unit == current_unit_name) {
+      return enum_bound_name(enum_name, want_low ? "low" : "high");
+    }
+    return mangle(defining_unit) + "::" +
+           enum_bound_name(enum_name, want_low ? "low" : "high");
+  };
+
+  auto dot = name.find('.');
+  if (dot != std::string_view::npos) {
+    std::string unit(name.substr(0, dot));
+    std::string tail(name.substr(dot + 1));
+    if (registry) {
+      auto eit = registry->enums.find(ascii_lower(tail));
+      if (eit != registry->enums.end() && eit->second.defining_unit == unit) {
+        return emit_enum_bound(tail, unit);
+      }
+      auto ait = registry->aliases.find(ascii_lower(tail));
+      if (ait != registry->aliases.end() && ait->second.defining_unit == unit &&
+          ait->second.target) {
+        return low_high_expr_for_type(ait->second.target.get(), want_low);
+      }
+    }
+    return {};
+  }
+
+  if (local_enums.count(std::string(name))) {
+    return enum_bound_name(name, want_low ? "low" : "high");
+  }
+  if (registry) {
+    auto eit = registry->enums.find(ascii_lower(std::string(name)));
+    if (eit != registry->enums.end()) {
+      return emit_enum_bound(name, eit->second.defining_unit);
+    }
+  }
+
+  auto lit = local_type_aliases_scoped.find(std::string(name));
+  if (lit != local_type_aliases_scoped.end() && lit->second) {
+    return low_high_expr_for_type(lit->second, want_low);
+  }
+  if (registry) {
+    auto ait = registry->aliases.find(ascii_lower(std::string(name)));
+    if (ait != registry->aliases.end() && ait->second.target) {
+      return low_high_expr_for_type(ait->second.target.get(), want_low);
+    }
+  }
+  return {};
+}
+
+std::string Emitter::low_high_expr_for_type(const TypeExpr* t,
+                                            bool want_low) {
+  if (!t) return {};
+  if (t->kind == Kind::TyName) {
+    return low_high_expr_for_named_type(static_cast<const TyName&>(*t).name,
+                                        want_low);
+  }
+  if (t->kind == Kind::TyDistinct) {
+    return low_high_expr_for_type(
+        static_cast<const TyDistinct&>(*t).underlying.get(), want_low);
+  }
+  if (t->kind == Kind::TySubrange) {
+    const auto& r = static_cast<const TySubrange&>(*t);
+    return const_value_to_cxx(want_low ? *r.lo : *r.hi);
+  }
+  return {};
 }
 
 // ---------------------------------------------------------------------------
@@ -2817,55 +2897,36 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return c.args.empty() ? std::string("0") : expr_to_cxx(*c.args[0]);
         };
 
-        // `low(T)`/`high(T)` on a type-name arg -> emitted enum constant.
-        // `low(arr)`/`high(arr)` on an array value -> call `arr.low()` /
-        // `arr.high()` (rt::Array exposes those as static methods).
-        bool is_low_high_type = false;
-        std::string low_high_rewrite;
-        if ((n == "low" || n == "high") && c.args.size() == 1 &&
-            c.args[0]->kind == Kind::Ident) {
-          const auto& a = static_cast<const Ident&>(*c.args[0]);
-          if (std::string primitive = primitive_low_high_expr(a.name, n == "low");
-              !primitive.empty()) {
-            is_low_high_type = true;
-            low_high_rewrite = std::move(primitive);
-          }
-          // Function-local enum: the helper constants live
-          // right alongside us in the current block scope.
-          if (!is_low_high_type && local_enums.count(a.name)) {
-            is_low_high_type = true;
-            low_high_rewrite = enum_bound_name(a.name, n);
-          } else if (!is_low_high_type && registry) {
-            auto eit = registry->enums.find(a.name);
-            if (eit != registry->enums.end()) {
-              // Enum helper constants live in their
-              // defining unit's namespace; qualify unless it's ours.
-              is_low_high_type = true;
-              const std::string& def = eit->second.defining_unit;
-              if (def == current_unit_name) {
-                low_high_rewrite = enum_bound_name(a.name, n);
-              } else {
-                low_high_rewrite = mangle(def) + "::" +
-                                   enum_bound_name(a.name, n);
-              }
+        // Pascal `low` / `high` are type-driven:
+        //   `high(longint)`   -> max value of the type
+        //   `high(a)`         -> max value of a's type
+        //   `high(arr)`       -> last array index of arr's type
+        // so lower them from the resolved Pascal type rather than leaving
+        // a raw runtime call in the generated C++.
+        if ((n == "low" || n == "high") && c.args.size() == 1) {
+          const bool want_low = (n == "low");
+          if (c.args[0]->kind == Kind::Ident) {
+            const auto& a = static_cast<const Ident&>(*c.args[0]);
+            if (std::string rewrite =
+                    low_high_expr_for_named_type(a.name, want_low);
+                !rewrite.empty()) {
+              return rewrite;
             }
           }
-          if (!is_low_high_type) {
-            // Not a type name: may be an array-valued expression.
-            // Resolve via type deduction and use rt::Array's low()/
-            // high() static methods on the deduced array type.
-            const TypeExpr* at = deduce_type(*c.args[0]);
-            if (at) at = registry ? registry->canonicalize(at) : at;
-            if (at && at->kind == Kind::TyArray) {
-              is_low_high_type = true;
-              low_high_rewrite = mangle(a.name) + "." + n + "()";
+          const TypeExpr* at = deduce_type(*c.args[0]);
+          if (at) {
+            if (std::string rewrite = low_high_expr_for_type(at, want_low);
+                !rewrite.empty()) {
+              return rewrite;
+            }
+            const TypeExpr* canon = canonicalize_type(at);
+            if (canon && canon->kind == Kind::TyArray) {
+              return type_to_cxx(*at) + "::" + n + "()";
             }
           }
         }
 
-        if (is_low_high_type) {
-          return low_high_rewrite;
-        } else if (n == "sizeof" && c.args.size() == 1) {
+        if (n == "sizeof" && c.args.size() == 1) {
           // `sizeof(T)` on a type name -- map primitives to their C++
           // expansion, type aliases to their mangled form. `sizeof(expr)`
           // on any value expression stays as C++ `sizeof(expr)`.
