@@ -1512,6 +1512,114 @@ void test_function_result_member_access_uses_pointer_semantics() {
   CHECK(contains(out.impl, "p_result->p_next = nullptr;"));
 }
 
+void test_pointer_typed_field_chain_keeps_arrow_access() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsym = class\n"
+      "    name : string;\n"
+      "  end;\n"
+      "  tblock = class\n"
+      "    sym : tsym;\n"
+      "  end;\n"
+      "function getname(b : tblock) : string;\n"
+      "implementation\n"
+      "function getname(b : tblock) : string;\n"
+      "begin\n"
+      "  getname := b.sym.name;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = p_b->p_sym->p_name;"));
+}
+
+void test_with_cast_binds_pointer_rvalue_by_value() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class\n"
+      "    next : tnode;\n"
+      "  end;\n"
+      "procedure clear(p : pointer);\n"
+      "implementation\n"
+      "procedure clear(p : pointer);\n"
+      "begin\n"
+      "  with tnode(p) do\n"
+      "    next := nil;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "auto tp2cc_with_0 = ((p_tnode*)(p_p));"));
+  CHECK(!contains(out.impl, "auto& tp2cc_with_0 = ((p_tnode*)(p_p));"));
+  CHECK(contains(out.impl, "tp2cc_with_0->p_next = nullptr;"));
+}
+
+void test_statement_context_member_destroy_autocalls() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tlist = class\n"
+      "  end;\n"
+      "procedure zap(list : tlist);\n"
+      "implementation\n"
+      "procedure zap(list : tlist);\n"
+      "begin\n"
+      "  list.destroy;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_list->p_destroy();"));
+}
+
+void test_var_arg_class_cast_reinterprets_storage_slot() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsym = class\n"
+      "  end;\n"
+      "  tlabel = class(tsym)\n"
+      "  end;\n"
+      "procedure take(var s : tsym);\n"
+      "procedure use(l : tlabel);\n"
+      "implementation\n"
+      "procedure take(var s : tsym);\n"
+      "begin\n"
+      "end;\n"
+      "procedure use(l : tlabel);\n"
+      "begin\n"
+      "  take(tsym(l));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_take(::rt::p_reinterpret_storage_ref<p_tsym*>(p_l));"));
+}
+
+void test_parameterless_method_result_keeps_arrow_member_access() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tprocdef = class\n"
+      "    mangledname : string;\n"
+      "  end;\n"
+      "  tprocsym = class\n"
+      "    function first_procdef : tprocdef;\n"
+      "  end;\n"
+      "function getname(ps : tprocsym) : string;\n"
+      "implementation\n"
+      "function tprocsym.first_procdef : tprocdef;\n"
+      "begin\n"
+      "  first_procdef := nil;\n"
+      "end;\n"
+      "function getname(ps : tprocsym) : string;\n"
+      "begin\n"
+      "  getname := ps.first_procdef.mangledname;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = p_ps->p_first_procdef()->p_mangledname;"));
+}
+
 void test_reference_class_typecast_is_pointer_cast() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1670,6 +1778,11 @@ int main() {
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
   RUN_TEST(test_indexed_implicit_property_in_method_body);
   RUN_TEST(test_function_result_member_access_uses_pointer_semantics);
+  RUN_TEST(test_pointer_typed_field_chain_keeps_arrow_access);
+  RUN_TEST(test_with_cast_binds_pointer_rvalue_by_value);
+  RUN_TEST(test_statement_context_member_destroy_autocalls);
+  RUN_TEST(test_var_arg_class_cast_reinterprets_storage_slot);
+  RUN_TEST(test_parameterless_method_result_keeps_arrow_member_access);
   RUN_TEST(test_reference_class_typecast_is_pointer_cast);
   RUN_TEST(test_reference_class_cast_keeps_pointer_member_access);
   RUN_TEST(test_is_as_use_pointer_target_types);
