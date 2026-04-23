@@ -27,7 +27,7 @@ ALL_BINS  := $(BINDIR)/tp2cc $(TEST_BINS)
 all: $(ALL_BINS)
 
 # Make every source file (in src/ or tests/) depend on every header.
-ALL_HEADERS := $(wildcard src/*.h)
+ALL_HEADERS := $(wildcard src/*.h) tp2cc_rt/prelude.h
 
 $(OBJDIR)/%.o: src/%.cc $(ALL_HEADERS)
 	@mkdir -p $(@D)
