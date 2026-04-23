@@ -2320,6 +2320,53 @@ void test_with_local_record_pointer_uses_bound_storage_for_fields() {
   CHECK(!contains(out.impl, "\n        p_y = p_x;"));
 }
 
+void test_statement_new_and_dispose_use_runtime_storage_helpers() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "type\n"
+      "  pdata = ^tdata;\n"
+      "  tdata = record\n"
+      "    value : integer;\n"
+      "  end;\n"
+      "procedure demo;\n"
+      "var\n"
+      "  d : pdata;\n"
+      "begin\n"
+      "  new(d);\n"
+      "  dispose(d);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_new(p_d);"));
+  CHECK(contains(out.impl, "::rt::p_dispose(p_d);"));
+  CHECK(!contains(out.impl, "p_d = new "));
+  CHECK(!contains(out.impl, "delete p_d;"));
+}
+
+void test_expression_new_uses_runtime_storage_helper() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "type\n"
+      "  pbox = ^tbox;\n"
+      "  tbox = object\n"
+      "    constructor init(n : integer);\n"
+      "  end;\n"
+      "procedure demo;\n"
+      "var\n"
+      "  b : pbox;\n"
+      "begin\n"
+      "  b := new(pbox, init(3));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_new(tp2cc_ptr);"));
+  CHECK(!contains(out.impl, "new ::std::remove_pointer_t<p_pbox>{}"));
+}
+
 void test_type_order_sees_method_signature_dependencies() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2537,6 +2584,8 @@ int main() {
   RUN_TEST(test_pointer_indexed_class_field_chain_keeps_arrow_access);
   RUN_TEST(test_as_cast_member_chain_keeps_arrow_access);
   RUN_TEST(test_with_local_record_pointer_uses_bound_storage_for_fields);
+  RUN_TEST(test_statement_new_and_dispose_use_runtime_storage_helpers);
+  RUN_TEST(test_expression_new_uses_runtime_storage_helper);
   RUN_TEST(test_type_order_sees_method_signature_dependencies);
   RUN_TEST(test_reference_class_typecast_is_pointer_cast);
   RUN_TEST(test_reference_class_cast_keeps_pointer_member_access);

@@ -4082,7 +4082,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           std::string t = expr_to_cxx(*c.args[0]);
           std::string make =
-              "new ::std::remove_pointer_t<" + t + ">{}";
+              "([&]{ auto tp2cc_ptr = static_cast<::std::remove_pointer_t<" +
+              t + ">*>(nullptr); ::rt::p_new(tp2cc_ptr); return tp2cc_ptr; }())";
           if (c.args.size() == 1) return make;
           // c.args[1] is either Call(Ctor, args) or Ident(Ctor).
           std::string method;
@@ -5697,10 +5698,12 @@ void Emitter::emit_stmt(const Stmt& s) {
       } else if (name == "new" && call_expr && !call_expr->args.empty()) {
         // new(p) or new(p, Ctor(args)). `p` might be `arr[i]` whose
         // `decltype` is a reference (`T&`); strip it before computing
-        // the pointee so `new remove_pointer_t<T&>` doesn't arise.
+        // the pointee so `new remove_pointer_t<T&>` doesn't arise. Route
+        // statement-form Pascal `new` through the runtime helper rather than
+        // raw C++ `new`, so later `reallocmem` / `dispose` on the same typed
+        // storage stays in one allocation family.
         std::string p = expr_to_cxx(*call_expr->args[0]);
-        emitln(p + " = new ::std::remove_pointer_t<"
-                   "::std::remove_reference_t<decltype(" + p + ")>>{};");
+        emitln("::rt::p_new(" + p + ");");
         if (call_expr->args.size() >= 2) {
           const auto& second = *call_expr->args[1];
           std::string method;
@@ -5737,8 +5740,7 @@ void Emitter::emit_stmt(const Stmt& s) {
           }
           if (!method.empty()) emitln("(*" + p + ")." + method + "();");
         }
-        emitln("delete " + p + ";");
-        emitln(p + " = nullptr;");
+        emitln("::rt::p_dispose(" + p + ");");
       } else if (es.expr->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*es.expr);
         if (auto free_call = maybe_lower_class_free_member(*mem.base, mem.name)) {

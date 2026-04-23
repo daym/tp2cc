@@ -327,6 +327,18 @@ struct ShortString {
     return *this;
   }
 
+  // Pascal code routinely treats `PString` as a raw shortstring buffer:
+  // `GetMem(p, Length(s)+1); p^ := s;`. When source and destination have the
+  // same static type, C++ would otherwise pick the compiler-generated copy
+  // assignment and memcpy the whole fixed-size object. That overruns these
+  // length+1 buffers, so keep the same-capacity path length-aware too.
+  constexpr ShortString& operator=(const ShortString& o) {
+    int n = o.length;
+    length = static_cast<uint8_t>(n);
+    for (int i = 0; i < n; ++i) data[i] = o.data[i];
+    return *this;
+  }
+
   constexpr uint8_t size() const { return length; }
   constexpr bool empty() const { return length == 0; }
 
@@ -2245,6 +2257,17 @@ inline void p_blockread(File& f, T& value, int32_t count, Count& transferred) {
       std::fread(static_cast<void*>(std::addressof(value)), 1, count, f.f));
   p_set_ioresult(f, std::ferror(f.f) ? 100 : 0);
 }
+template <typename File, typename Count>
+inline void p_blockread(File& f, ShortStringCharRef value, int32_t count,
+                        Count& transferred) {
+  p_blockread(f, static_cast<void*>(value.byte), count, transferred);
+}
+template <typename File, typename Count>
+inline void p_blockread(File& f, AnsiStringCharRef value, int32_t count,
+                        Count& transferred) {
+  p_blockread(f, static_cast<void*>(value.owner->mutable_bytes() + value.index),
+              count, transferred);
+}
 template <typename File, typename T>
 inline void p_blockread(File& f, T& value, int32_t count) {
   int32_t transferred = 0;
@@ -2296,6 +2319,28 @@ inline void p_blockwrite(File& f, const T& value, int32_t count,
                   f.f));
   p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
+template <typename File, typename Count>
+inline void p_blockwrite(File& f, ShortStringCharRef value, int32_t count,
+                         Count& transferred) {
+  p_blockwrite(f, static_cast<const void*>(value.byte), count, transferred);
+}
+template <typename File, typename Count>
+inline void p_blockwrite(File& f, ShortStringCharValue value, int32_t count,
+                         Count& transferred) {
+  p_blockwrite(f, static_cast<const void*>(value.byte), count, transferred);
+}
+template <typename File, typename Count>
+inline void p_blockwrite(File& f, AnsiStringCharRef value, int32_t count,
+                         Count& transferred) {
+  p_blockwrite(f,
+               static_cast<const void*>(value.owner->data + value.index),
+               count, transferred);
+}
+template <typename File, typename Count>
+inline void p_blockwrite(File& f, AnsiStringCharValue value, int32_t count,
+                         Count& transferred) {
+  p_blockwrite(f, static_cast<const void*>(value.byte), count, transferred);
+}
 
 template <typename File>
 inline void p_blockwrite(File& f, const void* value, int32_t count) {
@@ -2313,6 +2358,7 @@ inline void p_fillword(void* dest, int32_t count, uint16_t value) {
   for (int32_t i = 0; i < count; ++i) p[i] = value;
 }
 template <typename T>
+requires (!std::is_pointer_v<T>)
 inline void p_fillword(T& dest, int32_t count, uint16_t value) {
   p_fillword(static_cast<void*>(std::addressof(dest)), count, value);
 }
@@ -2552,10 +2598,12 @@ inline void p_fillchar(AnsiStringCharRef dest, int count, p_char value) {
   p_fillchar(dest, count, p_ord(value));
 }
 template <typename T>
+requires (!std::is_pointer_v<T>)
 inline void p_fillchar(T& dest, int count, int value) {
   std::memset(&dest, value & 0xff, static_cast<size_t>(count));
 }
 template <typename T>
+requires (!std::is_pointer_v<T>)
 inline void p_fillchar(T& dest, int count, p_char value) {
   p_fillchar(dest, count, p_ord(value));
 }
@@ -2617,6 +2665,9 @@ inline void p_move(const S& src, AnsiStringCharRef dest, int count) {
 inline void p_getmem(void*& p, int size) {
   p = std::malloc(static_cast<size_t>(size));
 }
+inline void* p_allocmem(int size) {
+  return std::calloc(1, static_cast<size_t>(size));
+}
 inline void p_freemem(void*& p, int = 0) {
   std::free(p);
   p = nullptr;
@@ -2632,15 +2683,11 @@ inline void p_reallocmem(void*& p, int size) {
 }
 template <typename P>
 inline void p_getmem(P*& p, int size) {
-  // Pascal idiom: `getmem(p, length(s)+1)` then `p^ := s` where p is
-  // `^string`. In Pascal that packs to length+1 bytes because strings
-  // are length-prefixed and stored tightly. In C++ our ShortString<N>
-  // is fixed size, so the assignment would overrun a length+1 buffer.
-  // Round allocations up to at least `sizeof(P)` so any later
-  // store-through via `*p` stays in bounds.
-  size_t n = static_cast<size_t>(size);
-  if (n < sizeof(P)) n = sizeof(P);
-  p = static_cast<P*>(std::malloc(n));
+  // Pascal `GetMem(p, n)` allocates exactly `n` bytes even when `p` is a
+  // typed pointer. The bootstrap compiler relies on that for giant array
+  // pointer views like `^tasmsymbolidxarr`, where only a live prefix is
+  // allocated and later passed around as `p^`.
+  p = static_cast<P*>(std::malloc(static_cast<size_t>(size)));
 }
 template <typename P>
 inline void p_freemem(P*& p, int = 0) {
@@ -2656,6 +2703,28 @@ inline void p_reallocmem(P*& p, int size) {
   }
   void* q = std::realloc(static_cast<void*>(p), static_cast<size_t>(size));
   if (q) p = static_cast<P*>(q);
+}
+
+template <typename P>
+inline void p_new(P*& p) {
+  // Pascal typed-pointer allocation must stay in the same malloc/realloc/free
+  // family as getmem/reallocmem/freemem. Plain typed storage is sometimes
+  // grown with reallocmem and later released with dispose, so lowering
+  // new/dispose to C++ new/delete would make those paths mismatch. Use
+  // placement construction here so managed fields still start life in a
+  // proper value-initialized object.
+  void* raw = std::malloc(sizeof(P));
+  if (!raw) std::abort();
+  p = static_cast<P*>(raw);
+  ::new (raw) P{};
+}
+
+template <typename P>
+inline void p_dispose(P*& p) {
+  if (!p) return;
+  std::destroy_at(p);
+  std::free(static_cast<void*>(p));
+  p = nullptr;
 }
 
 // --- Program control --------------------------------------------------------
@@ -3131,7 +3200,8 @@ inline void p_writeln(TextFile& f) {
 
 // --- File-IO placeholders ---------------------------------------------------
 // Real behaviour is added as units are translated that need them.
-inline void p_assign(TextFile& f, const ShortString<>& n) {
+template <int N>
+inline void p_assign(TextFile& f, const ShortString<N>& n) {
   f.name = n;
   f.f = nullptr;
   p_set_ioresult(f, 0);

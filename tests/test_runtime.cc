@@ -49,6 +49,13 @@ inline void method_ptr_add(void* self, int32_t delta) {
   static_cast<MethodPtrCounter*>(self)->value += delta;
 }
 
+struct DisposeProbe {
+  static inline int destroys = 0;
+  int32_t value = 0;
+
+  ~DisposeProbe() { ++destroys; }
+};
+
 void test_val_accepts_prefixed_integers() {
   int32_t v = 0;
   int32_t code = -1;
@@ -101,6 +108,17 @@ void test_bootstrap_pointer_sized_aliases_are_32bit() {
   CHECK_EQ(p_maxint, std::numeric_limits<int32_t>::max());
 }
 
+void test_getmem_typed_pointer_keeps_requested_prefix_size() {
+  using HugeSymIndex = Array<void*, 0, 536870911>;
+
+  HugeSymIndex* p = nullptr;
+  p_getmem(p, static_cast<int>(4 * sizeof(void*)));
+
+  CHECK(p != nullptr);
+  p_freemem(p);
+  CHECK(p == nullptr);
+}
+
 void test_ansistring_copy_on_write_preserves_original() {
   AnsiString original("abc");
   AnsiString copy = original;
@@ -118,6 +136,35 @@ void test_ansistring_storage_slot_holds_payload_pointer() {
 
   CHECK(slot == static_cast<void*>(static_cast<p_char*>(s)));
   CHECK_EQ(p_deref(slot), 'h');
+}
+
+void test_new_and_dispose_share_malloc_storage_family() {
+  DisposeProbe::destroys = 0;
+
+  DisposeProbe* p = nullptr;
+  p_new(p);
+  CHECK(p != nullptr);
+  p->value = 7;
+
+  p_dispose(p);
+  CHECK(p == nullptr);
+  CHECK_EQ(DisposeProbe::destroys, 1);
+}
+
+void test_dispose_releases_plain_storage_grown_with_reallocmem() {
+  struct MoveListLike {
+    int32_t count;
+    void* data[1];
+  };
+
+  MoveListLike* p = nullptr;
+  p_getmem(p, static_cast<int>(sizeof(int32_t) + 4 * sizeof(void*)));
+  p->count = 4;
+  p_reallocmem(p, static_cast<int>(sizeof(int32_t) + 8 * sizeof(void*)));
+  p->count = 8;
+
+  p_dispose(p);
+  CHECK(p == nullptr);
 }
 
 void test_ansistring_setlength_and_insert_delete_keep_bytes_stable() {
@@ -359,6 +406,70 @@ void test_blockread_writes_to_void_buffer() {
   f.f = nullptr;
 }
 
+void test_blockwrite_uses_underlying_shortstring_char_storage() {
+  TextFile f{};
+  ShortString<> text("hello");
+  int32_t transferred = -1;
+  char got[6] = {};
+
+  f.f = std::tmpfile();
+  CHECK(f.f != nullptr);
+
+  p_blockwrite(f, text[1], p_length(text), transferred);
+  CHECK_EQ(transferred, 5);
+  std::rewind(f.f);
+  CHECK_EQ(std::fread(got, 1, 5, f.f), static_cast<std::size_t>(5));
+  CHECK_EQ(std::string(got, 5), std::string("hello"));
+
+  const ShortString<> const_text("ok");
+  p_seek(f, 0);
+  p_blockwrite(f, const_text[1], p_length(const_text), transferred);
+  CHECK_EQ(transferred, 2);
+  std::rewind(f.f);
+  CHECK_EQ(std::fread(got, 1, 2, f.f), static_cast<std::size_t>(2));
+  CHECK_EQ(std::string(got, 2), std::string("ok"));
+
+  std::fclose(f.f);
+  f.f = nullptr;
+}
+
+void test_blockread_uses_underlying_shortstring_char_storage() {
+  TextFile f{};
+  ShortString<> text{};
+  int32_t transferred = -1;
+
+  f.f = std::tmpfile();
+  CHECK(f.f != nullptr);
+  const char* src = "abc";
+  std::fwrite(src, 1, 3, f.f);
+  std::rewind(f.f);
+
+  p_blockread(f, text[1], 3, transferred);
+  CHECK_EQ(transferred, 3);
+  text.length = 3;
+  CHECK_EQ(p_to_std_string(text), std::string("abc"));
+
+  std::fclose(f.f);
+  f.f = nullptr;
+}
+
+void test_shortstring_same_capacity_assignment_uses_length_prefix_copy() {
+  alignas(ShortString<>) unsigned char raw[12];
+  std::memset(raw, 0xAA, sizeof(raw));
+
+  auto* p = reinterpret_cast<ShortString<>*>(raw);
+  ShortString<> src("abc");
+  *p = src;
+
+  CHECK_EQ(raw[0], 3);
+  CHECK_EQ(raw[1], static_cast<unsigned char>('a'));
+  CHECK_EQ(raw[2], static_cast<unsigned char>('b'));
+  CHECK_EQ(raw[3], static_cast<unsigned char>('c'));
+  for (size_t i = 4; i < sizeof(raw); ++i) {
+    CHECK_EQ(raw[i], static_cast<unsigned char>(0xAA));
+  }
+}
+
 void test_strnew_allocates_and_disposes_pchar() {
   p_char* text = p_strnew("hello");
   CHECK(text != nullptr);
@@ -422,8 +533,11 @@ int main() {
   RUN_TEST(test_val_accepts_decimal_min_longint);
   RUN_TEST(test_val_rejects_compiler_unsupported_integer_forms);
   RUN_TEST(test_bootstrap_pointer_sized_aliases_are_32bit);
+  RUN_TEST(test_getmem_typed_pointer_keeps_requested_prefix_size);
   RUN_TEST(test_ansistring_copy_on_write_preserves_original);
   RUN_TEST(test_ansistring_storage_slot_holds_payload_pointer);
+  RUN_TEST(test_new_and_dispose_share_malloc_storage_family);
+  RUN_TEST(test_dispose_releases_plain_storage_grown_with_reallocmem);
   RUN_TEST(test_ansistring_setlength_and_insert_delete_keep_bytes_stable);
   RUN_TEST(test_ansistring_converts_to_shortstring_with_pascal_truncation);
   RUN_TEST(test_shortstring_char_concat_grows_capacity);
@@ -447,6 +561,9 @@ int main() {
   RUN_TEST(test_indexword_searches_prefix_only);
   RUN_TEST(test_comparebyte_operates_on_byte_counts);
   RUN_TEST(test_blockread_writes_to_void_buffer);
+  RUN_TEST(test_blockwrite_uses_underlying_shortstring_char_storage);
+  RUN_TEST(test_blockread_uses_underlying_shortstring_char_storage);
+  RUN_TEST(test_shortstring_same_capacity_assignment_uses_length_prefix_copy);
   RUN_TEST(test_strnew_allocates_and_disposes_pchar);
   RUN_TEST(test_textfile_reset_closes_previous_handle);
   RUN_TEST(test_exec_tracks_exit_status);
