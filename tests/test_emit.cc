@@ -384,7 +384,7 @@ void test_const_pointer_parameter_stays_value_abi() {
   CHECK(!contains(out.impl, "p_take(const "));
 }
 
-void test_const_fixed_array_parameter_uses_const_reference() {
+void test_const_fixed_array_parameter_stays_value_abi() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -401,13 +401,13 @@ void test_const_fixed_array_parameter_uses_const_reference() {
       "  if a[0] <> 0 then ;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "void p_take(const p_tarr& p_a);"));
-  CHECK(contains(out.impl, "void p_take(const p_tarr& p_a) {"));
+  CHECK(contains(out.header, "void p_take(p_tarr p_a);"));
+  CHECK(contains(out.impl, "void p_take(p_tarr p_a) {"));
   CHECK(contains(out.impl, "p_p = (&p_a);"));
   CHECK(contains(out.impl, "if ((p_a[0] != 0))"));
 }
 
-void test_const_fixed_record_array_parameter_uses_const_reference() {
+void test_const_fixed_record_array_parameter_stays_value_abi() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -427,12 +427,12 @@ void test_const_fixed_record_array_parameter_uses_const_reference() {
       "  if a[0].x <> 0 then ;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "void p_take(const p_tarr& p_a);"));
+  CHECK(contains(out.header, "void p_take(p_tarr p_a);"));
   CHECK(contains(out.impl, "p_p = (&p_a);"));
   CHECK(contains(out.impl, "if ((p_a[0].p_x != 0))"));
 }
 
-void test_const_fixed_classref_array_parameter_uses_const_reference() {
+void test_const_fixed_classref_array_parameter_stays_value_abi() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -450,7 +450,7 @@ void test_const_fixed_classref_array_parameter_uses_const_reference() {
       "  if a[0] <> nil then ;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "void p_take(const p_tarr& p_a);"));
+  CHECK(contains(out.header, "void p_take(p_tarr p_a);"));
   CHECK(contains(out.impl, "p_p = (&p_a);"));
   CHECK(contains(out.impl, "if ((p_a[0] != nullptr))"));
 }
@@ -2532,9 +2532,9 @@ int main() {
   RUN_TEST(test_var_extern_in_header_and_def_in_impl);
   RUN_TEST(test_out_parameter_emits_like_var_reference);
   RUN_TEST(test_const_pointer_parameter_stays_value_abi);
-  RUN_TEST(test_const_fixed_array_parameter_uses_const_reference);
-  RUN_TEST(test_const_fixed_record_array_parameter_uses_const_reference);
-  RUN_TEST(test_const_fixed_classref_array_parameter_uses_const_reference);
+  RUN_TEST(test_const_fixed_array_parameter_stays_value_abi);
+  RUN_TEST(test_const_fixed_record_array_parameter_stays_value_abi);
+  RUN_TEST(test_const_fixed_classref_array_parameter_stays_value_abi);
   RUN_TEST(test_proc_signature_in_header);
   RUN_TEST(test_typed_array_const);
   RUN_TEST(test_singleton_typed_array_const);

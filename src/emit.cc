@@ -1131,25 +1131,13 @@ bool Emitter::const_param_needs_mutable_ref(const TypeExpr* t) {
 }
 
 bool Emitter::const_param_needs_const_ref(const TypeExpr* t) {
-  if (type_is_reference_class(t)) return false;
-  t = canonicalize_type(t);
-  if (!t) return false;
-  if (t->kind != Kind::TyArray) return false;
-  const auto& arr = static_cast<const TyArray&>(*t);
-  if (arr.array_kind != ArrayKind::Fixed) return false;
-  // Keep fixed-array `const` params as `const T&`.
-  //
-  // Before the compiler sources were cleaned up, bootstrap used typed
-  // pointers to arrays whose backing storage only held the live prefix:
-  //   spill_temps : ^Tspill_temp_list;
-  //   spill_temps := allocmem(sizeof(treference) * maxreg);
-  //   instr_spill_register(..., spill_temps^);
-  //
-  // In Pascal that passes the array lvalue the pointer names; emitting the
-  // formal as a by-value C++ parameter would instead copy the full declared
-  // array object. That is wrong for both arrays of records and arrays of
-  // class references, so keep only this one family on a reference ABI.
-  return true;
+  (void)t;
+  // Pascal `const` is not a blanket request for C++ reference semantics.
+  // Use explicit special cases only when the source model proves we need
+  // aliasing. The remaining bootstrap paths do not rely on fixed-array
+  // `const` parameters preserving caller storage identity, so keep them as
+  // plain values.
+  return false;
 }
 
 const ClassInfo* Emitter::class_info_for_type_name(std::string_view name) {
