@@ -1,0 +1,56 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Replace InheritsFrom with `is` in nopt/nutils to drop the RTTI dependency
+License: expat
+
+`TObject.InheritsFrom` walks the runtime class descriptor chain, which
+pulls the full FPC RTTI emission path into the bootstrap compiler.
+The three call sites in `nopt.pas` / `nutils.pas` just need "is this
+node a binary/unary/add-string-opt node?" -- an `is` operator expression
+answers that without requiring the RTTI metadata.
+
+Switch them over so the bootstrap subset does not have to model RTTI.
+
+--- a/compiler/nopt.pas
++++ b/compiler/nopt.pas
+@@ -163,7 +163,7 @@
+ function is_addsstringoptnode(p: tnode): boolean;
+ begin
+   is_addsstringoptnode :=
+-    p.inheritsfrom(taddsstringoptnode);
++    p is taddsstringoptnode;
+ end;
+
+ procedure taddsstringoptnode.updatecurmaxlen;
+--- a/compiler/nutils.pas
++++ b/compiler/nutils.pas
+@@ -125,12 +125,12 @@
+             result := foreachnode(tcasenode(n).elseblock,f,arg) or result;
+           end;
+       end;
+-      if n.inheritsfrom(tbinarynode) then
++      if n is tbinarynode then
+         begin
+           result := foreachnode(tbinarynode(n).right,f,arg) or result;
+           result := foreachnode(tbinarynode(n).left,f,arg) or result;
+         end
+-      else if n.inheritsfrom(tunarynode) then
++      else if n is tunarynode then
+         result := foreachnode(tunarynode(n).left,f,arg) or result;
+     end;
+
+@@ -180,12 +180,12 @@
+             result := foreachnodestatic(tcasenode(n).elseblock,f,arg) or result;
+           end;
+       end;
+-      if n.inheritsfrom(tbinarynode) then
++      if n is tbinarynode then
+         begin
+           result := foreachnodestatic(tbinarynode(n).right,f,arg) or result;
+           result := foreachnodestatic(tbinarynode(n).left,f,arg) or result;
+         end
+-      else if n.inheritsfrom(tunarynode) then
++      else if n is tunarynode then
+         result := foreachnodestatic(tunarynode(n).left,f,arg) or result;
+     end;
+
