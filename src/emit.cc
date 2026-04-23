@@ -237,6 +237,8 @@ const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
       {"dword",       {"uint32_t",        PrimitiveIntKind::Unsigned, 32}},
       {"string",      {"::rt::ShortString<>", PrimitiveIntKind::None,  0}},
       {"shortstring", {"::rt::ShortString<>", PrimitiveIntKind::None,  0}},
+      {"ansistring",  {"::rt::AnsiString", PrimitiveIntKind::None,      0}},
+      {"utf8string",  {"::rt::AnsiString", PrimitiveIntKind::None,      0}},
   };
   return m;
 }
@@ -1642,7 +1644,8 @@ bool Emitter::type_is_stringish(const TypeExpr* t) {
   t = canonicalize_type(t);
   if (!t) return false;
   if (t->kind == Kind::TyString) return true;
-  return tyname_is(t, "string") || tyname_is(t, "shortstring");
+  return tyname_is(t, "string") || tyname_is(t, "shortstring") ||
+         tyname_is(t, "ansistring") || tyname_is(t, "utf8string");
 }
 
 bool Emitter::type_is_pointerish(const TypeExpr* t) {

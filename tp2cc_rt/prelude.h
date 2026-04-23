@@ -452,6 +452,470 @@ inline constexpr auto operator+(const ShortString<N>& a, CharConst b) {
   return a + ShortString<>(b.c);
 }
 
+// --- AnsiString ------------------------------------------------------------
+//
+// Generated compiler code treats an ansistring value in two ways at once:
+// as a managed Pascal string, and as "the variable whose first storage slot
+// contains the payload pointer". Keep the runtime wrapper to exactly one
+// pointer data member so low-level emitted operations like
+// `reinterpret_storage_ref<void*>(s)` still see the expected bytes.
+
+struct AnsiStringHeader {
+  uint32_t refs;
+  int32_t len;
+};
+
+inline p_char* p_ansistring_empty_bytes() {
+  static p_char empty[1] = {p_char_of('\0')};
+  return empty;
+}
+
+inline bool p_ansistring_is_empty_bytes(const p_char* data) {
+  return data == p_ansistring_empty_bytes();
+}
+
+inline AnsiStringHeader* p_ansistring_header(p_char* data) {
+  return reinterpret_cast<AnsiStringHeader*>(
+      reinterpret_cast<unsigned char*>(data) - sizeof(AnsiStringHeader));
+}
+
+inline const AnsiStringHeader* p_ansistring_header(const p_char* data) {
+  return reinterpret_cast<const AnsiStringHeader*>(
+      reinterpret_cast<const unsigned char*>(data) - sizeof(AnsiStringHeader));
+}
+
+inline p_char* p_ansistring_alloc_bytes(int32_t len) {
+  if (len <= 0) return p_ansistring_empty_bytes();
+  auto* raw = static_cast<unsigned char*>(
+      std::malloc(sizeof(AnsiStringHeader) +
+                  static_cast<size_t>(len + 1) * sizeof(p_char)));
+  if (!raw) std::abort();
+  auto* hdr = reinterpret_cast<AnsiStringHeader*>(raw);
+  hdr->refs = 1;
+  hdr->len = len;
+  auto* data = reinterpret_cast<p_char*>(raw + sizeof(AnsiStringHeader));
+  std::memset(data, 0, static_cast<size_t>(len + 1) * sizeof(p_char));
+  return data;
+}
+
+inline p_char* p_ansistring_alloc_owned_empty() {
+  auto* raw = static_cast<unsigned char*>(
+      std::malloc(sizeof(AnsiStringHeader) + sizeof(p_char)));
+  if (!raw) std::abort();
+  auto* hdr = reinterpret_cast<AnsiStringHeader*>(raw);
+  hdr->refs = 1;
+  hdr->len = 0;
+  auto* data = reinterpret_cast<p_char*>(raw + sizeof(AnsiStringHeader));
+  data[0] = p_char_of('\0');
+  return data;
+}
+
+class AnsiString;
+
+struct AnsiStringCharValue {
+  const p_char* byte = nullptr;
+
+  constexpr operator p_char() const { return *byte; }
+
+  const p_char* operator&() const { return byte; }
+};
+
+struct AnsiStringCharRef {
+  AnsiString* owner = nullptr;
+  int index = 0;  // zero-based byte index within the payload
+
+  AnsiStringCharRef() = default;
+  AnsiStringCharRef(const AnsiStringCharRef&) = default;
+  AnsiStringCharRef(AnsiString* s, int i) : owner(s), index(i) {}
+
+  operator p_char() const;
+  AnsiStringCharRef& operator=(p_char value);
+  AnsiStringCharRef& operator=(const AnsiStringCharRef& other);
+  p_char* operator&();
+};
+
+class AnsiString {
+ public:
+  p_char* data;
+
+  AnsiString() : data(p_ansistring_empty_bytes()) {}
+  AnsiString(std::nullptr_t) : AnsiString() {}
+
+  AnsiString(const char* s) : AnsiString() { assign_c_str(s); }
+  AnsiString(const p_char* s) : AnsiString() { assign_pascal_c_str(s); }
+
+  template <int N>
+  AnsiString(const ShortString<N>& s) : AnsiString() {
+    assign_bytes(s.data, s.length);
+  }
+
+  explicit AnsiString(p_char c) : AnsiString() {
+    set_length(1);
+    data[0] = c;
+  }
+
+  AnsiString(const AnsiString& other) : data(other.data) { retain(); }
+
+  AnsiString(AnsiString&& other) noexcept : data(other.data) {
+    other.data = p_ansistring_empty_bytes();
+  }
+
+  ~AnsiString() { release(); }
+
+  AnsiString& operator=(const AnsiString& other) {
+    if (this == &other || data == other.data) return *this;
+    release();
+    data = other.data;
+    retain();
+    return *this;
+  }
+
+  AnsiString& operator=(AnsiString&& other) noexcept {
+    if (this == &other) return *this;
+    release();
+    data = other.data;
+    other.data = p_ansistring_empty_bytes();
+    return *this;
+  }
+
+  template <int N>
+  AnsiString& operator=(const ShortString<N>& s) {
+    assign_bytes(s.data, s.length);
+    return *this;
+  }
+
+  AnsiString& operator=(const char* s) {
+    assign_c_str(s);
+    return *this;
+  }
+
+  AnsiString& operator=(const p_char* s) {
+    assign_pascal_c_str(s);
+    return *this;
+  }
+
+  AnsiString& operator=(p_char c) {
+    set_length(1);
+    data[0] = c;
+    return *this;
+  }
+
+  AnsiString& operator=(std::nullptr_t) {
+    clear();
+    return *this;
+  }
+
+  int32_t length() const {
+    return p_ansistring_is_empty_bytes(data) ? 0 : p_ansistring_header(data)->len;
+  }
+
+  bool empty() const { return length() == 0; }
+
+  const p_char* bytes() const { return data; }
+
+  p_char* mutable_bytes() {
+    ensure_unique();
+    return data;
+  }
+
+  void clear() {
+    release();
+    data = p_ansistring_empty_bytes();
+  }
+
+  void ensure_unique() {
+    if (p_ansistring_is_empty_bytes(data)) {
+      data = p_ansistring_alloc_owned_empty();
+      return;
+    }
+    auto* hdr = p_ansistring_header(data);
+    if (hdr->refs == 1) return;
+
+    int32_t len = hdr->len;
+    p_char* fresh = p_ansistring_alloc_bytes(len);
+    std::memcpy(fresh, data, static_cast<size_t>(len + 1) * sizeof(p_char));
+    --hdr->refs;
+    data = fresh;
+  }
+
+  void set_length(int32_t new_len) {
+    if (new_len <= 0) {
+      clear();
+      return;
+    }
+
+    int32_t old_len = length();
+    p_char* fresh = p_ansistring_alloc_bytes(new_len);
+    int32_t keep = old_len < new_len ? old_len : new_len;
+    if (keep > 0) {
+      std::memcpy(fresh, data, static_cast<size_t>(keep) * sizeof(p_char));
+    }
+    release();
+    data = fresh;
+  }
+
+  explicit operator int32_t() const {
+    return static_cast<int32_t>(reinterpret_cast<std::uintptr_t>(data));
+  }
+
+  explicit operator uint32_t() const {
+    return static_cast<uint32_t>(reinterpret_cast<std::uintptr_t>(data));
+  }
+
+  operator const p_char*() const { return data; }
+
+  operator p_char*() {
+    ensure_unique();
+    return data;
+  }
+
+  AnsiStringCharRef operator[](int i) {
+    return AnsiStringCharRef(this, i - 1);
+  }
+
+  AnsiStringCharValue operator[](int i) const {
+    return AnsiStringCharValue{data + (i - 1)};
+  }
+
+ private:
+  void retain() {
+    if (!p_ansistring_is_empty_bytes(data)) ++p_ansistring_header(data)->refs;
+  }
+
+  void release() {
+    if (p_ansistring_is_empty_bytes(data)) return;
+    auto* hdr = p_ansistring_header(data);
+    if (--hdr->refs == 0) std::free(hdr);
+  }
+
+  void assign_bytes(const p_char* src, int32_t len) {
+    if (!src || len <= 0) {
+      clear();
+      return;
+    }
+    p_char* fresh = p_ansistring_alloc_bytes(len);
+    std::memcpy(fresh, src, static_cast<size_t>(len) * sizeof(p_char));
+    release();
+    data = fresh;
+  }
+
+  void assign_c_str(const char* s) {
+    if (!s || *s == '\0') {
+      clear();
+      return;
+    }
+    assign_bytes(reinterpret_cast<const p_char*>(s),
+                 static_cast<int32_t>(std::strlen(s)));
+  }
+
+  void assign_pascal_c_str(const p_char* s) {
+    if (!s || p_char_byte(*s) == 0) {
+      clear();
+      return;
+    }
+    int32_t len = 0;
+    while (p_char_byte(s[len]) != 0) ++len;
+    assign_bytes(s, len);
+  }
+};
+
+inline AnsiStringCharRef::operator p_char() const {
+  return owner->data[index];
+}
+
+inline AnsiStringCharRef& AnsiStringCharRef::operator=(p_char value) {
+  owner->ensure_unique();
+  owner->data[index] = value;
+  return *this;
+}
+
+inline AnsiStringCharRef& AnsiStringCharRef::operator=(
+    const AnsiStringCharRef& other) {
+  return (*this = static_cast<p_char>(other));
+}
+
+inline p_char* AnsiStringCharRef::operator&() {
+  owner->ensure_unique();
+  return owner->data + index;
+}
+
+template <int N>
+inline const p_char* p_string_bytes(const ShortString<N>& s) {
+  return s.data;
+}
+
+inline const p_char* p_string_bytes(const AnsiString& s) {
+  return s.bytes();
+}
+
+template <int N>
+inline int32_t p_string_length(const ShortString<N>& s) {
+  return s.length;
+}
+
+inline int32_t p_string_length(const AnsiString& s) {
+  return s.length();
+}
+
+template <typename A, typename B>
+inline int p_string_compare(const A& a, const B& b) {
+  const int32_t a_len = p_string_length(a);
+  const int32_t b_len = p_string_length(b);
+  const p_char* a_bytes = p_string_bytes(a);
+  const p_char* b_bytes = p_string_bytes(b);
+  int32_t limit = a_len < b_len ? a_len : b_len;
+  for (int32_t i = 0; i < limit; ++i) {
+    uint8_t av = p_char_byte(a_bytes[i]);
+    uint8_t bv = p_char_byte(b_bytes[i]);
+    if (av < bv) return -1;
+    if (av > bv) return 1;
+  }
+  if (a_len < b_len) return -1;
+  if (a_len > b_len) return 1;
+  return 0;
+}
+
+template <typename A, typename B>
+inline AnsiString p_concat_to_ansistring(const A& a, const B& b) {
+  const int32_t a_len = p_string_length(a);
+  const int32_t b_len = p_string_length(b);
+  AnsiString out;
+  out.set_length(a_len + b_len);
+  if (a_len > 0) {
+    std::memcpy(out.mutable_bytes(), p_string_bytes(a),
+                static_cast<size_t>(a_len) * sizeof(p_char));
+  }
+  if (b_len > 0) {
+    std::memcpy(out.mutable_bytes() + a_len, p_string_bytes(b),
+                static_cast<size_t>(b_len) * sizeof(p_char));
+  }
+  return out;
+}
+
+inline AnsiString operator+(const AnsiString& s) { return s; }
+
+template <int N>
+inline AnsiString operator+(const AnsiString& a, const ShortString<N>& b) {
+  return p_concat_to_ansistring(a, b);
+}
+
+template <int N>
+inline AnsiString operator+(const ShortString<N>& a, const AnsiString& b) {
+  return p_concat_to_ansistring(a, b);
+}
+
+inline AnsiString operator+(const AnsiString& a, const AnsiString& b) {
+  return p_concat_to_ansistring(a, b);
+}
+
+inline AnsiString operator+(const AnsiString& a, const char* b) {
+  return a + AnsiString(b);
+}
+
+inline AnsiString operator+(const char* a, const AnsiString& b) {
+  return AnsiString(a) + b;
+}
+
+inline AnsiString operator+(const AnsiString& a, const p_char* b) {
+  return a + AnsiString(b);
+}
+
+inline AnsiString operator+(const p_char* a, const AnsiString& b) {
+  return AnsiString(a) + b;
+}
+
+inline AnsiString operator+(const AnsiString& a, p_char c) {
+  return a + AnsiString(c);
+}
+
+inline AnsiString operator+(p_char c, const AnsiString& b) {
+  return AnsiString(c) + b;
+}
+
+inline bool operator==(const AnsiString& a, const AnsiString& b) {
+  return p_string_compare(a, b) == 0;
+}
+
+inline bool operator!=(const AnsiString& a, const AnsiString& b) {
+  return !(a == b);
+}
+
+inline bool operator<(const AnsiString& a, const AnsiString& b) {
+  return p_string_compare(a, b) < 0;
+}
+
+inline bool operator>(const AnsiString& a, const AnsiString& b) {
+  return p_string_compare(a, b) > 0;
+}
+
+inline bool operator<=(const AnsiString& a, const AnsiString& b) {
+  return p_string_compare(a, b) <= 0;
+}
+
+inline bool operator>=(const AnsiString& a, const AnsiString& b) {
+  return p_string_compare(a, b) >= 0;
+}
+
+template <int N>
+inline bool operator==(const AnsiString& a, const ShortString<N>& b) {
+  return p_string_compare(a, b) == 0;
+}
+
+template <int N>
+inline bool operator==(const ShortString<N>& a, const AnsiString& b) {
+  return p_string_compare(a, b) == 0;
+}
+
+template <int N>
+inline bool operator!=(const AnsiString& a, const ShortString<N>& b) {
+  return !(a == b);
+}
+
+template <int N>
+inline bool operator!=(const ShortString<N>& a, const AnsiString& b) {
+  return !(a == b);
+}
+
+template <int N>
+inline bool operator<(const AnsiString& a, const ShortString<N>& b) {
+  return p_string_compare(a, b) < 0;
+}
+
+template <int N>
+inline bool operator<(const ShortString<N>& a, const AnsiString& b) {
+  return p_string_compare(a, b) < 0;
+}
+
+template <int N>
+inline bool operator>(const AnsiString& a, const ShortString<N>& b) {
+  return p_string_compare(a, b) > 0;
+}
+
+template <int N>
+inline bool operator>(const ShortString<N>& a, const AnsiString& b) {
+  return p_string_compare(a, b) > 0;
+}
+
+template <int N>
+inline bool operator<=(const AnsiString& a, const ShortString<N>& b) {
+  return p_string_compare(a, b) <= 0;
+}
+
+template <int N>
+inline bool operator<=(const ShortString<N>& a, const AnsiString& b) {
+  return p_string_compare(a, b) <= 0;
+}
+
+template <int N>
+inline bool operator>=(const AnsiString& a, const ShortString<N>& b) {
+  return p_string_compare(a, b) >= 0;
+}
+
+template <int N>
+inline bool operator>=(const ShortString<N>& a, const AnsiString& b) {
+  return p_string_compare(a, b) >= 0;
+}
+
 // --- Common Pascal RTL type aliases ----------------------------------------
 // Exposed in the `rt` namespace so emitted units pick them up via
 // `using namespace ::rt;`.
@@ -933,7 +1397,22 @@ inline Range range(int64_t a, int64_t b) { return {a, b}; }
 // calls through verbatim -- no translation table needed.
 
 template <int N> inline int p_length(const ShortString<N>& s) { return s.length; }
+inline int p_length(const AnsiString& s) { return s.length(); }
 template <typename T> inline int p_length(const std::array<T, 0>&) { return 0; }
+
+template <int N>
+inline void p_setlength(ShortString<N>& s, int new_len) {
+  if (new_len < 0) new_len = 0;
+  if (new_len > N) new_len = N;
+  for (int i = s.length; i < new_len; ++i) {
+    s.data[i] = p_char_of('\0');
+  }
+  s.length = static_cast<uint8_t>(new_len);
+}
+
+inline void p_setlength(AnsiString& s, int new_len) {
+  s.set_length(new_len);
+}
 
 template <typename T>
 requires std::is_convertible_v<T, p_char>
@@ -1065,6 +1544,13 @@ inline std::string p_to_std_string(const ShortString<N>& s) {
   return out;
 }
 
+inline std::string p_to_std_string(const AnsiString& s) {
+  std::string out;
+  out.reserve(static_cast<size_t>(s.length()));
+  for (int i = 0; i < s.length(); ++i) out.push_back(p_char_to_c(s.data[i]));
+  return out;
+}
+
 inline std::string p_to_std_string(const char* s) {
   return s ? std::string(s) : std::string();
 }
@@ -1076,6 +1562,10 @@ inline int32_t p_strtoint(const ShortString<>& s) {
   char buf[260]{};
   for (int i = 0; i < s.length; ++i) buf[i] = p_char_to_c(s.data[i]);
   return std::atoi(buf);
+}
+
+inline int32_t p_strtoint(const AnsiString& s) {
+  return std::atoi(p_to_std_string(s).c_str());
 }
 
 inline int p_digit_value(char c) {
@@ -1606,6 +2096,22 @@ inline void p_readln(TextFile& f, ShortString<N>& s) {
     if (s.length < N) { s.data[s.length] = p_char_of(static_cast<char>(c)); ++s.length; }
   }
 }
+inline void p_readln(TextFile& f, AnsiString& s) {
+  if (!f.f) {
+    s.clear();
+    return;
+  }
+  std::vector<p_char> bytes;
+  int c;
+  while ((c = std::fgetc(f.f)) != EOF && c != '\n') {
+    bytes.push_back(p_char_of(static_cast<char>(c)));
+  }
+  s.set_length(static_cast<int32_t>(bytes.size()));
+  if (!bytes.empty()) {
+    std::memcpy(s.mutable_bytes(), bytes.data(),
+                bytes.size() * sizeof(p_char));
+  }
+}
 template <typename... A> inline void p_readln(A&&...) {}
 template <typename... A> inline void p_read(A&&...) {}
 // `settextbuf(f, buf, size)` is a stub -- we don't buffer. Take the buffer
@@ -1623,6 +2129,7 @@ inline int p_strlen(const p_char* s) {
   while (p_char_byte(s[n]) != 0) ++n;
   return n;
 }
+inline int p_strlen(const AnsiString& s) { return s.length(); }
 inline const char* p_strpas(const char* s) { return s; }
 inline const p_char* p_strpas(const p_char* s) { return s; }
 template <int N>
@@ -1641,6 +2148,16 @@ inline char* p_strpcopy(char* dest, const ShortString<>& src) {
 inline p_char* p_strpcopy(p_char* dest, const ShortString<>& src) {
   for (int i = 0; i < src.length; ++i) dest[i] = src.data[i];
   dest[src.length] = p_char_of('\0');
+  return dest;
+}
+inline char* p_strpcopy(char* dest, const AnsiString& src) {
+  for (int i = 0; i < src.length(); ++i) dest[i] = p_char_to_c(src.data[i]);
+  dest[src.length()] = 0;
+  return dest;
+}
+inline p_char* p_strpcopy(p_char* dest, const AnsiString& src) {
+  for (int i = 0; i < src.length(); ++i) dest[i] = src.data[i];
+  dest[src.length()] = p_char_of('\0');
   return dest;
 }
 inline int p_strcomp(const char* a, const char* b) { return std::strcmp(a, b); }
@@ -1685,6 +2202,50 @@ inline void p_insert(const p_char* src, ShortString<>& dest, int pos) {
   p_insert(ShortString<>(src), dest, pos);
 }
 
+template <typename Src>
+inline void p_insert_bytes(const Src& src, AnsiString& dest, int pos) {
+  int32_t src_len = p_string_length(src);
+  if (src_len <= 0) return;
+  const p_char* src_bytes = p_string_bytes(src);
+  std::vector<p_char> owned_src;
+  if (src_bytes == dest.bytes()) {
+    owned_src.assign(src_bytes, src_bytes + src_len);
+    src_bytes = owned_src.data();
+  }
+
+  int32_t old_len = dest.length();
+  if (pos < 1) pos = 1;
+  if (pos > old_len + 1) pos = old_len + 1;
+
+  dest.set_length(old_len + src_len);
+  p_char* bytes = dest.mutable_bytes();
+  std::memmove(bytes + (pos - 1) + src_len, bytes + (pos - 1),
+               static_cast<size_t>(old_len - (pos - 1)) * sizeof(p_char));
+  std::memcpy(bytes + (pos - 1), src_bytes,
+              static_cast<size_t>(src_len) * sizeof(p_char));
+}
+
+template <int N>
+inline void p_insert(const ShortString<N>& src, AnsiString& dest, int pos) {
+  p_insert_bytes(src, dest, pos);
+}
+
+inline void p_insert(const AnsiString& src, AnsiString& dest, int pos) {
+  p_insert_bytes(src, dest, pos);
+}
+
+inline void p_insert(p_char c, AnsiString& dest, int pos) {
+  p_insert_bytes(AnsiString(c), dest, pos);
+}
+
+inline void p_insert(const char* src, AnsiString& dest, int pos) {
+  p_insert_bytes(AnsiString(src), dest, pos);
+}
+
+inline void p_insert(const p_char* src, AnsiString& dest, int pos) {
+  p_insert_bytes(AnsiString(src), dest, pos);
+}
+
 // --- Memory / bytewise utilities -------------------------------------------
 
 inline void p_fillchar(void* dest, int count, int value) {
@@ -1697,6 +2258,12 @@ inline void p_fillchar(ShortStringCharRef dest, int count, int value) {
   std::memset(dest.byte, value & 0xff, static_cast<size_t>(count));
 }
 inline void p_fillchar(ShortStringCharRef dest, int count, p_char value) {
+  p_fillchar(dest, count, p_ord(value));
+}
+inline void p_fillchar(AnsiStringCharRef dest, int count, int value) {
+  std::memset(&dest, value & 0xff, static_cast<size_t>(count));
+}
+inline void p_fillchar(AnsiStringCharRef dest, int count, p_char value) {
   p_fillchar(dest, count, p_ord(value));
 }
 template <typename T>
@@ -1716,18 +2283,38 @@ inline void p_move(ShortStringCharRef src, void* dest, int count) {
 inline void p_move(ShortStringCharValue src, void* dest, int count) {
   std::memmove(dest, src.byte, static_cast<size_t>(count));
 }
+inline void p_move(AnsiStringCharRef src, void* dest, int count) {
+  std::memmove(dest, &src, static_cast<size_t>(count));
+}
+inline void p_move(AnsiStringCharValue src, void* dest, int count) {
+  std::memmove(dest, src.byte, static_cast<size_t>(count));
+}
 inline void p_move(const void* src, ShortStringCharRef dest, int count) {
   std::memmove(dest.byte, src, static_cast<size_t>(count));
 }
+inline void p_move(const void* src, AnsiStringCharRef dest, int count) {
+  std::memmove(&dest, src, static_cast<size_t>(count));
+}
 inline void p_move(ShortStringCharValue src, ShortStringCharRef dest, int count) {
   std::memmove(dest.byte, src.byte, static_cast<size_t>(count));
+}
+inline void p_move(AnsiStringCharValue src, AnsiStringCharRef dest, int count) {
+  std::memmove(&dest, src.byte, static_cast<size_t>(count));
 }
 template <typename D>
 inline void p_move(ShortStringCharRef src, D& dest, int count) {
   std::memmove(std::addressof(dest), src.byte, static_cast<size_t>(count));
 }
 template <typename D>
+inline void p_move(AnsiStringCharRef src, D& dest, int count) {
+  std::memmove(std::addressof(dest), &src, static_cast<size_t>(count));
+}
+template <typename D>
 inline void p_move(ShortStringCharValue src, D& dest, int count) {
+  std::memmove(std::addressof(dest), src.byte, static_cast<size_t>(count));
+}
+template <typename D>
+inline void p_move(AnsiStringCharValue src, D& dest, int count) {
   std::memmove(std::addressof(dest), src.byte, static_cast<size_t>(count));
 }
 template <typename S, typename D>
@@ -1737,6 +2324,10 @@ inline void p_move(const S& src, D& dest, int count) {
 template <typename S>
 inline void p_move(const S& src, ShortStringCharRef dest, int count) {
   std::memmove(dest.byte, &src, static_cast<size_t>(count));
+}
+template <typename S>
+inline void p_move(const S& src, AnsiStringCharRef dest, int count) {
+  std::memmove(&dest, &src, static_cast<size_t>(count));
 }
 inline void p_getmem(void*& p, int size) {
   p = std::malloc(static_cast<size_t>(size));
@@ -1872,9 +2463,88 @@ inline int p_pos(p_char c, const ShortString<N>& hay) {
   return 0;
 }
 
+inline int p_pos(const char* needle, const AnsiString& hay) {
+  int nl = needle ? static_cast<int>(std::strlen(needle)) : 0;
+  int32_t hay_len = hay.length();
+  for (int32_t i = 0; i + nl <= hay_len; ++i) {
+    bool ok = true;
+    for (int j = 0; j < nl; ++j) {
+      if (hay.data[i + j] != p_char_of(needle[j])) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return i + 1;
+  }
+  return 0;
+}
+
+inline int p_pos(const p_char* needle, const AnsiString& hay) {
+  int nl = p_strlen(needle);
+  int32_t hay_len = hay.length();
+  for (int32_t i = 0; i + nl <= hay_len; ++i) {
+    bool ok = true;
+    for (int j = 0; j < nl; ++j) {
+      if (hay.data[i + j] != needle[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return i + 1;
+  }
+  return 0;
+}
+
+template <int N>
+inline int p_pos(const ShortString<N>& needle, const AnsiString& hay) {
+  int32_t needle_len = needle.length;
+  int32_t hay_len = hay.length();
+  for (int32_t i = 0; i + needle_len <= hay_len; ++i) {
+    bool ok = true;
+    for (int32_t j = 0; j < needle_len; ++j) {
+      if (hay.data[i + j] != needle.data[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return i + 1;
+  }
+  return 0;
+}
+
+inline int p_pos(const AnsiString& needle, const AnsiString& hay) {
+  int32_t needle_len = needle.length();
+  int32_t hay_len = hay.length();
+  for (int32_t i = 0; i + needle_len <= hay_len; ++i) {
+    bool ok = true;
+    for (int32_t j = 0; j < needle_len; ++j) {
+      if (hay.data[i + j] != needle.data[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return i + 1;
+  }
+  return 0;
+}
+
+inline int p_pos(p_char c, const AnsiString& hay) {
+  for (int32_t i = 0; i < hay.length(); ++i) {
+    if (hay.data[i] == c) return i + 1;
+  }
+  return 0;
+}
+
 // Pascal `val(S, real_var, code_var)` overload.
 template <int N>
 inline void p_val(const ShortString<N>& s, double& out, int32_t& code) {
+  std::string buf = p_to_std_string(s);
+  char* end = nullptr;
+  double v = std::strtod(buf.c_str(), &end);
+  if (end && *end == '\0') { out = v; code = 0; }
+  else { code = static_cast<int32_t>(end - buf.c_str()) + 1; }
+}
+inline void p_val(const AnsiString& s, double& out, int32_t& code) {
   std::string buf = p_to_std_string(s);
   char* end = nullptr;
   double v = std::strtod(buf.c_str(), &end);
@@ -1889,8 +2559,23 @@ inline void p_val(const ShortString<N>& s, double& out, Code& code) {
   p_val(s, out, parsed_code);
   code = static_cast<Code>(parsed_code);
 }
+template <typename Code>
+requires (std::is_integral_v<Code> && !std::is_same_v<Code, bool> &&
+          !std::is_same_v<Code, int32_t>)
+inline void p_val(const AnsiString& s, double& out, Code& code) {
+  int32_t parsed_code = 0;
+  p_val(s, out, parsed_code);
+  code = static_cast<Code>(parsed_code);
+}
 template <int N>
 inline void p_val(const ShortString<N>& s, long double& out, int32_t& code) {
+  std::string buf = p_to_std_string(s);
+  char* end = nullptr;
+  long double v = std::strtold(buf.c_str(), &end);
+  if (end && *end == '\0') { out = v; code = 0; }
+  else { code = static_cast<int32_t>(end - buf.c_str()) + 1; }
+}
+inline void p_val(const AnsiString& s, long double& out, int32_t& code) {
   std::string buf = p_to_std_string(s);
   char* end = nullptr;
   long double v = std::strtold(buf.c_str(), &end);
@@ -1905,8 +2590,21 @@ inline void p_val(const ShortString<N>& s, long double& out, Code& code) {
   p_val(s, out, parsed_code);
   code = static_cast<Code>(parsed_code);
 }
+template <typename Code>
+requires (std::is_integral_v<Code> && !std::is_same_v<Code, bool> &&
+          !std::is_same_v<Code, int32_t>)
+inline void p_val(const AnsiString& s, long double& out, Code& code) {
+  int32_t parsed_code = 0;
+  p_val(s, out, parsed_code);
+  code = static_cast<Code>(parsed_code);
+}
 template <int N>
 inline void p_val(const ShortString<N>& s, float& out, int32_t& code) {
+  double v = 0.0;
+  p_val(s, v, code);
+  if (code == 0) out = static_cast<float>(v);
+}
+inline void p_val(const AnsiString& s, float& out, int32_t& code) {
   double v = 0.0;
   p_val(s, v, code);
   if (code == 0) out = static_cast<float>(v);
@@ -1915,6 +2613,14 @@ template <int N, typename Code>
 requires (std::is_integral_v<Code> && !std::is_same_v<Code, bool> &&
           !std::is_same_v<Code, int32_t>)
 inline void p_val(const ShortString<N>& s, float& out, Code& code) {
+  int32_t parsed_code = 0;
+  p_val(s, out, parsed_code);
+  code = static_cast<Code>(parsed_code);
+}
+template <typename Code>
+requires (std::is_integral_v<Code> && !std::is_same_v<Code, bool> &&
+          !std::is_same_v<Code, int32_t>)
+inline void p_val(const AnsiString& s, float& out, Code& code) {
   int32_t parsed_code = 0;
   p_val(s, out, parsed_code);
   code = static_cast<Code>(parsed_code);
@@ -1933,6 +2639,21 @@ inline ShortString<> p_copy(const ShortString<N>& s, int start, int count) {
   return r;
 }
 
+inline AnsiString p_copy(const AnsiString& s, int start, int count) {
+  if (start < 1) start = 1;
+  int avail = s.length() - (start - 1);
+  if (avail < 0) avail = 0;
+  if (count > avail) count = avail;
+  if (count < 0) count = 0;
+  AnsiString r;
+  r.set_length(count);
+  if (count > 0) {
+    std::memcpy(r.mutable_bytes(), s.data + (start - 1),
+                static_cast<size_t>(count) * sizeof(p_char));
+  }
+  return r;
+}
+
 template <int N>
 inline void p_delete(ShortString<N>& s, int start, int count) {
   if (start < 1 || start > s.length) return;
@@ -1942,11 +2663,26 @@ inline void p_delete(ShortString<N>& s, int start, int count) {
   s.length = static_cast<uint8_t>(s.length - count);
 }
 
+inline void p_delete(AnsiString& s, int start, int count) {
+  int32_t len = s.length();
+  if (start < 1 || start > len || count <= 0) return;
+  if (count > len - (start - 1)) count = len - (start - 1);
+  s.ensure_unique();
+  p_char* bytes = s.mutable_bytes();
+  std::memmove(bytes + (start - 1), bytes + (start - 1 + count),
+               static_cast<size_t>(len - (start - 1 + count) + 1) *
+                   sizeof(p_char));
+  s.set_length(len - count);
+}
+
 template <int N>
 inline void p_insert(const char* src, ShortString<N>& s, int pos) {
-  ShortString<N> in(src);
-  (void)pos; (void)in;
-  // Minimal stub; flesh out later.
+  p_insert(ShortString<N>(src), s, pos);
+}
+
+template <int N>
+inline void p_insert(const AnsiString& src, ShortString<N>& s, int pos) {
+  p_insert(ShortString<N>(src.bytes()), s, pos);
 }
 
 inline p_char p_upcase(p_char c) {
@@ -1961,6 +2697,12 @@ inline ShortString<N> p_upcase(const ShortString<N>& s) {
   return r;
 }
 
+inline AnsiString p_upcase(const AnsiString& s) {
+  AnsiString r = s;
+  for (int i = 1; i <= r.length(); ++i) r[i] = p_upcase(r[i]);
+  return r;
+}
+
 // --- Write / Writeln --------------------------------------------------------
 // Variadic emit: each call translates to a sequence of one-arg writes.
 
@@ -1968,6 +2710,9 @@ inline ShortString<N> p_upcase(const ShortString<N>& s) {
 template <int N>
 inline void p_write_one(const ShortString<N>& s) {
   for (int i = 0; i < s.length; ++i) std::fputc(p_char_to_c(s.data[i]), stdout);
+}
+inline void p_write_one(const AnsiString& s) {
+  for (int i = 0; i < s.length(); ++i) std::fputc(p_char_to_c(s.data[i]), stdout);
 }
 inline void p_write_one(const char* s)    { if (s) std::fputs(s, stdout); }
 inline void p_write_one(const p_char* s)  { if (s) std::fputs(p_c_str(s), stdout); }
@@ -1989,6 +2734,10 @@ template <int N>
 inline void p_write_file_one(std::FILE* out, const ShortString<N>& s) {
   if (!out) return;
   for (int i = 0; i < s.length; ++i) std::fputc(p_char_to_c(s.data[i]), out);
+}
+inline void p_write_file_one(std::FILE* out, const AnsiString& s) {
+  if (!out) return;
+  for (int i = 0; i < s.length(); ++i) std::fputc(p_char_to_c(s.data[i]), out);
 }
 inline void p_write_file_one(std::FILE* out, const char* s) {
   if (out && s) std::fputs(s, out);
@@ -2082,6 +2831,9 @@ inline void p_assign(TextFile& f, const ShortString<>& n) {
   f.f = nullptr;
   p_set_ioresult(f, 0);
 }
+inline void p_assign(TextFile& f, const AnsiString& n) {
+  p_assign(f, ShortString<>(n.bytes()));
+}
 inline void p_reset(TextFile& f) {
   if (f.f) {
     std::fclose(f.f);
@@ -2133,6 +2885,10 @@ inline void p_assign(TypedFile<T>& f, const ShortString<>& n) {
   f.name = n;
   f.f = nullptr;
   p_set_ioresult(f, 0);
+}
+template <typename T>
+inline void p_assign(TypedFile<T>& f, const AnsiString& n) {
+  p_assign(f, ShortString<>(n.bytes()));
 }
 template <typename T>
 inline void p_reset(TypedFile<T>& f) {
@@ -2189,11 +2945,19 @@ template <int N>
 inline void p_val(const ShortString<N>& s, int32_t& out, int32_t& code) {
   p_parse_pascal_integer(p_to_std_string(s), out, code);
 }
+inline void p_val(const AnsiString& s, int32_t& out, int32_t& code) {
+  p_parse_pascal_integer(p_to_std_string(s), out, code);
+}
 template <int N>
 inline void p_str(int32_t v, ShortString<N>& out) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%d", v);
   out = ShortString<N>(buf);
+}
+inline void p_str(int32_t v, AnsiString& out) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%d", v);
+  out = buf;
 }
 template <int N>
 inline void p_str(uint32_t v, ShortString<N>& out) {
@@ -2201,11 +2965,21 @@ inline void p_str(uint32_t v, ShortString<N>& out) {
   std::snprintf(buf, sizeof(buf), "%u", v);
   out = ShortString<N>(buf);
 }
+inline void p_str(uint32_t v, AnsiString& out) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%u", v);
+  out = buf;
+}
 template <int N>
 inline void p_str(int64_t v, ShortString<N>& out) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(v));
   out = ShortString<N>(buf);
+}
+inline void p_str(int64_t v, AnsiString& out) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(v));
+  out = buf;
 }
 template <int N>
 inline void p_str(uint64_t v, ShortString<N>& out) {
@@ -2213,11 +2987,21 @@ inline void p_str(uint64_t v, ShortString<N>& out) {
   std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(v));
   out = ShortString<N>(buf);
 }
+inline void p_str(uint64_t v, AnsiString& out) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(v));
+  out = buf;
+}
 template <int N>
 inline void p_str(float v, ShortString<N>& out) {
   char buf[64];
   std::snprintf(buf, sizeof(buf), "% .9g", static_cast<double>(v));
   out = ShortString<N>(buf);
+}
+inline void p_str(float v, AnsiString& out) {
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "% .9g", static_cast<double>(v));
+  out = buf;
 }
 template <int N>
 inline void p_str(double v, ShortString<N>& out) {
@@ -2225,11 +3009,21 @@ inline void p_str(double v, ShortString<N>& out) {
   std::snprintf(buf, sizeof(buf), "% .17g", v);
   out = ShortString<N>(buf);
 }
+inline void p_str(double v, AnsiString& out) {
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "% .17g", v);
+  out = buf;
+}
 template <int N>
 inline void p_str(long double v, ShortString<N>& out) {
   char buf[96];
   std::snprintf(buf, sizeof(buf), "% .21Lg", v);
   out = ShortString<N>(buf);
+}
+inline void p_str(long double v, AnsiString& out) {
+  char buf[96];
+  std::snprintf(buf, sizeof(buf), "% .21Lg", v);
+  out = buf;
 }
 
 // --- high / low intrinsics --------------------------------------------------

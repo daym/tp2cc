@@ -215,6 +215,21 @@ void test_named_type_alias() {
   CHECK(contains(out.header, "using p_mystr = ::rt::ShortString<32>;"));
 }
 
+void test_ansistring_builtin_maps_to_runtime_type() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type tname = ansistring;\n"
+      "var s : ansistring;\n"
+      "procedure take(x : ansistring);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "using p_tname = ::rt::AnsiString;"));
+  CHECK(contains(out.header, "extern ::rt::AnsiString p_s;"));
+  CHECK(contains(out.header, "void p_take(::rt::AnsiString p_x);"));
+  CHECK(!contains(out.header, "p_ansistring"));
+}
+
 void test_set_type_alias() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -1116,6 +1131,7 @@ int main() {
   RUN_TEST(test_enum_type_with_explicit_values);
   RUN_TEST(test_explicit_enum_array_bounds_use_ordinal_range);
   RUN_TEST(test_named_type_alias);
+  RUN_TEST(test_ansistring_builtin_maps_to_runtime_type);
   RUN_TEST(test_set_type_alias);
   RUN_TEST(test_var_extern_in_header_and_def_in_impl);
   RUN_TEST(test_out_parameter_emits_like_var_reference);

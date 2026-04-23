@@ -77,6 +77,43 @@ void test_bootstrap_pointer_sized_aliases_are_32bit() {
   CHECK_EQ(p_maxint, std::numeric_limits<int32_t>::max());
 }
 
+void test_ansistring_copy_on_write_preserves_original() {
+  AnsiString original("abc");
+  AnsiString copy = original;
+
+  copy[1] = p_char_of('z');
+
+  CHECK_EQ(p_to_std_string(original), std::string("abc"));
+  CHECK_EQ(p_to_std_string(copy), std::string("zbc"));
+}
+
+void test_ansistring_storage_slot_holds_payload_pointer() {
+  AnsiString s("hello");
+
+  auto& slot = p_reinterpret_storage_ref<void*>(s);
+
+  CHECK(slot == static_cast<void*>(static_cast<p_char*>(s)));
+  CHECK_EQ(p_deref(slot), 'h');
+}
+
+void test_ansistring_setlength_and_insert_delete_keep_bytes_stable() {
+  AnsiString s("ab");
+
+  p_setlength(s, 4);
+  auto& slot = p_reinterpret_storage_ref<void*>(s);
+  static_cast<p_char*>(slot)[2] = p_char_of('c');
+  static_cast<p_char*>(slot)[3] = p_char_of('d');
+
+  CHECK_EQ(p_length(s), 4);
+  CHECK_EQ(p_to_std_string(s), std::string("abcd"));
+
+  p_delete(s, 2, 2);
+  CHECK_EQ(p_to_std_string(s), std::string("ad"));
+
+  p_insert(ShortString<>("bc"), s, 2);
+  CHECK_EQ(p_to_std_string(s), std::string("abcd"));
+}
+
 void test_shortstring_char_concat_grows_capacity() {
   auto label = ShortString<2>(".L") + p_char_of('e') + p_char_of('0');
   CHECK_EQ(p_to_std_string(label), std::string(".Le0"));
@@ -249,6 +286,9 @@ int main() {
   RUN_TEST(test_val_accepts_decimal_min_longint);
   RUN_TEST(test_val_rejects_compiler_unsupported_integer_forms);
   RUN_TEST(test_bootstrap_pointer_sized_aliases_are_32bit);
+  RUN_TEST(test_ansistring_copy_on_write_preserves_original);
+  RUN_TEST(test_ansistring_storage_slot_holds_payload_pointer);
+  RUN_TEST(test_ansistring_setlength_and_insert_delete_keep_bytes_stable);
   RUN_TEST(test_shortstring_char_concat_grows_capacity);
   RUN_TEST(test_move_reads_from_const_shortstring_storage);
   RUN_TEST(test_str_formats_real_values);
