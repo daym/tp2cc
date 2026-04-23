@@ -1,0 +1,22 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Switch fppu source-file open from tinputfile to tdosinputfile
+License: expat
+
+`fppu.pas` instantiates `tinputfile` directly when registering source
+files. `tinputfile` is the abstract base -- concrete subclasses
+(`tdosinputfile`, etc.) provide the actual file I/O. The bootstrap
+target uses the DOS variant; instantiate it directly so we never rely
+on the abstract base's defaults.
+
+--- a/compiler/fppu.pas	2005-12-04 21:24:46.000000000 +0000
++++ b/compiler/fppu.pas	2026-04-25 11:18:34.358141136 +0000
+@@ -756,7 +756,7 @@
+                   sources_avail:=false;
+                   temp:=' not found';
+                 end;
+-              hp:=tinputfile.create(hs);
++              hp:=tdosinputfile.create(hs);
+               { the indexing is wrong here PM }
+               sourcefiles.register_file(hp);
+             end;
