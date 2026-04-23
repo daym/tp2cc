@@ -1,0 +1,122 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Replace pointer-carrier fixed arrays with their honest pointer types
+License: expat
+
+Two places in the bootstrap compiler declare fixed-size arrays only
+as carriers for an underlying pointer access pattern. The declared
+bound is fictional -- code never honours it.
+
+`compiler/cmsgs.pas`:
+
+  TArrayOfPChar = array[0..1000] of pchar;
+  PArrayOfPChar = ^TArrayOfPChar;
+  ...
+  msgidx : array[1..maxmsgidxparts] of PArrayOfPChar;
+  ...
+  msgidx[part]^[idx] := hp1;        { deref the outer pointer, then index }
+
+The "1000" is arbitrary; the field is allocated with a different real
+size and indexed past 1000 routinely. It only happens to work because
+Pascal pointer-arithmetic indexing doesn't bounds-check the declared
+array size in release. Replace the alias with plain `ppchar` and drop
+the deref:
+
+  msgidx : array[1..maxmsgidxparts] of ppchar;
+  ...
+  msgidx[part][idx] := hp1;
+
+`compiler/cp437.pas` / `cp850.pas` / `cp8859_1.pas`:
+
+  unicodemap : tunicodemap = (
+    cpname : 'cp437';
+    map : @map;          { address of the array AS an array }
+    ...
+  );
+
+`tunicodemap.map` is a `pchar`-shaped field expecting a pointer to
+elements; `@map` returns a pointer to the whole-array type. The byte
+address is the same, but the type is wrong. Spell it as `@map[0]` so
+the typed-const initializer's source type matches the field's type.
+
+--- a/compiler/cmsgs.pas
++++ b/compiler/cmsgs.pas
+@@ -31,9 +31,6 @@
+ type
+   ppchar=^pchar;
+ 
+-  TArrayOfPChar = array[0..1000] of pchar;
+-  PArrayOfPChar = ^TArrayOfPChar;
+-
+   PMessage=^TMessage;
+   TMessage=object
+     msgfilename : string;
+@@ -43,7 +40,7 @@
+     msgparts,
+     msgs        : longint;
+     msgtxt      : pchar;
+-    msgidx      : array[1..maxmsgidxparts] of PArrayOfPChar;
++    msgidx      : array[1..maxmsgidxparts] of ppchar;
+     msgidxmax   : array[1..maxmsgidxparts] of longint;
+     constructor Init(n:longint;const idxmax:array of longint);
+     destructor  Done;
+@@ -363,7 +360,7 @@
+         { skip _ }
+         inc(hp1);
+         { put the address in the idx, the numbers are already checked }
+-        msgidx[numpart]^[numidx]:=hp1;
++        msgidx[numpart][numidx]:=hp1;
+       end;
+      { next string }
+      hp:=pchar(@hp[strlen(hp)+1]);
+@@ -395,7 +392,7 @@
+ 
+ function TMessage.GetPChar(nr:longint):pchar;
+ begin
+-  GetPChar:=msgidx[nr div 1000]^[nr mod 1000];
++  GetPChar:=msgidx[nr div 1000][nr mod 1000];
+ end;
+ 
+ 
+@@ -403,7 +400,7 @@
+ var
+   hp : pchar;
+ begin
+-  hp:=msgidx[nr div 1000]^[nr mod 1000];
++  hp:=msgidx[nr div 1000][nr mod 1000];
+   if hp=nil then
+     Get:='msg nr '+tostr(nr)
+   else
+--- a/compiler/cp437.pas
++++ b/compiler/cp437.pas
+@@ -270,7 +270,7 @@
+ 
+      unicodemap : tunicodemap = (
+        cpname : 'cp437';
+-       map : @map;
++       map : @map[0];
+        lastchar : 255;
+        next : nil;
+        internalmap : true
+--- a/compiler/cp850.pas
++++ b/compiler/cp850.pas
+@@ -270,7 +270,7 @@
+ 
+      unicodemap : tunicodemap = (
+        cpname : 'cp850';
+-       map : @map;
++       map : @map[0];
+        lastchar : 255;
+        next : nil;
+        internalmap : true
+--- a/compiler/cp8859_1.pas
++++ b/compiler/cp8859_1.pas
+@@ -270,7 +270,7 @@
+ 
+      unicodemap : tunicodemap = (
+        cpname : '8859-1';
+-       map : @map;
++       map : @map[0];
+        lastchar : 255;
+        next : nil;
+        internalmap : true
