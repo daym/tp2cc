@@ -1167,6 +1167,27 @@ void test_open_array_procvar_signature_keeps_wrapper_type() {
                  "using p_tcb = void (*)(const ::rt::OpenArray<::rt::ShortString<>>&);"));
 }
 
+void test_untyped_const_method_thunk_keeps_raw_storage_pointer() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tstream = object\n"
+      "    function write(const buffer; count : longint) : longint;\n"
+      "  end;\n"
+      "implementation\n"
+      "function tstream.write(const buffer; count : longint) : longint;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  // Untyped Pascal params always mean "address of caller storage". Even
+  // `const` keeps that raw-storage ABI; it must not turn into
+  // `const void*&` in thunks or procvar signatures.
+  CHECK(contains(out.header, "int32_t p_write(void* p_buffer, int32_t p_count);"));
+  CHECK(contains(out.header,
+                 "static int32_t tp2cc_methodptr_write_const_untyped_value_name_longint_ret_name_longint(void* tp2cc_self, void* p_buffer, int32_t p_count)"));
+}
+
 void test_class_types_lower_to_pointers_and_implicit_tobject() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1241,6 +1262,31 @@ void test_implicit_tobject_inherited_constructor_autocalls() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "inherited::p_create();"));
+}
+
+void test_inherited_destroy_autocalls_through_non_overriding_parent() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    destructor destroy; override;\n"
+      "  end;\n"
+      "  tmid = class(tbase)\n"
+      "  end;\n"
+      "  tleaf = class(tmid)\n"
+      "    destructor destroy; override;\n"
+      "  end;\n"
+      "implementation\n"
+      "destructor tbase.destroy;\n"
+      "begin\n"
+      "end;\n"
+      "destructor tleaf.destroy;\n"
+      "begin\n"
+      "  inherited destroy;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "inherited::p_destroy();"));
 }
 
 void test_class_self_and_free_use_pointer_semantics() {
@@ -1347,10 +1393,12 @@ int main() {
   RUN_TEST(test_bool_procvar_call_uses_logical_and);
   RUN_TEST(test_open_array_method_signature_keeps_wrapper_type);
   RUN_TEST(test_open_array_procvar_signature_keeps_wrapper_type);
+  RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);
   RUN_TEST(test_class_types_lower_to_pointers_and_implicit_tobject);
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
   RUN_TEST(test_class_constructor_call_allocates_instance);
   RUN_TEST(test_implicit_tobject_inherited_constructor_autocalls);
+  RUN_TEST(test_inherited_destroy_autocalls_through_non_overriding_parent);
   RUN_TEST(test_class_self_and_free_use_pointer_semantics);
   RUN_TEST(test_cxx_reserved_word_identifiers);
 

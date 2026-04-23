@@ -168,19 +168,23 @@ struct p_tobject {
   // it via `inherited Create`.
   virtual bool p_create() { return true; }
   virtual void p_destroy() {}
+  // `FreeInstance` is the raw storage-release hook underneath `Free`.
+  // Old compiler code overrides it directly (for refcounted symbol-table
+  // nodes, for example), so keep it virtual and separate from `p_destroy`.
+  virtual void p_freeinstance() { delete this; }
   virtual ~p_tobject() = default;
   // Pascal `obj.Free` is null-safe. That cannot be a normal C++ member
   // call on a pointer, because `obj->p_free()` is already UB when `obj`
   // is null. The emitter therefore lowers Pascal `Free` to this static
   // helper, which owns the null check and only then dispatches the
-  // virtual Pascal destructor hook.
+  // virtual Pascal destruction sequence.
   template <typename T>
   static void p_free(T* p) {
     static_assert(std::is_base_of_v<p_tobject, T>,
                   "p_tobject::p_free expects a translated Pascal class type");
     if (!p) return;
     p->p_destroy();
-    delete p;
+    p->p_freeinstance();
   }
 };
 
@@ -1451,6 +1455,36 @@ inline constexpr int32_t p_ord(T x) {
 }
 inline constexpr p_char p_chr(int x) { return p_char_of(static_cast<uint8_t>(x)); }
 
+// Pascal `Lo` / `Hi` return the lower / upper half of an ordinal value's
+// storage width: 32-bit -> 16-bit halves, 64-bit -> 32-bit halves, etc.
+template <typename T>
+inline constexpr auto p_lo(T value) {
+  using U = std::make_unsigned_t<T>;
+  if constexpr (sizeof(U) == 8) {
+    return static_cast<uint32_t>(static_cast<U>(value) & 0xffffffffu);
+  } else if constexpr (sizeof(U) == 4) {
+    return static_cast<uint16_t>(static_cast<U>(value) & 0xffffu);
+  } else if constexpr (sizeof(U) == 2) {
+    return static_cast<uint8_t>(static_cast<U>(value) & 0xffu);
+  } else {
+    return static_cast<U>(value);
+  }
+}
+
+template <typename T>
+inline constexpr auto p_hi(T value) {
+  using U = std::make_unsigned_t<T>;
+  if constexpr (sizeof(U) == 8) {
+    return static_cast<uint32_t>(static_cast<U>(value) >> 32);
+  } else if constexpr (sizeof(U) == 4) {
+    return static_cast<uint16_t>(static_cast<U>(value) >> 16);
+  } else if constexpr (sizeof(U) == 2) {
+    return static_cast<uint8_t>(static_cast<U>(value) >> 8);
+  } else {
+    return static_cast<U>(0);
+  }
+}
+
 // Pascal `swap` -- byte-swap the two halves of a word or longint.
 inline uint16_t p_swap(uint16_t w) {
   return static_cast<uint16_t>((w >> 8) | (w << 8));
@@ -2088,22 +2122,80 @@ inline void p_blockread(File& f, void* value, int32_t count) {
   p_blockread(f, value, count, transferred);
 }
 template <typename File>
-inline void p_blockwrite(File& f, const void* value, int32_t count) {
+inline void p_truncate(File& f) {
   if (!f.f) {
     p_set_ioresult(f, 103);
     return;
   }
-  std::fwrite(value, 1, count, f.f);
+  long pos = std::ftell(f.f);
+  if (pos < 0) {
+    p_set_ioresult(f, 103);
+    return;
+  }
+  std::fflush(f.f);
+  int rc = ::ftruncate(::fileno(f.f), static_cast<off_t>(pos));
+  p_set_ioresult(f, rc == 0 ? 0 : 103);
+}
+
+template <typename File, typename Count>
+inline void p_blockwrite(File& f, const void* value, int32_t count,
+                         Count& transferred) {
+  if (!f.f) {
+    transferred = static_cast<Count>(0);
+    p_set_ioresult(f, 103);
+    return;
+  }
+  transferred = static_cast<Count>(std::fwrite(value, 1, count, f.f));
   p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
+}
+
+template <typename File, typename T, typename Count>
+inline void p_blockwrite(File& f, const T& value, int32_t count,
+                         Count& transferred) {
+  if (!f.f) {
+    transferred = static_cast<Count>(0);
+    p_set_ioresult(f, 103);
+    return;
+  }
+  transferred = static_cast<Count>(
+      std::fwrite(static_cast<const void*>(std::addressof(value)), 1, count,
+                  f.f));
+  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
+}
+
+template <typename File>
+inline void p_blockwrite(File& f, const void* value, int32_t count) {
+  int32_t transferred = 0;
+  p_blockwrite(f, value, count, transferred);
 }
 template <typename File, typename T>
 inline void p_blockwrite(File& f, const T& value, int32_t count) {
-  if (!f.f) {
-    p_set_ioresult(f, 103);
-    return;
+  int32_t transferred = 0;
+  p_blockwrite(f, value, count, transferred);
+}
+
+inline void p_fillword(void* dest, int32_t count, uint16_t value) {
+  auto* p = static_cast<uint16_t*>(dest);
+  for (int32_t i = 0; i < count; ++i) p[i] = value;
+}
+template <typename T>
+inline void p_fillword(T& dest, int32_t count, uint16_t value) {
+  p_fillword(static_cast<void*>(std::addressof(dest)), count, value);
+}
+
+inline int32_t p_compareword(const void* a, const void* b, int32_t count) {
+  auto* pa = static_cast<const uint16_t*>(a);
+  auto* pb = static_cast<const uint16_t*>(b);
+  for (int32_t i = 0; i < count; ++i) {
+    if (pa[i] < pb[i]) return -1;
+    if (pa[i] > pb[i]) return 1;
   }
-  std::fwrite(static_cast<const void*>(std::addressof(value)), 1, count, f.f);
-  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
+  return 0;
+}
+template <typename A, typename B>
+inline int32_t p_compareword(const A& a, const B& b, int32_t count) {
+  return p_compareword(static_cast<const void*>(std::addressof(a)),
+                       static_cast<const void*>(std::addressof(b)), count);
 }
 // `readln(f, s)` reads a line into `s`. `readln` (no args) reads and
 // discards a line. `readln(f)` reads/discards a line from `f`.

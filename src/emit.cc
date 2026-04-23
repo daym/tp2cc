@@ -1112,10 +1112,12 @@ std::string Emitter::procedural_param_types_to_cxx(
     } else {
       pt = type_to_cxx(*pp.type);
     }
-    if (pp.mode == Param::Var || pp.mode == Param::Out) pt += "&";
-    else if (pp.mode == Param::Const) {
-      if (const_param_needs_mutable_ref(pp.type.get())) pt += "&";
-      else pt = std::string("const ") + pt + "&";
+    if (pp.type) {
+      if (pp.mode == Param::Var || pp.mode == Param::Out) pt += "&";
+      else if (pp.mode == Param::Const) {
+        if (const_param_needs_mutable_ref(pp.type.get())) pt += "&";
+        else pt = std::string("const ") + pt + "&";
+      }
     }
     size_t repeats = pp.names.empty() ? 1 : pp.names.size();
     for (size_t i = 0; i < repeats; ++i) {
@@ -2617,9 +2619,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         bool implicit_tobject_root =
             parent == "tobject" &&
             (ascii_lower(m.name) == "create" || ascii_lower(m.name) == "destroy");
+        bool same_current_method =
+            !current_fn_name.empty() &&
+            ascii_lower(m.name) == ascii_lower(current_fn_name);
         bool want_call = !is_callee_context_ &&
                          ((rr.is_callable && rr.is_parameterless) ||
-                          implicit_tobject_root);
+                          implicit_tobject_root || same_current_method);
         return want_call ? text + "()" : text;
       }
 
@@ -3888,10 +3893,15 @@ void Emitter::emit_method_pointer_thunk(const std::string& owner_name,
     // The thunk must preserve the method's real parameter ABI so
     // `var`/`out`/`const` and open-array calls behave identically
     // whether they go through a method pointer or a direct call.
-    if (par.mode == Param::Var || par.mode == Param::Out) pt += "&";
-    else if (par.mode == Param::Const) {
-      if (const_param_needs_mutable_ref(par.type.get())) pt += "&";
-      else pt = std::string("const ") + pt + "&";
+    if (par.type) {
+      // Untyped Pascal params always carry "address of caller storage",
+      // even for `const`, so method-pointer thunks must keep the raw
+      // `void*` ABI instead of inventing `const void*&`.
+      if (par.mode == Param::Var || par.mode == Param::Out) pt += "&";
+      else if (par.mode == Param::Const) {
+        if (const_param_needs_mutable_ref(par.type.get())) pt += "&";
+        else pt = std::string("const ") + pt + "&";
+      }
     }
     if (par.names.empty()) {
       append_arg(pt, "tp2cc_arg" + std::to_string(++unnamed_index));

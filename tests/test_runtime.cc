@@ -31,6 +31,20 @@ struct DestroyProbe : p_tobject {
   }
 };
 
+struct FreeInstanceProbe : p_tobject {
+  int* destroys = nullptr;
+  int* frees = nullptr;
+
+  FreeInstanceProbe(int* d, int* f) : destroys(d), frees(f) {}
+
+  void p_destroy() override { ++(*destroys); }
+
+  void p_freeinstance() override {
+    ++(*frees);
+    delete this;
+  }
+};
+
 inline void method_ptr_add(void* self, int32_t delta) {
   static_cast<MethodPtrCounter*>(self)->value += delta;
 }
@@ -229,6 +243,34 @@ void test_class_free_dispatches_virtual_destroy() {
   CHECK_EQ(destroys, 1);
 }
 
+void test_class_free_dispatches_virtual_freeinstance() {
+  int destroys = 0;
+  int frees = 0;
+  auto* p = new FreeInstanceProbe(&destroys, &frees);
+
+  p_tobject::p_free(p);
+  CHECK_EQ(destroys, 1);
+  CHECK_EQ(frees, 1);
+}
+
+void test_hi_lo_split_ordinal_halves() {
+  CHECK_EQ(p_lo(uint32_t{0x11223344}), static_cast<uint16_t>(0x3344));
+  CHECK_EQ(p_hi(uint32_t{0x11223344}), static_cast<uint16_t>(0x1122));
+  CHECK_EQ(p_lo(uint64_t{0x1122334455667788ull}), uint32_t{0x55667788u});
+  CHECK_EQ(p_hi(uint64_t{0x1122334455667788ull}), uint32_t{0x11223344u});
+}
+
+void test_fillword_and_compareword_operate_on_word_counts() {
+  uint16_t words[4] = {0, 0, 0, 0};
+  uint16_t same[4] = {0x1234, 0x1234, 0x1234, 0x1234};
+  uint16_t different[4] = {0x1234, 0x1234, 0x1235, 0x1234};
+
+  p_fillword(words[0], 4, 0x1234);
+  CHECK_EQ(std::memcmp(words, same, sizeof(words)), 0);
+  CHECK_EQ(p_compareword(words[0], same[0], 4), 0);
+  CHECK(p_compareword(words[0], different[0], 4) < 0);
+}
+
 void test_blockread_writes_to_void_buffer() {
   TypedFile<uint8_t> f;
   uint8_t got[5] = {};
@@ -324,6 +366,9 @@ int main() {
   RUN_TEST(test_method_ptr_storage_matches_two_pointer_slots);
   RUN_TEST(test_class_free_accepts_null_pointer);
   RUN_TEST(test_class_free_dispatches_virtual_destroy);
+  RUN_TEST(test_class_free_dispatches_virtual_freeinstance);
+  RUN_TEST(test_hi_lo_split_ordinal_halves);
+  RUN_TEST(test_fillword_and_compareword_operate_on_word_counts);
   RUN_TEST(test_blockread_writes_to_void_buffer);
   RUN_TEST(test_strnew_allocates_and_disposes_pchar);
   RUN_TEST(test_textfile_reset_closes_previous_handle);
