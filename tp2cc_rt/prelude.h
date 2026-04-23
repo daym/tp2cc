@@ -24,6 +24,7 @@
 #include <glob.h>
 #include <initializer_list>
 #include <limits.h>
+#include <memory>
 #include <spawn.h>
 #include <string>
 #include <sys/stat.h>
@@ -1262,6 +1263,65 @@ inline bool operator==(const ShortString<StrN>& a,
   return b == a;
 }
 
+// Pascal has two distinct `array of T` forms:
+//   * open arrays   -> procedure parameter view `(ptr,count)`
+//   * dynamic arrays -> heap-backed value with shared ownership
+// Keep those separate in the rt so the emitted C++ does not blur
+// "parameter view" with "owning variable-length object".
+template <typename T>
+struct DynArray {
+  std::shared_ptr<T[]> data{};
+  int32_t count = 0;
+
+  constexpr DynArray() = default;
+  DynArray(std::nullptr_t) {}
+
+  DynArray& operator=(std::nullptr_t) {
+    data.reset();
+    count = 0;
+    return *this;
+  }
+
+  template <typename Ix>
+  T& operator[](Ix i) {
+    return data[static_cast<size_t>(p_ordinal_value(i))];
+  }
+  template <typename Ix>
+  const T& operator[](Ix i) const {
+    return data[static_cast<size_t>(p_ordinal_value(i))];
+  }
+
+  T* ptr() { return data.get(); }
+  const T* ptr() const { return data.get(); }
+
+  T* begin() { return ptr(); }
+  T* end() { return ptr() + count; }
+  const T* begin() const { return ptr(); }
+  const T* end() const { return ptr() + count; }
+
+  constexpr int32_t low() const { return 0; }
+  constexpr int32_t high() const { return count - 1; }
+
+  explicit operator bool() const { return data != nullptr; }
+};
+
+template <typename T>
+inline bool operator==(const DynArray<T>& a, std::nullptr_t) {
+  return a.data == nullptr;
+}
+template <typename T>
+inline bool operator==(std::nullptr_t, const DynArray<T>& a) {
+  return a == nullptr;
+}
+template <typename T>
+inline bool operator!=(const DynArray<T>& a, std::nullptr_t) {
+  return !(a == nullptr);
+}
+template <typename T>
+inline bool operator!=(std::nullptr_t, const DynArray<T>& a) {
+  return !(a == nullptr);
+}
+
 template <typename T>
 struct OpenArray {
   T* data = nullptr;
@@ -1277,6 +1337,15 @@ struct OpenArray {
   template <typename U, auto Lo, int N>
   requires std::is_convertible_v<const U*, T*>
   constexpr OpenArray(const Array<U, Lo, N>& a) : data(a.data), count(N) {}
+
+  template <typename U>
+  requires std::is_convertible_v<U*, T*>
+  OpenArray(DynArray<U>& a) : data(a.ptr()), count(a.count) {}
+
+  template <typename U>
+  requires std::is_convertible_v<const U*, T*>
+  OpenArray(const DynArray<U>& a)
+      : data(const_cast<U*>(a.ptr())), count(a.count) {}
 
   template <int N>
   requires std::is_convertible_v<p_char*, T*>
@@ -1680,6 +1749,7 @@ inline Range range(int64_t a, int64_t b) { return {a, b}; }
 
 template <int N> inline int p_length(const ShortString<N>& s) { return s.length; }
 inline int p_length(const AnsiString& s) { return s.length(); }
+template <typename T> inline int p_length(const DynArray<T>& a) { return a.count; }
 template <typename T> inline int p_length(const OpenArray<T>& a) { return a.count; }
 template <typename T> inline int p_length(const std::array<T, 0>&) { return 0; }
 
@@ -1695,6 +1765,23 @@ inline void p_setlength(ShortString<N>& s, int new_len) {
 
 inline void p_setlength(AnsiString& s, int new_len) {
   s.set_length(new_len);
+}
+
+template <typename T>
+inline void p_setlength(DynArray<T>& a, int new_len) {
+  if (new_len <= 0) {
+    a = nullptr;
+    return;
+  }
+
+  auto new_data = std::shared_ptr<T[]>(
+      new T[static_cast<size_t>(new_len)](), std::default_delete<T[]>());
+  const int32_t copy_count = std::min(a.count, static_cast<int32_t>(new_len));
+  for (int32_t i = 0; i < copy_count; ++i) {
+    new_data[static_cast<size_t>(i)] = a.data[static_cast<size_t>(i)];
+  }
+  a.data = std::move(new_data);
+  a.count = new_len;
 }
 
 template <typename T>
@@ -1763,6 +1850,9 @@ inline char& p_deref(void* p) { return *static_cast<char*>(p); }
 inline const char& p_deref(const void* p) { return *static_cast<const char*>(p); }
 
 template <typename T> inline bool p_assigned(T* p) { return p != nullptr; }
+template <typename T> inline bool p_assigned(const DynArray<T>& a) {
+  return a.data != nullptr;
+}
 template <typename Sig> inline bool p_assigned(const MethodPtr<Sig>& p) {
   return static_cast<bool>(p);
 }

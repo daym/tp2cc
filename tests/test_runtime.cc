@@ -351,6 +351,47 @@ void test_open_array_helper_owns_temporary_storage() {
   CHECK_EQ(view[2], 3);
 }
 
+void test_dynamic_array_setlength_detaches_and_zeroes_tail() {
+  DynArray<int32_t> values;
+  p_setlength(values, 2);
+  values[0] = 7;
+  values[1] = 9;
+
+  DynArray<int32_t> alias = values;
+  p_setlength(values, 4);
+
+  CHECK_EQ(p_length(values), 4);
+  CHECK_EQ(values[0], 7);
+  CHECK_EQ(values[1], 9);
+  CHECK_EQ(values[2], 0);
+  CHECK_EQ(values[3], 0);
+
+  CHECK_EQ(p_length(alias), 2);
+  CHECK_EQ(alias[0], 7);
+  CHECK_EQ(alias[1], 9);
+
+  values[0] = 11;
+  CHECK_EQ(alias[0], 7);
+
+  values = nullptr;
+  CHECK(values == nullptr);
+}
+
+void test_open_array_view_uses_dynamic_array_storage() {
+  DynArray<int32_t> values;
+  p_setlength(values, 3);
+  values[0] = 1;
+  values[1] = 2;
+  values[2] = 3;
+
+  OpenArray<int32_t> view(values);
+  CHECK_EQ(view.count, 3);
+  CHECK(view.data == values.ptr());
+
+  view[1] = 8;
+  CHECK_EQ(values[1], 8);
+}
+
 void test_dos_pack_unpack_time_matches_bit_layout() {
   DateTime in{};
   in.p_year = 2004;
@@ -700,6 +741,8 @@ int main() {
   RUN_TEST(test_reinterpret_storage_ref_views_pointer_variable_bytes);
   RUN_TEST(test_reinterpret_ref_views_pointee_bytes_of_pointer_value);
   RUN_TEST(test_open_array_helper_owns_temporary_storage);
+  RUN_TEST(test_dynamic_array_setlength_detaches_and_zeroes_tail);
+  RUN_TEST(test_open_array_view_uses_dynamic_array_storage);
   RUN_TEST(test_dos_pack_unpack_time_matches_bit_layout);
   RUN_TEST(test_getfattr_reports_directory_bit);
   RUN_TEST(test_set_superset_operator_matches_pascal);
