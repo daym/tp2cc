@@ -1,0 +1,34 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Guard cgcpu's Windows stack-probe asm with $ifndef NOTARGETWIN32
+License: expat
+
+`compiler/i386/cgcpu.pas` carries a Windows-specific stack-page-probing
+sequence -- Win32 only commits a few stack pages, so the prologue has
+to touch every later page before using it. The block is gated by
+`{$ifndef __NOWINPECOFF__}`, but the inner `target_info.system =
+system_i386_win32` arm still references Win32 target metadata.
+
+The bootstrap is built `-dNOTARGETWIN32`. Add an `{$ifndef
+NOTARGETWIN32}` around that arm so the bootstrap doesn't drag any of
+the Win32 target plumbing (system identifiers, related target info)
+into the tp2cc runtime.
+
+--- a/compiler/i386/cgcpu.pas
++++ b/compiler/i386/cgcpu.pas
+@@ -330,6 +330,7 @@
+ {$ifndef __NOWINPECOFF__}
+         { windows guards only a few pages for stack growing, }
+         { so we have to access every page first              }
++{$ifndef NOTARGETWIN32}
+         if target_info.system=system_i386_win32 then
+           begin
+              objectlibrary.getlabel(again);
+@@ -359,6 +360,7 @@
+              end;
+           end
+         else
++{$endif NOTARGETWIN32}
+ {$endif __NOWINPECOFF__}
+           list.concat(Taicpu.op_reg_reg(A_SUB,S_L,NR_EDI,NR_ESP));
+        { align stack on 4 bytes }
