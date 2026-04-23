@@ -624,6 +624,11 @@ struct Emitter {
     const MethodSig* sig = nullptr;
     bool implicit_root_create = false;
   };
+  struct MetaclassCallableImpl {
+    std::string owner_class;
+    const MethodSig* sig = nullptr;
+    bool implicit_root_create = false;
+  };
 
   // Reified type/symbol tree spanning all parsed units. Set by the
   // driver. Drives member-access and ident-call decisions.
@@ -663,6 +668,8 @@ struct Emitter {
   std::string metaclass_value_fn_cxx(std::string_view class_name);
   std::vector<MetaclassCallable> collect_metaclass_callables(
       std::string_view class_name);
+  std::optional<MetaclassCallableImpl> find_metaclass_callable_impl(
+      std::string_view concrete_class, const MetaclassCallable& target);
   std::string array_type_to_cxx(const TyArray& a);
   const ast::TypeExpr* canonicalize_type(const ast::TypeExpr* t);
   bool enum_has_explicit_values(const TyEnum& e);
@@ -714,6 +721,7 @@ struct Emitter {
   bool const_param_needs_mutable_ref(const ast::TypeExpr* t);
   bool const_param_needs_const_ref(const ast::TypeExpr* t);
   const ClassInfo* class_info_for_type_name(std::string_view name);
+  bool is_builtin_reference_class_name(std::string_view name) const;
   std::string metaclass_target_name(const ast::TypeExpr* t);
   bool type_is_value_object(const ast::TypeExpr* t);
   std::string primitive_cast_lvalue_ref(const ast::Call& c);
@@ -1035,6 +1043,47 @@ std::vector<Emitter::MetaclassCallable> Emitter::collect_metaclass_callables(
   return out;
 }
 
+std::optional<Emitter::MetaclassCallableImpl>
+Emitter::find_metaclass_callable_impl(std::string_view concrete_class,
+                                      const MetaclassCallable& target) {
+  if (!registry) return std::nullopt;
+
+  auto matches_target = [&](const MethodSig& candidate) {
+    if (!candidate.decl) return false;
+    if (target.implicit_root_create) {
+      return candidate.kind == SymKind::Constructor &&
+             candidate.param_count == 0;
+    }
+    if (!target.sig || !target.sig->decl) return false;
+    return candidate.kind == target.sig->kind &&
+           procedural_param_types_to_cxx(candidate.decl->params) ==
+               procedural_param_types_to_cxx(target.sig->decl->params);
+  };
+
+  std::string cls = ascii_lower(std::string(concrete_class));
+  std::unordered_set<std::string> seen;
+  while (!cls.empty() && !seen.count(cls)) {
+    seen.insert(cls);
+    auto it = registry->classes.find(cls);
+    if (it == registry->classes.end()) break;
+    auto mit = it->second.methods.find(target.name);
+    if (mit != it->second.methods.end() && matches_target(mit->second)) {
+      return MetaclassCallableImpl{cls, &mit->second, false};
+    }
+    cls = it->second.parent;
+  }
+
+  if (target.implicit_root_create) {
+    // `TLinkedListItemClass(x).Create` and similar base-typed class refs still
+    // inherit `TObject.Create` even when a derived class also declares
+    // `Create(...)` with a different signature. Keep that zero-arg slot alive
+    // through the concrete metaclass instead of treating the derived
+    // declaration as if it erased the inherited constructor.
+    return MetaclassCallableImpl{"tobject", nullptr, true};
+  }
+  return std::nullopt;
+}
+
 const TypeExpr* Emitter::canonicalize_type(const TypeExpr* t) {
   int hops = 0;
   while (t && t->kind == Kind::TyName) {
@@ -1109,6 +1158,13 @@ const ClassInfo* Emitter::class_info_for_type_name(std::string_view name) {
   auto it = registry->classes.find(tail);
   if (it == registry->classes.end()) return nullptr;
   return it->second.defining_unit == unit ? &it->second : nullptr;
+}
+
+bool Emitter::is_builtin_reference_class_name(std::string_view name) const {
+  // `TObject` is supplied by the runtime root rather than the per-unit
+  // registry, but Pascal still treats `TObject(expr)` as a class-pointer
+  // cast with normal reference semantics.
+  return ascii_lower(std::string(name)) == "tobject";
 }
 
 std::string Emitter::metaclass_target_name(const TypeExpr* t) {
@@ -2275,7 +2331,7 @@ bool Emitter::type_is_reference_class(const TypeExpr* t) {
   if (const auto* ci = class_info_for_type_name(n.name)) {
     return ci->is_reference_type;
   }
-  return ascii_lower(n.name) == "tobject";
+  return is_builtin_reference_class_name(n.name);
 }
 
 bool Emitter::expr_is_reference_class(const Expr& e) {
@@ -2289,10 +2345,18 @@ bool Emitter::expr_is_reference_class(const Expr& e) {
     const auto& c = static_cast<const Call&>(e);
     if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
       const auto& id = static_cast<const Ident&>(*c.callee);
+      if (is_builtin_reference_class_name(id.name)) return true;
       auto it = registry->classes.find(id.name);
       if (it != registry->classes.end() && it->second.is_reference_type) {
         return true;
       }
+    }
+  } else if (e.kind == Kind::Call) {
+    const auto& c = static_cast<const Call&>(e);
+    if (c.args.size() == 1 && c.callee->kind == Kind::Ident &&
+        is_builtin_reference_class_name(
+            static_cast<const Ident&>(*c.callee).name)) {
+      return true;
     }
   }
   return type_is_reference_class(deduce_type(e));
@@ -3892,6 +3956,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           return "((" + primitive_type_cxx(n) + ")(" + arg0() + "))";
         } else if (c.args.size() == 1 && n != "inc" && n != "dec") {
+          if (is_builtin_reference_class_name(n)) {
+            // `TObject(expr)` is a pointer cast even though `TObject` itself
+            // comes from the runtime root instead of the registry.
+            TyName cast_name;
+            cast_name.name = n;
+            return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
+          }
           if (registry) {
             auto cit = registry->classes.find(n);
             if (cit != registry->classes.end() && cit->second.is_reference_type) {
@@ -4924,19 +4995,16 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
         for (const auto& callable : parent_visible) {
           parent_surface.emplace(callable.name, callable);
         }
-        auto concrete_matches_surface = [&](const MetaclassCallable& target,
-                                            const MethodSig& concrete_sig) {
-          if (concrete_sig.kind != (target.implicit_root_create
-                                        ? SymKind::Constructor
-                                        : target.sig->kind)) {
-            return false;
+        auto ctor_member_call = [&](std::string_view owner_class,
+                                    std::string_view method_name,
+                                    const std::string& args) {
+          if (ascii_lower(std::string(owner_class)) ==
+              ascii_lower(std::string(concrete_class))) {
+            return "tp2cc_ptr->" + std::string(method_name) + "(" + args + ")";
           }
-          if (!concrete_sig.decl) return false;
-          if (target.implicit_root_create) {
-            return concrete_sig.param_count == 0;
-          }
-          return callable_param_types(target) ==
-                 procedural_param_types_to_cxx(concrete_sig.decl->params);
+          return "static_cast<" + named_type_struct_cxx(owner_class) +
+                 "*>(tp2cc_ptr)->" + std::string(method_name) + "(" + args +
+                 ")";
         };
         std::string out = metaclass_struct_cxx(target_class) + "(";
         bool first = true;
@@ -4951,15 +5019,9 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
             continue;
           }
           if (!first) out += ", ";
-          const auto* concrete_sig =
-              registry->lookup_class_method(std::string(concrete_class),
-                                            callable.name);
-          const bool concrete_matches =
-              concrete_sig &&
-              concrete_matches_surface(callable, *concrete_sig);
-          const bool use_implicit_root_create =
-              callable.implicit_root_create && !concrete_sig;
-          if (!use_implicit_root_create && !concrete_matches) {
+          const auto concrete_impl =
+              find_metaclass_callable_impl(concrete_class, callable);
+          if (!concrete_impl) {
             // A `class of TBase` value can hold `TChild`, but a hidden
             // constructor/class-method is not callable through the base
             // metaclass surface anymore. Keep such entries as "fail loudly"
@@ -4973,27 +5035,27 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
             first = false;
             continue;
           }
-          if (!use_implicit_root_create &&
-              (!concrete_sig || !concrete_sig->decl)) {
-            continue;
-          }
+          const bool use_implicit_root_create =
+              concrete_impl->implicit_root_create;
+          const auto* concrete_sig = concrete_impl->sig;
           if (use_implicit_root_create ||
-              concrete_sig->kind == SymKind::Constructor) {
+              (concrete_sig && concrete_sig->kind == SymKind::Constructor)) {
             out += "+[](" + callable_param_list(callable) + ") -> " +
                    callable_return_type(target_class, callable) + " { auto "
                    "tp2cc_ptr = new " +
                    named_type_struct_cxx(concrete_class) + "{}; ";
-            const std::string ctor_name =
-                use_implicit_root_create ? "p_create"
-                                         : mangle(callable.name);
-            out += "tp2cc_ptr->" + ctor_name + "(" +
-                   callable_arg_list(callable) + "); return tp2cc_ptr; }";
+            const std::string ctor_name = use_implicit_root_create
+                                              ? "p_create"
+                                              : mangle(callable.name);
+            out += ctor_member_call(concrete_impl->owner_class, ctor_name,
+                                    callable_arg_list(callable)) +
+                   "; return tp2cc_ptr; }";
           } else {
             std::string ret = callable_return_type(target_class, callable);
             out += "+[](" + callable_param_list(callable) + ") -> " + ret +
                    " { ";
             if (ret != "void") out += "return ";
-            out += named_type_struct_cxx(concrete_class) + "::" +
+            out += named_type_struct_cxx(concrete_impl->owner_class) + "::" +
                    mangle(callable.name) + "(" +
                    callable_arg_list(callable) + ");";
             out += " }";

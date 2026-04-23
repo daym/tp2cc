@@ -1359,6 +1359,27 @@ void test_tobject_runtime_helpers_lower_in_method_body() {
   CHECK(contains(out.impl, "p_result = p_instancesize();"));
 }
 
+void test_tobject_cast_preserves_pointer_semantics_for_free() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = class\n"
+      "    p : pointer;\n"
+      "    destructor destroy; override;\n"
+      "  end;\n"
+      "implementation\n"
+      "destructor tbox.destroy;\n"
+      "begin\n"
+      "  if assigned(p) then\n"
+      "    tobject(p).free;\n"
+      "  inherited destroy;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_tobject::p_free(((::rt::p_tobject*)(p_p)));"));
+  CHECK(!contains(out.impl, "::rt::p_tobject(p_p)"));
+}
+
 void test_parameterless_proc_assignment_keeps_designator() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1935,6 +1956,37 @@ void test_metaclass_derived_constructor_surface_stays_visible() {
   CHECK(contains(out.impl, "p_inst = p_cls->p_create(7);"));
 }
 
+void test_metaclass_base_constructor_slot_survives_hidden_child_create() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    constructor create;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    constructor create(n : integer);\n"
+      "  end;\n"
+      "  tbaseclass = class of tbase;\n"
+      "var\n"
+      "  cls : tbaseclass;\n"
+      "  inst : tbase;\n"
+      "implementation\n"
+      "constructor tbase.create;\n"
+      "begin\n"
+      "end;\n"
+      "constructor tchild.create(n : integer);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  cls := tchild;\n"
+      "  inst := cls.create;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "static_cast<p_tbase*>(tp2cc_ptr)->p_create();"));
+  CHECK(contains(out.impl, "p_inst = p_cls->p_create();"));
+}
+
 void test_indexed_implicit_property_in_method_body() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2441,6 +2493,7 @@ int main() {
   RUN_TEST(test_default_indexed_procvar_property_stmt_autocalls);
   RUN_TEST(test_class_method_static_emission_and_calls);
   RUN_TEST(test_tobject_runtime_helpers_lower_in_method_body);
+  RUN_TEST(test_tobject_cast_preserves_pointer_semantics_for_free);
   RUN_TEST(test_parameterless_proc_assignment_keeps_designator);
   RUN_TEST(test_method_pointer_type_and_bound_assignment_emit);
   RUN_TEST(test_method_pointer_record_cast_reinterprets_same_storage);
@@ -2469,6 +2522,7 @@ int main() {
   RUN_TEST(test_metaclass_cast_keeps_concrete_descriptor);
   RUN_TEST(test_class_identifier_value_lowers_to_metaclass_descriptor);
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
+  RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);
   RUN_TEST(test_indexed_implicit_property_in_method_body);
   RUN_TEST(test_function_result_member_access_uses_pointer_semantics);
   RUN_TEST(test_pointer_typed_field_chain_keeps_arrow_access);
