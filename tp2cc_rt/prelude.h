@@ -378,6 +378,12 @@ struct ShortString {
     for (int i = 0; i < n; ++i) data[i] = o.data[i];
   }
 
+  constexpr ShortString(const ShortString& o) : data{} {
+    int n = o.length;
+    length = static_cast<uint8_t>(n);
+    for (int i = 0; i < n; ++i) data[i] = o.data[i];
+  }
+
   template <int M>
   constexpr ShortString& operator=(const ShortString<M>& o) {
     int n = o.length;
@@ -1009,6 +1015,20 @@ inline bool operator==(const ShortString<N>& a, const AnsiString& b) {
 }
 
 template <int N>
+inline bool operator==(const p_char* a, const ShortString<N>& b) {
+  if (!a) return b.size() == 0;
+  for (int i = 0; i < b.size(); ++i) {
+    if (a[i] != b[i + 1]) return false;
+  }
+  return a[b.size()] == p_char_of('\0');
+}
+
+template <int N>
+inline bool operator==(const ShortString<N>& a, const p_char* b) {
+  return b == a;
+}
+
+template <int N>
 inline bool operator!=(const AnsiString& a, const ShortString<N>& b) {
   return !(a == b);
 }
@@ -1221,6 +1241,27 @@ struct Array {
   }
 };
 
+template <auto Lo, int ArrN, int StrN>
+inline bool operator==(const Array<p_char, Lo, ArrN>& a,
+                       const ShortString<StrN>& b) {
+  int logical_len = ArrN;
+  while (logical_len > 0 &&
+         a.data[static_cast<size_t>(logical_len - 1)] == p_char_of('\0')) {
+    --logical_len;
+  }
+  if (logical_len != b.size()) return false;
+  for (int i = 0; i < logical_len; ++i) {
+    if (a.data[static_cast<size_t>(i)] != b[i + 1]) return false;
+  }
+  return true;
+}
+
+template <int StrN, auto Lo, int ArrN>
+inline bool operator==(const ShortString<StrN>& a,
+                       const Array<p_char, Lo, ArrN>& b) {
+  return b == a;
+}
+
 template <typename T>
 struct OpenArray {
   T* data = nullptr;
@@ -1312,6 +1353,23 @@ struct ByteReinterpreter<Array<Elem, Lo, N>> {
 template <typename Arr, typename Src>
 inline Arr p_reinterpret_bytes(const Src& src) {
   return ByteReinterpreter<Arr>::cast(src);
+}
+
+// Pascal also uses typed casts like `double(bits)` to mean "take this
+// aggregate object's bytes and interpret them as a floating-point value".
+// Do that with a byte copy rather than a C++ cast so the translation stays
+// defined with respect to aliasing and alignment.
+template <typename T, typename Src>
+inline T p_reinterpret_copy(const Src& src) {
+  static_assert(std::is_trivially_copyable_v<T>,
+                "byte reinterpretation target must be trivially copyable");
+  static_assert(std::is_trivially_copyable_v<Src>,
+                "byte reinterpretation source must be trivially copyable");
+  static_assert(sizeof(T) == sizeof(Src),
+                "byte reinterpretation requires equal object size");
+  T out{};
+  std::memcpy(&out, &src, sizeof(T));
+  return out;
 }
 
 // View the bytes of the source object itself as a different type.

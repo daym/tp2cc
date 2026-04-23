@@ -234,6 +234,26 @@ void test_move_reads_from_const_shortstring_storage() {
   CHECK_EQ(p_to_std_string(static_cast<p_char*>(buf)), std::string("hello"));
 }
 
+void test_shortstring_compares_equal_to_pchar_buffer() {
+  const p_char text[] = {
+      p_char_of('h'), p_char_of('e'), p_char_of('l'),
+      p_char_of('l'), p_char_of('o'), p_char_of('\0')};
+  const ShortString<> shorty("hello");
+
+  CHECK(text == shorty);
+  CHECK(shorty == text);
+}
+
+void test_char_array_compares_equal_to_shortstring_by_live_prefix() {
+  Array<p_char, 0, 8> text{};
+  text.data[0] = p_char_of('h');
+  text.data[1] = p_char_of('i');
+  text.data[2] = p_char_of('\0');
+
+  CHECK(text == ShortString<>("hi"));
+  CHECK(ShortString<>("hi") == text);
+}
+
 void test_str_formats_real_values() {
   ShortString<> s;
 
@@ -252,6 +272,26 @@ void test_reinterpret_bytes_copies_raw_object_bytes() {
   std::memcpy(raw, &v, sizeof(v));
   for (int i = 0; i < 10; ++i) {
     CHECK_EQ(bytes.data[i], raw[i]);
+  }
+}
+
+void test_reinterpret_copy_preserves_scalar_bit_pattern() {
+  Array<uint8_t, 0, 8> bits{};
+  bits.data[0] = 0;
+  bits.data[1] = 0;
+  bits.data[2] = 0;
+  bits.data[3] = 0;
+  bits.data[4] = 0;
+  bits.data[5] = 0;
+  bits.data[6] = 240;
+  bits.data[7] = 127;
+
+  double value = p_reinterpret_copy<double>(bits);
+  uint8_t raw[sizeof(value)] = {};
+  std::memcpy(raw, &value, sizeof(value));
+
+  for (int i = 0; i < 8; ++i) {
+    CHECK_EQ(raw[i], bits.data[i]);
   }
 }
 
@@ -589,8 +629,11 @@ int main() {
   RUN_TEST(test_shortstring_charref_inc_and_dec_update_length_slot_storage);
   RUN_TEST(test_octstr_formats_octal_with_zero_padding);
   RUN_TEST(test_move_reads_from_const_shortstring_storage);
+  RUN_TEST(test_shortstring_compares_equal_to_pchar_buffer);
+  RUN_TEST(test_char_array_compares_equal_to_shortstring_by_live_prefix);
   RUN_TEST(test_str_formats_real_values);
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
+  RUN_TEST(test_reinterpret_copy_preserves_scalar_bit_pattern);
   RUN_TEST(test_scope_exit_runs_on_exception_unwind);
   RUN_TEST(test_reinterpret_storage_ref_views_pointer_variable_bytes);
   RUN_TEST(test_reinterpret_ref_views_pointee_bytes_of_pointer_value);
