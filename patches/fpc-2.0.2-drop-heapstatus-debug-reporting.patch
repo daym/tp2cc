@@ -1,0 +1,116 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Drop heap-status reporting from the bootstrap compiler
+License: expat
+
+The 2.0.2 compiler uses `TFPCHeapStatus` only for optional memory
+debug/status reporting.  The tp2cc bootstrap does not need that
+diagnostic path to compile programs correctly, and keeping it would
+force extra runtime API surface into the bootstrap subset.
+
+Remove the reporting hooks while leaving the surrounding compiler logic
+intact.
+
+--- a/compiler/cclasses.pas
++++ b/compiler/cclasses.pas
+@@ -367,26 +367,14 @@
+ 
+ 
+     procedure tmemdebug.start;
+-
+-      var
+-        status : TFPCHeapStatus;
+-
+       begin
+-        status:=GetFPCHeapStatus;
+-        startmem:=status.CurrHeapUsed;
++        startmem:=0;
+       end;
+ 
+ 
+     procedure tmemdebug.stop;
+-      var
+-        status : TFPCHeapStatus;
+       begin
+-        if startmem<>0 then
+-         begin
+-           status:=GetFPCHeapStatus;
+-           inc(TotalMem,startmem-status.CurrHeapUsed);
+-           startmem:=0;
+-         end;
++        startmem:=0;
+       end;
+ 
+ 
+@@ -399,11 +387,6 @@
+ 
+     procedure tmemdebug.show;
+       begin
+-        write('memory [',infostr,'] ');
+-        if TotalMem>0 then
+-         writeln(DStr(TotalMem shr 10),' Kb released')
+-        else
+-         writeln(DStr((-TotalMem) shr 10),' Kb allocated');
+       end;
+ 
+ 
+--- a/compiler/comphook.pas
++++ b/compiler/comphook.pas
+@@ -224,8 +224,6 @@
+ ****************************************************************************}
+ 
+ function def_status:boolean;
+-var
+-  hstatus : TFPCHeapStatus;
+ begin
+   def_status:=false; { never stop }
+ { Status info?, Called every line }
+@@ -235,9 +233,7 @@
+         (status.currentline mod 100=0) then
+        begin
+          if status.currentline>0 then
+-           Write(status.currentline,' ');
+-         hstatus:=GetFPCHeapStatus;
+-         WriteLn(DStr(hstatus.CurrHeapUsed shr 10),'/',DStr(hstatus.CurrHeapSize shr 10),' Kb Used');
++           WriteLn(status.currentline);
+        end;
+    end;
+ {$ifdef macos}
+--- a/compiler/compiler.pas
++++ b/compiler/compiler.pas
+@@ -237,13 +237,6 @@
+ uses
+   aasmcpu;
+ 
+-{$ifdef EXTDEBUG}
+-  {$define SHOWUSEDMEM}
+-{$endif}
+-{$ifdef MEMDEBUG}
+-  {$define SHOWUSEDMEM}
+-{$endif}
+-
+ var
+   CompilerInitedAfterArgs,
+   CompilerInited : boolean;
+@@ -355,9 +348,6 @@
+ 
+ var
+   starttime  : real;
+-{$ifdef SHOWUSEDMEM}
+-  hstatus : TFPCHeapStatus;
+-{$endif SHOWUSEDMEM}
+ begin
+   try
+     try
+@@ -445,11 +435,6 @@
+         Raise;
+       end;
+   end;
+-{$ifdef SHOWUSEDMEM}
+-      hstatus:=GetFPCHeapStatus;
+-      Writeln('Max Memory used/heapsize: ',DStr(hstatus.MaxHeapUsed shr 10),'/',DStr(hstatus.MaxHeapSize shr 10),' Kb');
+-{$endif SHOWUSEDMEM}
+-
+   { Set the return value if an error has occurred }
+   if status.errorcount=0 then
+     result:=0
