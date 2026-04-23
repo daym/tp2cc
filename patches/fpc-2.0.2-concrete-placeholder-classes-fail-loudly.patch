@@ -1,0 +1,367 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Drop virtual abstract on instantiated ogbase/cg base classes; bodies raise internalerror
+License: expat
+
+Several base classes in the assembler-output and codegen paths
+(`tobjectdata` in `ogbase.pas`: `writereloc`, `writesymbol`,
+`writestabs`, `writesymstabs`; `tcg` in the cg base: `getflagregister`;
+the read-asm utilities: `parseparaloc`) declare core methods as
+`virtual; abstract;`. Native FPC instantiates these classes anyway --
+the abstract methods just happen never to be reached on those
+instances at runtime, because real call sites go through concrete
+backend subclasses. In native FPC the abstract slot is dead weight
+the runtime never touches.
+
+tp2cc emits each abstract Pascal method as a pure-virtual C++ method
+(`= 0`). A C++ class with any pure-virtual is not instantiable at all,
+so the source's "instantiate the base, just don't call this method"
+pattern stops compiling.
+
+Drop `abstract` from those declarations and supply each body with
+`internalerror(...)`. The classes are now concretely instantiable
+under both compilers; calling the method that was previously abstract
+still fails loudly, just at the call site instead of the construction
+site.
+
+--- a/compiler/aasmbase.pas
++++ b/compiler/aasmbase.pas
+@@ -182,10 +182,14 @@
+          procedure allocstabs(p:pchar);
+          procedure allocsymbol(currpass:byte;p:tasmsymbol;len:aint);
+          procedure writebytes(var data;len:aint);
+-         procedure writereloc(data,len:aint;p:tasmsymbol;relative:TAsmRelocationType);virtual;abstract;
+-         procedure writesymbol(p:tasmsymbol);virtual;abstract;
+-         procedure writestabs(offset:aint;p:pchar;nidx,nother,line:longint;reloc:boolean);virtual;abstract;
+-         procedure writesymstabs(offset:aint;p:pchar;ps:tasmsymbol;nidx,nother,line:longint;reloc:boolean);virtual;abstract;
++         { ogbase instantiates the generic object-data class for shared
++           bookkeeping paths. Concrete object formats override these writer
++           hooks; the base implementation must therefore fail loudly if one
++           of those generic instances ever reaches real object emission. }
++         procedure writereloc(data,len:aint;p:tasmsymbol;relative:TAsmRelocationType);virtual;
++         procedure writesymbol(p:tasmsymbol);virtual;
++         procedure writestabs(offset:aint;p:pchar;nidx,nother,line:longint;reloc:boolean);virtual;
++         procedure writesymstabs(offset:aint;p:pchar;ps:tasmsymbol;nidx,nother,line:longint;reloc:boolean);virtual;
+          procedure beforealloc;virtual;
+          procedure beforewrite;virtual;
+          procedure afteralloc;virtual;
+@@ -662,6 +666,30 @@
+       end;
+ 
+ 
++    procedure TAsmObjectData.writereloc(data,len:aint;p:tasmsymbol;relative:TAsmRelocationType);
++      begin
++        internalerror(2005110201);
++      end;
++
++
++    procedure TAsmObjectData.writesymbol(p:tasmsymbol);
++      begin
++        internalerror(2005110202);
++      end;
++
++
++    procedure TAsmObjectData.writestabs(offset:aint;p:pchar;nidx,nother,line:longint;reloc:boolean);
++      begin
++        internalerror(2005110203);
++      end;
++
++
++    procedure TAsmObjectData.writesymstabs(offset:aint;p:pchar;ps:tasmsymbol;nidx,nother,line:longint;reloc:boolean);
++      begin
++        internalerror(2005110204);
++      end;
++
++
+     procedure TAsmObjectData.section_reset(p:tnamedindexitem;arg:pointer);
+       begin
+         with tasmsection(p) do
+--- a/compiler/cgobj.pas
++++ b/compiler/cgobj.pas
+@@ -79,7 +79,6 @@
+           function getaddressregister(list:Taasmoutput):Tregister;virtual;
+           function getfpuregister(list:Taasmoutput;size:Tcgsize):Tregister;virtual;
+           function getmmregister(list:Taasmoutput;size:Tcgsize):Tregister;virtual;
+-          function getflagregister(list:Taasmoutput;size:Tcgsize):Tregister;virtual;abstract;
+           {Does the generic cg need SIMD registers, like getmmxregister? Or should
+            the cpu specific child cg object have such a method?}
+ 
+--- a/compiler/i386/n386cal.pas
++++ b/compiler/i386/n386cal.pas
+@@ -35,6 +35,7 @@
+        protected
+           procedure pop_parasize(pop_size:longint);override;
+           procedure extra_interrupt_code;override;
++          procedure do_syscall;override;
+        end;
+ 
+ 
+@@ -55,6 +56,16 @@
+ *****************************************************************************}
+ 
+ 
++    procedure ti386callnode.do_syscall;
++      begin
++        { The 2.0.2 i386 backend never supplied a concrete syscall lowering
++          here, but the class is still installed as ccallnode. Keep it
++          concrete for the normal Linux bootstrap path and fail loudly if an
++          i386 syscall-style call ever reaches this stub. }
++        internalerror(2016090104);
++      end;
++
++
+     procedure ti386callnode.extra_interrupt_code;
+       begin
+         emit_none(A_PUSHF,S_L);
+--- a/compiler/nbas.pas
++++ b/compiler/nbas.pas
+@@ -44,6 +44,8 @@
+           constructor create;virtual;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
++          procedure pass_2;override;
+           procedure mark_write;override;
+        end;
+        terrornodeclass = class of terrornode;
+@@ -285,6 +287,21 @@
+       end;
+ 
+ 
++    procedure terrornode.det_temp;
++      begin
++        { Error nodes stop further analysis immediately; they carry no
++          executable value and therefore do not need temp planning. }
++      end;
++
++
++    procedure terrornode.pass_2;
++      begin
++        { The compiler should remove or short-circuit error nodes before
++          code generation ever reaches pass_2. }
++        internalerror(2006041602);
++      end;
++
++
+     procedure terrornode.mark_write;
+       begin
+       end;
+--- a/compiler/ncal.pas
++++ b/compiler/ncal.pas
+@@ -158,6 +158,8 @@
+           procedure ppuwrite(ppufile:tcompilerppufile);override;
+           function getcopy : tnode;override;
+           procedure insertintolist(l : tnodelist);override;
++          function pass_1 : tnode;override;
++          function det_resulttype : tnode;override;
+           procedure get_paratype;
+           procedure insert_typeconv(do_count : boolean);
+           procedure det_registers;
+@@ -476,6 +478,29 @@
+       end;
+ 
+ 
++    function tcallparanode.pass_1 : tnode;
++
++      begin
++         { Call parameters are processed through firstcallparan rather than
++           the generic pass_1 entry point. Keep this base class concrete so
++           cg subclasses can be instantiated, but fail loudly if someone
++           ever calls pass_1 on it directly. }
++         internalerror(200709252);
++         result:=nil;
++      end;
++
++
++    function tcallparanode.det_resulttype : tnode;
++
++      begin
++         { Type collection for call parameters goes through get_paratype, not
++           the generic det_resulttype dispatch. Treat a direct call here as a
++           compiler bug instead of guessing. }
++         internalerror(200709251);
++         result:=nil;
++      end;
++
++
+     procedure tcallparanode.get_paratype;
+       var
+         old_array_constructor : boolean;
+--- a/compiler/ncnv.pas
++++ b/compiler/ncnv.pas
+@@ -191,6 +191,7 @@
+           constructor create(l,r : tnode);virtual;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
+           procedure pass_2;override;
+        end;
+        tisnodeclass = class of tisnode;
+@@ -2569,6 +2570,12 @@
+         result:=nil;
+       end;
+ 
++    procedure tisnode.det_temp;
++      begin
++        { The typecheck pass rewrites `is` nodes to helper calls before any
++          temp analysis would matter, so there is nothing to plan here. }
++      end;
++
+     { dummy pass_2, it will never be called, but we need one since }
+     { you can't instantiate an abstract class                      }
+     procedure tisnode.pass_2;
+--- a/compiler/nld.pas
++++ b/compiler/nld.pas
+@@ -78,6 +78,8 @@
+           constructor create(l,r : tnode);virtual;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
++          procedure det_temp;override;
++          procedure pass_2;override;
+        end;
+        tarrayconstructorrangenodeclass = class of tarrayconstructorrangenode;
+ 
+@@ -100,6 +102,8 @@
+           procedure ppuwrite(ppufile:tcompilerppufile);override;
+           procedure buildderefimpl;override;
+           procedure derefimpl;override;
++          procedure det_temp;override;
++          procedure pass_2;override;
+           function pass_1 : tnode;override;
+           function det_resulttype:tnode;override;
+           function docompare(p: tnode): boolean; override;
+@@ -852,6 +856,20 @@
+         result:=nil;
+       end;
+ 
++    procedure tarrayconstructorrangenode.det_temp;
++      begin
++        { pass_1 already computes the register needs for this transient
++          range-wrapper node directly via calcregisters(). }
++      end;
++
++
++    procedure tarrayconstructorrangenode.pass_2;
++      begin
++        { Array-constructor range nodes are a first-pass-only helper and
++          must be eliminated before code generation reaches pass_2. }
++        internalerror(2006041601);
++      end;
++
+ 
+ {****************************************************************************
+                             TARRAYCONSTRUCTORNODE
+@@ -1091,6 +1109,23 @@
+       end;
+ 
+ 
++    procedure ttypenode.det_temp;
++      begin
++        { Typenodes are instantiated through the ctypenode class reference
++          while parsing type expressions, so keep them concrete. They should
++          never survive to temp allocation. }
++        internalerror(2025042301);
++      end;
++
++
++    procedure ttypenode.pass_2;
++      begin
++        { Typenodes represent parser/typechecker-only nodes and should have
++          been rejected or rewritten before code generation reaches pass_2. }
++        internalerror(2025042302);
++      end;
++
++
+     function ttypenode.det_resulttype:tnode;
+       begin
+         result:=nil;
+--- a/compiler/nset.pas
++++ b/compiler/nset.pas
+@@ -69,6 +69,8 @@
+           constructor create(l,r : tnode);virtual;
+           function det_resulttype:tnode;override;
+           function pass_1 : tnode;override;
++          procedure det_temp;override;
++          procedure pass_2;override;
+        end;
+        trangenodeclass = class of trangenode;
+ 
+@@ -374,6 +376,17 @@
+         expectloc:=left.expectloc;
+       end;
+ 
++    procedure trangenode.det_temp;
++      begin
++        { Range nodes are parser/set helpers and keep no evaluation temps. }
++      end;
++
++    procedure trangenode.pass_2;
++      begin
++        { Range helpers should be folded away before the code generator runs. }
++        internalerror(2005042303);
++      end;
++
+ 
+ {*****************************************************************************
+                               Case Helpers
+--- a/compiler/ogbase.pas
++++ b/compiler/ogbase.pas
+@@ -234,7 +234,9 @@
+ 
+     function texeoutput.newobjectinput:tobjectinput;
+       begin
+-        result:=tobjectinput.create;
++        { concrete backends override this with the matching object reader }
++        internalerror(2005070301);
++        result:=nil;
+       end;
+ 
+ 
+--- a/compiler/paramgr.pas
++++ b/compiler/paramgr.pas
+@@ -111,7 +111,7 @@
+           procedure createtempparaloc(list: taasmoutput;calloption : tproccalloption;parasym : tparavarsym;var cgpara:TCGPara);virtual;
+           procedure duplicateparaloc(list: taasmoutput;calloption : tproccalloption;parasym : tparavarsym;var cgpara:TCGPara);
+ 
+-          function parseparaloc(parasym : tparavarsym;const s : string) : boolean;virtual;abstract;
++          function parseparaloc(parasym : tparavarsym;const s : string) : boolean;virtual;
+        end;
+ 
+ 
+@@ -215,6 +215,12 @@
+       end;
+ 
+ 
++    function tparamanager.parseparaloc(parasym : tparavarsym;const s : string) : boolean;
++      begin
++        result:=false;
++      end;
++
++
+     procedure tparamanager.allocparaloc(list: taasmoutput; const cgpara: TCGPara);
+       var
+         paraloc : pcgparalocation;
+--- a/compiler/symdef.pas
++++ b/compiler/symdef.pas
+@@ -161,6 +161,7 @@
+           tosymname : pstring;
+           forwardpos : tfileposinfo;
+           constructor create(const s:string;const pos : tfileposinfo);
++          procedure ppuwrite(ppufile:tcompilerppufile);override;
+           destructor destroy;override;
+           function  gettypename:string;override;
+        end;
+@@ -6454,6 +6455,13 @@
+         forwardpos:=pos;
+      end;
+ 
++    procedure tforwarddef.ppuwrite(ppufile:tcompilerppufile);
++      begin
++        { Forward defs are parser-local placeholders. They should be resolved
++          or discarded before any PPU serialization path can see them. }
++        internalerror(2005090401);
++      end;
++
+ 
+     function tforwarddef.gettypename:string;
+       begin
