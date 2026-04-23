@@ -1,0 +1,157 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Keep ncnv set conversions when source and target use different storage kinds
+License: expat
+
+`ncnv.pas` had two related bugs in its set-handling type-conversion
+machinery:
+
+1. `inserttypeconv` and `inserttypeconv_internal` skipped emitting the
+   conversion node whenever `equal_defs` returned true. For sets that's
+   wrong: a `smallset` and a normal set can have the same element-base
+   type (so `equal_defs` says yes) but completely different storage
+   layouts (one fits in a word, the other is a 32-byte bitmask). The
+   inline guard tried to special-case this by checking `settype`
+   inequality but did so with the wrong polarity for the not-equal-defs
+   side. Pull the test out into a `same_set_storage` boolean so both
+   conditions read cleanly.
+
+2. The set-loading switch in `typecheckpass` had its smallset/normalset
+   logic nested inside the `xor` test, which meant the "same storage"
+   path fell out of the conditional without ever consulting the
+   `convtype in [tc_equal,tc_not_possible]` check. Restructure the
+   nesting so the conversion-or-not decision runs after the
+   smallset/normalset decision, not in parallel with it.
+
+Both fixes are semantic -- wrong-storage conversions could previously be
+silently dropped at type-check time, and the bootstrap compiler needs
+these conversions for correct codegen.
+
+--- a/compiler/ncnv.pas
++++ b/compiler/ncnv.pas
+@@ -222,6 +222,9 @@
+ 
+     procedure inserttypeconv(var p:tnode;const t:ttype);
+ 
++      var
++        same_set_storage : boolean;
++
+       begin
+         if not assigned(p.resulttype.def) then
+          begin
+@@ -231,10 +234,15 @@
+          end;
+ 
+         { don't insert obsolete type conversions }
+-        if equal_defs(p.resulttype.def,t.def) and
+-           not ((p.resulttype.def.deftype=setdef) and
+-                (tsetdef(p.resulttype.def).settype <>
+-                 tsetdef(t.def).settype)) then
++        same_set_storage:=true;
++        if equal_defs(p.resulttype.def,t.def) then
++         begin
++           if (p.resulttype.def.deftype=setdef) and
++              (t.def.deftype=setdef) then
++             same_set_storage:=
++               tsetdef(p.resulttype.def).settype=tsetdef(t.def).settype;
++         end;
++        if equal_defs(p.resulttype.def,t.def) and same_set_storage then
+          begin
+            p.resulttype:=t;
+          end
+@@ -248,6 +256,9 @@
+ 
+     procedure inserttypeconv_internal(var p:tnode;const t:ttype);
+ 
++      var
++        same_set_storage : boolean;
++
+       begin
+         if not assigned(p.resulttype.def) then
+          begin
+@@ -257,10 +268,15 @@
+          end;
+ 
+         { don't insert obsolete type conversions }
+-        if equal_defs(p.resulttype.def,t.def) and
+-           not ((p.resulttype.def.deftype=setdef) and
+-                (tsetdef(p.resulttype.def).settype <>
+-                 tsetdef(t.def).settype)) then
++        same_set_storage:=true;
++        if equal_defs(p.resulttype.def,t.def) then
++         begin
++           if (p.resulttype.def.deftype=setdef) and
++              (t.def.deftype=setdef) then
++             same_set_storage:=
++               tsetdef(p.resulttype.def).settype=tsetdef(t.def).settype;
++         end;
++        if equal_defs(p.resulttype.def,t.def) and same_set_storage then
+          begin
+            p.resulttype:=t;
+          end
+@@ -1441,37 +1457,37 @@
+                   { because is_equal only checks the basetype for sets we need to
+                     check here if we are loading a smallset into a normalset }
+                   if (resulttype.def.deftype=setdef) and
+-                     (left.resulttype.def.deftype=setdef) and
+-                     ((tsetdef(resulttype.def).settype = smallset) xor
+-                      (tsetdef(left.resulttype.def).settype = smallset)) then
++                     (left.resulttype.def.deftype=setdef) then
+                     begin
+-                      { constant sets can be converted by changing the type only }
+-                      if (left.nodetype=setconstn) then
+-                       begin
+-                         left.resulttype:=resulttype;
+-                         result:=left;
+-                         left:=nil;
+-                         exit;
+-                       end;
++                      if ((tsetdef(resulttype.def).settype = smallset) xor
++                          (tsetdef(left.resulttype.def).settype = smallset)) then
++                        begin
++                          { constant sets can be converted by changing the type only }
++                          if (left.nodetype=setconstn) then
++                           begin
++                             left.resulttype:=resulttype;
++                             result:=left;
++                             left:=nil;
++                             exit;
++                           end;
+ 
+-                      if (tsetdef(resulttype.def).settype <> smallset) then
+-                       convtype:=tc_load_smallset
+-                      else
+-                       convtype := tc_normal_2_smallset;
+-                      exit;
+-                    end
+-                  else
++                          if (tsetdef(resulttype.def).settype <> smallset) then
++                           convtype:=tc_load_smallset
++                          else
++                           convtype := tc_normal_2_smallset;
++                          exit;
++                        end;
++                    end;
++
++                  { Only leave when there is no conversion to do.
++                    We can still need to call a conversion routine,
++                    like the routine to convert a stringconstnode }
++                  if convtype in [tc_equal,tc_not_possible] then
+                    begin
+-                     { Only leave when there is no conversion to do.
+-                       We can still need to call a conversion routine,
+-                       like the routine to convert a stringconstnode }
+-                     if convtype in [tc_equal,tc_not_possible] then
+-                      begin
+-                        left.resulttype:=resulttype;
+-                        result:=left;
+-                        left:=nil;
+-                        exit;
+-                      end;
++                     left.resulttype:=resulttype;
++                     result:=left;
++                     left:=nil;
++                     exit;
+                    end;
+                 end;
+ 
