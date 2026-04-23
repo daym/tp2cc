@@ -1,0 +1,41 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Add a tostr(cardinal) overload in cutils
+License: expat
+
+`cutils.pas` exports `tostr` overloads for `qword`, `int64`, `longint`.
+Pascal call sites that pass a `cardinal` get implicitly promoted, but
+once tp2cc lowers those overloads to C++ free functions, the same call
+expressions hit "ambiguous overload" -- C++ does not pick the way Pascal
+would when several integer overloads are equally viable through
+implicit conversions.
+
+Add an explicit `tostr(cardinal)` overload so each Pascal-side ordinal
+type already has its own C++ overload, no implicit-conversion roulette.
+
+--- a/compiler/cutils.pas	2005-12-04 21:24:46.000000000 +0000
++++ b/compiler/cutils.pas	2026-04-23 05:32:25.296747557 +0000
+@@ -71,6 +71,7 @@
+     function realtostr(e:extended):string;{$ifdef USEINLINE}inline;{$endif}
+     function tostr(i : qword) : string;{$ifdef USEINLINE}inline;{$endif}overload;
+     function tostr(i : int64) : string;{$ifdef USEINLINE}inline;{$endif}overload;
++    function tostr(i : cardinal) : string;{$ifdef USEINLINE}inline;{$endif}overload;
+     function tostr(i : longint) : string;{$ifdef USEINLINE}inline;{$endif}overload;
+     function tostr_with_plus(i : int64) : string;{$ifdef USEINLINE}inline;{$endif}
+     function DStr(l:longint):string;
+@@ -575,6 +576,15 @@
+    {
+      return string of value i
+    }
++     begin
++        str(i,result);
++     end;
++
++
++   function tostr(i : cardinal) : string;{$ifdef USEINLINE}inline;{$endif}overload;
++   {
++     return string of value i
++   }
+      begin
+         str(i,result);
+      end;
