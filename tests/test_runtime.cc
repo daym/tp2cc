@@ -68,6 +68,15 @@ void test_val_rejects_compiler_unsupported_integer_forms() {
   CHECK_EQ(v, 0);
 }
 
+void test_bootstrap_pointer_sized_aliases_are_32bit() {
+  static_assert(std::is_same_v<p_sizeint, int32_t>);
+  static_assert(std::is_same_v<p_sizeuint, uint32_t>);
+  static_assert(std::is_same_v<p_ptrint, int32_t>);
+  static_assert(std::is_same_v<p_ptruint, uint32_t>);
+
+  CHECK_EQ(p_maxint, std::numeric_limits<int32_t>::max());
+}
+
 void test_shortstring_char_concat_grows_capacity() {
   auto label = ShortString<2>(".L") + p_char_of('e') + p_char_of('0');
   CHECK_EQ(p_to_std_string(label), std::string(".Le0"));
@@ -239,6 +248,7 @@ int main() {
   RUN_TEST(test_val_accepts_prefixed_integers);
   RUN_TEST(test_val_accepts_decimal_min_longint);
   RUN_TEST(test_val_rejects_compiler_unsupported_integer_forms);
+  RUN_TEST(test_bootstrap_pointer_sized_aliases_are_32bit);
   RUN_TEST(test_shortstring_char_concat_grows_capacity);
   RUN_TEST(test_move_reads_from_const_shortstring_storage);
   RUN_TEST(test_str_formats_real_values);
