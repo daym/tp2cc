@@ -1,0 +1,22 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-23
+Subject: Replace nobj's High(tequals) with the literal 1000
+License: expat
+
+`nobj.pas` allocates a workspace whose size is bounded by
+`High(tequals)`. `tequals` is an enum that has been in flux across the
+2.0.x series; pinning the bound to a literal `1000` keeps the
+allocation independent of whatever `tequals`'s last member happens to
+be in any given source tree.
+
+--- a/compiler/nobj.pas
++++ b/compiler/nobj.pas
+@@ -953,7 +953,7 @@
+         cji: boolean;
+       begin
+         max:=_class.implementedinterfaces.count;
+-        if max>High(tequals) then
++        if max>1000 then
+           Internalerror(200006135);
+         getmem(compats,sizeof(tcompintfentry)*max);
+         getmem(equals,sizeof(longint)*max);
