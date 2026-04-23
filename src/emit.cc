@@ -712,9 +712,10 @@ struct Emitter {
 
   // Small helpers.
   bool const_param_needs_mutable_ref(const ast::TypeExpr* t);
+  bool const_param_needs_const_ref(const ast::TypeExpr* t);
   const ClassInfo* class_info_for_type_name(std::string_view name);
   std::string metaclass_target_name(const ast::TypeExpr* t);
-  bool type_is_value_object_or_record(const ast::TypeExpr* t);
+  bool type_is_value_object(const ast::TypeExpr* t);
   std::string primitive_cast_lvalue_ref(const ast::Call& c);
   std::string param_list_to_cxx(const std::vector<Param>& params);
   void emit_method_pointer_thunk(const std::string& owner_name,
@@ -1063,10 +1064,32 @@ const TypeExpr* Emitter::canonicalize_type(const TypeExpr* t) {
 
 bool Emitter::const_param_needs_mutable_ref(const TypeExpr* t) {
   if (type_is_reference_class(t)) return false;
-  // In old Turbo Pascal/FPC object-style code, `const` on records and
-  // objects is mainly a calling-convention hint. Treating it as C++
-  // deep immutability breaks method calls and container updates.
-  return type_is_value_object_or_record(t);
+  // Old object-style `object` values still treat `const` mostly as a
+  // calling-convention hint. Their methods may mutate internal bookkeeping
+  // through `self`, so these parameters cannot become `const T&`.
+  return type_is_value_object(t);
+}
+
+bool Emitter::const_param_needs_const_ref(const TypeExpr* t) {
+  if (type_is_reference_class(t)) return false;
+  t = canonicalize_type(t);
+  if (!t) return false;
+  if (t->kind != Kind::TyArray) return false;
+  const auto& arr = static_cast<const TyArray&>(*t);
+  if (arr.dims.empty()) return false;
+  // Keep fixed-array `const` params as `const T&`.
+  //
+  // The bootstrap compiler uses typed pointers to arrays whose backing
+  // storage only holds the live prefix:
+  //   spill_temps : ^Tspill_temp_list;
+  //   spill_temps := allocmem(sizeof(treference) * maxreg);
+  //   instr_spill_register(..., spill_temps^);
+  //
+  // In Pascal that passes the array lvalue the pointer names; emitting the
+  // formal as a by-value C++ parameter would instead copy the full declared
+  // array object. That is wrong for both arrays of records and arrays of
+  // class references, so keep only this one family on a reference ABI.
+  return true;
 }
 
 const ClassInfo* Emitter::class_info_for_type_name(std::string_view name) {
@@ -1094,10 +1117,9 @@ std::string Emitter::metaclass_target_name(const TypeExpr* t) {
   return static_cast<const TyMetaclass&>(*t).class_name;
 }
 
-bool Emitter::type_is_value_object_or_record(const TypeExpr* t) {
+bool Emitter::type_is_value_object(const TypeExpr* t) {
   t = canonicalize_type(t);
   if (!t) return false;
-  if (t->kind == Kind::TyRecord) return true;
   if (t->kind == Kind::TyObject) {
     return !static_cast<const TyObject&>(*t).is_reference_type;
   }
@@ -1107,11 +1129,7 @@ bool Emitter::type_is_value_object_or_record(const TypeExpr* t) {
   if (const auto* ci = class_info_for_type_name(n.name)) {
     return !ci->is_reference_type;
   }
-
-  std::string low = ascii_lower(n.name);
-  auto dot = low.find('.');
-  if (dot != std::string::npos) low = low.substr(dot + 1);
-  return registry && registry->records.count(low) > 0;
+  return false;
 }
 
 bool Emitter::enum_has_explicit_values(const TyEnum& e) {
@@ -1399,6 +1417,8 @@ std::string Emitter::procedural_param_types_to_cxx(
       if (pp.mode == Param::Var || pp.mode == Param::Out) pt += "&";
       else if (pp.mode == Param::Const) {
         if (const_param_needs_mutable_ref(pp.type.get())) pt += "&";
+        else if (const_param_needs_const_ref(pp.type.get()))
+          pt = "const " + pt + "&";
       }
     }
     size_t repeats = pp.names.empty() ? 1 : pp.names.size();
@@ -5094,6 +5114,9 @@ std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
       else if (p.mode == Param::Const &&
                const_param_needs_mutable_ref(p.type.get()))
         name_prefix = "&";
+      else if (p.mode == Param::Const &&
+               const_param_needs_const_ref(p.type.get()))
+        name_prefix = "const &";
     }
     for (const auto& n : p.names) {
       if (!first) out += ", ";
@@ -5155,6 +5178,9 @@ void Emitter::emit_method_pointer_thunk(const std::string& owner_name,
       else if (par.mode == Param::Const &&
                const_param_needs_mutable_ref(par.type.get()))
         pt += "&";
+      else if (par.mode == Param::Const &&
+               const_param_needs_const_ref(par.type.get()))
+        pt = "const " + pt + "&";
     }
     if (par.names.empty()) {
       append_arg(pt, "tp2cc_arg" + std::to_string(++unnamed_index));
@@ -5226,6 +5252,9 @@ void Emitter::emit_decl(const Decl& d, bool in_header) {
               else if (p.mode == Param::Const &&
                        const_param_needs_mutable_ref(p.type.get()))
                 pt += "&";
+              else if (p.mode == Param::Const &&
+                       const_param_needs_const_ref(p.type.get()))
+                pt = "const " + pt + "&";
             }
             for (const auto& n : p.names) {
               (void)n;
@@ -6150,6 +6179,9 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
         else if (p.mode == Param::Const &&
                  const_param_needs_mutable_ref(p.type.get()))
           pt += "&";
+        else if (p.mode == Param::Const &&
+                 const_param_needs_const_ref(p.type.get()))
+          pt = "const " + pt + "&";
       }
       for (const auto& n : p.names) {
         (void)n;
