@@ -176,7 +176,7 @@ void test_enum_type() {
       "end.\n");
   // Pascal enums are unscoped -- emit plain `enum` so members are visible
   // at namespace scope, matching Pascal's name lookup.
-  CHECK(contains(out.header, "enum p_tcolor"));
+  CHECK(contains(out.header, "enum p_tcolor : uint8_t"));
   CHECK(contains(out.header, "p_red"));
   CHECK(contains(out.header, "p_green"));
   CHECK(contains(out.header, "p_blue"));
@@ -195,6 +195,25 @@ void test_enum_type_with_explicit_values() {
                  "p_lo = ::std::numeric_limits<int32_t>::min(),"));
   CHECK(contains(out.header,
                  "p_hi = ::std::numeric_limits<int32_t>::max()"));
+}
+
+void test_packed_record_uses_byte_sized_enum_fields() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsmall = (a, b, c);\n"
+      "  trec = packed record\n"
+      "    hi : word;\n"
+      "    lo : tsmall;\n"
+      "    kind : tsmall;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "enum p_tsmall : uint8_t {"));
+  CHECK(contains(out.header, "struct [[gnu::packed]] p_trec {"));
+  CHECK(contains(out.header, "p_tsmall p_lo;"));
+  CHECK(contains(out.header, "p_tsmall p_kind;"));
 }
 
 void test_explicit_enum_array_bounds_use_ordinal_range() {
@@ -620,6 +639,122 @@ void test_local_result_name_is_rejected_in_function_body() {
   CHECK(error_count() - before > 0);
 }
 
+void test_nested_procedure_can_assign_enclosing_result() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function demo : integer;\n"
+      "implementation\n"
+      "function demo : integer;\n"
+      "  procedure setit(v : integer);\n"
+      "  begin\n"
+      "    Result := v;\n"
+      "  end;\n"
+      "begin\n"
+      "  setit(3);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_setit = [&](int32_t p_v) -> void {"));
+  CHECK(contains(out.impl, "p_result = p_v;"));
+}
+
+void test_nested_function_uses_own_result_and_outer_name() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function outer : integer;\n"
+      "implementation\n"
+      "function outer : integer;\n"
+      "  function inner : boolean;\n"
+      "  begin\n"
+      "    Result := false;\n"
+      "    outer := 123;\n"
+      "  end;\n"
+      "begin\n"
+      "  inner;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "bool tp2cc_result_p_inner{};"));
+  CHECK(contains(out.impl, "tp2cc_result_p_inner = false;"));
+  CHECK(contains(out.impl, "p_result = 123;"));
+}
+
+void test_try_finally_uses_scope_exit_guard() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "var x : integer;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  try\n"
+      "    x := 1;\n"
+      "  finally\n"
+      "    x := 2;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "auto tp2cc_finally_1 = ::rt::tp2cc_make_scope_exit([&]() {"));
+  CHECK(contains(out.impl, "p_x = 1;"));
+  CHECK(contains(out.impl, "p_x = 2;"));
+}
+
+void test_try_except_raises_and_matches_exception_class() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  efoo = class(exception)\n"
+      "  end;\n"
+      "function demo : boolean;\n"
+      "implementation\n"
+      "function demo : boolean;\n"
+      "begin\n"
+      "  try\n"
+      "    raise efoo.create;\n"
+      "  except\n"
+      "    on e : efoo do\n"
+      "      Result := e <> nil;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "throw ([&]{ auto tp2cc_ptr = new p_efoo{};"));
+  CHECK(contains(out.impl, "} catch (::rt::p_exception* tp2cc_exc_1) {"));
+  CHECK(contains(out.impl,
+                 "dynamic_cast<p_efoo*>(tp2cc_exc_1); tp2cc_match_1_0) {"));
+  CHECK(contains(out.impl, "auto p_e = tp2cc_match_1_0;"));
+}
+
+void test_try_except_multiple_handlers_start_with_if_and_base_pointer_cast() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  efoo = class(exception)\n"
+      "  end;\n"
+      "  ebar = class(exception)\n"
+      "  end;\n"
+      "function demo : boolean;\n"
+      "implementation\n"
+      "function demo : boolean;\n"
+      "begin\n"
+      "  try\n"
+      "    raise efoo.create;\n"
+      "  except\n"
+      "    on a : efoo do\n"
+      "      Result := a <> nil;\n"
+      "    on b : exception do\n"
+      "      Result := b <> nil;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "if (auto tp2cc_match_1_0 = dynamic_cast<p_efoo*>(tp2cc_exc_1); tp2cc_match_1_0) {"));
+  CHECK(contains(out.impl, "else if (auto tp2cc_match_1_1 = dynamic_cast<p_exception*>(tp2cc_exc_1); tp2cc_match_1_1) {"));
+  CHECK(!contains(out.impl, "bool tp2cc_handled_1 = false;\n      else if"));
+}
+
 void test_char_plus_cast_uses_string_concat() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -713,6 +848,42 @@ void test_untyped_method_call_on_variable_uses_storage_address() {
   // metadata and accidentally pass the whole value expression instead.
   CHECK(contains(out.impl, "p_result = p_source.p_read(((void*)&(p_buffer)), p_count);"));
   CHECK(!contains(out.impl, "p_source.p_read(p_buffer, p_count);"));
+}
+
+void test_fillchar_uses_storage_address_for_pointer_slots() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure zero(capacity : longint);\n"
+      "implementation\n"
+      "procedure zero(capacity : longint);\n"
+      "var\n"
+      "  list : array[0..3] of pointer;\n"
+      "begin\n"
+      "  fillchar(list[capacity], (4 - capacity) * sizeof(pointer), 0);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_fillchar(((void*)&(p_list[p_capacity]))"));
+  CHECK(!contains(out.impl, "p_fillchar(p_list[p_capacity],"));
+}
+
+void test_move_uses_storage_addresses_for_source_and_destination_slots() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure slide(index, count : longint);\n"
+      "implementation\n"
+      "procedure slide(index, count : longint);\n"
+      "var\n"
+      "  list : array[0..3] of pointer;\n"
+      "begin\n"
+      "  system.move(list[index + 1], list[index],\n"
+      "              (count - index) * sizeof(pointer));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_move(((void*)&(p_list[(p_index + 1)]))"));
+  CHECK(contains(out.impl, "((void*)&(p_list[p_index]))"));
+  CHECK(!contains(out.impl, "::rt::p_move(p_list[(p_index + 1)],"));
 }
 
 void test_byte_array_typecast_reinterprets_storage() {
@@ -1644,6 +1815,25 @@ void test_metaclass_cast_keeps_concrete_descriptor() {
   CHECK(contains(out.impl, "p_childcls = ((p_tchildclass)(p_basecls));"));
 }
 
+void test_class_identifier_value_lowers_to_metaclass_descriptor() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "  end;\n"
+      "function ischild(x : tbase) : boolean;\n"
+      "implementation\n"
+      "function ischild(x : tbase) : boolean;\n"
+      "begin\n"
+      "  ischild := x.classtype = tchild;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_result = (p_x->p_classtype() == tp2cc_metaclass_value_p_tchild());"));
+}
+
 void test_metaclass_derived_constructor_surface_stays_visible() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2121,6 +2311,7 @@ int main() {
   RUN_TEST(test_typed_scalar_const_wraps_to_destination_value);
   RUN_TEST(test_enum_type);
   RUN_TEST(test_enum_type_with_explicit_values);
+  RUN_TEST(test_packed_record_uses_byte_sized_enum_fields);
   RUN_TEST(test_explicit_enum_array_bounds_use_ordinal_range);
   RUN_TEST(test_distinct_ordinal_array_bounds_use_underlying_range);
   RUN_TEST(test_low_high_use_resolved_pascal_type);
@@ -2147,11 +2338,18 @@ int main() {
   RUN_TEST(test_typed_const_read_is_not_folded_through_initializer);
   RUN_TEST(test_exit_literal_uses_function_result_type);
   RUN_TEST(test_local_result_name_is_rejected_in_function_body);
+  RUN_TEST(test_nested_procedure_can_assign_enclosing_result);
+  RUN_TEST(test_nested_function_uses_own_result_and_outer_name);
+  RUN_TEST(test_try_finally_uses_scope_exit_guard);
+  RUN_TEST(test_try_except_raises_and_matches_exception_class);
+  RUN_TEST(test_try_except_multiple_handlers_start_with_if_and_base_pointer_cast);
   RUN_TEST(test_char_plus_cast_uses_string_concat);
   RUN_TEST(test_integer_and_or_stays_bitwise);
   RUN_TEST(test_nested_boolean_function_and_short_circuits);
   RUN_TEST(test_nested_untyped_var_forwarding_stays_pointer_value);
   RUN_TEST(test_untyped_method_call_on_variable_uses_storage_address);
+  RUN_TEST(test_fillchar_uses_storage_address_for_pointer_slots);
+  RUN_TEST(test_move_uses_storage_addresses_for_source_and_destination_slots);
   RUN_TEST(test_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_local_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
@@ -2195,6 +2393,7 @@ int main() {
   RUN_TEST(test_class_self_and_free_use_pointer_semantics);
   RUN_TEST(test_metaclass_alias_and_concrete_class_value_lowering);
   RUN_TEST(test_metaclass_cast_keeps_concrete_descriptor);
+  RUN_TEST(test_class_identifier_value_lowers_to_metaclass_descriptor);
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
   RUN_TEST(test_indexed_implicit_property_in_method_body);
   RUN_TEST(test_function_result_member_access_uses_pointer_semantics);
