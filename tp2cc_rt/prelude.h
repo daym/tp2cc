@@ -1185,6 +1185,32 @@ struct OpenArray {
   constexpr int32_t high() const { return count - 1; }
 };
 
+// A bracketed Pascal open-array constructor (`foo([a, b, c])`) needs
+// temporary storage that survives the whole call expression. This wrapper
+// owns that storage and converts to `OpenArray<T>` by pointing at it.
+template <typename T, std::size_t N>
+struct OpenArrayValue {
+  std::array<T, N> storage{};
+
+  constexpr operator OpenArray<T>() {
+    return OpenArray<T>(storage.data(), static_cast<int32_t>(N));
+  }
+  constexpr operator OpenArray<T>() const {
+    return OpenArray<T>(const_cast<T*>(storage.data()),
+                        static_cast<int32_t>(N));
+  }
+};
+
+template <typename T, typename... Args>
+constexpr auto p_open_array_of(Args&&... args) {
+  OpenArrayValue<T, sizeof...(Args)> out{};
+  if constexpr (sizeof...(Args) > 0) {
+    std::size_t i = 0;
+    ((out.storage[i++] = static_cast<T>(std::forward<Args>(args))), ...);
+  }
+  return out;
+}
+
 template <typename Arr>
 struct ByteReinterpreter;
 
@@ -1305,16 +1331,6 @@ struct Set {
 
   constexpr Set() = default;
 
-  // Cross-element conversion: same bit-layout, different `Elem`
-  // type. Pascal treats `set of char`, `set of byte`, `set of
-  // 0..255` etc. as interchangeable at the value level; C++ templates
-  // instantiate these as distinct types, so we provide an implicit
-  // conversion constructor that just copies the bitmask.
-  template <typename Other>
-  constexpr Set(const Set<Other>& o) {
-    for (int i = 0; i < Nb; ++i) bits[i] = o.bits[i];
-  }
-
   // Adopt the byte-layout of a 32-byte `array[0..31] of byte` as the
   // bitmask. Pascal's in-memory `set` layout matches this for
   // `set of 0..255` / `set of byte`, so an explicit cast
@@ -1372,11 +1388,26 @@ struct Set {
     for (int i = 0; i < Nb; ++i) if ((a.bits[i] & ~b.bits[i]) != 0) return false;
     return true;
   }
+  friend constexpr bool operator>=(Set a, Set b) {
+    // Pascal `a >= b` on sets is a superset test.
+    return b <= a;
+  }
 };
 
 template <typename Elem>
 Set<Elem> set_of(std::initializer_list<Elem> xs) {
   return Set<Elem>::from_list(xs);
+}
+
+template <typename DstSet, typename SrcElem>
+constexpr DstSet p_set_cast(const Set<SrcElem>& src) {
+  // Pascal `TDstSet(x)` is an explicit set typecast. Keep that as an
+  // explicit helper rather than an implicit cross-Set conversion.
+  DstSet dst{};
+  constexpr int bytes =
+      (DstSet::Nb < Set<SrcElem>::Nb) ? DstSet::Nb : Set<SrcElem>::Nb;
+  for (int i = 0; i < bytes; ++i) dst.bits[i] = src.bits[i];
+  return dst;
 }
 
 // Mixed-type variadic `set_of` -- Pascal set literals like
@@ -1408,6 +1439,57 @@ struct EmptySet {
 };
 inline Set<int> set_of(std::initializer_list<EmptySet>) { return {}; }
 inline EmptySet set_of() { return {}; }
+
+template <typename A, typename B>
+requires (!std::is_same_v<A, B>)
+constexpr Set<A> operator+(Set<A> a, Set<B> b) {
+  for (int i = 0; i < Set<A>::Nb; ++i) a.bits[i] |= b.bits[i];
+  return a;
+}
+
+template <typename A, typename B>
+requires (!std::is_same_v<A, B>)
+constexpr Set<A> operator-(Set<A> a, Set<B> b) {
+  for (int i = 0; i < Set<A>::Nb; ++i) a.bits[i] &= static_cast<unsigned char>(~b.bits[i]);
+  return a;
+}
+
+template <typename A, typename B>
+requires (!std::is_same_v<A, B>)
+constexpr Set<A> operator*(Set<A> a, Set<B> b) {
+  for (int i = 0; i < Set<A>::Nb; ++i) a.bits[i] &= b.bits[i];
+  return a;
+}
+
+template <typename A, typename B>
+requires (!std::is_same_v<A, B>)
+constexpr bool operator==(Set<A> a, Set<B> b) {
+  for (int i = 0; i < Set<A>::Nb; ++i) {
+    if (a.bits[i] != b.bits[i]) return false;
+  }
+  return true;
+}
+
+template <typename A, typename B>
+requires (!std::is_same_v<A, B>)
+constexpr bool operator!=(Set<A> a, Set<B> b) {
+  return !(a == b);
+}
+
+template <typename A, typename B>
+requires (!std::is_same_v<A, B>)
+constexpr bool operator<=(Set<A> a, Set<B> b) {
+  for (int i = 0; i < Set<A>::Nb; ++i) {
+    if ((a.bits[i] & static_cast<unsigned char>(~b.bits[i])) != 0) return false;
+  }
+  return true;
+}
+
+template <typename A, typename B>
+requires (!std::is_same_v<A, B>)
+constexpr bool operator>=(Set<A> a, Set<B> b) {
+  return b <= a;
+}
 
 // Set-literal element: either a single value or a range `lo..hi`.  We
 // model heterogeneous set literals with a type-erased element, then
@@ -1468,6 +1550,7 @@ inline Range range(int64_t a, int64_t b) { return {a, b}; }
 
 template <int N> inline int p_length(const ShortString<N>& s) { return s.length; }
 inline int p_length(const AnsiString& s) { return s.length(); }
+template <typename T> inline int p_length(const OpenArray<T>& a) { return a.count; }
 template <typename T> inline int p_length(const std::array<T, 0>&) { return 0; }
 
 template <int N>

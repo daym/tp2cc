@@ -1285,6 +1285,76 @@ void test_open_array_procvar_signature_keeps_wrapper_type() {
                  "using p_tcb = void (*)(const ::rt::OpenArray<::rt::ShortString<>>&);"));
 }
 
+void test_open_array_call_uses_owning_temporary_wrapper() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure log(const values : array of word);\n"
+      "implementation\n"
+      "procedure log(const values : array of word);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  log([1, 2, 3]);\n"
+      "  log([]);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_log(::rt::p_open_array_of<uint16_t>(1, 2, 3))"));
+  CHECK(contains(out.impl, "p_log(::rt::OpenArray<uint16_t>())"));
+}
+
+void test_high_low_on_open_array_use_runtime_length() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo(const xs : array of longint);\n"
+      "implementation\n"
+      "procedure demo(const xs : array of longint);\n"
+      "begin\n"
+      "  if high(xs) = 1 then begin end;\n"
+      "  if low(xs) = 0 then begin end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_length(p_xs) - 1"));
+  CHECK(!contains(out.impl, "int32_t*::high()"));
+}
+
+void test_typed_set_literal_uses_surrounding_set_type() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tset = set of 0..7;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  s : tset;\n"
+      "begin\n"
+      "  s := s + [3];\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::Set<int32_t>::from_list({3})"));
+}
+
+void test_explicit_set_cast_uses_runtime_helper() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsmall = set of 0..7;\n"
+      "  tbyte = set of byte;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  small : tsmall;\n"
+      "begin\n"
+      "  if tbyte(small) = [] then begin end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_set_cast<::rt::Set<uint8_t>>(p_small)"));
+}
+
 void test_untyped_const_method_thunk_keeps_raw_storage_pointer() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1875,6 +1945,10 @@ int main() {
   RUN_TEST(test_bool_procvar_call_uses_logical_and);
   RUN_TEST(test_open_array_method_signature_keeps_wrapper_type);
   RUN_TEST(test_open_array_procvar_signature_keeps_wrapper_type);
+  RUN_TEST(test_open_array_call_uses_owning_temporary_wrapper);
+  RUN_TEST(test_high_low_on_open_array_use_runtime_length);
+  RUN_TEST(test_typed_set_literal_uses_surrounding_set_type);
+  RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
   RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);
   RUN_TEST(test_class_types_lower_to_pointers_and_implicit_tobject);
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);

@@ -222,6 +222,33 @@ void test_reinterpret_ref_views_pointee_bytes_of_pointer_value() {
   CHECK_EQ(box.value, 29);
 }
 
+void test_open_array_helper_owns_temporary_storage() {
+  auto holder = p_open_array_of<int32_t>(1, 2, 3);
+  OpenArray<int32_t> view = holder;
+
+  CHECK_EQ(view.count, 3);
+  CHECK_EQ(view[0], 1);
+  CHECK_EQ(view[1], 2);
+  CHECK_EQ(view[2], 3);
+}
+
+void test_set_superset_operator_matches_pascal() {
+  auto bigger = set_of<int32_t>({1, 2});
+  auto smaller = set_of<int32_t>({1});
+
+  CHECK(bigger >= smaller);
+  CHECK(!(smaller >= bigger));
+}
+
+void test_explicit_set_cast_copies_bits() {
+  auto src = set_of<int32_t>({1, 7});
+  auto dst = p_set_cast<Set<uint8_t>>(src);
+
+  CHECK(dst.contains(static_cast<uint8_t>(1)));
+  CHECK(dst.contains(static_cast<uint8_t>(7)));
+  CHECK(!dst.contains(static_cast<uint8_t>(2)));
+}
+
 void test_method_ptr_calls_bound_thunk() {
   MethodPtrCounter counter;
   MethodPtr<void(int32_t)> cb(p_method_code<&method_ptr_add>(), &counter);
@@ -407,6 +434,9 @@ int main() {
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
   RUN_TEST(test_reinterpret_storage_ref_views_pointer_variable_bytes);
   RUN_TEST(test_reinterpret_ref_views_pointee_bytes_of_pointer_value);
+  RUN_TEST(test_open_array_helper_owns_temporary_storage);
+  RUN_TEST(test_set_superset_operator_matches_pascal);
+  RUN_TEST(test_explicit_set_cast_copies_bits);
   RUN_TEST(test_method_ptr_calls_bound_thunk);
   RUN_TEST(test_method_ptr_storage_matches_two_pointer_slots);
   RUN_TEST(test_class_free_accepts_null_pointer);

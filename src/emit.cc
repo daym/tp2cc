@@ -637,6 +637,8 @@ struct Emitter {
   std::string const_value_to_cxx(const Expr& e,
                                  const TypeExpr* target = nullptr,
                                  bool explicit_conversion = false);
+  std::string set_literal_to_cxx(const SetLit& s,
+                                 const TypeExpr* target = nullptr);
   // If `e` is an integer constant expression and `target` is an
   // integer primitive, return the exact destination value as a C++
   // literal. Implicit conversions diagnose range errors; explicit
@@ -695,6 +697,8 @@ struct Emitter {
   bool type_is_pointerish(const ast::TypeExpr* t);
   bool type_is_open_array(const ast::TypeExpr* t);
   std::string open_array_type_to_cxx(const ast::TypeExpr& t);
+  std::string open_array_constructor_to_cxx(const SetLit& s,
+                                            const TypeExpr& param_type);
   std::string reinterpret_ref_text(const std::string& ty_cxx,
                                    const std::string& source_cxx,
                                    bool pointee_view);
@@ -2210,6 +2214,35 @@ std::string Emitter::open_array_type_to_cxx(const TypeExpr& t) {
          (a.element ? type_to_cxx(*a.element) : std::string("int32_t")) + ">";
 }
 
+std::string Emitter::open_array_constructor_to_cxx(const SetLit& s,
+                                                   const TypeExpr& param_type) {
+  const TypeExpr* canon = canonicalize_type(&param_type);
+  if (!canon || canon->kind != Kind::TyArray) return expr_to_cxx(s);
+  const auto& arr = static_cast<const TyArray&>(*canon);
+  const TypeExpr* elem_type = arr.element.get();
+  if (!elem_type) return open_array_type_to_cxx(param_type) + "()";
+  if (s.elements.empty()) return open_array_type_to_cxx(param_type) + "()";
+
+  // Pascal reuses `[...]` for two different constructs:
+  //   * set literals                -> `[a, b]`
+  //   * open-array actuals in calls -> `foo([a, b])`
+  // Keep the AST simple and decide here from the formal parameter type.
+  for (const auto& el : s.elements) {
+    if (el->kind == Kind::Range) {
+      report_error(s.loc, "ranges in open-array constructors are unsupported");
+      return open_array_type_to_cxx(param_type) + "()";
+    }
+  }
+
+  std::string out = "::rt::p_open_array_of<" + type_to_cxx(*elem_type) + ">(";
+  for (size_t i = 0; i < s.elements.size(); ++i) {
+    if (i) out += ", ";
+    out += const_value_to_cxx(*s.elements[i], elem_type);
+  }
+  out += ")";
+  return out;
+}
+
 void Emitter::mark_call_param_info(
     const ProcDecl* decl, std::vector<bool>& untyped_arg,
     std::vector<bool>& mutable_ref_arg,
@@ -2283,6 +2316,10 @@ void Emitter::collect_call_param_info(
 std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
                                     bool untyped_arg,
                                     bool mutable_ref_arg) {
+  if (param_type && type_is_open_array(param_type) && arg.kind == Kind::SetLit) {
+    return open_array_constructor_to_cxx(static_cast<const SetLit&>(arg),
+                                         *param_type);
+  }
   if (mutable_ref_arg && arg.kind == Kind::Call &&
       static_cast<const Call&>(arg).args.size() == 1 &&
       static_cast<const Call&>(arg).callee->kind == Kind::Ident &&
@@ -2808,6 +2845,108 @@ Emitter::ResolveResult Emitter::resolve_name(
 // ---------------------------------------------------------------------------
 // Expressions (coarse -- just enough for constant values)
 
+std::string Emitter::set_literal_to_cxx(const SetLit& s,
+                                        const TypeExpr* target) {
+  const TypeExpr* elem_type = nullptr;
+  if (target) {
+    const TypeExpr* canon = canonicalize_type(target);
+    if (canon && canon->kind == Kind::TySet) {
+      elem_type = static_cast<const TySet&>(*canon).element.get();
+    }
+  }
+
+  bool has_range = false;
+  for (const auto& el : s.elements) {
+    if (el->kind == Kind::Range) {
+      has_range = true;
+      break;
+    }
+  }
+
+  if (elem_type) {
+    const std::string elem_cxx = type_to_cxx(*elem_type);
+    if (s.elements.empty()) return "::rt::Set<" + elem_cxx + ">{}";
+    if (!has_range) {
+      // Pascal set literals inherit the surrounding set type. Make that
+      // explicit in the generated C++ so `typed_set + [EnumValue]` does
+      // not depend on any cross-Set implicit conversion.
+      std::string out = "::rt::Set<" + elem_cxx + ">::from_list({";
+      for (size_t i = 0; i < s.elements.size(); ++i) {
+        if (i) out += ", ";
+        out += const_value_to_cxx(*s.elements[i], elem_type);
+      }
+      out += "})";
+      return out;
+    }
+
+    std::string body = "::rt::Set<" + elem_cxx + "> tp2cc_set{};";
+    for (const auto& el : s.elements) {
+      if (el->kind == Kind::Range) {
+        const auto& r = static_cast<const Range&>(*el);
+        body += " for (auto tp2cc_i = " + const_value_to_cxx(*r.lo, elem_type) +
+                "; tp2cc_i <= " + const_value_to_cxx(*r.hi, elem_type) +
+                "; ++tp2cc_i) tp2cc_set.add(tp2cc_i);";
+      } else {
+        body += " tp2cc_set.add(" + const_value_to_cxx(*el, elem_type) + ");";
+      }
+    }
+    body += " return tp2cc_set;";
+    const char* cap = (block_depth > 0) ? "[&]" : "[]";
+    return std::string("(") + cap + "{ " + body + " }())";
+  }
+
+  if (s.elements.empty()) {
+    // `[]` in Pascal: untyped empty set. EmptySet converts to any
+    // `Set<T>` implicitly, so the value is usable in any set
+    // context.
+    return "::rt::EmptySet{}";
+  }
+  if (!has_range) {
+    // Variadic-pack form so the element types don't have to
+    // match exactly (Pascal set literals freely mix e.g. a
+    // CharConst `p_newline` with plain char literals like
+    // `'\r'`, `';'`). The Set's element type is deduced from
+    // the first argument.
+    std::string out = "::rt::set_of(";
+    for (size_t i = 0; i < s.elements.size(); ++i) {
+      if (i) out += ", ";
+      out += expr_to_cxx(*s.elements[i]);
+    }
+    out += ")";
+    return out;
+  }
+
+  // Slow path: mixed scalar + range elements. Build a Set in an IIFE
+  // whose element type is deduced from the first element (either a
+  // scalar value or a range low-bound). Use `[&]` inside function
+  // bodies (may reference outer locals); use `[]` at namespace scope
+  // where `[&]` is invalid.
+  std::string first;
+  if (s.elements.front()->kind == Kind::Range) {
+    first = expr_to_cxx(*static_cast<const Range&>(*s.elements.front()).lo);
+  } else {
+    first = expr_to_cxx(*s.elements.front());
+  }
+  // Value-init: `Set` has no default member initialisers, so a
+  // bare temporary would leave the bitmask uninitialised and
+  // `add(...)` only sets specific bits -- every unset bit
+  // would be stack garbage, making `contains()` return true for
+  // arbitrary values.
+  std::string body = "::rt::Set<decltype(" + first + ")> tp2cc_set{};";
+  for (const auto& el : s.elements) {
+    if (el->kind == Kind::Range) {
+      const auto& r = static_cast<const Range&>(*el);
+      body += " for (auto tp2cc_i = " + expr_to_cxx(*r.lo) + "; tp2cc_i <= " +
+              expr_to_cxx(*r.hi) + "; ++tp2cc_i) tp2cc_set.add(tp2cc_i);";
+    } else {
+      body += " tp2cc_set.add(" + expr_to_cxx(*el) + ");";
+    }
+  }
+  body += " return tp2cc_set;";
+  const char* cap = (block_depth > 0) ? "[&]" : "[]";
+  return std::string("(") + cap + "{ " + body + " }())";
+}
+
 std::string Emitter::expr_to_cxx(const Expr& e) {
   switch (e.kind) {
     case Kind::IntLit: {
@@ -3024,6 +3163,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       };
       bool logical_bool = (n.op == BinOp::And || n.op == BinOp::Or) &&
                           is_bool(*n.lhs) && is_bool(*n.rhs);
+      auto emit_operand = [&](const Expr& operand, const Expr& other) {
+        if (operand.kind != Kind::SetLit) return expr_to_cxx(operand);
+        const TypeExpr* other_ty = deduce_type(other);
+        const TypeExpr* canon = canonicalize_type(other_ty);
+        if (canon && canon->kind == Kind::TySet) {
+          return set_literal_to_cxx(static_cast<const SetLit&>(operand),
+                                    other_ty);
+        }
+        return expr_to_cxx(operand);
+      };
       const char* op = "?";
       switch (n.op) {
         case BinOp::Add:    op = "+"; break;
@@ -3045,7 +3194,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         case BinOp::GtEq:   op = ">="; break;
         default:            op = "/*?*/"; break;
       }
-      return "(" + expr_to_cxx(*n.lhs) + " " + op + " " + expr_to_cxx(*n.rhs) + ")";
+      return "(" + emit_operand(*n.lhs, *n.rhs) + " " + op + " " +
+             emit_operand(*n.rhs, *n.lhs) + ")";
     }
     case Kind::Unary: {
       const auto& n = static_cast<const Unary&>(e);
@@ -3362,6 +3512,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
             const TypeExpr* canon = canonicalize_type(at);
             if (canon && canon->kind == Kind::TyArray) {
+              const auto& arr = static_cast<const TyArray&>(*canon);
+              if (arr.dims.empty()) {
+                return want_low ? "0"
+                                : "(::rt::p_length(" + expr_to_cxx(*c.args[0]) +
+                                      ") - 1)";
+              }
               return type_to_cxx(*at) + "::" + n + "()";
             }
           }
@@ -3455,6 +3611,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                    const_value_to_cxx(*c.args[0], cast_ty,
                                       /*explicit_conversion=*/true) +
                    "))";
+          }
+          if (cast_ty && cast_ty->kind == Kind::TySet) {
+            return "::rt::p_set_cast<" + type_to_cxx(*cast_ty) + ">(" +
+                   arg0() + ")";
           }
           if (cast_ty && type_is_reference_class(cast_ty)) {
             // `TClass(expr)` is a class-pointer cast in Pascal, not a C++
@@ -3728,67 +3888,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       return out;
     }
     case Kind::SetLit: {
-      const auto& s = static_cast<const SetLit&>(e);
-      // Fast path when there are no range-elements: the deduction-friendly
-      // set_of helper works.
-      bool has_range = false;
-      for (const auto& el : s.elements) {
-        if (el->kind == Kind::Range) { has_range = true; break; }
-      }
-      if (s.elements.empty()) {
-        // `[]` in Pascal: untyped empty set. EmptySet converts to any
-        // `Set<T>` implicitly, so the value is usable in any set
-        // context.
-        return "::rt::EmptySet{}";
-      }
-      if (!has_range) {
-        // Variadic-pack form so the element types don't have to
-        // match exactly (Pascal set literals freely mix e.g. a
-        // CharConst `p_newline` with plain char literals like
-        // `'\r'`, `';'`). The Set's element type is deduced from
-        // the first argument.
-        std::string out = "::rt::set_of(";
-        for (size_t i = 0; i < s.elements.size(); ++i) {
-          if (i) out += ", ";
-          out += expr_to_cxx(*s.elements[i]);
-        }
-        out += ")";
-        return out;
-      }
-      // Slow path: mixed scalar + range elements. Build a Set in an IIFE
-      // whose element type is deduced from the first element (either a
-      // scalar value or a range low-bound). Use `[&]` inside function
-      // bodies (may reference outer locals); use `[]` at namespace scope
-      // where `[&]` is invalid.
-      std::string first;
-      if (s.elements.front()->kind == Kind::Range) {
-        first = expr_to_cxx(
-            *static_cast<const Range&>(*s.elements.front()).lo);
-      } else {
-        first = expr_to_cxx(*s.elements.front());
-      }
-      // Value-init: `Set` has no default member initialisers, so a
-      // bare temporary would leave the bitmask uninitialised and
-      // `add(...)` only sets specific bits -- every unset bit
-      // would be stack garbage, making `contains()` return true for
-      // arbitrary values.
-      std::string body =
-          "::rt::Set<decltype(" + first + ")> tp2cc_set{};";
-      for (const auto& el : s.elements) {
-        if (el->kind == Kind::Range) {
-          const auto& r = static_cast<const Range&>(*el);
-          std::string lo = expr_to_cxx(*r.lo);
-          std::string hi = expr_to_cxx(*r.hi);
-          body += " for (int64_t tp2cc_value = (int64_t)(" + lo +
-                  "); tp2cc_value <= (int64_t)(" + hi +
-                  "); ++tp2cc_value) tp2cc_set.add(static_cast<decltype(" +
-                  first + ")>(tp2cc_value));";
-        } else {
-          body += " tp2cc_set.add(" + expr_to_cxx(*el) + ");";
-        }
-      }
-      const char* cap = (block_depth > 0) ? "[&]" : "[]";
-      return std::string("(") + cap + "{ " + body + " return tp2cc_set; }())";
+      return set_literal_to_cxx(static_cast<const SetLit&>(e));
     }
     case Kind::Range: {
       const auto& r = static_cast<const Range&>(e);
@@ -3867,6 +3967,9 @@ std::string Emitter::const_value_to_cxx(const Expr& e,
     }
     out += "}";
     return out;
+  }
+  if (e.kind == Kind::SetLit) {
+    return set_literal_to_cxx(static_cast<const SetLit&>(e), target);
   }
   if (auto text =
           maybe_convert_const_int_expr(e, target, explicit_conversion)) {
