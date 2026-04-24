@@ -3152,6 +3152,10 @@ std::optional<std::string> Emitter::maybe_lower_class_constructor_call(
     const std::vector<bool>& untyped_arg,
     const std::vector<bool>& mutable_ref_arg) {
   if (!registry) return std::nullopt;
+  const auto* ci = class_info_for_type_name(class_name);
+  if (!ci || !ci->is_reference_type) {
+    return std::nullopt;
+  }
   const auto* method = registry->lookup_class_method(std::string(class_name),
                                                      std::string(member_name));
   bool implicit_root_create = false;
@@ -3159,8 +3163,6 @@ std::optional<std::string> Emitter::maybe_lower_class_constructor_call(
     if (ascii_lower(std::string(member_name)) != "create" || !args.empty()) {
       return std::nullopt;
     }
-    const auto* ci = class_info_for_type_name(class_name);
-    if (!ci || !ci->is_reference_type) return std::nullopt;
     implicit_root_create = true;
   }
 

@@ -2183,6 +2183,30 @@ void test_class_constructor_call_allocates_instance() {
   CHECK(contains(out.impl, "tp2cc_ptr->p_create();"));
 }
 
+void test_object_constructor_call_uses_base_method_on_self() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = object\n"
+      "    constructor init(n : integer);\n"
+      "  end;\n"
+      "  tchild = object(tbase)\n"
+      "    constructor init(n : integer);\n"
+      "  end;\n"
+      "implementation\n"
+      "constructor tbase.init(n : integer);\n"
+      "begin\n"
+      "end;\n"
+      "constructor tchild.init(n : integer);\n"
+      "begin\n"
+      "  tbase.init(n);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_tbase::p_init(p_n);"));
+  CHECK(!contains(out.impl, "new p_tbase{};"));
+}
+
 void test_implicit_tobject_inherited_constructor_autocalls() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2992,6 +3016,7 @@ int main() {
   RUN_TEST(test_class_types_lower_to_pointers_and_implicit_tobject);
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
   RUN_TEST(test_class_constructor_call_allocates_instance);
+  RUN_TEST(test_object_constructor_call_uses_base_method_on_self);
   RUN_TEST(test_implicit_tobject_inherited_constructor_autocalls);
   RUN_TEST(test_inherited_destroy_autocalls_through_non_overriding_parent);
   RUN_TEST(test_class_self_and_free_use_pointer_semantics);
