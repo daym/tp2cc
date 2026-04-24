@@ -109,7 +109,6 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
           for (const auto& m : static_cast<const TyEnum&>(*td.type).members) {
             std::string lm = lc(m.name);
             ei.members.push_back(lm);
-            r.enum_members[lm] = unit;
             if (ui)
               (is_interface ? ui->iface_enum_members : ui->impl_enum_members)
                   .insert(lm);
@@ -135,7 +134,6 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         size_t pc = 0;
         for (const auto& par : pd.params) pc += par.names.size();
         p.param_count = pc;
-        r.procs[lc(pd.name)] = p;
         if (ui) (is_interface ? ui->iface_procs : ui->impl_procs)[lc(pd.name)] = p;
         break;
       }
@@ -145,7 +143,6 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         v.defining_unit = unit;
         v.type = vd.type;
         for (const auto& n : vd.names) {
-          r.vars[lc(n)] = v;
           if (ui) (is_interface ? ui->iface_vars : ui->impl_vars)[lc(n)] = v;
         }
         break;
@@ -156,7 +153,6 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         c.defining_unit = unit;
         c.type = cd.type;
         c.value = cd.value;
-        r.consts[lc(cd.name)] = c;
         if (ui)
           (is_interface ? ui->iface_consts : ui->impl_consts)[lc(cd.name)] = c;
         break;
@@ -213,7 +209,6 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     p.accepts_zero_args = b.zero_ok;
     p.return_type_name = b.ret;
     rtui.iface_procs[b.name] = p;
-    procs[b.name] = p;
   }
   units["__rt__"] = std::move(rtui);
 

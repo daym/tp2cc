@@ -23,27 +23,39 @@ using namespace tp2cc_test;
 
 namespace {
 
-EmittedUnit compile_snippet(std::string text) {
+std::shared_ptr<UnitNode> parse_unit(std::string path, std::string text) {
   auto sf = std::make_unique<SourceFile>();
-  sf->path = "<mem>";
+  sf->path = std::move(path);
   sf->contents = std::move(text);
   Lexer lx(std::move(sf));
   Parser p(lx);
-  auto u = p.parse();
+  return p.parse();
+}
+
+EmittedUnit compile_snippet(std::string text) {
+  auto u = parse_unit("<mem>", std::move(text));
   if (!u) return {};
   return emit_unit(*u);
 }
 
-EmittedUnit compile_snippet_with_registry(std::string text) {
-  auto sf = std::make_unique<SourceFile>();
-  sf->path = "<mem>";
-  sf->contents = std::move(text);
-  Lexer lx(std::move(sf));
-  Parser p(lx);
-  auto u = p.parse();
+EmittedUnit compile_snippet_with_registry(
+    std::string text,
+    std::vector<std::pair<std::string, std::string>> extra_units = {}) {
+  auto u = parse_unit("<mem>", std::move(text));
   if (!u) return {};
+
+  std::vector<std::shared_ptr<UnitNode>> parsed_units;
+  parsed_units.push_back(u);
+  for (auto& [path, unit_text] : extra_units) {
+    auto dep = parse_unit(std::move(path), std::move(unit_text));
+    if (!dep) return {};
+    parsed_units.push_back(std::move(dep));
+  }
+
   TypeRegistry reg;
-  std::vector<const UnitNode*> units = {u.get()};
+  std::vector<const UnitNode*> units;
+  units.reserve(parsed_units.size());
+  for (const auto& unit : parsed_units) units.push_back(unit.get());
   reg.build(units);
   return emit_unit(*u, &reg);
 }
@@ -111,7 +123,7 @@ void test_program_registers_unit_finalizers() {
         out.impl.find("p_classes::tp2cc_unit_init();"));
 }
 
-void test_uses_become_includes_and_usings() {
+void test_uses_become_includes_without_open_namespaces() {
   auto out = compile_snippet(
       "unit foo;\n"
       "interface\n"
@@ -121,10 +133,12 @@ void test_uses_become_includes_and_usings() {
       "end.\n");
   CHECK(contains(out.header, "#include \"p_bar.h\""));
   CHECK(contains(out.header, "#include \"p_baz.h\""));
-  CHECK(contains(out.header, "using namespace p_bar;"));
-  CHECK(contains(out.header, "using namespace p_baz;"));
   CHECK(contains(out.impl, "#include \"p_qux.h\""));
-  CHECK(contains(out.impl, "using namespace p_qux;"));
+  CHECK(!contains(out.header, "using namespace p_bar;"));
+  CHECK(!contains(out.header, "using namespace p_baz;"));
+  CHECK(!contains(out.impl, "using namespace p_qux;"));
+  CHECK(!contains(out.header, "using namespace ::rt;"));
+  CHECK(!contains(out.impl, "using namespace ::rt;"));
 }
 
 void test_scalar_const() {
@@ -823,7 +837,7 @@ void test_try_except_multiple_handlers_start_with_if_and_base_pointer_cast() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "if (auto tp2cc_match_1_0 = dynamic_cast<p_efoo*>(tp2cc_exc_1); tp2cc_match_1_0) {"));
-  CHECK(contains(out.impl, "else if (auto tp2cc_match_1_1 = dynamic_cast<p_exception*>(tp2cc_exc_1); tp2cc_match_1_1) {"));
+  CHECK(contains(out.impl, "else if (auto tp2cc_match_1_1 = dynamic_cast<::rt::p_exception*>(tp2cc_exc_1); tp2cc_match_1_1) {"));
   CHECK(!contains(out.impl, "bool tp2cc_handled_1 = false;\n      else if"));
 }
 
@@ -1017,6 +1031,134 @@ void test_local_byte_array_typecast_reinterprets_storage() {
   CHECK(contains(out.impl,
                  "::rt::p_reinterpret_storage_ref<p_t80bitarray>(p_e)[p_i]"));
   CHECK(!contains(out.impl, "p_t80bitarray(p_e)[p_i]"));
+}
+
+void test_visible_pointer_alias_cast_uses_qualified_type_spelling() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses widestr;\n"
+      "procedure demo(raw : pointer);\n"
+      "implementation\n"
+      "procedure demo(raw : pointer);\n"
+      "begin\n"
+      "  widestr.copywidestring(widestr.pcompilerwidestring(raw),\n"
+      "                         widestr.pcompilerwidestring(raw));\n"
+      "end;\n"
+      "end.\n",
+      {{"widestr.pas",
+        "unit widestr;\n"
+        "interface\n"
+        "type\n"
+        "  compilerwidestring = array[0..3] of widechar;\n"
+        "  pcompilerwidestring = ^compilerwidestring;\n"
+        "procedure copywidestring(src, dst : pcompilerwidestring);\n"
+        "implementation\n"
+        "procedure copywidestring(src, dst : pcompilerwidestring);\n"
+        "begin\n"
+        "end;\n"
+        "end.\n"}});
+  CHECK(contains(out.impl,
+                 "::rt::p_reinterpret_storage_ref<p_widestr::p_pcompilerwidestring>(p_raw)"));
+  CHECK(!contains(out.impl,
+                  "::rt::p_reinterpret_storage_ref<p_pcompilerwidestring>(p_raw)"));
+}
+
+void test_local_pointer_alias_cast_uses_local_type_spelling() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo(raw : pointer);\n"
+      "implementation\n"
+      "procedure demo(raw : pointer);\n"
+      "type\n"
+      "  setbytes = array[0..31] of byte;\n"
+      "  psetbytes = ^setbytes;\n"
+      "begin\n"
+      "  writeln(psetbytes(raw)^[0]);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::p_deref(::rt::p_reinterpret_storage_ref<p_psetbytes>(p_raw))[0]"));
+  CHECK(!contains(out.impl, "::rt::p_deref(::rt::p_psetbytes(p_raw))[0]"));
+}
+
+void test_runtime_alias_type_names_are_explicitly_qualified() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses dos;\n"
+      "var\n"
+      "  d : dirstr;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  dt : datetime;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "extern ::rt::p_dirstr p_d;"));
+  CHECK(!contains(out.header, "extern p_dirstr p_d;"));
+  CHECK(contains(out.impl, "::rt::p_datetime p_dt{};"));
+}
+
+void test_tmethod_type_name_is_explicitly_qualified() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  m : tmethod;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_tmethod p_m{};"));
+  CHECK(!contains(out.impl, "\n  p_tmethod p_m{};"));
+}
+
+void test_local_enum_members_do_not_fall_back_to_runtime() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo(i : longint);\n"
+      "implementation\n"
+      "procedure demo(i : longint);\n"
+      "type\n"
+      "  leftright = (left, right);\n"
+      "var\n"
+      "  lr : leftright;\n"
+      "begin\n"
+      "  if i = 0 then\n"
+      "    lr := right\n"
+      "  else\n"
+      "    lr := left;\n"
+      "  writeln(ord(lr));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_lr = p_right;"));
+  CHECK(contains(out.impl, "p_lr = p_left;"));
+  CHECK(!contains(out.impl, "::rt::p_right"));
+  CHECK(!contains(out.impl, "::rt::p_left"));
+}
+
+void test_sizeof_visible_type_uses_type_spelling_not_identifier_lookup() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  aint = longint;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  writeln(sizeof(aint));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "sizeof(p_aint)"));
+  CHECK(!contains(out.impl, "sizeof(::rt::p_aint)"));
 }
 
 void test_primitive_cast_assign_reinterprets_storage() {
@@ -1968,7 +2110,7 @@ void test_metaclass_alias_and_concrete_class_value_lowering() {
                  "inline const tp2cc_metaclass_p_tchild* tp2cc_metaclass_value_p_tchild() {"));
   CHECK(contains(out.impl, "p_cls = tp2cc_metaclass_value_p_tchild();"));
   CHECK(contains(out.impl, "p_inst = p_cls->p_create(1);"));
-  CHECK(contains(out.impl, "if (p_assigned(p_cls))"));
+  CHECK(contains(out.impl, "if (::rt::p_assigned(p_cls))"));
 }
 
 void test_metaclass_cast_keeps_concrete_descriptor() {
@@ -2566,7 +2708,7 @@ void test_cxx_reserved_word_identifiers() {
 int main() {
   RUN_TEST(test_empty_unit_skeleton);
   RUN_TEST(test_program_registers_unit_finalizers);
-  RUN_TEST(test_uses_become_includes_and_usings);
+  RUN_TEST(test_uses_become_includes_without_open_namespaces);
   RUN_TEST(test_scalar_const);
   RUN_TEST(test_typed_scalar_const);
   RUN_TEST(test_typed_scalar_const_wraps_to_destination_value);
@@ -2618,6 +2760,12 @@ int main() {
   RUN_TEST(test_move_uses_storage_addresses_for_source_and_destination_slots);
   RUN_TEST(test_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_local_byte_array_typecast_reinterprets_storage);
+  RUN_TEST(test_visible_pointer_alias_cast_uses_qualified_type_spelling);
+  RUN_TEST(test_local_pointer_alias_cast_uses_local_type_spelling);
+  RUN_TEST(test_runtime_alias_type_names_are_explicitly_qualified);
+  RUN_TEST(test_tmethod_type_name_is_explicitly_qualified);
+  RUN_TEST(test_local_enum_members_do_not_fall_back_to_runtime);
+  RUN_TEST(test_sizeof_visible_type_uses_type_spelling_not_identifier_lookup);
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
   RUN_TEST(test_primitive_cast_read_reinterprets_storage);
   RUN_TEST(test_inc_primitive_cast_reinterprets_storage);

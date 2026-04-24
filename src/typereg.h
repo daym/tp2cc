@@ -197,19 +197,6 @@ struct TypeRegistry {
   std::unordered_map<std::string, EnumInfoReg> enums;
   std::unordered_map<std::string, AliasInfo> aliases;   // includes pointer aliases
 
-  // Unqualified lowercased name -> info. Ambiguity across units is rare in
-  // the fpc compiler sources; last-wins is acceptable for now, and the
-  // translator's job isn't "bit-perfect name resolution" but "emit code
-  // that compiles".
-  std::unordered_map<std::string, ProcInfo> procs;
-  std::unordered_map<std::string, VarInfo> vars;
-  std::unordered_map<std::string, ConstInfo> consts;
-  // Enum member -> defining unit. Enum members are emitted at unit-
-  // namespace scope (Pascal's unscoped enums leak members into the
-  // enclosing namespace); using-namespaces can cause ambiguity when
-  // two units' enums share a member name.
-  std::unordered_map<std::string, std::string> enum_members;
-
   // Fill from all parsed UnitNodes.
   void build(const std::vector<const ast::UnitNode*>& units);
 

@@ -600,6 +600,33 @@ void test_class_free_dispatches_virtual_freeinstance() {
   CHECK_EQ(frees, 1);
 }
 
+void test_tobject_metaclass_exists_and_constructs_root_instance() {
+  const auto* meta = tp2cc_metaclass_value_p_tobject();
+
+  CHECK(meta != nullptr);
+  CHECK(meta->p_create != nullptr);
+
+  p_tobject* instance = meta->p_create();
+  CHECK(instance != nullptr);
+  CHECK(instance->p_classtype() == meta);
+
+  p_tobject::p_free(instance);
+}
+
+void test_exception_metaclass_exists_and_constructs_exception_instance() {
+  const auto* meta = tp2cc_metaclass_value_p_exception();
+
+  CHECK(meta != nullptr);
+  CHECK(meta->p_create != nullptr);
+
+  p_tobject* instance = meta->p_create();
+  CHECK(instance != nullptr);
+  CHECK(instance->p_classtype() == meta);
+  CHECK(dynamic_cast<p_exception*>(instance) != nullptr);
+
+  p_tobject::p_free(instance);
+}
+
 void test_hi_lo_split_ordinal_halves() {
   CHECK_EQ(p_lo(uint32_t{0x11223344}), static_cast<uint16_t>(0x3344));
   CHECK_EQ(p_hi(uint32_t{0x11223344}), static_cast<uint16_t>(0x1122));
@@ -825,6 +852,8 @@ int main() {
   RUN_TEST(test_class_free_accepts_null_pointer);
   RUN_TEST(test_class_free_dispatches_virtual_destroy);
   RUN_TEST(test_class_free_dispatches_virtual_freeinstance);
+  RUN_TEST(test_tobject_metaclass_exists_and_constructs_root_instance);
+  RUN_TEST(test_exception_metaclass_exists_and_constructs_exception_instance);
   RUN_TEST(test_hi_lo_split_ordinal_halves);
   RUN_TEST(test_fillword_and_compareword_operate_on_word_counts);
   RUN_TEST(test_indexword_searches_prefix_only);

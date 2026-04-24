@@ -110,6 +110,12 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
   if (unit_name == "sysutils") {
     h << "namespace p_sysutils {\n";
     h << "using p_exception = ::rt::p_exception;\n";
+    h << "using tp2cc_metaclass_p_exception = "
+         "::rt::tp2cc_metaclass_p_exception;\n";
+    h << "inline const tp2cc_metaclass_p_exception* "
+         "tp2cc_metaclass_value_p_exception() {\n";
+    h << "  return ::rt::tp2cc_metaclass_value_p_exception();\n";
+    h << "}\n";
     h << "\n";
     h << "// Compiler units catch a small SysUtils exception hierarchy even\n";
     h << "// when the full SysUtils unit is not translated. Keep just the\n";

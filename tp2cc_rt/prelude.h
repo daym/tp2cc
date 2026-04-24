@@ -168,6 +168,28 @@ inline void* p_method_code() {
 }
 
 template <int N> struct ShortString;
+struct p_tobject;
+struct p_exception;
+
+struct tp2cc_metaclass_p_tobject {
+  p_tobject* (*p_create)() = nullptr;
+
+  constexpr tp2cc_metaclass_p_tobject() = default;
+  constexpr explicit tp2cc_metaclass_p_tobject(
+      p_tobject* (*tp2cc_p_create)())
+      : p_create(tp2cc_p_create) {}
+};
+
+inline const tp2cc_metaclass_p_tobject* tp2cc_metaclass_value_p_tobject();
+
+struct tp2cc_metaclass_p_exception : public tp2cc_metaclass_p_tobject {
+  constexpr tp2cc_metaclass_p_exception() = default;
+  constexpr explicit tp2cc_metaclass_p_exception(
+      tp2cc_metaclass_p_tobject tp2cc_parent)
+      : tp2cc_metaclass_p_tobject(tp2cc_parent) {}
+};
+
+inline const tp2cc_metaclass_p_exception* tp2cc_metaclass_value_p_exception();
 
 // Delphi/FPC `class` types are references to heap objects whose base
 // contract is `TObject`. Keep the runtime base explicit rather than
@@ -180,7 +202,7 @@ struct p_tobject {
   // Old Delphi/FPC object code queries the dynamic class descriptor and
   // instance byte size via TObject.ClassType / InstanceSize. Derived
   // translated classes override these with concrete answers.
-  virtual const void* p_classtype() { return nullptr; }
+  virtual const void* p_classtype() { return tp2cc_metaclass_value_p_tobject(); }
   virtual int32_t p_instancesize() { return static_cast<int32_t>(sizeof(*this)); }
   virtual void p_destroy() {}
   // `FreeInstance` is the raw storage-release hook underneath `Free`.
@@ -237,10 +259,40 @@ struct p_exception : p_tobject {
   using inherited = p_tobject;
   using inherited::p_create;
 
+  const void* p_classtype() override;
+  int32_t p_instancesize() override;
+
   bool p_create(const ShortString<255>&) {
     return true;
   }
 };
+
+inline const tp2cc_metaclass_p_tobject* tp2cc_metaclass_value_p_tobject() {
+  static const tp2cc_metaclass_p_tobject value(+[]() -> p_tobject* {
+    auto* tp2cc_ptr = new p_tobject{};
+    tp2cc_ptr->p_create();
+    return tp2cc_ptr;
+  });
+  return &value;
+}
+
+inline const tp2cc_metaclass_p_exception* tp2cc_metaclass_value_p_exception() {
+  static const tp2cc_metaclass_p_exception value(
+      tp2cc_metaclass_p_tobject(+[]() -> p_tobject* {
+        auto* tp2cc_ptr = new p_exception{};
+        tp2cc_ptr->p_create();
+        return tp2cc_ptr;
+      }));
+  return &value;
+}
+
+inline const void* p_exception::p_classtype() {
+  return tp2cc_metaclass_value_p_exception();
+}
+
+inline int32_t p_exception::p_instancesize() {
+  return static_cast<int32_t>(sizeof(*this));
+}
 
 // Pascal `try .. finally` runs the cleanup block on every exit path:
 // ordinary fallthrough, `Exit`, loop control, and exception unwinding.

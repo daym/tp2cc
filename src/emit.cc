@@ -328,6 +328,60 @@ const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
   return m;
 }
 
+const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
+  static const std::unordered_map<std::string, const char*> m = {
+      {"datetime", "::rt::p_datetime"},
+      {"dirstr", "::rt::p_dirstr"},
+      {"namestr", "::rt::p_namestr"},
+      {"extstr", "::rt::p_extstr"},
+      {"pathstr", "::rt::p_pathstr"},
+      {"searchrec", "::rt::p_searchrec"},
+      {"signalhandler", "::rt::p_signalhandler"},
+      {"sizeint", "::rt::p_sizeint"},
+      {"tmethod", "::rt::p_tmethod"},
+  };
+  return m;
+}
+
+std::string runtime_named_type_cxx(std::string_view lowname) {
+  auto it = runtime_named_type_map().find(ascii_lower(std::string(lowname)));
+  return it == runtime_named_type_map().end() ? std::string()
+                                              : std::string(it->second);
+}
+
+struct BuiltinReferenceClassInfo {
+  const char* struct_cxx;
+  const char* parent;
+  const char* defining_unit;
+};
+
+const std::unordered_map<std::string, BuiltinReferenceClassInfo>&
+builtin_reference_class_map() {
+  static const std::unordered_map<std::string, BuiltinReferenceClassInfo> m = {
+      {"tobject", {"::rt::p_tobject", "", "__rt__"}},
+      {"exception", {"::rt::p_exception", "tobject", "sysutils"}},
+      {"eexternal", {"p_sysutils::p_eexternal", "exception", "sysutils"}},
+      {"einterror", {"p_sysutils::p_einterror", "eexternal", "sysutils"}},
+      {"eintoverflow",
+       {"p_sysutils::p_eintoverflow", "einterror", "sysutils"}},
+      {"eoserror", {"p_sysutils::p_eoserror", "exception", "sysutils"}},
+  };
+  return m;
+}
+
+std::string builtin_reference_class_struct_cxx(std::string_view lowname) {
+  auto it =
+      builtin_reference_class_map().find(ascii_lower(std::string(lowname)));
+  return it == builtin_reference_class_map().end()
+             ? std::string()
+             : std::string(it->second.struct_cxx);
+}
+
+std::string unit_namespace_prefix(std::string_view unit_name) {
+  return unit_name == "__rt__" ? std::string("::rt::")
+                               : (mangle(unit_name) + "::");
+}
+
 const PrimitiveInfo* primitive_info(std::string_view lowname) {
   auto it = primitive_type_map().find(std::string(lowname));
   return it == primitive_type_map().end() ? nullptr : &it->second;
@@ -674,7 +728,9 @@ struct Emitter {
   // Types -> C++ type string.
   std::string type_to_cxx(const TypeExpr& t);
   std::string type_name_to_cxx(const TyName& n);
+  std::string type_name_text_to_cxx(std::string_view name);
   std::string named_type_struct_cxx(std::string_view name);
+  std::string visible_type_prefix(std::string_view name);
   std::string metaclass_struct_cxx(std::string_view class_name);
   std::string metaclass_value_fn_cxx(std::string_view class_name);
   std::vector<MetaclassCallable> collect_metaclass_callables(
@@ -732,6 +788,7 @@ struct Emitter {
   bool const_param_needs_mutable_ref(const ast::TypeExpr* t);
   bool const_param_needs_const_ref(const ast::TypeExpr* t);
   const ClassInfo* class_info_for_type_name(std::string_view name);
+  const ast::TypeExpr* lookup_named_type_expr(std::string_view name);
   bool is_builtin_reference_class_name(std::string_view name) const;
   std::string metaclass_target_name(const ast::TypeExpr* t);
   bool type_is_value_object(const ast::TypeExpr* t);
@@ -795,6 +852,7 @@ struct Emitter {
                                    bool pointee_view);
   const VarInfo* find_visible_unit_var(const std::string& name);
   const ConstInfo* find_visible_unit_const(const std::string& name);
+  const EnumInfoReg* find_visible_enum_info_for_member(const std::string& name);
   struct AbsoluteTargetInfo {
     std::string cxx;
     const ast::TypeExpr* type = nullptr;
@@ -890,6 +948,8 @@ struct Emitter {
     bool is_parameterless = false;
     bool is_callable = false;
     const ast::ProcDecl* proc = nullptr;   // for call-site analysis
+    bool accepts_zero_args = false;
+    std::string return_type_name;
   };
   std::optional<ResolveResult> maybe_resolve_implicit_property(
       std::string_view name);
@@ -936,11 +996,15 @@ struct Emitter {
 
 std::string Emitter::type_name_to_cxx(const TyName& n) {
   if (is_primitive_type(n.name)) return primitive_type_cxx(n.name);
+  if (std::string rt = runtime_named_type_cxx(n.name); !rt.empty()) return rt;
   // Delphi/FPC `class` names denote references to heap objects, so
   // plain uses of the type name lower to a pointer type. The raw struct
   // spelling is kept separate in `named_type_struct_cxx()` for places
   // like base-class lists and `TClass.Method`.
-  if (n.name == "tobject") return "::rt::p_tobject*";
+  if (std::string cls = builtin_reference_class_struct_cxx(n.name);
+      !cls.empty()) {
+    return cls + "*";
+  }
   if (registry) {
     auto mark_if_class_ref = [&](std::string_view lookup_name,
                                  std::string_view defining_unit) -> bool {
@@ -962,15 +1026,77 @@ std::string Emitter::type_name_to_cxx(const TyName& n) {
   return named_type_struct_cxx(n.name);
 }
 
+std::string Emitter::type_name_text_to_cxx(std::string_view name) {
+  TyName t;
+  t.name = std::string(name);
+  return type_name_to_cxx(t);
+}
+
 std::string Emitter::named_type_struct_cxx(std::string_view name) {
-  if (name == "tobject") return "::rt::p_tobject";
+  if (std::string rt = runtime_named_type_cxx(ascii_lower(std::string(name)));
+      !rt.empty()) {
+    return rt;
+  }
+  if (std::string cls =
+          builtin_reference_class_struct_cxx(ascii_lower(std::string(name)));
+      !cls.empty()) {
+    return cls;
+  }
   // Qualified name `unitname.Type` -> `p_unitname::p_type`
   auto dot = name.find('.');
   if (dot != std::string_view::npos) {
-    return mangle(name.substr(0, dot)) +
-           "::" + mangle(name.substr(dot + 1));
+    return unit_namespace_prefix(name.substr(0, dot)) +
+           mangle(name.substr(dot + 1));
   }
-  return mangle(name);
+  return visible_type_prefix(name) + mangle(name);
+}
+
+std::string Emitter::visible_type_prefix(std::string_view name) {
+  if (!registry) return {};
+
+  std::string lower = ascii_lower(std::string(name));
+  if (local_type_aliases_scoped.count(lower) || local_enums.count(lower)) {
+    return {};
+  }
+
+  auto cur = registry->units.find(current_unit_name);
+  if (cur != registry->units.end()) {
+    if (cur->second.has_type(lower)) return {};
+    for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend(); ++it) {
+      auto uit = registry->units.find(*it);
+      if (uit == registry->units.end()) continue;
+      if (uit->second.has_export_type(lower)) {
+        return unit_namespace_prefix(*it);
+      }
+    }
+  }
+
+  auto class_it = registry->classes.find(lower);
+  if (class_it != registry->classes.end() &&
+      !class_it->second.defining_unit.empty() &&
+      class_it->second.defining_unit != current_unit_name) {
+    return unit_namespace_prefix(class_it->second.defining_unit);
+  }
+  auto record_it = registry->records.find(lower);
+  if (record_it != registry->records.end() &&
+      !record_it->second.defining_unit.empty() &&
+      record_it->second.defining_unit != current_unit_name) {
+    return unit_namespace_prefix(record_it->second.defining_unit);
+  }
+  auto enum_it = registry->enums.find(lower);
+  if (enum_it != registry->enums.end() &&
+      !enum_it->second.defining_unit.empty() &&
+      enum_it->second.defining_unit != current_unit_name) {
+    return unit_namespace_prefix(enum_it->second.defining_unit);
+  }
+  auto alias_it = registry->aliases.find(lower);
+  if (alias_it != registry->aliases.end() &&
+      !alias_it->second.defining_unit.empty() &&
+      alias_it->second.defining_unit != current_unit_name) {
+    return unit_namespace_prefix(alias_it->second.defining_unit);
+  }
+
+  return {};
 }
 
 std::string Emitter::metaclass_struct_cxx(std::string_view class_name) {
@@ -982,7 +1108,7 @@ std::string Emitter::metaclass_struct_cxx(std::string_view class_name) {
   if (const auto* ci = class_info_for_type_name(class_name);
       ci && !ci->defining_unit.empty() &&
       ci->defining_unit != current_unit_name) {
-    prefix = mangle(ci->defining_unit) + "::";
+    prefix = unit_namespace_prefix(ci->defining_unit);
   }
   return prefix + "tp2cc_metaclass_" + mangle(tail);
 }
@@ -996,7 +1122,7 @@ std::string Emitter::metaclass_value_fn_cxx(std::string_view class_name) {
   if (const auto* ci = class_info_for_type_name(class_name);
       ci && !ci->defining_unit.empty() &&
       ci->defining_unit != current_unit_name) {
-    prefix = mangle(ci->defining_unit) + "::";
+    prefix = unit_namespace_prefix(ci->defining_unit);
   }
   return prefix + "tp2cc_metaclass_value_" + mangle(tail);
 }
@@ -1141,8 +1267,21 @@ bool Emitter::const_param_needs_const_ref(const TypeExpr* t) {
 }
 
 const ClassInfo* Emitter::class_info_for_type_name(std::string_view name) {
-  if (!registry) return nullptr;
   std::string low = ascii_lower(std::string(name));
+  auto builtin_it = builtin_reference_class_map().find(low);
+  if (builtin_it != builtin_reference_class_map().end()) {
+    static std::unordered_map<std::string, ClassInfo> builtins;
+    auto [it, inserted] = builtins.try_emplace(low);
+    if (inserted) {
+      it->second.name = low;
+      it->second.parent = builtin_it->second.parent;
+      it->second.defining_unit = builtin_it->second.defining_unit;
+      it->second.is_reference_type = true;
+    }
+    return &it->second;
+  }
+
+  if (!registry) return nullptr;
   auto dot = low.find('.');
   if (dot == std::string::npos) {
     auto it = registry->classes.find(low);
@@ -1159,11 +1298,56 @@ const ClassInfo* Emitter::class_info_for_type_name(std::string_view name) {
   return it->second.defining_unit == unit ? &it->second : nullptr;
 }
 
+const TypeExpr* Emitter::lookup_named_type_expr(std::string_view name) {
+  std::string low = ascii_lower(std::string(name));
+
+  auto lit = local_type_aliases_scoped.find(low);
+  if (lit != local_type_aliases_scoped.end() && lit->second) {
+    return lit->second;
+  }
+
+  if (!registry) return nullptr;
+
+  auto dot = low.find('.');
+  if (dot != std::string::npos) {
+    std::string unit = low.substr(0, dot);
+    std::string tail = low.substr(dot + 1);
+
+    auto ait = registry->aliases.find(tail);
+    if (ait != registry->aliases.end() &&
+        ait->second.defining_unit == unit &&
+        ait->second.target) {
+      return ait->second.target.get();
+    }
+    auto cit = registry->classes.find(tail);
+    if (cit != registry->classes.end() && cit->second.defining_unit == unit) {
+      return named_pascal_type(name);
+    }
+    auto rit = registry->records.find(tail);
+    if (rit != registry->records.end() && rit->second.defining_unit == unit) {
+      return named_pascal_type(name);
+    }
+    auto eit = registry->enums.find(tail);
+    if (eit != registry->enums.end() && eit->second.defining_unit == unit) {
+      return named_pascal_type(name);
+    }
+    return nullptr;
+  }
+
+  auto ait = registry->aliases.find(low);
+  if (ait != registry->aliases.end() && ait->second.target) {
+    return ait->second.target.get();
+  }
+  if (registry->classes.count(low) || registry->records.count(low) ||
+      registry->enums.count(low)) {
+    return named_pascal_type(name);
+  }
+  return nullptr;
+}
+
 bool Emitter::is_builtin_reference_class_name(std::string_view name) const {
-  // `TObject` is supplied by the runtime root rather than the per-unit
-  // registry, but Pascal still treats `TObject(expr)` as a class-pointer
-  // cast with normal reference semantics.
-  return ascii_lower(std::string(name)) == "tobject";
+  return !builtin_reference_class_struct_cxx(
+              ascii_lower(std::string(name))).empty();
 }
 
 std::string Emitter::metaclass_target_name(const TypeExpr* t) {
@@ -1383,21 +1567,9 @@ std::string Emitter::subrange_type_to_cxx(const TySubrange& r) {
   // than `Set<int32_t>`.
   auto bound_enum = [&](const Expr* e) -> std::string {
     if (!e || e->kind != Kind::Ident || !registry) return {};
-    auto it = registry->enum_members.find(
-        static_cast<const Ident&>(*e).name);
-    if (it == registry->enum_members.end()) return {};
-    // enum_members maps member-name -> defining unit. Find which
-    // enum within that unit the member belongs to.
-    auto uit = registry->units.find(it->second);
-    if (uit == registry->units.end()) return {};
-    for (const auto& [en, info] : registry->enums) {
-      if (info.defining_unit == it->second) {
-        for (const auto& m : info.members) {
-          if (m == static_cast<const Ident&>(*e).name) return en;
-        }
-      }
-    }
-    return {};
+    const auto* info =
+        find_visible_enum_info_for_member(static_cast<const Ident&>(*e).name);
+    return info ? info->name : std::string{};
   };
   std::string le = bound_enum(r.lo.get());
   std::string he = bound_enum(r.hi.get());
@@ -2451,6 +2623,30 @@ const ConstInfo* Emitter::find_visible_unit_const(const std::string& name) {
   return nullptr;
 }
 
+const EnumInfoReg* Emitter::find_visible_enum_info_for_member(
+    const std::string& name) {
+  if (!registry) return nullptr;
+
+  auto find_in_unit = [&](const std::string& unit_name) -> const EnumInfoReg* {
+    for (const auto& [enum_name, info] : registry->enums) {
+      (void)enum_name;
+      if (info.defining_unit != unit_name) continue;
+      for (const auto& member : info.members) {
+        if (member == name) return &info;
+      }
+    }
+    return nullptr;
+  };
+
+  if (const auto* info = find_in_unit(current_unit_name)) return info;
+  auto cur = registry->units.find(current_unit_name);
+  if (cur == registry->units.end()) return nullptr;
+  for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend(); ++it) {
+    if (const auto* info = find_in_unit(*it)) return info;
+  }
+  return nullptr;
+}
+
 std::optional<Emitter::AbsoluteTargetInfo> Emitter::resolve_absolute_target(
     const VarDecl& vd) {
   AbsoluteTargetInfo info;
@@ -2944,7 +3140,7 @@ Emitter::ResolveResult Emitter::resolve_name(
 
   // ----- Qualified lookups first: `Unit.name` / `Class.name`. -----
   if (qk == QualifierKind::Unit) {
-    r.cxx = mangle(qualifier) + "::" + mangle(name);
+    r.cxx = unit_namespace_prefix(qualifier) + mangle(name);
     if (registry) {
       auto uit = registry->units.find(qualifier);
       if (uit != registry->units.end()) {
@@ -2954,6 +3150,8 @@ Emitter::ResolveResult Emitter::resolve_name(
           r.proc = pi->decl.get();
           r.is_callable = true;
           r.is_parameterless = (pi->param_count == 0);
+          r.accepts_zero_args = pi->accepts_zero_args;
+          r.return_type_name = pi->return_type_name;
           return r;
         }
         if (u.find_export_var(name)) { r.kind = ResolvedKind::UnitVar; return r; }
@@ -2962,9 +3160,9 @@ Emitter::ResolveResult Emitter::resolve_name(
         if (u.has_export_type(name)) { r.kind = ResolvedKind::UnitType; return r; }
       }
     }
-    // RTL unit we don't parse (e.g. `dos.getenv` when dos.pas isn't
-    // in our source tree). Leave the name unresolved and let the
-    // stub header's `namespace alias = rt` do the final lookup.
+    // RTL unit we don't parse (e.g. `dos.getenv` when dos.pas isn't in our
+    // source tree). Keep the Pascal unit qualifier in the emitted text and
+    // let the runtime's stub namespace alias own that lookup.
     r.kind = ResolvedKind::Unknown;
     return r;
   }
@@ -3066,6 +3264,16 @@ Emitter::ResolveResult Emitter::resolve_name(
     r.cxx = mangle(name);
     return r;
   }
+  for (const auto& [_, en] : local_enums) {
+    if (!en) continue;
+    for (const auto& member : en->members) {
+      if (ascii_lower(member.name) == ascii_lower(name)) {
+        r.kind = ResolvedKind::EnumMember;
+        r.cxx = mangle(name);
+        return r;
+      }
+    }
+  }
   if (auto prop = maybe_resolve_implicit_property(name)) return *prop;
   // 5. Current class's members (chain).
   if (!current_class_name.empty() && registry) {
@@ -3130,11 +3338,10 @@ Emitter::ResolveResult Emitter::resolve_name(
       auto it = registry->units.find(un);
       if (it == registry->units.end()) return false;
       const UnitInfo& u = it->second;
-      // Synthetic `__rt__` unit holds rt:: builtins. They live in
-      // namespace `::rt` and every emitted unit injects
-      // `using namespace ::rt;`, so emit the bare mangled name.
-      const std::string prefix =
-          (un == "__rt__") ? std::string() : (mangle(un) + "::");
+      // Synthetic `__rt__` unit holds runtime builtins. Emit them fully
+      // qualified so translated units do not depend on `using namespace
+      // ::rt;` for correctness.
+      const std::string prefix = unit_namespace_prefix(un);
       // Other units contribute only their interface-exported names.
       if (auto* pi = u.find_export_proc(name)) {
         r.cxx = prefix + mangle(name);
@@ -3143,6 +3350,8 @@ Emitter::ResolveResult Emitter::resolve_name(
         r.proc = pi->decl.get();
         r.is_callable = true;
         r.is_parameterless = (pi->param_count == 0);
+        r.accepts_zero_args = pi->accepts_zero_args;
+        r.return_type_name = pi->return_type_name;
         return true;
       }
       if (u.find_export_var(name)) {
@@ -3171,10 +3380,11 @@ Emitter::ResolveResult Emitter::resolve_name(
     }
     (void)own;  // already handled by the per-unit lookup above.
   }
-  // 7. Fallback: emit the mangled name and let C++ lookup sort it out
-  //    (catches rt:: free functions we haven't enumerated and any
-  //    name that's in the current namespace).
-  r.cxx = mangle(name);
+  // 7. Fallback: unresolved free names are much more often runtime helpers
+  //    than cross-unit symbols. Emit them as explicit `::rt::...`
+  //    references instead of depending on open namespaces in generated
+  //    units.
+  r.cxx = "::rt::" + mangle(name);
   r.kind = ResolvedKind::Unknown;
   return r;
 }
@@ -3461,17 +3671,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // `(IF_SM or IF_SM2)` as "boolean because it is an `or`" silently
       // miscompiles bitmask code into `&&`/`||`.
       std::function<bool(const Expr&)> is_bool = [&](const Expr& x) -> bool {
-        // Calls to rt:: builtins and user procs: consult the registry's
-        // recorded return type (registry stores rt builtins under the
-        // synthetic `__rt__` unit alongside user procs).
+        // Calls to rt:: builtins and source procs: consult the resolved proc's
+        // recorded return type instead of a global last-wins name map.
         if (x.kind == Kind::Call && registry) {
           const auto& c = static_cast<const Call&>(x);
           if (c.callee->kind == Kind::Ident) {
             const std::string& nm =
                 static_cast<const Ident&>(*c.callee).name;
-            auto pit = registry->procs.find(nm);
-            if (pit != registry->procs.end() &&
-                pit->second.return_type_name == "boolean")
+            ResolveResult rr = resolve_name(nm);
+            if (rr.return_type_name == "boolean")
               return true;
           }
         }
@@ -3818,7 +4026,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // rest (length, ord, chr, assigned, odd, abs, sqr, sqrt, sin, cos,
       // ln, exp, arctan, trunc, round, int, frac, inc, dec, succ, pred,
       // ...) live in `rt::` under their exact Pascal names and pass through
-      // the `using namespace ::rt;` injection. No translation table.
+      // ordinary name resolution as explicit `::rt::...` calls.
       //
       // Special cases below:
       //   * `low(T)` / `high(T)` when T is a type name  -> emitted constant
@@ -3832,6 +4040,28 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         const std::string& n = id.name;
         auto arg0 = [&] {
           return c.args.empty() ? std::string("0") : expr_to_cxx(*c.args[0]);
+        };
+        auto is_visible_type_name = [&](const std::string& type_name) {
+          const std::string low = ascii_lower(type_name);
+          if (is_primitive_type(low)) return true;
+          if (!runtime_named_type_cxx(low).empty()) return true;
+          if (!builtin_reference_class_struct_cxx(low).empty()) {
+            return true;
+          }
+          if (local_type_aliases_scoped.count(low) || local_enums.count(low)) {
+            return true;
+          }
+          if (ResolveResult rr = resolve_name(type_name);
+              rr.kind == ResolvedKind::UnitType) {
+            return true;
+          }
+          if (registry) {
+            return registry->classes.count(low) ||
+                   registry->records.count(low) ||
+                   registry->enums.count(low) ||
+                   registry->aliases.count(low);
+          }
+          return false;
         };
 
         // Pascal `low` / `high` are type-driven:
@@ -3871,19 +4101,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
 
         if (n == "sizeof" && c.args.size() == 1) {
           // `sizeof(T)` on a type name -- map primitives to their C++
-          // expansion, type aliases to their mangled form. `sizeof(expr)`
-          // on any value expression stays as C++ `sizeof(expr)`.
+          // expansion through the normal type-name lowering path.
+          // `sizeof(expr)` on any value expression stays as C++ `sizeof(expr)`.
           if (c.args[0]->kind == Kind::Ident) {
             const auto& tn = static_cast<const Ident&>(*c.args[0]);
-            if (is_primitive_type(tn.name)) {
-              return "sizeof(" + primitive_type_cxx(tn.name) + ")";
-            }
-            if (registry &&
-                (registry->classes.count(tn.name) ||
-                 registry->records.count(tn.name) ||
-                 registry->enums.count(tn.name) ||
-                 registry->aliases.count(tn.name))) {
-              return "sizeof(" + mangle(tn.name) + ")";
+            if (is_visible_type_name(tn.name)) {
+              return "sizeof(" + type_name_text_to_cxx(tn.name) + ")";
             }
           }
           return "sizeof(" + expr_to_cxx(*c.args[0]) + ")";
@@ -3974,7 +4197,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
           }
           if (cast_ty && cast_ty->kind == Kind::TyMetaclass) {
-            return "((" + expr_to_cxx(*c.callee) + ")(" +
+            return "((" + type_name_text_to_cxx(n) + ")(" +
                    const_value_to_cxx(*c.args[0], cast_ty,
                                       /*explicit_conversion=*/true) +
                    "))";
@@ -4004,7 +4227,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             bool pointee_view =
                 expr_is_untyped_storage_ref(*c.args[0]) ||
                 type_is_pointerish(source_ty);
-            return reinterpret_ref_text(expr_to_cxx(*c.callee),
+            return reinterpret_ref_text(type_name_text_to_cxx(n),
                                         expr_to_cxx(*peeled),
                                         pointee_view);
           }
@@ -4014,7 +4237,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             bool pointee_view =
                 expr_is_untyped_storage_ref(*c.args[0]) ||
                 type_is_pointerish(source_ty);
-            return reinterpret_ref_text(expr_to_cxx(*c.callee),
+            return reinterpret_ref_text(type_name_text_to_cxx(n),
                                         expr_to_cxx(*peeled),
                                         pointee_view);
           }
@@ -4025,7 +4248,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (arr.dims.size() == 1 &&
                 (tyname_is(elem, "byte") || tyname_is(elem, "char"))) {
               return "::rt::p_reinterpret_bytes<" +
-                     expr_to_cxx(*c.callee) + ">(" + arg0() + ")";
+                     type_name_text_to_cxx(n) + ">(" + arg0() + ")";
             }
           }
         } else if ((n == "inc" || n == "dec") &&
@@ -4111,14 +4334,20 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if (id.name == "pointer") {
           cast_to_pointer = true;
           cast_type_cxx = "void*";
-        } else if (registry) {
-          auto ait = registry->aliases.find(id.name);
-          if (ait != registry->aliases.end() && ait->second.target.get()) {
-            const TypeExpr* tgt = registry->canonicalize(ait->second.target.get());
-            if (tgt && tgt->kind == Kind::TyPointer) {
-              cast_to_pointer = true;
-              cast_type_cxx = mangle(id.name);
+        } else {
+          const TypeExpr* tgt = nullptr;
+          auto lit = local_type_aliases_scoped.find(id.name);
+          if (lit != local_type_aliases_scoped.end() && lit->second) {
+            tgt = canonicalize_type(lit->second);
+          } else if (registry) {
+            auto ait = registry->aliases.find(id.name);
+            if (ait != registry->aliases.end() && ait->second.target.get()) {
+              tgt = registry->canonicalize(ait->second.target.get());
             }
+          }
+          if (tgt && tgt->kind == Kind::TyPointer) {
+            cast_to_pointer = true;
+            cast_type_cxx = type_name_text_to_cxx(id.name);
           }
         }
         if (cast_to_pointer) {
@@ -4126,6 +4355,57 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (peeled && expr_is_storage_lvalue(*c.args[0])) {
             return reinterpret_ref_text(cast_type_cxx, expr_to_cxx(*peeled),
                                         expr_is_untyped_storage_ref(*c.args[0]));
+          }
+        }
+      }
+      if (c.args.size() == 1 && c.callee->kind == Kind::Member && registry) {
+        const auto& mem = static_cast<const Member&>(*c.callee);
+        if (mem.base->kind == Kind::Ident) {
+          const auto& base_id = static_cast<const Ident&>(*mem.base);
+          const std::string& base_name = base_id.name;
+          bool shadowed = local_scope.count(base_name) > 0;
+          if (!shadowed && !current_class_name.empty() &&
+              (registry->lookup_class_method(current_class_name, base_name) ||
+               registry->lookup_class_field(current_class_name, base_name) ||
+               registry->lookup_class_property(current_class_name, base_name))) {
+            shadowed = true;
+          }
+          if (!shadowed) {
+            for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
+              if (with_bind_has_visible_member(*it, base_name)) {
+                shadowed = true;
+                break;
+              }
+            }
+          }
+          bool is_unit = !shadowed && registry->units.count(base_name) > 0;
+          if (!is_unit && !shadowed) {
+            auto uit = registry->units.find(current_unit_name);
+            if (uit != registry->units.end()) {
+              for (const auto& nm : uit->second.uses) {
+                if (nm == base_name) {
+                  is_unit = true;
+                  break;
+                }
+              }
+            }
+          }
+          if (is_unit) {
+            ResolveResult rr =
+                resolve_name(mem.name, QualifierKind::Unit, base_name);
+            if (rr.kind == ResolvedKind::UnitType) {
+              const std::string qualified = base_name + "." + mem.name;
+              const TypeExpr* cast_ty = lookup_named_type_expr(qualified);
+              if (cast_ty) cast_ty = canonicalize_type(cast_ty);
+              if (cast_ty && cast_ty->kind == Kind::TyPointer) {
+                const Expr* peeled = peel_primitive_casts(c.args[0].get());
+                if (peeled && expr_is_storage_lvalue(*c.args[0])) {
+                  return reinterpret_ref_text(type_name_text_to_cxx(qualified),
+                                              expr_to_cxx(*peeled),
+                                              expr_is_untyped_storage_ref(*c.args[0]));
+                }
+              }
+            }
           }
         }
       }
@@ -5503,19 +5783,23 @@ void Emitter::emit_stmt(const Stmt& s) {
             break;
           }
           const auto& id = static_cast<const Ident&>(*c.callee);
-          if (registry) {
+          const TypeExpr* tgt = nullptr;
+          auto lit = local_type_aliases_scoped.find(id.name);
+          if (lit != local_type_aliases_scoped.end() && lit->second) {
+            tgt = canonicalize_type(lit->second);
+          } else if (registry) {
             auto ait = registry->aliases.find(id.name);
             if (ait != registry->aliases.end() && ait->second.target.get()) {
-              const TypeExpr* tgt = registry->canonicalize(ait->second.target.get());
-              if (tgt && tgt->kind == Kind::TyPointer) {
-                std::string lv = expr_to_cxx(*c.args[0]);
-                std::string rhs = expr_to_cxx(*a.value);
-                emitln(reinterpret_ref_text(mangle(id.name), lv,
-                                            expr_is_untyped_storage_ref(*c.args[0])) +
-                       " = " + rhs + ";");
-                break;
-              }
+              tgt = registry->canonicalize(ait->second.target.get());
             }
+          }
+          if (tgt && tgt->kind == Kind::TyPointer) {
+            std::string lv = expr_to_cxx(*c.args[0]);
+            std::string rhs = expr_to_cxx(*a.value);
+            emitln(reinterpret_ref_text(type_name_text_to_cxx(id.name), lv,
+                                        expr_is_untyped_storage_ref(*c.args[0])) +
+                   " = " + rhs + ";");
+            break;
           }
         }
       }
@@ -5784,9 +6068,8 @@ void Emitter::emit_stmt(const Stmt& s) {
         std::string text = expr_to_cxx(*es.expr);
         if (es.expr->kind == Kind::Ident && registry) {
           const auto& id = static_cast<const Ident&>(*es.expr);
-          auto pit = registry->procs.find(id.name);
-          if (pit != registry->procs.end() &&
-              pit->second.accepts_zero_args &&
+          ResolveResult rr = resolve_name(id.name);
+          if (rr.accepts_zero_args &&
               !text.empty() && text.back() != ')') {
             text += "()";
           }
@@ -6591,13 +6874,6 @@ void Emitter::emit_unit(const UnitNode& u) {
   nl();
   emitln("namespace " + ns + " {");
   nl();
-  // Runtime helpers (p_fillchar, p_writeln, p_getmem, ...) live in
-  // namespace ::rt. Pull them in so Pascal builtins emit as bare calls.
-  emitln("using namespace ::rt;");
-  for (const auto& uu : u.interface_uses) {
-    emitln("using namespace " + mangle(uu) + ";");
-  }
-  nl();
   emit_forward_struct_decls(*this, u.interface_decls);
   // Walk source order. Types are reordered topologically only within a
   // single contiguous run (a Pascal `type` section); any intervening
@@ -6649,11 +6925,6 @@ void Emitter::emit_unit(const UnitNode& u) {
   }
   nl();
   emitln("namespace " + ns + " {");
-  nl();
-  emitln("using namespace ::rt;");
-  for (const auto& uu : u.impl_uses) {
-    emitln("using namespace " + mangle(uu) + ";");
-  }
   nl();
   emit_forward_struct_decls(*this, u.impl_decls);
   // Emit definitions (not just extern declarations) for interface
@@ -6721,7 +6992,6 @@ void Emitter::emit_unit(const UnitNode& u) {
       }
     }
     emitln("using namespace " + ns + ";");
-    emitln("using namespace ::rt;");
     ++block_depth;
     if (u.init_body) emit_stmt(*u.init_body);
     --block_depth;
@@ -6742,8 +7012,6 @@ void Emitter::emit_tpexcept_unit(const UnitNode& u) {
   emitln("#include \"tp2cc_rt/prelude.h\"");
   nl();
   emitln("namespace p_tpexcept {");
-  nl();
-  emitln("using namespace ::rt;");
   nl();
   emitln("struct p_jmp_buf {");
   indent();
@@ -6802,8 +7070,6 @@ void Emitter::emit_tpexcept_unit(const UnitNode& u) {
   emitln("}  // namespace");
   nl();
   emitln("namespace p_tpexcept {");
-  nl();
-  emitln("using namespace ::rt;");
   nl();
   emitln("namespace p_detail {");
   indent();
