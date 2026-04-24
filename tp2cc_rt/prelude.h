@@ -180,6 +180,7 @@ inline void* p_method_code() {
 template <int N> struct ShortString;
 template <int N> struct ShortStringPtrValue;
 template <int N> struct ShortStringPtrRef;
+class AnsiString;
 template <int N = 255> constexpr ShortString<N> p_shortstring_of();
 template <int N = 255> constexpr ShortString<N> p_shortstring_of(const char* s);
 template <int N = 255> constexpr ShortString<N> p_shortstring_of(const p_char* s);
@@ -397,6 +398,18 @@ struct ShortString {
     return p_shortstring_of<M>(*this);
   }
 
+  operator AnsiString() const;
+
+  constexpr ShortString& operator=(p_char c) {
+    length = 1;
+    data[0] = c;
+    return *this;
+  }
+
+  constexpr ShortString& operator=(char c) {
+    return (*this = p_char_of(c));
+  }
+
   // Cross-capacity equality -- declared as a friend template so
   // `s<255> == s<10>` is unambiguous.
   template <int M>
@@ -521,6 +534,8 @@ struct ShortStringPtrValue {
     for (int32_t i = 0; i < n; ++i) out.data[i] = src[i];
     return out;
   }
+
+  operator AnsiString() const;
 };
 
 template <int N>
@@ -539,6 +554,7 @@ struct ShortStringPtrRef {
   constexpr operator ShortString<M>() const {
     return static_cast<ShortString<M>>(ShortStringPtrValue<N>{storage});
   }
+  operator AnsiString() const;
   constexpr ShortStringCharRef operator[](int i) const {
     return ShortStringCharRef{storage + i};
   }
@@ -991,6 +1007,16 @@ inline AnsiString p_ansistring_of(const ShortString<N>& s) {
 }
 
 template <int N>
+inline AnsiString p_ansistring_of(ShortStringPtrValue<N> s) {
+  return p_ansistring_of(static_cast<ShortString<N>>(s));
+}
+
+template <int N>
+inline AnsiString p_ansistring_of(ShortStringPtrRef<N> s) {
+  return p_ansistring_of(static_cast<ShortString<N>>(s));
+}
+
+template <int N>
 inline ShortString<N> p_shortstring_of(const AnsiString& s) {
   return static_cast<ShortString<N>>(s);
 }
@@ -999,6 +1025,21 @@ inline AnsiString p_ansistring_of(p_char c) {
   AnsiString out{};
   out = c;
   return out;
+}
+
+template <int N>
+inline ShortString<N>::operator AnsiString() const {
+  return p_ansistring_of(*this);
+}
+
+template <int N>
+inline ShortStringPtrValue<N>::operator AnsiString() const {
+  return p_ansistring_of(*this);
+}
+
+template <int N>
+inline ShortStringPtrRef<N>::operator AnsiString() const {
+  return p_ansistring_of(*this);
 }
 
 inline AnsiStringCharRef::operator p_char() const {
@@ -1240,6 +1281,22 @@ inline bool operator==(const p_char* a, const ShortString<N>& b) {
 
 template <int N>
 inline bool operator==(const ShortString<N>& a, const p_char* b) {
+  return b == a;
+}
+
+template <typename S>
+requires tp2cc_is_shortstring_proxy_v<S>
+inline bool operator==(const p_char* a, const S& b) {
+  if (!a) return b.size() == 0;
+  for (int i = 0; i < b.size(); ++i) {
+    if (a[i] != b[i + 1]) return false;
+  }
+  return a[b.size()] == p_char_of('\0');
+}
+
+template <typename S>
+requires tp2cc_is_shortstring_proxy_v<S>
+inline bool operator==(const S& a, const p_char* b) {
   return b == a;
 }
 
@@ -3023,8 +3080,8 @@ inline int p_strlen(const p_char* s) {
   return n;
 }
 inline int p_strlen(const AnsiString& s) { return s.length(); }
-inline const char* p_strpas(const char* s) { return s; }
-inline const p_char* p_strpas(const p_char* s) { return s; }
+inline ShortString<> p_strpas(const char* s) { return p_shortstring_of<>(s); }
+inline ShortString<> p_strpas(const p_char* s) { return p_shortstring_of<>(s); }
 template <int N>
 inline ShortString<N> p_strpas_s(const char* s) {
   return p_shortstring_of<N>(s);
@@ -3095,6 +3152,16 @@ inline void p_insert(const ShortString<N>& src, ShortString<M>& dest, int pos) {
   }
   dest.length = static_cast<uint8_t>(need);
 }
+
+template <int N, int M>
+inline void p_insert(ShortStringPtrValue<N> src, ShortString<M>& dest, int pos) {
+  p_insert(static_cast<ShortString<N>>(src), dest, pos);
+}
+
+template <int N, int M>
+inline void p_insert(ShortStringPtrRef<N> src, ShortString<M>& dest, int pos) {
+  p_insert(static_cast<ShortString<N>>(src), dest, pos);
+}
 // Pascal `insert(c, s, pos)` -- insert a single character.
 template <int M>
 inline void p_insert(p_char c, ShortString<M>& dest, int pos) {
@@ -3134,6 +3201,16 @@ inline void p_insert_bytes(const Src& src, AnsiString& dest, int pos) {
 template <int N>
 inline void p_insert(const ShortString<N>& src, AnsiString& dest, int pos) {
   p_insert_bytes(src, dest, pos);
+}
+
+template <int N>
+inline void p_insert(ShortStringPtrValue<N> src, AnsiString& dest, int pos) {
+  p_insert(static_cast<ShortString<N>>(src), dest, pos);
+}
+
+template <int N>
+inline void p_insert(ShortStringPtrRef<N> src, AnsiString& dest, int pos) {
+  p_insert(static_cast<ShortString<N>>(src), dest, pos);
 }
 
 inline void p_insert(const AnsiString& src, AnsiString& dest, int pos) {

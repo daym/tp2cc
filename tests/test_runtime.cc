@@ -339,6 +339,32 @@ void test_shortstring_implicitly_converts_between_capacities() {
   CHECK_EQ(p_to_std_string(narrow), std::string("ab"));
 }
 
+void test_shortstring_implicitly_converts_to_ansistring() {
+  ShortString<> shorty = p_shortstring_of<>("abc");
+  AnsiString text = shorty;
+
+  CHECK_EQ(text.length(), 3);
+  CHECK_EQ(p_char_byte(text.bytes()[0]), static_cast<uint8_t>('a'));
+  CHECK_EQ(p_char_byte(text.bytes()[1]), static_cast<uint8_t>('b'));
+  CHECK_EQ(p_char_byte(text.bytes()[2]), static_cast<uint8_t>('c'));
+  CHECK_EQ(p_char_byte(text.bytes()[3]), 0);
+}
+
+void test_shortstring_assign_from_char_creates_one_character_string() {
+  ShortString<> s{};
+  s = p_char_of('.');
+
+  CHECK_EQ(p_to_std_string(s), std::string("."));
+}
+
+void test_strpas_returns_shortstring_up_to_first_nul() {
+  const p_char raw[] = {p_char_of('A'), p_char_of('B'), p_char_of('\0'),
+                        p_char_of('C'), p_char_of('\0')};
+  ShortString<> s = p_strpas(raw);
+
+  CHECK_EQ(p_to_std_string(s), std::string("AB"));
+}
+
 void test_ansistring_from_shortstring_keeps_trailing_nul_storage() {
   AnsiString s = p_ansistring_of(
       p_shortstring_literal<255>(p_char_of('A'), p_char_of('\0'),
@@ -383,6 +409,16 @@ void test_shortstring_compares_equal_to_pchar_buffer() {
 
   CHECK(text == shorty);
   CHECK(shorty == text);
+}
+
+void test_insert_accepts_shortstring_pointer_proxy_source() {
+  ShortString<> src = p_shortstring_of<>("ab");
+  ShortString<> dest = p_shortstring_of<>("XY");
+  ShortString<>* ptr = &src;
+
+  p_insert(p_deref(ptr), dest, 2);
+
+  CHECK_EQ(p_to_std_string(dest), std::string("XabY"));
 }
 
 void test_char_array_compares_equal_to_shortstring_by_live_prefix() {
@@ -879,11 +915,15 @@ int main() {
   RUN_TEST(test_shortstring_nul_char_concat_preserves_embedded_zero);
   RUN_TEST(test_shortstring_literal_helper_preserves_embedded_nuls);
   RUN_TEST(test_shortstring_implicitly_converts_between_capacities);
+  RUN_TEST(test_shortstring_implicitly_converts_to_ansistring);
+  RUN_TEST(test_shortstring_assign_from_char_creates_one_character_string);
+  RUN_TEST(test_strpas_returns_shortstring_up_to_first_nul);
   RUN_TEST(test_ansistring_from_shortstring_keeps_trailing_nul_storage);
   RUN_TEST(test_shortstring_charref_inc_and_dec_update_length_slot_storage);
   RUN_TEST(test_octstr_formats_octal_with_zero_padding);
   RUN_TEST(test_move_reads_from_const_shortstring_storage);
   RUN_TEST(test_shortstring_compares_equal_to_pchar_buffer);
+  RUN_TEST(test_insert_accepts_shortstring_pointer_proxy_source);
   RUN_TEST(test_char_array_compares_equal_to_shortstring_by_live_prefix);
   RUN_TEST(test_str_formats_real_values);
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
