@@ -879,6 +879,7 @@ struct Emitter {
   bool expr_is_storage_lvalue(const ast::Expr& e);
   bool expr_is_untyped_storage_ref(const ast::Expr& e);
   bool expr_is_charish(const ast::Expr& e);
+  bool type_is_pcharish(const ast::TypeExpr* t);
   bool type_is_metaclass(const ast::TypeExpr* t);
   bool type_is_reference_class(const ast::TypeExpr* t);
   bool expr_is_reference_class(const ast::Expr& e);
@@ -2342,6 +2343,7 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
         const auto& id = static_cast<const Ident&>(*c.callee);
         if ((id.name == "char" || id.name == "chr") && c.args.size() == 1)
           return builtin_char_type();
+        if (id.name == "pchar" && c.args.size() == 1) return builtin_pchar_type();
         if ((id.name == "succ" || id.name == "pred" || id.name == "upcase") &&
             c.args.size() == 1)
           return deduce_type(*c.args[0]);
@@ -2654,6 +2656,15 @@ bool Emitter::expr_is_charish(const Expr& e) {
   if (!t) return false;
   t = canonicalize_type(t);
   return tyname_is(t, "char");
+}
+
+bool Emitter::type_is_pcharish(const TypeExpr* t) {
+  if (!t) return false;
+  t = canonicalize_type(t);
+  if (!t) return false;
+  if (tyname_is(t, "pchar")) return true;
+  return t->kind == Kind::TyPointer &&
+         tyname_is(static_cast<const TyPointer&>(*t).target.get(), "char");
 }
 
 bool Emitter::type_is_metaclass(const TypeExpr* t) {
@@ -3034,6 +3045,20 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
     // Reinterpret the slot itself so the callee still sees writable storage.
     return reinterpret_ref_text(type_to_cxx(*param_type), expr_to_cxx(arg),
                                 false);
+  }
+  if (canon_param_type && type_is_stringish(canon_param_type)) {
+    if (mutable_ref_arg && expr_is_storage_lvalue(arg)) {
+      return expr_to_cxx(arg);
+    }
+    if (arg_type && type_is_stringish(arg_type)) {
+      return expr_to_cxx(arg);
+    }
+    if (type_is_pcharish(arg_type)) {
+      return const_value_to_cxx(arg, param_type);
+    }
+    if (arg.kind != Kind::StringLit && !expr_is_charish(arg)) {
+      return expr_to_cxx(arg);
+    }
   }
   std::string arg_text = const_value_to_cxx(arg, param_type);
   if (type_is_open_array(param_type)) {

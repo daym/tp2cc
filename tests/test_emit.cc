@@ -408,7 +408,7 @@ void test_packed_record_shortstring_array_index_is_allowed() {
       "end;\n"
       "end.\n");
   CHECK(error_count() == before);
-  CHECK(contains(out.impl, "p_s = p_r.p_names[0];"));
+  CHECK(contains(out.impl, "::rt::p_shortstring_assign(p_s, p_r.p_names[0]);"));
 }
 
 void test_explicit_enum_array_bounds_use_ordinal_range() {
@@ -1125,6 +1125,91 @@ void test_typed_const_shortstring_literals_use_target_capacity() {
   CHECK(!contains(out.header,
                   "::rt::ShortString<::rt::p_tokenlenmax> p_plustok = "
                   "::rt::p_char_of('+');"));
+}
+
+void test_var_shortstring_call_keeps_lvalue_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure replace(var s : string);\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure replace(var s : string);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "var s : string;\n"
+      "begin\n"
+      "  replace(s);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_replace(p_s);"));
+  CHECK(!contains(out.impl, "p_replace(::rt::p_shortstring_of"));
+  CHECK(!contains(out.impl, "p_replace(::rt::p_ansistring_of"));
+}
+
+void test_var_ansistring_call_keeps_lvalue_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure replace(var s : ansistring);\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure replace(var s : ansistring);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "var s : ansistring;\n"
+      "begin\n"
+      "  replace(s);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_replace(p_s);"));
+  CHECK(!contains(out.impl, "p_replace(::rt::p_ansistring_of"));
+}
+
+void test_overloaded_string_and_bool_call_keeps_boolean_argument_raw() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tpath = class\n"
+      "    procedure addpath(s : string; addfirst : boolean); overload;\n"
+      "    procedure addpath(srcpath, s : string; addfirst : boolean); overload;\n"
+      "  end;\n"
+      "procedure demo(p : tpath; s : string);\n"
+      "implementation\n"
+      "procedure tpath.addpath(s : string; addfirst : boolean);\n"
+      "begin\n"
+      "end;\n"
+      "procedure tpath.addpath(srcpath, s : string; addfirst : boolean);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo(p : tpath; s : string);\n"
+      "begin\n"
+      "  p.addpath(s, false);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_p->p_addpath(p_s, false);"));
+  CHECK(!contains(out.impl, "::rt::p_shortstring_of<255>(false)"));
+}
+
+void test_pchar_cast_argument_converts_to_string_value() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure take(const s : string);\n"
+      "procedure demo(p : pchar);\n"
+      "implementation\n"
+      "procedure take(const s : string);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo(p : pchar);\n"
+      "begin\n"
+      "  take(pchar(p));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_take(::rt::p_shortstring_of<255>(((::rt::p_char*)(p_p))));"));
 }
 
 void test_integer_and_or_stays_bitwise() {
@@ -3090,6 +3175,10 @@ int main() {
   RUN_TEST(test_nul_char_plus_cast_uses_string_concat);
   RUN_TEST(test_embedded_nul_string_literal_uses_explicit_length_builder);
   RUN_TEST(test_shortstring_assignment_uses_pascal_string_helper);
+  RUN_TEST(test_var_shortstring_call_keeps_lvalue_storage);
+  RUN_TEST(test_var_ansistring_call_keeps_lvalue_storage);
+  RUN_TEST(test_overloaded_string_and_bool_call_keeps_boolean_argument_raw);
+  RUN_TEST(test_pchar_cast_argument_converts_to_string_value);
   RUN_TEST(test_integer_and_or_stays_bitwise);
   RUN_TEST(test_nested_boolean_function_and_short_circuits);
   RUN_TEST(test_nested_untyped_var_forwarding_stays_pointer_value);
