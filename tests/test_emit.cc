@@ -363,6 +363,54 @@ void test_packed_record_method_call_reports_error() {
   CHECK(error_count() > before);
 }
 
+void test_packed_record_char_array_index_is_allowed() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = packed record\n"
+      "    tag : byte;\n"
+      "    name : array[0..15] of char;\n"
+      "  end;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "var\n"
+      "  r : trec;\n"
+      "  c : char;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  c := r.name[0];\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "p_c = p_r.p_name[0];"));
+}
+
+void test_packed_record_shortstring_array_index_is_allowed() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = packed record\n"
+      "    tag : byte;\n"
+      "    names : array[0..1] of string[20];\n"
+      "  end;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "var\n"
+      "  r : trec;\n"
+      "  s : string[20];\n"
+      "procedure run;\n"
+      "begin\n"
+      "  s := r.names[0];\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "p_s = p_r.p_names[0];"));
+}
+
 void test_explicit_enum_array_bounds_use_ordinal_range() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2999,6 +3047,8 @@ int main() {
   RUN_TEST(test_packed_record_array_index_reports_error);
   RUN_TEST(test_packed_record_nested_member_reports_error);
   RUN_TEST(test_packed_record_method_call_reports_error);
+  RUN_TEST(test_packed_record_char_array_index_is_allowed);
+  RUN_TEST(test_packed_record_shortstring_array_index_is_allowed);
   RUN_TEST(test_explicit_enum_array_bounds_use_ordinal_range);
   RUN_TEST(test_distinct_ordinal_array_bounds_use_underlying_range);
   RUN_TEST(test_low_high_use_resolved_pascal_type);

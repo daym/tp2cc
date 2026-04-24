@@ -865,6 +865,7 @@ struct Emitter {
   };
   bool type_is_packed_record(const ast::TypeExpr* t);
   bool type_is_direct_packed_aggregate(const ast::TypeExpr* t);
+  bool type_is_byte_aligned_packed_index_carrier(const ast::TypeExpr* t);
   std::optional<PackedAggregateFieldUse> direct_packed_aggregate_field_use(
       const ast::Expr& e);
   void report_packed_aggregate_subobject_use(
@@ -2518,6 +2519,38 @@ bool Emitter::type_is_direct_packed_aggregate(const TypeExpr* t) {
     case Kind::TySet:
     case Kind::TyString:
       return true;
+    default:
+      return false;
+  }
+}
+
+bool Emitter::type_is_byte_aligned_packed_index_carrier(const TypeExpr* t) {
+  if (!t) return false;
+  t = canonicalize_type(t);
+  if (!t) return false;
+  switch (t->kind) {
+    case Kind::TyString:
+    case Kind::TySet:
+      return true;
+    case Kind::TyArray: {
+      const auto& a = static_cast<const TyArray&>(*t);
+      return type_is_byte_aligned_packed_index_carrier(a.element.get());
+    }
+    case Kind::TyEnum: {
+      const std::string underlying =
+          enum_underlying_type_to_cxx(static_cast<const TyEnum&>(*t));
+      return underlying == "uint8_t" || underlying == "int8_t";
+    }
+    case Kind::TySubrange: {
+      const std::string lowered =
+          subrange_type_to_cxx(static_cast<const TySubrange&>(*t));
+      return lowered == "uint8_t" || lowered == "int8_t";
+    }
+    case Kind::TyName: {
+      const std::string low = ascii_lower(static_cast<const TyName&>(*t).name);
+      return low == "char" || low == "byte" || low == "shortint" ||
+             low == "boolean";
+    }
     default:
       return false;
   }
@@ -4624,7 +4657,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Index: {
       const auto& i = static_cast<const Index&>(e);
-      if (auto use = direct_packed_aggregate_field_use(*i.base)) {
+      if (auto use = direct_packed_aggregate_field_use(*i.base);
+          use && !type_is_byte_aligned_packed_index_carrier(deduce_type(*i.base))) {
         report_packed_aggregate_subobject_use(i.loc, "indexing", *use);
       }
       std::vector<const Expr*> indices;
