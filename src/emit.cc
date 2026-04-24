@@ -4815,9 +4815,20 @@ std::string Emitter::const_value_to_cxx(const Expr& e,
   // Aggregate initialisers recurse into their element/field type.
   if (e.kind == Kind::ArrayConst) {
     const TypeExpr* canon = canonicalize_type(target);
+    std::shared_ptr<TyArray> nested_array_target;
     const TypeExpr* elem_type = nullptr;
     if (canon && canon->kind == Kind::TyArray) {
-      elem_type = static_cast<const TyArray&>(*canon).element.get();
+      const auto& arr = static_cast<const TyArray&>(*canon);
+      if (arr.dims.size() > 1) {
+        nested_array_target = std::make_shared<TyArray>();
+        nested_array_target->dims.assign(arr.dims.begin() + 1, arr.dims.end());
+        nested_array_target->element = arr.element;
+        nested_array_target->is_packed = arr.is_packed;
+        nested_array_target->array_kind = arr.array_kind;
+        elem_type = nested_array_target.get();
+      } else {
+        elem_type = arr.element.get();
+      }
     }
     const auto& ac = static_cast<const ArrayConst&>(e);
     std::string out = "{";

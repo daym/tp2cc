@@ -496,6 +496,24 @@ void test_char_array_assignment_uses_explicit_array_literal_helper() {
                  "p_buf = ::rt::p_array_literal<::rt::p_char, 1, ((4) - (1) + 1)>(::rt::p_char_of('A'));"));
 }
 
+void test_nested_array_typed_const_braces_each_array_wrapper() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tarr = array[0..1, 0..1, 0..3] of byte;\n"
+      "const\n"
+      "  table : tarr = (\n"
+      "    ((1, 2, 3, 4), (5, 6, 7, 8)),\n"
+      "    ((9, 10, 11, 12), (13, 14, 15, 16))\n"
+      "  );\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "p_table = {{{{{{1, 2, 3, 4}}, {{5, 6, 7, 8}}}}, "
+                 "{{{{9, 10, 11, 12}}, {{13, 14, 15, 16}}}}}};"));
+}
+
 void test_named_type_alias() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -3139,6 +3157,7 @@ int main() {
   RUN_TEST(test_low_high_use_resolved_pascal_type);
   RUN_TEST(test_char_array_typed_const_uses_explicit_array_literal_helper);
   RUN_TEST(test_char_array_assignment_uses_explicit_array_literal_helper);
+  RUN_TEST(test_nested_array_typed_const_braces_each_array_wrapper);
   RUN_TEST(test_typed_const_shortstring_literals_use_target_capacity);
   RUN_TEST(test_named_type_alias);
   RUN_TEST(test_ansistring_builtin_maps_to_runtime_type);
