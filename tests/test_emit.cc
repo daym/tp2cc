@@ -2006,6 +2006,28 @@ void test_memory_helpers_reinterpret_typecast_pointer_slots() {
                  "::rt::p_dispose(::rt::p_reinterpret_storage_ref<p_pdata>(p_raw));"));
 }
 
+void test_unit_local_enum_array_bounds_win_over_unrelated_same_name_types() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tasmtoken = (as_none, as_xor);\n"
+      "const\n"
+      "  token2str : array[tasmtoken] of integer = (1, 2);\n"
+      "implementation\n"
+      "end.\n",
+      {{"other.pas",
+        "unit other;\n"
+        "interface\n"
+        "type\n"
+        "  tasmtoken = (as_none, as_or, as_xor);\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.header,
+                 "::rt::Array<int32_t, 0, 2> p_token2str"));
+  CHECK(!contains(out.header, "p_other::p_as_none"));
+}
+
 void test_typed_set_literal_uses_surrounding_set_type() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2961,6 +2983,7 @@ int main() {
   RUN_TEST(test_dynamic_array_type_uses_runtime_carrier);
   RUN_TEST(test_dynamic_array_actual_converts_to_open_array_view);
   RUN_TEST(test_memory_helpers_reinterpret_typecast_pointer_slots);
+  RUN_TEST(test_unit_local_enum_array_bounds_win_over_unrelated_same_name_types);
   RUN_TEST(test_typed_set_literal_uses_surrounding_set_type);
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
