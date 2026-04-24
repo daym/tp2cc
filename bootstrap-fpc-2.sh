@@ -19,7 +19,15 @@ ROOT=$(pwd)
 JOBS="${JOBS:-8}"
 CXX="${CXX:-g++}"
 CC="${CC:-gcc}"
-SOURCE_DIR="${FPC2_SRC:-${FPC200_SRC:-$ROOT/../fpc-2/src}}"
+if [ -n "${FPC2_SRC:-}" ]; then
+  SOURCE_DIR="$FPC2_SRC"
+elif [ -n "${FPC200_SRC:-}" ]; then
+  SOURCE_DIR="$FPC200_SRC"
+elif [ -d "$ROOT/../fpc-2.0.2/compiler" ]; then
+  SOURCE_DIR="$ROOT/../fpc-2.0.2"
+else
+  SOURCE_DIR="$ROOT/../fpc-2/src"
+fi
 
 # Keep the translated compiler under the same instrumentation as the older
 # bootstrap scripts so runtime failures show up as concrete UB/safety reports.
