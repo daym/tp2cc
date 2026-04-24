@@ -100,7 +100,9 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
           RecordInfo ri;
           ri.name = nm;
           ri.defining_unit = unit;
-          add_record_fields(ri, static_cast<const TyRecord&>(*td.type));
+          const auto& tr = static_cast<const TyRecord&>(*td.type);
+          ri.is_packed = tr.is_packed;
+          add_record_fields(ri, tr);
           r.records[nm] = std::move(ri);
         } else if (td.type->kind == Kind::TyEnum) {
           EnumInfoReg ei;

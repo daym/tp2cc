@@ -286,6 +286,83 @@ void test_packed_variant_record_emits_packed_case_layout_asserts() {
                  "static_assert(sizeof(p_trec) == ((0 + sizeof(uint8_t)) + ((((0 + sizeof(uint16_t)) + sizeof(int32_t))) < ((0 + sizeof(int32_t))) ? ((0 + sizeof(int32_t))) : (((0 + sizeof(uint16_t)) + sizeof(int32_t)))))"));
 }
 
+void test_packed_record_array_index_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = packed record\n"
+      "    tag : byte;\n"
+      "    data : array[0..2] of longint;\n"
+      "  end;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "var\n"
+      "  r : trec;\n"
+      "  i : longint;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  i := r.data[0];\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_packed_record_nested_member_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsub = record\n"
+      "    x : longint;\n"
+      "  end;\n"
+      "  trec = packed record\n"
+      "    tag : byte;\n"
+      "    sub : tsub;\n"
+      "  end;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "var\n"
+      "  r : trec;\n"
+      "  i : longint;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  i := r.sub.x;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_packed_record_method_call_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tobj = object\n"
+      "    procedure ping;\n"
+      "  end;\n"
+      "  trec = packed record\n"
+      "    tag : byte;\n"
+      "    child : tobj;\n"
+      "  end;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "var\n"
+      "  r : trec;\n"
+      "procedure tobj.ping;\n"
+      "begin\n"
+      "end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  r.child.ping;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
 void test_explicit_enum_array_bounds_use_ordinal_range() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2919,6 +2996,9 @@ int main() {
   RUN_TEST(test_packed_record_shortstring_field_emits_exact_layout_asserts);
   RUN_TEST(test_packed_record_array_field_keeps_array_wrapper_with_exact_layout_asserts);
   RUN_TEST(test_packed_variant_record_emits_packed_case_layout_asserts);
+  RUN_TEST(test_packed_record_array_index_reports_error);
+  RUN_TEST(test_packed_record_nested_member_reports_error);
+  RUN_TEST(test_packed_record_method_call_reports_error);
   RUN_TEST(test_explicit_enum_array_bounds_use_ordinal_range);
   RUN_TEST(test_distinct_ordinal_array_bounds_use_underlying_range);
   RUN_TEST(test_low_high_use_resolved_pascal_type);

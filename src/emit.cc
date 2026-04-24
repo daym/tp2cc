@@ -859,6 +859,17 @@ struct Emitter {
   const ast::TypeExpr* lookup_record_field_type_in_with(
       const WithBind& wb, std::string_view field_name);
   bool with_bind_has_visible_member(const WithBind& wb, std::string_view name);
+  struct PackedAggregateFieldUse {
+    std::string record_name;
+    std::string field_name;
+  };
+  bool type_is_packed_record(const ast::TypeExpr* t);
+  bool type_is_direct_packed_aggregate(const ast::TypeExpr* t);
+  std::optional<PackedAggregateFieldUse> direct_packed_aggregate_field_use(
+      const ast::Expr& e);
+  void report_packed_aggregate_subobject_use(
+      Location where, std::string_view op,
+      const PackedAggregateFieldUse& use);
 
   // Class/record alias name ("tfoo") of `e`, lowercased, if detectable.
   // Empty if the type can't be narrowed to a named object/record type.
@@ -2471,6 +2482,72 @@ bool Emitter::with_bind_has_visible_member(const WithBind& wb,
   return lookup_record_field_type_in_with(wb, name) != nullptr;
 }
 
+bool Emitter::type_is_packed_record(const TypeExpr* t) {
+  if (!registry || !t) return false;
+  if (t->kind == Kind::TyName) {
+    const auto& n = static_cast<const TyName&>(*t);
+    auto it = registry->records.find(ascii_lower(n.name));
+    if (it != registry->records.end()) return it->second.is_packed;
+  }
+  t = canonicalize_type(t);
+  return t && t->kind == Kind::TyRecord &&
+         static_cast<const TyRecord&>(*t).is_packed;
+}
+
+bool Emitter::type_is_direct_packed_aggregate(const TypeExpr* t) {
+  if (!t) return false;
+  if (t->kind == Kind::TyName) {
+    const std::string low = ascii_lower(static_cast<const TyName&>(*t).name);
+    if (!low.empty() && registry &&
+        (registry->records.count(low) || registry->classes.count(low))) {
+      return true;
+    }
+    static const std::unordered_set<std::string> runtime_aggregate_types = {
+        "datetime", "dirstr", "extstr", "namestr",
+        "pathstr",  "searchrec", "stat", "tmethod",
+    };
+    if (runtime_aggregate_types.count(low)) return true;
+  }
+  t = canonicalize_type(t);
+  if (!t) return false;
+  switch (t->kind) {
+    case Kind::TyArray:
+    case Kind::TyRecord:
+    case Kind::TyObject:
+    case Kind::TyProcedural:
+    case Kind::TySet:
+    case Kind::TyString:
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::optional<Emitter::PackedAggregateFieldUse>
+Emitter::direct_packed_aggregate_field_use(const Expr& e) {
+  if (!registry || e.kind != Kind::Member) return std::nullopt;
+  const auto& m = static_cast<const Member&>(e);
+  const TypeExpr* base_type = deduce_type(*m.base);
+  if (!type_is_packed_record(base_type)) return std::nullopt;
+  const TypeExpr* field_type = lookup_record_field_type_in_type(base_type, m.name);
+  if (!field_type || !type_is_direct_packed_aggregate(field_type)) {
+    return std::nullopt;
+  }
+  std::string record_name = registry->direct_type_name(base_type);
+  if (record_name.empty()) {
+    record_name = "packed record";
+  }
+  return PackedAggregateFieldUse{record_name, m.name};
+}
+
+void Emitter::report_packed_aggregate_subobject_use(
+    Location where, std::string_view op,
+    const PackedAggregateFieldUse& use) {
+  report_error(where, std::string(op) + " through packed aggregate field '" +
+                          use.field_name + "' of '" + use.record_name +
+                          "' is unsupported");
+}
+
 // Strip a chain of primitive casts like `pointer(longint(x))` down to the
 // underlying storage expression. Pascal uses these casts to satisfy type
 // checking before reinterpreting bytes, so emit-time lvalue analysis has to
@@ -3808,6 +3885,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Member: {
       const auto& m = static_cast<const Member&>(e);
+      if (auto use = direct_packed_aggregate_field_use(*m.base)) {
+        report_packed_aggregate_subobject_use(
+            m.loc, "nested member access", *use);
+      }
       // Classify the base into one of the qualifier kinds that
       // `resolve_name` understands. The base cases are:
       //   - `inherited.name`    -> class-qualified on parent alias
@@ -4543,6 +4624,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Index: {
       const auto& i = static_cast<const Index&>(e);
+      if (auto use = direct_packed_aggregate_field_use(*i.base)) {
+        report_packed_aggregate_subobject_use(i.loc, "indexing", *use);
+      }
       std::vector<const Expr*> indices;
       for (const auto& idx : i.indices) indices.push_back(idx.get());
       if (registry && i.base->kind == Kind::Member) {

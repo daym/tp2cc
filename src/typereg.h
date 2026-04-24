@@ -79,6 +79,7 @@ struct ClassInfo {
 struct RecordInfo {
   std::string name;
   std::string defining_unit;
+  bool is_packed = false;
   // Flat list of all field names including variant-case fields.
   std::unordered_map<std::string, FieldInfo> fields;
 };
