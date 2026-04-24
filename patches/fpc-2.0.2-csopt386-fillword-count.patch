@@ -1,0 +1,31 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-24
+Subject: Fix csopt386 CheckSequence FillWord count: words not bytes
+License: expat
+
+`compiler/i386/csopt386.pas` initialises the `new2oldreg` map with
+
+  fillword(new2oldreg, sizeof(new2oldreg), RS_INVALID);
+
+`FillWord`'s second argument is the number of 16-bit words to write,
+but `sizeof(new2oldreg)` is the size in BYTES. The call therefore
+writes twice as many words as the array holds and scribbles past the
+end of `new2oldreg` into whatever follows it in the stack frame.
+
+Divide by `sizeof(word)` so the count is in words, matching what
+`FillWord` actually wants.
+
+This is a real upstream FPC bug!
+
+diff --git a/compiler/i386/csopt386.pas b/compiler/i386/csopt386.pas
+--- a/compiler/i386/csopt386.pas
++++ b/compiler/i386/csopt386.pas
+@@ -427,7 +427,7 @@ begin {CheckSequence}
+   with startRegInfo do
+     begin
+       newRegsEncountered := [RS_EBP, RS_ESP];
+-      fillword(new2oldreg,sizeof(new2oldreg),RS_INVALID);
++      fillword(new2oldreg,sizeof(new2oldreg) div sizeof(word),RS_INVALID);
+       new2OldReg[RS_EBP] := RS_EBP;
+       new2OldReg[RS_ESP] := RS_ESP;
+       oldRegsEncountered := newRegsEncountered;
