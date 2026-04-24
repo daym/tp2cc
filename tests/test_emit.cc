@@ -340,6 +340,37 @@ void test_low_high_use_resolved_pascal_type() {
   CHECK(!contains(out.impl, "p_high(p_arr)"));
 }
 
+void test_char_array_typed_const_uses_explicit_array_literal_helper() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuf = array[1..4] of char;\n"
+      "const\n"
+      "  magic : tbuf = 'ABC';\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "inline p_tbuf p_magic = ::rt::p_array_literal<::rt::p_char, 1, ((4) - (1) + 1)>(::rt::p_shortstring_literal<255>("));
+}
+
+void test_char_array_assignment_uses_explicit_array_literal_helper() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure setbuf;\n"
+      "implementation\n"
+      "procedure setbuf;\n"
+      "var\n"
+      "  buf : array[1..4] of char;\n"
+      "begin\n"
+      "  buf := 'A';\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_buf = ::rt::p_array_literal<::rt::p_char, 1, ((4) - (1) + 1)>(::rt::p_char_of('A'));"));
+}
+
 void test_named_type_alias() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -904,7 +935,7 @@ void test_char_plus_cast_uses_string_concat() {
       "  s = #1 + char(byte(66));\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "::rt::ShortString<>(::rt::p_char_of('\\x01'))"));
+  CHECK(contains(out.header, "::rt::p_shortstring_of<>(::rt::p_char_of('\\x01'))"));
   CHECK(!contains(out.header, "'\\x01' + (("));
 }
 
@@ -916,8 +947,8 @@ void test_nul_char_plus_cast_uses_string_concat() {
       "  s = #0 + char(byte(66));\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "::rt::ShortString<>(::rt::p_char_of('\\0'))"));
-  CHECK(!contains(out.header, "::rt::ShortString<>(\"\\0\")"));
+  CHECK(contains(out.header, "::rt::p_shortstring_of<>(::rt::p_char_of('\\0'))"));
+  CHECK(!contains(out.header, "::rt::p_shortstring_of<>(\"\\0\")"));
 }
 
 void test_embedded_nul_string_literal_uses_explicit_length_builder() {
@@ -931,6 +962,44 @@ void test_embedded_nul_string_literal_uses_explicit_length_builder() {
   CHECK(contains(out.header, "p_s = ::rt::p_shortstring_literal<255>("));
   CHECK(contains(out.header, "::rt::p_char_of('\\0')"));
   CHECK(!contains(out.header, "p_s = ::rt::ShortString<>(\""));
+}
+
+void test_shortstring_assignment_uses_pascal_string_helper() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pstring = ^string;\n"
+      "procedure store_string(const s : string; var p : pstring);\n"
+      "implementation\n"
+      "procedure store_string(const s : string; var p : pstring);\n"
+      "begin\n"
+      "  getmem(p, length(s) + 1);\n"
+      "  p^ := s;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_shortstring_assign(::rt::p_deref(p_p), p_s);"));
+  CHECK(!contains(out.impl, "::rt::p_deref(p_p) = p_s;"));
+}
+
+void test_typed_const_shortstring_literals_use_target_capacity() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "const tokenlenmax = 14;\n"
+      "const emptytok : string[tokenlenmax] = '';\n"
+      "const plustok : string[tokenlenmax] = '+';\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "::rt::ShortString<::rt::p_tokenlenmax> p_emptytok = "
+                 "::rt::p_shortstring_literal<::rt::p_tokenlenmax>();"));
+  CHECK(contains(out.header,
+                 "::rt::ShortString<::rt::p_tokenlenmax> p_plustok = "
+                 "::rt::p_shortstring_of<::rt::p_tokenlenmax>(::rt::p_char_of('+'));"));
+  CHECK(!contains(out.header,
+                  "::rt::ShortString<::rt::p_tokenlenmax> p_plustok = "
+                  "::rt::p_char_of('+');"));
 }
 
 void test_integer_and_or_stays_bitwise() {
@@ -1114,9 +1183,9 @@ void test_visible_pointer_alias_cast_uses_qualified_type_spelling() {
         "end;\n"
         "end.\n"}});
   CHECK(contains(out.impl,
-                 "::rt::p_reinterpret_storage_ref<p_widestr::p_pcompilerwidestring>(p_raw)"));
+                 "((p_widestr::p_pcompilerwidestring)(p_raw))"));
   CHECK(!contains(out.impl,
-                  "::rt::p_reinterpret_storage_ref<p_pcompilerwidestring>(p_raw)"));
+                  "((p_pcompilerwidestring)(p_raw))"));
 }
 
 void test_local_pointer_alias_cast_uses_local_type_spelling() {
@@ -1134,8 +1203,8 @@ void test_local_pointer_alias_cast_uses_local_type_spelling() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_deref(::rt::p_reinterpret_storage_ref<p_psetbytes>(p_raw))[0]"));
-  CHECK(!contains(out.impl, "::rt::p_deref(::rt::p_psetbytes(p_raw))[0]"));
+                 "::rt::p_deref(((p_psetbytes)(p_raw)))[0]"));
+  CHECK(!contains(out.impl, "::rt::p_deref(::rt::p_reinterpret_storage_ref<p_psetbytes>(p_raw))[0]"));
 }
 
 void test_runtime_alias_type_names_are_explicitly_qualified() {
@@ -1853,7 +1922,7 @@ void test_open_array_call_uses_owning_temporary_wrapper() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "p_log(::rt::p_open_array_of<uint16_t>(1, 2, 3))"));
-  CHECK(contains(out.impl, "p_log(::rt::OpenArray<uint16_t>())"));
+  CHECK(contains(out.impl, "p_log(::rt::p_open_array<uint16_t>())"));
 }
 
 void test_high_low_on_open_array_use_runtime_length() {
@@ -1909,7 +1978,32 @@ void test_dynamic_array_actual_converts_to_open_array_view() {
       "  log(ys);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_log(::rt::OpenArray<int32_t>(p_ys))"));
+  CHECK(contains(out.impl, "p_log(::rt::p_open_array<int32_t>(p_ys))"));
+}
+
+void test_memory_helpers_reinterpret_typecast_pointer_slots() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "type\n"
+      "  pdata = ^byte;\n"
+      "procedure demo;\n"
+      "var\n"
+      "  raw : pointer;\n"
+      "begin\n"
+      "  getmem(pdata(raw), 4);\n"
+      "  freemem(pdata(raw), 4);\n"
+      "  dispose(pdata(raw));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::p_getmem(::rt::p_reinterpret_storage_ref<p_pdata>(p_raw), 4);"));
+  CHECK(contains(out.impl,
+                 "::rt::p_freemem(::rt::p_reinterpret_storage_ref<p_pdata>(p_raw), 4);"));
+  CHECK(contains(out.impl,
+                 "::rt::p_dispose(::rt::p_reinterpret_storage_ref<p_pdata>(p_raw));"));
 }
 
 void test_typed_set_literal_uses_surrounding_set_type() {
@@ -2339,7 +2433,8 @@ void test_pointer_typed_field_chain_keeps_arrow_access() {
       "  getname := b.sym.name;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_result = p_b->p_sym->p_name;"));
+  CHECK(contains(out.impl,
+                 "::rt::p_shortstring_assign(p_result, p_b->p_sym->p_name);"));
 }
 
 void test_with_cast_binds_pointer_rvalue_by_value() {
@@ -2473,7 +2568,9 @@ void test_parameterless_method_result_keeps_arrow_member_access() {
       "  getname := ps.first_procdef.mangledname;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_result = p_ps->p_first_procdef()->p_mangledname;"));
+  CHECK(contains(out.impl,
+                 "::rt::p_shortstring_assign(p_result, "
+                 "p_ps->p_first_procdef()->p_mangledname);"));
 }
 
 void test_parameterless_method_result_autocalls_in_outer_callee_context() {
@@ -2529,7 +2626,8 @@ void test_with_parameterless_method_result_keeps_arrow_member_access() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_result = tp2cc_with_0->p_first_procdef()->p_mangledname;"));
+                 "::rt::p_shortstring_assign("
+                 "p_result, tp2cc_with_0->p_first_procdef()->p_mangledname);"));
 }
 
 void test_pointer_indexed_class_field_chain_keeps_arrow_access() {
@@ -2551,7 +2649,9 @@ void test_pointer_indexed_class_field_chain_keeps_arrow_access() {
       "  getname := m[0].u.modulename;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_result = p_m[0].p_u->p_modulename;"));
+  CHECK(contains(out.impl,
+                 "::rt::p_shortstring_assign(p_result, "
+                 "p_m[0].p_u->p_modulename);"));
 }
 
 void test_as_cast_member_chain_keeps_arrow_access() {
@@ -2776,6 +2876,9 @@ int main() {
   RUN_TEST(test_explicit_enum_array_bounds_use_ordinal_range);
   RUN_TEST(test_distinct_ordinal_array_bounds_use_underlying_range);
   RUN_TEST(test_low_high_use_resolved_pascal_type);
+  RUN_TEST(test_char_array_typed_const_uses_explicit_array_literal_helper);
+  RUN_TEST(test_char_array_assignment_uses_explicit_array_literal_helper);
+  RUN_TEST(test_typed_const_shortstring_literals_use_target_capacity);
   RUN_TEST(test_named_type_alias);
   RUN_TEST(test_ansistring_builtin_maps_to_runtime_type);
   RUN_TEST(test_widechar_builtin_maps_to_16bit_ordinal);
@@ -2810,6 +2913,7 @@ int main() {
   RUN_TEST(test_char_plus_cast_uses_string_concat);
   RUN_TEST(test_nul_char_plus_cast_uses_string_concat);
   RUN_TEST(test_embedded_nul_string_literal_uses_explicit_length_builder);
+  RUN_TEST(test_shortstring_assignment_uses_pascal_string_helper);
   RUN_TEST(test_integer_and_or_stays_bitwise);
   RUN_TEST(test_nested_boolean_function_and_short_circuits);
   RUN_TEST(test_nested_untyped_var_forwarding_stays_pointer_value);
@@ -2856,6 +2960,7 @@ int main() {
   RUN_TEST(test_high_low_on_open_array_use_runtime_length);
   RUN_TEST(test_dynamic_array_type_uses_runtime_carrier);
   RUN_TEST(test_dynamic_array_actual_converts_to_open_array_view);
+  RUN_TEST(test_memory_helpers_reinterpret_typecast_pointer_slots);
   RUN_TEST(test_typed_set_literal_uses_surrounding_set_type);
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);

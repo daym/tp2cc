@@ -60,19 +60,19 @@ void test_val_accepts_prefixed_integers() {
   int32_t v = 0;
   int32_t code = -1;
 
-  p_val(ShortString<>("$7fffffff"), v, code);
+  p_val(p_shortstring_of<>("$7fffffff"), v, code);
   CHECK_EQ(code, 0);
   CHECK_EQ(v, 2147483647);
 
-  p_val(ShortString<>("$80000000"), v, code);
+  p_val(p_shortstring_of<>("$80000000"), v, code);
   CHECK_EQ(code, 0);
   CHECK_EQ(v, std::numeric_limits<int32_t>::min());
 
-  p_val(ShortString<>("$D7B0"), v, code);
+  p_val(p_shortstring_of<>("$D7B0"), v, code);
   CHECK_EQ(code, 0);
   CHECK_EQ(v, 55216);
 
-  p_val(ShortString<>("%1010"), v, code);
+  p_val(p_shortstring_of<>("%1010"), v, code);
   CHECK_EQ(code, 0);
   CHECK_EQ(v, 10);
 }
@@ -81,7 +81,7 @@ void test_val_accepts_decimal_min_longint() {
   int32_t v = 0;
   int32_t code = -1;
 
-  p_val(ShortString<>("-2147483648"), v, code);
+  p_val(p_shortstring_of<>("-2147483648"), v, code);
   CHECK_EQ(code, 0);
   CHECK_EQ(v, std::numeric_limits<int32_t>::min());
 }
@@ -90,11 +90,11 @@ void test_val_handles_bootstrap_integer_forms() {
   int32_t v = 123;
   int32_t code = -1;
 
-  p_val(ShortString<>("&77"), v, code);
+  p_val(p_shortstring_of<>("&77"), v, code);
   CHECK_EQ(code, 0);
   CHECK_EQ(v, 63);
 
-  p_val(ShortString<>("2147483648"), v, code);
+  p_val(p_shortstring_of<>("2147483648"), v, code);
   CHECK_EQ(code, 10);
   CHECK_EQ(v, 0);
 }
@@ -103,7 +103,7 @@ void test_val_keeps_leading_zero_decimals_decimal() {
   uint32_t v = 0;
   int32_t code = -1;
 
-  p_val(ShortString<>("01012"), v, code);
+  p_val(p_shortstring_of<>("01012"), v, code);
   CHECK_EQ(code, 0);
   CHECK_EQ(v, 1012u);
 }
@@ -126,6 +126,62 @@ void test_getmem_typed_pointer_keeps_requested_prefix_size() {
   CHECK(p != nullptr);
   p_freemem(p);
   CHECK(p == nullptr);
+}
+
+void test_shortstring_pointer_deref_uses_live_prefix_storage() {
+  ShortString<>* p = nullptr;
+  const auto hello = p_shortstring_of<>("hello");
+  const auto one = p_shortstring_of<>("A");
+
+  p_getmem(p, p_length(hello) + 1);
+  CHECK(p != nullptr);
+
+  p_shortstring_assign(p_deref(p), hello);
+  CHECK_EQ(p_length(p_deref(p)), 5);
+  CHECK(p_deref(p) == hello);
+
+  p_shortstring_assign(p_deref(p), one);
+  CHECK_EQ(p_length(p_deref(p)), 1);
+  CHECK(static_cast<p_char>(p_deref(p)[1]) == p_char_of('A'));
+
+  p_deref(p)[1] = p_char_of('Z');
+  CHECK(static_cast<p_char>(p_deref(p)[1]) == p_char_of('Z'));
+
+  p_freemem(p, p_length(p_deref(p)) + 1);
+  CHECK(p == nullptr);
+}
+
+void test_shortstring_pointer_deref_interoperates_with_string_ops() {
+  ShortString<>* lhs = nullptr;
+  ShortString<>* rhs = nullptr;
+  const auto foo = p_shortstring_of<>("foo");
+  const auto bar = p_shortstring_of<>("bar");
+  const auto zoo = p_shortstring_of<>("zoo");
+  TextFile f{};
+
+  p_getmem(lhs, p_length(foo) + 1);
+  p_getmem(rhs, p_length(bar) + 1);
+  CHECK(lhs != nullptr);
+  CHECK(rhs != nullptr);
+
+  p_shortstring_assign(p_deref(lhs), foo);
+  p_shortstring_assign(p_deref(rhs), bar);
+
+  CHECK_EQ(p_to_std_string(foo + p_deref(rhs)), std::string("foobar"));
+  CHECK_EQ(p_to_std_string(p_deref(lhs) + p_deref(rhs)),
+           std::string("foobar"));
+  CHECK(p_deref(lhs) < zoo);
+  CHECK(zoo > p_deref(rhs));
+  CHECK_EQ(p_to_std_string(p_copy(p_deref(lhs), 2, 2)), std::string("oo"));
+  CHECK_EQ(p_pos(p_shortstring_of<>("ar"), p_deref(rhs)), 2);
+
+  p_assign(f, p_deref(lhs));
+  CHECK_EQ(p_to_std_string(f.name), std::string("foo"));
+
+  p_freemem(lhs, p_length(p_deref(lhs)) + 1);
+  p_freemem(rhs, p_length(p_deref(rhs)) + 1);
+  CHECK(lhs == nullptr);
+  CHECK(rhs == nullptr);
 }
 
 void test_exception_mask_roundtrips() {
@@ -166,8 +222,8 @@ void test_8087cw_compatibility_tracks_mask_bits() {
 }
 
 void test_ansistring_copy_on_write_preserves_original() {
-  AnsiString original("abc");
-  AnsiString copy = original;
+  AnsiString original = p_ansistring_of("abc");
+  AnsiString copy = p_ansistring_of(original);
 
   copy[1] = p_char_of('z');
 
@@ -176,7 +232,7 @@ void test_ansistring_copy_on_write_preserves_original() {
 }
 
 void test_ansistring_storage_slot_holds_payload_pointer() {
-  AnsiString s("hello");
+  AnsiString s = p_ansistring_of("hello");
 
   auto& slot = p_reinterpret_storage_ref<void*>(s);
 
@@ -214,7 +270,7 @@ void test_dispose_releases_plain_storage_grown_with_reallocmem() {
 }
 
 void test_ansistring_setlength_and_insert_delete_keep_bytes_stable() {
-  AnsiString s("ab");
+  AnsiString s = p_ansistring_of("ab");
 
   p_setlength(s, 4);
   auto& slot = p_reinterpret_storage_ref<void*>(s);
@@ -227,31 +283,31 @@ void test_ansistring_setlength_and_insert_delete_keep_bytes_stable() {
   p_delete(s, 2, 2);
   CHECK_EQ(p_to_std_string(s), std::string("ad"));
 
-  p_insert(ShortString<>("bc"), s, 2);
+  p_insert(p_shortstring_of<>("bc"), s, 2);
   CHECK_EQ(p_to_std_string(s), std::string("abcd"));
 }
 
 void test_ansistring_converts_to_shortstring_with_pascal_truncation() {
-  AnsiString s("abcdef");
+  AnsiString s = p_ansistring_of("abcdef");
   auto shorty = static_cast<ShortString<4>>(s);
 
   CHECK_EQ(p_to_std_string(shorty), std::string("abcd"));
 }
 
 void test_shortstring_char_concat_grows_capacity() {
-  auto label = ShortString<2>(".L") + p_char_of('e') + p_char_of('0');
+  auto label = p_shortstring_of<2>(".L") + p_char_of('e') + p_char_of('0');
   CHECK_EQ(p_to_std_string(label), std::string(".Le0"));
 }
 
 void test_shortstring_single_nul_char_keeps_length_one() {
-  ShortString<> s(p_char_of('\0'));
+  ShortString<> s = p_shortstring_of<>(p_char_of('\0'));
 
   CHECK_EQ(p_length(s), 1);
   CHECK_EQ(p_char_byte(s.data[0]), 0);
 }
 
 void test_shortstring_nul_char_concat_preserves_embedded_zero() {
-  auto s = ShortString<>(p_char_of('\0')) + p_char_of('A');
+  auto s = p_shortstring_of<>(p_char_of('\0')) + p_char_of('A');
 
   CHECK_EQ(p_length(s), 2);
   CHECK_EQ(p_char_byte(s.data[0]), 0);
@@ -274,9 +330,19 @@ void test_shortstring_literal_helper_preserves_embedded_nuls() {
   CHECK_EQ(p_char_byte(s.data[6]), 0);
 }
 
+void test_shortstring_implicitly_converts_between_capacities() {
+  ShortString<4> small = p_shortstring_of<4>("abcdef");
+  ShortString<> wide = small;
+  ShortString<2> narrow = wide;
+
+  CHECK_EQ(p_to_std_string(wide), std::string("abcd"));
+  CHECK_EQ(p_to_std_string(narrow), std::string("ab"));
+}
+
 void test_ansistring_from_shortstring_keeps_trailing_nul_storage() {
-  AnsiString s = p_shortstring_literal<255>(p_char_of('A'), p_char_of('\0'),
-                                            p_char_of('B'));
+  AnsiString s = p_ansistring_of(
+      p_shortstring_literal<255>(p_char_of('A'), p_char_of('\0'),
+                                 p_char_of('B')));
 
   CHECK_EQ(s.length(), 3);
   CHECK_EQ(p_char_byte(s.bytes()[0]), static_cast<uint8_t>('A'));
@@ -286,7 +352,7 @@ void test_ansistring_from_shortstring_keeps_trailing_nul_storage() {
 }
 
 void test_shortstring_charref_inc_and_dec_update_length_slot_storage() {
-  ShortString<> s("A");
+  ShortString<> s = p_shortstring_of<>("A");
 
   p_inc(s[1]);
   CHECK_EQ(p_to_std_string(s), std::string("B"));
@@ -300,7 +366,7 @@ void test_octstr_formats_octal_with_zero_padding() {
 }
 
 void test_move_reads_from_const_shortstring_storage() {
-  const ShortString<> text("hello");
+  const ShortString<> text = p_shortstring_of<>("hello");
   Array<p_char, 0, 8> buf;
 
   p_move(text[1], buf[0], p_length(text));
@@ -313,7 +379,7 @@ void test_shortstring_compares_equal_to_pchar_buffer() {
   const p_char text[] = {
       p_char_of('h'), p_char_of('e'), p_char_of('l'),
       p_char_of('l'), p_char_of('o'), p_char_of('\0')};
-  const ShortString<> shorty("hello");
+  const ShortString<> shorty = p_shortstring_of<>("hello");
 
   CHECK(text == shorty);
   CHECK(shorty == text);
@@ -325,8 +391,8 @@ void test_char_array_compares_equal_to_shortstring_by_live_prefix() {
   text.data[1] = p_char_of('i');
   text.data[2] = p_char_of('\0');
 
-  CHECK(text == ShortString<>("hi"));
-  CHECK(ShortString<>("hi") == text);
+  CHECK(text == p_shortstring_of<>("hi"));
+  CHECK(p_shortstring_of<>("hi") == text);
 }
 
 void test_str_formats_real_values() {
@@ -450,7 +516,7 @@ void test_open_array_view_uses_dynamic_array_storage() {
   values[1] = 2;
   values[2] = 3;
 
-  OpenArray<int32_t> view(values);
+  OpenArray<int32_t> view = p_open_array<int32_t>(values);
   CHECK_EQ(view.count, 3);
   CHECK(view.data == values.ptr());
 
@@ -493,14 +559,14 @@ void test_getfattr_reports_directory_bit() {
   ::close(fd);
 
   TypedFile<uint8_t> dir_file{};
-  p_assign(dir_file, ShortString<>(dir));
+  p_assign(dir_file, p_shortstring_of<>(dir));
   uint16_t dir_attr = 0;
   p_getfattr(dir_file, dir_attr);
   CHECK_EQ(p_doserror, 0);
   CHECK((dir_attr & p_directory) == p_directory);
 
   TypedFile<uint8_t> plain_file{};
-  p_assign(plain_file, ShortString<>(file_template));
+  p_assign(plain_file, p_shortstring_of<>(file_template));
   uint16_t plain_attr = 0;
   p_getfattr(plain_file, plain_attr);
   CHECK_EQ(p_doserror, 0);
@@ -529,7 +595,7 @@ void test_explicit_set_cast_copies_bits() {
 
 void test_method_ptr_calls_bound_thunk() {
   MethodPtrCounter counter;
-  MethodPtr<void(int32_t)> cb(p_method_code<&method_ptr_add>(), &counter);
+  auto cb = p_method_ptr<void(int32_t)>(p_method_code<&method_ptr_add>(), &counter);
 
   CHECK(p_assigned(cb));
   cb(7);
@@ -687,7 +753,7 @@ void test_blockread_writes_to_void_buffer() {
 
 void test_blockwrite_uses_underlying_shortstring_char_storage() {
   TextFile f{};
-  ShortString<> text("hello");
+  ShortString<> text = p_shortstring_of<>("hello");
   int32_t transferred = -1;
   char got[6] = {};
 
@@ -700,7 +766,7 @@ void test_blockwrite_uses_underlying_shortstring_char_storage() {
   CHECK_EQ(std::fread(got, 1, 5, f.f), static_cast<std::size_t>(5));
   CHECK_EQ(std::string(got, 5), std::string("hello"));
 
-  const ShortString<> const_text("ok");
+  const ShortString<> const_text = p_shortstring_of<>("ok");
   p_seek(f, 0);
   p_blockwrite(f, const_text[1], p_length(const_text), transferred);
   CHECK_EQ(transferred, 2);
@@ -732,23 +798,6 @@ void test_blockread_uses_underlying_shortstring_char_storage() {
   f.f = nullptr;
 }
 
-void test_shortstring_same_capacity_assignment_uses_length_prefix_copy() {
-  alignas(ShortString<>) unsigned char raw[12];
-  std::memset(raw, 0xAA, sizeof(raw));
-
-  auto* p = reinterpret_cast<ShortString<>*>(raw);
-  ShortString<> src("abc");
-  *p = src;
-
-  CHECK_EQ(raw[0], 3);
-  CHECK_EQ(raw[1], static_cast<unsigned char>('a'));
-  CHECK_EQ(raw[2], static_cast<unsigned char>('b'));
-  CHECK_EQ(raw[3], static_cast<unsigned char>('c'));
-  for (size_t i = 4; i < sizeof(raw); ++i) {
-    CHECK_EQ(raw[i], static_cast<unsigned char>(0xAA));
-  }
-}
-
 void test_strnew_allocates_and_disposes_pchar() {
   p_char* text = p_strnew("hello");
   CHECK(text != nullptr);
@@ -764,10 +813,10 @@ void test_textfile_reset_closes_previous_handle() {
   ::close(fd);
 
   TextFile f;
-  p_assign(f, ShortString<>(path));
+  p_assign(f, p_shortstring_of<>(path));
   p_rewrite(f);
   CHECK(f.f != nullptr);
-  p_write(f, ShortString<>("hello"));
+  p_write(f, p_shortstring_of<>("hello"));
 
   // The compiler reopens the same file variable in AsmClose before invoking
   // the assembler. That reopen must close+flush the write handle first.
@@ -785,21 +834,22 @@ void test_textfile_reset_closes_previous_handle() {
 
 void test_exec_tracks_exit_status() {
   p_doserror = -1;
-  p_exec(ShortString<>("sh"), ShortString<>("-c 'exit 9'"));
+  p_exec(p_shortstring_of<>("sh"), p_shortstring_of<>("-c 'exit 9'"));
   CHECK_EQ(p_doserror, 0);
   CHECK_EQ(p_dosexitcode(), 9);
 }
 
 void test_exec_reports_spawn_failure() {
   p_doserror = 0;
-  p_exec(ShortString<>("/definitely/not/a/real/command"), ShortString<>(""));
+  p_exec(p_shortstring_of<>("/definitely/not/a/real/command"),
+         p_shortstring_of<>(""));
   CHECK(p_doserror != 0);
   CHECK_EQ(p_dosexitcode(), 0);
 }
 
 void test_shell_tracks_exit_status() {
   p_doserror = -1;
-  int32_t rc = p_shell(ShortString<>("exit 7"));
+  int32_t rc = p_shell(p_shortstring_of<>("exit 7"));
   CHECK_EQ(p_doserror, 0);
   CHECK_EQ(rc, 7);
   CHECK_EQ(p_dosexitcode(), 7);
@@ -814,6 +864,8 @@ int main() {
   RUN_TEST(test_val_keeps_leading_zero_decimals_decimal);
   RUN_TEST(test_bootstrap_pointer_sized_aliases_are_32bit);
   RUN_TEST(test_getmem_typed_pointer_keeps_requested_prefix_size);
+  RUN_TEST(test_shortstring_pointer_deref_uses_live_prefix_storage);
+  RUN_TEST(test_shortstring_pointer_deref_interoperates_with_string_ops);
   RUN_TEST(test_exception_mask_roundtrips);
   RUN_TEST(test_8087cw_compatibility_tracks_mask_bits);
   RUN_TEST(test_ansistring_copy_on_write_preserves_original);
@@ -826,6 +878,7 @@ int main() {
   RUN_TEST(test_shortstring_single_nul_char_keeps_length_one);
   RUN_TEST(test_shortstring_nul_char_concat_preserves_embedded_zero);
   RUN_TEST(test_shortstring_literal_helper_preserves_embedded_nuls);
+  RUN_TEST(test_shortstring_implicitly_converts_between_capacities);
   RUN_TEST(test_ansistring_from_shortstring_keeps_trailing_nul_storage);
   RUN_TEST(test_shortstring_charref_inc_and_dec_update_length_slot_storage);
   RUN_TEST(test_octstr_formats_octal_with_zero_padding);
@@ -861,7 +914,6 @@ int main() {
   RUN_TEST(test_blockread_writes_to_void_buffer);
   RUN_TEST(test_blockwrite_uses_underlying_shortstring_char_storage);
   RUN_TEST(test_blockread_uses_underlying_shortstring_char_storage);
-  RUN_TEST(test_shortstring_same_capacity_assignment_uses_length_prefix_copy);
   RUN_TEST(test_strnew_allocates_and_disposes_pchar);
   RUN_TEST(test_textfile_reset_closes_previous_handle);
   RUN_TEST(test_exec_tracks_exit_status);

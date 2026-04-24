@@ -21,6 +21,27 @@ using namespace ast;
 
 namespace {
 
+std::string char_literal_body_to_cxx(char c) {
+  std::string o;
+  switch (c) {
+    case '\\': o += "\\\\"; return o;
+    case '\n': o += "\\n"; return o;
+    case '\r': o += "\\r"; return o;
+    case '\t': o += "\\t"; return o;
+    case '\0': o += "\\0"; return o;
+    default: break;
+  }
+  if (c == '\'') { o += "\\'"; return o; }
+  if ((unsigned char)c < 0x20 || (unsigned char)c >= 0x7f) {
+    char esc[8];
+    std::snprintf(esc, sizeof(esc), "\\x%02x", (unsigned char)c);
+    o += esc;
+    return o;
+  }
+  o.push_back(c);
+  return o;
+}
+
 const ast::TyName* builtin_char_type() {
   static const ast::TyName t = [] {
     ast::TyName n;
@@ -273,6 +294,11 @@ void mark_builtin_memory_helper_param_info(
   if (lower == "move") {
     mark(0, /*is_untyped=*/true, /*is_mutable=*/false);
     mark(1, /*is_untyped=*/true, /*is_mutable=*/true);
+    return;
+  }
+  if (lower == "getmem" || lower == "freemem" || lower == "reallocmem" ||
+      lower == "dispose" || lower == "strdispose") {
+    mark(0, /*is_untyped=*/false, /*is_mutable=*/true);
   }
 }
 
@@ -338,6 +364,7 @@ const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
       {"searchrec", "::rt::p_searchrec"},
       {"signalhandler", "::rt::p_signalhandler"},
       {"sizeint", "::rt::p_sizeint"},
+      {"stat", "::rt::p_stat"},
       {"tmethod", "::rt::p_tmethod"},
   };
   return m;
@@ -751,6 +778,10 @@ struct Emitter {
   std::string enum_type_to_cxx(const TyEnum& e, const std::string& context);
   std::string subrange_type_to_cxx(const TySubrange& r);
   std::string string_type_to_cxx(const TyString& s);
+  std::optional<std::string> shortstring_capacity_to_cxx(
+      const TypeExpr* t);
+  std::string shortstring_value_to_cxx(std::string text,
+                                       const TypeExpr* target);
   std::string pointer_type_to_cxx(const TyPointer& p);
   std::string procedural_type_to_cxx(const TyProcedural& p);
   std::string procedural_param_types_to_cxx(const std::vector<Param>& params);
@@ -1585,6 +1616,22 @@ std::string Emitter::string_type_to_cxx(const TyString& s) {
     return "::rt::ShortString<" + const_value_to_cxx(*s.max_length) + ">";
   }
   return "::rt::ShortString<>";
+}
+
+std::optional<std::string> Emitter::shortstring_capacity_to_cxx(
+    const TypeExpr* t) {
+  const TypeExpr* canon = canonicalize_type(t);
+  if (!(canon && canon->kind == Kind::TyString)) return std::nullopt;
+  const auto& s = static_cast<const TyString&>(*canon);
+  if (s.max_length) return const_value_to_cxx(*s.max_length);
+  return std::string("255");
+}
+
+std::string Emitter::shortstring_value_to_cxx(std::string text,
+                                              const TypeExpr* target) {
+  auto cap = shortstring_capacity_to_cxx(target);
+  if (!cap) return text;
+  return "::rt::p_shortstring_of<" + *cap + ">(" + text + ")";
 }
 
 std::string Emitter::pointer_type_to_cxx(const TyPointer& p) {
@@ -2720,8 +2767,8 @@ std::string Emitter::open_array_constructor_to_cxx(const SetLit& s,
   if (!canon || canon->kind != Kind::TyArray) return expr_to_cxx(s);
   const auto& arr = static_cast<const TyArray&>(*canon);
   const TypeExpr* elem_type = arr.element.get();
-  if (!elem_type) return open_array_type_to_cxx(param_type) + "()";
-  if (s.elements.empty()) return open_array_type_to_cxx(param_type) + "()";
+  if (!elem_type) return "::rt::p_open_array<int32_t>()";
+  if (s.elements.empty()) return "::rt::p_open_array<" + type_to_cxx(*elem_type) + ">()";
 
   // Pascal reuses `[...]` for two different constructs:
   //   * set literals                -> `[a, b]`
@@ -2730,7 +2777,7 @@ std::string Emitter::open_array_constructor_to_cxx(const SetLit& s,
   for (const auto& el : s.elements) {
     if (el->kind == Kind::Range) {
       report_error(s.loc, "ranges in open-array constructors are unsupported");
-      return open_array_type_to_cxx(param_type) + "()";
+      return "::rt::p_open_array<" + type_to_cxx(*elem_type) + ">()";
     }
   }
 
@@ -2834,18 +2881,24 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
   if (mutable_ref_arg && arg.kind == Kind::Call &&
       static_cast<const Call&>(arg).args.size() == 1 &&
       static_cast<const Call&>(arg).callee->kind == Kind::Ident &&
-      canon_param_type) {
+      (canon_param_type || !untyped_arg)) {
     const auto& cast = static_cast<const Call&>(arg);
     const auto& id = static_cast<const Ident&>(*cast.callee);
     bool is_type_cast = is_primitive_type(id.name);
-    if (!is_type_cast && registry) {
-      is_type_cast = registry->aliases.count(id.name) ||
-                     registry->classes.count(id.name) ||
-                     registry->records.count(id.name);
+    if (!is_type_cast && lookup_named_type_expr(id.name)) {
+      is_type_cast = true;
     }
     if (is_type_cast && expr_is_storage_lvalue(*cast.args[0])) {
-      return reinterpret_ref_text(type_to_cxx(*param_type),
-                                  expr_to_cxx(*cast.args[0]), false);
+      std::string ref_type_cxx;
+      if (param_type) {
+        ref_type_cxx = type_to_cxx(*param_type);
+      } else if (is_primitive_type(id.name)) {
+        ref_type_cxx = primitive_type_cxx(id.name);
+      } else {
+        ref_type_cxx = type_name_text_to_cxx(id.name);
+      }
+      return reinterpret_ref_text(ref_type_cxx, expr_to_cxx(*cast.args[0]),
+                                  false);
     }
   }
   if (mutable_ref_arg && canon_param_type && arg_type &&
@@ -2862,13 +2915,15 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
                                 false);
   }
   std::string arg_text = const_value_to_cxx(arg, param_type);
-  if (type_is_stringish(param_type) && expr_is_charish(arg)) {
-    arg_text = "::rt::ShortString<>(" + arg_text + ")";
-  }
   if (type_is_open_array(param_type)) {
     const TypeExpr* at = arg_type;
     if (!type_is_open_array(at)) {
-      arg_text = open_array_type_to_cxx(*param_type) + "(" + arg_text + ")";
+      const TypeExpr* canon_param_type = canonicalize_type(param_type);
+      const auto& arr = static_cast<const TyArray&>(*canon_param_type);
+      const TypeExpr* elem_type = arr.element ? arr.element.get() : nullptr;
+      std::string elem_cxx = elem_type ? type_to_cxx(*elem_type)
+                                       : std::string("int32_t");
+      arg_text = "::rt::p_open_array<" + elem_cxx + ">(" + arg_text + ")";
     }
   }
   if (!untyped_arg) return arg_text;
@@ -2961,9 +3016,6 @@ std::optional<std::string> Emitter::maybe_property_write_text(
     return std::nullopt;
   }
   std::string rhs = const_value_to_cxx(value, prop.type.get());
-  if (type_is_stringish(prop.type.get()) && expr_is_charish(value)) {
-    rhs = "::rt::ShortString<>(" + rhs + ")";
-  }
   if (const auto* field = registry->lookup_class_field(class_name, prop.write_name)) {
     (void)field;
     std::string text = base_cxx + access + mangle(prop.write_name);
@@ -3522,29 +3574,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // subrange bounds (`'A'..'Z'`), case labels, and set-elements.
       // Multi-character literals are emitted as ShortString so that `+`
       // resolves to concatenation (not pointer arithmetic).
-      auto escape_char_body = [](char c, bool in_char_literal) {
-        std::string o;
-        switch (c) {
-          case '\\': o += "\\\\"; return o;
-          case '\n': o += "\\n"; return o;
-          case '\r': o += "\\r"; return o;
-          case '\t': o += "\\t"; return o;
-          case '\0': o += "\\0"; return o;
-          default: break;
-        }
-        if (in_char_literal && c == '\'') { o += "\\'"; return o; }
-        if (!in_char_literal && c == '"') { o += "\\\""; return o; }
-        if ((unsigned char)c < 0x20 || (unsigned char)c >= 0x7f) {
-          char esc[8];
-          std::snprintf(esc, sizeof(esc), "\\x%02x", (unsigned char)c);
-          o += esc;
-          return o;
-        }
-        o.push_back(c);
-        return o;
-      };
       if (n.value.size() == 1) {
-        return "::rt::p_char_of('" + escape_char_body(n.value[0], true) + "')";
+        return "::rt::p_char_of('" + char_literal_body_to_cxx(n.value[0]) + "')";
       }
       std::string out = "::rt::p_shortstring_literal<255>(";
       bool first = true;
@@ -3552,7 +3583,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if (!first) out += ", ";
         first = false;
         out += "::rt::p_char_of('";
-        out += escape_char_body(c, true);
+        out += char_literal_body_to_cxx(c);
         out += "')";
       }
       out += ")";
@@ -3658,7 +3689,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         bool r_char = expr_is_charish(*n.rhs);
         if (l_char || r_char) {
           auto wrap = [&](const Expr& x, bool want) {
-            return want ? "::rt::ShortString<>(" + expr_to_cxx(x) + ")"
+            return want ? "::rt::p_shortstring_of<>(" + expr_to_cxx(x) + ")"
                         : expr_to_cxx(x);
           };
           return "(" + wrap(*n.lhs, l_char) + " + " + wrap(*n.rhs, r_char) + ")";
@@ -4127,6 +4158,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // Only the explicit lvalue forms handled elsewhere
           // (`T(lv) := ...`, `inc(T(lv))`, `dec(T(lv))`) reinterpret
           // storage. Plain `T(expr)` remains a value conversion.
+          if (n == "ansistring" || n == "utf8string") {
+            return "::rt::p_ansistring_of(" + arg0() + ")";
+          }
           const Expr* peeled = peel_primitive_casts(c.args[0].get());
           if (peeled && expr_is_untyped_storage_ref(*c.args[0])) {
             return "::rt::p_reinterpret_ref<" + primitive_type_cxx(n) +
@@ -4151,9 +4185,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           if (n == "pointer" || n == "pchar" || n == "ppchar") {
             if (peeled && expr_is_storage_lvalue(*c.args[0])) {
-              return reinterpret_ref_text(primitive_type_cxx(n),
-                                          expr_to_cxx(*peeled),
-                                          expr_is_untyped_storage_ref(*c.args[0]));
+              return "((" + primitive_type_cxx(n) + ")(" +
+                     expr_to_cxx(*peeled) + "))";
             }
           }
           if (expr_is_charish(*c.args[0])) {
@@ -4306,9 +4339,28 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (cc.callee->kind == Kind::Ident) {
               method = mangle(static_cast<const Ident&>(*cc.callee).name);
             }
+            const ProcDecl* ctor_decl = nullptr;
+            if (registry && c.args[0]->kind == Kind::Ident &&
+                cc.callee->kind == Kind::Ident) {
+              TyName ptr_type;
+              ptr_type.name = static_cast<const Ident&>(*c.args[0]).name;
+              std::string pointee = registry->pointer_target_type_name(&ptr_type);
+              if (!pointee.empty()) {
+                if (auto* m = registry->lookup_class_method(
+                        pointee, static_cast<const Ident&>(*cc.callee).name)) {
+                  ctor_decl = m->decl.get();
+                }
+              }
+            }
+            std::vector<bool> untyped_arg(cc.args.size(), false);
+            std::vector<bool> mutable_ref_arg(cc.args.size(), false);
+            std::vector<const TypeExpr*> param_types(cc.args.size(), nullptr);
+            mark_call_param_info(ctor_decl, untyped_arg, mutable_ref_arg,
+                                 param_types);
             for (size_t i = 0; i < cc.args.size(); ++i) {
               if (i) margs += ", ";
-              margs += expr_to_cxx(*cc.args[i]);
+              margs += lower_call_arg(*cc.args[i], param_types[i],
+                                      untyped_arg[i], mutable_ref_arg[i]);
             }
           } else if (second.kind == Kind::Ident) {
             method = mangle(static_cast<const Ident&>(second).name);
@@ -4353,8 +4405,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if (cast_to_pointer) {
           const Expr* peeled = peel_primitive_casts(c.args[0].get());
           if (peeled && expr_is_storage_lvalue(*c.args[0])) {
-            return reinterpret_ref_text(cast_type_cxx, expr_to_cxx(*peeled),
-                                        expr_is_untyped_storage_ref(*c.args[0]));
+            return "((" + cast_type_cxx + ")(" + expr_to_cxx(*peeled) + "))";
           }
         }
       }
@@ -4400,9 +4451,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               if (cast_ty && cast_ty->kind == Kind::TyPointer) {
                 const Expr* peeled = peel_primitive_casts(c.args[0].get());
                 if (peeled && expr_is_storage_lvalue(*c.args[0])) {
-                  return reinterpret_ref_text(type_name_text_to_cxx(qualified),
-                                              expr_to_cxx(*peeled),
-                                              expr_is_untyped_storage_ref(*c.args[0]));
+                  return "((" + type_name_text_to_cxx(qualified) + ")(" +
+                         expr_to_cxx(*peeled) + "))";
                 }
               }
             }
@@ -4572,6 +4622,40 @@ std::string Emitter::const_value_to_cxx(const Expr& e,
                                         const TypeExpr* target,
                                         bool explicit_conversion) {
   if (!target) return expr_to_cxx(e);
+  if (e.kind == Kind::StringLit) {
+    const auto& lit = static_cast<const StringLit&>(e);
+    const TypeExpr* canon = canonicalize_type(target);
+    if (canon && canon->kind == Kind::TyArray) {
+      const auto& arr = static_cast<const TyArray&>(*canon);
+      const TypeExpr* elem =
+          arr.element ? canonicalize_type(arr.element.get()) : nullptr;
+      std::string lo;
+      std::string size_expr;
+      if (arr.array_kind == ArrayKind::Fixed && arr.dims.size() == 1 && elem &&
+          array_dim_bounds_to_cxx(*arr.dims[0], &lo, &size_expr) &&
+          (tyname_is(elem, "char") || tyname_is(elem, "byte"))) {
+        return "::rt::p_array_literal<" + type_to_cxx(*elem) + ", " + lo +
+               ", " + size_expr + ">(" + expr_to_cxx(e) + ")";
+      }
+    }
+    if (auto cap = shortstring_capacity_to_cxx(target)) {
+      if (lit.value.size() == 1) {
+        return "::rt::p_shortstring_of<" + *cap + ">(::rt::p_char_of('" +
+               char_literal_body_to_cxx(lit.value[0]) + "'))";
+      }
+      std::string out = "::rt::p_shortstring_literal<" + *cap + ">(";
+      bool first = true;
+      for (char c : lit.value) {
+        if (!first) out += ", ";
+        first = false;
+        out += "::rt::p_char_of('";
+        out += char_literal_body_to_cxx(c);
+        out += "')";
+      }
+      out += ")";
+      return out;
+    }
+  }
   // Aggregate initialisers recurse into their element/field type.
   if (e.kind == Kind::ArrayConst) {
     const TypeExpr* canon = canonicalize_type(target);
@@ -4587,28 +4671,18 @@ std::string Emitter::const_value_to_cxx(const Expr& e,
                                 explicit_conversion);
     }
     out += "}";
+    if (canon && canon->kind == Kind::TyArray) {
+      return "{" + out + "}";
+    }
     return out;
   }
   if (e.kind == Kind::RecordConst) {
-    const TypeExpr* canon = canonicalize_type(target);
-    const TyRecord* tr = nullptr;
-    if (canon && canon->kind == Kind::TyRecord) {
-      tr = &static_cast<const TyRecord&>(*canon);
-    }
     const auto& rc = static_cast<const RecordConst&>(e);
     std::string out = "{";
     for (size_t i = 0; i < rc.fields.size(); ++i) {
       if (i) out += ", ";
-      const TypeExpr* field_type = nullptr;
-      if (tr) {
-        std::string lf = ascii_lower(rc.fields[i].first);
-        for (const auto& f : tr->fields) {
-          for (const auto& n : f.names) {
-            if (ascii_lower(n) == lf) { field_type = f.type.get(); break; }
-          }
-          if (field_type) break;
-        }
-      }
+      const TypeExpr* field_type =
+          lookup_record_field_type_in_type(target, rc.fields[i].first);
       out += "." + mangle(rc.fields[i].first) + " = " +
              const_value_to_cxx(*rc.fields[i].second, field_type,
                                 explicit_conversion);
@@ -4629,7 +4703,24 @@ std::string Emitter::const_value_to_cxx(const Expr& e,
   if (auto text = maybe_convert_proc_value(e, target)) {
     return *text;
   }
-  return expr_to_cxx(e);
+  std::string out = expr_to_cxx(e);
+  const TypeExpr* source_type = deduce_type(e);
+  if (source_type) source_type = canonicalize_type(source_type);
+  if (auto cap = shortstring_capacity_to_cxx(target);
+      cap && !(source_type && type_is_stringish(source_type))) {
+    out = "::rt::p_shortstring_of<" + *cap + ">(" + out + ")";
+  }
+  const TypeExpr* canon_target = canonicalize_type(target);
+  if (canon_target &&
+      (tyname_is(canon_target, "ansistring") ||
+       tyname_is(canon_target, "utf8string"))) {
+    if (!(source_type &&
+          (tyname_is(source_type, "ansistring") ||
+           tyname_is(source_type, "utf8string")))) {
+      out = "::rt::p_ansistring_of(" + out + ")";
+    }
+  }
+  return out;
 }
 
 // FPC constant conversions first evaluate the integer constant
@@ -4857,8 +4948,7 @@ generic_emit:;
   if (cd.value->kind == Kind::StringLit) {
     const auto& sl = static_cast<const StringLit&>(*cd.value);
     if (sl.value.size() == 1) {
-      // Direct-init (`{...}`) because CharConst's ctor is explicit
-      // -- see prelude.h for why.
+      // Keep char consts visibly aggregate-shaped in the emitted C++.
       emitln(linkage + "constexpr ::rt::CharConst " + name + "{" +
              val + "};");
     } else {
@@ -5915,8 +6005,10 @@ void Emitter::emit_stmt(const Stmt& s) {
       lhs_outer_result_rewrite_slot.clear();
       const TypeExpr* target_ty = deduce_type(*a.target);
       std::string rhs_cxx = const_value_to_cxx(*a.value, target_ty);
-      if (type_is_stringish(target_ty) && expr_is_charish(*a.value)) {
-        rhs_cxx = "::rt::ShortString<>(" + rhs_cxx + ")";
+      if (target_ty && shortstring_capacity_to_cxx(target_ty)) {
+        emitln("::rt::p_shortstring_assign(" + target_cxx + ", " + rhs_cxx +
+               ");");
+        break;
       }
       emitln(target_cxx + " = " + rhs_cxx + ";");
       break;
@@ -5981,20 +6073,40 @@ void Emitter::emit_stmt(const Stmt& s) {
         // statement-form Pascal `new` through the runtime helper rather than
         // raw C++ `new`, so later `reallocmem` / `dispose` on the same typed
         // storage stays in one allocation family.
-        std::string p = expr_to_cxx(*call_expr->args[0]);
+        std::string p = lower_call_arg(*call_expr->args[0],
+                                       /*param_type=*/nullptr,
+                                       /*untyped_arg=*/false,
+                                       /*mutable_ref_arg=*/true);
         emitln("::rt::p_new(" + p + ");");
         if (call_expr->args.size() >= 2) {
           const auto& second = *call_expr->args[1];
           std::string method;
+          const TypeExpr* ptr_arg_ty = deduce_type(*call_expr->args[0]);
           std::string args;
           if (second.kind == Kind::Call) {
             const auto& cc = static_cast<const Call&>(second);
             if (cc.callee->kind == Kind::Ident) {
               method = mangle(static_cast<const Ident&>(*cc.callee).name);
             }
+            const ProcDecl* ctor_decl = nullptr;
+            if (registry && ptr_arg_ty && cc.callee->kind == Kind::Ident) {
+              std::string pointee = registry->pointer_target_type_name(ptr_arg_ty);
+              if (!pointee.empty()) {
+                if (auto* m = registry->lookup_class_method(
+                        pointee, static_cast<const Ident&>(*cc.callee).name)) {
+                  ctor_decl = m->decl.get();
+                }
+              }
+            }
+            std::vector<bool> untyped_arg(cc.args.size(), false);
+            std::vector<bool> mutable_ref_arg(cc.args.size(), false);
+            std::vector<const TypeExpr*> param_types(cc.args.size(), nullptr);
+            mark_call_param_info(ctor_decl, untyped_arg, mutable_ref_arg,
+                                 param_types);
             for (size_t i = 0; i < cc.args.size(); ++i) {
               if (i) args += ", ";
-              args += expr_to_cxx(*cc.args[i]);
+              args += lower_call_arg(*cc.args[i], param_types[i],
+                                     untyped_arg[i], mutable_ref_arg[i]);
             }
           } else if (second.kind == Kind::Ident) {
             method = mangle(static_cast<const Ident&>(second).name);
@@ -6005,7 +6117,10 @@ void Emitter::emit_stmt(const Stmt& s) {
         }
       } else if (name == "dispose" && call_expr && !call_expr->args.empty()) {
         // dispose(p) or dispose(p, Done)
-        std::string p = expr_to_cxx(*call_expr->args[0]);
+        std::string p = lower_call_arg(*call_expr->args[0],
+                                       /*param_type=*/nullptr,
+                                       /*untyped_arg=*/false,
+                                       /*mutable_ref_arg=*/true);
         if (call_expr->args.size() >= 2) {
           const auto& second = *call_expr->args[1];
           std::string method;

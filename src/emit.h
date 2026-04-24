@@ -7,8 +7,8 @@
 //     the `.h` and the `.cc`.
 //   * Every user-defined Pascal identifier is prefixed `p_` to avoid
 //     collisions with C++ reserved words.
-//   * Each `uses X` becomes `#include "X.h"` + `using namespace p_X;` in
-//     the implementation file.
+//   * Each `uses X` becomes `#include "X.h"`; cross-unit references are
+//     emitted explicitly instead of relying on open namespaces.
 //   * Interface decls land in the `.h`; implementation decls in the `.cc`.
 //   * Primitive types are mapped with a fixed table (see emit.cc).
 //
