@@ -4939,58 +4939,38 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     emitln(open + name + " {");
     indent();
 
-    // Every field of a `[[gnu::packed]]` struct must be POD-like (standard
-    // layout + trivially copyable). GCC silently *ignores* the packed
-    // attribute for a non-POD field and keeps it at natural alignment
-    // (emitting `warning: ignoring packed attribute because of unpacked
-    // non-POD field` -- a warning with no dedicated `-W` flag, so you
-    // can't `-Werror=...` it). That silently breaks the packed layout the
-    // Pascal source asked for. To turn this into a hard compile-time error
-    // at the precise field, emit a per-field `static_assert` on packed
-    // records.
+    // For Pascal `packed record`, the property we care about is the final
+    // byte layout: no inserted padding between fields, and total size equal
+    // to the packed Pascal size. Emit the ordinary `[[gnu::packed]]` struct,
+    // then assert the resulting `offsetof(...)` / `sizeof(...)` after the
+    // complete type is known.
+    std::vector<std::pair<std::string, std::string>> packed_offsets;
+    auto max_expr = [](const std::vector<std::string>& exprs) -> std::string {
+      if (exprs.empty()) return "0";
+      std::string out = exprs.front();
+      for (size_t i = 1; i < exprs.size(); ++i) {
+        out = "((" + out + ") < (" + exprs[i] + ") ? (" + exprs[i] + ") : (" + out + "))";
+      }
+      return out;
+    };
+    std::string packed_size_expr = "0";
     auto emit_field =
-        [&](const TypeExpr* field_type, const std::string& ft, const std::string& fn) {
+        [&](const TypeExpr* field_type, const std::string& ft, const std::string& fn,
+            const std::string* packed_offset_expr) {
       emitln(named_type_to_cxx(field_type, mangle(fn)) + ";");
-      if (tr.is_packed) {
-        // The predicate below is what GCC actually uses to decide whether
-        // to honour `[[gnu::packed]]` on a field. I measured it by
-        // compiling one non-trivial field at a time and checking whether
-        // the "ignoring packed attribute because of unpacked non-POD
-        // field" diagnostic fired; the warning tracks `is_trivial_v`
-        // one-to-one. Weaker checks like `is_trivially_copyable_v` (no
-        // trivial-default-ctor requirement) miss the exact cases GCC
-        // flags -- e.g. a class with a user-provided converting ctor is
-        // trivially copyable but not trivial, and GCC refuses to pack it.
-        //
-        // `is_standard_layout_v` is belt-and-braces: it rules out virtual
-        // bases, mixed access control, references, and other layouts that
-        // aren't a plain byte sequence.
-        //
-        // Together they mean: the type has a statically-knowable byte
-        // layout, can be copied with `memcpy`, has no hidden init side
-        // effects. That's the "POD-like" that Pascal `packed record'
-        // semantics implicitly require when the record is used as a
-        // file/wire format (ppu headers, COFF symbols, ar headers, ...).
-        //
-        // GCC's warning has no dedicated `-W` flag (emitted with
-        // `warning(0, ...)` in `stor-layout.cc`), so we can't `-Werror=`
-        // it selectively; this static_assert is the replacement, firing
-        // at the exact field with a message that names it and explains
-        // what would otherwise go silently wrong.
-        emitln("static_assert(::std::is_standard_layout_v<" + ft + "> && "
-               "::std::is_trivial_v<" + ft + ">, "
-               "\"field '" + fn + "' of packed record '" + name + "' must "
-               "be POD-like (is_standard_layout && is_trivial): GCC "
-               "silently ignores [[gnu::packed]] for non-trivial fields "
-               "and keeps natural alignment, breaking the packed layout "
-               "Pascal asked for.\");");
+      if (tr.is_packed && packed_offset_expr) {
+        packed_offsets.emplace_back(mangle(fn), *packed_offset_expr);
       }
     };
 
     for (const auto& f : tr.fields) {
       std::string ft = f.type ? type_to_cxx(*f.type) : std::string("int32_t");
       for (const auto& fn : f.names) {
-        emit_field(f.type.get(), ft, fn);
+        std::string field_offset = packed_size_expr;
+        emit_field(f.type.get(), ft, fn, tr.is_packed ? &field_offset : nullptr);
+        if (tr.is_packed) {
+          packed_size_expr = "(" + packed_size_expr + " + sizeof(" + ft + "))";
+        }
       }
     }
     if (tr.has_variant) {
@@ -4999,29 +4979,57 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
       // We match that by emitting one anonymous struct per case inside an
       // anonymous union. GCC accepts this as an extension.
       if (!tr.variant_tag_name.empty() && tr.variant_tag_type) {
+        std::string ft = type_to_cxx(*tr.variant_tag_type);
+        std::string field_offset = packed_size_expr;
         emit_field(tr.variant_tag_type.get(),
-                   type_to_cxx(*tr.variant_tag_type), tr.variant_tag_name);
+                   ft, tr.variant_tag_name, tr.is_packed ? &field_offset : nullptr);
+        if (tr.is_packed) {
+          packed_size_expr = "(" + packed_size_expr + " + sizeof(" + ft + "))";
+        }
       }
       emitln("union {");
       indent();
+      std::vector<std::string> variant_case_sizes;
       for (const auto& vc : tr.variant_cases) {
         if (vc.fields.empty()) continue;
-        emitln("struct {");
+        std::string case_open = "struct ";
+        if (tr.is_packed) case_open += "[[gnu::packed]] ";
+        case_open += "{";
+        emitln(case_open);
         indent();
+        std::string case_size_expr = "0";
         for (const auto& f : vc.fields) {
           std::string ft = f.type ? type_to_cxx(*f.type) : std::string("int32_t");
           for (const auto& fn : f.names) {
-            emit_field(f.type.get(), ft, fn);
+            std::string field_offset = "(" + packed_size_expr + " + " + case_size_expr + ")";
+            emit_field(f.type.get(), ft, fn, tr.is_packed ? &field_offset : nullptr);
+            if (tr.is_packed) {
+              case_size_expr = "(" + case_size_expr + " + sizeof(" + ft + "))";
+            }
           }
         }
+        if (tr.is_packed) variant_case_sizes.push_back(case_size_expr);
         dedent();
         emitln("};");
       }
       dedent();
       emitln("};");
+      if (tr.is_packed) {
+        packed_size_expr = "(" + packed_size_expr + " + " + max_expr(variant_case_sizes) + ")";
+      }
     }
     dedent();
     emitln("};");
+    if (tr.is_packed && !packed_offsets.empty()) {
+      for (const auto& [field_name, offset_expr] : packed_offsets) {
+        emitln("static_assert(offsetof(" + name + ", " + field_name + ") == " +
+               offset_expr + ", "
+               "\"packed record '" + name + "' must place field '" + field_name +
+               "' at the exact Pascal byte offset with no inserted padding.\");");
+      }
+      emitln("static_assert(sizeof(" + name + ") == " + packed_size_expr + ", "
+             "\"packed record '" + name + "' must have the exact packed Pascal size.\");");
+    }
     return;
   }
 

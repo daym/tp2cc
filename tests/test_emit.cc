@@ -231,6 +231,61 @@ void test_packed_record_uses_byte_sized_enum_fields() {
   CHECK(contains(out.header, "p_tsmall p_kind;"));
 }
 
+void test_packed_record_shortstring_field_emits_exact_layout_asserts() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = packed record\n"
+      "    name : string[30];\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "::rt::ShortString<30> p_name;"));
+  CHECK(contains(out.header, "static_assert(offsetof(p_trec, p_name) == 0"));
+  CHECK(contains(out.header,
+                 "static_assert(sizeof(p_trec) == (0 + sizeof(::rt::ShortString<30>))"));
+}
+
+void test_packed_record_array_field_keeps_array_wrapper_with_exact_layout_asserts() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = packed record\n"
+      "    future : array[0..2] of longint;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "::rt::Array<int32_t, 0, ((2) - (0) + 1)> p_future;"));
+  CHECK(contains(out.header, "static_assert(offsetof(p_trec, p_future) == 0"));
+  CHECK(contains(out.header,
+                 "static_assert(sizeof(p_trec) == (0 + sizeof(::rt::Array<int32_t, 0, ((2) - (0) + 1)>))"));
+}
+
+void test_packed_variant_record_emits_packed_case_layout_asserts() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = packed record\n"
+      "    tag : byte;\n"
+      "    case byte of\n"
+      "      0 : (a : word; b : longint);\n"
+      "      1 : (c : longint);\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "struct [[gnu::packed]] {"));
+  CHECK(contains(out.header, "static_assert(offsetof(p_trec, p_tag) == 0"));
+  CHECK(contains(out.header,
+                 "static_assert(offsetof(p_trec, p_a) == ((0 + sizeof(uint8_t)) + 0)"));
+  CHECK(contains(out.header,
+                 "static_assert(offsetof(p_trec, p_b) == ((0 + sizeof(uint8_t)) + (0 + sizeof(uint16_t)))"));
+  CHECK(contains(out.header,
+                 "static_assert(sizeof(p_trec) == ((0 + sizeof(uint8_t)) + ((((0 + sizeof(uint16_t)) + sizeof(int32_t))) < ((0 + sizeof(int32_t))) ? ((0 + sizeof(int32_t))) : (((0 + sizeof(uint16_t)) + sizeof(int32_t)))))"));
+}
+
 void test_explicit_enum_array_bounds_use_ordinal_range() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2715,6 +2770,9 @@ int main() {
   RUN_TEST(test_enum_type);
   RUN_TEST(test_enum_type_with_explicit_values);
   RUN_TEST(test_packed_record_uses_byte_sized_enum_fields);
+  RUN_TEST(test_packed_record_shortstring_field_emits_exact_layout_asserts);
+  RUN_TEST(test_packed_record_array_field_keeps_array_wrapper_with_exact_layout_asserts);
+  RUN_TEST(test_packed_variant_record_emits_packed_case_layout_asserts);
   RUN_TEST(test_explicit_enum_array_bounds_use_ordinal_range);
   RUN_TEST(test_distinct_ordinal_array_bounds_use_underlying_range);
   RUN_TEST(test_low_high_use_resolved_pascal_type);
