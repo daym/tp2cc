@@ -361,9 +361,12 @@ const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
       {"namestr", "::rt::p_namestr"},
       {"extstr", "::rt::p_extstr"},
       {"pathstr", "::rt::p_pathstr"},
+      {"ptrint", "::rt::p_ptrint"},
+      {"ptruint", "::rt::p_ptruint"},
       {"searchrec", "::rt::p_searchrec"},
       {"signalhandler", "::rt::p_signalhandler"},
       {"sizeint", "::rt::p_sizeint"},
+      {"sizeuint", "::rt::p_sizeuint"},
       {"stat", "::rt::p_stat"},
       {"tmethod", "::rt::p_tmethod"},
   };

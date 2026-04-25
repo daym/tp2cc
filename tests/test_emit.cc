@@ -2576,6 +2576,19 @@ void test_empty_inherited_class_decl_emits_real_struct() {
   CHECK(contains(out.header, "extern p_echild* p_child;"));
 }
 
+void test_pointer_sized_integer_aliases_lower_through_rt() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "var\n"
+      "  a : ptrint;\n"
+      "  b : ptruint;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "extern ::rt::p_ptrint p_a;"));
+  CHECK(contains(out.header, "extern ::rt::p_ptruint p_b;"));
+}
+
 void test_class_constructor_call_allocates_instance() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -3506,6 +3519,7 @@ int main() {
   RUN_TEST(test_class_types_lower_to_pointers_and_implicit_tobject);
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
   RUN_TEST(test_empty_inherited_class_decl_emits_real_struct);
+  RUN_TEST(test_pointer_sized_integer_aliases_lower_through_rt);
   RUN_TEST(test_class_constructor_call_allocates_instance);
   RUN_TEST(test_class_constructor_trailing_default_argument_is_lowered);
   RUN_TEST(test_object_constructor_call_uses_base_method_on_self);
