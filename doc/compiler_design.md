@@ -242,10 +242,12 @@ tp2cc has real support for Pascal metaclass values (`class of T`), but the suppo
 Today this means:
 
 - `class of T` parses as a distinct metaclass type
+- `TClass` lowers through the runtime root metaclass alias
 - a class identifier used as a value lowers to a metaclass descriptor, not an instance pointer
 - metaclass values can be compared for equality
 - constructors and class methods can be called through metaclass values
 - instance-side `ClassType` and `InstanceSize` are supported on translated classes
+- instance-side `InheritsFrom(TClassVar)` is supported through the metaclass parent chain
 
 Representative shape:
 
@@ -255,6 +257,7 @@ using p_tbaseclass = const tp2cc_metaclass_p_tbase *;
 p_cls = tp2cc_metaclass_value_p_tchild();
 p_inst = p_cls->p_create(1);
 p_same = (p_x->p_classtype() == tp2cc_metaclass_value_p_tchild());
+p_isbase = p_x->p_inheritsfrom(p_cls);
 ```
 
 What tp2cc does not currently model as a general metaclass surface is RTTI/reflection-style members such as arbitrary `.ClassName` access on metaclass values. The implemented metaclass member surface is essentially:
@@ -262,7 +265,7 @@ What tp2cc does not currently model as a general metaclass surface is RTTI/refle
 - constructors
 - class methods
 
-plus instance-side `ClassType` / `InstanceSize` on class instances.
+plus instance-side `ClassType`, `InstanceSize`, and `InheritsFrom(TClassVar)` on class instances.
 
 ### 1.11 `Free`
 
@@ -525,10 +528,12 @@ Metaclass support exists, but it is not a full Delphi/FPC RTTI surface.
 Supported today:
 
 - `class of T`
+- `TClass`
 - class identifiers as metaclass values
 - constructor/class-method dispatch through metaclass values
 - `ClassType`
 - `InstanceSize`
+- `InheritsFrom(TClassVar)`
 
 Not generally supported today:
 

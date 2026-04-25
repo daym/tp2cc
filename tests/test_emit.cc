@@ -2012,10 +2012,10 @@ void test_tobject_runtime_helpers_lower_in_method_body() {
       "  bytes := instancesize;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "virtual const void* p_classtype() override;"));
-  CHECK(contains(out.header, "virtual int32_t p_instancesize() override;"));
-  CHECK(contains(out.header, "inline const void* p_titem::p_classtype() {"));
-  CHECK(contains(out.header, "inline int32_t p_titem::p_instancesize() {"));
+  CHECK(contains(out.header, "virtual ::rt::p_tclass p_classtype() const override;"));
+  CHECK(contains(out.header, "virtual int32_t p_instancesize() const override;"));
+  CHECK(contains(out.header, "inline ::rt::p_tclass p_titem::p_classtype() const {"));
+  CHECK(contains(out.header, "inline int32_t p_titem::p_instancesize() const {"));
   CHECK(contains(out.impl, "p_result = p_classtype();"));
   CHECK(contains(out.impl, "p_result = p_instancesize();"));
 }
@@ -2589,6 +2589,20 @@ void test_pointer_sized_integer_aliases_lower_through_rt() {
   CHECK(contains(out.header, "extern ::rt::p_ptruint p_b;"));
 }
 
+void test_tclass_alias_lowers_through_rt() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "function sameclass(c : tclass) : boolean;\n"
+      "implementation\n"
+      "function sameclass(c : tclass) : boolean;\n"
+      "begin\n"
+      "  sameclass := c = nil;\n"
+      "end.\n"
+      "end.\n");
+  CHECK(contains(out.header, "bool p_sameclass(::rt::p_tclass p_c);"));
+}
+
 void test_class_constructor_call_allocates_instance() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2862,6 +2876,79 @@ void test_metaclass_base_constructor_slot_survives_hidden_child_create() {
   CHECK(contains(out.header,
                  "static_cast<p_tbase*>(tp2cc_ptr)->p_create();"));
   CHECK(contains(out.impl, "p_inst = p_cls->p_create();"));
+}
+
+void test_inheritsfrom_uses_runtime_tclass_and_method_call() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "  end;\n"
+      "function isbase(x : tbase; c : tclass) : boolean;\n"
+      "implementation\n"
+      "function isbase(x : tbase; c : tclass) : boolean;\n"
+      "begin\n"
+      "  isbase := x.inheritsfrom(c);\n"
+      "end.\n");
+  CHECK(contains(out.header, "bool p_isbase(p_tbase* p_x, ::rt::p_tclass p_c);"));
+  CHECK(contains(out.impl, "p_result = p_x->p_inheritsfrom(p_c);"));
+}
+
+void test_indexed_property_result_classtype_autocalls() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class\n"
+      "  end;\n"
+      "  tbox = class\n"
+      "  private\n"
+      "    function getitem(i : integer) : titem;\n"
+      "  public\n"
+      "    property items[i : integer] : titem read getitem; default;\n"
+      "  end;\n"
+      "function sameclass(b : tbox; i : integer; c : tclass) : boolean;\n"
+      "implementation\n"
+      "function tbox.getitem(i : integer) : titem;\n"
+      "begin\n"
+      "  getitem := nil;\n"
+      "end;\n"
+      "function sameclass(b : tbox; i : integer; c : tclass) : boolean;\n"
+      "begin\n"
+      "  sameclass := b.items[i].classtype = c;\n"
+      "end.\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = (p_b->p_getitem(p_i)->p_classtype() == p_c);"));
+}
+
+void test_implicit_indexed_property_result_classtype_autocalls() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class\n"
+      "  end;\n"
+      "  tbox = class\n"
+      "  private\n"
+      "    function getitem(i : integer) : titem;\n"
+      "  public\n"
+      "    property items[i : integer] : titem read getitem; default;\n"
+      "    function sameclass(i : integer; c : tclass) : boolean;\n"
+      "  end;\n"
+      "implementation\n"
+      "function tbox.getitem(i : integer) : titem;\n"
+      "begin\n"
+      "  getitem := nil;\n"
+      "end;\n"
+      "function tbox.sameclass(i : integer; c : tclass) : boolean;\n"
+      "begin\n"
+      "  sameclass := items[i].classtype = c;\n"
+      "end.\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = (this->p_getitem(p_i)->p_classtype() == p_c);"));
 }
 
 void test_indexed_implicit_property_in_method_body() {
@@ -3520,6 +3607,7 @@ int main() {
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
   RUN_TEST(test_empty_inherited_class_decl_emits_real_struct);
   RUN_TEST(test_pointer_sized_integer_aliases_lower_through_rt);
+  RUN_TEST(test_tclass_alias_lowers_through_rt);
   RUN_TEST(test_class_constructor_call_allocates_instance);
   RUN_TEST(test_class_constructor_trailing_default_argument_is_lowered);
   RUN_TEST(test_object_constructor_call_uses_base_method_on_self);
@@ -3531,6 +3619,9 @@ int main() {
   RUN_TEST(test_class_identifier_value_lowers_to_metaclass_descriptor);
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
   RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);
+  RUN_TEST(test_inheritsfrom_uses_runtime_tclass_and_method_call);
+  RUN_TEST(test_indexed_property_result_classtype_autocalls);
+  RUN_TEST(test_implicit_indexed_property_result_classtype_autocalls);
   RUN_TEST(test_indexed_implicit_property_in_method_body);
   RUN_TEST(test_indexed_implicit_property_result_write_in_method_body);
   RUN_TEST(test_function_result_member_access_uses_pointer_semantics);

@@ -368,6 +368,7 @@ const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
       {"sizeint", "::rt::p_sizeint"},
       {"sizeuint", "::rt::p_sizeuint"},
       {"stat", "::rt::p_stat"},
+      {"tclass", "::rt::p_tclass"},
       {"tmethod", "::rt::p_tmethod"},
   };
   return m;
@@ -962,6 +963,14 @@ struct Emitter {
       const std::vector<const ast::Expr*>& indices,
       const ast::Expr& value);
   std::string implicit_self_cxx();
+  struct ImplicitPropertyLookup {
+    const PropertyInfo* prop = nullptr;
+    std::string class_name;
+    std::string base_cxx;
+    bool from_with = false;
+  };
+  std::optional<ImplicitPropertyLookup> find_implicit_class_property(
+      std::string_view name);
   std::optional<std::string> maybe_lower_implicit_property_write(
       Location where,
       std::string_view name,
@@ -2250,7 +2259,8 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
         if (const auto* ci = class_info_for_type_name(current_class_name);
             ci && ci->is_reference_type) {
           if (id.name == "instancesize") return builtin_integer_type("longint");
-          if (id.name == "classtype") return nullptr;
+          if (id.name == "classtype") return named_pascal_type("tclass");
+          if (id.name == "inheritsfrom") return builtin_boolean_type();
         }
         if (auto* f = registry->lookup_class_field(current_class_name, id.name))
           return f->type.get();
@@ -2268,7 +2278,8 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
         if (const auto* ci = class_info_for_type_name(ac);
             ci && ci->is_reference_type) {
           if (id.name == "instancesize") return builtin_integer_type("longint");
-          if (id.name == "classtype") return nullptr;
+          if (id.name == "classtype") return named_pascal_type("tclass");
+          if (id.name == "inheritsfrom") return builtin_boolean_type();
         }
         if (!ac.empty()) {
           if (auto* f = registry->lookup_class_field(ac, id.name))
@@ -2356,7 +2367,8 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
       if (const auto* ci = class_info_for_type_name(cls);
           ci && ci->is_reference_type) {
         if (m.name == "instancesize") return builtin_integer_type("longint");
-        if (m.name == "classtype") return nullptr;
+        if (m.name == "classtype") return named_pascal_type("tclass");
+        if (m.name == "inheritsfrom") return builtin_boolean_type();
       }
       if (auto* pm = registry->lookup_class_method(cls, m.name)) {
         if (pm->decl.get() && pm->decl.get()->return_type)
@@ -2386,6 +2398,13 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
           if (auto* prop = registry->lookup_class_property(cls, mem.name);
               prop && !prop->params.empty())
             return prop->type.get();
+        }
+      }
+      if (registry && ix.base->kind == Kind::Ident) {
+        const auto& id = static_cast<const Ident&>(*ix.base);
+        if (auto found = find_implicit_class_property(id.name);
+            found && found->prop && !found->prop->params.empty()) {
+          return found->prop->type.get();
         }
       }
       const TypeExpr* bt = deduce_type(*ix.base);
@@ -3326,77 +3345,54 @@ std::string Emitter::implicit_self_cxx() {
   return "(*this)";
 }
 
-std::optional<Emitter::ResolveResult> Emitter::maybe_resolve_implicit_property(
-    std::string_view name) {
+std::optional<Emitter::ImplicitPropertyLookup>
+Emitter::find_implicit_class_property(std::string_view name) {
   if (!registry) return std::nullopt;
+  if (local_scope.count(std::string(name))) return std::nullopt;
 
-  // Bare member names inside a method body must resolve the same way as
-  // `self.Name`. Without that, inherited properties silently fall out as
-  // undeclared locals (`p_count`, `p_name`, `p_currsec`) in the translated
-  // bootstrap compiler instead of reading the declared property accessor.
+  // Bare member names inside a method body must resolve exactly like
+  // `self.Name`, including indexed/default properties. Keep the lookup
+  // in one place so reads, writes, and type deduction stay aligned.
   for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
     const std::string& cls = it->class_name;
     if (cls.empty()) continue;
     if (auto* prop = registry->lookup_class_property(cls, std::string(name))) {
-      if (!prop->params.empty()) continue;
-      std::vector<const Expr*> no_indices;
-      if (auto text = maybe_property_read_text(it->cxx_text, cls, *prop,
-                                               no_indices)) {
-        ResolveResult r;
-        r.kind = ResolvedKind::WithProperty;
-        r.cxx = *text;
-        return r;
-      }
+      return ImplicitPropertyLookup{prop, cls, it->cxx_text, true};
     }
   }
 
-  if (!current_class_name.empty()) {
-    if (auto* prop = registry->lookup_class_property(current_class_name,
-                                                     std::string(name))) {
-      if (!prop->params.empty()) return std::nullopt;
-      std::vector<const Expr*> no_indices;
-      if (auto text = maybe_property_read_text(implicit_self_cxx(),
-                                               current_class_name, *prop,
-                                               no_indices)) {
-        ResolveResult r;
-        r.kind = ResolvedKind::ClassProperty;
-        r.cxx = *text;
-        return r;
-      }
-    }
+  if (current_class_name.empty()) return std::nullopt;
+  if (auto* prop = registry->lookup_class_property(current_class_name,
+                                                   std::string(name))) {
+    return ImplicitPropertyLookup{prop, current_class_name, implicit_self_cxx(),
+                                  false};
   }
+  return std::nullopt;
+}
 
+std::optional<Emitter::ResolveResult> Emitter::maybe_resolve_implicit_property(
+    std::string_view name) {
+  auto found = find_implicit_class_property(name);
+  if (!found || !found->prop || !found->prop->params.empty()) return std::nullopt;
+  std::vector<const Expr*> no_indices;
+  if (auto text = maybe_property_read_text(found->base_cxx, found->class_name,
+                                           *found->prop, no_indices)) {
+    ResolveResult r;
+    r.kind = found->from_with ? ResolvedKind::WithProperty
+                              : ResolvedKind::ClassProperty;
+    r.cxx = *text;
+    return r;
+  }
   return std::nullopt;
 }
 
 std::optional<std::string> Emitter::maybe_lower_implicit_property_write(
     Location where, std::string_view name, const Expr& value) {
-  if (!registry) return std::nullopt;
-
-  for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
-    const std::string& cls = it->class_name;
-    if (cls.empty()) continue;
-    if (auto* prop = registry->lookup_class_property(cls, std::string(name))) {
-      if (!prop->params.empty()) continue;
-      std::vector<const Expr*> no_indices;
-      return lower_property_write(where, it->cxx_text, cls, *prop, no_indices,
-                                  value);
-    }
-  }
-
-  if (local_scope.count(std::string(name))) return std::nullopt;
-
-  if (!current_class_name.empty()) {
-    if (auto* prop = registry->lookup_class_property(current_class_name,
-                                                     std::string(name))) {
-      if (!prop->params.empty()) return std::nullopt;
-      std::vector<const Expr*> no_indices;
-      return lower_property_write(where, implicit_self_cxx(), current_class_name,
-                                  *prop, no_indices, value);
-    }
-  }
-
-  return std::nullopt;
+  auto found = find_implicit_class_property(name);
+  if (!found || !found->prop || !found->prop->params.empty()) return std::nullopt;
+  std::vector<const Expr*> no_indices;
+  return lower_property_write(where, found->base_cxx, found->class_name,
+                              *found->prop, no_indices, value);
 }
 
 std::optional<std::string> Emitter::maybe_lower_class_free_member(
@@ -4270,11 +4266,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
       }
       std::string bcls = deduce_class_alias(*m.base);
-      if (const auto* ci = class_info_for_type_name(bcls);
-          ci && ci->is_reference_type &&
-          (m.name == "classtype" || m.name == "instancesize")) {
-        std::string text = base_cxx + member_access_op(*m.base) + mangle(m.name);
-        return is_callee_context_ ? text : text + "()";
+      if (m.name == "classtype" || m.name == "instancesize") {
+        const auto* ci = bcls.empty() ? nullptr : class_info_for_type_name(bcls);
+        if ((ci && ci->is_reference_type) || expr_is_reference_class(*m.base)) {
+          // Property/default-index results like `Items[i]` may already have
+          // the right Pascal class alias even when the raw expression
+          // no longer looks like a plain class lvalue. Recover the dynamic
+          // class query from that alias so `Items[i].ClassType` still lowers
+          // to an object-side method call.
+          const std::string access =
+              (ci && ci->is_reference_type) ? "->" : member_access_op(*m.base);
+          std::string text = base_cxx + access + mangle(m.name);
+          return is_callee_context_ ? text : text + "()";
+        }
       }
       if (registry && !bcls.empty()) {
         if (auto* prop = registry->lookup_class_property(bcls, m.name)) {
@@ -4874,31 +4878,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       if (registry && i.base->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*i.base);
-        auto implicit_property_read =
-            [&](std::string_view name) -> std::optional<std::string> {
-          if (local_scope.count(std::string(name))) return std::nullopt;
-          for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
-            const std::string& cls = it->class_name;
-            if (cls.empty()) continue;
-            if (auto* prop =
-                    registry->lookup_class_property(cls, std::string(name))) {
-              if (!prop->params.empty()) {
-                return lower_property_read(i.loc, it->cxx_text, cls, *prop,
-                                           indices);
-              }
-            }
-          }
-          if (current_class_name.empty()) return std::nullopt;
-          if (auto* prop = registry->lookup_class_property(current_class_name,
-                                                           std::string(name))) {
-            if (!prop->params.empty()) {
-              return lower_property_read(i.loc, implicit_self_cxx(),
-                                         current_class_name, *prop, indices);
-            }
-          }
-          return std::nullopt;
-        };
-        if (auto text = implicit_property_read(id.name)) return *text;
+        if (auto found = find_implicit_class_property(id.name);
+            found && found->prop && !found->prop->params.empty()) {
+          return lower_property_read(i.loc, found->base_cxx, found->class_name,
+                                     *found->prop, indices);
+        }
       }
       if (registry) {
         std::string cls = deduce_class_alias(*i.base);
@@ -5498,8 +5482,8 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
       emitln("using inherited = ::rt::p_tobject;");
     }
     if (to.is_reference_type) {
-      emitln("virtual const void* p_classtype() override;");
-      emitln("virtual int32_t p_instancesize() override;");
+      emitln("virtual ::rt::p_tclass p_classtype() const override;");
+      emitln("virtual int32_t p_instancesize() const override;");
     }
     bool has_virtual = false;
     for (const auto& m : to.members) {
@@ -5560,6 +5544,9 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
           class_info_for_type_name(to.parent)->is_reference_type;
       const std::string parent_meta =
           has_parent_meta ? metaclass_struct_cxx(to.parent) : std::string{};
+      const std::string base_meta =
+          has_parent_meta ? parent_meta
+                          : std::string("::rt::tp2cc_metaclass_p_tobject");
       const auto visible_callables = collect_metaclass_callables(td.name);
       const auto parent_callables =
           has_parent_meta ? collect_metaclass_callables(to.parent)
@@ -5649,7 +5636,10 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
       // inherits the parent's descriptor and only adds newly visible
       // constructor/class-method entries of its own.
       std::string meta_decl = "struct " + meta_name;
-      if (has_parent_meta) meta_decl += " : public " + parent_meta;
+      // Every emitted metaclass must remain convertible to `::rt::p_tclass`.
+      // Even Pascal classes with only an implicit TObject ancestor therefore
+      // need to inherit the runtime root descriptor, not a standalone struct.
+      meta_decl += " : public " + base_meta;
       meta_decl += " {";
       emitln(meta_decl);
       indent();
@@ -5658,12 +5648,21 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
                mangle(callable.name) + ")(" +
                callable_param_types(callable) + ");");
       }
-      if (!has_parent_meta && own_callables.empty()) {
-        emitln("constexpr " + meta_name + "() = default;");
+      const std::string direct_parent_meta =
+          has_parent_meta ? (metaclass_value_fn_cxx(to.parent) + "()")
+                          : std::string("::rt::tp2cc_metaclass_value_p_tobject()");
+      emitln("::rt::p_tclass tp2cc_parentclass() const override { return " +
+             direct_parent_meta + "; }");
+      if (visible_callables.empty()) {
+        // A class with no visible constructor/class-method surface still
+        // needs a metaclass object for `ClassType` / `TClass`, but that
+        // descriptor should stay trivially default-constructible instead of
+        // forcing a synthetic parent-descriptor constructor argument.
+        emitln(meta_name + "() = default;");
       } else {
         std::string ctor_params;
         bool first = true;
-        if (has_parent_meta) {
+        if (has_parent_meta && !parent_callables.empty()) {
           ctor_params += parent_meta + " tp2cc_parent";
           first = false;
         }
@@ -5673,14 +5672,14 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
           first = false;
         }
         std::string init_list;
-        if (has_parent_meta) {
+        if (has_parent_meta && !parent_callables.empty()) {
           init_list = " : " + parent_meta + "(tp2cc_parent)";
         }
         for (const auto& callable : own_callables) {
           init_list += (init_list.empty() ? " : " : ", ") +
                        callable_ctor_init(callable);
         }
-        emitln("constexpr " + meta_name + "(" + ctor_params + ")" +
+        emitln(meta_name + "(" + ctor_params + ")" +
                init_list + " {}");
       }
       dedent();
@@ -5719,7 +5718,7 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
         };
         std::string out = metaclass_struct_cxx(target_class) + "(";
         bool first = true;
-        if (has_parent) {
+        if (has_parent && !parent_visible.empty()) {
           out += build_metaclass_ctor_expr(parent_class, concrete_class);
           first = false;
         }
@@ -5779,7 +5778,7 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
 
       emitln("inline const " + meta_name + "* " + value_fn + "() {");
       indent();
-      if (visible_callables.empty() && !has_parent_meta) {
+      if (visible_callables.empty()) {
         emitln("static const " + meta_name + " value{};");
       } else {
         emitln("static const " + meta_name + " value = " +
@@ -5788,12 +5787,12 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
       emitln("return &value;");
       dedent();
       emitln("}");
-      emitln("inline const void* " + name + "::p_classtype() {");
+      emitln("inline ::rt::p_tclass " + name + "::p_classtype() const {");
       indent();
       emitln("return " + value_fn + "();");
       dedent();
       emitln("}");
-      emitln("inline int32_t " + name + "::p_instancesize() {");
+      emitln("inline int32_t " + name + "::p_instancesize() const {");
       indent();
       emitln("return sizeof(" + name + ");");
       dedent();
@@ -6309,33 +6308,12 @@ void Emitter::emit_stmt(const Stmt& s) {
         }
         if (ix.base->kind == Kind::Ident) {
           const auto& id = static_cast<const Ident&>(*ix.base);
-          auto implicit_property_write =
-              [&](std::string_view name) -> std::optional<std::string> {
-            if (local_scope.count(std::string(name))) return std::nullopt;
-            for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
-              const std::string& cls = it->class_name;
-              if (cls.empty()) continue;
-              if (auto* prop = registry->lookup_class_property(
-                      cls, std::string(name))) {
-                if (!prop->params.empty()) {
-                  return lower_property_write(a.loc, it->cxx_text, cls, *prop,
-                                              indices, *a.value);
-                }
-              }
-            }
-            if (current_class_name.empty()) return std::nullopt;
-            if (auto* prop = registry->lookup_class_property(
-                    current_class_name, std::string(name))) {
-              if (!prop->params.empty()) {
-                return lower_property_write(a.loc, implicit_self_cxx(),
-                                            current_class_name, *prop, indices,
-                                            *a.value);
-              }
-            }
-            return std::nullopt;
-          };
-          if (auto text = implicit_property_write(id.name)) {
-            emitln(*text + ";");
+          if (auto found = find_implicit_class_property(id.name);
+              found && found->prop && !found->prop->params.empty()) {
+            emitln(lower_property_write(a.loc, found->base_cxx,
+                                        found->class_name, *found->prop,
+                                        indices, *a.value) +
+                   ";");
             break;
           }
         }
