@@ -824,6 +824,13 @@ struct Emitter {
   std::string metaclass_target_name(const ast::TypeExpr* t);
   bool type_is_value_object(const ast::TypeExpr* t);
   std::string primitive_cast_lvalue_ref(const ast::Call& c);
+  std::string primitive_cast_untyped_storage_ptr(const ast::Call& c);
+  struct UntypedStorageIndexView {
+    std::string elem_cxx;
+    std::string ptr_cxx;
+  };
+  std::optional<UntypedStorageIndexView> untyped_storage_index_view(
+      const ast::Index& i);
   std::string param_list_to_cxx(const std::vector<Param>& params);
   void emit_method_pointer_thunk(const std::string& owner_name,
                                  const ast::ProcDecl& pd,
@@ -1498,6 +1505,7 @@ std::string Emitter::primitive_cast_lvalue_ref(const Call& c) {
   if (!is_primitive_type(id.name)) return {};
   const Expr* peeled = peel_primitive_casts(c.args[0].get());
   if (!peeled || !expr_is_storage_lvalue(*c.args[0])) return {};
+  if (expr_is_untyped_storage_ref(*c.args[0])) return {};
   if (peeled->kind == Kind::Ident) {
     ResolveResult rr = resolve_name(static_cast<const Ident&>(*peeled).name);
     if (rr.kind == ResolvedKind::UnitConst || rr.kind == ResolvedKind::EnumMember ||
@@ -1508,7 +1516,58 @@ std::string Emitter::primitive_cast_lvalue_ref(const Call& c) {
   // Pascal `T(lv)` used as an lvalue aliases the same storage with a
   // different type. Emit that reinterpretation directly.
   return reinterpret_ref_text(primitive_type_cxx(id.name), expr_to_cxx(*peeled),
-                              expr_is_untyped_storage_ref(*c.args[0]));
+                              false);
+}
+
+std::string Emitter::primitive_cast_untyped_storage_ptr(const Call& c) {
+  if (c.args.size() != 1 || c.callee->kind != Kind::Ident) return {};
+  const auto& id = static_cast<const Ident&>(*c.callee);
+  if (!is_primitive_type(id.name)) return {};
+  const Expr* peeled = peel_primitive_casts(c.args[0].get());
+  if (!peeled || !expr_is_storage_lvalue(*c.args[0]) ||
+      !expr_is_untyped_storage_ref(*c.args[0])) {
+    return {};
+  }
+  if (peeled->kind == Kind::Ident) {
+    ResolveResult rr = resolve_name(static_cast<const Ident&>(*peeled).name);
+    if (rr.kind == ResolvedKind::UnitConst || rr.kind == ResolvedKind::EnumMember ||
+        rr.kind == ResolvedKind::UnitType || rr.is_callable) {
+      return {};
+    }
+  }
+  return expr_to_cxx(*peeled);
+}
+
+std::optional<Emitter::UntypedStorageIndexView>
+Emitter::untyped_storage_index_view(const Index& i) {
+  if (i.indices.size() != 1 || i.base->kind != Kind::Call) return std::nullopt;
+  const auto& cast = static_cast<const Call&>(*i.base);
+  if (cast.args.size() != 1 || cast.callee->kind != Kind::Ident ||
+      !expr_is_untyped_storage_ref(*cast.args[0])) {
+    return std::nullopt;
+  }
+  const TypeExpr* base_ty = deduce_type(*i.base);
+  if (!base_ty) return std::nullopt;
+  base_ty = canonicalize_type(base_ty);
+  if (!base_ty || base_ty->kind != Kind::TyArray) return std::nullopt;
+  const auto& arr = static_cast<const TyArray&>(*base_ty);
+  if (arr.array_kind != ArrayKind::Fixed || arr.dims.size() != 1 ||
+      !arr.element) {
+    return std::nullopt;
+  }
+  std::string lo;
+  std::string size_expr;
+  if (!array_dim_bounds_to_cxx(*arr.dims[0], &lo, &size_expr)) {
+    return std::nullopt;
+  }
+  UntypedStorageIndexView view;
+  view.elem_cxx = type_to_cxx(*arr.element);
+  const std::string index_cxx = expr_to_cxx(*i.indices[0]);
+  const std::string offset =
+      "((" + index_cxx + ") - (" + lo + ")) * sizeof(" + view.elem_cxx + ")";
+  view.ptr_cxx = "::rt::p_byte_offset(" + expr_to_cxx(*cast.args[0]) + ", " +
+                 offset + ")";
+  return view;
 }
 
 bool Emitter::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
@@ -4315,7 +4374,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           const Expr* peeled = peel_primitive_casts(c.args[0].get());
           if (peeled && expr_is_untyped_storage_ref(*c.args[0])) {
-            return "::rt::p_reinterpret_ref<" + primitive_type_cxx(n) +
+            return "::rt::p_reinterpret_load<" + primitive_type_cxx(n) +
                    ">(" + expr_to_cxx(*peeled) + ")";
           }
           if (peeled && expr_is_storage_lvalue(*c.args[0])) {
@@ -4442,6 +4501,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // Pascal `inc(T(lv))` / `dec(T(lv))` mutate the storage behind
           // `lv` as type T. Emit that reinterpreting lvalue explicitly.
           const auto& inner = static_cast<const Call&>(*c.args[0]);
+          if (std::string ptr = primitive_cast_untyped_storage_ptr(inner);
+              !ptr.empty()) {
+            const auto& id = static_cast<const Ident&>(*inner.callee);
+            std::string op = (n == "inc") ? "::rt::p_reinterpret_inc"
+                                          : "::rt::p_reinterpret_dec";
+            if (c.args.size() == 2) {
+              return op + "<" + primitive_type_cxx(id.name) + ">(" + ptr + ", " +
+                     expr_to_cxx(*c.args[1]) + ")";
+            }
+            return op + "<" + primitive_type_cxx(id.name) + ">(" + ptr + ")";
+          }
           if (std::string ref = primitive_cast_lvalue_ref(inner);
               !ref.empty()) {
             std::string op = (n == "inc") ? "::rt::p_inc" : "::rt::p_dec";
@@ -4736,6 +4806,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                                        indices);
           }
         }
+      }
+      if (auto view = untyped_storage_index_view(i)) {
+        return "::rt::p_reinterpret_load<" + view->elem_cxx + ">(" +
+               view->ptr_cxx + ")";
       }
       std::string out = expr_to_cxx(*i.base);
       for (const auto& idx : i.indices) out += "[" + expr_to_cxx(*idx) + "]";
@@ -6043,6 +6117,13 @@ void Emitter::emit_stmt(const Stmt& s) {
       if (a.target->kind == Kind::Call) {
         const auto& c = static_cast<const Call&>(*a.target);
         if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
+          if (std::string ptr = primitive_cast_untyped_storage_ptr(c);
+              !ptr.empty()) {
+            const auto& id = static_cast<const Ident&>(*c.callee);
+            emitln("::rt::p_reinterpret_store<" + primitive_type_cxx(id.name) +
+                   ">(" + ptr + ", " + expr_to_cxx(*a.value) + ");");
+            break;
+          }
           if (std::string ref = primitive_cast_lvalue_ref(c); !ref.empty()) {
             emitln(ref + " = " + expr_to_cxx(*a.value) + ";");
             break;
@@ -6097,6 +6178,11 @@ void Emitter::emit_stmt(const Stmt& s) {
       }
       if (registry && a.target->kind == Kind::Index) {
         const auto& ix = static_cast<const Index&>(*a.target);
+        if (auto view = untyped_storage_index_view(ix)) {
+          emitln("::rt::p_reinterpret_store<" + view->elem_cxx + ">(" +
+                 view->ptr_cxx + ", " + expr_to_cxx(*a.value) + ");");
+          break;
+        }
         std::vector<const Expr*> indices;
         for (const auto& idx : ix.indices) indices.push_back(idx.get());
         if (ix.base->kind == Kind::Member) {

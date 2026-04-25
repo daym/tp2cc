@@ -1775,6 +1775,30 @@ inline T p_reinterpret_copy(const Src& src) {
   return out;
 }
 
+template <typename T>
+inline T p_reinterpret_load(const void* p) {
+  static_assert(std::is_trivially_copyable_v<T>,
+                "byte reinterpretation target must be trivially copyable");
+  T out{};
+  std::memcpy(&out, p, sizeof(T));
+  return out;
+}
+
+template <typename T>
+inline void p_reinterpret_store(void* p, const T& value) {
+  static_assert(std::is_trivially_copyable_v<T>,
+                "byte reinterpretation source must be trivially copyable");
+  std::memcpy(p, &value, sizeof(T));
+}
+
+inline void* p_byte_offset(void* p, std::ptrdiff_t n) {
+  return static_cast<void*>(static_cast<uint8_t*>(p) + n);
+}
+
+inline const void* p_byte_offset(const void* p, std::ptrdiff_t n) {
+  return static_cast<const void*>(static_cast<const uint8_t*>(p) + n);
+}
+
 // View the bytes of the source object itself as a different type.
 // This is the helper used for Pascal `absolute` aliases and typed lvalue
 // casts, where the source object already is the storage being re-viewed.
@@ -2306,9 +2330,32 @@ inline void p_dec(ShortStringCharRef x, N n) {
   *x.byte = static_cast<uint8_t>(static_cast<int64_t>(*x.byte) - n);
 }
 
-// No rvalue `p_inc`/`p_dec` overloads here: casted-lvalue forms like
-// `inc(longint(p))` are emitted as `p_inc(p_reinterpret_ref<int32_t>(p))`,
-// so callers still reach `p_inc` / `p_dec` with a true lvalue.
+template <typename T> inline void p_reinterpret_inc(void* p) {
+  T x = p_reinterpret_load<T>(p);
+  p_inc(x);
+  p_reinterpret_store<T>(p, x);
+}
+template <typename T, typename N> inline void p_reinterpret_inc(void* p, N n) {
+  T x = p_reinterpret_load<T>(p);
+  p_inc(x, n);
+  p_reinterpret_store<T>(p, x);
+}
+template <typename T> inline void p_reinterpret_dec(void* p) {
+  T x = p_reinterpret_load<T>(p);
+  p_dec(x);
+  p_reinterpret_store<T>(p, x);
+}
+template <typename T, typename N> inline void p_reinterpret_dec(void* p, N n) {
+  T x = p_reinterpret_load<T>(p);
+  p_dec(x, n);
+  p_reinterpret_store<T>(p, x);
+}
+
+// No rvalue `p_inc`/`p_dec` overloads here: typed-storage casted lvalues like
+// `inc(longint(p))` on a real pointer slot are emitted as
+// `p_inc(p_reinterpret_storage_ref<int32_t>(p))`. Untyped-storage byte views
+// use `p_reinterpret_inc` / `p_reinterpret_dec` above instead of manufacturing
+// a potentially misaligned C++ reference.
 
 // --- Missing small RTL procedures ------------------------------------------
 

@@ -1526,7 +1526,7 @@ void test_primitive_cast_assign_reinterprets_storage() {
       "  longint(b) := l;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "::rt::p_reinterpret_ref<int32_t>(p_b) = p_l;"));
+  CHECK(contains(out.impl, "::rt::p_reinterpret_store<int32_t>(p_b, p_l);"));
   CHECK(!contains(out.impl, "p_b = ((int32_t)(p_l));"));
 }
 
@@ -1543,8 +1543,22 @@ void test_primitive_cast_read_reinterprets_storage() {
       "  l := longint(b);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_l = ::rt::p_reinterpret_ref<int32_t>(p_b);"));
+  CHECK(contains(out.impl, "p_l = ::rt::p_reinterpret_load<int32_t>(p_b);"));
   CHECK(!contains(out.impl, "p_l = ((int32_t)(p_b));"));
+}
+
+void test_inc_untyped_primitive_cast_reinterprets_storage_by_byte_copy() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure step(var b);\n"
+      "implementation\n"
+      "procedure step(var b);\n"
+      "begin\n"
+      "  inc(longint(b));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_reinterpret_inc<int32_t>(p_b)"));
 }
 
 void test_inc_primitive_cast_reinterprets_storage() {
@@ -1561,6 +1575,25 @@ void test_inc_primitive_cast_reinterprets_storage() {
   CHECK(contains(out.impl,
                  "::rt::p_inc(::rt::p_reinterpret_storage_ref<int32_t>(p_p))"));
   CHECK(!contains(out.impl, "p_p = ((int32_t)(p_p) + 1)"));
+}
+
+void test_untyped_array_view_index_uses_byte_load_store() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tarr = array[0..7] of longint;\n"
+      "procedure poke(var b; i : longint);\n"
+      "implementation\n"
+      "procedure poke(var b; i : longint);\n"
+      "begin\n"
+      "  tarr(b)[i] := tarr(b)[i];\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::p_reinterpret_load<int32_t>(::rt::p_byte_offset(p_b, ((p_i) - (0)) * sizeof(int32_t)))"));
+  CHECK(contains(out.impl,
+                 "::rt::p_reinterpret_store<int32_t>(::rt::p_byte_offset(p_b, ((p_i) - (0)) * sizeof(int32_t)), "));
 }
 
 void test_aggregate_to_primitive_cast_reinterprets_bytes() {
@@ -3214,7 +3247,9 @@ int main() {
   RUN_TEST(test_sizeof_visible_type_uses_type_spelling_not_identifier_lookup);
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
   RUN_TEST(test_primitive_cast_read_reinterprets_storage);
+  RUN_TEST(test_inc_untyped_primitive_cast_reinterprets_storage_by_byte_copy);
   RUN_TEST(test_inc_primitive_cast_reinterprets_storage);
+  RUN_TEST(test_untyped_array_view_index_uses_byte_load_store);
   RUN_TEST(test_aggregate_to_primitive_cast_reinterprets_bytes);
   RUN_TEST(test_absolute_pointer_target_reinterprets_pointee_storage);
   RUN_TEST(test_absolute_pointer_alias_reinterprets_pointer_storage);

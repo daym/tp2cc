@@ -472,6 +472,24 @@ void test_reinterpret_copy_preserves_scalar_bit_pattern() {
   }
 }
 
+void test_reinterpret_load_store_and_inc_handle_misaligned_bytes() {
+  uint8_t raw[8] = {};
+  void* p = raw + 1;
+  int32_t value = 0x12345678;
+  uint8_t expected[sizeof(value)] = {};
+
+  std::memcpy(expected, &value, sizeof(value));
+  p_reinterpret_store<int32_t>(p, value);
+
+  for (size_t i = 0; i < sizeof(value); ++i) {
+    CHECK_EQ(raw[1 + i], expected[i]);
+  }
+  CHECK_EQ(p_reinterpret_load<int32_t>(p), value);
+
+  p_reinterpret_inc<int32_t>(p);
+  CHECK_EQ(p_reinterpret_load<int32_t>(p), value + 1);
+}
+
 void test_scope_exit_runs_on_exception_unwind() {
   int value = 0;
   try {
@@ -928,6 +946,7 @@ int main() {
   RUN_TEST(test_str_formats_real_values);
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
   RUN_TEST(test_reinterpret_copy_preserves_scalar_bit_pattern);
+  RUN_TEST(test_reinterpret_load_store_and_inc_handle_misaligned_bytes);
   RUN_TEST(test_scope_exit_runs_on_exception_unwind);
   RUN_TEST(test_reinterpret_storage_ref_views_pointer_variable_bytes);
   RUN_TEST(test_reinterpret_ref_views_pointee_bytes_of_pointer_value);
