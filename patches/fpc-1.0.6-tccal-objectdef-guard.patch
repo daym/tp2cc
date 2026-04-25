@@ -19,7 +19,7 @@ is a tclassrefdef, so the cast is wrong by construction and the
 field read runs past the end of that allocation.  On native FPC/x86
 the four bytes past the tclassrefdef usually land in adjacent live
 heap, so the smallset test returned some bit and the surrounding
-logic tolerated either outcome.  Under the tp2cc C++ bootstrap the
+logic tolerated either outcome.  Under the tp2cc-translated bootstrap the
 allocation is sized exactly, and the oob read is visible.
 
 Fix: guard the cast with `resulttype^.deftype=objectdef'.  When the

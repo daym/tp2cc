@@ -4,7 +4,7 @@ Subject: Fix wrong record-type casts and PPU-loader type confusion
 License: expat
 
 The FPC 1.0.6 compiler has wrong casts that native FPC tolerated
-by coincidence and the tp2cc C++ bootstrap exposes:
+by coincidence and the tp2cc-translated bootstrap exposes:
 
  * Source-level casts that lie about the record type at the cast
    site -- e.g. casting a tprocsym pointer as pvarsym, casting an
@@ -14,7 +14,7 @@ by coincidence and the tp2cc C++ bootstrap exposes:
    only got away with these because the surrounding code happened
    to read a field at an offset that the wrong record also has, or
    because the variant-part bytes happened to land on a tolerated
-   value.  Under tp2cc the C++ emitter renders a narrowing cast
+   value.  Under tp2cc the translated emitter renders a narrowing cast
    between unrelated record types as a checked downcast, and the
    sized allocation no longer accommodates the over-read.
 
@@ -26,8 +26,8 @@ by coincidence and the tp2cc C++ bootstrap exposes:
    a real pointer.  That in-place reuse claimed the field already
    held the resolved type when in fact it held a tderef of an
    entirely different record type (no shared hierarchy with the
-   declared type).  The C++ emitter then issued a class-hierarchy
-   downcast on a foreign object.  Restructured to park the chain
+   declared type).  The translated bootstrap then issued a
+   class-hierarchy downcast on a foreign object.  Restructured to park the chain
    in a shadow `pderef' field instead, leaving the typed field nil
    until `deref' runs.  PPU on-disk format is unchanged --
    `writederef' synthesises the bytes from the live object after
@@ -107,7 +107,7 @@ Site-by-site summary:
    entry via `pwithsymtable(symt^.next)` even though that value was
    never consumed afterwards.  On the final iteration `next` is the
    ordinary `symtablestack` tail, not another `withsymtable`, so the
-   generated C++ downcast lands on the wrong dynamic type. Stop
+   translated downcast lands on the wrong dynamic type. Stop
    advancing after the last real `withsymtable`.
 
  * tcmem.pas, `firstwith': the loop walks exactly `tablecount`
@@ -115,8 +115,8 @@ Site-by-site summary:
    past the last one via `pwithsymtable(symtable^.next)` even
    though the value was never used afterwards. For a single-entry
    `with`, that `next` pointer is already the ordinary
-   `symtablestack` tail, not another `withsymtable`, so tp2cc's
-   checked downcast lands on the wrong dynamic type. Only advance
+   `symtablestack` tail, not another `withsymtable`, so the
+   translated checked downcast lands on the wrong dynamic type. Only advance
    when another `withsymtable` iteration remains.
 
  * symdefh.inc / symsymh.inc: add shadow `pderef' fields
@@ -129,8 +129,8 @@ Site-by-site summary:
  * symdef.inc / symsym.inc: each affected `load' now parks the
    readderef chain in the shadow and leaves the typed field nil;
    each affected `deref' moves the chain back into the typed
-   field (a cast between unrelated record types, which the C++
-   emitter renders as a reinterpret) and runs the upstream
+   field (a cast between unrelated record types, which the
+   translated emitter renders as a reinterpret) and runs the upstream
    in-place resolve unchanged.
 
 --- a/compiler/i386/aggas.pas

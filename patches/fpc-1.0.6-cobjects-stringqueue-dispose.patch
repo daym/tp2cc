@@ -18,11 +18,11 @@ new/dispose pair.  Native FPC tolerated the mismatch because its
 heap manager folds new/dispose and getmem/freemem onto the same
 underlying allocator and the size argument is reconciled from the
 heap header rather than the caller-supplied value.  Under stricter
-allocators -- including the tp2cc C++ lowering, where new/delete
+allocators -- including the tp2cc-translated runtime split, where new/delete
 target the C++ operator new/delete and getmem/freemem target
 malloc/free -- the size-mismatched and pair-mismatched call is a
-real heap error: ASan reports it as
-`alloc-dealloc-mismatch (malloc vs operator delete)'.
+real heap error once those allocator families are no longer treated
+as interchangeable.
 
 `TStringQueue.Done' already pairs the buffer correctly with
 `stringdispose'; this just brings Delete in line.
@@ -39,7 +39,7 @@ real heap error: ASan reports it as
 +          stringdispose wraps. The original `dispose(p^.data)' worked on
 +          native FPC only because its heap manager folds new/dispose and
 +          getmem/freemem onto the same allocator; under stricter
-+          allocators (or under tp2cc's C++ lowering, where new/delete
++          allocators (or under tp2cc's translated runtime split, where new/delete
 +          and malloc/free are separate) the size-mismatched dispose is
 +          a real heap error. }
 +        stringdispose(p^.data);

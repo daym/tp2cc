@@ -6,7 +6,7 @@ License: expat
 FPC 1.0.6 uses `tmodule.scanner' as a loose cache/ownership slot across
 reset, nested compile, and second-load reload paths. Native FPC mostly got
 away with this because the freed scanner memory often remained untouched,
-but tp2cc's ASan/UBSan bootstrap exposes two real failures:
+but the tp2cc-translated bootstrap makes two real failures visible:
 
  * stale freed scanner pointers kept reachable from module records, and
  * the second-load `loadunit' path reading an uninitialized local
