@@ -1,30 +1,33 @@
 Author: Danny Milosavljevic <dannym@friendly-machines.com>
 Date: 2026-04-20
-Subject: Depack `treference' and `tlocation' for the tp2cc C++ bootstrap (fpc 0.99)
+Subject: Depack internal i386 backend records for the tp2cc-translated bootstrap (fpc 0.99)
 License: expat
 
 Same fix as fpc-1.0.6-c-record-packing.patch, applied to the fpc-0.99.14
-source tree (where both records live in compiler/cpubase.pas -- the i386
-back-end isn't split into its own subdir yet).
+source tree (where the affected records live in compiler/cpubase.pas --
+the i386 back-end isn't split into its own subdir yet).
 
-These two records carry no file-format role -- they're internal
-codegen/operand state for the i386 backend, not written to PPU files or
-to disk in any other form.  Upstream declared them `packed' purely to
-save RAM on 1990s-era builds.
+These records carry no file-format role -- they're internal i386
+backend state and tables, not written to PPU files or to disk in any
+other form.  Upstream declared them `packed' purely to save RAM on
+1990s-era builds.
 
 tp2cc translates Pascal `packed record' to `struct [[gnu::packed]]' in
-C++.  Unlike `#pragma pack(push,1)', the attribute form makes GCC flag
+the translated bootstrap.  Unlike `#pragma pack(push,1)', the attribute form makes GCC flag
 latent UB that the pragma silently permits: in particular, binding a
 C++ reference to a misaligned packed field (which is exactly what a
 Pascal `var' parameter pointing at `treference.offset' or
-`tlocation.register' becomes under the C++ lowering).  Those bindings
+`tlocation.register' becomes under the translated lowering).  Those bindings
 assume natural alignment for the referent type; the packed-member
 address carries no such guarantee, so GCC rejects them with
-`cannot bind packed field X to T&'.
+`cannot bind packed field X to T&'. For aggregate carriers such as
+`tinsentry.optypes' and `TInsProp.Ch', the translated bootstrap will happily compile the
+packed field access and then execute through a misaligned
+subobject/reference at runtime.
 
 On x86 the original FPC code worked because the CPU tolerates
-unaligned loads, but under strict C++ rules the resulting references
-are UB regardless of hardware.  Depacking these two in-memory records
+unaligned loads, but under the translated bootstrap's strict reference rules the resulting references
+are UB regardless of hardware.  Depacking these in-memory records
 restores natural alignment without disturbing any on-disk layout, and
 lets the [[gnu::packed]] policy keep catching real misalignments
 wherever they might appear for records that *are* file formats
@@ -33,11 +36,11 @@ wherever they might appear for records that *are* file formats
 --- a/compiler/cpubase.pas
 +++ b/compiler/cpubase.pas
 @@ -425,7 +425,11 @@
-
+ 
    { immediate/reference record }
    preference = ^treference;
 -  treference = packed record
-+  { was `packed record' -- depacked for the tp2cc C++ bootstrap. This record
++  { was `packed record' -- depacked for the tp2cc-translated bootstrap. This record
 +    is in-memory-only (no file-format role), and packing it forced misaligned
 +    access to its `longint'/pointer fields. C++ references to those fields
 +    are UB when misaligned, which `[[gnu::packed]]' rightly rejects. }
@@ -47,7 +50,7 @@ wherever they might appear for records that *are* file formats
       base,
 @@ -477,7 +481,8 @@
    );
-
+ 
    plocation = ^tlocation;
 -  tlocation = packed record
 +  { depacked for tp2cc bootstrap, see note on `treference' above. }
@@ -55,3 +58,31 @@ wherever they might appear for records that *are* file formats
       case loc : tloc of
          LOC_MEM,LOC_REFERENCE : (reference : treference);
          LOC_FPU : ();
+@@ -546,7 +551,13 @@
+ 
+ {$ifndef NOAG386BIN}
+ type
+-  tinsentry=packed record
++  { was `packed record' -- depacked for the tp2cc-translated bootstrap. This
++    instruction-table entry is in-memory-only, and packing it misaligns
++    the `longint' operand-type array. tp2cc lowers that array to a translated
++    aggregate carrier whose indexed element access binds references to
++    the underlying elements; keeping this record packed therefore turns
++    normal operand-table lookups into misaligned-reference UB. }
++  tinsentry=record
+     opcode  : tasmop;
+     ops     : byte;
+     optypes : array[0..2] of longint;
+@@ -617,7 +628,11 @@
+ const
+   MaxCh = 3; { Max things a instruction can change }
+ type
+-  TInsProp = packed record
++  { was `packed record' -- depacked for the tp2cc-translated bootstrap. This is
++    optimizer metadata, not an on-disk format, and its change-array is
++    only consulted in memory. Keeping it packed forces aggregate indexed
++    access through a packed subobject for no file-format benefit. }
++  TInsProp = record
+     Ch : Array[1..MaxCh] of TInsChange;
+   end;
+ 
