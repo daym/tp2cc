@@ -1,0 +1,33 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-25
+Subject: Depack daopt386's in-memory TContent optimizer state
+License: expat
+
+`compiler/i386/daopt386.pas` stores per-register optimizer state in the
+packed `TContent` record. Later optimizer passes in both `daopt386` and
+`csopt386` dereference `MemWrite` and `StartMod` through those shared
+register-content slots.
+
+That state is in-memory-only. Keeping it packed turns those ordinary nested
+accesses into packed-subobject misalignment hazards for the translated
+bootstrap. Depack `TContent`; this does not change any on-disk format.
+
+diff --git a/compiler/i386/daopt386.pas b/compiler/i386/daopt386.pas
+index 724492cdb5..8a7ee607f4 100644
+--- a/compiler/i386/daopt386.pas
++++ b/compiler/i386/daopt386.pas
+@@ -81,7 +81,13 @@ type
+ {the possible states of a flag}
+   TFlagContents = (F_Unknown, F_notSet, F_Set);
+ 
+-  TContent = Packed Record
++  { was `packed record` -- depacked for the tp2cc C++ bootstrap. This is
++    in-memory optimizer state, not an on-disk format, and several later
++    optimizer passes dereference `MemWrite` / `StartMod` through these
++    per-register slots. Keeping it packed turns those ordinary nested
++    accesses into packed-subobject misalignment hazards for the translated
++    bootstrap. }
++  TContent = Record
+       {start and end of block instructions that defines the
+        content of this register.}
+                StartMod: tai;
