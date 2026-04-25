@@ -723,6 +723,18 @@ void test_typed_array_const() {
   CHECK(contains(out.header, "{1, 2, 4, 8}"));
 }
 
+void test_typed_array_const_with_inline_subrange_element_type() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  reverse_nible : array[0..1] of 0..15 = (%0001, %0010);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "p_reverse_nible"));
+  CHECK(contains(out.header, "{1, 2}"));
+}
+
 void test_singleton_typed_array_const() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -3343,6 +3355,7 @@ int main() {
   RUN_TEST(test_const_fixed_classref_array_parameter_stays_value_abi);
   RUN_TEST(test_proc_signature_in_header);
   RUN_TEST(test_typed_array_const);
+  RUN_TEST(test_typed_array_const_with_inline_subrange_element_type);
   RUN_TEST(test_singleton_typed_array_const);
   RUN_TEST(test_nested_array_type);
   RUN_TEST(test_named_subrange_array_type);

@@ -87,6 +87,7 @@ class Parser {
 
   // ---- expressions (precedence-climbing) ----
   ast::ExprPtr parse_expr();
+  ast::ExprPtr parse_subrange_bound();  // expression without relational ops
   ast::ExprPtr parse_simple_expr();   // +/-/or/xor
   ast::ExprPtr parse_term();          // * / div mod and shl shr
   ast::ExprPtr parse_factor();        // unary, primary

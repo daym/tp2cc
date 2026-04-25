@@ -755,7 +755,7 @@ TypePtr Parser::parse_simple_type() {
     return te;
   }
   // Either a name (possibly qualified) or a subrange literal-start.
-  // Attempt subrange first by trying to parse an expression and looking for
+  // Attempt subrange first by trying to parse a bound expression and looking for
   // `..`. But Pascal named types are simple identifiers, so:
   //   TypeName | lo .. hi
   // If the first token is an Ident and the next is NOT `..`, it's a name.
@@ -765,9 +765,9 @@ TypePtr Parser::parse_simple_type() {
     if (peek().kind == Tok::DotDot) {
       auto sr = std::make_shared<TySubrange>();
       sr->loc = loc;
-      sr->lo = parse_expr();     // will read the ident as primary
+      sr->lo = parse_subrange_bound();     // will read the ident as primary
       expect(Tok::DotDot, "subrange");
-      sr->hi = parse_expr();
+      sr->hi = parse_subrange_bound();
       return sr;
     }
     auto tn = std::make_shared<TyName>();
@@ -789,9 +789,9 @@ TypePtr Parser::parse_simple_type() {
   // Otherwise, treat as subrange.
   auto sr = std::make_shared<TySubrange>();
   sr->loc = loc;
-  sr->lo = parse_expr();
+  sr->lo = parse_subrange_bound();
   expect(Tok::DotDot, "subrange");
-  sr->hi = parse_expr();
+  sr->hi = parse_subrange_bound();
   return sr;
 }
 
@@ -1473,6 +1473,14 @@ ExprPtr Parser::parse_expr() {
     b->lhs = std::move(lhs); b->rhs = std::move(rhs);
     lhs = std::move(b);
   }
+}
+
+ExprPtr Parser::parse_subrange_bound() {
+  // Subrange bounds are constant ordinal expressions, not full relational
+  // expressions. Parsing them as simple_expr keeps `=` out of the bound and
+  // avoids swallowing the typed-const `=` that follows declarations like
+  // `array[0..1] of 0..15 = (...)`.
+  return parse_simple_expr();
 }
 
 ExprPtr Parser::parse_simple_expr() {

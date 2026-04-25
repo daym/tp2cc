@@ -935,6 +935,28 @@ void test_typed_array_constant() {
   }
 }
 
+void test_typed_array_constant_with_inline_subrange_element_type() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  reverse_nible : array[0..1] of 0..15 = (%0001,%0010);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && !u->interface_decls.empty()) {
+    auto* cd = dynamic_cast<ConstDecl*>(u->interface_decls[0].get());
+    CHECK(cd);
+    if (cd) {
+      auto* ac = dynamic_cast<ArrayConst*>(cd->value.get());
+      CHECK(ac);
+      if (ac) CHECK_EQ(ac->elements.size(), size_t{2});
+    }
+  }
+}
+
 void test_typed_record_constant() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1109,6 +1131,7 @@ int main() {
   RUN_TEST(test_procedural_type_decl);
   RUN_TEST(test_directives_as_identifiers);
   RUN_TEST(test_typed_array_constant);
+  RUN_TEST(test_typed_array_constant_with_inline_subrange_element_type);
   RUN_TEST(test_typed_record_constant);
   RUN_TEST(test_inherited_method_call);
   RUN_TEST(test_directive_as_method_name);
