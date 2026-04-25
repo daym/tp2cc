@@ -37,7 +37,7 @@ RPM_DIR="$ROOT/../rpm"
 # object hierarchies, oob reads on wrongly-cast records, etc. -- exactly
 # the latent UB that `tp2cc` inherits from decades-old FPC sources. Keep
 # these on by default; `SAN=` disables for profiling or release runs.
-SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer}"
+SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=address,undefined}"
 CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -fms-extensions -fpermissive -Wno-narrowing -Wno-microsoft-anon-tag -Wno-permissive $SAN"
 export CXXFLAGS
 
@@ -47,7 +47,8 @@ export CXXFLAGS
 # status breaks the stage2/stage3 use-fpc drivers (which read pp's exit
 # code as "compile failed"). Leave heap/stack checking armed; just turn
 # off the exit-time leak scan. Override with ASAN_OPTIONS=... to re-enable.
-export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
+export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1}"
+export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
 
 MACHINE="$($CXX -dumpmachine 2>/dev/null || true)"
 case "$MACHINE" in
