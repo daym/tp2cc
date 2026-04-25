@@ -2508,6 +2508,23 @@ void test_forward_class_decl_only_emits_one_struct_body() {
   CHECK(contains(out.header, "p_tnode* p_next;"));
 }
 
+void test_empty_inherited_class_decl_emits_real_struct() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  ebase = class\n"
+      "  end;\n"
+      "  echild = class(ebase);\n"
+      "var\n"
+      "  child : echild;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "struct p_echild : public p_ebase {"));
+  CHECK(contains(out.header, "using inherited = p_ebase;"));
+  CHECK(contains(out.header, "extern p_echild* p_child;"));
+}
+
 void test_class_constructor_call_allocates_instance() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -3413,6 +3430,7 @@ int main() {
   RUN_TEST(test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes);
   RUN_TEST(test_class_types_lower_to_pointers_and_implicit_tobject);
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
+  RUN_TEST(test_empty_inherited_class_decl_emits_real_struct);
   RUN_TEST(test_class_constructor_call_allocates_instance);
   RUN_TEST(test_object_constructor_call_uses_base_method_on_self);
   RUN_TEST(test_implicit_tobject_inherited_constructor_autocalls);

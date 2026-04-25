@@ -928,17 +928,17 @@ TypePtr Parser::parse_object_type() {
     expect(Tok::KwObject, "object");
   }
   to->loc = loc;
-  // Delphi forward class declaration: `T = class;' (body follows in a
-  // later type declaration within the same section).  Only legal for
-  // `class' -- TP `object;' with no body is not idiomatic.  Detect by
-  // `class' immediately followed by `;'; no parent, no body, no end.
-  if (to->is_reference_type && check(Tok::Semi)) {
-    to->is_forward = true;
-    return to;
-  }
   if (accept(Tok::LParen)) {
     to->parent = consume_ident("parent class");
     expect(Tok::RParen, "parent class");
+  }
+  // Delphi forward class declaration: `T = class;' (body follows in a
+  // later type declaration within the same section). A parenthesized
+  // ancestor changes the meaning: `T = class(Base);` is a complete empty
+  // class declaration, equivalent to `class(Base) end`.
+  if (to->is_reference_type && check(Tok::Semi)) {
+    if (to->parent.empty()) to->is_forward = true;
+    return to;
   }
   Visibility vis = Visibility::Public;
   while (!at_end() && !check(Tok::KwEnd)) {

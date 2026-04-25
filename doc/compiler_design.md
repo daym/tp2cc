@@ -186,6 +186,13 @@ Pascal `class` types are heap-allocated and generally lowered as pointers. `obje
 - class method body: `this`
 - value object method body: `(*this)`
 
+Class declarations follow the Delphi/FPC split between true forwards and
+empty class bodies:
+
+- `TFoo = class;` is a forward declaration
+- `TBar = class(TFoo);` is a complete empty inherited class declaration,
+  equivalent to `class(TFoo) end`
+
 ### 1.9 Constructors and `Create`
 
 Reference-class construction is explicit. The emitter allocates the object and then calls the Pascal constructor helper.
@@ -483,6 +490,11 @@ The parser currently rejects several Delphi/FPC class-method features such as:
 - `message`
 
 This is an intentional current limitation.
+
+For ordinary class declarations, tp2cc does support both:
+
+- true forward declarations like `TFoo = class;`
+- empty inherited class declarations like `TBar = class(TFoo);`
 
 ### 3.7 Metaclass reflection subset
 

@@ -509,12 +509,9 @@ struct TyObject : TypeExpr {
   // destruction via `.Free` (null-safe at the call site).
   bool is_reference_type = false;
   // Delphi-style forward declaration `T = class;' -- the body comes
-  // later in the same type block (or same unit section).  A forward
-  // declaration carries no members, no parent; the real TyObject is
-  // produced when the actual `class ... end' follows.  Used in
-  // fpc-2.0.0 for mutually-referential classes (tprocdef/tobjectdef/
-  // timplementedinterfaces in symdef.pas, TAsmSection/TAsmObjectData
-  // in aasmbase.pas).
+  // later in the same type block (or same unit section). A true forward
+  // declaration carries no members and no parent; `T = class(Base);` is a
+  // complete empty class declaration instead, not a forward.
   bool is_forward = false;
   TyObject() : TypeExpr(Kind::TyObject) {}
 };

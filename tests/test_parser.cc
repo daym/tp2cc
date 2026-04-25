@@ -508,6 +508,34 @@ void test_class_declaration() {
   }
 }
 
+void test_empty_inherited_class_decl() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  ebase = class end;\n"
+      "  echild = class(ebase);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && u->interface_decls.size() >= 2) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[1].get());
+    CHECK(td);
+    if (td) {
+      auto* to = dynamic_cast<TyObject*>(td->type.get());
+      CHECK(to);
+      if (to) {
+        CHECK(to->is_reference_type);
+        CHECK(!to->is_forward);
+        CHECK_EQ(to->parent, std::string("ebase"));
+        CHECK_EQ(to->members.size(), size_t{0});
+      }
+    }
+  }
+}
+
 void test_class_properties() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1073,6 +1101,7 @@ int main() {
   RUN_TEST(test_open_and_dynamic_array_forms_stay_distinct);
   RUN_TEST(test_error_recovery_basic);
   RUN_TEST(test_class_declaration);
+  RUN_TEST(test_empty_inherited_class_decl);
   RUN_TEST(test_class_properties);
   RUN_TEST(test_write_only_property);
   RUN_TEST(test_class_directives);
