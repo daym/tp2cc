@@ -1,0 +1,47 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-25
+Subject: Depack aasmcpu's in-memory tinsentry and TInsProp backend tables
+License: expat
+
+`compiler/x86/aasmcpu.pas` stores instruction metadata in two packed
+records:
+
+  TInsProp  with an indexed change array
+  tinsentry with an indexed longint operand-type array
+
+Those tables are only consulted in memory. Keeping them packed forces
+aggregate indexed access through packed subobjects, which tp2cc rejects
+and which would otherwise become misaligned aggregate access in the
+translated bootstrap. Depack these two backend-table records; this does
+not change any on-disk format.
+
+--- a/compiler/x86/aasmcpu.pas
++++ b/compiler/x86/aasmcpu.pas
+@@ -160,7 +160,11 @@
+         Ch_MRAX, Ch_MRCX, Ch_MRDX, Ch_MRBX, Ch_MRSP, Ch_MRBP, Ch_MRSI, Ch_MRDI
+       );
+ 
+-      TInsProp = packed record
++      { was `packed record` -- depacked for the tp2cc C++ bootstrap. This is
++        optimizer metadata, not an on-disk format, and its change-array is
++        only consulted in memory. Keeping it packed forces aggregate indexed
++        access through a packed subobject for no file-format benefit. }
++      TInsProp = record
+         Ch : Array[1..MaxInsChanges] of TInsChange;
+       end;
+ 
+@@ -175,7 +179,13 @@
+     type
+       TOperandOrder = (op_intel,op_att);
+ 
+-      tinsentry=packed record
++      { was `packed record` -- depacked for the tp2cc C++ bootstrap. This
++        instruction-table entry is in-memory-only, and packing it misaligns
++        the `longint` operand-type array. tp2cc lowers that array to a C++
++        aggregate carrier whose indexed element access binds references to
++        the underlying elements; keeping this record packed therefore turns
++        normal operand-table lookups into misaligned-reference UB. }
++      tinsentry=record
+         opcode  : tasmop;
+         ops     : byte;
+         optypes : array[0..2] of longint;
