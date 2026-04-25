@@ -1,0 +1,58 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-24
+Subject: Guard tai_label\s tasmlabel narrowing casts during PPU load/deref
+License: expat
+
+`compiler/aasmtai.pas` narrows `tai_label.l` from the generic
+`tasmsymbol` base type in two places:
+
+  l := tasmlabel(ppufile.getasmsymbol);
+  objectlibrary.DerefAsmsymbol(tasmsymbol(l));
+
+Both paths can leave `l` pointing at a plain `tasmsymbol`. In the
+bootstrap subset these old-style casts lower to reinterpreting views,
+so the later `tai_label(hp).l.is_used` path in `aggas` ends up making
+a member call through a `tasmlabel`-typed reference whose dynamic
+object is only a base `tasmsymbol`. UBSan reports that immediately
+during the stage-2 compiler build.
+
+This is the same cleanup style as the other FPC 2 source guards:
+perform the runtime type test first, narrow only after that, and fail
+loudly if the PPU stream violates the expected invariant.
+
+--- a/compiler/aasmtai.pas
++++ b/compiler/aasmtai.pas
+@@ -1446,9 +1446,15 @@
+ 
+ 
+     constructor tai_label.ppuload(t:taitype;ppufile:tcompilerppufile);
++      var
++        s : tasmsymbol;
+       begin
+         inherited ppuload(t,ppufile);
+-        l:=tasmlabel(ppufile.getasmsymbol);
++        s:=ppufile.getasmsymbol;
++        if assigned(s) and (s is tasmlabel) then
++          l:=tasmlabel(s)
++        else
++          internalerror(2005050501);
+         is_global:=boolean(ppufile.getbyte);
+       end;
+ 
+@@ -1462,8 +1468,15 @@
+ 
+ 
+     procedure tai_label.derefimpl;
++      var
++        s : tasmsymbol;
+       begin
+-        objectlibrary.DerefAsmsymbol(tasmsymbol(l));
++        s:=tasmsymbol(l);
++        objectlibrary.DerefAsmsymbol(s);
++        if assigned(s) and (s is tasmlabel) then
++          l:=tasmlabel(s)
++        else
++          internalerror(2005050502);
+         l.is_set:=true;
+       end;
+ 
