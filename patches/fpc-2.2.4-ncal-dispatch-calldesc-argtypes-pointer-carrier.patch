@@ -1,0 +1,51 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-25
+Subject: Route ncal dispatch calldesc argtypes writes through a pointer carrier
+License: expat
+
+`compiler/ncal.pas` builds a packed dispatch-call descriptor with a dummy
+`argtypes` byte array. Writing `calldesc.argtypes[i]` indexes through a
+packed aggregate subfield, which tp2cc cannot lower safely.
+
+Keep the packed call-descriptor layout intact, but introduce a typed
+pointer carrier for the `argtypes` array and use that for the indexed
+writes.
+
+--- a/compiler/ncal.pas
++++ b/compiler/ncal.pas
+@@ -240,6 +240,9 @@ implementation
+         DISPATCH_PROPERTYPUT = $4;
+         DISPATCH_PROPERTYPUTREF = $8;
+         DISPATCH_CONSTRUCT = $4000;
++      type
++        TCallDescArgTypes = array[0..255] of byte;
++        PCallDescArgTypes = ^TCallDescArgTypes;
+       var
+         statements : tstatementnode;
+         result_data,
+@@ -255,6 +258,7 @@ implementation
+         vardatadef,
+         pvardatadef : tdef;
+         dispatchbyref : boolean;
++        callargtypes : PCallDescArgTypes;
+ 
+         calldesc : packed record
+             calltype,argcount,namedargcount : byte;
+@@ -409,13 +413,14 @@ implementation
+                     ctypeconvnode.create_internal(para.value,assignmenttype)));
+                 end;
+ 
++            callargtypes:=PCallDescArgTypes(@calldesc.argtypes);
+             if is_ansistring(para.value.resultdef) then
+-              calldesc.argtypes[currargpos]:=varStrArg
++              callargtypes^[currargpos]:=varStrArg
+             else
+-              calldesc.argtypes[currargpos]:=para.value.resultdef.getvardef;
++              callargtypes^[currargpos]:=para.value.resultdef.getvardef;
+ 
+             if dispatchbyref then
+-              calldesc.argtypes[currargpos]:=calldesc.argtypes[currargpos] or $80;
++              callargtypes^[currargpos]:=callargtypes^[currargpos] or $80;
+ 
+             increase_paramssize;
+ 
