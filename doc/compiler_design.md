@@ -93,6 +93,24 @@ p_c = ::rt::tp2cc_char_of('A');
 p_s = ::rt::tp2cc_shortstring_literal<255>("Hello");
 ```
 
+Trailing default parameters are lowered by inserting the omitted actuals at the
+call site. This applies to ordinary procedures/functions, methods, and the
+special class-constructor allocation lowering.
+
+Pascal:
+
+```pascal
+procedure Note(W: Integer; Code: Integer = 7);
+...
+Note(1);
+```
+
+Representative C++:
+
+```cpp
+p_note(1, 7);
+```
+
 ### 1.4 Strings
 
 Pascal strings are not lowered as raw `char *`. They use explicit runtime carriers:

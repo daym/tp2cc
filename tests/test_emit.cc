@@ -735,6 +735,45 @@ void test_typed_array_const_with_inline_subrange_element_type() {
   CHECK(contains(out.header, "{1, 2}"));
 }
 
+void test_free_function_trailing_default_argument_is_lowered() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure note(w : integer; code : integer = 7);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure note(w : integer; code : integer);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  note(1);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_note(1, 7);"));
+}
+
+void test_method_trailing_default_argument_is_lowered() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tverbose = class\n"
+      "    procedure message(w : integer; onqueue : integer = 9);\n"
+      "  end;\n"
+      "procedure run(verbose : tverbose);\n"
+      "implementation\n"
+      "procedure tverbose.message(w : integer; onqueue : integer);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run(verbose : tverbose);\n"
+      "begin\n"
+      "  verbose.message(1);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "->p_message(1, 9);"));
+}
+
 void test_singleton_typed_array_const() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2559,6 +2598,27 @@ void test_class_constructor_call_allocates_instance() {
   CHECK(contains(out.impl, "tp2cc_ptr->p_create();"));
 }
 
+void test_class_constructor_trailing_default_argument_is_lowered() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class\n"
+      "    constructor create(n : integer = 7);\n"
+      "  end;\n"
+      "function build : tnode;\n"
+      "implementation\n"
+      "constructor tnode.create(n : integer);\n"
+      "begin\n"
+      "end;\n"
+      "function build : tnode;\n"
+      "begin\n"
+      "  build := tnode.create;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "tp2cc_ptr->p_create(7);"));
+}
+
 void test_object_constructor_call_uses_base_method_on_self() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -3356,6 +3416,8 @@ int main() {
   RUN_TEST(test_proc_signature_in_header);
   RUN_TEST(test_typed_array_const);
   RUN_TEST(test_typed_array_const_with_inline_subrange_element_type);
+  RUN_TEST(test_free_function_trailing_default_argument_is_lowered);
+  RUN_TEST(test_method_trailing_default_argument_is_lowered);
   RUN_TEST(test_singleton_typed_array_const);
   RUN_TEST(test_nested_array_type);
   RUN_TEST(test_named_subrange_array_type);
@@ -3445,6 +3507,7 @@ int main() {
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
   RUN_TEST(test_empty_inherited_class_decl_emits_real_struct);
   RUN_TEST(test_class_constructor_call_allocates_instance);
+  RUN_TEST(test_class_constructor_trailing_default_argument_is_lowered);
   RUN_TEST(test_object_constructor_call_uses_base_method_on_self);
   RUN_TEST(test_implicit_tobject_inherited_constructor_autocalls);
   RUN_TEST(test_inherited_destroy_autocalls_through_non_overriding_parent);

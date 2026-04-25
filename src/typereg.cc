@@ -15,6 +15,16 @@ std::string lc(std::string s) {
   return s;
 }
 
+bool proc_accepts_zero_args(const ProcDecl& pd) {
+  // Defaulted trailing parameters make a Pascal routine callable as `foo`
+  // / `foo()` even when its flattened formal count is non-zero.
+  for (const auto& p : pd.params) {
+    size_t count = p.names.empty() ? 1 : p.names.size();
+    if (count != 0 && !p.default_value) return false;
+  }
+  return true;
+}
+
 void add_record_fields(RecordInfo& ri, const TyRecord& tr) {
   for (const auto& f : tr.fields) {
     FieldInfo fi;
@@ -56,6 +66,7 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
       size_t pc = 0;
       for (const auto& p : pd.params) pc += p.names.size();
       ms.param_count = pc;
+      ms.accepts_zero_args = proc_accepts_zero_args(pd);
       ci.methods[lc(pd.name)] = ms;
     } else if (m.kind == ObjectMemberKind::Property) {
       PropertyInfo pi;
@@ -136,6 +147,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         size_t pc = 0;
         for (const auto& par : pd.params) pc += par.names.size();
         p.param_count = pc;
+        p.accepts_zero_args = proc_accepts_zero_args(pd);
         if (ui) (is_interface ? ui->iface_procs : ui->impl_procs)[lc(pd.name)] = p;
         break;
       }
@@ -208,7 +220,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     p.decl = nullptr;
     p.param_count = b.params;
     p.is_function = b.is_fn;
-    p.accepts_zero_args = b.zero_ok;
+    p.accepts_zero_args = b.zero_ok || b.params == 0;
     p.return_type_name = b.ret;
     rtui.iface_procs[b.name] = p;
   }

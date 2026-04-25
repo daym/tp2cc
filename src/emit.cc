@@ -677,6 +677,7 @@ struct Emitter {
   // auto-call (the lambda itself is `std::function<T()>`, not a `T`).
   struct NestedFn {
     size_t param_count = 0;
+    bool accepts_zero_args = false;
     bool is_function = false;
     const ast::TypeExpr* return_type = nullptr;
     const ast::ProcDecl* decl = nullptr;
@@ -911,6 +912,18 @@ struct Emitter {
     bool is_const_storage = false;
   };
   std::optional<AbsoluteTargetInfo> resolve_absolute_target(const ast::VarDecl& vd);
+  struct FlatCallParamInfo {
+    const ast::TypeExpr* type = nullptr;
+    bool untyped = false;
+    bool mutable_ref = false;
+    const ast::Expr* default_value = nullptr;
+  };
+  bool proc_accepts_zero_args(const ast::ProcDecl& decl);
+  const ast::ProcDecl* resolve_call_decl(const ast::Expr& callee);
+  void flatten_call_param_info(const ast::ProcDecl* decl,
+                               std::vector<FlatCallParamInfo>& flat_params);
+  void append_defaulted_trailing_call_args(
+      const ast::ProcDecl* decl, std::vector<const ast::Expr*>& args);
   void mark_call_param_info(const ast::ProcDecl* decl,
                             std::vector<bool>& untyped_arg,
                             std::vector<bool>& mutable_ref_arg,
@@ -2686,7 +2699,7 @@ bool Emitter::expr_is_storage_lvalue(const Expr& e) {
   if (root.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(root);
     ResolveResult rr = resolve_name(id.name);
-    if (rr.is_callable && rr.is_parameterless) return false;
+    if (rr.is_callable && rr.accepts_zero_args) return false;
     if (rr.kind == ResolvedKind::WithProperty ||
         rr.kind == ResolvedKind::ClassProperty) {
       return false;
@@ -2697,7 +2710,7 @@ bool Emitter::expr_is_storage_lvalue(const Expr& e) {
     if (!cls.empty()) {
       if (registry->lookup_class_property(cls, m.name)) return false;
       if (const auto* method = registry->lookup_class_method(cls, m.name)) {
-        if (method->param_count == 0) return false;
+        if (method->accepts_zero_args) return false;
       }
     }
   }
@@ -3002,6 +3015,90 @@ void Emitter::mark_call_param_info(
   }
 }
 
+const ProcDecl* Emitter::resolve_call_decl(const Expr& callee) {
+  if (callee.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(callee);
+    if (!registry) return nullptr;
+    if (!current_class_name.empty()) {
+      if (auto* m = registry->lookup_class_method(current_class_name, id.name)) {
+        return m->decl.get();
+      }
+    }
+    ResolveResult rr = resolve_name(id.name);
+    return rr.proc;
+  }
+  if (callee.kind != Kind::Member || !registry) return nullptr;
+  const auto& mem = static_cast<const Member&>(callee);
+  std::string cls;
+  if (mem.base->kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(*mem.base);
+    if (id.name == "self") {
+      cls = current_class_name;
+    } else if (registry->classes.count(id.name) ||
+               registry->records.count(id.name)) {
+      cls = id.name;
+    } else {
+      // Method calls through a variable or parameter receiver (`source.read`)
+      // still need the receiver's declared Pascal type here so later call
+      // lowering can recover parameter modes and any trailing defaults.
+      cls = deduce_class_alias(*mem.base);
+    }
+  } else {
+    cls = deduce_class_alias(*mem.base);
+  }
+  if (cls.empty()) return nullptr;
+  if (auto* m = registry->lookup_class_method(cls, mem.name)) {
+    return m->decl.get();
+  }
+  return nullptr;
+}
+
+bool Emitter::proc_accepts_zero_args(const ProcDecl& decl) {
+  for (const auto& p : decl.params) {
+    size_t count = p.names.empty() ? 1 : p.names.size();
+    if (count != 0 && !p.default_value) return false;
+  }
+  return true;
+}
+
+void Emitter::flatten_call_param_info(
+    const ProcDecl* decl, std::vector<FlatCallParamInfo>& flat_params) {
+  flat_params.clear();
+  if (!decl) return;
+  for (const auto& p : decl->params) {
+    size_t count = p.names.empty() ? 1 : p.names.size();
+    for (size_t i = 0; i < count; ++i) {
+      FlatCallParamInfo info;
+      info.type = p.type.get();
+      info.untyped = !p.type;
+      info.mutable_ref =
+          p.mode == Param::Var || p.mode == Param::Out ||
+          (p.mode == Param::Const && const_param_needs_mutable_ref(p.type.get()));
+      info.default_value = p.default_value.get();
+      flat_params.push_back(info);
+    }
+  }
+}
+
+void Emitter::append_defaulted_trailing_call_args(
+    const ProcDecl* decl, std::vector<const Expr*>& args) {
+  if (!decl) return;
+  std::vector<FlatCallParamInfo> flat_params;
+  flatten_call_param_info(decl, flat_params);
+  if (args.size() >= flat_params.size()) return;
+
+  // Pascal trailing default parameters are compile-time sugar: the callee sees
+  // an ordinary full argument list, so the emitter expands omitted suffix
+  // actuals here before any later call lowering asks about parameter modes.
+  for (size_t i = args.size(); i < flat_params.size(); ++i) {
+    if (!flat_params[i].default_value) return;
+  }
+  args.reserve(flat_params.size());
+  for (size_t i = args.size(); i < flat_params.size(); ++i) {
+    args.push_back(flat_params[i].default_value);
+  }
+}
+
 // Call emission only cares about parameter metadata for a narrow set of
 // bootstrap-sensitive rewrites: untyped `var` arguments stay as raw storage
 // pointers, `char` actuals may need string wrapping, and open arrays need the
@@ -3015,16 +3112,8 @@ void Emitter::collect_call_param_info(
     const auto& id = static_cast<const Ident&>(callee);
     mark_builtin_memory_helper_param_info(id.name, untyped_arg,
                                           mutable_ref_arg, param_types);
-    if (!registry) return;
-    if (!current_class_name.empty()) {
-      if (auto* m = registry->lookup_class_method(current_class_name, id.name)) {
-        mark_call_param_info(m->decl.get(), untyped_arg, mutable_ref_arg,
-                             param_types);
-        return;
-      }
-    }
-    ResolveResult rr = resolve_name(id.name);
-    mark_call_param_info(rr.proc, untyped_arg, mutable_ref_arg, param_types);
+    mark_call_param_info(resolve_call_decl(callee), untyped_arg, mutable_ref_arg,
+                         param_types);
     return;
   }
   if (callee.kind != Kind::Member) return;
@@ -3034,30 +3123,8 @@ void Emitter::collect_call_param_info(
     mark_builtin_memory_helper_param_info(mem.name, untyped_arg,
                                           mutable_ref_arg, param_types);
   }
-  if (!registry) return;
-  std::string cls;
-  if (mem.base->kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(*mem.base);
-    if (id.name == "self") {
-      cls = current_class_name;
-    } else if (registry->classes.count(id.name) ||
-               registry->records.count(id.name)) {
-      cls = id.name;
-    } else {
-      // Method calls through a variable/parameter receiver (`source.read`)
-      // still need the receiver's declared Pascal type here. Without this
-      // fallback we miss untyped/open-array parameter metadata for such
-      // calls and start passing plain values where Pascal expects storage.
-      cls = deduce_class_alias(*mem.base);
-    }
-  } else {
-    cls = deduce_class_alias(*mem.base);
-  }
-  if (cls.empty()) return;
-  if (auto* m = registry->lookup_class_method(cls, mem.name)) {
-    mark_call_param_info(m->decl.get(), untyped_arg, mutable_ref_arg,
-                         param_types);
-  }
+  mark_call_param_info(resolve_call_decl(callee), untyped_arg, mutable_ref_arg,
+                       param_types);
 }
 
 std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
@@ -3361,15 +3428,34 @@ std::optional<std::string> Emitter::maybe_lower_class_constructor_call(
     implicit_root_create = true;
   }
 
+  std::vector<const Expr*> effective_args(args.begin(), args.end());
+  std::vector<const TypeExpr*> effective_param_types(param_types.begin(),
+                                                     param_types.end());
+  std::vector<bool> effective_untyped_arg(untyped_arg.begin(),
+                                          untyped_arg.end());
+  std::vector<bool> effective_mutable_ref_arg(mutable_ref_arg.begin(),
+                                              mutable_ref_arg.end());
+  append_defaulted_trailing_call_args(method ? method->decl.get() : nullptr,
+                                      effective_args);
+  if (effective_param_types.size() < effective_args.size()) {
+    effective_param_types.resize(effective_args.size(), nullptr);
+    effective_untyped_arg.resize(effective_args.size(), false);
+    effective_mutable_ref_arg.resize(effective_args.size(), false);
+    mark_call_param_info(method ? method->decl.get() : nullptr,
+                         effective_untyped_arg, effective_mutable_ref_arg,
+                         effective_param_types);
+  }
+
   // Pascal constructor calls on a class value (`TNode.Create`) allocate a
   // fresh instance and then run the constructor body on that instance. They
   // are not plain static method calls, even though the emitted C++ helper
   // itself lives on the struct type.
   std::string args_cxx;
-  for (size_t i = 0; i < args.size(); ++i) {
+  for (size_t i = 0; i < effective_args.size(); ++i) {
     if (i) args_cxx += ", ";
-    args_cxx += lower_call_arg(*args[i], param_types[i], untyped_arg[i],
-                               mutable_ref_arg[i]);
+    args_cxx += lower_call_arg(*effective_args[i], effective_param_types[i],
+                               effective_untyped_arg[i],
+                               effective_mutable_ref_arg[i]);
   }
   std::string struct_ty = named_type_struct_cxx(class_name);
   return "([&]{ auto tp2cc_ptr = new " + struct_ty + "{}; tp2cc_ptr->" +
@@ -3433,6 +3519,7 @@ Emitter::ResolveResult Emitter::resolve_name(
         r.proc = m->decl.get();
         r.is_callable = true;
         r.is_parameterless = (m->param_count == 0);
+        r.accepts_zero_args = m->accepts_zero_args;
         r.cxx = mangle(name);  // caller emits the `base.` prefix
         return r;
       }
@@ -3481,6 +3568,7 @@ Emitter::ResolveResult Emitter::resolve_name(
         r.kind = ResolvedKind::WithMethod;
         r.is_callable = true;
         r.is_parameterless = true;
+        r.accepts_zero_args = true;
         return r;
       }
       if (!cls.empty()) {
@@ -3490,6 +3578,7 @@ Emitter::ResolveResult Emitter::resolve_name(
           r.proc = m->decl.get();
           r.is_callable = true;
           r.is_parameterless = (m->param_count == 0);
+          r.accepts_zero_args = m->accepts_zero_args;
           return r;
         }
         if (registry->lookup_class_field(cls, name)) {
@@ -3515,6 +3604,7 @@ Emitter::ResolveResult Emitter::resolve_name(
        r.proc = nit->second.decl;
       r.is_callable = true;
       r.is_parameterless = (nit->second.param_count == 0);
+      r.accepts_zero_args = nit->second.accepts_zero_args;
       return r;
     }
   }
@@ -3544,6 +3634,7 @@ Emitter::ResolveResult Emitter::resolve_name(
       r.kind = ResolvedKind::ClassMethod;
       r.is_callable = true;
       r.is_parameterless = true;
+      r.accepts_zero_args = true;
       return r;
     }
     if (auto* m = registry->lookup_class_method(current_class_name, name)) {
@@ -3552,6 +3643,7 @@ Emitter::ResolveResult Emitter::resolve_name(
       r.proc = m->decl.get();
       r.is_callable = true;
       r.is_parameterless = (m->param_count == 0);
+      r.accepts_zero_args = m->accepts_zero_args;
       return r;
     }
     if (registry->lookup_class_field(current_class_name, name)) {
@@ -3575,6 +3667,7 @@ Emitter::ResolveResult Emitter::resolve_name(
         r.proc = pi->decl.get();
         r.is_callable = true;
         r.is_parameterless = (pi->param_count == 0);
+        r.accepts_zero_args = pi->accepts_zero_args;
         return r;
       }
       if (ui->find_var(name)) {
@@ -3837,7 +3930,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // names bare: Pascal typed-const initialisers reference
       // function names as procedural-pointer values.
       bool want_call = !is_callee_context_ && block_depth > 0 &&
-                       rr.is_callable && rr.is_parameterless;
+                       rr.is_callable && rr.accepts_zero_args;
       return want_call ? rr.cxx + "()" : rr.cxx;
     }
     case Kind::Binary: {
@@ -4054,7 +4147,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             !current_fn_name.empty() &&
             ascii_lower(m.name) == ascii_lower(current_fn_name);
         bool want_call = !is_callee_context_ &&
-                         ((rr.is_callable && rr.is_parameterless) ||
+                         ((rr.is_callable && rr.accepts_zero_args) ||
                           implicit_tobject_root || same_current_method);
         return want_call ? text + "()" : text;
       }
@@ -4103,7 +4196,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               }
             }
             bool want_call = !is_callee_context_ &&
-                             rr.is_callable && rr.is_parameterless;
+                             rr.is_callable && rr.accepts_zero_args;
             return want_call ? rr.cxx + "()" : rr.cxx;
           }
           // `TClass.method` -- Pascal's way to call a specific
@@ -4126,7 +4219,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                 resolve_name(m.name, QualifierKind::Class, base_name);
             std::string text = mangle(base_name) + "::" + mangle(m.name);
             bool want_call = !is_callee_context_ &&
-                             rr.is_callable && rr.is_parameterless;
+                             rr.is_callable && rr.accepts_zero_args;
             return want_call ? text + "()" : text;
           }
         }
@@ -4146,7 +4239,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (method->kind == SymKind::Constructor ||
                 method->kind == SymKind::ClassMethod) {
               std::string text = base_cxx + "->" + mangle(m.name);
-              bool want_call = !is_callee_context_ && method->param_count == 0;
+              bool want_call = !is_callee_context_ &&
+                               method->accepts_zero_args;
               return want_call ? text + "()" : text;
             }
           }
@@ -4191,7 +4285,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (is_callee_context_ || !registry) return text;
       if (bcls.empty()) return text;
       if (const auto* method = registry->lookup_class_method(bcls, m.name)) {
-        if (method->param_count == 0) text += "()";
+        if (method->accepts_zero_args) text += "()";
       }
       return text;
     }
@@ -4575,14 +4669,18 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                 }
               }
             }
-            std::vector<bool> untyped_arg(cc.args.size(), false);
-            std::vector<bool> mutable_ref_arg(cc.args.size(), false);
-            std::vector<const TypeExpr*> param_types(cc.args.size(), nullptr);
+            std::vector<const Expr*> ctor_args;
+            ctor_args.reserve(cc.args.size());
+            for (const auto& arg : cc.args) ctor_args.push_back(arg.get());
+            append_defaulted_trailing_call_args(ctor_decl, ctor_args);
+            std::vector<bool> untyped_arg(ctor_args.size(), false);
+            std::vector<bool> mutable_ref_arg(ctor_args.size(), false);
+            std::vector<const TypeExpr*> param_types(ctor_args.size(), nullptr);
             mark_call_param_info(ctor_decl, untyped_arg, mutable_ref_arg,
                                  param_types);
-            for (size_t i = 0; i < cc.args.size(); ++i) {
+            for (size_t i = 0; i < ctor_args.size(); ++i) {
               if (i) margs += ", ";
-              margs += lower_call_arg(*cc.args[i], param_types[i],
+              margs += lower_call_arg(*ctor_args[i], param_types[i],
                                       untyped_arg[i], mutable_ref_arg[i]);
             }
           } else if (second.kind == Kind::Ident) {
@@ -4683,6 +4781,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
         }
       }
+      const ProcDecl* call_decl = resolve_call_decl(*c.callee);
+      std::vector<const Expr*> call_args;
+      call_args.reserve(c.args.size());
+      for (const auto& arg : c.args) call_args.push_back(arg.get());
+      append_defaulted_trailing_call_args(call_decl, call_args);
+      std::vector<bool> call_untyped_arg(call_args.size(), false);
+      std::vector<bool> call_mutable_ref_arg(call_args.size(), false);
+      std::vector<const TypeExpr*> call_param_types(call_args.size(), nullptr);
+      collect_call_param_info(*c.callee, call_untyped_arg,
+                              call_mutable_ref_arg, call_param_types);
       if (c.args.empty() && c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         if (auto free_call = maybe_lower_class_free_member(*mem.base, mem.name)) {
@@ -4695,17 +4803,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           const auto& id = static_cast<const Ident&>(*mem.base);
           auto cit = registry->classes.find(id.name);
           if (cit != registry->classes.end()) {
-            std::vector<bool> untyped_arg(c.args.size(), false);
-            std::vector<bool> mutable_ref_arg(c.args.size(), false);
-            std::vector<const TypeExpr*> param_types(c.args.size(), nullptr);
-            collect_call_param_info(*c.callee, untyped_arg, mutable_ref_arg,
-                                    param_types);
-            std::vector<const Expr*> args;
-            args.reserve(c.args.size());
-            for (const auto& arg : c.args) args.push_back(arg.get());
             if (auto ctor_call = maybe_lower_class_constructor_call(
-                    id.name, mem.name, args, param_types, untyped_arg,
-                    mutable_ref_arg)) {
+                    id.name, mem.name, call_args, call_param_types,
+                    call_untyped_arg, call_mutable_ref_arg)) {
               return *ctor_call;
             }
           }
@@ -4734,20 +4834,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return "setjmp(p_tpexcept::p_detail::p_state_for(&(" +
                expr_to_cxx(*c.args[0]) + ")).p_env)";
       }
-      // Collect per-arg "untyped-var" flags from the callee's proc
-      // decl so we can wrap those args with `(void*)&(arg)`. Handles
-      // two shapes: Ident callees (unit-level procs) and Member
-      // callees (methods whose class we can resolve).
-      std::vector<bool> untyped_arg(c.args.size(), false);
-      std::vector<bool> mutable_ref_arg(c.args.size(), false);
-      std::vector<const TypeExpr*> param_types(c.args.size(), nullptr);
-      collect_call_param_info(*c.callee, untyped_arg, mutable_ref_arg,
-                              param_types);
       std::string out = callee_text + "(";
-      for (size_t i = 0; i < c.args.size(); ++i) {
+      for (size_t i = 0; i < call_args.size(); ++i) {
         if (i) out += ", ";
-        out += lower_call_arg(*c.args[i], param_types[i], untyped_arg[i],
-                              mutable_ref_arg[i]);
+        out += lower_call_arg(*call_args[i], call_param_types[i],
+                              call_untyped_arg[i], call_mutable_ref_arg[i]);
       }
       out += ")";
       return out;
@@ -6413,7 +6504,7 @@ void Emitter::emit_stmt(const Stmt& s) {
             std::string cls = deduce_class_alias(*mem.base);
             if (!cls.empty()) {
               if (const auto* method = registry->lookup_class_method(cls, mem.name)) {
-                stmt_autocalls_member = method->param_count == 0;
+                stmt_autocalls_member = method->accepts_zero_args;
               } else if (ascii_lower(mem.name) == "destroy") {
                 if (const auto* ci = class_info_for_type_name(cls)) {
                   stmt_autocalls_member = ci->is_reference_type;
@@ -6826,6 +6917,7 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
       if (!insert_local_name(npd.loc, npd.name)) continue;
       NestedFn nf;
       for (const auto& p : npd.params) nf.param_count += p.names.size();
+      nf.accepts_zero_args = proc_accepts_zero_args(npd);
       nf.is_function = (npd.pkind == ProcKind::Function);
       nf.return_type = npd.return_type.get();
       nf.decl = &npd;
@@ -7030,6 +7122,7 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
       if (!insert_local_name(npd.loc, npd.name)) continue;
       NestedFn nf;
       for (const auto& p : npd.params) nf.param_count += p.names.size();
+      nf.accepts_zero_args = proc_accepts_zero_args(npd);
       nf.is_function = (npd.pkind == ProcKind::Function);
       nf.return_type = npd.return_type.get();
       nf.decl = &npd;
