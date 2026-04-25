@@ -24,8 +24,10 @@ SOURCE_DIR="${FPC106_SRC:-$ROOT/../fpc-1.0.6/source}"
 # ASan and UBSan catch packed-field misbindings, vptr downcasts on foreign
 # object hierarchies, oob reads on wrongly-cast records, etc. -- exactly
 # the latent UB tp2cc inherits from decades-old FPC sources. Keep these
-# armed by default; `SAN=` disables for profiling or release runs.
-SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer}"
+# armed by default; `SAN=` disables for profiling or release runs. Make
+# sanitizer findings fatal so a bootstrap never reports success while
+# printing active UB.
+SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=address,undefined}"
 CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -fms-extensions -fpermissive -Wno-narrowing -Wno-microsoft-anon-tag -Wno-permissive $SAN"
 export CXXFLAGS
 
@@ -34,8 +36,10 @@ export CXXFLAGS
 # exit. That leaks by design, and LSan turning each exit into a nonzero
 # status breaks the stage2/stage3 use-fpc drivers (which read pp's exit
 # code as "compile failed"). Leave heap/stack checking armed; just turn
-# off the exit-time leak scan. Override with ASAN_OPTIONS=... to re-enable.
-export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
+# off the exit-time leak scan while keeping every other sanitizer hit
+# fatal.
+export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1}"
+export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
 BOOT_ROOT="${BOOTSTRAP_ROOT:-$ROOT/build/fpc-1.0.6-bootstrap}"
 CLEAN_SRC="$BOOT_ROOT/source"
 STAGE1_DIR="$BOOT_ROOT/stage1"
