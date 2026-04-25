@@ -1,0 +1,53 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-24
+Subject: Preserve TAsmLabel class when generating alternate asm symbols
+License: expat
+
+`ncgbas.pas` relabels inline-asm labels through:
+
+  ReLabel(tasmsymbol(tai_label(hp2).l));
+
+That path allows `GenerateAltSymbol` to assign `p.altsymbol` back into
+`tai_label.l`. But `GenerateAltSymbol` always created a plain
+`tasmsymbol`, even when the original symbol was a `tasmlabel`. The
+result is that later assembler output walks a `tai_label` whose `l`
+slot no longer contains a real label object, and the translated
+compiler trips UBSan when `aggas` calls label-only methods through it.
+
+Keep alternate labels in the label class. For label inputs, generate a
+fresh alternate label via the existing label factories and copy over the
+symbol binding/type metadata. Non-label symbols still use the generic
+`tasmsymbol` alternate path.
+
+--- a/compiler/aasmbase.pas
++++ b/compiler/aasmbase.pas
+@@ -849,11 +849,27 @@
+ 
+ 
+     procedure TAsmLibraryData.GenerateAltSymbol(p:tasmsymbol);
++      var
++        l : tasmlabel;
+       begin
+         if not assigned(p.altsymbol) then
+          begin
+-           p.altsymbol:=tasmsymbol.create(p.name+'_'+tostr(nextaltnr),p.defbind,p.typ);
+-           symbolsearch.insert(p.altsymbol);
++           if p is tasmlabel then
++            begin
++              if tasmlabel(p).is_addr then
++                getaddrlabel(l)
++              else
++                getlabel(l);
++              l.typ:=p.typ;
++              l.defbind:=p.defbind;
++              l.currbind:=p.currbind;
++              p.altsymbol:=l;
++            end
++           else
++            begin
++              p.altsymbol:=tasmsymbol.create(p.name+'_'+tostr(nextaltnr),p.defbind,p.typ);
++              symbolsearch.insert(p.altsymbol);
++            end;
+            { add also the original sym to the usedasmsymbollist,
+              that list is used to reset the altsymbol }
+            if not p.inusedlist then
