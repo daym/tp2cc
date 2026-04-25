@@ -1657,6 +1657,27 @@ void test_absolute_pointer_alias_reinterprets_pointer_storage() {
                  "p_pint &p_value = ::rt::p_reinterpret_storage_ref<p_pint>(p_raw);"));
 }
 
+void test_pointer_alias_cast_on_pointer_expression_uses_plain_cast() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "type\n"
+      "  plongint = ^longint;\n"
+      "var\n"
+      "  raw : array[0..7] of byte;\n"
+      "  i : longint;\n"
+      "  l : longint;\n"
+      "begin\n"
+      "  l := plongint(@raw[i*4])^;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "((p_plongint)("));
+  CHECK(!contains(out.impl, "::rt::p_plongint("));
+}
+
 void test_absolute_typed_const_alias_reinterprets_same_storage() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2051,6 +2072,35 @@ void test_internal_helpers_avoid_double_underscores() {
       "end.\n");
   CHECK(!contains(out.header, "__"));
   CHECK(!contains(out.impl, "__"));
+}
+
+void test_for_loop_uses_resolved_global_control_var() {
+  auto out = compile_snippet_with_registry(
+      "unit symtable;\n"
+      "interface\n"
+      "uses globals;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  for token := first_overloaded to last_overloaded do begin end;\n"
+      "end;\n"
+      "end.\n",
+      {{"globals.pas",
+        "unit globals;\n"
+        "interface\n"
+        "type\n"
+        "  ttoken = (_plus, _assignment);\n"
+        "var\n"
+        "  token : ttoken;\n"
+        "const\n"
+        "  first_overloaded = _plus;\n"
+        "  last_overloaded = _assignment;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.impl, "p_globals::p_token = tp2cc_from;"));
+  CHECK(contains(out.impl, "if (p_globals::p_token == tp2cc_to) break;"));
+  CHECK(contains(out.impl, "::rt::p_inc(p_globals::p_token);"));
 }
 
 void test_const_object_param_uses_mutable_ref() {
@@ -3253,6 +3303,7 @@ int main() {
   RUN_TEST(test_aggregate_to_primitive_cast_reinterprets_bytes);
   RUN_TEST(test_absolute_pointer_target_reinterprets_pointee_storage);
   RUN_TEST(test_absolute_pointer_alias_reinterprets_pointer_storage);
+  RUN_TEST(test_pointer_alias_cast_on_pointer_expression_uses_plain_cast);
   RUN_TEST(test_absolute_typed_const_alias_reinterprets_same_storage);
   RUN_TEST(test_absolute_const_param_alias_stays_const_reference);
   RUN_TEST(test_property_getter_setter_lowering);
@@ -3268,6 +3319,7 @@ int main() {
   RUN_TEST(test_method_pointer_record_cast_reinterprets_same_storage);
   RUN_TEST(test_unbound_method_address_uses_thunk_code);
   RUN_TEST(test_internal_helpers_avoid_double_underscores);
+  RUN_TEST(test_for_loop_uses_resolved_global_control_var);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
   RUN_TEST(test_parameterless_procvar_stmt_autocalls);
   RUN_TEST(test_direct_procvar_var_decl_uses_named_function_pointer_syntax);

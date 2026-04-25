@@ -4629,6 +4629,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (peeled && expr_is_storage_lvalue(*c.args[0])) {
             return "((" + cast_type_cxx + ")(" + expr_to_cxx(*peeled) + "))";
           }
+          return "((" + cast_type_cxx + ")(" + expr_to_cxx(*c.args[0]) + "))";
         }
       }
       if (c.args.size() == 1 && c.callee->kind == Kind::Member && registry) {
@@ -6529,7 +6530,8 @@ void Emitter::emit_stmt(const Stmt& s) {
     }
     case Kind::For: {
       const auto& f = static_cast<const For&>(s);
-      std::string var = mangle(f.var);
+      ResolveResult vr = resolve_name(f.var);
+      std::string var = vr.cxx.empty() ? mangle(f.var) : vr.cxx;
       std::string from = expr_to_cxx(*f.from);
       std::string to = expr_to_cxx(*f.to);
       std::string n = std::to_string(++loop_label_counter);
