@@ -55,6 +55,13 @@ Site-by-site summary:
    the call sites only read psym-level fields afterwards.
    Dropped.
 
+ * pexpr.pas, `is_func_ret' branch: the historic identity tests
+   `pfuncretsym(sym)=...` and `pvarsym(sym)=opsym` narrow a generic
+   `psym` to unrelated sibling record types just to compare pointer
+   identity. Under tp2cc those become checked downcasts and UBSan
+   correctly rejects a `tfuncretsym` masquerading as `tvarsym`.
+   Compare at the common `psym` level instead.
+
  * tcadd.pas, set-operation handling: when a type-mismatch
    between `rd' and a setdef `ld' was reported via CGMessage the
    code fell through without halting, then later did
@@ -67,6 +74,23 @@ Site-by-site summary:
    themselves.  Guard the `v^.vartype.def' read to the subtypes
    that actually have a `vartype' field (tvarsym and its child
    tabsolutesym).
+
+ * tree.pas, `disposetree' `dt_with' branch: like `tcmem.firstwith',
+   the old loop advanced once past the last real `withsymtable`
+   entry via `pwithsymtable(symt^.next)` even though that value was
+   never consumed afterwards.  On the final iteration `next` is the
+   ordinary `symtablestack` tail, not another `withsymtable`, so the
+   generated C++ downcast correctly trips UBSan.  Stop advancing after
+   the last real `withsymtable`.
+
+ * tcmem.pas, `firstwith': the loop walks exactly `tablecount`
+   `withsymtable` entries, but the old code still advanced once
+   past the last one via `pwithsymtable(symtable^.next)` even
+   though the value was never used afterwards. For a single-entry
+   `with`, that `next` pointer is already the ordinary
+   `symtablestack` tail, not another `withsymtable`, so tp2cc's
+   checked downcast rightly trips UBSan. Only advance when
+   another `withsymtable` iteration remains.
 
  * symdefh.inc / symsymh.inc: add shadow `pderef' fields
    alongside every PPU-reference field that held a pderef
@@ -120,6 +144,26 @@ Site-by-site summary:
               orddef:
 --- a/compiler/pexpr.pas
 +++ b/compiler/pexpr.pas
+@@ -954,15 +954,15 @@
+                { is this an access to a function result? Accessing _RESULT is
+                  always allowed and funcretn is generated }
+                if assigned(p^.funcretsym) and
+-                  ((pfuncretsym(sym)=p^.resultfuncretsym) or
+-                   ((pfuncretsym(sym)=p^.funcretsym) or
+-                    ((pvarsym(sym)=opsym) and ((p^.flags and pi_operator)<>0))) and
++                  ((sym=psym(p^.resultfuncretsym)) or
++                   ((sym=psym(p^.funcretsym)) or
++                    ((sym=psym(opsym)) and ((p^.flags and pi_operator)<>0))) and
+                    (p^.returntype.def<>pdef(voiddef)) and
+                    (token<>_LKLAMMER) and
+                    (not ((m_tp in aktmodeswitches) and (afterassignment or in_args)))
+                   ) then
+                  begin
+-                    if ((pvarsym(sym)=opsym) and
++                    if ((sym=psym(opsym)) and
+                        ((p^.flags and pi_operator)<>0)) then
+                        inc(opsym^.refs);
+                     p1:=genzeronode(funcretn);
 @@ -1133,7 +1133,16 @@
                                                 { search also in inherited methods }
                                                 repeat
@@ -167,7 +211,24 @@ Site-by-site summary:
                     if (p^.right^.treetype=setconstn) then
 --- a/compiler/tree.pas
 +++ b/compiler/tree.pas
-@@ -1100,7 +1100,17 @@
+@@ -667,9 +667,12 @@
+              {$ELSE}
+                 symt:=p^.withsymtable;
+                 for i:=1 to p^.tablecount do
+                   begin
+                      if assigned(symt) then
+                        begin
+-                           p^.withsymtable:=pwithsymtable(symt^.next);
++                           if i<p^.tablecount then
++                             p^.withsymtable:=pwithsymtable(symt^.next)
++                           else
++                             p^.withsymtable:=nil;
+                            dispose(symt,done);
+                         end;
+                      symt:=p^.withsymtable;
+--- a/compiler/tree.pas
++++ b/compiler/tree.pas
+@@ -1100,7 +1103,17 @@
        {$IFDEF NEWST}
           p^.resulttype:=v^.definition;
        {$ELSE}
@@ -186,6 +247,19 @@ Site-by-site summary:
        {$ENDIF NEWST}
           p^.symtableentry:=v;
           p^.symtable:=st;
+--- a/compiler/tcmem.pas
++++ b/compiler/tcmem.pas
+@@ -644,8 +644,9 @@
+                     if (p^.left^.treetype=loadn) and
+                        (p^.left^.symtable=aktprocsym^.definition^.localst) then
+                       symtable^.direct_with:=true;
+                     symtable^.withnode:=p;
+-                    symtable:=pwithsymtable(symtable^.next);
++                    if i<p^.tablecount then
++                      symtable:=pwithsymtable(symtable^.next);
+                   end;
+                firstpass(p^.right);
+                if codegenerror then
 --- a/compiler/symdefh.inc
 +++ b/compiler/symdefh.inc
 @@ -28,6 +28,12 @@
