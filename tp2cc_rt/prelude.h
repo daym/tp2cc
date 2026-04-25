@@ -13,7 +13,7 @@
 // constructor-based implicit conversions for the Pascal carrier types in this
 // header.
 // tp2cc models Pascal initialization/conversion explicitly in emitted code and
-// named helpers (`p_shortstring_of`, `p_ansistring_of`, `p_open_array`,
+// named helpers (`tp2cc_shortstring_of`, `tp2cc_ansistring_of`, `tp2cc_open_array`,
 // `p_method_ptr`, ...), not through hidden C++ construction hooks.
 // User-declared constructors change the aggregate/POD surface that GCC uses
 // for packed-layout decisions.
@@ -59,13 +59,13 @@ namespace rt {
 
 enum class p_char : uint8_t {};
 
-inline constexpr p_char p_char_of(char c) {
+inline constexpr p_char tp2cc_char_of(char c) {
   return static_cast<p_char>(static_cast<uint8_t>(c));
 }
-inline constexpr p_char p_char_of(p_char c) {
+inline constexpr p_char tp2cc_char_of(p_char c) {
   return c;
 }
-inline constexpr p_char p_char_of(uint8_t c) {
+inline constexpr p_char tp2cc_char_of(uint8_t c) {
   return static_cast<p_char>(c);
 }
 inline constexpr uint8_t p_char_byte(p_char c) {
@@ -85,8 +85,8 @@ inline p_char* p_from_c_str_copy(const char* s) {
   thread_local std::vector<p_char> buf;
   size_t n = std::strlen(s);
   buf.resize(n + 1);
-  for (size_t i = 0; i < n; ++i) buf[i] = p_char_of(s[i]);
-  buf[n] = p_char_of('\0');
+  for (size_t i = 0; i < n; ++i) buf[i] = tp2cc_char_of(s[i]);
+  buf[n] = tp2cc_char_of('\0');
   return buf.data();
 }
 
@@ -109,7 +109,7 @@ inline Fn p_funptr_from_bits(void* bits) {
 }
 
 template <typename Signature>
-struct MethodPtr;
+struct tp2cc_MethodPtr;
 
 // Raw `{Code,Data}` storage used by Pascal code that reinterprets method
 // pointers as plain records instead of invoking them through `... of object`.
@@ -119,7 +119,7 @@ struct p_tmethod {
 };
 
 template <typename Ret, typename... Args>
-struct MethodPtr<Ret(Args...)> {
+struct tp2cc_MethodPtr<Ret(Args...)> {
   using Thunk = Ret (*)(void*, Args...);
 
   // Keep the layout as two pointer-sized slots so Pascal code that
@@ -128,7 +128,7 @@ struct MethodPtr<Ret(Args...)> {
   void* code = nullptr;
   void* self = nullptr;
 
-  constexpr MethodPtr& operator=(std::nullptr_t) {
+  constexpr tp2cc_MethodPtr& operator=(std::nullptr_t) {
     code = nullptr;
     self = nullptr;
     return *this;
@@ -147,51 +147,51 @@ struct MethodPtr<Ret(Args...)> {
     }
   }
 
-  friend constexpr bool operator==(const MethodPtr& a, const MethodPtr& b) {
+  friend constexpr bool operator==(const tp2cc_MethodPtr& a, const tp2cc_MethodPtr& b) {
     return a.code == b.code && a.self == b.self;
   }
-  friend constexpr bool operator!=(const MethodPtr& a, const MethodPtr& b) {
+  friend constexpr bool operator!=(const tp2cc_MethodPtr& a, const tp2cc_MethodPtr& b) {
     return !(a == b);
   }
-  friend constexpr bool operator==(const MethodPtr& a, std::nullptr_t) {
+  friend constexpr bool operator==(const tp2cc_MethodPtr& a, std::nullptr_t) {
     return a.code == nullptr;
   }
-  friend constexpr bool operator==(std::nullptr_t, const MethodPtr& a) {
+  friend constexpr bool operator==(std::nullptr_t, const tp2cc_MethodPtr& a) {
     return a == nullptr;
   }
-  friend constexpr bool operator!=(const MethodPtr& a, std::nullptr_t) {
+  friend constexpr bool operator!=(const tp2cc_MethodPtr& a, std::nullptr_t) {
     return !(a == nullptr);
   }
-  friend constexpr bool operator!=(std::nullptr_t, const MethodPtr& a) {
+  friend constexpr bool operator!=(std::nullptr_t, const tp2cc_MethodPtr& a) {
     return !(a == nullptr);
   }
 };
 
 template <typename Sig>
-constexpr MethodPtr<Sig> p_method_ptr(void* code, void* self) {
+constexpr tp2cc_MethodPtr<Sig> p_method_ptr(void* code, void* self) {
   return {code, self};
 }
 
 template <auto Fn>
-inline void* p_method_code() {
+inline void* tp2cc_method_code() {
   return p_funptr_bits(Fn);
 }
 
-template <int N> struct ShortString;
-template <int N> struct ShortStringPtrValue;
-template <int N> struct ShortStringPtrRef;
-class AnsiString;
-template <int N = 255> constexpr ShortString<N> p_shortstring_of();
-template <int N = 255> constexpr ShortString<N> p_shortstring_of(const char* s);
-template <int N = 255> constexpr ShortString<N> p_shortstring_of(const p_char* s);
-template <int N = 255> constexpr ShortString<N> p_shortstring_of(p_char c);
-template <int N = 255> constexpr ShortString<N> p_shortstring_of(char c);
+template <int N> struct tp2cc_ShortString;
+template <int N> struct tp2cc_ShortStringPtrValue;
+template <int N> struct tp2cc_ShortStringPtrRef;
+class tp2cc_AnsiString;
+template <int N = 255> constexpr tp2cc_ShortString<N> tp2cc_shortstring_of();
+template <int N = 255> constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(const char* s);
+template <int N = 255> constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(const p_char* s);
+template <int N = 255> constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(p_char c);
+template <int N = 255> constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(char c);
 template <int N = 255, int M>
-constexpr ShortString<N> p_shortstring_of(const ShortString<M>& o);
+constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(const tp2cc_ShortString<M>& o);
 template <int N, typename Src>
-inline void p_shortstring_assign(ShortString<N>& dest, const Src& src);
+inline void tp2cc_shortstring_assign(tp2cc_ShortString<N>& dest, const Src& src);
 template <int N, typename Src>
-inline void p_shortstring_assign(ShortStringPtrRef<N> dest, const Src& src);
+inline void tp2cc_shortstring_assign(tp2cc_ShortStringPtrRef<N> dest, const Src& src);
 struct p_tobject;
 struct p_exception;
 
@@ -244,7 +244,7 @@ inline void p_assert(bool ok) {
 }
 
 template <int N>
-inline void p_assert(bool ok, const ShortString<N>&) {
+inline void p_assert(bool ok, const tp2cc_ShortString<N>&) {
   if (!ok) std::abort();
 }
 
@@ -276,7 +276,7 @@ struct p_exception : p_tobject {
   const void* p_classtype() override;
   int32_t p_instancesize() override;
 
-  bool p_create(const ShortString<255>&) {
+  bool p_create(const tp2cc_ShortString<255>&) {
     return true;
   }
 };
@@ -333,36 +333,36 @@ tp2cc_scope_exit<F> tp2cc_make_scope_exit(F fn) {
 
 struct CharConst;
 
-struct ShortStringCharValue {
+struct tp2cc_ShortStringCharValue {
   const uint8_t* byte = nullptr;
 
   constexpr explicit operator uint8_t() const { return *byte; }
-  constexpr operator p_char() const { return p_char_of(*byte); }
+  constexpr operator p_char() const { return tp2cc_char_of(*byte); }
 
   const p_char* operator&() const {
     return reinterpret_cast<const p_char*>(byte);
   }
 };
 
-struct ShortStringCharRef {
+struct tp2cc_ShortStringCharRef {
   uint8_t* byte = nullptr;
 
   constexpr explicit operator uint8_t() const { return *byte; }
-  constexpr operator p_char() const { return p_char_of(*byte); }
+  constexpr operator p_char() const { return tp2cc_char_of(*byte); }
 
-  constexpr ShortStringCharRef& operator=(const ShortStringCharRef& other) {
+  constexpr tp2cc_ShortStringCharRef& operator=(const tp2cc_ShortStringCharRef& other) {
     *byte = *other.byte;
     return *this;
   }
 
   template <typename T>
   requires std::is_convertible_v<T, p_char>
-  constexpr ShortStringCharRef& operator=(T x) {
+  constexpr tp2cc_ShortStringCharRef& operator=(T x) {
     *byte = p_char_byte(static_cast<p_char>(x));
     return *this;
   }
 
-  constexpr ShortStringCharRef& operator=(uint8_t x) {
+  constexpr tp2cc_ShortStringCharRef& operator=(uint8_t x) {
     *byte = x;
     return *this;
   }
@@ -372,20 +372,20 @@ struct ShortStringCharRef {
   }
 };
 
-// --- ShortString<N> --------------------------------------------------------
+// --- tp2cc_ShortString<N> --------------------------------------------------------
 //
 // Pascal-compatible short-string layout: 1 length byte followed by N content
 // bytes. Fixed size. Default capacity is 255 (classic `string`).
 
 template <int N = 255>
-struct ShortString {
-  static_assert(N >= 1 && N <= 255, "ShortString capacity must be 1..255");
+struct tp2cc_ShortString {
+  static_assert(N >= 1 && N <= 255, "tp2cc_ShortString capacity must be 1..255");
 
-  // No default member initialisers, so `std::is_trivial_v<ShortString>`
-  // holds; that lets a ShortString live as a field of a packed record
+  // No default member initialisers, so `std::is_trivial_v<tp2cc_ShortString>`
+  // holds; that lets a tp2cc_ShortString live as a field of a packed record
   // without GCC silently dropping the `[[gnu::packed]]` attribute.
   // Consumers always read no further than `length`, and the emitter
-  // value-inits locals (`ShortString<> s{};`) so Pascal `var s : string;`
+  // value-inits locals (`tp2cc_ShortString<> s{};`) so Pascal `var s : string;`
   // still starts empty.
   uint8_t length;
   p_char data[N];
@@ -394,35 +394,35 @@ struct ShortString {
   constexpr bool empty() const { return length == 0; }
 
   template <int M, typename = std::enable_if_t<M != N>>
-  constexpr operator ShortString<M>() const {
-    return p_shortstring_of<M>(*this);
+  constexpr operator tp2cc_ShortString<M>() const {
+    return tp2cc_shortstring_of<M>(*this);
   }
 
-  operator AnsiString() const;
+  operator tp2cc_AnsiString() const;
 
-  constexpr ShortString& operator=(p_char c) {
+  constexpr tp2cc_ShortString& operator=(p_char c) {
     length = 1;
     data[0] = c;
     return *this;
   }
 
-  constexpr ShortString& operator=(char c) {
-    return (*this = p_char_of(c));
+  constexpr tp2cc_ShortString& operator=(char c) {
+    return (*this = tp2cc_char_of(c));
   }
 
   // Cross-capacity equality -- declared as a friend template so
   // `s<255> == s<10>` is unambiguous.
   template <int M>
-  friend constexpr bool operator==(const ShortString& a,
-                                   const ShortString<M>& b) {
+  friend constexpr bool operator==(const tp2cc_ShortString& a,
+                                   const tp2cc_ShortString<M>& b) {
     if (a.length != b.length) return false;
     for (int i = 0; i < a.length; ++i)
       if (a.data[i] != b.data[i]) return false;
     return true;
   }
   template <int M>
-  friend constexpr bool operator!=(const ShortString& a,
-                                   const ShortString<M>& b) {
+  friend constexpr bool operator!=(const tp2cc_ShortString& a,
+                                   const tp2cc_ShortString<M>& b) {
     return !(a == b);
   }
 
@@ -430,8 +430,8 @@ struct ShortString {
   // right: compare characters up to min-length, shorter is smaller on
   // tie. Emit the full four relational ops so sort-like code works.
   template <int M>
-  friend constexpr bool operator<(const ShortString& a,
-                                  const ShortString<M>& b) {
+  friend constexpr bool operator<(const tp2cc_ShortString& a,
+                                  const tp2cc_ShortString<M>& b) {
     int n = a.length < b.length ? a.length : b.length;
     for (int i = 0; i < n; ++i) {
       if (a.data[i] < b.data[i]) return true;
@@ -440,36 +440,36 @@ struct ShortString {
     return a.length < b.length;
   }
   template <int M>
-  friend constexpr bool operator>(const ShortString& a,
-                                  const ShortString<M>& b) {
+  friend constexpr bool operator>(const tp2cc_ShortString& a,
+                                  const tp2cc_ShortString<M>& b) {
     return b < a;
   }
   template <int M>
-  friend constexpr bool operator<=(const ShortString& a,
-                                   const ShortString<M>& b) {
+  friend constexpr bool operator<=(const tp2cc_ShortString& a,
+                                   const tp2cc_ShortString<M>& b) {
     return !(b < a);
   }
   template <int M>
-  friend constexpr bool operator>=(const ShortString& a,
-                                   const ShortString<M>& b) {
+  friend constexpr bool operator>=(const tp2cc_ShortString& a,
+                                   const tp2cc_ShortString<M>& b) {
     return !(a < b);
   }
 
   // Pascal occasionally writes `s := +t;` -- a unary `+` on a string,
   // which is a no-op. Provide the operator so the emitted C++ mirror
   // (`s = +t;`) type-checks.
-  friend constexpr ShortString operator+(const ShortString& a) { return a; }
+  friend constexpr tp2cc_ShortString operator+(const tp2cc_ShortString& a) { return a; }
 
-  // Pascal `s1 + s2` concatenation across any two ShortString capacities.
+  // Pascal `s1 + s2` concatenation across any two tp2cc_ShortString capacities.
   // Declared as a non-member friend with explicit template parameters so
-  // mixing `ShortString<N1>` with `ShortString<N2>` is unambiguous -- each
+  // mixing `tp2cc_ShortString<N1>` with `tp2cc_ShortString<N2>` is unambiguous -- each
   // instantiation produces exactly one best viable overload (result type
   // is whichever side has the larger capacity).
   template <int M>
-  friend constexpr auto operator+(const ShortString& a,
-                                  const ShortString<M>& b) {
+  friend constexpr auto operator+(const tp2cc_ShortString& a,
+                                  const tp2cc_ShortString<M>& b) {
     constexpr int R = (N > M ? N : M);
-    ShortString<R> out{};
+    tp2cc_ShortString<R> out{};
     int n = a.length + b.length;
     if (n > R) n = R;
     for (int i = 0; i < a.length && i < R; ++i) out.data[i] = a.data[i];
@@ -480,27 +480,27 @@ struct ShortString {
     return out;
   }
 
-  friend constexpr ShortString operator+(const ShortString& a, const char* b) {
-    return a + p_shortstring_of<N>(b);
+  friend constexpr tp2cc_ShortString operator+(const tp2cc_ShortString& a, const char* b) {
+    return a + tp2cc_shortstring_of<N>(b);
   }
-  friend constexpr ShortString operator+(const char* a, const ShortString& b) {
-    return p_shortstring_of<N>(a) + b;
+  friend constexpr tp2cc_ShortString operator+(const char* a, const tp2cc_ShortString& b) {
+    return tp2cc_shortstring_of<N>(a) + b;
   }
-  friend constexpr auto operator+(const ShortString& a, p_char c) {
-    return a + p_shortstring_of<>(c);
+  friend constexpr auto operator+(const tp2cc_ShortString& a, p_char c) {
+    return a + tp2cc_shortstring_of<>(c);
   }
-  friend constexpr auto operator+(p_char c, const ShortString& b) {
-    return p_shortstring_of<>(c) + b;
+  friend constexpr auto operator+(p_char c, const tp2cc_ShortString& b) {
+    return tp2cc_shortstring_of<>(c) + b;
   }
 
   // Pascal `s[i]` is 1-based. We model the access: index 0 gives the
   // length byte (as in TP memory layout), 1..length give the characters.
-  constexpr ShortStringCharRef operator[](int i) {
-    return ShortStringCharRef{
+  constexpr tp2cc_ShortStringCharRef operator[](int i) {
+    return tp2cc_ShortStringCharRef{
         i == 0 ? &length : reinterpret_cast<uint8_t*>(&data[i - 1])};
   }
-  constexpr ShortStringCharValue operator[](int i) const {
-    return ShortStringCharValue{
+  constexpr tp2cc_ShortStringCharValue operator[](int i) const {
+    return tp2cc_ShortStringCharValue{
         i == 0 ? &length : reinterpret_cast<const uint8_t*>(&data[i - 1])};
   }
 };
@@ -508,10 +508,10 @@ struct ShortString {
 // Turbo Pascal / Delphi `^string` storage is a live prefix: callers often
 // allocate only `length(s) + 1` bytes and still expect `p^`, `length(p^)`,
 // and `p^[i]` to work. A typed-pointer dereference therefore cannot be a
-// normal `ShortString&`, because that would pretend a full `ShortString<N>`
+// normal `tp2cc_ShortString&`, because that would pretend a full `tp2cc_ShortString<N>`
 // object exists in storage that may be much smaller.
 template <int N>
-struct ShortStringPtrValue {
+struct tp2cc_ShortStringPtrValue {
   const uint8_t* storage = nullptr;
 
   constexpr int32_t size() const {
@@ -521,13 +521,13 @@ struct ShortStringPtrValue {
   constexpr const p_char* bytes() const {
     return storage ? reinterpret_cast<const p_char*>(storage + 1) : nullptr;
   }
-  constexpr ShortStringCharValue operator[](int i) const {
-    return ShortStringCharValue{storage + i};
+  constexpr tp2cc_ShortStringCharValue operator[](int i) const {
+    return tp2cc_ShortStringCharValue{storage + i};
   }
 
   template <int M = N>
-  constexpr operator ShortString<M>() const {
-    ShortString<M> out{};
+  constexpr operator tp2cc_ShortString<M>() const {
+    tp2cc_ShortString<M> out{};
     const int32_t n = std::min<int32_t>(size(), M);
     const p_char* src = bytes();
     out.length = static_cast<uint8_t>(n);
@@ -535,11 +535,11 @@ struct ShortStringPtrValue {
     return out;
   }
 
-  operator AnsiString() const;
+  operator tp2cc_AnsiString() const;
 };
 
 template <int N>
-struct ShortStringPtrRef {
+struct tp2cc_ShortStringPtrRef {
   uint8_t* storage = nullptr;
 
   constexpr int32_t size() const {
@@ -549,14 +549,14 @@ struct ShortStringPtrRef {
   constexpr p_char* bytes() const {
     return storage ? reinterpret_cast<p_char*>(storage + 1) : nullptr;
   }
-  constexpr operator ShortStringPtrValue<N>() const { return {storage}; }
+  constexpr operator tp2cc_ShortStringPtrValue<N>() const { return {storage}; }
   template <int M = N>
-  constexpr operator ShortString<M>() const {
-    return static_cast<ShortString<M>>(ShortStringPtrValue<N>{storage});
+  constexpr operator tp2cc_ShortString<M>() const {
+    return static_cast<tp2cc_ShortString<M>>(tp2cc_ShortStringPtrValue<N>{storage});
   }
-  operator AnsiString() const;
-  constexpr ShortStringCharRef operator[](int i) const {
-    return ShortStringCharRef{storage + i};
+  operator tp2cc_AnsiString() const;
+  constexpr tp2cc_ShortStringCharRef operator[](int i) const {
+    return tp2cc_ShortStringCharRef{storage + i};
   }
 };
 
@@ -564,15 +564,15 @@ template <typename T>
 struct tp2cc_shortstring_capacity;
 
 template <int N>
-struct tp2cc_shortstring_capacity<ShortString<N>>
+struct tp2cc_shortstring_capacity<tp2cc_ShortString<N>>
     : std::integral_constant<int, N> {};
 
 template <int N>
-struct tp2cc_shortstring_capacity<ShortStringPtrValue<N>>
+struct tp2cc_shortstring_capacity<tp2cc_ShortStringPtrValue<N>>
     : std::integral_constant<int, N> {};
 
 template <int N>
-struct tp2cc_shortstring_capacity<ShortStringPtrRef<N>>
+struct tp2cc_shortstring_capacity<tp2cc_ShortStringPtrRef<N>>
     : std::integral_constant<int, N> {};
 
 template <typename T>
@@ -583,10 +583,10 @@ template <typename T>
 struct tp2cc_is_shortstring_proxy : std::false_type {};
 
 template <int N>
-struct tp2cc_is_shortstring_proxy<ShortStringPtrValue<N>> : std::true_type {};
+struct tp2cc_is_shortstring_proxy<tp2cc_ShortStringPtrValue<N>> : std::true_type {};
 
 template <int N>
-struct tp2cc_is_shortstring_proxy<ShortStringPtrRef<N>> : std::true_type {};
+struct tp2cc_is_shortstring_proxy<tp2cc_ShortStringPtrRef<N>> : std::true_type {};
 
 template <typename T>
 inline constexpr bool tp2cc_is_shortstring_proxy_v =
@@ -596,14 +596,14 @@ template <typename T>
 struct tp2cc_is_fixed_shortstring_like : std::false_type {};
 
 template <int N>
-struct tp2cc_is_fixed_shortstring_like<ShortString<N>> : std::true_type {};
+struct tp2cc_is_fixed_shortstring_like<tp2cc_ShortString<N>> : std::true_type {};
 
 template <int N>
-struct tp2cc_is_fixed_shortstring_like<ShortStringPtrValue<N>>
+struct tp2cc_is_fixed_shortstring_like<tp2cc_ShortStringPtrValue<N>>
     : std::true_type {};
 
 template <int N>
-struct tp2cc_is_fixed_shortstring_like<ShortStringPtrRef<N>>
+struct tp2cc_is_fixed_shortstring_like<tp2cc_ShortStringPtrRef<N>>
     : std::true_type {};
 
 template <typename T>
@@ -611,25 +611,25 @@ inline constexpr bool tp2cc_is_fixed_shortstring_like_v =
     tp2cc_is_fixed_shortstring_like<std::remove_cvref_t<T>>::value;
 
 template <int N>
-constexpr ShortString<N> p_shortstring_of() {
+constexpr tp2cc_ShortString<N> tp2cc_shortstring_of() {
   return {};
 }
 
 template <int N>
-constexpr ShortString<N> p_shortstring_of(const char* s) {
-  ShortString<N> out{};
+constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(const char* s) {
+  tp2cc_ShortString<N> out{};
   int n = 0;
   if (s) {
     while (s[n] && n < N) ++n;
   }
   out.length = static_cast<uint8_t>(n);
-  for (int i = 0; i < n; ++i) out.data[i] = p_char_of(s[i]);
+  for (int i = 0; i < n; ++i) out.data[i] = tp2cc_char_of(s[i]);
   return out;
 }
 
 template <int N>
-constexpr ShortString<N> p_shortstring_of(const p_char* s) {
-  ShortString<N> out{};
+constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(const p_char* s) {
+  tp2cc_ShortString<N> out{};
   int n = 0;
   if (s) {
     while (p_char_byte(s[n]) != 0 && n < N) ++n;
@@ -640,21 +640,21 @@ constexpr ShortString<N> p_shortstring_of(const p_char* s) {
 }
 
 template <int N>
-constexpr ShortString<N> p_shortstring_of(p_char c) {
-  ShortString<N> out{};
+constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(p_char c) {
+  tp2cc_ShortString<N> out{};
   out.length = 1;
   out.data[0] = c;
   return out;
 }
 
 template <int N>
-constexpr ShortString<N> p_shortstring_of(char c) {
-  return p_shortstring_of<N>(p_char_of(c));
+constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(char c) {
+  return tp2cc_shortstring_of<N>(tp2cc_char_of(c));
 }
 
 template <int N, int M>
-constexpr ShortString<N> p_shortstring_of(const ShortString<M>& o) {
-  ShortString<N> out{};
+constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(const tp2cc_ShortString<M>& o) {
+  tp2cc_ShortString<N> out{};
   int n = o.length;
   if (n > N) n = N;
   out.length = static_cast<uint8_t>(n);
@@ -667,15 +667,15 @@ constexpr ShortString<N> p_shortstring_of(const ShortString<M>& o) {
 // (usable in string concatenations). C++ can't have one type that
 // plays both roles, so the emitter wraps such consts in this tag
 // struct with implicit conversions in both directions. Scoped to
-// the const decl -- ordinary ShortString variables are unaffected.
+// the const decl -- ordinary tp2cc_ShortString variables are unaffected.
 struct CharConst {
   p_char c;
   // Conversions: `p_char` for Pascal char contexts, and
-  // `ShortString<N>` for string-concatenation contexts.
+  // `tp2cc_ShortString<N>` for string-concatenation contexts.
   constexpr operator p_char() const { return c; }
   template <int N = 255>
-  constexpr operator ShortString<N>() const {
-    return p_shortstring_of<N>(c);
+  constexpr operator tp2cc_ShortString<N>() const {
+    return tp2cc_shortstring_of<N>(c);
   }
 };
 
@@ -720,29 +720,29 @@ inline constexpr bool operator>=(A a, B b) {
 
 // `+` on a CharConst / p_char chooses string concatenation: the only
 // reason a Pascal 1-char value appears under `+` is to build a string.
-inline constexpr ShortString<> operator+(CharConst a, CharConst b) {
-  ShortString<> r{};
+inline constexpr tp2cc_ShortString<> operator+(CharConst a, CharConst b) {
+  tp2cc_ShortString<> r{};
   r.data[0] = a.c;
   r.data[1] = b.c;
   r.length = 2;
   return r;
 }
-inline constexpr ShortString<> operator+(CharConst a, p_char b) {
-  return p_shortstring_of<>(a.c) + b;
+inline constexpr tp2cc_ShortString<> operator+(CharConst a, p_char b) {
+  return tp2cc_shortstring_of<>(a.c) + b;
 }
-inline constexpr ShortString<> operator+(p_char a, CharConst b) {
-  return a + p_shortstring_of<>(b.c);
-}
-template <int N>
-inline constexpr auto operator+(CharConst a, const ShortString<N>& b) {
-  return p_shortstring_of<>(a.c) + b;
+inline constexpr tp2cc_ShortString<> operator+(p_char a, CharConst b) {
+  return a + tp2cc_shortstring_of<>(b.c);
 }
 template <int N>
-inline constexpr auto operator+(const ShortString<N>& a, CharConst b) {
-  return a + p_shortstring_of<>(b.c);
+inline constexpr auto operator+(CharConst a, const tp2cc_ShortString<N>& b) {
+  return tp2cc_shortstring_of<>(a.c) + b;
+}
+template <int N>
+inline constexpr auto operator+(const tp2cc_ShortString<N>& a, CharConst b) {
+  return a + tp2cc_shortstring_of<>(b.c);
 }
 
-// --- AnsiString ------------------------------------------------------------
+// --- tp2cc_AnsiString ------------------------------------------------------------
 //
 // Generated compiler code treats an ansistring value in two ways at once:
 // as a Pascal string value, and as "the variable whose first storage slot
@@ -755,7 +755,7 @@ struct AnsiStringHeader {
 };
 
 inline p_char* p_ansistring_empty_bytes() {
-  static p_char empty[1] = {p_char_of('\0')};
+  static p_char empty[1] = {tp2cc_char_of('\0')};
   return empty;
 }
 
@@ -815,13 +815,13 @@ inline p_char* p_ansistring_alloc_owned_empty() {
   auto* hdr = reinterpret_cast<AnsiStringHeader*>(raw);
   hdr->len = 0;
   auto* data = reinterpret_cast<p_char*>(raw + sizeof(AnsiStringHeader));
-  data[0] = p_char_of('\0');
+  data[0] = tp2cc_char_of('\0');
   return data;
 }
 
-class AnsiString;
+class tp2cc_AnsiString;
 
-struct AnsiStringCharValue {
+struct tp2cc_AnsiStringCharValue {
   const p_char* byte = nullptr;
 
   constexpr operator p_char() const { return *byte; }
@@ -829,43 +829,43 @@ struct AnsiStringCharValue {
   const p_char* operator&() const { return byte; }
 };
 
-struct AnsiStringCharRef {
-  AnsiString* owner = nullptr;
+struct tp2cc_AnsiStringCharRef {
+  tp2cc_AnsiString* owner = nullptr;
   int index = 0;  // zero-based byte index within the payload
 
   operator p_char() const;
-  AnsiStringCharRef& operator=(p_char value);
-  AnsiStringCharRef& operator=(const AnsiStringCharRef& other);
+  tp2cc_AnsiStringCharRef& operator=(p_char value);
+  tp2cc_AnsiStringCharRef& operator=(const tp2cc_AnsiStringCharRef& other);
   p_char* operator&();
 };
 
-class AnsiString {
+class tp2cc_AnsiString {
  public:
   p_char* data = p_ansistring_empty_bytes();
 
   template <int N>
-  AnsiString& operator=(const ShortString<N>& s) {
+  tp2cc_AnsiString& operator=(const tp2cc_ShortString<N>& s) {
     assign_bytes(s.data, s.length);
     return *this;
   }
 
-  AnsiString& operator=(const char* s) {
+  tp2cc_AnsiString& operator=(const char* s) {
     assign_c_str(s);
     return *this;
   }
 
-  AnsiString& operator=(const p_char* s) {
+  tp2cc_AnsiString& operator=(const p_char* s) {
     assign_pascal_c_str(s);
     return *this;
   }
 
-  AnsiString& operator=(p_char c) {
+  tp2cc_AnsiString& operator=(p_char c) {
     set_length(1);
     data[0] = c;
     return *this;
   }
 
-  AnsiString& operator=(std::nullptr_t) {
+  tp2cc_AnsiString& operator=(std::nullptr_t) {
     clear();
     return *this;
   }
@@ -929,8 +929,8 @@ class AnsiString {
   // means materialising a shortstring temporary, so keep this conversion
   // implicit and let the destination capacity truncate as Pascal does.
   template <int N = 255>
-  operator ShortString<N>() const {
-    ShortString<N> out{};
+  operator tp2cc_ShortString<N>() const {
+    tp2cc_ShortString<N> out{};
     int32_t copy = length();
     if (copy > N) copy = N;
     out.length = static_cast<uint8_t>(copy);
@@ -938,12 +938,12 @@ class AnsiString {
     return out;
   }
 
-  AnsiStringCharRef operator[](int i) {
+  tp2cc_AnsiStringCharRef operator[](int i) {
     return {this, i - 1};
   }
 
-  AnsiStringCharValue operator[](int i) const {
-    return AnsiStringCharValue{data + (i - 1)};
+  tp2cc_AnsiStringCharValue operator[](int i) const {
+    return tp2cc_AnsiStringCharValue{data + (i - 1)};
   }
 
  private:
@@ -977,122 +977,122 @@ class AnsiString {
   }
 };
 
-inline AnsiString p_ansistring_of(std::nullptr_t) {
-  return AnsiString{};
+inline tp2cc_AnsiString tp2cc_ansistring_of(std::nullptr_t) {
+  return tp2cc_AnsiString{};
 }
 
-inline AnsiString p_ansistring_of(const AnsiString& s) {
-  AnsiString out{};
+inline tp2cc_AnsiString tp2cc_ansistring_of(const tp2cc_AnsiString& s) {
+  tp2cc_AnsiString out{};
   out.data = s.data;
   return out;
 }
 
-inline AnsiString p_ansistring_of(const char* s) {
-  AnsiString out{};
+inline tp2cc_AnsiString tp2cc_ansistring_of(const char* s) {
+  tp2cc_AnsiString out{};
   out = s;
   return out;
 }
 
-inline AnsiString p_ansistring_of(const p_char* s) {
-  AnsiString out{};
-  out = s;
-  return out;
-}
-
-template <int N>
-inline AnsiString p_ansistring_of(const ShortString<N>& s) {
-  AnsiString out{};
+inline tp2cc_AnsiString tp2cc_ansistring_of(const p_char* s) {
+  tp2cc_AnsiString out{};
   out = s;
   return out;
 }
 
 template <int N>
-inline AnsiString p_ansistring_of(ShortStringPtrValue<N> s) {
-  return p_ansistring_of(static_cast<ShortString<N>>(s));
+inline tp2cc_AnsiString tp2cc_ansistring_of(const tp2cc_ShortString<N>& s) {
+  tp2cc_AnsiString out{};
+  out = s;
+  return out;
 }
 
 template <int N>
-inline AnsiString p_ansistring_of(ShortStringPtrRef<N> s) {
-  return p_ansistring_of(static_cast<ShortString<N>>(s));
+inline tp2cc_AnsiString tp2cc_ansistring_of(tp2cc_ShortStringPtrValue<N> s) {
+  return tp2cc_ansistring_of(static_cast<tp2cc_ShortString<N>>(s));
 }
 
 template <int N>
-inline ShortString<N> p_shortstring_of(const AnsiString& s) {
-  return static_cast<ShortString<N>>(s);
+inline tp2cc_AnsiString tp2cc_ansistring_of(tp2cc_ShortStringPtrRef<N> s) {
+  return tp2cc_ansistring_of(static_cast<tp2cc_ShortString<N>>(s));
 }
 
-inline AnsiString p_ansistring_of(p_char c) {
-  AnsiString out{};
+template <int N>
+inline tp2cc_ShortString<N> tp2cc_shortstring_of(const tp2cc_AnsiString& s) {
+  return static_cast<tp2cc_ShortString<N>>(s);
+}
+
+inline tp2cc_AnsiString tp2cc_ansistring_of(p_char c) {
+  tp2cc_AnsiString out{};
   out = c;
   return out;
 }
 
 template <int N>
-inline ShortString<N>::operator AnsiString() const {
-  return p_ansistring_of(*this);
+inline tp2cc_ShortString<N>::operator tp2cc_AnsiString() const {
+  return tp2cc_ansistring_of(*this);
 }
 
 template <int N>
-inline ShortStringPtrValue<N>::operator AnsiString() const {
-  return p_ansistring_of(*this);
+inline tp2cc_ShortStringPtrValue<N>::operator tp2cc_AnsiString() const {
+  return tp2cc_ansistring_of(*this);
 }
 
 template <int N>
-inline ShortStringPtrRef<N>::operator AnsiString() const {
-  return p_ansistring_of(*this);
+inline tp2cc_ShortStringPtrRef<N>::operator tp2cc_AnsiString() const {
+  return tp2cc_ansistring_of(*this);
 }
 
-inline AnsiStringCharRef::operator p_char() const {
+inline tp2cc_AnsiStringCharRef::operator p_char() const {
   return owner->data[index];
 }
 
-inline AnsiStringCharRef& AnsiStringCharRef::operator=(p_char value) {
+inline tp2cc_AnsiStringCharRef& tp2cc_AnsiStringCharRef::operator=(p_char value) {
   owner->ensure_unique();
   owner->data[index] = value;
   return *this;
 }
 
-inline AnsiStringCharRef& AnsiStringCharRef::operator=(
-    const AnsiStringCharRef& other) {
+inline tp2cc_AnsiStringCharRef& tp2cc_AnsiStringCharRef::operator=(
+    const tp2cc_AnsiStringCharRef& other) {
   return (*this = static_cast<p_char>(other));
 }
 
-inline p_char* AnsiStringCharRef::operator&() {
+inline p_char* tp2cc_AnsiStringCharRef::operator&() {
   owner->ensure_unique();
   return owner->data + index;
 }
 
 template <int N>
-inline const p_char* p_string_bytes(const ShortString<N>& s) {
+inline const p_char* p_string_bytes(const tp2cc_ShortString<N>& s) {
   return s.data;
 }
 template <int N>
-inline const p_char* p_string_bytes(const ShortStringPtrValue<N>& s) {
+inline const p_char* p_string_bytes(const tp2cc_ShortStringPtrValue<N>& s) {
   return s.bytes();
 }
 template <int N>
-inline const p_char* p_string_bytes(const ShortStringPtrRef<N>& s) {
+inline const p_char* p_string_bytes(const tp2cc_ShortStringPtrRef<N>& s) {
   return s.bytes();
 }
 
-inline const p_char* p_string_bytes(const AnsiString& s) {
+inline const p_char* p_string_bytes(const tp2cc_AnsiString& s) {
   return s.bytes();
 }
 
 template <int N>
-inline int32_t p_string_length(const ShortString<N>& s) {
+inline int32_t p_string_length(const tp2cc_ShortString<N>& s) {
   return s.length;
 }
 template <int N>
-inline int32_t p_string_length(const ShortStringPtrValue<N>& s) {
+inline int32_t p_string_length(const tp2cc_ShortStringPtrValue<N>& s) {
   return s.size();
 }
 template <int N>
-inline int32_t p_string_length(const ShortStringPtrRef<N>& s) {
+inline int32_t p_string_length(const tp2cc_ShortStringPtrRef<N>& s) {
   return s.size();
 }
 
-inline int32_t p_string_length(const AnsiString& s) {
+inline int32_t p_string_length(const tp2cc_AnsiString& s) {
   return s.length();
 }
 
@@ -1176,14 +1176,14 @@ requires (tp2cc_is_fixed_shortstring_like_v<A> &&
 inline constexpr auto operator+(const A& a, const B& b) {
   constexpr int AN = tp2cc_shortstring_capacity_v<A>;
   constexpr int BN = tp2cc_shortstring_capacity_v<B>;
-  return static_cast<ShortString<AN>>(a) + static_cast<ShortString<BN>>(b);
+  return static_cast<tp2cc_ShortString<AN>>(a) + static_cast<tp2cc_ShortString<BN>>(b);
 }
 
 template <typename A, typename B>
-inline AnsiString p_concat_to_ansistring(const A& a, const B& b) {
+inline tp2cc_AnsiString p_concat_to_ansistring(const A& a, const B& b) {
   const int32_t a_len = p_string_length(a);
   const int32_t b_len = p_string_length(b);
-  AnsiString out{};
+  tp2cc_AnsiString out{};
   out.set_length(a_len + b_len);
   if (a_len > 0) {
     std::memcpy(out.data, p_string_bytes(a),
@@ -1196,91 +1196,91 @@ inline AnsiString p_concat_to_ansistring(const A& a, const B& b) {
   return out;
 }
 
-inline AnsiString operator+(const AnsiString& s) { return p_ansistring_of(s); }
+inline tp2cc_AnsiString operator+(const tp2cc_AnsiString& s) { return tp2cc_ansistring_of(s); }
 
 template <int N>
-inline AnsiString operator+(const AnsiString& a, const ShortString<N>& b) {
+inline tp2cc_AnsiString operator+(const tp2cc_AnsiString& a, const tp2cc_ShortString<N>& b) {
   return p_concat_to_ansistring(a, b);
 }
 
 template <int N>
-inline AnsiString operator+(const ShortString<N>& a, const AnsiString& b) {
+inline tp2cc_AnsiString operator+(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b) {
   return p_concat_to_ansistring(a, b);
 }
 
-inline AnsiString operator+(const AnsiString& a, const AnsiString& b) {
+inline tp2cc_AnsiString operator+(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
   return p_concat_to_ansistring(a, b);
 }
 
-inline AnsiString operator+(const AnsiString& a, const char* b) {
-  return a + p_ansistring_of(b);
+inline tp2cc_AnsiString operator+(const tp2cc_AnsiString& a, const char* b) {
+  return a + tp2cc_ansistring_of(b);
 }
 
-inline AnsiString operator+(const char* a, const AnsiString& b) {
-  return p_ansistring_of(a) + b;
+inline tp2cc_AnsiString operator+(const char* a, const tp2cc_AnsiString& b) {
+  return tp2cc_ansistring_of(a) + b;
 }
 
-inline AnsiString operator+(const AnsiString& a, const p_char* b) {
-  return a + p_ansistring_of(b);
+inline tp2cc_AnsiString operator+(const tp2cc_AnsiString& a, const p_char* b) {
+  return a + tp2cc_ansistring_of(b);
 }
 
-inline AnsiString operator+(const p_char* a, const AnsiString& b) {
-  return p_ansistring_of(a) + b;
+inline tp2cc_AnsiString operator+(const p_char* a, const tp2cc_AnsiString& b) {
+  return tp2cc_ansistring_of(a) + b;
 }
 
-inline AnsiString operator+(const AnsiString& a, p_char c) {
-  return a + p_ansistring_of(c);
+inline tp2cc_AnsiString operator+(const tp2cc_AnsiString& a, p_char c) {
+  return a + tp2cc_ansistring_of(c);
 }
 
-inline AnsiString operator+(p_char c, const AnsiString& b) {
-  return p_ansistring_of(c) + b;
+inline tp2cc_AnsiString operator+(p_char c, const tp2cc_AnsiString& b) {
+  return tp2cc_ansistring_of(c) + b;
 }
 
-inline bool operator==(const AnsiString& a, const AnsiString& b) {
+inline bool operator==(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
   return p_string_compare(a, b) == 0;
 }
 
-inline bool operator!=(const AnsiString& a, const AnsiString& b) {
+inline bool operator!=(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
   return !(a == b);
 }
 
-inline bool operator<(const AnsiString& a, const AnsiString& b) {
+inline bool operator<(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
   return p_string_compare(a, b) < 0;
 }
 
-inline bool operator>(const AnsiString& a, const AnsiString& b) {
+inline bool operator>(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
   return p_string_compare(a, b) > 0;
 }
 
-inline bool operator<=(const AnsiString& a, const AnsiString& b) {
+inline bool operator<=(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
   return p_string_compare(a, b) <= 0;
 }
 
-inline bool operator>=(const AnsiString& a, const AnsiString& b) {
+inline bool operator>=(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
   return p_string_compare(a, b) >= 0;
 }
 
 template <int N>
-inline bool operator==(const AnsiString& a, const ShortString<N>& b) {
+inline bool operator==(const tp2cc_AnsiString& a, const tp2cc_ShortString<N>& b) {
   return p_string_compare(a, b) == 0;
 }
 
 template <int N>
-inline bool operator==(const ShortString<N>& a, const AnsiString& b) {
+inline bool operator==(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b) {
   return p_string_compare(a, b) == 0;
 }
 
 template <int N>
-inline bool operator==(const p_char* a, const ShortString<N>& b) {
+inline bool operator==(const p_char* a, const tp2cc_ShortString<N>& b) {
   if (!a) return b.size() == 0;
   for (int i = 0; i < b.size(); ++i) {
     if (a[i] != b[i + 1]) return false;
   }
-  return a[b.size()] == p_char_of('\0');
+  return a[b.size()] == tp2cc_char_of('\0');
 }
 
 template <int N>
-inline bool operator==(const ShortString<N>& a, const p_char* b) {
+inline bool operator==(const tp2cc_ShortString<N>& a, const p_char* b) {
   return b == a;
 }
 
@@ -1291,7 +1291,7 @@ inline bool operator==(const p_char* a, const S& b) {
   for (int i = 0; i < b.size(); ++i) {
     if (a[i] != b[i + 1]) return false;
   }
-  return a[b.size()] == p_char_of('\0');
+  return a[b.size()] == tp2cc_char_of('\0');
 }
 
 template <typename S>
@@ -1301,113 +1301,113 @@ inline bool operator==(const S& a, const p_char* b) {
 }
 
 template <int N>
-inline bool operator==(const ShortString<N>& a, p_char b) {
-  return a == p_shortstring_of<1>(b);
+inline bool operator==(const tp2cc_ShortString<N>& a, p_char b) {
+  return a == tp2cc_shortstring_of<1>(b);
 }
 
 template <int N>
-inline bool operator==(p_char a, const ShortString<N>& b) {
-  return p_shortstring_of<1>(a) == b;
+inline bool operator==(p_char a, const tp2cc_ShortString<N>& b) {
+  return tp2cc_shortstring_of<1>(a) == b;
 }
 
 template <int N>
-inline bool operator!=(const AnsiString& a, const ShortString<N>& b) {
+inline bool operator!=(const tp2cc_AnsiString& a, const tp2cc_ShortString<N>& b) {
   return !(a == b);
 }
 
 template <int N>
-inline bool operator!=(const ShortString<N>& a, const AnsiString& b) {
+inline bool operator!=(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b) {
   return !(a == b);
 }
 
 template <int N>
-inline bool operator!=(const ShortString<N>& a, p_char b) {
+inline bool operator!=(const tp2cc_ShortString<N>& a, p_char b) {
   return !(a == b);
 }
 
 template <int N>
-inline bool operator!=(p_char a, const ShortString<N>& b) {
+inline bool operator!=(p_char a, const tp2cc_ShortString<N>& b) {
   return !(a == b);
 }
 
 template <int N>
-inline bool operator<(const AnsiString& a, const ShortString<N>& b) {
+inline bool operator<(const tp2cc_AnsiString& a, const tp2cc_ShortString<N>& b) {
   return p_string_compare(a, b) < 0;
 }
 
 template <int N>
-inline bool operator<(const ShortString<N>& a, const AnsiString& b) {
+inline bool operator<(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b) {
   return p_string_compare(a, b) < 0;
 }
 
 template <int N>
-inline bool operator<(const ShortString<N>& a, p_char b) {
-  return a < p_shortstring_of<1>(b);
+inline bool operator<(const tp2cc_ShortString<N>& a, p_char b) {
+  return a < tp2cc_shortstring_of<1>(b);
 }
 
 template <int N>
-inline bool operator<(p_char a, const ShortString<N>& b) {
-  return p_shortstring_of<1>(a) < b;
+inline bool operator<(p_char a, const tp2cc_ShortString<N>& b) {
+  return tp2cc_shortstring_of<1>(a) < b;
 }
 
 template <int N>
-inline bool operator>(const AnsiString& a, const ShortString<N>& b) {
+inline bool operator>(const tp2cc_AnsiString& a, const tp2cc_ShortString<N>& b) {
   return p_string_compare(a, b) > 0;
 }
 
 template <int N>
-inline bool operator>(const ShortString<N>& a, const AnsiString& b) {
+inline bool operator>(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b) {
   return p_string_compare(a, b) > 0;
 }
 
 template <int N>
-inline bool operator>(const ShortString<N>& a, p_char b) {
-  return a > p_shortstring_of<1>(b);
+inline bool operator>(const tp2cc_ShortString<N>& a, p_char b) {
+  return a > tp2cc_shortstring_of<1>(b);
 }
 
 template <int N>
-inline bool operator>(p_char a, const ShortString<N>& b) {
-  return p_shortstring_of<1>(a) > b;
+inline bool operator>(p_char a, const tp2cc_ShortString<N>& b) {
+  return tp2cc_shortstring_of<1>(a) > b;
 }
 
 template <int N>
-inline bool operator<=(const AnsiString& a, const ShortString<N>& b) {
+inline bool operator<=(const tp2cc_AnsiString& a, const tp2cc_ShortString<N>& b) {
   return p_string_compare(a, b) <= 0;
 }
 
 template <int N>
-inline bool operator<=(const ShortString<N>& a, const AnsiString& b) {
+inline bool operator<=(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b) {
   return p_string_compare(a, b) <= 0;
 }
 
 template <int N>
-inline bool operator<=(const ShortString<N>& a, p_char b) {
-  return a <= p_shortstring_of<1>(b);
+inline bool operator<=(const tp2cc_ShortString<N>& a, p_char b) {
+  return a <= tp2cc_shortstring_of<1>(b);
 }
 
 template <int N>
-inline bool operator<=(p_char a, const ShortString<N>& b) {
-  return p_shortstring_of<1>(a) <= b;
+inline bool operator<=(p_char a, const tp2cc_ShortString<N>& b) {
+  return tp2cc_shortstring_of<1>(a) <= b;
 }
 
 template <int N>
-inline bool operator>=(const AnsiString& a, const ShortString<N>& b) {
+inline bool operator>=(const tp2cc_AnsiString& a, const tp2cc_ShortString<N>& b) {
   return p_string_compare(a, b) >= 0;
 }
 
 template <int N>
-inline bool operator>=(const ShortString<N>& a, const AnsiString& b) {
+inline bool operator>=(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b) {
   return p_string_compare(a, b) >= 0;
 }
 
 template <int N>
-inline bool operator>=(const ShortString<N>& a, p_char b) {
-  return a >= p_shortstring_of<1>(b);
+inline bool operator>=(const tp2cc_ShortString<N>& a, p_char b) {
+  return a >= tp2cc_shortstring_of<1>(b);
 }
 
 template <int N>
-inline bool operator>=(p_char a, const ShortString<N>& b) {
-  return p_shortstring_of<1>(a) >= b;
+inline bool operator>=(p_char a, const tp2cc_ShortString<N>& b) {
+  return tp2cc_shortstring_of<1>(a) >= b;
 }
 
 // --- Common Pascal RTL type aliases ----------------------------------------
@@ -1415,11 +1415,11 @@ inline bool operator>=(p_char a, const ShortString<N>& b) {
 // `using namespace ::rt;`.
 
 // dos unit
-using p_dirstr  = ShortString<255>;
-using p_namestr = ShortString<255>;
-using p_extstr  = ShortString<255>;
-using p_pathstr = ShortString<255>;
-using p_comstr  = ShortString<255>;
+using p_dirstr  = tp2cc_ShortString<255>;
+using p_namestr = tp2cc_ShortString<255>;
+using p_extstr  = tp2cc_ShortString<255>;
+using p_pathstr = tp2cc_ShortString<255>;
+using p_comstr  = tp2cc_ShortString<255>;
 
 // The current tp2cc bootstrap runtime targets 32-bit hosts only. Match
 // FPC's CPU32 aliases here so translated compiler code sees pointer-sized
@@ -1454,29 +1454,29 @@ inline constexpr int32_t p_sigsegv = 11;
 inline constexpr int32_t p_sigterm = 15;
 
 template <typename T>
-inline constexpr int p_ordinal_value(T x) {
+inline constexpr int tp2cc_ordinal_value(T x) {
   if constexpr (std::is_convertible_v<T, p_char>)
     return static_cast<int>(p_char_byte(static_cast<p_char>(x)));
   else
     return static_cast<int>(x);
 }
 
-// --- Array<T, Lo, N> -------------------------------------------------------
+// --- tp2cc_Array<T, Lo, N> -------------------------------------------------------
 // Pascal `array[Lo..Hi] of T`. Value-semantics (copied on pass, like
 // Pascal), arbitrary lower bound, 1- or 0-based or whatever Pascal said.
 //
 // We DO NOT inherit from std::array: that adds an extra aggregate layer
 // which breaks brace-elision for designated initialisers of element
 // records (the fpc sources' typed consts use `(field: value; ...)` a
-// lot).  Holding a bare C-array as the single member keeps `Array` a
-// simple one-member aggregate, so `Array<R, Lo, N> a = {{.f=1},{.f=2}};`
+// lot).  Holding a bare C-array as the single member keeps `tp2cc_Array` a
+// simple one-member aggregate, so `tp2cc_Array<R, Lo, N> a = {{.f=1},{.f=2}};`
 // initialises exactly as expected.
 template <typename T, auto Lo, int N>
-struct Array {
+struct tp2cc_Array {
   // `T data[N];` -- DELIBERATELY NOT `T data[N]{};`. A default member
-  // initialiser makes `std::is_trivial_v<Array>` false even when `T` is
+  // initialiser makes `std::is_trivial_v<tp2cc_Array>` false even when `T` is
   // trivial, which in turn makes GCC silently ignore `[[gnu::packed]]`
-  // on any packed record containing this Array. Leaving the array
+  // on any packed record containing this tp2cc_Array. Leaving the array
   // uninitialised in the raw declaration is fine because the tp2cc
   // emitter's `emit_var_decl` adds `{}` at every local declaration
   // site, static-storage globals zero-init by C++ rules, and struct
@@ -1489,11 +1489,11 @@ struct Array {
 
   template <typename Ix>
   constexpr T& operator[](Ix i) {
-    return data[p_ordinal_value(i) - p_ordinal_value(Lo)];
+    return data[tp2cc_ordinal_value(i) - tp2cc_ordinal_value(Lo)];
   }
   template <typename Ix>
   constexpr const T& operator[](Ix i) const {
-    return data[p_ordinal_value(i) - p_ordinal_value(Lo)];
+    return data[tp2cc_ordinal_value(i) - tp2cc_ordinal_value(Lo)];
   }
 
   constexpr T* begin()             { return data; }
@@ -1516,17 +1516,17 @@ struct Array {
 
   static constexpr auto low()  { return Lo; }
   static constexpr auto high() {
-    return static_cast<decltype(Lo)>(p_ordinal_value(Lo) + N - 1);
+    return static_cast<decltype(Lo)>(tp2cc_ordinal_value(Lo) + N - 1);
   }
 };
 
 template <typename T, auto Lo, int N, int M>
-constexpr Array<T, Lo, N> p_array_literal(const ShortString<M>& s) {
-  Array<T, Lo, N> out{};
+constexpr tp2cc_Array<T, Lo, N> tp2cc_array_literal(const tp2cc_ShortString<M>& s) {
+  tp2cc_Array<T, Lo, N> out{};
   const int n = s.length < N ? s.length : N;
   for (int i = 0; i < n; ++i) {
     if constexpr (std::is_same_v<T, p_char>)
-      out.data[i] = p_char_of(static_cast<uint8_t>(s.data[i]));
+      out.data[i] = tp2cc_char_of(static_cast<uint8_t>(s.data[i]));
     else
       out.data[i] = static_cast<T>(s.data[i]);
   }
@@ -1534,8 +1534,8 @@ constexpr Array<T, Lo, N> p_array_literal(const ShortString<M>& s) {
 }
 
 template <typename T, auto Lo, int N>
-constexpr Array<T, Lo, N> p_array_literal(p_char c) {
-  Array<T, Lo, N> out{};
+constexpr tp2cc_Array<T, Lo, N> tp2cc_array_literal(p_char c) {
+  tp2cc_Array<T, Lo, N> out{};
   if (N > 0) {
     if constexpr (std::is_same_v<T, p_char>)
       out.data[0] = c;
@@ -1546,16 +1546,16 @@ constexpr Array<T, Lo, N> p_array_literal(p_char c) {
 }
 
 template <typename T, auto Lo, int N>
-constexpr Array<T, Lo, N> p_array_literal(char c) {
-  return p_array_literal<T, Lo, N>(p_char_of(c));
+constexpr tp2cc_Array<T, Lo, N> tp2cc_array_literal(char c) {
+  return tp2cc_array_literal<T, Lo, N>(tp2cc_char_of(c));
 }
 
 template <auto Lo, int ArrN, int StrN>
-inline bool operator==(const Array<p_char, Lo, ArrN>& a,
-                       const ShortString<StrN>& b) {
+inline bool operator==(const tp2cc_Array<p_char, Lo, ArrN>& a,
+                       const tp2cc_ShortString<StrN>& b) {
   int logical_len = ArrN;
   while (logical_len > 0 &&
-         a.data[static_cast<size_t>(logical_len - 1)] == p_char_of('\0')) {
+         a.data[static_cast<size_t>(logical_len - 1)] == tp2cc_char_of('\0')) {
     --logical_len;
   }
   if (logical_len != b.size()) return false;
@@ -1566,8 +1566,8 @@ inline bool operator==(const Array<p_char, Lo, ArrN>& a,
 }
 
 template <int StrN, auto Lo, int ArrN>
-inline bool operator==(const ShortString<StrN>& a,
-                       const Array<p_char, Lo, ArrN>& b) {
+inline bool operator==(const tp2cc_ShortString<StrN>& a,
+                       const tp2cc_Array<p_char, Lo, ArrN>& b) {
   return b == a;
 }
 
@@ -1577,11 +1577,11 @@ inline bool operator==(const ShortString<StrN>& a,
 // Keep those separate in the rt so the emitted C++ does not blur
 // "parameter view" with "owning variable-length object".
 template <typename T>
-struct DynArray {
+struct tp2cc_DynArray {
   std::shared_ptr<T[]> data{};
   int32_t count = 0;
 
-  DynArray& operator=(std::nullptr_t) {
+  tp2cc_DynArray& operator=(std::nullptr_t) {
     data.reset();
     count = 0;
     return *this;
@@ -1589,11 +1589,11 @@ struct DynArray {
 
   template <typename Ix>
   T& operator[](Ix i) {
-    return data[static_cast<size_t>(p_ordinal_value(i))];
+    return data[static_cast<size_t>(tp2cc_ordinal_value(i))];
   }
   template <typename Ix>
   const T& operator[](Ix i) const {
-    return data[static_cast<size_t>(p_ordinal_value(i))];
+    return data[static_cast<size_t>(tp2cc_ordinal_value(i))];
   }
 
   T* ptr() { return data.get(); }
@@ -1611,24 +1611,24 @@ struct DynArray {
 };
 
 template <typename T>
-inline bool operator==(const DynArray<T>& a, std::nullptr_t) {
+inline bool operator==(const tp2cc_DynArray<T>& a, std::nullptr_t) {
   return a.data == nullptr;
 }
 template <typename T>
-inline bool operator==(std::nullptr_t, const DynArray<T>& a) {
+inline bool operator==(std::nullptr_t, const tp2cc_DynArray<T>& a) {
   return a == nullptr;
 }
 template <typename T>
-inline bool operator!=(const DynArray<T>& a, std::nullptr_t) {
+inline bool operator!=(const tp2cc_DynArray<T>& a, std::nullptr_t) {
   return !(a == nullptr);
 }
 template <typename T>
-inline bool operator!=(std::nullptr_t, const DynArray<T>& a) {
+inline bool operator!=(std::nullptr_t, const tp2cc_DynArray<T>& a) {
   return !(a == nullptr);
 }
 
 template <typename T>
-struct OpenArray {
+struct tp2cc_OpenArray {
   T* data = nullptr;
   int32_t count = 0;
 
@@ -1645,81 +1645,81 @@ struct OpenArray {
 };
 
 template <typename T>
-constexpr OpenArray<T> p_open_array() {
+constexpr tp2cc_OpenArray<T> tp2cc_open_array() {
   return {};
 }
 
 template <typename T>
-constexpr OpenArray<T> p_open_array(T* p, int32_t n) {
+constexpr tp2cc_OpenArray<T> tp2cc_open_array(T* p, int32_t n) {
   return {p, n};
 }
 
 template <typename T, typename U, auto Lo, int N>
 requires std::is_convertible_v<U*, T*>
-constexpr OpenArray<T> p_open_array(Array<U, Lo, N>& a) {
+constexpr tp2cc_OpenArray<T> tp2cc_open_array(tp2cc_Array<U, Lo, N>& a) {
   return {a.data, N};
 }
 
 template <typename T, typename U, auto Lo, int N>
 requires std::is_convertible_v<const U*, T*>
-constexpr OpenArray<T> p_open_array(const Array<U, Lo, N>& a) {
+constexpr tp2cc_OpenArray<T> tp2cc_open_array(const tp2cc_Array<U, Lo, N>& a) {
   return {a.data, N};
 }
 
 template <typename T, typename U>
 requires std::is_convertible_v<U*, T*>
-inline OpenArray<T> p_open_array(DynArray<U>& a) {
+inline tp2cc_OpenArray<T> tp2cc_open_array(tp2cc_DynArray<U>& a) {
   return {a.ptr(), a.count};
 }
 
 template <typename T, typename U>
 requires std::is_convertible_v<const U*, T*>
-inline OpenArray<T> p_open_array(const DynArray<U>& a) {
+inline tp2cc_OpenArray<T> tp2cc_open_array(const tp2cc_DynArray<U>& a) {
   return {const_cast<U*>(a.ptr()), a.count};
 }
 
 template <typename T, int N>
 requires std::is_convertible_v<p_char*, T*>
-constexpr OpenArray<T> p_open_array(ShortString<N>& s) {
+constexpr tp2cc_OpenArray<T> tp2cc_open_array(tp2cc_ShortString<N>& s) {
   return {s.data, s.length};
 }
 
 template <typename T, int N>
 requires std::is_convertible_v<const p_char*, T*>
-constexpr OpenArray<T> p_open_array(const ShortString<N>& s) {
+constexpr tp2cc_OpenArray<T> tp2cc_open_array(const tp2cc_ShortString<N>& s) {
   return {s.data, s.length};
 }
 
 // A bracketed Pascal open-array constructor (`foo([a, b, c])`) needs
 // temporary storage that survives the whole call expression. This wrapper
-// owns that storage and converts to `OpenArray<T>` by pointing at it.
+// owns that storage and converts to `tp2cc_OpenArray<T>` by pointing at it.
 template <typename T, std::size_t N>
-struct OpenArrayValue {
+struct tp2cc_OpenArrayValue {
   std::array<T, N> storage{};
 
-  constexpr operator OpenArray<T>() {
-    return p_open_array<T>(storage.data(), static_cast<int32_t>(N));
+  constexpr operator tp2cc_OpenArray<T>() {
+    return tp2cc_open_array<T>(storage.data(), static_cast<int32_t>(N));
   }
-  constexpr operator OpenArray<T>() const {
-    return p_open_array<T>(const_cast<T*>(storage.data()),
+  constexpr operator tp2cc_OpenArray<T>() const {
+    return tp2cc_open_array<T>(const_cast<T*>(storage.data()),
                            static_cast<int32_t>(N));
   }
 };
 
 template <typename T, std::size_t N>
-constexpr OpenArray<T> p_open_array(OpenArrayValue<T, N>& value) {
-  return p_open_array<T>(value.storage.data(), static_cast<int32_t>(N));
+constexpr tp2cc_OpenArray<T> tp2cc_open_array(tp2cc_OpenArrayValue<T, N>& value) {
+  return tp2cc_open_array<T>(value.storage.data(), static_cast<int32_t>(N));
 }
 
 template <typename T, std::size_t N>
-constexpr OpenArray<T> p_open_array(const OpenArrayValue<T, N>& value) {
-  return p_open_array<T>(const_cast<T*>(value.storage.data()),
+constexpr tp2cc_OpenArray<T> tp2cc_open_array(const tp2cc_OpenArrayValue<T, N>& value) {
+  return tp2cc_open_array<T>(const_cast<T*>(value.storage.data()),
                          static_cast<int32_t>(N));
 }
 
 template <typename T, typename... Args>
-constexpr auto p_open_array_of(Args&&... args) {
-  OpenArrayValue<T, sizeof...(Args)> out{};
+constexpr auto tp2cc_open_array_of(Args&&... args) {
+  tp2cc_OpenArrayValue<T, sizeof...(Args)> out{};
   if constexpr (sizeof...(Args) > 0) {
     std::size_t i = 0;
     ((out.storage[i++] = static_cast<T>(std::forward<Args>(args))), ...);
@@ -1731,19 +1731,19 @@ template <typename Arr>
 struct ByteReinterpreter;
 
 template <typename Elem, auto Lo, int N>
-struct ByteReinterpreter<Array<Elem, Lo, N>> {
+struct ByteReinterpreter<tp2cc_Array<Elem, Lo, N>> {
   template <typename Src>
-  static Array<Elem, Lo, N> cast(const Src& src) {
+  static tp2cc_Array<Elem, Lo, N> cast(const Src& src) {
     static_assert(std::is_same_v<Elem, uint8_t> ||
                       std::is_same_v<Elem, p_char>,
                   "byte reinterpretation only supports byte-sized arrays");
-    Array<Elem, Lo, N> out{};
+    tp2cc_Array<Elem, Lo, N> out{};
     const auto* raw = reinterpret_cast<const uint8_t*>(&src);
     const int bytes = static_cast<int>(
         std::min<std::size_t>(sizeof(src), sizeof(out.data)));
     for (int i = 0; i < bytes; ++i) {
       if constexpr (std::is_same_v<Elem, p_char>)
-        out.data[i] = p_char_of(raw[i]);
+        out.data[i] = tp2cc_char_of(raw[i]);
       else
         out.data[i] = raw[i];
     }
@@ -1754,7 +1754,7 @@ struct ByteReinterpreter<Array<Elem, Lo, N>> {
 // Pascal typecasts like `array[0..9] of byte(x)` reinterpret raw
 // storage bytes; they are not element-wise numeric conversions.
 template <typename Arr, typename Src>
-inline Arr p_reinterpret_bytes(const Src& src) {
+inline Arr tp2cc_reinterpret_bytes(const Src& src) {
   return ByteReinterpreter<Arr>::cast(src);
 }
 
@@ -1763,7 +1763,7 @@ inline Arr p_reinterpret_bytes(const Src& src) {
 // Do that with a byte copy rather than a C++ cast so the translation stays
 // defined with respect to aliasing and alignment.
 template <typename T, typename Src>
-inline T p_reinterpret_copy(const Src& src) {
+inline T tp2cc_reinterpret_copy(const Src& src) {
   static_assert(std::is_trivially_copyable_v<T>,
                 "byte reinterpretation target must be trivially copyable");
   static_assert(std::is_trivially_copyable_v<Src>,
@@ -1776,7 +1776,7 @@ inline T p_reinterpret_copy(const Src& src) {
 }
 
 template <typename T>
-inline T p_reinterpret_load(const void* p) {
+inline T tp2cc_reinterpret_load(const void* p) {
   static_assert(std::is_trivially_copyable_v<T>,
                 "byte reinterpretation target must be trivially copyable");
   T out{};
@@ -1785,17 +1785,17 @@ inline T p_reinterpret_load(const void* p) {
 }
 
 template <typename T>
-inline void p_reinterpret_store(void* p, const T& value) {
+inline void tp2cc_reinterpret_store(void* p, const T& value) {
   static_assert(std::is_trivially_copyable_v<T>,
                 "byte reinterpretation source must be trivially copyable");
   std::memcpy(p, &value, sizeof(T));
 }
 
-inline void* p_byte_offset(void* p, std::ptrdiff_t n) {
+inline void* tp2cc_byte_offset(void* p, std::ptrdiff_t n) {
   return static_cast<void*>(static_cast<uint8_t*>(p) + n);
 }
 
-inline const void* p_byte_offset(const void* p, std::ptrdiff_t n) {
+inline const void* tp2cc_byte_offset(const void* p, std::ptrdiff_t n) {
   return static_cast<const void*>(static_cast<const uint8_t*>(p) + n);
 }
 
@@ -1803,51 +1803,51 @@ inline const void* p_byte_offset(const void* p, std::ptrdiff_t n) {
 // This is the helper used for Pascal `absolute` aliases and typed lvalue
 // casts, where the source object already is the storage being re-viewed.
 template <typename T, typename Src>
-inline T& p_reinterpret_storage_ref(Src& src) {
+inline T& tp2cc_reinterpret_storage_ref(Src& src) {
   return *reinterpret_cast<T*>(&src);
 }
 template <typename T, typename Src>
-inline const T& p_reinterpret_storage_ref(const Src& src) {
+inline const T& tp2cc_reinterpret_storage_ref(const Src& src) {
   return *reinterpret_cast<const T*>(&src);
 }
 template <typename T>
-inline T& p_reinterpret_storage_ref(ShortStringCharRef src) {
+inline T& tp2cc_reinterpret_storage_ref(tp2cc_ShortStringCharRef src) {
   return *reinterpret_cast<T*>(src.byte);
 }
 template <typename T>
-inline const T& p_reinterpret_storage_ref(ShortStringCharValue src) {
+inline const T& tp2cc_reinterpret_storage_ref(tp2cc_ShortStringCharValue src) {
   return *reinterpret_cast<const T*>(src.byte);
 }
 
 // View the storage pointed at by `src` as a different type. This is a
-// different Pascal operation from p_reinterpret_storage_ref even though the
+// different Pascal operation from tp2cc_reinterpret_storage_ref even though the
 // current implementation uses the same cast sequence for non-pointer inputs.
 template <typename T, typename Src>
-inline T& p_reinterpret_ref(Src& src) {
+inline T& tp2cc_reinterpret_ref(Src& src) {
   return *reinterpret_cast<T*>(&src);
 }
 template <typename T, typename Src>
-inline const T& p_reinterpret_ref(const Src& src) {
+inline const T& tp2cc_reinterpret_ref(const Src& src) {
   return *reinterpret_cast<const T*>(&src);
 }
 template <typename T>
-inline T& p_reinterpret_ref(ShortStringCharRef src) {
+inline T& tp2cc_reinterpret_ref(tp2cc_ShortStringCharRef src) {
   return *reinterpret_cast<T*>(src.byte);
 }
 template <typename T>
-inline const T& p_reinterpret_ref(ShortStringCharValue src) {
+inline const T& tp2cc_reinterpret_ref(tp2cc_ShortStringCharValue src) {
   return *reinterpret_cast<const T*>(src.byte);
 }
 template <typename T>
-inline T& p_reinterpret_ref(void* p) {
+inline T& tp2cc_reinterpret_ref(void* p) {
   return *reinterpret_cast<T*>(p);
 }
 template <typename T>
-inline const T& p_reinterpret_ref(const void* p) {
+inline const T& tp2cc_reinterpret_ref(const void* p) {
   return *reinterpret_cast<const T*>(p);
 }
 
-// --- Set<Elem> --------------------------------------------------------------
+// --- tp2cc_Set<Elem> --------------------------------------------------------------
 //
 // A 256-bit set, wide enough for `set of byte`, `set of char`, and every
 // enum-backed Pascal set we encounter (emitted code may cast enum values to
@@ -1856,11 +1856,11 @@ inline const T& p_reinterpret_ref(const void* p) {
 // The storage is a bare `unsigned char[32]` with alignment 1 -- intentionally,
 // NOT a `uint64_t[4]`. Reason: a Pascal `packed record` maps to a C++ struct
 // wrapped in `#pragma pack(push, 1)`, which places all fields at byte
-// granularity. A `Set` member of such a record then lands at an arbitrary
+// granularity. A `tp2cc_Set` member of such a record then lands at an arbitrary
 // byte offset within the record (and, once placed in an array, most elements
 // have the field at an address that isn't 4- or 8-aligned). Calling any
-// member function on that misaligned `Set` -- e.g. `rec.p_flags.add(x)` --
-// forms a `Set* this` pointer that has lost the "I came from a packed
+// member function on that misaligned `tp2cc_Set` -- e.g. `rec.p_flags.add(x)` --
+// forms a `tp2cc_Set* this` pointer that has lost the "I came from a packed
 // struct" information; inside the method the compiler assumes the pointer
 // has the type's natural alignment and emits aligned loads/stores through it.
 // If the internal storage were `uint64_t[4]`, those loads/stores would be
@@ -1868,7 +1868,7 @@ inline const T& p_reinterpret_ref(const void* p) {
 // `-fsanitize=alignment` catches exactly this, and on strict-aligning
 // architectures it would fault outright. Using a 1-byte-aligned element
 // type makes every access on `this` trivially aligned regardless of where
-// the `Set` actually sits, so packed-record membership is safe. See the
+// the `tp2cc_Set` actually sits, so packed-record membership is safe. See the
 // tp2cc codegen -- it emits `#pragma pack(push, 1)` whenever the Pascal
 // source says `packed record` (e.g. `ttargetinfo` in `compiler/systems.pas`
 // which has a `set of ttargetflags` field).
@@ -1876,12 +1876,12 @@ inline const T& p_reinterpret_ref(const void* p) {
 // All bit operations below are written byte-wise to preserve that property.
 
 template <typename Elem>
-struct Set {
+struct tp2cc_Set {
   static constexpr int Nb = 32;  // 32 bytes == 256 bits.
-  // No default member initialiser: keeps `is_trivial_v<Set>` so `Set`
+  // No default member initialiser: keeps `is_trivial_v<tp2cc_Set>` so `tp2cc_Set`
   // can live inside a packed record without GCC dropping the packing.
-  // `Set` helpers (`from_list`, `set_of`, the emitter's set-range
-  // lambda) value-init with `Set s{};` before calling `add` so the
+  // `tp2cc_Set` helpers (`from_list`, `set_of`, the emitter's set-range
+  // lambda) value-init with `tp2cc_Set s{};` before calling `add` so the
   // unset bits are zeroed; otherwise `.contains()` would return true
   // for arbitrary values.
   unsigned char bits[Nb];
@@ -1893,12 +1893,12 @@ struct Set {
       return static_cast<int>(static_cast<int64_t>(e));
   }
 
-  static Set from_list(std::initializer_list<Elem> xs) {
-    // Value-init; `Set` has no default member initialisers, so a bare
-    // `Set s;` would leave the bitmask uninitialised and the
+  static tp2cc_Set from_list(std::initializer_list<Elem> xs) {
+    // Value-init; `tp2cc_Set` has no default member initialisers, so a bare
+    // `tp2cc_Set s;` would leave the bitmask uninitialised and the
     // subsequent `s.add(x)` calls would only set specific bits on top
     // of stack garbage.
-    Set s{};
+    tp2cc_Set s{};
     for (auto x : xs) s.add(x);
     return s;
   }
@@ -1912,34 +1912,34 @@ struct Set {
     if (i < 0 || i >= 8 * Nb) return false;
     return (bits[i >> 3] & (1u << (i & 7))) != 0;
   }
-  friend constexpr Set operator+(Set a, Set b) {
-    Set r{}; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] | b.bits[i]; return r;
+  friend constexpr tp2cc_Set operator+(tp2cc_Set a, tp2cc_Set b) {
+    tp2cc_Set r{}; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] | b.bits[i]; return r;
   }
-  friend constexpr Set operator-(Set a, Set b) {
-    Set r{}; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] & ~b.bits[i]; return r;
+  friend constexpr tp2cc_Set operator-(tp2cc_Set a, tp2cc_Set b) {
+    tp2cc_Set r{}; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] & ~b.bits[i]; return r;
   }
-  friend constexpr Set operator*(Set a, Set b) {
-    Set r{}; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] & b.bits[i]; return r;
+  friend constexpr tp2cc_Set operator*(tp2cc_Set a, tp2cc_Set b) {
+    tp2cc_Set r{}; for (int i = 0; i < Nb; ++i) r.bits[i] = a.bits[i] & b.bits[i]; return r;
   }
-  friend constexpr bool operator==(Set a, Set b) {
+  friend constexpr bool operator==(tp2cc_Set a, tp2cc_Set b) {
     for (int i = 0; i < Nb; ++i) if (a.bits[i] != b.bits[i]) return false;
     return true;
   }
-  friend constexpr bool operator!=(Set a, Set b) { return !(a == b); }
-  friend constexpr bool operator<=(Set a, Set b) {
+  friend constexpr bool operator!=(tp2cc_Set a, tp2cc_Set b) { return !(a == b); }
+  friend constexpr bool operator<=(tp2cc_Set a, tp2cc_Set b) {
     // subset test
     for (int i = 0; i < Nb; ++i) if ((a.bits[i] & ~b.bits[i]) != 0) return false;
     return true;
   }
-  friend constexpr bool operator>=(Set a, Set b) {
+  friend constexpr bool operator>=(tp2cc_Set a, tp2cc_Set b) {
     // Pascal `a >= b` on sets is a superset test.
     return b <= a;
   }
 };
 
 template <typename Elem>
-Set<Elem> set_of(std::initializer_list<Elem> xs) {
-  return Set<Elem>::from_list(xs);
+tp2cc_Set<Elem> set_of(std::initializer_list<Elem> xs) {
+  return tp2cc_Set<Elem>::from_list(xs);
 }
 
 // Pascal `Math.GetExceptionMask` / `SetExceptionMask` use the same six-bit
@@ -1947,33 +1947,33 @@ Set<Elem> set_of(std::initializer_list<Elem> xs) {
 // translated compiler does not need the full `Math` unit just to mask FP
 // traps before constant folding.
 template <typename Elem>
-inline Set<Elem> p_getexceptionmask() {
-  Set<Elem> mask{};
+inline tp2cc_Set<Elem> p_getexceptionmask() {
+  tp2cc_Set<Elem> mask{};
   mask.bits[0] = static_cast<unsigned char>(tp2cc_get_exception_mask_bits() & 0x3Fu);
   return mask;
 }
 
 template <typename Elem>
-inline Set<Elem> p_setexceptionmask(Set<Elem> mask) {
-  Set<Elem> previous{};
+inline tp2cc_Set<Elem> p_setexceptionmask(tp2cc_Set<Elem> mask) {
+  tp2cc_Set<Elem> previous{};
   previous.bits[0] = static_cast<unsigned char>(
       tp2cc_set_exception_mask_bits(static_cast<uint8_t>(mask.bits[0] & 0x3Fu)));
   return previous;
 }
 
 template <typename DstSet, typename SrcElem>
-constexpr DstSet p_set_cast(const Set<SrcElem>& src) {
+constexpr DstSet tp2cc_set_cast(const tp2cc_Set<SrcElem>& src) {
   // Pascal `TDstSet(x)` is an explicit set typecast. Keep that as an
-  // explicit helper rather than an implicit cross-Set conversion.
+  // explicit helper rather than an implicit cross-tp2cc_Set conversion.
   DstSet dst{};
   constexpr int bytes =
-      (DstSet::Nb < Set<SrcElem>::Nb) ? DstSet::Nb : Set<SrcElem>::Nb;
+      (DstSet::Nb < tp2cc_Set<SrcElem>::Nb) ? DstSet::Nb : tp2cc_Set<SrcElem>::Nb;
   for (int i = 0; i < bytes; ++i) dst.bits[i] = src.bits[i];
   return dst;
 }
 
 template <typename DstSet, typename Elem, auto Lo, int N>
-constexpr DstSet p_set_cast(const Array<Elem, Lo, N>& src) {
+constexpr DstSet tp2cc_set_cast(const tp2cc_Array<Elem, Lo, N>& src) {
   static_assert(N == DstSet::Nb,
                 "set casts from raw array carriers require exactly 32 bytes");
   static_assert(sizeof(Elem) == 1,
@@ -1993,7 +1993,7 @@ constexpr DstSet p_set_cast(const Array<Elem, Lo, N>& src) {
 // `const X = 'c'`) with plain char literals. A single
 // `initializer_list<Elem>` can't deduce Elem across distinct argument
 // types, so take them as a variadic pack and add each explicitly.
-// The first argument's type drives the Set's element type.
+// The first argument's type drives the tp2cc_Set's element type.
 namespace detail {
 template <typename T> struct set_elem_type { using type = T; };
 template <> struct set_elem_type<char> { using type = p_char; };
@@ -2002,7 +2002,7 @@ template <> struct set_elem_type<CharConst> { using type = p_char; };
 template <typename T, typename... Rest>
 inline auto set_of(T first, Rest... rest) {
   using E = typename detail::set_elem_type<T>::type;
-  Set<E> s{};  // value-init: zero the bits[] -- see note on from_list
+  tp2cc_Set<E> s{};  // value-init: zero the bits[] -- see note on from_list
   s.add(static_cast<E>(first));
   (s.add(static_cast<E>(rest)), ...);
   return s;
@@ -2010,39 +2010,39 @@ inline auto set_of(T first, Rest... rest) {
 
 // Empty set-literal sentinel. Pascal `[]` has no element type on its own
 // (the type is inferred from use context). We emit it as `EmptySet{}`
-// which implicitly converts to any Set<T>.
+// which implicitly converts to any tp2cc_Set<T>.
 struct EmptySet {
   template <typename T>
-  constexpr operator Set<T>() const { return {}; }
+  constexpr operator tp2cc_Set<T>() const { return {}; }
 };
-inline Set<int> set_of(std::initializer_list<EmptySet>) { return {}; }
+inline tp2cc_Set<int> set_of(std::initializer_list<EmptySet>) { return {}; }
 inline EmptySet set_of() { return {}; }
 
 template <typename A, typename B>
 requires (!std::is_same_v<A, B>)
-constexpr Set<A> operator+(Set<A> a, Set<B> b) {
-  for (int i = 0; i < Set<A>::Nb; ++i) a.bits[i] |= b.bits[i];
+constexpr tp2cc_Set<A> operator+(tp2cc_Set<A> a, tp2cc_Set<B> b) {
+  for (int i = 0; i < tp2cc_Set<A>::Nb; ++i) a.bits[i] |= b.bits[i];
   return a;
 }
 
 template <typename A, typename B>
 requires (!std::is_same_v<A, B>)
-constexpr Set<A> operator-(Set<A> a, Set<B> b) {
-  for (int i = 0; i < Set<A>::Nb; ++i) a.bits[i] &= static_cast<unsigned char>(~b.bits[i]);
+constexpr tp2cc_Set<A> operator-(tp2cc_Set<A> a, tp2cc_Set<B> b) {
+  for (int i = 0; i < tp2cc_Set<A>::Nb; ++i) a.bits[i] &= static_cast<unsigned char>(~b.bits[i]);
   return a;
 }
 
 template <typename A, typename B>
 requires (!std::is_same_v<A, B>)
-constexpr Set<A> operator*(Set<A> a, Set<B> b) {
-  for (int i = 0; i < Set<A>::Nb; ++i) a.bits[i] &= b.bits[i];
+constexpr tp2cc_Set<A> operator*(tp2cc_Set<A> a, tp2cc_Set<B> b) {
+  for (int i = 0; i < tp2cc_Set<A>::Nb; ++i) a.bits[i] &= b.bits[i];
   return a;
 }
 
 template <typename A, typename B>
 requires (!std::is_same_v<A, B>)
-constexpr bool operator==(Set<A> a, Set<B> b) {
-  for (int i = 0; i < Set<A>::Nb; ++i) {
+constexpr bool operator==(tp2cc_Set<A> a, tp2cc_Set<B> b) {
+  for (int i = 0; i < tp2cc_Set<A>::Nb; ++i) {
     if (a.bits[i] != b.bits[i]) return false;
   }
   return true;
@@ -2050,14 +2050,14 @@ constexpr bool operator==(Set<A> a, Set<B> b) {
 
 template <typename A, typename B>
 requires (!std::is_same_v<A, B>)
-constexpr bool operator!=(Set<A> a, Set<B> b) {
+constexpr bool operator!=(tp2cc_Set<A> a, tp2cc_Set<B> b) {
   return !(a == b);
 }
 
 template <typename A, typename B>
 requires (!std::is_same_v<A, B>)
-constexpr bool operator<=(Set<A> a, Set<B> b) {
-  for (int i = 0; i < Set<A>::Nb; ++i) {
+constexpr bool operator<=(tp2cc_Set<A> a, tp2cc_Set<B> b) {
+  for (int i = 0; i < tp2cc_Set<A>::Nb; ++i) {
     if ((a.bits[i] & static_cast<unsigned char>(~b.bits[i])) != 0) return false;
   }
   return true;
@@ -2065,13 +2065,13 @@ constexpr bool operator<=(Set<A> a, Set<B> b) {
 
 template <typename A, typename B>
 requires (!std::is_same_v<A, B>)
-constexpr bool operator>=(Set<A> a, Set<B> b) {
+constexpr bool operator>=(tp2cc_Set<A> a, tp2cc_Set<B> b) {
   return b <= a;
 }
 
-// Set-literal element: either a single value or a range `lo..hi`.  We
+// tp2cc_Set-literal element: either a single value or a range `lo..hi`.  We
 // model heterogeneous set literals with a type-erased element, then
-// construct the Set by walking and adding each element (ranges expand).
+// construct the tp2cc_Set by walking and adding each element (ranges expand).
 template <typename Elem>
 struct SetElem {
   bool is_range = false;
@@ -2079,8 +2079,8 @@ struct SetElem {
 };
 
 template <typename Elem>
-Set<Elem> set_of_range(std::initializer_list<SetElem<Elem>> xs) {
-  Set<Elem> s{};  // value-init; see note on Set::from_list
+tp2cc_Set<Elem> set_of_range(std::initializer_list<SetElem<Elem>> xs) {
+  tp2cc_Set<Elem> s{};  // value-init; see note on tp2cc_Set::from_list
   for (const auto& x : xs) {
     if (x.is_range) {
       for (int64_t v = static_cast<int64_t>(x.lo);
@@ -2096,20 +2096,20 @@ Set<Elem> set_of_range(std::initializer_list<SetElem<Elem>> xs) {
 
 // --- Text I/O stub ----------------------------------------------------------
 
-struct TextFile {
+struct tp2cc_TextFile {
   std::FILE* f = nullptr;
-  // `{}` needed because `ShortString` no longer carries a default
+  // `{}` needed because `tp2cc_ShortString` no longer carries a default
   // member initialiser on its own fields (would disqualify it from
   // `is_trivial` and break its use as a packed-record member).
-  ShortString<> name{};
+  tp2cc_ShortString<> name{};
   int32_t iores = 0;  // last IOResult
 };
 
 // Pascal `file of T` - minimal stub; behaviour added as needed.
 template <typename T>
-struct TypedFile {
+struct tp2cc_TypedFile {
   std::FILE* f = nullptr;
-  ShortString<> name{};
+  tp2cc_ShortString<> name{};
   int32_t iores = 0;
 };
 
@@ -2124,20 +2124,20 @@ inline Range range(int64_t a, int64_t b) { return {a, b}; }
 // Keeping these in sync with Pascal's names means the emitter passes
 // calls through verbatim -- no translation table needed.
 
-template <int N> inline int p_length(const ShortString<N>& s) { return s.length; }
-template <int N> inline int p_length(const ShortStringPtrValue<N>& s) {
+template <int N> inline int p_length(const tp2cc_ShortString<N>& s) { return s.length; }
+template <int N> inline int p_length(const tp2cc_ShortStringPtrValue<N>& s) {
   return s.size();
 }
-template <int N> inline int p_length(const ShortStringPtrRef<N>& s) {
+template <int N> inline int p_length(const tp2cc_ShortStringPtrRef<N>& s) {
   return s.size();
 }
-inline int p_length(const AnsiString& s) { return s.length(); }
-template <typename T> inline int p_length(const DynArray<T>& a) { return a.count; }
-template <typename T> inline int p_length(const OpenArray<T>& a) { return a.count; }
+inline int p_length(const tp2cc_AnsiString& s) { return s.length(); }
+template <typename T> inline int p_length(const tp2cc_DynArray<T>& a) { return a.count; }
+template <typename T> inline int p_length(const tp2cc_OpenArray<T>& a) { return a.count; }
 template <typename T> inline int p_length(const std::array<T, 0>&) { return 0; }
 
 template <int N, typename Src>
-inline void p_shortstring_assign(ShortString<N>& dest, const Src& src) {
+inline void tp2cc_shortstring_assign(tp2cc_ShortString<N>& dest, const Src& src) {
   const int32_t n = std::min<int32_t>(p_string_length(src), N);
   dest.length = static_cast<uint8_t>(n);
   if (n > 0) {
@@ -2147,7 +2147,7 @@ inline void p_shortstring_assign(ShortString<N>& dest, const Src& src) {
 }
 
 template <int N, typename Src>
-inline void p_shortstring_assign(ShortStringPtrRef<N> dest, const Src& src) {
+inline void tp2cc_shortstring_assign(tp2cc_ShortStringPtrRef<N> dest, const Src& src) {
   const int32_t n = std::min<int32_t>(p_string_length(src), N);
   *dest.storage = static_cast<uint8_t>(n);
   if (n > 0) {
@@ -2157,21 +2157,21 @@ inline void p_shortstring_assign(ShortStringPtrRef<N> dest, const Src& src) {
 }
 
 template <int N>
-inline void p_setlength(ShortString<N>& s, int new_len) {
+inline void p_setlength(tp2cc_ShortString<N>& s, int new_len) {
   if (new_len < 0) new_len = 0;
   if (new_len > N) new_len = N;
   for (int i = s.length; i < new_len; ++i) {
-    s.data[i] = p_char_of('\0');
+    s.data[i] = tp2cc_char_of('\0');
   }
   s.length = static_cast<uint8_t>(new_len);
 }
 
-inline void p_setlength(AnsiString& s, int new_len) {
+inline void p_setlength(tp2cc_AnsiString& s, int new_len) {
   s.set_length(new_len);
 }
 
 template <typename T>
-inline void p_setlength(DynArray<T>& a, int new_len) {
+inline void p_setlength(tp2cc_DynArray<T>& a, int new_len) {
   if (new_len <= 0) {
     a = nullptr;
     return;
@@ -2197,7 +2197,7 @@ requires (!std::is_convertible_v<T, p_char>)
 inline constexpr int32_t p_ord(T x) {
   return static_cast<int32_t>(x);
 }
-inline constexpr p_char p_chr(int x) { return p_char_of(static_cast<uint8_t>(x)); }
+inline constexpr p_char p_chr(int x) { return tp2cc_char_of(static_cast<uint8_t>(x)); }
 
 // Pascal `Lo` / `Hi` return the lower / upper half of an ordinal value's
 // storage width: 32-bit -> 16-bit halves, 64-bit -> 32-bit halves, etc.
@@ -2243,27 +2243,27 @@ inline int32_t p_swap(int32_t l) {
   return static_cast<int32_t>(p_swap(static_cast<uint32_t>(l)));
 }
 
-// Pascal `ptr^` becomes `p_deref(ptr)`. For typed pointers this is just
+// Pascal `ptr^` becomes `tp2cc_deref(ptr)`. For typed pointers this is just
 // `*ptr`. For untyped (`pointer` -> `void*`), expose the first byte so
 // code that writes through the deref still compiles; the translated units
 // using this pattern (settextbuf buffers, heap-trace hooks) only touch
 // these values behind stubbed helpers.
-template <typename T> inline T& p_deref(T* p) { return *p; }
-template <int N> inline ShortStringPtrRef<N> p_deref(ShortString<N>* p) {
+template <typename T> inline T& tp2cc_deref(T* p) { return *p; }
+template <int N> inline tp2cc_ShortStringPtrRef<N> tp2cc_deref(tp2cc_ShortString<N>* p) {
   return {reinterpret_cast<uint8_t*>(p)};
 }
 template <int N>
-inline ShortStringPtrValue<N> p_deref(const ShortString<N>* p) {
+inline tp2cc_ShortStringPtrValue<N> tp2cc_deref(const tp2cc_ShortString<N>* p) {
   return {reinterpret_cast<const uint8_t*>(p)};
 }
-inline char& p_deref(void* p) { return *static_cast<char*>(p); }
-inline const char& p_deref(const void* p) { return *static_cast<const char*>(p); }
+inline char& tp2cc_deref(void* p) { return *static_cast<char*>(p); }
+inline const char& tp2cc_deref(const void* p) { return *static_cast<const char*>(p); }
 
 template <typename T> inline bool p_assigned(T* p) { return p != nullptr; }
-template <typename T> inline bool p_assigned(const DynArray<T>& a) {
+template <typename T> inline bool p_assigned(const tp2cc_DynArray<T>& a) {
   return a.data != nullptr;
 }
-template <typename Sig> inline bool p_assigned(const MethodPtr<Sig>& p) {
+template <typename Sig> inline bool p_assigned(const tp2cc_MethodPtr<Sig>& p) {
   return static_cast<bool>(p);
 }
 template <typename T> inline bool p_odd(T x) { return (static_cast<int64_t>(x) & 1) != 0; }
@@ -2306,13 +2306,13 @@ template <typename T> inline void p_inc(T& x) {
     x = static_cast<T>(static_cast<int64_t>(x) + 1);
   else ++x;
 }
-inline void p_inc(ShortStringCharRef x) { ++(*x.byte); }
+inline void p_inc(tp2cc_ShortStringCharRef x) { ++(*x.byte); }
 template <typename T, typename N> inline void p_inc(T& x, N n) {
   if constexpr (std::is_pointer_v<T>) x += n;
   else x = static_cast<T>(static_cast<int64_t>(x) + n);
 }
 template <typename N>
-inline void p_inc(ShortStringCharRef x, N n) {
+inline void p_inc(tp2cc_ShortStringCharRef x, N n) {
   *x.byte = static_cast<uint8_t>(static_cast<int64_t>(*x.byte) + n);
 }
 template <typename T> inline void p_dec(T& x) {
@@ -2320,41 +2320,41 @@ template <typename T> inline void p_dec(T& x) {
     x = static_cast<T>(static_cast<int64_t>(x) - 1);
   else --x;
 }
-inline void p_dec(ShortStringCharRef x) { --(*x.byte); }
+inline void p_dec(tp2cc_ShortStringCharRef x) { --(*x.byte); }
 template <typename T, typename N> inline void p_dec(T& x, N n) {
   if constexpr (std::is_pointer_v<T>) x -= n;
   else x = static_cast<T>(static_cast<int64_t>(x) - n);
 }
 template <typename N>
-inline void p_dec(ShortStringCharRef x, N n) {
+inline void p_dec(tp2cc_ShortStringCharRef x, N n) {
   *x.byte = static_cast<uint8_t>(static_cast<int64_t>(*x.byte) - n);
 }
 
-template <typename T> inline void p_reinterpret_inc(void* p) {
-  T x = p_reinterpret_load<T>(p);
+template <typename T> inline void tp2cc_reinterpret_inc(void* p) {
+  T x = tp2cc_reinterpret_load<T>(p);
   p_inc(x);
-  p_reinterpret_store<T>(p, x);
+  tp2cc_reinterpret_store<T>(p, x);
 }
-template <typename T, typename N> inline void p_reinterpret_inc(void* p, N n) {
-  T x = p_reinterpret_load<T>(p);
+template <typename T, typename N> inline void tp2cc_reinterpret_inc(void* p, N n) {
+  T x = tp2cc_reinterpret_load<T>(p);
   p_inc(x, n);
-  p_reinterpret_store<T>(p, x);
+  tp2cc_reinterpret_store<T>(p, x);
 }
-template <typename T> inline void p_reinterpret_dec(void* p) {
-  T x = p_reinterpret_load<T>(p);
+template <typename T> inline void tp2cc_reinterpret_dec(void* p) {
+  T x = tp2cc_reinterpret_load<T>(p);
   p_dec(x);
-  p_reinterpret_store<T>(p, x);
+  tp2cc_reinterpret_store<T>(p, x);
 }
-template <typename T, typename N> inline void p_reinterpret_dec(void* p, N n) {
-  T x = p_reinterpret_load<T>(p);
+template <typename T, typename N> inline void tp2cc_reinterpret_dec(void* p, N n) {
+  T x = tp2cc_reinterpret_load<T>(p);
   p_dec(x, n);
-  p_reinterpret_store<T>(p, x);
+  tp2cc_reinterpret_store<T>(p, x);
 }
 
 // No rvalue `p_inc`/`p_dec` overloads here: typed-storage casted lvalues like
 // `inc(longint(p))` on a real pointer slot are emitted as
-// `p_inc(p_reinterpret_storage_ref<int32_t>(p))`. Untyped-storage byte views
-// use `p_reinterpret_inc` / `p_reinterpret_dec` above instead of manufacturing
+// `p_inc(tp2cc_reinterpret_storage_ref<int32_t>(p))`. Untyped-storage byte views
+// use `tp2cc_reinterpret_inc` / `tp2cc_reinterpret_dec` above instead of manufacturing
 // a potentially misaligned C++ reference.
 
 // --- Missing small RTL procedures ------------------------------------------
@@ -2371,7 +2371,7 @@ inline void p_set_ioresult(File& f, int32_t code) {
   p_last_ioresult = code;
 }
 
-inline ShortString<> p_file_name_to_string(const ShortString<>& name) {
+inline tp2cc_ShortString<> p_file_name_to_string(const tp2cc_ShortString<>& name) {
   return name;
 }
 
@@ -2383,14 +2383,14 @@ inline void p_file_name_to_buf(const File& f, char (&buf)[260]) {
 }
 
 template <int N>
-inline std::string p_to_std_string(const ShortString<N>& s) {
+inline std::string p_to_std_string(const tp2cc_ShortString<N>& s) {
   std::string out;
   out.reserve(s.length);
   for (int i = 0; i < s.length; ++i) out.push_back(p_char_to_c(s.data[i]));
   return out;
 }
 
-inline std::string p_to_std_string(const AnsiString& s) {
+inline std::string p_to_std_string(const tp2cc_AnsiString& s) {
   std::string out;
   out.reserve(static_cast<size_t>(s.length()));
   for (int i = 0; i < s.length(); ++i) out.push_back(p_char_to_c(s.data[i]));
@@ -2404,13 +2404,13 @@ inline std::string p_to_std_string(const p_char* s) {
   return s ? std::string(p_c_str(s)) : std::string();
 }
 
-inline int32_t p_strtoint(const ShortString<>& s) {
+inline int32_t p_strtoint(const tp2cc_ShortString<>& s) {
   char buf[260]{};
   for (int i = 0; i < s.length; ++i) buf[i] = p_char_to_c(s.data[i]);
   return std::atoi(buf);
 }
 
-inline int32_t p_strtoint(const AnsiString& s) {
+inline int32_t p_strtoint(const tp2cc_AnsiString& s) {
   return std::atoi(p_to_std_string(s).c_str());
 }
 
@@ -2618,7 +2618,7 @@ inline void p_spawn_process(const std::vector<std::string>& args) {
 
 // Dos/file procedures -- stubbed; real behaviour added as needed.
 struct SearchRec { int32_t p_time = 0; int32_t p_size = 0;
-                   uint8_t p_attr = 0; ShortString<> p_name{};
+                   uint8_t p_attr = 0; tp2cc_ShortString<> p_name{};
                    std::vector<std::string> p_matches;
                    std::size_t p_index = 0; };
 using p_searchrec = SearchRec;
@@ -2631,13 +2631,13 @@ inline void p_searchrec_fill(SearchRec& rec, const std::string& path) {
   rec.p_attr = 0;
   if (S_ISDIR(st.st_mode)) rec.p_attr |= 0x10;
   std::size_t sep = path.find_last_of("/\\");
-  rec.p_name = p_shortstring_of<>((sep == std::string::npos ? path : path.substr(sep + 1)).c_str());
+  rec.p_name = tp2cc_shortstring_of<>((sep == std::string::npos ? path : path.substr(sep + 1)).c_str());
 }
-inline int32_t p_findfirst(const ShortString<>& pattern, int attrs, SearchRec& rec) {
+inline int32_t p_findfirst(const tp2cc_ShortString<>& pattern, int attrs, SearchRec& rec) {
   rec.p_matches.clear();
   rec.p_index = 0;
   rec.p_attr = 0;
-  rec.p_name = p_shortstring_of<>("");
+  rec.p_name = tp2cc_shortstring_of<>("");
   glob_t matches{};
   int rc = ::glob(p_to_std_string(pattern).c_str(), GLOB_NOSORT, nullptr, &matches);
   if (rc != 0) {
@@ -2675,7 +2675,7 @@ inline void p_findclose(SearchRec& rec) {
   rec.p_matches.clear();
   rec.p_index = 0;
 }
-inline void p_getfattr(TextFile& f, uint16_t& attr) {
+inline void p_getfattr(tp2cc_TextFile& f, uint16_t& attr) {
   struct stat st{};
   if (::stat(p_to_std_string(f.name).c_str(), &st) != 0) {
     p_doserror = errno;
@@ -2686,7 +2686,7 @@ inline void p_getfattr(TextFile& f, uint16_t& attr) {
   p_doserror = 0;
 }
 template <typename T>
-inline void p_getfattr(TypedFile<T>& f, uint16_t& attr) {
+inline void p_getfattr(tp2cc_TypedFile<T>& f, uint16_t& attr) {
   struct stat st{};
   if (::stat(p_to_std_string(f.name).c_str(), &st) != 0) {
     p_doserror = errno;
@@ -2696,41 +2696,41 @@ inline void p_getfattr(TypedFile<T>& f, uint16_t& attr) {
   attr = static_cast<uint16_t>(S_ISDIR(st.st_mode) ? 0x10 : 0);
   p_doserror = 0;
 }
-inline void p_mkdir(const ShortString<>& path) {
+inline void p_mkdir(const tp2cc_ShortString<>& path) {
   p_last_ioresult = ::mkdir(p_to_std_string(path).c_str(), 0777) == 0 ? 0 : 5;
 }
-inline void p_rmdir(const ShortString<>& path) {
+inline void p_rmdir(const tp2cc_ShortString<>& path) {
   p_last_ioresult = ::rmdir(p_to_std_string(path).c_str()) == 0 ? 0 : 5;
 }
-inline void p_chdir(const ShortString<>& path) {
+inline void p_chdir(const tp2cc_ShortString<>& path) {
   p_last_ioresult = ::chdir(p_to_std_string(path).c_str()) == 0 ? 0 : 3;
 }
 template <int N>
-inline void p_getdir(int, ShortString<N>& out) {
+inline void p_getdir(int, tp2cc_ShortString<N>& out) {
   char buf[PATH_MAX > 0 ? PATH_MAX : 4096]{};
-  if (::getcwd(buf, sizeof(buf)) == nullptr) out = p_shortstring_of<N>("");
-  else out = p_shortstring_of<N>(buf);
+  if (::getcwd(buf, sizeof(buf)) == nullptr) out = tp2cc_shortstring_of<N>("");
+  else out = tp2cc_shortstring_of<N>(buf);
 }
-inline void p_erase(const ShortString<>& path) {
+inline void p_erase(const tp2cc_ShortString<>& path) {
   p_last_ioresult = std::remove(p_to_std_string(path).c_str()) == 0 ? 0 : 2;
 }
-inline void p_erase(TextFile& f) {      // `erase(f)` after assign(f, name)
+inline void p_erase(tp2cc_TextFile& f) {      // `erase(f)` after assign(f, name)
   char buf[260]{};
   p_file_name_to_buf(f, buf);
   p_set_ioresult(f, std::remove(buf) == 0 ? 0 : 2);
 }
-inline void p_rename(const ShortString<>& old_name, const ShortString<>& new_name) {
+inline void p_rename(const tp2cc_ShortString<>& old_name, const tp2cc_ShortString<>& new_name) {
   p_last_ioresult =
       std::rename(p_to_std_string(old_name).c_str(), p_to_std_string(new_name).c_str()) == 0 ? 0 : 5;
 }
-inline void p_rename(TextFile& f, const ShortString<>& new_name) {
+inline void p_rename(tp2cc_TextFile& f, const tp2cc_ShortString<>& new_name) {
   char buf[260]{};
   p_file_name_to_buf(f, buf);
   p_set_ioresult(f, std::rename(buf, p_to_std_string(new_name).c_str()) == 0 ? 0 : 5);
 }
-inline ShortString<> p_fsearch(const ShortString<>& name, const ShortString<>&) { return name; }
-inline void p_fsplit(const ShortString<>& input, ShortString<>& dir,
-                     ShortString<>& name, ShortString<>& ext) {
+inline tp2cc_ShortString<> p_fsearch(const tp2cc_ShortString<>& name, const tp2cc_ShortString<>&) { return name; }
+inline void p_fsplit(const tp2cc_ShortString<>& input, tp2cc_ShortString<>& dir,
+                     tp2cc_ShortString<>& name, tp2cc_ShortString<>& ext) {
   std::string path;
   path.reserve(input.length);
   for (int i = 0; i < input.length; ++i) {
@@ -2761,9 +2761,9 @@ inline void p_fsplit(const ShortString<>& input, ShortString<>& dir,
     ext_part = leaf.substr(dot);
   }
 
-  dir = p_shortstring_of<>(dir_part.c_str());
-  name = p_shortstring_of<>(name_part.c_str());
-  ext = p_shortstring_of<>(ext_part.c_str());
+  dir = tp2cc_shortstring_of<>(dir_part.c_str());
+  name = tp2cc_shortstring_of<>(name_part.c_str());
+  ext = tp2cc_shortstring_of<>(ext_part.c_str());
 }
 // FExpand: produce a fully-qualified, lexically normalised form of
 // `path`.  This is a string operation: GetDir is read once for the
@@ -2783,9 +2783,9 @@ inline void p_fsplit(const ShortString<>& input, ShortString<>& dir,
 //  - Relative inputs are resolved against GetDir(0).
 //  - `.` components are dropped; `..` pops the previous component;
 //    `..` at the root is a no-op.
-//  - Result is capped to 255 chars by the ShortString carrier size
+//  - Result is capped to 255 chars by the tp2cc_ShortString carrier size
 //    (silent truncation, Pascal shortstring semantics).
-inline ShortString<> p_fexpand(const ShortString<>& s) {
+inline tp2cc_ShortString<> p_fexpand(const tp2cc_ShortString<>& s) {
   std::string in = p_to_std_string(s);
 
   // Read cwd up-front.  getcwd(3) with a too-small buffer returns
@@ -2801,7 +2801,7 @@ inline ShortString<> p_fexpand(const ShortString<>& s) {
     if (errno != ERANGE) break;
   }
 
-  if (in.empty()) return p_shortstring_of<>(cwd.c_str());
+  if (in.empty()) return tp2cc_shortstring_of<>(cwd.c_str());
 
   std::string path = in;
 
@@ -2847,7 +2847,7 @@ inline ShortString<> p_fexpand(const ShortString<>& s) {
     out += comps[k];
   }
 
-  return p_shortstring_of<>(out.c_str());
+  return tp2cc_shortstring_of<>(out.c_str());
 }
 
 // `EpochToLocal(epoch, var year,month,day,hour,minute,second)`
@@ -2895,8 +2895,8 @@ inline void p_seek(File& f, int32_t pos) {
   }
   p_set_ioresult(f, std::fseek(f.f, pos, SEEK_SET) == 0 ? 0 : 103);
 }
-//inline void p_truncate(TextFile&) {}
-inline void p_flush(const TextFile& f) {
+//inline void p_truncate(tp2cc_TextFile&) {}
+inline void p_flush(const tp2cc_TextFile& f) {
   if (f.f) std::fflush(f.f);
 }
 // `blockread` / `blockwrite` are stubs and callers in fpc use either
@@ -2924,12 +2924,12 @@ inline void p_blockread(File& f, T& value, int32_t count, Count& transferred) {
   p_set_ioresult(f, std::ferror(f.f) ? 100 : 0);
 }
 template <typename File, typename Count>
-inline void p_blockread(File& f, ShortStringCharRef value, int32_t count,
+inline void p_blockread(File& f, tp2cc_ShortStringCharRef value, int32_t count,
                         Count& transferred) {
   p_blockread(f, static_cast<void*>(value.byte), count, transferred);
 }
 template <typename File, typename Count>
-inline void p_blockread(File& f, AnsiStringCharRef value, int32_t count,
+inline void p_blockread(File& f, tp2cc_AnsiStringCharRef value, int32_t count,
                         Count& transferred) {
   p_blockread(f, static_cast<void*>(value.owner->mutable_bytes() + value.index),
               count, transferred);
@@ -2986,24 +2986,24 @@ inline void p_blockwrite(File& f, const T& value, int32_t count,
   p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
 template <typename File, typename Count>
-inline void p_blockwrite(File& f, ShortStringCharRef value, int32_t count,
+inline void p_blockwrite(File& f, tp2cc_ShortStringCharRef value, int32_t count,
                          Count& transferred) {
   p_blockwrite(f, static_cast<const void*>(value.byte), count, transferred);
 }
 template <typename File, typename Count>
-inline void p_blockwrite(File& f, ShortStringCharValue value, int32_t count,
+inline void p_blockwrite(File& f, tp2cc_ShortStringCharValue value, int32_t count,
                          Count& transferred) {
   p_blockwrite(f, static_cast<const void*>(value.byte), count, transferred);
 }
 template <typename File, typename Count>
-inline void p_blockwrite(File& f, AnsiStringCharRef value, int32_t count,
+inline void p_blockwrite(File& f, tp2cc_AnsiStringCharRef value, int32_t count,
                          Count& transferred) {
   p_blockwrite(f,
                static_cast<const void*>(value.owner->data + value.index),
                count, transferred);
 }
 template <typename File, typename Count>
-inline void p_blockwrite(File& f, AnsiStringCharValue value, int32_t count,
+inline void p_blockwrite(File& f, tp2cc_AnsiStringCharValue value, int32_t count,
                          Count& transferred) {
   p_blockwrite(f, static_cast<const void*>(value.byte), count, transferred);
 }
@@ -3079,21 +3079,21 @@ inline int32_t p_indexword(const Arr& arr, int32_t count, Needle needle) {
 }
 // `readln(f, s)` reads a line into `s`. `readln` (no args) reads and
 // discards a line. `readln(f)` reads/discards a line from `f`.
-inline void p_readln(TextFile& f) {
+inline void p_readln(tp2cc_TextFile& f) {
   if (!f.f) return;
   int c;
   while ((c = std::fgetc(f.f)) != EOF && c != '\n') {}
 }
 template <int N>
-inline void p_readln(TextFile& f, ShortString<N>& s) {
+inline void p_readln(tp2cc_TextFile& f, tp2cc_ShortString<N>& s) {
   s.length = 0;
   if (!f.f) return;
   int c;
   while ((c = std::fgetc(f.f)) != EOF && c != '\n') {
-    if (s.length < N) { s.data[s.length] = p_char_of(static_cast<char>(c)); ++s.length; }
+    if (s.length < N) { s.data[s.length] = tp2cc_char_of(static_cast<char>(c)); ++s.length; }
   }
 }
-inline void p_readln(TextFile& f, AnsiString& s) {
+inline void p_readln(tp2cc_TextFile& f, tp2cc_AnsiString& s) {
   if (!f.f) {
     s.clear();
     return;
@@ -3101,7 +3101,7 @@ inline void p_readln(TextFile& f, AnsiString& s) {
   std::vector<p_char> bytes;
   int c;
   while ((c = std::fgetc(f.f)) != EOF && c != '\n') {
-    bytes.push_back(p_char_of(static_cast<char>(c)));
+    bytes.push_back(tp2cc_char_of(static_cast<char>(c)));
   }
   s.set_length(static_cast<int32_t>(bytes.size()));
   if (!bytes.empty()) {
@@ -3115,7 +3115,7 @@ template <typename... A> inline void p_read(A&&...) {}
 // as fully variadic so callers can pass anything (void*, opaque arrays,
 // lvalue derefs of untyped pointers) without type-checking fuss.
 template <typename... A>
-inline void p_settextbuf(TextFile&, A&&...) {}
+inline void p_settextbuf(tp2cc_TextFile&, A&&...) {}
 template <typename T> inline int32_t p_ioresult_of(T&&) { return 0; }
 
 // PChar utilities (strings unit).
@@ -3126,48 +3126,48 @@ inline int p_strlen(const p_char* s) {
   while (p_char_byte(s[n]) != 0) ++n;
   return n;
 }
-inline int p_strlen(const AnsiString& s) { return s.length(); }
-inline ShortString<> p_strpas(const char* s) { return p_shortstring_of<>(s); }
-inline ShortString<> p_strpas(const p_char* s) { return p_shortstring_of<>(s); }
+inline int p_strlen(const tp2cc_AnsiString& s) { return s.length(); }
+inline tp2cc_ShortString<> p_strpas(const char* s) { return tp2cc_shortstring_of<>(s); }
+inline tp2cc_ShortString<> p_strpas(const p_char* s) { return tp2cc_shortstring_of<>(s); }
 template <int N>
-inline ShortString<N> p_strpas_s(const char* s) {
-  return p_shortstring_of<N>(s);
+inline tp2cc_ShortString<N> p_strpas_s(const char* s) {
+  return tp2cc_shortstring_of<N>(s);
 }
 template <int N>
-inline ShortString<N> p_strpas_s(const p_char* s) {
-  return p_shortstring_of<N>(s);
+inline tp2cc_ShortString<N> p_strpas_s(const p_char* s) {
+  return tp2cc_shortstring_of<N>(s);
 }
 template <int N, typename... Cs>
 requires ((std::is_same_v<std::remove_cvref_t<Cs>, p_char>) && ...)
-constexpr ShortString<N> p_shortstring_literal(Cs... chars) {
-  ShortString<N> out{};
+constexpr tp2cc_ShortString<N> tp2cc_shortstring_literal(Cs... chars) {
+  tp2cc_ShortString<N> out{};
   constexpr std::size_t literal_len = sizeof...(Cs);
   constexpr std::size_t copy_len =
       literal_len < static_cast<std::size_t>(N) ? literal_len
                                                 : static_cast<std::size_t>(N);
-  const p_char src[] = {chars..., p_char_of('\0')};
+  const p_char src[] = {chars..., tp2cc_char_of('\0')};
   out.length = static_cast<uint8_t>(copy_len);
   for (std::size_t i = 0; i < copy_len; ++i) out.data[i] = src[i];
   return out;
 }
-inline char* p_strpcopy(char* dest, const ShortString<>& src) {
+inline char* p_strpcopy(char* dest, const tp2cc_ShortString<>& src) {
   for (int i = 0; i < src.length; ++i) dest[i] = p_char_to_c(src.data[i]);
   dest[src.length] = 0;
   return dest;
 }
-inline p_char* p_strpcopy(p_char* dest, const ShortString<>& src) {
+inline p_char* p_strpcopy(p_char* dest, const tp2cc_ShortString<>& src) {
   for (int i = 0; i < src.length; ++i) dest[i] = src.data[i];
-  dest[src.length] = p_char_of('\0');
+  dest[src.length] = tp2cc_char_of('\0');
   return dest;
 }
-inline char* p_strpcopy(char* dest, const AnsiString& src) {
+inline char* p_strpcopy(char* dest, const tp2cc_AnsiString& src) {
   for (int i = 0; i < src.length(); ++i) dest[i] = p_char_to_c(src.data[i]);
   dest[src.length()] = 0;
   return dest;
 }
-inline p_char* p_strpcopy(p_char* dest, const AnsiString& src) {
+inline p_char* p_strpcopy(p_char* dest, const tp2cc_AnsiString& src) {
   for (int i = 0; i < src.length(); ++i) dest[i] = src.data[i];
-  dest[src.length()] = p_char_of('\0');
+  dest[src.length()] = tp2cc_char_of('\0');
   return dest;
 }
 inline int p_strcomp(const char* a, const char* b) { return std::strcmp(a, b); }
@@ -3184,7 +3184,7 @@ inline int p_strcomp(const p_char* a, const p_char* b) {
 
 // Insert (string manipulation).
 template <int N, int M>
-inline void p_insert(const ShortString<N>& src, ShortString<M>& dest, int pos) {
+inline void p_insert(const tp2cc_ShortString<N>& src, tp2cc_ShortString<M>& dest, int pos) {
   if (pos < 1) pos = 1;
   if (pos > dest.length + 1) pos = dest.length + 1;
   int need = dest.length + src.length;
@@ -3201,29 +3201,29 @@ inline void p_insert(const ShortString<N>& src, ShortString<M>& dest, int pos) {
 }
 
 template <int N, int M>
-inline void p_insert(ShortStringPtrValue<N> src, ShortString<M>& dest, int pos) {
-  p_insert(static_cast<ShortString<N>>(src), dest, pos);
+inline void p_insert(tp2cc_ShortStringPtrValue<N> src, tp2cc_ShortString<M>& dest, int pos) {
+  p_insert(static_cast<tp2cc_ShortString<N>>(src), dest, pos);
 }
 
 template <int N, int M>
-inline void p_insert(ShortStringPtrRef<N> src, ShortString<M>& dest, int pos) {
-  p_insert(static_cast<ShortString<N>>(src), dest, pos);
+inline void p_insert(tp2cc_ShortStringPtrRef<N> src, tp2cc_ShortString<M>& dest, int pos) {
+  p_insert(static_cast<tp2cc_ShortString<N>>(src), dest, pos);
 }
 // Pascal `insert(c, s, pos)` -- insert a single character.
 template <int M>
-inline void p_insert(p_char c, ShortString<M>& dest, int pos) {
+inline void p_insert(p_char c, tp2cc_ShortString<M>& dest, int pos) {
   char src[2] = {p_char_to_c(c), 0};
   p_insert(src, dest, pos);
 }
-inline void p_insert(const char* src, ShortString<>& dest, int pos) {
-  p_insert(p_shortstring_of<>(src), dest, pos);
+inline void p_insert(const char* src, tp2cc_ShortString<>& dest, int pos) {
+  p_insert(tp2cc_shortstring_of<>(src), dest, pos);
 }
-inline void p_insert(const p_char* src, ShortString<>& dest, int pos) {
-  p_insert(p_shortstring_of<>(src), dest, pos);
+inline void p_insert(const p_char* src, tp2cc_ShortString<>& dest, int pos) {
+  p_insert(tp2cc_shortstring_of<>(src), dest, pos);
 }
 
 template <typename Src>
-inline void p_insert_bytes(const Src& src, AnsiString& dest, int pos) {
+inline void p_insert_bytes(const Src& src, tp2cc_AnsiString& dest, int pos) {
   int32_t src_len = p_string_length(src);
   if (src_len <= 0) return;
   const p_char* src_bytes = p_string_bytes(src);
@@ -3246,34 +3246,34 @@ inline void p_insert_bytes(const Src& src, AnsiString& dest, int pos) {
 }
 
 template <int N>
-inline void p_insert(const ShortString<N>& src, AnsiString& dest, int pos) {
+inline void p_insert(const tp2cc_ShortString<N>& src, tp2cc_AnsiString& dest, int pos) {
   p_insert_bytes(src, dest, pos);
 }
 
 template <int N>
-inline void p_insert(ShortStringPtrValue<N> src, AnsiString& dest, int pos) {
-  p_insert(static_cast<ShortString<N>>(src), dest, pos);
+inline void p_insert(tp2cc_ShortStringPtrValue<N> src, tp2cc_AnsiString& dest, int pos) {
+  p_insert(static_cast<tp2cc_ShortString<N>>(src), dest, pos);
 }
 
 template <int N>
-inline void p_insert(ShortStringPtrRef<N> src, AnsiString& dest, int pos) {
-  p_insert(static_cast<ShortString<N>>(src), dest, pos);
+inline void p_insert(tp2cc_ShortStringPtrRef<N> src, tp2cc_AnsiString& dest, int pos) {
+  p_insert(static_cast<tp2cc_ShortString<N>>(src), dest, pos);
 }
 
-inline void p_insert(const AnsiString& src, AnsiString& dest, int pos) {
+inline void p_insert(const tp2cc_AnsiString& src, tp2cc_AnsiString& dest, int pos) {
   p_insert_bytes(src, dest, pos);
 }
 
-inline void p_insert(p_char c, AnsiString& dest, int pos) {
-  p_insert_bytes(p_ansistring_of(c), dest, pos);
+inline void p_insert(p_char c, tp2cc_AnsiString& dest, int pos) {
+  p_insert_bytes(tp2cc_ansistring_of(c), dest, pos);
 }
 
-inline void p_insert(const char* src, AnsiString& dest, int pos) {
-  p_insert_bytes(p_ansistring_of(src), dest, pos);
+inline void p_insert(const char* src, tp2cc_AnsiString& dest, int pos) {
+  p_insert_bytes(tp2cc_ansistring_of(src), dest, pos);
 }
 
-inline void p_insert(const p_char* src, AnsiString& dest, int pos) {
-  p_insert_bytes(p_ansistring_of(src), dest, pos);
+inline void p_insert(const p_char* src, tp2cc_AnsiString& dest, int pos) {
+  p_insert_bytes(tp2cc_ansistring_of(src), dest, pos);
 }
 
 // --- Memory / bytewise utilities -------------------------------------------
@@ -3284,16 +3284,16 @@ inline void p_fillchar(void* dest, int count, int value) {
 inline void p_fillchar(void* dest, int count, p_char value) {
   p_fillchar(dest, count, p_ord(value));
 }
-inline void p_fillchar(ShortStringCharRef dest, int count, int value) {
+inline void p_fillchar(tp2cc_ShortStringCharRef dest, int count, int value) {
   std::memset(dest.byte, value & 0xff, static_cast<size_t>(count));
 }
-inline void p_fillchar(ShortStringCharRef dest, int count, p_char value) {
+inline void p_fillchar(tp2cc_ShortStringCharRef dest, int count, p_char value) {
   p_fillchar(dest, count, p_ord(value));
 }
-inline void p_fillchar(AnsiStringCharRef dest, int count, int value) {
+inline void p_fillchar(tp2cc_AnsiStringCharRef dest, int count, int value) {
   std::memset(&dest, value & 0xff, static_cast<size_t>(count));
 }
-inline void p_fillchar(AnsiStringCharRef dest, int count, p_char value) {
+inline void p_fillchar(tp2cc_AnsiStringCharRef dest, int count, p_char value) {
   p_fillchar(dest, count, p_ord(value));
 }
 template <typename T>
@@ -3309,44 +3309,44 @@ inline void p_fillchar(T& dest, int count, p_char value) {
 inline void p_move(const void* src, void* dest, int count) {
   std::memmove(dest, src, static_cast<size_t>(count));
 }
-inline void p_move(ShortStringCharRef src, void* dest, int count) {
+inline void p_move(tp2cc_ShortStringCharRef src, void* dest, int count) {
   std::memmove(dest, src.byte, static_cast<size_t>(count));
 }
-inline void p_move(ShortStringCharValue src, void* dest, int count) {
+inline void p_move(tp2cc_ShortStringCharValue src, void* dest, int count) {
   std::memmove(dest, src.byte, static_cast<size_t>(count));
 }
-inline void p_move(AnsiStringCharRef src, void* dest, int count) {
+inline void p_move(tp2cc_AnsiStringCharRef src, void* dest, int count) {
   std::memmove(dest, &src, static_cast<size_t>(count));
 }
-inline void p_move(AnsiStringCharValue src, void* dest, int count) {
+inline void p_move(tp2cc_AnsiStringCharValue src, void* dest, int count) {
   std::memmove(dest, src.byte, static_cast<size_t>(count));
 }
-inline void p_move(const void* src, ShortStringCharRef dest, int count) {
+inline void p_move(const void* src, tp2cc_ShortStringCharRef dest, int count) {
   std::memmove(dest.byte, src, static_cast<size_t>(count));
 }
-inline void p_move(const void* src, AnsiStringCharRef dest, int count) {
+inline void p_move(const void* src, tp2cc_AnsiStringCharRef dest, int count) {
   std::memmove(&dest, src, static_cast<size_t>(count));
 }
-inline void p_move(ShortStringCharValue src, ShortStringCharRef dest, int count) {
+inline void p_move(tp2cc_ShortStringCharValue src, tp2cc_ShortStringCharRef dest, int count) {
   std::memmove(dest.byte, src.byte, static_cast<size_t>(count));
 }
-inline void p_move(AnsiStringCharValue src, AnsiStringCharRef dest, int count) {
+inline void p_move(tp2cc_AnsiStringCharValue src, tp2cc_AnsiStringCharRef dest, int count) {
   std::memmove(&dest, src.byte, static_cast<size_t>(count));
 }
 template <typename D>
-inline void p_move(ShortStringCharRef src, D& dest, int count) {
+inline void p_move(tp2cc_ShortStringCharRef src, D& dest, int count) {
   std::memmove(std::addressof(dest), src.byte, static_cast<size_t>(count));
 }
 template <typename D>
-inline void p_move(AnsiStringCharRef src, D& dest, int count) {
+inline void p_move(tp2cc_AnsiStringCharRef src, D& dest, int count) {
   std::memmove(std::addressof(dest), &src, static_cast<size_t>(count));
 }
 template <typename D>
-inline void p_move(ShortStringCharValue src, D& dest, int count) {
+inline void p_move(tp2cc_ShortStringCharValue src, D& dest, int count) {
   std::memmove(std::addressof(dest), src.byte, static_cast<size_t>(count));
 }
 template <typename D>
-inline void p_move(AnsiStringCharValue src, D& dest, int count) {
+inline void p_move(tp2cc_AnsiStringCharValue src, D& dest, int count) {
   std::memmove(std::addressof(dest), src.byte, static_cast<size_t>(count));
 }
 template <typename S, typename D>
@@ -3354,11 +3354,11 @@ inline void p_move(const S& src, D& dest, int count) {
   std::memmove(&dest, &src, static_cast<size_t>(count));
 }
 template <typename S>
-inline void p_move(const S& src, ShortStringCharRef dest, int count) {
+inline void p_move(const S& src, tp2cc_ShortStringCharRef dest, int count) {
   std::memmove(dest.byte, &src, static_cast<size_t>(count));
 }
 template <typename S>
-inline void p_move(const S& src, AnsiStringCharRef dest, int count) {
+inline void p_move(const S& src, tp2cc_AnsiStringCharRef dest, int count) {
   std::memmove(&dest, &src, static_cast<size_t>(count));
 }
 inline void p_getmem(void*& p, int size) {
@@ -3461,9 +3461,9 @@ inline int rt_argc = 0;
 inline char** rt_argv = nullptr;
 inline void init_argv(int argc, char** argv) { rt_argc = argc; rt_argv = argv; }
 inline int p_paramcount() { return rt_argc > 0 ? rt_argc - 1 : 0; }
-inline ShortString<> p_paramstr(int i) {
+inline tp2cc_ShortString<> p_paramstr(int i) {
   if (i < 0 || i >= rt_argc || !rt_argv || !rt_argv[i]) return {};
-  return p_shortstring_of<>(rt_argv[i]);
+  return tp2cc_shortstring_of<>(rt_argv[i]);
 }
 
 inline int32_t p_ioresult() {
@@ -3475,27 +3475,27 @@ inline int32_t p_ioresult() {
 // --- String intrinsics ------------------------------------------------------
 
 template <int N>
-inline int p_pos(const char* needle, const ShortString<N>& hay) {
+inline int p_pos(const char* needle, const tp2cc_ShortString<N>& hay) {
   int nl = 0; while (needle[nl]) ++nl;
   for (int i = 0; i + nl <= hay.length; ++i) {
     bool ok = true;
     for (int j = 0; j < nl; ++j) {
-      if (hay.data[i + j] != p_char_of(needle[j])) { ok = false; break; }
+      if (hay.data[i + j] != tp2cc_char_of(needle[j])) { ok = false; break; }
     }
     if (ok) return i + 1;
   }
   return 0;
 }
 template <int N>
-inline int p_pos(const char* needle, const ShortStringPtrValue<N>& hay) {
-  return p_pos(needle, static_cast<ShortString<N>>(hay));
+inline int p_pos(const char* needle, const tp2cc_ShortStringPtrValue<N>& hay) {
+  return p_pos(needle, static_cast<tp2cc_ShortString<N>>(hay));
 }
 template <int N>
-inline int p_pos(const char* needle, const ShortStringPtrRef<N>& hay) {
-  return p_pos(needle, static_cast<ShortString<N>>(hay));
+inline int p_pos(const char* needle, const tp2cc_ShortStringPtrRef<N>& hay) {
+  return p_pos(needle, static_cast<tp2cc_ShortString<N>>(hay));
 }
 template <int N>
-inline int p_pos(const p_char* needle, const ShortString<N>& hay) {
+inline int p_pos(const p_char* needle, const tp2cc_ShortString<N>& hay) {
   int nl = p_strlen(needle);
   for (int i = 0; i + nl <= hay.length; ++i) {
     bool ok = true;
@@ -3507,15 +3507,15 @@ inline int p_pos(const p_char* needle, const ShortString<N>& hay) {
   return 0;
 }
 template <int N>
-inline int p_pos(const p_char* needle, const ShortStringPtrValue<N>& hay) {
-  return p_pos(needle, static_cast<ShortString<N>>(hay));
+inline int p_pos(const p_char* needle, const tp2cc_ShortStringPtrValue<N>& hay) {
+  return p_pos(needle, static_cast<tp2cc_ShortString<N>>(hay));
 }
 template <int N>
-inline int p_pos(const p_char* needle, const ShortStringPtrRef<N>& hay) {
-  return p_pos(needle, static_cast<ShortString<N>>(hay));
+inline int p_pos(const p_char* needle, const tp2cc_ShortStringPtrRef<N>& hay) {
+  return p_pos(needle, static_cast<tp2cc_ShortString<N>>(hay));
 }
 template <int N, int M>
-inline int p_pos(const ShortString<N>& needle, const ShortString<M>& hay) {
+inline int p_pos(const tp2cc_ShortString<N>& needle, const tp2cc_ShortString<M>& hay) {
   for (int i = 0; i + needle.length <= hay.length; ++i) {
     bool ok = true;
     for (int j = 0; j < needle.length; ++j) {
@@ -3526,39 +3526,39 @@ inline int p_pos(const ShortString<N>& needle, const ShortString<M>& hay) {
   return 0;
 }
 template <int N, int M>
-inline int p_pos(const ShortString<N>& needle,
-                 const ShortStringPtrValue<M>& hay) {
-  return p_pos(needle, static_cast<ShortString<M>>(hay));
+inline int p_pos(const tp2cc_ShortString<N>& needle,
+                 const tp2cc_ShortStringPtrValue<M>& hay) {
+  return p_pos(needle, static_cast<tp2cc_ShortString<M>>(hay));
 }
 template <int N, int M>
-inline int p_pos(const ShortString<N>& needle, const ShortStringPtrRef<M>& hay) {
-  return p_pos(needle, static_cast<ShortString<M>>(hay));
+inline int p_pos(const tp2cc_ShortString<N>& needle, const tp2cc_ShortStringPtrRef<M>& hay) {
+  return p_pos(needle, static_cast<tp2cc_ShortString<M>>(hay));
 }
 
 // Pascal `pos(c, s)` with a single-char needle. Very common in compiler.
 template <int N>
-inline int p_pos(p_char c, const ShortString<N>& hay) {
+inline int p_pos(p_char c, const tp2cc_ShortString<N>& hay) {
   for (int i = 0; i < hay.length; ++i) {
     if (hay.data[i] == c) return i + 1;
   }
   return 0;
 }
 template <int N>
-inline int p_pos(p_char c, const ShortStringPtrValue<N>& hay) {
-  return p_pos(c, static_cast<ShortString<N>>(hay));
+inline int p_pos(p_char c, const tp2cc_ShortStringPtrValue<N>& hay) {
+  return p_pos(c, static_cast<tp2cc_ShortString<N>>(hay));
 }
 template <int N>
-inline int p_pos(p_char c, const ShortStringPtrRef<N>& hay) {
-  return p_pos(c, static_cast<ShortString<N>>(hay));
+inline int p_pos(p_char c, const tp2cc_ShortStringPtrRef<N>& hay) {
+  return p_pos(c, static_cast<tp2cc_ShortString<N>>(hay));
 }
 
-inline int p_pos(const char* needle, const AnsiString& hay) {
+inline int p_pos(const char* needle, const tp2cc_AnsiString& hay) {
   int nl = needle ? static_cast<int>(std::strlen(needle)) : 0;
   int32_t hay_len = hay.length();
   for (int32_t i = 0; i + nl <= hay_len; ++i) {
     bool ok = true;
     for (int j = 0; j < nl; ++j) {
-      if (hay.data[i + j] != p_char_of(needle[j])) {
+      if (hay.data[i + j] != tp2cc_char_of(needle[j])) {
         ok = false;
         break;
       }
@@ -3568,7 +3568,7 @@ inline int p_pos(const char* needle, const AnsiString& hay) {
   return 0;
 }
 
-inline int p_pos(const p_char* needle, const AnsiString& hay) {
+inline int p_pos(const p_char* needle, const tp2cc_AnsiString& hay) {
   int nl = p_strlen(needle);
   int32_t hay_len = hay.length();
   for (int32_t i = 0; i + nl <= hay_len; ++i) {
@@ -3585,7 +3585,7 @@ inline int p_pos(const p_char* needle, const AnsiString& hay) {
 }
 
 template <int N>
-inline int p_pos(const ShortString<N>& needle, const AnsiString& hay) {
+inline int p_pos(const tp2cc_ShortString<N>& needle, const tp2cc_AnsiString& hay) {
   int32_t needle_len = needle.length;
   int32_t hay_len = hay.length();
   for (int32_t i = 0; i + needle_len <= hay_len; ++i) {
@@ -3601,7 +3601,7 @@ inline int p_pos(const ShortString<N>& needle, const AnsiString& hay) {
   return 0;
 }
 
-inline int p_pos(const AnsiString& needle, const AnsiString& hay) {
+inline int p_pos(const tp2cc_AnsiString& needle, const tp2cc_AnsiString& hay) {
   int32_t needle_len = needle.length();
   int32_t hay_len = hay.length();
   for (int32_t i = 0; i + needle_len <= hay_len; ++i) {
@@ -3617,7 +3617,7 @@ inline int p_pos(const AnsiString& needle, const AnsiString& hay) {
   return 0;
 }
 
-inline int p_pos(p_char c, const AnsiString& hay) {
+inline int p_pos(p_char c, const tp2cc_AnsiString& hay) {
   for (int32_t i = 0; i < hay.length(); ++i) {
     if (hay.data[i] == c) return i + 1;
   }
@@ -3626,14 +3626,14 @@ inline int p_pos(p_char c, const AnsiString& hay) {
 
 // Pascal `val(S, real_var, code_var)` overload.
 template <int N>
-inline void p_val(const ShortString<N>& s, double& out, int32_t& code) {
+inline void p_val(const tp2cc_ShortString<N>& s, double& out, int32_t& code) {
   std::string buf = p_to_std_string(s);
   char* end = nullptr;
   double v = std::strtod(buf.c_str(), &end);
   if (end && *end == '\0') { out = v; code = 0; }
   else { code = static_cast<int32_t>(end - buf.c_str()) + 1; }
 }
-inline void p_val(const AnsiString& s, double& out, int32_t& code) {
+inline void p_val(const tp2cc_AnsiString& s, double& out, int32_t& code) {
   std::string buf = p_to_std_string(s);
   char* end = nullptr;
   double v = std::strtod(buf.c_str(), &end);
@@ -3643,7 +3643,7 @@ inline void p_val(const AnsiString& s, double& out, int32_t& code) {
 template <int N, typename Code>
 requires (std::is_integral_v<Code> && !std::is_same_v<Code, bool> &&
           !std::is_same_v<Code, int32_t>)
-inline void p_val(const ShortString<N>& s, double& out, Code& code) {
+inline void p_val(const tp2cc_ShortString<N>& s, double& out, Code& code) {
   int32_t parsed_code = 0;
   p_val(s, out, parsed_code);
   code = static_cast<Code>(parsed_code);
@@ -3651,20 +3651,20 @@ inline void p_val(const ShortString<N>& s, double& out, Code& code) {
 template <typename Code>
 requires (std::is_integral_v<Code> && !std::is_same_v<Code, bool> &&
           !std::is_same_v<Code, int32_t>)
-inline void p_val(const AnsiString& s, double& out, Code& code) {
+inline void p_val(const tp2cc_AnsiString& s, double& out, Code& code) {
   int32_t parsed_code = 0;
   p_val(s, out, parsed_code);
   code = static_cast<Code>(parsed_code);
 }
 template <int N>
-inline void p_val(const ShortString<N>& s, long double& out, int32_t& code) {
+inline void p_val(const tp2cc_ShortString<N>& s, long double& out, int32_t& code) {
   std::string buf = p_to_std_string(s);
   char* end = nullptr;
   long double v = std::strtold(buf.c_str(), &end);
   if (end && *end == '\0') { out = v; code = 0; }
   else { code = static_cast<int32_t>(end - buf.c_str()) + 1; }
 }
-inline void p_val(const AnsiString& s, long double& out, int32_t& code) {
+inline void p_val(const tp2cc_AnsiString& s, long double& out, int32_t& code) {
   std::string buf = p_to_std_string(s);
   char* end = nullptr;
   long double v = std::strtold(buf.c_str(), &end);
@@ -3674,7 +3674,7 @@ inline void p_val(const AnsiString& s, long double& out, int32_t& code) {
 template <int N, typename Code>
 requires (std::is_integral_v<Code> && !std::is_same_v<Code, bool> &&
           !std::is_same_v<Code, int32_t>)
-inline void p_val(const ShortString<N>& s, long double& out, Code& code) {
+inline void p_val(const tp2cc_ShortString<N>& s, long double& out, Code& code) {
   int32_t parsed_code = 0;
   p_val(s, out, parsed_code);
   code = static_cast<Code>(parsed_code);
@@ -3682,18 +3682,18 @@ inline void p_val(const ShortString<N>& s, long double& out, Code& code) {
 template <typename Code>
 requires (std::is_integral_v<Code> && !std::is_same_v<Code, bool> &&
           !std::is_same_v<Code, int32_t>)
-inline void p_val(const AnsiString& s, long double& out, Code& code) {
+inline void p_val(const tp2cc_AnsiString& s, long double& out, Code& code) {
   int32_t parsed_code = 0;
   p_val(s, out, parsed_code);
   code = static_cast<Code>(parsed_code);
 }
 template <int N>
-inline void p_val(const ShortString<N>& s, float& out, int32_t& code) {
+inline void p_val(const tp2cc_ShortString<N>& s, float& out, int32_t& code) {
   double v = 0.0;
   p_val(s, v, code);
   if (code == 0) out = static_cast<float>(v);
 }
-inline void p_val(const AnsiString& s, float& out, int32_t& code) {
+inline void p_val(const tp2cc_AnsiString& s, float& out, int32_t& code) {
   double v = 0.0;
   p_val(s, v, code);
   if (code == 0) out = static_cast<float>(v);
@@ -3701,7 +3701,7 @@ inline void p_val(const AnsiString& s, float& out, int32_t& code) {
 template <int N, typename Code>
 requires (std::is_integral_v<Code> && !std::is_same_v<Code, bool> &&
           !std::is_same_v<Code, int32_t>)
-inline void p_val(const ShortString<N>& s, float& out, Code& code) {
+inline void p_val(const tp2cc_ShortString<N>& s, float& out, Code& code) {
   int32_t parsed_code = 0;
   p_val(s, out, parsed_code);
   code = static_cast<Code>(parsed_code);
@@ -3709,15 +3709,15 @@ inline void p_val(const ShortString<N>& s, float& out, Code& code) {
 template <typename Code>
 requires (std::is_integral_v<Code> && !std::is_same_v<Code, bool> &&
           !std::is_same_v<Code, int32_t>)
-inline void p_val(const AnsiString& s, float& out, Code& code) {
+inline void p_val(const tp2cc_AnsiString& s, float& out, Code& code) {
   int32_t parsed_code = 0;
   p_val(s, out, parsed_code);
   code = static_cast<Code>(parsed_code);
 }
 
 template <int N>
-inline ShortString<> p_copy(const ShortString<N>& s, int start, int count) {
-  ShortString<> r{};
+inline tp2cc_ShortString<> p_copy(const tp2cc_ShortString<N>& s, int start, int count) {
+  tp2cc_ShortString<> r{};
   if (start < 1) start = 1;
   int avail = s.length - (start - 1);
   if (avail < 0) avail = 0;
@@ -3728,25 +3728,25 @@ inline ShortString<> p_copy(const ShortString<N>& s, int start, int count) {
   return r;
 }
 template <int N>
-inline ShortString<> p_copy(const ShortStringPtrValue<N>& s,
+inline tp2cc_ShortString<> p_copy(const tp2cc_ShortStringPtrValue<N>& s,
                             int start,
                             int count) {
-  return p_copy(static_cast<ShortString<N>>(s), start, count);
+  return p_copy(static_cast<tp2cc_ShortString<N>>(s), start, count);
 }
 template <int N>
-inline ShortString<> p_copy(const ShortStringPtrRef<N>& s,
+inline tp2cc_ShortString<> p_copy(const tp2cc_ShortStringPtrRef<N>& s,
                             int start,
                             int count) {
-  return p_copy(static_cast<ShortString<N>>(s), start, count);
+  return p_copy(static_cast<tp2cc_ShortString<N>>(s), start, count);
 }
 
-inline AnsiString p_copy(const AnsiString& s, int start, int count) {
+inline tp2cc_AnsiString p_copy(const tp2cc_AnsiString& s, int start, int count) {
   if (start < 1) start = 1;
   int avail = s.length() - (start - 1);
   if (avail < 0) avail = 0;
   if (count > avail) count = avail;
   if (count < 0) count = 0;
-  AnsiString r{};
+  tp2cc_AnsiString r{};
   r.set_length(count);
   if (count > 0) {
     std::memcpy(r.data, s.data + (start - 1),
@@ -3756,7 +3756,7 @@ inline AnsiString p_copy(const AnsiString& s, int start, int count) {
 }
 
 template <int N>
-inline void p_delete(ShortString<N>& s, int start, int count) {
+inline void p_delete(tp2cc_ShortString<N>& s, int start, int count) {
   if (start < 1 || start > s.length) return;
   int tail = s.length - (start - 1) - count;
   if (tail < 0) { s.length = static_cast<uint8_t>(start - 1); return; }
@@ -3764,7 +3764,7 @@ inline void p_delete(ShortString<N>& s, int start, int count) {
   s.length = static_cast<uint8_t>(s.length - count);
 }
 
-inline void p_delete(AnsiString& s, int start, int count) {
+inline void p_delete(tp2cc_AnsiString& s, int start, int count) {
   int32_t len = s.length();
   if (start < 1 || start > len || count <= 0) return;
   if (count > len - (start - 1)) count = len - (start - 1);
@@ -3777,17 +3777,17 @@ inline void p_delete(AnsiString& s, int start, int count) {
 }
 
 template <int N>
-inline void p_insert(const char* src, ShortString<N>& s, int pos) {
-  p_insert(p_shortstring_of<N>(src), s, pos);
+inline void p_insert(const char* src, tp2cc_ShortString<N>& s, int pos) {
+  p_insert(tp2cc_shortstring_of<N>(src), s, pos);
 }
 
 template <int N>
-inline void p_insert(const AnsiString& src, ShortString<N>& s, int pos) {
-  p_insert(static_cast<ShortString<N>>(src), s, pos);
+inline void p_insert(const tp2cc_AnsiString& src, tp2cc_ShortString<N>& s, int pos) {
+  p_insert(static_cast<tp2cc_ShortString<N>>(src), s, pos);
 }
 
 template <typename Int>
-inline ShortString<> p_octstr(Int value, int width) {
+inline tp2cc_ShortString<> p_octstr(Int value, int width) {
   using U = std::make_unsigned_t<Int>;
   U bits = static_cast<U>(value);
   char buf[65];
@@ -3797,26 +3797,26 @@ inline ShortString<> p_octstr(Int value, int width) {
     bits >>= 3;
   } while (bits != 0);
   while (len < width) buf[len++] = '0';
-  ShortString<> out{};
+  tp2cc_ShortString<> out{};
   out.length = static_cast<uint8_t>(len);
-  for (int i = 0; i < len; ++i) out.data[i] = p_char_of(buf[len - 1 - i]);
+  for (int i = 0; i < len; ++i) out.data[i] = tp2cc_char_of(buf[len - 1 - i]);
   return out;
 }
 
 inline p_char p_upcase(p_char c) {
   uint8_t b = p_char_byte(c);
   if (b >= 'a' && b <= 'z') b = static_cast<uint8_t>(b - 32);
-  return p_char_of(b);
+  return tp2cc_char_of(b);
 }
 template <int N>
-inline ShortString<N> p_upcase(const ShortString<N>& s) {
-  ShortString<N> r = s;
+inline tp2cc_ShortString<N> p_upcase(const tp2cc_ShortString<N>& s) {
+  tp2cc_ShortString<N> r = s;
   for (int i = 0; i < r.length; ++i) r.data[i] = p_upcase(r.data[i]);
   return r;
 }
 
-inline AnsiString p_upcase(const AnsiString& s) {
-  AnsiString r = p_ansistring_of(s);
+inline tp2cc_AnsiString p_upcase(const tp2cc_AnsiString& s) {
+  tp2cc_AnsiString r = tp2cc_ansistring_of(s);
   for (int i = 1; i <= r.length(); ++i) r[i] = p_upcase(r[i]);
   return r;
 }
@@ -3826,10 +3826,10 @@ inline AnsiString p_upcase(const AnsiString& s) {
 
 // Single-value writers to stdout.
 template <int N>
-inline void p_write_one(const ShortString<N>& s) {
+inline void p_write_one(const tp2cc_ShortString<N>& s) {
   for (int i = 0; i < s.length; ++i) std::fputc(p_char_to_c(s.data[i]), stdout);
 }
-inline void p_write_one(const AnsiString& s) {
+inline void p_write_one(const tp2cc_AnsiString& s) {
   for (int i = 0; i < s.length(); ++i) std::fputc(p_char_to_c(s.data[i]), stdout);
 }
 inline void p_write_one(const char* s)    { if (s) std::fputs(s, stdout); }
@@ -3843,17 +3843,17 @@ inline void p_write_one(double v)         { std::fprintf(stdout, "%g", v); }
 inline void p_write_one(long double v)    { std::fprintf(stdout, "%Lg", v); }
 inline void p_write_one(p_char c)         { std::fputc(p_char_to_c(c), stdout); }
 inline void p_write_one(bool b)           { std::fputs(b ? "TRUE" : "FALSE", stdout); }
-inline void p_write_one(const TextFile&)  {}  // first arg of `write(f, ...)`
+inline void p_write_one(const tp2cc_TextFile&)  {}  // first arg of `write(f, ...)`
 template <typename T> inline void p_write_one(T* p) {
   std::fprintf(stdout, "%p", (void*)p);
 }
 
 template <int N>
-inline void p_write_file_one(std::FILE* out, const ShortString<N>& s) {
+inline void p_write_file_one(std::FILE* out, const tp2cc_ShortString<N>& s) {
   if (!out) return;
   for (int i = 0; i < s.length; ++i) std::fputc(p_char_to_c(s.data[i]), out);
 }
-inline void p_write_file_one(std::FILE* out, const AnsiString& s) {
+inline void p_write_file_one(std::FILE* out, const tp2cc_AnsiString& s) {
   if (!out) return;
   for (int i = 0; i < s.length(); ++i) std::fputc(p_char_to_c(s.data[i]), out);
 }
@@ -3890,7 +3890,7 @@ inline void p_write_file_one(std::FILE* out, p_char c) {
 inline void p_write_file_one(std::FILE* out, bool b) {
   if (out) std::fputs(b ? "TRUE" : "FALSE", out);
 }
-inline void p_write_file_one(std::FILE*, const TextFile&) {}
+inline void p_write_file_one(std::FILE*, const tp2cc_TextFile&) {}
 template <typename T>
 inline void p_write_file_one(std::FILE* out, T* p) {
   if (out) std::fprintf(out, "%p", (void*)p);
@@ -3908,7 +3908,7 @@ inline void p_writeln(Args&&... args) {
   std::fputc('\n', stdout);
 }
 template <typename... Args>
-inline void p_write(TextFile& f, Args&&... args) {
+inline void p_write(tp2cc_TextFile& f, Args&&... args) {
   if (!f.f) {
     p_set_ioresult(f, 103);
     return;
@@ -3916,7 +3916,7 @@ inline void p_write(TextFile& f, Args&&... args) {
   (p_write_file_one(f.f, std::forward<Args>(args)), ...);
   p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
-inline void p_write(TextFile& f) {
+inline void p_write(tp2cc_TextFile& f) {
   if (!f.f) {
     p_set_ioresult(f, 103);
     return;
@@ -3924,7 +3924,7 @@ inline void p_write(TextFile& f) {
   p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
 template <typename... Args>
-inline void p_writeln(TextFile& f, Args&&... args) {
+inline void p_writeln(tp2cc_TextFile& f, Args&&... args) {
   if (!f.f) {
     p_set_ioresult(f, 103);
     return;
@@ -3933,7 +3933,7 @@ inline void p_writeln(TextFile& f, Args&&... args) {
   std::fputc('\n', f.f);
   p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
-inline void p_writeln(TextFile& f) {
+inline void p_writeln(tp2cc_TextFile& f) {
   if (!f.f) {
     p_set_ioresult(f, 103);
     return;
@@ -3945,23 +3945,23 @@ inline void p_writeln(TextFile& f) {
 // --- File-IO placeholders ---------------------------------------------------
 // Real behaviour is added as units are translated that need them.
 template <int N>
-inline void p_assign(TextFile& f, const ShortString<N>& n) {
+inline void p_assign(tp2cc_TextFile& f, const tp2cc_ShortString<N>& n) {
   f.name = n;
   f.f = nullptr;
   p_set_ioresult(f, 0);
 }
 template <int N>
-inline void p_assign(TextFile& f, const ShortStringPtrValue<N>& n) {
-  p_assign(f, static_cast<ShortString<N>>(n));
+inline void p_assign(tp2cc_TextFile& f, const tp2cc_ShortStringPtrValue<N>& n) {
+  p_assign(f, static_cast<tp2cc_ShortString<N>>(n));
 }
 template <int N>
-inline void p_assign(TextFile& f, const ShortStringPtrRef<N>& n) {
-  p_assign(f, static_cast<ShortString<N>>(n));
+inline void p_assign(tp2cc_TextFile& f, const tp2cc_ShortStringPtrRef<N>& n) {
+  p_assign(f, static_cast<tp2cc_ShortString<N>>(n));
 }
-inline void p_assign(TextFile& f, const AnsiString& n) {
-  p_assign(f, p_shortstring_of<>(n.bytes()));
+inline void p_assign(tp2cc_TextFile& f, const tp2cc_AnsiString& n) {
+  p_assign(f, tp2cc_shortstring_of<>(n.bytes()));
 }
-inline void p_reset(TextFile& f) {
+inline void p_reset(tp2cc_TextFile& f) {
   if (f.f) {
     std::fclose(f.f);
     f.f = nullptr;
@@ -3971,8 +3971,8 @@ inline void p_reset(TextFile& f) {
   f.f = std::fopen(buf, "rb");
   p_set_ioresult(f, f.f ? 0 : 2);  // 2 = file-not-found per fpc convention
 }
-inline void p_reset(TextFile& f, int32_t) { p_reset(f); }  // rec size form
-inline void p_rewrite(TextFile& f) {
+inline void p_reset(tp2cc_TextFile& f, int32_t) { p_reset(f); }  // rec size form
+inline void p_rewrite(tp2cc_TextFile& f) {
   if (f.f) {
     std::fclose(f.f);
     f.f = nullptr;
@@ -3982,8 +3982,8 @@ inline void p_rewrite(TextFile& f) {
   f.f = std::fopen(buf, "wb");
   p_set_ioresult(f, f.f ? 0 : 5);
 }
-inline void p_rewrite(TextFile& f, int32_t) { p_rewrite(f); }
-inline void p_append(TextFile& f) {
+inline void p_rewrite(tp2cc_TextFile& f, int32_t) { p_rewrite(f); }
+inline void p_append(tp2cc_TextFile& f) {
   if (f.f) {
     std::fclose(f.f);
     f.f = nullptr;
@@ -3993,11 +3993,11 @@ inline void p_append(TextFile& f) {
   f.f = std::fopen(buf, "ab");
   p_set_ioresult(f, f.f ? 0 : 5);
 }
-inline void p_close(TextFile& f) {
+inline void p_close(tp2cc_TextFile& f) {
   if (f.f) { std::fclose(f.f); f.f = nullptr; }
   p_set_ioresult(f, 0);
 }
-inline bool p_eof(TextFile& f) {
+inline bool p_eof(tp2cc_TextFile& f) {
   if (!f.f) return true;
   // Peek one char to update feof state after consuming previous
   // bytes -- glibc sets EOF flag lazily otherwise.
@@ -4008,25 +4008,25 @@ inline bool p_eof(TextFile& f) {
 }
 // typed-file variants
 template <typename T>
-inline void p_assign(TypedFile<T>& f, const ShortString<>& n) {
+inline void p_assign(tp2cc_TypedFile<T>& f, const tp2cc_ShortString<>& n) {
   f.name = n;
   f.f = nullptr;
   p_set_ioresult(f, 0);
 }
 template <typename T, int N>
-inline void p_assign(TypedFile<T>& f, const ShortStringPtrValue<N>& n) {
-  p_assign(f, static_cast<ShortString<>>(n));
+inline void p_assign(tp2cc_TypedFile<T>& f, const tp2cc_ShortStringPtrValue<N>& n) {
+  p_assign(f, static_cast<tp2cc_ShortString<>>(n));
 }
 template <typename T, int N>
-inline void p_assign(TypedFile<T>& f, const ShortStringPtrRef<N>& n) {
-  p_assign(f, static_cast<ShortString<>>(n));
+inline void p_assign(tp2cc_TypedFile<T>& f, const tp2cc_ShortStringPtrRef<N>& n) {
+  p_assign(f, static_cast<tp2cc_ShortString<>>(n));
 }
 template <typename T>
-inline void p_assign(TypedFile<T>& f, const AnsiString& n) {
-  p_assign(f, p_shortstring_of<>(n.bytes()));
+inline void p_assign(tp2cc_TypedFile<T>& f, const tp2cc_AnsiString& n) {
+  p_assign(f, tp2cc_shortstring_of<>(n.bytes()));
 }
 template <typename T>
-inline void p_reset(TypedFile<T>& f) {
+inline void p_reset(tp2cc_TypedFile<T>& f) {
   if (f.f) {
     std::fclose(f.f);
     f.f = nullptr;
@@ -4036,9 +4036,9 @@ inline void p_reset(TypedFile<T>& f) {
   f.f = std::fopen(buf, "rb");
   p_set_ioresult(f, f.f ? 0 : 2);
 }
-template <typename T> inline void p_reset(TypedFile<T>& f, int32_t) { p_reset(f); }
+template <typename T> inline void p_reset(tp2cc_TypedFile<T>& f, int32_t) { p_reset(f); }
 template <typename T>
-inline void p_rewrite(TypedFile<T>& f) {
+inline void p_rewrite(tp2cc_TypedFile<T>& f) {
   if (f.f) {
     std::fclose(f.f);
     f.f = nullptr;
@@ -4048,9 +4048,9 @@ inline void p_rewrite(TypedFile<T>& f) {
   f.f = std::fopen(buf, "wb");
   p_set_ioresult(f, f.f ? 0 : 5);
 }
-template <typename T> inline void p_rewrite(TypedFile<T>& f, int32_t) { p_rewrite(f); }
+template <typename T> inline void p_rewrite(tp2cc_TypedFile<T>& f, int32_t) { p_rewrite(f); }
 template <typename T>
-inline void p_append(TypedFile<T>& f) {
+inline void p_append(tp2cc_TypedFile<T>& f) {
   if (f.f) {
     std::fclose(f.f);
     f.f = nullptr;
@@ -4061,12 +4061,12 @@ inline void p_append(TypedFile<T>& f) {
   p_set_ioresult(f, f.f ? 0 : 5);
 }
 template <typename T>
-inline void p_close(TypedFile<T>& f) {
+inline void p_close(tp2cc_TypedFile<T>& f) {
   if (f.f) { std::fclose(f.f); f.f = nullptr; }
   p_set_ioresult(f, 0);
 }
 template <typename T>
-inline bool p_eof(const TypedFile<T>& f) {
+inline bool p_eof(const tp2cc_TypedFile<T>& f) {
   if (!f.f) return true;
   int c = std::fgetc(f.f);
   if (c == EOF) return true;
@@ -4077,13 +4077,13 @@ inline bool p_eof(const TypedFile<T>& f) {
 // --- Val / Str --------------------------------------------------------------
 
 template <int N>
-inline void p_val(const ShortString<N>& s, int32_t& out, int32_t& code) {
+inline void p_val(const tp2cc_ShortString<N>& s, int32_t& out, int32_t& code) {
   p_parse_pascal_integer(p_to_std_string(s), out, code);
 }
 template <int N, typename UInt>
 requires (std::is_integral_v<UInt> && std::is_unsigned_v<UInt> &&
           !std::is_same_v<UInt, bool> && !std::is_same_v<UInt, uint8_t>)
-inline void p_val(const ShortString<N>& s, UInt& out, int32_t& code) {
+inline void p_val(const tp2cc_ShortString<N>& s, UInt& out, int32_t& code) {
   // Pascal keeps a leading-zero decimal literal decimal. Reusing the shared
   // parser here avoids C's base-0 rule turning `01012` into octal `522`.
   using ParseUInt =
@@ -4098,82 +4098,82 @@ inline void p_val(const ShortString<N>& s, UInt& out, int32_t& code) {
   }
   out = static_cast<UInt>(parsed);
 }
-inline void p_val(const AnsiString& s, int32_t& out, int32_t& code) {
+inline void p_val(const tp2cc_AnsiString& s, int32_t& out, int32_t& code) {
   p_parse_pascal_integer(p_to_std_string(s), out, code);
 }
 template <int N>
-inline void p_str(int32_t v, ShortString<N>& out) {
+inline void p_str(int32_t v, tp2cc_ShortString<N>& out) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%d", v);
-  out = p_shortstring_of<N>(buf);
+  out = tp2cc_shortstring_of<N>(buf);
 }
-inline void p_str(int32_t v, AnsiString& out) {
+inline void p_str(int32_t v, tp2cc_AnsiString& out) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%d", v);
   out = buf;
 }
 template <int N>
-inline void p_str(uint32_t v, ShortString<N>& out) {
+inline void p_str(uint32_t v, tp2cc_ShortString<N>& out) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%u", v);
-  out = p_shortstring_of<N>(buf);
+  out = tp2cc_shortstring_of<N>(buf);
 }
-inline void p_str(uint32_t v, AnsiString& out) {
+inline void p_str(uint32_t v, tp2cc_AnsiString& out) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%u", v);
   out = buf;
 }
 template <int N>
-inline void p_str(int64_t v, ShortString<N>& out) {
+inline void p_str(int64_t v, tp2cc_ShortString<N>& out) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(v));
-  out = p_shortstring_of<N>(buf);
+  out = tp2cc_shortstring_of<N>(buf);
 }
-inline void p_str(int64_t v, AnsiString& out) {
+inline void p_str(int64_t v, tp2cc_AnsiString& out) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(v));
   out = buf;
 }
 template <int N>
-inline void p_str(uint64_t v, ShortString<N>& out) {
+inline void p_str(uint64_t v, tp2cc_ShortString<N>& out) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(v));
-  out = p_shortstring_of<N>(buf);
+  out = tp2cc_shortstring_of<N>(buf);
 }
-inline void p_str(uint64_t v, AnsiString& out) {
+inline void p_str(uint64_t v, tp2cc_AnsiString& out) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(v));
   out = buf;
 }
 template <int N>
-inline void p_str(float v, ShortString<N>& out) {
+inline void p_str(float v, tp2cc_ShortString<N>& out) {
   char buf[64];
   std::snprintf(buf, sizeof(buf), "% .9g", static_cast<double>(v));
-  out = p_shortstring_of<N>(buf);
+  out = tp2cc_shortstring_of<N>(buf);
 }
-inline void p_str(float v, AnsiString& out) {
+inline void p_str(float v, tp2cc_AnsiString& out) {
   char buf[64];
   std::snprintf(buf, sizeof(buf), "% .9g", static_cast<double>(v));
   out = buf;
 }
 template <int N>
-inline void p_str(double v, ShortString<N>& out) {
+inline void p_str(double v, tp2cc_ShortString<N>& out) {
   char buf[64];
   std::snprintf(buf, sizeof(buf), "% .17g", v);
-  out = p_shortstring_of<N>(buf);
+  out = tp2cc_shortstring_of<N>(buf);
 }
-inline void p_str(double v, AnsiString& out) {
+inline void p_str(double v, tp2cc_AnsiString& out) {
   char buf[64];
   std::snprintf(buf, sizeof(buf), "% .17g", v);
   out = buf;
 }
 template <int N>
-inline void p_str(long double v, ShortString<N>& out) {
+inline void p_str(long double v, tp2cc_ShortString<N>& out) {
   char buf[96];
   std::snprintf(buf, sizeof(buf), "% .21Lg", v);
-  out = p_shortstring_of<N>(buf);
+  out = tp2cc_shortstring_of<N>(buf);
 }
-inline void p_str(long double v, AnsiString& out) {
+inline void p_str(long double v, tp2cc_AnsiString& out) {
   char buf[96];
   std::snprintf(buf, sizeof(buf), "% .21Lg", v);
   out = buf;
@@ -4228,8 +4228,8 @@ inline p_char* p_strnew(const char* s) {
   std::size_t n = std::strlen(s);
   auto* out = static_cast<p_char*>(std::malloc((n + 1) * sizeof(p_char)));
   if (!out) return nullptr;
-  for (std::size_t i = 0; i < n; ++i) out[i] = p_char_of(s[i]);
-  out[n] = p_char_of('\0');
+  for (std::size_t i = 0; i < n; ++i) out[i] = tp2cc_char_of(s[i]);
+  out[n] = tp2cc_char_of('\0');
   return out;
 }
 inline p_char* p_strnew(const p_char* s) {
@@ -4246,7 +4246,7 @@ inline void p_strdispose(p_char*& p) {
   std::free(static_cast<void*>(p));
   p = nullptr;
 }
-inline bool p_chmod(const ShortString<>& path, int32_t newmode) {
+inline bool p_chmod(const tp2cc_ShortString<>& path, int32_t newmode) {
   return ::chmod(p_to_std_string(path).c_str(),
                  static_cast<mode_t>(newmode)) == 0;
 }
@@ -4317,12 +4317,12 @@ inline void p_packtime(DateTime& t, int32_t& p) {
   zs = (zs << 5) + (t.p_sec / 2);
   p += (zs & 0xffff);
 }
-inline constexpr p_char p_directoryseparator = p_char_of('/');
-inline constexpr p_char p_driveseparator = p_char_of(':');
+inline constexpr p_char p_directoryseparator = tp2cc_char_of('/');
+inline constexpr p_char p_driveseparator = tp2cc_char_of(':');
 inline int32_t p_extraoptions = 0;
 inline int32_t p_moduleindex = 0;
 template <int N, int M>
-inline void p_exec(const ShortString<N>& command, const ShortString<M>& para) {
+inline void p_exec(const tp2cc_ShortString<N>& command, const tp2cc_ShortString<M>& para) {
   std::vector<std::string> args;
   args.push_back(p_to_std_string(command));
   auto rest = p_split_commandline(p_to_std_string(para));
@@ -4332,28 +4332,28 @@ inline void p_exec(const ShortString<N>& command, const ShortString<M>& para) {
 // Pascal `include(set, elem)` / `exclude(set, elem)` add/remove a
 // single element. Not stubs -- these are real Pascal set builtins.
 template <typename E1, typename E2>
-inline void p_include(Set<E1>& s, E2 v) { s.add(static_cast<E1>(v)); }
+inline void p_include(tp2cc_Set<E1>& s, E2 v) { s.add(static_cast<E1>(v)); }
 template <typename E1, typename E2>
-inline void p_exclude(Set<E1>& s, E2 v) {
-  int i = Set<E1>::idx(static_cast<E1>(v));
-  if (i >= 0 && i < 8 * Set<E1>::Nb) {
+inline void p_exclude(tp2cc_Set<E1>& s, E2 v) {
+  int i = tp2cc_Set<E1>::idx(static_cast<E1>(v));
+  if (i >= 0 && i < 8 * tp2cc_Set<E1>::Nb) {
     s.bits[i >> 3] &= static_cast<unsigned char>(~(1u << (i & 7)));
   }
 }
 
-inline void p_popen(TextFile& f, const ShortString<>& cmd, p_char mode) {
+inline void p_popen(tp2cc_TextFile& f, const tp2cc_ShortString<>& cmd, p_char mode) {
   char m[2] = {static_cast<char>(std::tolower(p_char_to_c(mode))), '\0'};
   f.f = ::popen(p_to_std_string(cmd).c_str(), m);
   p_set_ioresult(f, f.f ? 0 : 5);
 }
-inline void p_popen(TextFile& f, const ShortString<>& cmd, char mode) {
-  p_popen(f, cmd, p_char_of(mode));
+inline void p_popen(tp2cc_TextFile& f, const tp2cc_ShortString<>& cmd, char mode) {
+  p_popen(f, cmd, tp2cc_char_of(mode));
 }
 template <typename F>
-inline void p_popen(F&, const ShortString<>&, char) {}
+inline void p_popen(F&, const tp2cc_ShortString<>&, char) {}
 template <typename F>
-inline void p_popen(F&, const ShortString<>&, p_char) {}
-inline void p_pclose(TextFile& f) {
+inline void p_popen(F&, const tp2cc_ShortString<>&, p_char) {}
+inline void p_pclose(tp2cc_TextFile& f) {
   int rc = 0;
   if (f.f) {
     rc = ::pclose(f.f);
@@ -4366,15 +4366,15 @@ inline void p_pclose(F&) {}
 // STUB: file timestamp get/set used by assembler/link bookkeeping.
 template <typename F, typename T> inline void p_getftime(F&&, T&) {}
 template <typename F, typename T> inline void p_setftime(F&&, T) {}
-// STUB: stderr is the fpc standard error TextFile.
-inline TextFile p_stderr;
-inline TextFile p_output = [] {
-  TextFile f;
+// STUB: stderr is the fpc standard error tp2cc_TextFile.
+inline tp2cc_TextFile p_stderr;
+inline tp2cc_TextFile p_output = [] {
+  tp2cc_TextFile f;
   f.f = stdout;
   return f;
 }();
-inline TextFile p_input = [] {
-  TextFile f;
+inline tp2cc_TextFile p_input = [] {
+  tp2cc_TextFile f;
   f.f = stdin;
   return f;
 }();
@@ -4426,7 +4426,7 @@ inline constexpr int32_t p_anyfile   = 0x3F;
 struct LinuxStat { int32_t p_mtime = 0; int32_t p_mode = 0; int32_t p_size = 0; };
 using p_stat = LinuxStat;
 template <int N>
-inline bool p_fstat(const ShortString<N>& path, p_stat& info) {
+inline bool p_fstat(const tp2cc_ShortString<N>& path, p_stat& info) {
   struct stat st{};
   if (::stat(p_to_std_string(path).c_str(), &st) != 0) return false;
   info.p_mtime = static_cast<int32_t>(st.st_mtime);
@@ -4445,7 +4445,7 @@ inline bool p_fstat(const File& f, p_stat& info) {
   return true;
 }
 
-// Return value of `getenv`. fpc's `dos.getenv` returns ShortString,
+// Return value of `getenv`. fpc's `dos.getenv` returns tp2cc_ShortString,
 // `linux.getenv` returns pchar -- same lowered name, different
 // types. The proxy converts to both, so one `rt::p_getenv` serves
 // both `Dos.Getenv` and `Linux.Getenv` call sites.
@@ -4453,19 +4453,19 @@ struct GetEnvResult {
   const char* raw;  // null-terminated env value, or nullptr if unset
   operator const p_char*() const { return raw ? p_from_c_str_copy(raw) : nullptr; }
   operator p_char*() const { return raw ? p_from_c_str_copy(raw) : nullptr; }
-  operator ShortString<>() const {
-    return raw ? p_shortstring_of<>(raw) : p_shortstring_of<>("");
+  operator tp2cc_ShortString<>() const {
+    return raw ? tp2cc_shortstring_of<>(raw) : tp2cc_shortstring_of<>("");
   }
 };
 template <int N>
-inline auto operator+(const ShortString<N>& a, const GetEnvResult& b) {
-  return a + static_cast<ShortString<>>(b);
+inline auto operator+(const tp2cc_ShortString<N>& a, const GetEnvResult& b) {
+  return a + static_cast<tp2cc_ShortString<>>(b);
 }
 template <int N>
-inline auto operator+(const GetEnvResult& a, const ShortString<N>& b) {
-  return static_cast<ShortString<>>(a) + b;
+inline auto operator+(const GetEnvResult& a, const tp2cc_ShortString<N>& b) {
+  return static_cast<tp2cc_ShortString<>>(a) + b;
 }
-inline GetEnvResult p_getenv(const ShortString<>& name) {
+inline GetEnvResult p_getenv(const tp2cc_ShortString<>& name) {
   char buf[260]{};
   int n = name.length < 255 ? name.length : 255;
   for (int i = 0; i < n; ++i) buf[i] = p_char_to_c(name.data[i]);
@@ -4474,7 +4474,7 @@ inline GetEnvResult p_getenv(const ShortString<>& name) {
 // Pascal `Linux.Shell(cmd)` -- run a command via `/bin/sh -c`, i.e.
 // POSIX `system(3)`. Used by the compiler for wildcard expansion.
 template <int N>
-inline int32_t p_shell(const ShortString<N>& cmd) {
+inline int32_t p_shell(const tp2cc_ShortString<N>& cmd) {
   // Resolve `sh` via PATH so this keeps working in build chroots that
   // intentionally do not provide a `/bin/sh` path.
   p_spawn_process({"sh", "-c", p_to_std_string(cmd)});

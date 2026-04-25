@@ -105,7 +105,7 @@ std::string ascii_lower(std::string_view text) {
 }
 
 // Some emit paths already know the exact C++ carrier type they need,
-// for example `OpenArray<T>` instead of the generic array-to-pointer
+// for example `tp2cc_OpenArray<T>` instead of the generic array-to-pointer
 // decay used elsewhere. In those cases we must only attach the name and
 // any `&` / `const &` declarator text here, not re-derive the type from
 // the Pascal AST and lose the chosen ABI.
@@ -342,14 +342,14 @@ const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
       {"pointer",     {"void*",           PrimitiveIntKind::None,      0}},
       {"pchar",       {"::rt::p_char*",   PrimitiveIntKind::None,      0}},
       {"ppchar",      {"::rt::p_char**",  PrimitiveIntKind::None,      0}},
-      {"text",        {"::rt::TextFile",  PrimitiveIntKind::None,      0}},
+      {"text",        {"::rt::tp2cc_TextFile",  PrimitiveIntKind::None,      0}},
       {"int64",       {"int64_t",         PrimitiveIntKind::Signed,   64}},
       {"qword",       {"uint64_t",        PrimitiveIntKind::Unsigned, 64}},
       {"dword",       {"uint32_t",        PrimitiveIntKind::Unsigned, 32}},
-      {"string",      {"::rt::ShortString<>", PrimitiveIntKind::None,  0}},
-      {"shortstring", {"::rt::ShortString<>", PrimitiveIntKind::None,  0}},
-      {"ansistring",  {"::rt::AnsiString", PrimitiveIntKind::None,      0}},
-      {"utf8string",  {"::rt::AnsiString", PrimitiveIntKind::None,      0}},
+      {"string",      {"::rt::tp2cc_ShortString<>", PrimitiveIntKind::None,  0}},
+      {"shortstring", {"::rt::tp2cc_ShortString<>", PrimitiveIntKind::None,  0}},
+      {"ansistring",  {"::rt::tp2cc_AnsiString", PrimitiveIntKind::None,      0}},
+      {"utf8string",  {"::rt::tp2cc_AnsiString", PrimitiveIntKind::None,      0}},
   };
   return m;
 }
@@ -451,7 +451,7 @@ std::string signed_bits_literal_text(uint64_t bits, const PrimitiveInfo& info) {
 
 std::string primitive_low_high_expr(std::string_view lowname, bool want_low) {
   if (lowname == "char") {
-    return want_low ? "::rt::p_char_of(0)" : "::rt::p_char_of(255)";
+    return want_low ? "::rt::tp2cc_char_of(0)" : "::rt::tp2cc_char_of(255)";
   }
   if (lowname == "boolean" || lowname == "bytebool" ||
       lowname == "wordbool" || lowname == "longbool") {
@@ -632,7 +632,7 @@ struct Emitter {
   // `uses` clause.
   std::string current_unit_name;
 
-  // Suppresses the "bare method reference -> append ()" rewrite. Set
+  // Suppresses the "bare method reference -> append ()" rewrite. tp2cc_Set
   // while emitting (a) the CALLEE of a Call (else `foo(args)` would
   // become `foo()(args)`), and (b) the operand of AddrOf (else `@foo`
   // would become `&foo()`).
@@ -722,12 +722,12 @@ struct Emitter {
     bool implicit_root_create = false;
   };
 
-  // Reified type/symbol tree spanning all parsed units. Set by the
+  // Reified type/symbol tree spanning all parsed units. tp2cc_Set by the
   // driver. Drives member-access and ident-call decisions.
   const TypeRegistry* registry = nullptr;
 
   // Ordered unit names whose lifecycle hooks must run before the
-  // program's `begin..end.` body. Set by the driver only when
+  // program's `begin..end.` body. tp2cc_Set by the driver only when
   // emitting the `program` unit.
   const std::vector<std::string>* unit_init_order = nullptr;
 
@@ -1565,7 +1565,7 @@ Emitter::untyped_storage_index_view(const Index& i) {
   const std::string index_cxx = expr_to_cxx(*i.indices[0]);
   const std::string offset =
       "((" + index_cxx + ") - (" + lo + ")) * sizeof(" + view.elem_cxx + ")";
-  view.ptr_cxx = "::rt::p_byte_offset(" + expr_to_cxx(*cast.args[0]) + ", " +
+  view.ptr_cxx = "::rt::tp2cc_byte_offset(" + expr_to_cxx(*cast.args[0]) + ", " +
                  offset + ")";
   return view;
 }
@@ -1583,7 +1583,7 @@ bool Emitter::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
     return expr_is_char(e) ? "::rt::p_ord(" + text + ")" : text;
   };
   auto ordinal_text = [&](std::string text) -> std::string {
-    return "::rt::p_ordinal_value(" + text + ")";
+    return "::rt::tp2cc_ordinal_value(" + text + ")";
   };
   const TypeExpr* dim = canonicalize_type(&dim_in);
   if (!dim) return false;
@@ -1666,8 +1666,8 @@ bool Emitter::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
 std::string Emitter::subrange_type_to_cxx(const TySubrange& r) {
   // If both bounds are enum members of the same enum, the subrange's
   // base type IS that enum -- and we want to keep that typing so
-  // things like `Set of R_EAX..R_BL` get `Set<tregister>` rather
-  // than `Set<int32_t>`.
+  // things like `tp2cc_Set of R_EAX..R_BL` get `tp2cc_Set<tregister>` rather
+  // than `tp2cc_Set<int32_t>`.
   auto bound_enum = [&](const Expr* e) -> std::string {
     if (!e || e->kind != Kind::Ident) return {};
     const std::string member = static_cast<const Ident&>(*e).name;
@@ -1696,9 +1696,9 @@ std::string Emitter::subrange_type_to_cxx(const TySubrange& r) {
 std::string Emitter::string_type_to_cxx(const TyString& s) {
   if (s.max_length) {
     // `string[N]`
-    return "::rt::ShortString<" + const_value_to_cxx(*s.max_length) + ">";
+    return "::rt::tp2cc_ShortString<" + const_value_to_cxx(*s.max_length) + ">";
   }
-  return "::rt::ShortString<>";
+  return "::rt::tp2cc_ShortString<>";
 }
 
 std::optional<std::string> Emitter::shortstring_capacity_to_cxx(
@@ -1714,7 +1714,7 @@ std::string Emitter::shortstring_value_to_cxx(std::string text,
                                               const TypeExpr* target) {
   auto cap = shortstring_capacity_to_cxx(target);
   if (!cap) return text;
-  return "::rt::p_shortstring_of<" + *cap + ">(" + text + ")";
+  return "::rt::tp2cc_shortstring_of<" + *cap + ">(" + text + ")";
 }
 
 std::string Emitter::pointer_type_to_cxx(const TyPointer& p) {
@@ -1723,9 +1723,9 @@ std::string Emitter::pointer_type_to_cxx(const TyPointer& p) {
 
 std::string Emitter::set_type_to_cxx(const TySet& s) {
   // For enum element types we can use the enum itself to parameterise the
-  // set; for primitives we'd use a bounded-integer Set. Keep it coarse for
+  // set; for primitives we'd use a bounded-integer tp2cc_Set. Keep it coarse for
   // now: element type tagged into the template.
-  return "::rt::Set<" + type_to_cxx(*s.element) + ">";
+  return "::rt::tp2cc_Set<" + type_to_cxx(*s.element) + ">";
 }
 
 std::string Emitter::enum_type_to_cxx(const TyEnum& e, const std::string&) {
@@ -1742,9 +1742,9 @@ std::string Emitter::array_type_to_cxx(const TyArray& a) {
     return open_array_type_to_cxx(a);
   }
   if (a.array_kind == ArrayKind::Dynamic) {
-    return "::rt::DynArray<" + type_to_cxx(*a.element) + ">";
+    return "::rt::tp2cc_DynArray<" + type_to_cxx(*a.element) + ">";
   }
-  // `array[D1, D2, ...] of T` emits as nested ::rt::Array<T, Lo, N>`
+  // `array[D1, D2, ...] of T` emits as nested ::rt::tp2cc_Array<T, Lo, N>`
   // wrappers with the Pascal bounds preserved at the type level.
   std::string ty = type_to_cxx(*a.element);
   // Wrap from innermost to outermost.
@@ -1754,7 +1754,7 @@ std::string Emitter::array_type_to_cxx(const TyArray& a) {
       // Can't compute dimension statically; fall back to pointer.
       return type_to_cxx(*a.element) + "*";
     }
-    ty = "::rt::Array<" + ty + ", " + lo + ", " + size_expr + ">";
+    ty = "::rt::tp2cc_Array<" + ty + ", " + lo + ", " + size_expr + ">";
   }
   return ty;
 }
@@ -1809,7 +1809,7 @@ std::string Emitter::procedural_type_to_cxx(const TyProcedural& p) {
   std::string ret = p.is_function ? type_to_cxx(*p.return_type) : std::string("void");
   std::string params = procedural_param_types_to_cxx(p.params);
   if (p.is_method) {
-    return "::rt::MethodPtr<" + ret + "(" + params + ")>";
+    return "::rt::tp2cc_MethodPtr<" + ret + "(" + params + ")>";
   }
   return ret + " (*)(" + params + ")";
 }
@@ -1864,8 +1864,8 @@ std::string Emitter::type_to_cxx(const TypeExpr& t) {
     case Kind::TyFile: {
       // Pascal `text`, `file`, `file of T`.
       const auto& tf = static_cast<const TyFile&>(t);
-      if (tf.is_text || !tf.element) return "::rt::TextFile";
-      return "::rt::TypedFile<" + type_to_cxx(*tf.element) + ">";
+      if (tf.is_text || !tf.element) return "::rt::tp2cc_TextFile";
+      return "::rt::tp2cc_TypedFile<" + type_to_cxx(*tf.element) + ">";
     }
     case Kind::TyRecord:
     case Kind::TyObject:
@@ -2824,14 +2824,14 @@ std::string Emitter::reinterpret_ref_text(const std::string& ty_cxx,
                                           bool pointee_view) {
   // Two distinct Pascal operations lower through this helper:
   //   - "same storage, new type" (`absolute`, typed lvalue casts) =>
-  //     p_reinterpret_storage_ref<T>(x)
+  //     tp2cc_reinterpret_storage_ref<T>(x)
   //   - "pointer points at T" (`absolute p` where p is pointer-ish) =>
-  //     p_reinterpret_ref<T>(p)
+  //     tp2cc_reinterpret_ref<T>(p)
   // They currently compile to the same cast sequence in the runtime, but
   // the emitter must keep the intent separate so later runtime tightening
   // does not blur "reinterpret the pointer slot" with "reinterpret pointee".
-  const char* helper = pointee_view ? "::rt::p_reinterpret_ref<"
-                                    : "::rt::p_reinterpret_storage_ref<";
+  const char* helper = pointee_view ? "::rt::tp2cc_reinterpret_ref<"
+                                    : "::rt::tp2cc_reinterpret_storage_ref<";
   return std::string(helper) + ty_cxx + ">(" + source_cxx + ")";
 }
 
@@ -2948,7 +2948,7 @@ std::optional<Emitter::AbsoluteTargetInfo> Emitter::resolve_absolute_target(
 std::string Emitter::open_array_type_to_cxx(const TypeExpr& t) {
   const TypeExpr* canon = canonicalize_type(&t);
   const auto& a = static_cast<const TyArray&>(*canon);
-  return "::rt::OpenArray<" +
+  return "::rt::tp2cc_OpenArray<" +
          (a.element ? type_to_cxx(*a.element) : std::string("int32_t")) + ">";
 }
 
@@ -2958,8 +2958,8 @@ std::string Emitter::open_array_constructor_to_cxx(const SetLit& s,
   if (!canon || canon->kind != Kind::TyArray) return expr_to_cxx(s);
   const auto& arr = static_cast<const TyArray&>(*canon);
   const TypeExpr* elem_type = arr.element.get();
-  if (!elem_type) return "::rt::p_open_array<int32_t>()";
-  if (s.elements.empty()) return "::rt::p_open_array<" + type_to_cxx(*elem_type) + ">()";
+  if (!elem_type) return "::rt::tp2cc_open_array<int32_t>()";
+  if (s.elements.empty()) return "::rt::tp2cc_open_array<" + type_to_cxx(*elem_type) + ">()";
 
   // Pascal reuses `[...]` for two different constructs:
   //   * set literals                -> `[a, b]`
@@ -2968,11 +2968,11 @@ std::string Emitter::open_array_constructor_to_cxx(const SetLit& s,
   for (const auto& el : s.elements) {
     if (el->kind == Kind::Range) {
       report_error(s.loc, "ranges in open-array constructors are unsupported");
-      return "::rt::p_open_array<" + type_to_cxx(*elem_type) + ">()";
+      return "::rt::tp2cc_open_array<" + type_to_cxx(*elem_type) + ">()";
     }
   }
 
-  std::string out = "::rt::p_open_array_of<" + type_to_cxx(*elem_type) + ">(";
+  std::string out = "::rt::tp2cc_open_array_of<" + type_to_cxx(*elem_type) + ">(";
   for (size_t i = 0; i < s.elements.size(); ++i) {
     if (i) out += ", ";
     out += const_value_to_cxx(*s.elements[i], elem_type);
@@ -3128,7 +3128,7 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
       const TypeExpr* elem_type = arr.element ? arr.element.get() : nullptr;
       std::string elem_cxx = elem_type ? type_to_cxx(*elem_type)
                                        : std::string("int32_t");
-      arg_text = "::rt::p_open_array<" + elem_cxx + ">(" + arg_text + ")";
+      arg_text = "::rt::tp2cc_open_array<" + elem_cxx + ">(" + arg_text + ")";
     }
   }
   if (!untyped_arg) return arg_text;
@@ -3671,12 +3671,12 @@ std::string Emitter::set_literal_to_cxx(const SetLit& s,
 
   if (elem_type) {
     const std::string elem_cxx = type_to_cxx(*elem_type);
-    if (s.elements.empty()) return "::rt::Set<" + elem_cxx + ">{}";
+    if (s.elements.empty()) return "::rt::tp2cc_Set<" + elem_cxx + ">{}";
     if (!has_range) {
       // Pascal set literals inherit the surrounding set type. Make that
       // explicit in the generated C++ so `typed_set + [EnumValue]` does
-      // not depend on any cross-Set implicit conversion.
-      std::string out = "::rt::Set<" + elem_cxx + ">::from_list({";
+      // not depend on any cross-tp2cc_Set implicit conversion.
+      std::string out = "::rt::tp2cc_Set<" + elem_cxx + ">::from_list({";
       for (size_t i = 0; i < s.elements.size(); ++i) {
         if (i) out += ", ";
         out += const_value_to_cxx(*s.elements[i], elem_type);
@@ -3685,7 +3685,7 @@ std::string Emitter::set_literal_to_cxx(const SetLit& s,
       return out;
     }
 
-    std::string body = "::rt::Set<" + elem_cxx + "> tp2cc_set{};";
+    std::string body = "::rt::tp2cc_Set<" + elem_cxx + "> tp2cc_set{};";
     for (const auto& el : s.elements) {
       if (el->kind == Kind::Range) {
         const auto& r = static_cast<const Range&>(*el);
@@ -3710,7 +3710,7 @@ std::string Emitter::set_literal_to_cxx(const SetLit& s,
 
   if (s.elements.empty()) {
     // `[]` in Pascal: untyped empty set. EmptySet converts to any
-    // `Set<T>` implicitly, so the value is usable in any set
+    // `tp2cc_Set<T>` implicitly, so the value is usable in any set
     // context.
     return "::rt::EmptySet{}";
   }
@@ -3718,7 +3718,7 @@ std::string Emitter::set_literal_to_cxx(const SetLit& s,
     // Variadic-pack form so the element types don't have to
     // match exactly (Pascal set literals freely mix e.g. a
     // CharConst `p_newline` with plain char literals like
-    // `'\r'`, `';'`). The Set's element type is deduced from
+    // `'\r'`, `';'`). The tp2cc_Set's element type is deduced from
     // the first argument.
     std::string out = "::rt::set_of(";
     for (size_t i = 0; i < s.elements.size(); ++i) {
@@ -3729,7 +3729,7 @@ std::string Emitter::set_literal_to_cxx(const SetLit& s,
     return out;
   }
 
-  // Slow path: mixed scalar + range elements. Build a Set in an IIFE
+  // Slow path: mixed scalar + range elements. Build a tp2cc_Set in an IIFE
   // whose element type is deduced from the first element (either a
   // scalar value or a range low-bound). Use `[&]` inside function
   // bodies (may reference outer locals); use `[]` at namespace scope
@@ -3740,12 +3740,12 @@ std::string Emitter::set_literal_to_cxx(const SetLit& s,
   } else {
     first = expr_to_cxx(*s.elements.front());
   }
-  // Value-init: `Set` has no default member initialisers, so a
+  // Value-init: `tp2cc_Set` has no default member initialisers, so a
   // bare temporary would leave the bitmask uninitialised and
   // `add(...)` only sets specific bits -- every unset bit
   // would be stack garbage, making `contains()` return true for
   // arbitrary values.
-  std::string body = "::rt::Set<decltype(" + first + ")> tp2cc_set{};";
+  std::string body = "::rt::tp2cc_Set<decltype(" + first + ")> tp2cc_set{};";
   for (const auto& el : s.elements) {
     if (el->kind == Kind::Range) {
       const auto& r = static_cast<const Range&>(*el);
@@ -3779,17 +3779,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // Single-character Pascal string literals are semantically chars.
       // Emit them as C++ character literals so they can appear as
       // subrange bounds (`'A'..'Z'`), case labels, and set-elements.
-      // Multi-character literals are emitted as ShortString so that `+`
+      // Multi-character literals are emitted as tp2cc_ShortString so that `+`
       // resolves to concatenation (not pointer arithmetic).
       if (n.value.size() == 1) {
-        return "::rt::p_char_of('" + char_literal_body_to_cxx(n.value[0]) + "')";
+        return "::rt::tp2cc_char_of('" + char_literal_body_to_cxx(n.value[0]) + "')";
       }
-      std::string out = "::rt::p_shortstring_literal<255>(";
+      std::string out = "::rt::tp2cc_shortstring_literal<255>(";
       bool first = true;
       for (char c : n.value) {
         if (!first) out += ", ";
         first = false;
-        out += "::rt::p_char_of('";
+        out += "::rt::tp2cc_char_of('";
         out += char_literal_body_to_cxx(c);
         out += "')";
       }
@@ -3849,8 +3849,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                expr_to_cxx(*n.lhs) + ")";
       }
       if (n.op == BinOp::SymDiff) {
-        // Set symmetric difference `a >< b` -> `(a + b) - (a * b)` on our
-        // Set<> type (rt::Set has union/intersect/subtract overloads).
+        // tp2cc_Set symmetric difference `a >< b` -> `(a + b) - (a * b)` on our
+        // tp2cc_Set<> type (rt::tp2cc_Set has union/intersect/subtract overloads).
         std::string a = expr_to_cxx(*n.lhs);
         std::string b = expr_to_cxx(*n.rhs);
         return "((" + a + " + " + b + ") - (" + a + " * " + b + "))";
@@ -3889,14 +3889,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       // Pascal `+` on `char` operands means string concatenation
       // (produces a 2-char string). C++ `char + char` is int
-      // arithmetic, so wrap a char-side in ShortString<> to force
-      // the ShortString `operator+` overload.
+      // arithmetic, so wrap a char-side in tp2cc_ShortString<> to force
+      // the tp2cc_ShortString `operator+` overload.
       if (n.op == BinOp::Add) {
         bool l_char = expr_is_charish(*n.lhs);
         bool r_char = expr_is_charish(*n.rhs);
         if (l_char || r_char) {
           auto wrap = [&](const Expr& x, bool want) {
-            return want ? "::rt::p_shortstring_of<>(" + expr_to_cxx(x) + ")"
+            return want ? "::rt::tp2cc_shortstring_of<>(" + expr_to_cxx(x) + ")"
                         : expr_to_cxx(x);
           };
           return "(" + wrap(*n.lhs, l_char) + " + " + wrap(*n.rhs, r_char) + ")";
@@ -4196,10 +4196,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Deref: {
       const auto& d = static_cast<const Deref&>(e);
-      // `::rt::p_deref(p)` is equivalent to `*p` for typed pointers and
+      // `::rt::tp2cc_deref(p)` is equivalent to `*p` for typed pointers and
       // yields `char&` for `void*` so Pascal `ptr^` on untyped pointers
       // still compiles.
-      return "::rt::p_deref(" + expr_to_cxx(*d.operand) + ")";
+      return "::rt::tp2cc_deref(" + expr_to_cxx(*d.operand) + ")";
     }
     case Kind::AddrOf: {
       const auto& a = static_cast<const AddrOf&>(e);
@@ -4216,7 +4216,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                            registry->records.count(id.name))) {
             if (auto* method = registry->lookup_class_method(id.name, m.name);
                 method && method->decl && !method->decl->is_class_method) {
-              return "::rt::p_method_code<&" + mangle(id.name) + "::" +
+              return "::rt::tp2cc_method_code<&" + mangle(id.name) + "::" +
                      method_pointer_helper_name(*method->decl) + ">()";
             }
           }
@@ -4239,7 +4239,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // char` / `array of byte`) typically lands in a `pchar` or
       // `pointer` context -- the fpc compiler's fill buffers and
       // inline byte tables do exactly this. For that narrow case
-      // emit `(::rt::p_char*)arr` using `rt::Array<byte>`'s pointer
+      // emit `(::rt::p_char*)arr` using `rt::tp2cc_Array<byte>`'s pointer
       // decay. Anything deeper than one array level (e.g.
       // `array of array of char`) stays as `&arr` and the source
       // is expected to use a flatter spelling -- we do not paper
@@ -4370,11 +4370,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // (`T(lv) := ...`, `inc(T(lv))`, `dec(T(lv))`) reinterpret
           // storage. Plain `T(expr)` remains a value conversion.
           if (n == "ansistring" || n == "utf8string") {
-            return "::rt::p_ansistring_of(" + arg0() + ")";
+            return "::rt::tp2cc_ansistring_of(" + arg0() + ")";
           }
           const Expr* peeled = peel_primitive_casts(c.args[0].get());
           if (peeled && expr_is_untyped_storage_ref(*c.args[0])) {
-            return "::rt::p_reinterpret_load<" + primitive_type_cxx(n) +
+            return "::rt::tp2cc_reinterpret_load<" + primitive_type_cxx(n) +
                    ">(" + expr_to_cxx(*peeled) + ")";
           }
           if (peeled && expr_is_storage_lvalue(*c.args[0])) {
@@ -4387,7 +4387,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               // Aggregate-to-primitive typecasts in Pascal are byte
               // reinterpretations, not numeric conversions. `double(MathInf)`
               // in the compiler sources depends on preserving the byte pattern.
-              return "::rt::p_reinterpret_copy<" + primitive_type_cxx(n) +
+              return "::rt::tp2cc_reinterpret_copy<" + primitive_type_cxx(n) +
                      ">(" + expr_to_cxx(*peeled) + ")";
             }
           }
@@ -4447,7 +4447,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                    "))";
           }
           if (cast_ty && cast_ty->kind == Kind::TySet) {
-            return "::rt::p_set_cast<" + type_to_cxx(*cast_ty) + ">(" +
+            return "::rt::tp2cc_set_cast<" + type_to_cxx(*cast_ty) + ">(" +
                    arg0() + ")";
           }
           if (cast_ty && type_is_reference_class(cast_ty)) {
@@ -4491,7 +4491,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                 arr.element ? canonicalize_type(arr.element.get()) : nullptr;
             if (arr.dims.size() == 1 &&
                 (tyname_is(elem, "byte") || tyname_is(elem, "char"))) {
-              return "::rt::p_reinterpret_bytes<" +
+              return "::rt::tp2cc_reinterpret_bytes<" +
                      type_name_text_to_cxx(n) + ">(" + arg0() + ")";
             }
           }
@@ -4504,8 +4504,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (std::string ptr = primitive_cast_untyped_storage_ptr(inner);
               !ptr.empty()) {
             const auto& id = static_cast<const Ident&>(*inner.callee);
-            std::string op = (n == "inc") ? "::rt::p_reinterpret_inc"
-                                          : "::rt::p_reinterpret_dec";
+            std::string op = (n == "inc") ? "::rt::tp2cc_reinterpret_inc"
+                                          : "::rt::tp2cc_reinterpret_dec";
             if (c.args.size() == 2) {
               return op + "<" + primitive_type_cxx(id.name) + ">(" + ptr + ", " +
                      expr_to_cxx(*c.args[1]) + ")";
@@ -4809,7 +4809,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
       }
       if (auto view = untyped_storage_index_view(i)) {
-        return "::rt::p_reinterpret_load<" + view->elem_cxx + ">(" +
+        return "::rt::tp2cc_reinterpret_load<" + view->elem_cxx + ">(" +
                view->ptr_cxx + ")";
       }
       std::string out = expr_to_cxx(*i.base);
@@ -4865,21 +4865,21 @@ std::string Emitter::const_value_to_cxx(const Expr& e,
       if (arr.array_kind == ArrayKind::Fixed && arr.dims.size() == 1 && elem &&
           array_dim_bounds_to_cxx(*arr.dims[0], &lo, &size_expr) &&
           (tyname_is(elem, "char") || tyname_is(elem, "byte"))) {
-        return "::rt::p_array_literal<" + type_to_cxx(*elem) + ", " + lo +
+        return "::rt::tp2cc_array_literal<" + type_to_cxx(*elem) + ", " + lo +
                ", " + size_expr + ">(" + expr_to_cxx(e) + ")";
       }
     }
     if (auto cap = shortstring_capacity_to_cxx(target)) {
       if (lit.value.size() == 1) {
-        return "::rt::p_shortstring_of<" + *cap + ">(::rt::p_char_of('" +
+        return "::rt::tp2cc_shortstring_of<" + *cap + ">(::rt::tp2cc_char_of('" +
                char_literal_body_to_cxx(lit.value[0]) + "'))";
       }
-      std::string out = "::rt::p_shortstring_literal<" + *cap + ">(";
+      std::string out = "::rt::tp2cc_shortstring_literal<" + *cap + ">(";
       bool first = true;
       for (char c : lit.value) {
         if (!first) out += ", ";
         first = false;
-        out += "::rt::p_char_of('";
+        out += "::rt::tp2cc_char_of('";
         out += char_literal_body_to_cxx(c);
         out += "')";
       }
@@ -4950,7 +4950,7 @@ std::string Emitter::const_value_to_cxx(const Expr& e,
   if (source_type) source_type = canonicalize_type(source_type);
   if (auto cap = shortstring_capacity_to_cxx(target);
       cap && !(source_type && type_is_stringish(source_type))) {
-    out = "::rt::p_shortstring_of<" + *cap + ">(" + out + ")";
+    out = "::rt::tp2cc_shortstring_of<" + *cap + ">(" + out + ")";
   }
   const TypeExpr* canon_target = canonicalize_type(target);
   if (canon_target &&
@@ -4959,7 +4959,7 @@ std::string Emitter::const_value_to_cxx(const Expr& e,
     if (!(source_type &&
           (tyname_is(source_type, "ansistring") ||
            tyname_is(source_type, "utf8string")))) {
-      out = "::rt::p_ansistring_of(" + out + ")";
+      out = "::rt::tp2cc_ansistring_of(" + out + ")";
     }
   }
   return out;
@@ -5016,11 +5016,11 @@ std::optional<std::string> Emitter::maybe_convert_proc_value(
   if (!registry) return std::nullopt;
   const std::string target_cxx = type_to_cxx(*target);
 
-  // `... of object` lowers to the runtime MethodPtr wrapper, which stores
+  // `... of object` lowers to the runtime tp2cc_MethodPtr wrapper, which stores
   // the method thunk separately from the bound object pointer.
   auto method_code_text = [&](const std::string& cls,
                               const ProcDecl& pd) -> std::string {
-    return "::rt::p_method_code<&" + mangle(cls) + "::" +
+    return "::rt::tp2cc_method_code<&" + mangle(cls) + "::" +
            method_pointer_helper_name(pd) + ">()";
   };
 
@@ -5138,7 +5138,7 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
       cd.type ? canonicalize_type(cd.type.get()) : nullptr;
 
   // Typed array (or named alias ultimately resolving to one) with an
-  // array-constant initialiser emits an `rt::Array<T, Lo, N>` so
+  // array-constant initialiser emits an `rt::tp2cc_Array<T, Lo, N>` so
   //   (a) the size is known even when the index is an enum (Pascal),
   //   (b) the array has value-copy semantics on pass (Pascal),
   //   (c) `arr[Lo]` picks the first element (Pascal arbitrary low bound).
@@ -5148,7 +5148,7 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
     const TypeExpr* t = typed_const_ty;
     if (t && t->kind == Kind::TyArray) {
       const auto& arr = static_cast<const TyArray&>(*t);
-      // Wrap the element type in `Array<..., Lo, N>` for each dim
+      // Wrap the element type in `tp2cc_Array<..., Lo, N>` for each dim
       // from innermost to outermost.
       std::string ty = arr.element ? type_to_cxx(*arr.element)
                                    : std::string("int32_t");
@@ -5158,7 +5158,7 @@ void Emitter::emit_const_decl(const ConstDecl& cd, bool in_header) {
           // Still unknown -- fall through to the generic emit below.
           goto generic_emit;
         }
-        ty = "::rt::Array<" + ty + ", " + lo + ", " + size_expr + ">";
+        ty = "::rt::tp2cc_Array<" + ty + ", " + lo + ", " + size_expr + ">";
       }
       emitln(linkage + ty + " " + name + " = " + val + ";");
       return;
@@ -5182,10 +5182,10 @@ generic_emit:;
 
   // Untyped Pascal const -- immutable.
   //   - Single-char string literal: wrap in `rt::CharConst` so it's
-  //     usable as both `p_char` (Pascal char) and `ShortString<>`
+  //     usable as both `p_char` (Pascal char) and `tp2cc_ShortString<>`
   //     (Pascal string) by context, matching Pascal's polymorphic
   //     `const X = 'c';` semantics.
-  //   - Multi-char string literal: plain `ShortString<>` so `+`
+  //   - Multi-char string literal: plain `tp2cc_ShortString<>` so `+`
   //     resolves to concatenation.
   if (cd.value->kind == Kind::StringLit) {
     const auto& sl = static_cast<const StringLit&>(*cd.value);
@@ -5194,7 +5194,7 @@ generic_emit:;
       emitln(linkage + "constexpr ::rt::CharConst " + name + "{" +
              val + "};");
     } else {
-      emitln(linkage + "const ::rt::ShortString<> " + name + " = " +
+      emitln(linkage + "const ::rt::tp2cc_ShortString<> " + name + " = " +
              val + ";");
     }
     return;
@@ -5264,8 +5264,8 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     // typed `this` with lost-packedness. All of those are real bugs -- e.g.
     // the `set of ttargetflags` field inside `packed record ttargetinfo` in
     // `compiler/systems.pas` would, under `#pragma pack`, happily silently
-    // invoke `Set::add` through a misaligned `this`. With the attribute the
-    // compiler flags it, and we can fix it (see rt::Set, now byte-aligned).
+    // invoke `tp2cc_Set::add` through a misaligned `this`. With the attribute the
+    // compiler flags it, and we can fix it (see rt::tp2cc_Set, now byte-aligned).
     std::string open = "struct ";
     if (tr.is_packed) open += "[[gnu::packed]] ";
     emitln(open + name + " {");
@@ -6121,7 +6121,7 @@ void Emitter::emit_stmt(const Stmt& s) {
           if (std::string ptr = primitive_cast_untyped_storage_ptr(c);
               !ptr.empty()) {
             const auto& id = static_cast<const Ident&>(*c.callee);
-            emitln("::rt::p_reinterpret_store<" + primitive_type_cxx(id.name) +
+            emitln("::rt::tp2cc_reinterpret_store<" + primitive_type_cxx(id.name) +
                    ">(" + ptr + ", " + expr_to_cxx(*a.value) + ");");
             break;
           }
@@ -6180,7 +6180,7 @@ void Emitter::emit_stmt(const Stmt& s) {
       if (registry && a.target->kind == Kind::Index) {
         const auto& ix = static_cast<const Index&>(*a.target);
         if (auto view = untyped_storage_index_view(ix)) {
-          emitln("::rt::p_reinterpret_store<" + view->elem_cxx + ">(" +
+          emitln("::rt::tp2cc_reinterpret_store<" + view->elem_cxx + ">(" +
                  view->ptr_cxx + ", " + expr_to_cxx(*a.value) + ");");
           break;
         }
@@ -6260,7 +6260,7 @@ void Emitter::emit_stmt(const Stmt& s) {
       const TypeExpr* target_ty = deduce_type(*a.target);
       std::string rhs_cxx = const_value_to_cxx(*a.value, target_ty);
       if (target_ty && shortstring_capacity_to_cxx(target_ty)) {
-        emitln("::rt::p_shortstring_assign(" + target_cxx + ", " + rhs_cxx +
+        emitln("::rt::tp2cc_shortstring_assign(" + target_cxx + ", " + rhs_cxx +
                ");");
         break;
       }

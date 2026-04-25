@@ -53,7 +53,7 @@ The emitter does not leave most lookup to C++. It resolves names itself using Pa
 6. current class members
 7. current unit
 8. used units
-9. runtime fallback in `::rt`
+9. runtime fallback in `::rt`, only for names starting with `p_`
 
 Every unit implicitly sees `System`; internally the type registry models that with a synthetic runtime unit.
 
@@ -85,17 +85,17 @@ s := 'Hello';
 Representative C++:
 
 ```cpp
-p_c = ::rt::p_char_of('A');
-p_s = ::rt::p_shortstring_literal<255>("Hello");
+p_c = ::rt::tp2cc_char_of('A');
+p_s = ::rt::tp2cc_shortstring_literal<255>("Hello");
 ```
 
 ### 1.4 Strings
 
 Pascal strings are not lowered as raw `char *`. They use explicit runtime carriers:
 
-- `string[n]` -> `::rt::ShortString<n>`
-- unsized `string` -> `::rt::ShortString<>`
-- `ansistring` and related types -> `::rt::AnsiString`
+- `string[n]` -> `::rt::tp2cc_ShortString<n>`
+- unsized `string` -> `::rt::tp2cc_ShortString<>`
+- `ansistring` and related types -> `::rt::tp2cc_AnsiString`
 
 Concatenation and comparisons are done through runtime operators/helpers on those carrier types.
 
@@ -112,7 +112,7 @@ var A: array[1..3] of Integer;
 Representative C++:
 
 ```cpp
-::rt::Array<int32_t, 1, 3> p_a;
+::rt::tp2cc_Array<int32_t, 1, 3> p_a;
 ```
 
 Open-array actual arguments are lowered explicitly with runtime helpers.
@@ -126,14 +126,14 @@ Proc([A, B, C]);
 Representative C++:
 
 ```cpp
-p_proc(::rt::p_open_array_of<int32_t>(p_a, p_b, p_c));
+p_proc(::rt::tp2cc_open_array_of<int32_t>(p_a, p_b, p_c));
 ```
 
-Dynamic arrays lower to `::rt::DynArray<T>`.
+Dynamic arrays lower to `::rt::tp2cc_DynArray<T>`.
 
 ### 1.6 Sets
 
-Pascal sets use `::rt::Set<T>`.
+Pascal sets use `::rt::tp2cc_Set<T>`.
 
 Pascal:
 
@@ -147,7 +147,7 @@ Representative C++:
 
 ```cpp
 if (p_s.contains(p_x)) { ... }
-p_t = ::rt::Set<int32_t>::from_list(...);
+p_t = ::rt::tp2cc_Set<int32_t>::from_list(...);
 p_u = ((p_a + p_b) - (p_a * p_b));
 ```
 
@@ -166,7 +166,7 @@ x := p^;
 Representative C++:
 
 ```cpp
-p_x = ::rt::p_deref(p_p);
+p_x = ::rt::tp2cc_deref(p_p);
 ```
 
 Address-of is emitted explicitly. For methods it may become a generated thunk.
@@ -224,7 +224,7 @@ Representative C++:
 
 ### 1.11 Procedure variables and `of object`
 
-Plain procedural types lower to function pointers or `std::function`-like helpers depending on context. `procedure/function ... of object` lowers to `::rt::MethodPtr<...>`.
+Plain procedural types lower to function pointers or `std::function`-like helpers depending on context. `procedure/function ... of object` lowers to `::rt::tp2cc_MethodPtr<...>`.
 
 Method pointers are represented as code-plus-self pairs. The emitter generates thunks where needed so a Pascal method can be called through that runtime carrier.
 
@@ -315,7 +315,7 @@ Pascal typecasts generally lower to explicit runtime helpers or explicit C++ cas
 Examples:
 
 - `char(x)` / `chr(x)` -> `::rt::p_chr(...)`
-- explicit set cast -> `::rt::p_set_cast<Dst>(src)`
+- explicit set cast -> `::rt::tp2cc_set_cast<Dst>(src)`
 - class cast via `as` -> `dynamic_cast`
 - byte reinterpretation of storage -> reinterpret helpers from the runtime
 
@@ -325,9 +325,9 @@ When a concrete target string type is known, the emitter converts explicitly.
 
 Examples:
 
-- to `string[20]` -> `::rt::p_shortstring_of<20>(...)`
-- to unsized shortstring -> `::rt::p_shortstring_of<255>(...)`
-- to `ansistring` -> `::rt::p_ansistring_of(...)`
+- to `string[20]` -> `::rt::tp2cc_shortstring_of<20>(...)`
+- to unsized shortstring -> `::rt::tp2cc_shortstring_of<255>(...)`
+- to `ansistring` -> `::rt::tp2cc_ansistring_of(...)`
 
 Important rule: the emitter tries to preserve string lvalues when passing mutable `var`/`out`-style arguments. It does not intentionally wrap those in temporaries.
 
@@ -345,8 +345,8 @@ inc(longint(b));
 
 does not become a typed C++ reference into arbitrary storage anymore. tp2cc now lowers these cases as byte load/store operations:
 
-- read -> `::rt::p_reinterpret_load<T>(...)`
-- write -> `::rt::p_reinterpret_store<T>(...)`
+- read -> `::rt::tp2cc_reinterpret_load<T>(...)`
+- write -> `::rt::tp2cc_reinterpret_store<T>(...)`
 - read/modify/write -> helper built from load/store
 
 This preserves Pascal's storage-reinterpretation semantics while avoiding misaligned typed-reference UB in C++.
@@ -355,14 +355,14 @@ This preserves Pascal's storage-reinterpretation semantics while avoiding misali
 
 When the source really is typed storage being re-viewed as another Pascal type, the emitter can still lower to reference-like reinterpret helpers such as:
 
-- `::rt::p_reinterpret_storage_ref<T>(...)`
-- `::rt::p_reinterpret_ref<T>(...)`
+- `::rt::tp2cc_reinterpret_storage_ref<T>(...)`
+- `::rt::tp2cc_reinterpret_ref<T>(...)`
 
 The distinction is whether the input is already storage of interest or a pointer to it.
 
 ### 2.6 Method pointer conversions
 
-Converting a method designator to a `... of object` value is explicit in the lowered code. The emitter produces the method thunk and object pointer pair needed by `::rt::MethodPtr`.
+Converting a method designator to a `... of object` value is explicit in the lowered code. The emitter produces the method thunk and object pointer pair needed by `::rt::tp2cc_MethodPtr`.
 
 ## 3. Workarounds and Limitations
 
@@ -438,15 +438,15 @@ The prelude still contains some stubbed or placeholder functionality, especially
 High-level runtime types include:
 
 - `p_char`
-- `ShortString<N>`
-- `AnsiString`
-- `Array<T, Lo, N>`
-- `DynArray<T>`
-- `OpenArray<T>`
-- `Set<T>`
-- `TextFile`
-- `TypedFile<T>`
-- `MethodPtr<...>`
+- `tp2cc_ShortString<N>`
+- `tp2cc_AnsiString`
+- `tp2cc_Array<T, Lo, N>`
+- `tp2cc_DynArray<T>`
+- `tp2cc_OpenArray<T>`
+- `tp2cc_Set<T>`
+- `tp2cc_TextFile`
+- `tp2cc_TypedFile<T>`
+- `tp2cc_MethodPtr<...>`
 - `p_tmethod`
 - `p_tobject`
 - exception and metaclass support types
@@ -477,7 +477,7 @@ This is why the emitter can preserve Pascal lower bounds and open-array call beh
 
 ### 4.4 Sets
 
-`Set<T>` provides the set operations needed by the language:
+`tp2cc_Set<T>` provides the set operations needed by the language:
 
 - contains
 - union
