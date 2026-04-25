@@ -61,6 +61,10 @@ Every unit implicitly sees `System`; internally the type registry models that wi
 
 Plain arithmetic and comparisons lower mostly directly. Some Pascal operators become runtime helpers.
 
+Unary `+` and `-` are accepted anywhere a factor is valid, not only at the
+start of a whole expression. So inputs like `5 * -3`, `5 * -x`, and
+`a or -mask` parse and lower normally.
+
 Pascal:
 
 ```pascal

@@ -1442,9 +1442,9 @@ StmtPtr Parser::parse_asm() {
 // Expressions (precedence from lowest to highest):
 //
 //   expression   := simple_expr ( relop simple_expr )?
-//   simple_expr  := sign? term ( addop term )*
+//   simple_expr  := term ( addop term )*
 //   term         := factor ( mulop factor )*
-//   factor       := NOT factor | unary-primary
+//   factor       := ( + | - | NOT ) factor | unary-primary
 //
 // relop: =  <>  <  >  <=  >=  in  is
 // addop: +  -  or  xor
@@ -1476,18 +1476,7 @@ ExprPtr Parser::parse_expr() {
 }
 
 ExprPtr Parser::parse_simple_expr() {
-  ExprPtr lhs;
-  // Optional sign
-  if (check(Tok::Plus) || check(Tok::Minus)) {
-    UnOp op = check(Tok::Minus) ? UnOp::Neg : UnOp::Plus;
-    Location loc = cur_.loc; advance();
-    auto u = std::make_shared<Unary>();
-    u->loc = loc; u->op = op;
-    u->operand = parse_term();
-    lhs = std::move(u);
-  } else {
-    lhs = parse_term();
-  }
+  auto lhs = parse_term();
   for (;;) {
     BinOp op;
     switch (cur_.kind) {
@@ -1531,6 +1520,14 @@ ExprPtr Parser::parse_term() {
 }
 
 ExprPtr Parser::parse_factor() {
+  if (check(Tok::Plus) || check(Tok::Minus)) {
+    UnOp op = check(Tok::Minus) ? UnOp::Neg : UnOp::Plus;
+    Location loc = cur_.loc; advance();
+    auto u = std::make_shared<Unary>();
+    u->loc = loc; u->op = op;
+    u->operand = parse_factor();
+    return u;
+  }
   if (check(Tok::KwNot)) {
     Location loc = cur_.loc; advance();
     auto u = std::make_shared<Unary>();

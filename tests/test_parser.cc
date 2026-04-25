@@ -828,6 +828,21 @@ void test_c_style_shift_exprs_parse_like_shl_shr() {
   CHECK(u != nullptr);
 }
 
+void test_unary_plus_minus_parse_in_factor_position() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "program p;\n"
+      "var x, a, b, mask : integer;\n"
+      "begin\n"
+      "  x := 5 * -3;\n"
+      "  x := 5 * -a;\n"
+      "  x := a or -mask;\n"
+      "  x := not -b;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+}
+
 void test_set_literal_in_expr() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1088,6 +1103,7 @@ int main() {
   RUN_TEST(test_goto_and_label);
   RUN_TEST(test_expr_precedence);
   RUN_TEST(test_c_style_shift_exprs_parse_like_shl_shr);
+  RUN_TEST(test_unary_plus_minus_parse_in_factor_position);
   RUN_TEST(test_set_literal_in_expr);
   RUN_TEST(test_call_with_write_formatter);
   RUN_TEST(test_procedural_type_decl);
