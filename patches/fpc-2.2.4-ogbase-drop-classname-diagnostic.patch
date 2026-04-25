@@ -1,0 +1,28 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-25
+Subject: Drop ogbase ClassName diagnostics on metaclass mismatch
+License: expat
+
+`compiler/ogbase.pas` uses exact metaclass equality for correctness and
+then only calls `.ClassName` to print the actual and expected class names
+in the error text.
+
+tp2cc already supports the metaclass equality check, but it does not
+model reflective metaclass members like `.ClassName`. Keep the exact
+metaclass mismatch check and replace the reflective diagnostic text with
+a generic incompatible-class message.
+
+diff --git a/compiler/ogbase.pas b/compiler/ogbase.pas
+index 60e0192240..993c5be0f4 100644
+--- a/compiler/ogbase.pas
++++ b/compiler/ogbase.pas
+@@ -1460,7 +1460,8 @@ implementation
+     procedure TExeOutput.AddObjData(ObjData:TObjData);
+       begin
+         if ObjData.classtype<>FCObjData then
+-          Comment(V_Error,'Invalid input object format for '+ObjData.name+' got '+ObjData.classname+' expected '+FCObjData.classname);
++          Comment(V_Error,'Invalid input object format for '+ObjData.name+
++            ' got an incompatible object class');
+         ObjDataList.Add(ObjData);
+       end;
+ 
