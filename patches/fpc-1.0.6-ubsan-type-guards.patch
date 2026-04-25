@@ -41,11 +41,29 @@ Site-by-site summary:
    wrong cast read the right bytes; the correct cast is
    pai_symbol_end.
 
+ * i386/aggas.pas, ait_align branch: on i386 the align records are
+   split into a shared tai_align_abstract base in aasm.pas and a
+   cpu-specific tai_align child in cpuasm.pas.  This branch only
+   reads the shared base fields (aligntype/use_op/fillop), so the
+   historic pai_align(hp) narrowing is both unnecessary and wrong
+   when the list node is only a tai_align_abstract.  Read it through
+   pai_align_abstract instead.
+
  * i386/cginl.pas, Handle_Val, floatdef branch: cast was
    pfloatdef(p^.resulttype) but p is the whole Val call node --
    its resulttype is the procedure return type, not the
    destination variable's type.  Use dest_para^.resulttype
    instead, matching the outer case.
+
+ * i386/cginl.pas, inc/dec pointerdef branch: the old
+   `porddef(ppointerdef(... )^.pointertype.def)=voiddef` cast narrows the
+   pointee type to torddef just to compare it with the builtin `voiddef`.
+   That is wrong for pointers-to-pointers and other non-orddef pointees.
+   Compare the `pdef` directly to `pdef(voiddef)` instead.
+
+ * i386/cgflw.pas, `secondfor': `is_signed' already accepts a `pdef` and
+   handles both orddefs and enumdefs.  The old `porddef(p^.t2^.resulttype)`
+   wrapper wrongly narrows enum loop variables to torddef first.
 
  * pexpr.pas (2 sites inside typesym member-read handling):
    `sym' is already declared `psym' in the enclosing function;
@@ -58,9 +76,9 @@ Site-by-site summary:
  * pexpr.pas, `is_func_ret' branch: the historic identity tests
    `pfuncretsym(sym)=...` and `pvarsym(sym)=opsym` narrow a generic
    `psym` to unrelated sibling record types just to compare pointer
-   identity. Under tp2cc those become checked downcasts and UBSan
-   correctly rejects a `tfuncretsym` masquerading as `tvarsym`.
-   Compare at the common `psym` level instead.
+   identity. Under tp2cc those become checked downcasts on objects
+   of the wrong dynamic type, e.g. a `tfuncretsym' masquerading as
+   `tvarsym'. Compare at the common `psym' level instead.
 
  * tcadd.pas, set-operation handling: when a type-mismatch
    between `rd' and a setdef `ld' was reported via CGMessage the
@@ -75,13 +93,22 @@ Site-by-site summary:
    that actually have a `vartype' field (tvarsym and its child
    tabsolutesym).
 
+ * tree.pas, genprocinlinenode: `calln.symtableprocentry` was widened to
+   `psym`, but this site only accepts procedure symbols. Cast it back to
+   `pprocsym` here instead of narrowing the whole call-node field again.
+
+ * tccnv.pas / tcmem.pas, proc-to-procvar conversion: these helper calls
+   also expect a `pprocsym`.  Keep `calln.symtableprocentry` widened to
+   `psym`, but cast it back at the proc-only `get_proc_2_procvar_def`
+   call sites.
+
  * tree.pas, `disposetree' `dt_with' branch: like `tcmem.firstwith',
    the old loop advanced once past the last real `withsymtable`
    entry via `pwithsymtable(symt^.next)` even though that value was
    never consumed afterwards.  On the final iteration `next` is the
    ordinary `symtablestack` tail, not another `withsymtable`, so the
-   generated C++ downcast correctly trips UBSan.  Stop advancing after
-   the last real `withsymtable`.
+   generated C++ downcast lands on the wrong dynamic type. Stop
+   advancing after the last real `withsymtable`.
 
  * tcmem.pas, `firstwith': the loop walks exactly `tablecount`
    `withsymtable` entries, but the old code still advanced once
@@ -89,8 +116,8 @@ Site-by-site summary:
    though the value was never used afterwards. For a single-entry
    `with`, that `next` pointer is already the ordinary
    `symtablestack` tail, not another `withsymtable`, so tp2cc's
-   checked downcast rightly trips UBSan. Only advance when
-   another `withsymtable` iteration remains.
+   checked downcast lands on the wrong dynamic type. Only advance
+   when another `withsymtable` iteration remains.
 
  * symdefh.inc / symsymh.inc: add shadow `pderef' fields
    alongside every PPU-reference field that held a pderef
@@ -108,6 +135,19 @@ Site-by-site summary:
 
 --- a/compiler/i386/aggas.pas
 +++ b/compiler/i386/aggas.pas
+@@ -531,9 +531,9 @@
+ 
+            ait_align :
+              begin
+-               AsmWrite(#9'.balign '+tostr(pai_align(hp)^.aligntype));
+-               if pai_align(hp)^.use_op then
+-                AsmWrite(','+tostr(pai_align(hp)^.fillop));
++               AsmWrite(#9'.balign '+tostr(pai_align_abstract(hp)^.aligntype));
++               if pai_align_abstract(hp)^.use_op then
++                AsmWrite(','+tostr(pai_align_abstract(hp)^.fillop));
+                AsmLn;
+              end;
+ 
 @@ -763,9 +763,15 @@
                    inc(symendcount);
                    AsmWriteLn(s+':');
@@ -142,9 +182,18 @@ Site-by-site summary:
                      inc(fpuvaroffset);
                 end;
               orddef:
+@@ -1204,7 +1209,7 @@
+                            end;
+               pointerdef : begin
+                              opsize:=S_L;
+-                             if porddef(ppointerdef(p^.left^.left^.resulttype)^.pointertype.def)=voiddef then
++                             if ppointerdef(p^.left^.left^.resulttype)^.pointertype.def=pdef(voiddef) then
+                               addvalue:=1
+                              else
+                               addvalue:=ppointerdef(p^.left^.left^.resulttype)^.pointertype.def^.size;
 --- a/compiler/pexpr.pas
 +++ b/compiler/pexpr.pas
-@@ -954,15 +954,15 @@
+@@ -956,15 +956,15 @@
                 { is this an access to a function result? Accessing _RESULT is
                   always allowed and funcretn is generated }
                 if assigned(p^.funcretsym) and
@@ -194,6 +243,26 @@ Site-by-site summary:
                                              if not assigned(sym) then
                                                Message1(sym_e_id_no_member,pattern)
                                              else if not(getaddr) and not(sp_static in sym^.symoptions) then
+@@ -1668,7 +1680,7 @@
+                               p1:=gencallnode(nil,nil);
+                               p1^.right:=p2;
+                               p1^.unit_specific:=unit_specific;
+-                              p1^.symtableprocentry:=pprocsym(sym);
++                              p1^.symtableprocentry:=sym;
+                               if token=_LKLAMMER then
+                                 begin
+                                    consume(_LKLAMMER);
+--- a/compiler/i386/cgflw.pas
++++ b/compiler/i386/cgflw.pas
+@@ -132,7 +132,7 @@
+          { produce start assignment }
+          cleartempgen;
+          secondpass(p^.left);
+-         count_var_is_signed:=is_signed(porddef(p^.t2^.resulttype));
++         count_var_is_signed:=is_signed(p^.t2^.resulttype);
+          if temptovalue then
+              begin
+               if p^.t2^.location.loc=LOC_CREGISTER then
 --- a/compiler/tcadd.pas
 +++ b/compiler/tcadd.pas
 @@ -730,7 +730,11 @@
@@ -211,13 +280,19 @@ Site-by-site summary:
                     if (p^.right^.treetype=setconstn) then
 --- a/compiler/tree.pas
 +++ b/compiler/tree.pas
-@@ -667,9 +667,12 @@
-              {$ELSE}
-                 symt:=p^.withsymtable;
-                 for i:=1 to p^.tablecount do
-                   begin
-                      if assigned(symt) then
-                        begin
+@@ -226,7 +226,7 @@
+              assignn : (assigntyp : tassigntyp;concat_string : boolean);
+              loadn : (symtableentry : psym;symtable : psymtable;
+                       is_absolute,is_first : boolean);
+-             calln : (symtableprocentry : pprocsym;
++             calln : (symtableprocentry : psym;
+                       symtableproc : psymtable;procdefinition : pabstractprocdef;
+                       methodpointer : ptree;
+                       no_check,unit_specific,
+@@ -669,7 +669,10 @@
+                    begin
+                       if assigned(symt) then
+                         begin
 -                           p^.withsymtable:=pwithsymtable(symt^.next);
 +                           if i<p^.tablecount then
 +                             p^.withsymtable:=pwithsymtable(symt^.next)
@@ -225,9 +300,7 @@ Site-by-site summary:
 +                             p^.withsymtable:=nil;
                             dispose(symt,done);
                          end;
-                      symt:=p^.withsymtable;
---- a/compiler/tree.pas
-+++ b/compiler/tree.pas
+                       symt:=p^.withsymtable;
 @@ -1100,7 +1103,17 @@
        {$IFDEF NEWST}
           p^.resulttype:=v^.definition;
@@ -247,10 +320,38 @@ Site-by-site summary:
        {$ENDIF NEWST}
           p^.symtableentry:=v;
           p^.symtable:=st;
+@@ -1416,7 +1429,7 @@
+          p:=getnode;
+          p^.disposetyp:=dt_nothing;
+          p^.treetype:=procinlinen;
+-         p^.inlineprocsym:=callp^.symtableprocentry;
++         p^.inlineprocsym:=pprocsym(callp^.symtableprocentry);
+          p^.retoffset:=-target_os.size_of_pointer; { less dangerous as zero (PM) }
+          p^.para_offset:=0;
+       {$IFDEF NEWST}
+--- a/compiler/tccnv.pas
++++ b/compiler/tccnv.pas
+@@ -795,7 +795,7 @@
+                begin
+                  if is_procsym_call(p^.left) then
+                   begin
+-                    currprocdef:=get_proc_2_procvar_def(p^.left^.symtableprocentry,pprocvardef(p^.resulttype));
++                    currprocdef:=get_proc_2_procvar_def(pprocsym(p^.left^.symtableprocentry),pprocvardef(p^.resulttype));
+                     if assigned(currprocdef) then
+                      begin
+                        if (p^.left^.symtableprocentry^.owner^.symtabletype=objectsymtable) and
 --- a/compiler/tcmem.pas
 +++ b/compiler/tcmem.pas
-@@ -644,8 +644,9 @@
-                     if (p^.left^.treetype=loadn) and
+@@ -245,7 +245,7 @@
+                 begin
+                   { find overloaded proc def }
+                   if assigned(p^.procvarloaddef) then
+-                   aprocdef:=get_proc_2_procvar_def(p^.left^.symtableprocentry,p^.procvarloaddef)
++                   aprocdef:=get_proc_2_procvar_def(pprocsym(p^.left^.symtableprocentry),p^.procvarloaddef)
+                   else
+                    aprocdef:=nil;
+                   { generate a methodcallnode or proccallnode }
+@@ -645,7 +645,8 @@
                         (p^.left^.symtable=aktprocsym^.definition^.localst) then
                        symtable^.direct_with:=true;
                      symtable^.withnode:=p;
