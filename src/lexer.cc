@@ -745,12 +745,21 @@ Token Lexer::next() {
     }
 
     if (!accepting()) {
-      // We are inside a rejected {$ifdef} branch: consume characters until
-      // we hit a directive that changes state. skip_ws_and_comments already
-      // processes directives, so we just need to eat one non-directive
-      // character and loop.
+      // We are inside a rejected {$ifdef} branch: consume source until a
+      // directive changes state. `skip_ws_and_comments()` already handles
+      // directives, whitespace, and comments, but we must also swallow whole
+      // Pascal string/char literals here. Otherwise a skipped literal like
+      // `'{'
+      // leaves the `{` behind for the next loop iteration, where
+      // `skip_ws_and_comments()` misclassifies it as a comment/directive start
+      // and can eat the rest of the file.
       if (at_eof_of_current()) continue;
-      get();
+      char c = peek();
+      if (c == '\'' || c == '#') {
+        (void)scan_string();
+      } else {
+        get();
+      }
       continue;
     }
 

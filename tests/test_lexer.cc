@@ -283,6 +283,32 @@ void test_directive_define_undef() {
   CHECK_EQ(ts[1].text, std::string("three"));
 }
 
+void test_inactive_ifdef_skips_full_string_literals() {
+  auto ts = lex_all(
+      "begin\n"
+      "  begin\n"
+      "{$ifdef arm}\n"
+      "    if c<>'$' then\n"
+      "      begin\n"
+      "        asmgetchar:='{';\n"
+      "        exit;\n"
+      "      end\n"
+      "    else\n"
+      "{$endif arm}\n"
+      "      skipcomment;\n"
+      "  end;\n"
+      "end.\n");
+  std::vector<Tok> expected = {
+      Tok::KwBegin, Tok::KwBegin, Tok::Ident, Tok::Semi,
+      Tok::KwEnd, Tok::Semi, Tok::KwEnd, Tok::Dot,
+  };
+  CHECK_EQ(ts.size(), expected.size());
+  for (size_t i = 0; i < ts.size() && i < expected.size(); ++i) {
+    CHECK(ts[i].kind == expected[i]);
+  }
+  if (ts.size() >= 3) CHECK_EQ(ts[2].text, std::string("skipcomment"));
+}
+
 void test_directive_builtin_macro_expands_deterministically() {
   int errs_before = tp2cc::error_count();
   auto ts = lex_all("const d = {$I %DATE%};");
@@ -428,6 +454,7 @@ int main() {
   RUN_TEST(test_directive_else);
   RUN_TEST(test_directive_nested_ifdef);
   RUN_TEST(test_directive_define_undef);
+  RUN_TEST(test_inactive_ifdef_skips_full_string_literals);
   RUN_TEST(test_directive_builtin_macro_expands_deterministically);
   RUN_TEST(test_directive_ignored_configs);
   RUN_TEST(test_enum_and_set_of_type);
