@@ -1,0 +1,121 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-25
+Subject: Keep scanner ownership on compiled modules and preserve reload locals
+License: expat
+
+FPC 1.0.6 uses `tmodule.scanner' as a loose cache/ownership slot across
+reset, nested compile, and second-load reload paths. Native FPC mostly got
+away with this because the freed scanner memory often remained untouched,
+but tp2cc's ASan/UBSan bootstrap exposes two real failures:
+
+ * stale freed scanner pointers kept reachable from module records, and
+ * the second-load `loadunit' path reading an uninitialized local
+   `scanner' after `reset' nilled the module field.
+
+Fix the lifetime rules explicitly:
+
+ * clear `tmodule.scanner' when the scanner lifetime ends,
+ * keep scanner ownership on `compiled_module' instead of whichever
+   module `current_module' happens to point at during nested loads, and
+ * preserve the reload path's old scanner only in the local helper
+   variable used by `loadppufile'.
+
+--- a/compiler/files.pas
++++ b/compiler/files.pas
+@@ -1213,6 +1213,7 @@
+       begin
+         if assigned(scanner) then
+           pscannerfile(scanner)^.invalid:=true;
++        scanner:=nil;
+         if assigned(globalsymtable) then
+           begin
+             dispose(punitsymtable(globalsymtable),done);
+@@ -1394,6 +1395,7 @@
+         _exports:=nil;
+         if assigned(scanner) then
+           pscannerfile(scanner)^.invalid:=true;
++        scanner:=nil;
+         if assigned(sourcefiles) then
+          dispose(sourcefiles,done);
+         sourcefiles:=nil;
+@@ -1583,4 +1585,4 @@
+   Revision 1.100  1999/08/24 13:14:01  peter
+     * MEMDEBUG to see the sizes of asmlist,asmsymbols,symtables
+ 
+-}
+\ No newline at end of file
++}
+--- a/compiler/parser.pas
++++ b/compiler/parser.pas
+@@ -227,6 +227,7 @@
+            end;
+          until false;
+        { free scanner }
++         current_module^.scanner:=nil;
+          dispose(current_scanner,done);
+          current_scanner:=nil;
+        { close }
+@@ -383,10 +384,7 @@
+        { reset the unit or create a new program }
+          if assigned(current_module) then
+            begin
+-              {current_module^.reset this is wrong !! }
+-               scanner:=current_module^.scanner;
+                current_module^.reset;
+-               current_module^.scanner:=scanner;
+            end
+          else
+           begin
+@@ -421,8 +419,7 @@
+        { startup scanner, and save in current_module }
+          current_scanner:=new(pscannerfile,Init(filename));
+          current_scanner^.readtoken;
+-         prev_scanner:=current_module^.scanner;
+-         current_module^.scanner:=current_scanner;
++         compiled_module^.scanner:=current_scanner;
+          UpdateStatus;
+        { init code generator for a new module }
+          codegen_newmodule;
+@@ -483,18 +480,15 @@
+ {$endif newcg}
+ 
+        { free ppu }
+-         if assigned(current_module^.ppufile) then
++         if assigned(compiled_module^.ppufile) then
+           begin
+-            dispose(current_module^.ppufile,done);
+-            current_module^.ppufile:=nil;
++            dispose(compiled_module^.ppufile,done);
++            compiled_module^.ppufile:=nil;
+           end;
+        { free scanner }
+          dispose(current_scanner,done);
+          current_scanner:=nil;
+-       { restore previous scanner !! }
+-         current_module^.scanner:=prev_scanner;
+-         if assigned(prev_scanner) then
+-           prev_scanner^.invalid:=true;
++         compiled_module^.scanner:=nil;
+ 
+        { free macros }
+          {!!! No check for unused macros yet !!! }
+--- a/compiler/pmodules.pas
++++ b/compiler/pmodules.pas
+@@ -550,11 +550,15 @@
+           begin
+             if assigned(hp) then
+              begin
++               { A second-load recompilation still uses the pre-reset
++                 scanner object as a local "old scanner" handle inside
++                 loadppufile. Preserve it here before reset nils the
++                 module field; otherwise the local `scanner` is left
++                 uninitialized in this branch. }
++               scanner:=pscannerfile(hp^.scanner);
+                { remove the old unit }
+                loaded_units.remove(hp);
+-               scanner:=hp^.scanner;
+                hp^.reset;
+-               hp^.scanner:=scanner;
+                { try to reopen ppu }
+                hp^.search_unit(s,false);
+                { try to load the unit a second time first }
