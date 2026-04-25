@@ -29,17 +29,18 @@ else
   SOURCE_DIR="$ROOT/../fpc-2/src"
 fi
 
-# Keep the translated compiler under the same instrumentation as the older
-# bootstrap scripts so runtime failures show up as concrete UB/safety reports.
-SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer}"
+# Keep the translated compiler under sanitizer instrumentation, but make
+# findings fatal so a "successful" bootstrap never masks active UB.
+SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=address,undefined}"
 CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -fms-extensions -fpermissive -Wno-narrowing -Wno-microsoft-anon-tag -Wno-permissive $SAN"
 CFLAGS="-std=gnu11 -O0 -g -pipe $SAN"
 export CXXFLAGS
 export CFLAGS
 
-# FPC frees most global state only at process exit. LSan then turns a normal
-# compile into a nonzero exit status, which confuses the stage2/stage3 driver.
-export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
+# FPC frees most global state only at process exit. Disable leak checking, but
+# keep everything else fatal so the bootstrap stops at the first sanitizer hit.
+export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1}"
+export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
 
 BOOT_ROOT="${BOOTSTRAP_ROOT:-$ROOT/build/fpc-2-bootstrap}"
 HOST_BUILD="${TP2CC_BUILD:-$ROOT/build-tp2cc-host}"
