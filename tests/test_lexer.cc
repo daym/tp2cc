@@ -115,6 +115,22 @@ void test_operators_and_punctuation() {
   }
 }
 
+void test_c_style_shift_tokens_alias_pascal_shifts() {
+  auto ts = lex_all("a << 1 >> 2 shl 3 shr 4");
+  std::vector<Tok> expected = {
+      Tok::Ident, Tok::KwShl, Tok::IntLit, Tok::KwShr, Tok::IntLit,
+      Tok::KwShl, Tok::IntLit, Tok::KwShr, Tok::IntLit,
+  };
+  CHECK_EQ(ts.size(), expected.size());
+  for (size_t i = 0; i < ts.size() && i < expected.size(); ++i) {
+    CHECK(ts[i].kind == expected[i]);
+  }
+  CHECK_EQ(ts[1].text, std::string("<<"));
+  CHECK_EQ(ts[3].text, std::string(">>"));
+  CHECK_EQ(ts[5].text, std::string("shl"));
+  CHECK_EQ(ts[7].text, std::string("shr"));
+}
+
 void test_numbers_decimal() {
   auto ts = lex_all("0 1 42 12345");
   CHECK_EQ(ts.size(), size_t{4});
@@ -397,6 +413,7 @@ int main() {
   RUN_TEST(test_case_insensitive_keywords);
   RUN_TEST(test_identifiers_lowercased);
   RUN_TEST(test_operators_and_punctuation);
+  RUN_TEST(test_c_style_shift_tokens_alias_pascal_shifts);
   RUN_TEST(test_numbers_decimal);
   RUN_TEST(test_numbers_bases);
   RUN_TEST(test_real_numbers);

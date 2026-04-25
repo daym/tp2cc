@@ -206,7 +206,36 @@ p_o = [&]() {
 }();
 ```
 
-### 1.10 `Free`
+### 1.10 Metaclasses and `class of`
+
+tp2cc has real support for Pascal metaclass values (`class of T`), but the supported surface is narrow and operational rather than reflective.
+
+Today this means:
+
+- `class of T` parses as a distinct metaclass type
+- a class identifier used as a value lowers to a metaclass descriptor, not an instance pointer
+- metaclass values can be compared for equality
+- constructors and class methods can be called through metaclass values
+- instance-side `ClassType` and `InstanceSize` are supported on translated classes
+
+Representative shape:
+
+```cpp
+using p_tbaseclass = const tp2cc_metaclass_p_tbase *;
+
+p_cls = tp2cc_metaclass_value_p_tchild();
+p_inst = p_cls->p_create(1);
+p_same = (p_x->p_classtype() == tp2cc_metaclass_value_p_tchild());
+```
+
+What tp2cc does not currently model as a general metaclass surface is RTTI/reflection-style members such as arbitrary `.ClassName` access on metaclass values. The implemented metaclass member surface is essentially:
+
+- constructors
+- class methods
+
+plus instance-side `ClassType` / `InstanceSize` on class instances.
+
+### 1.11 `Free`
 
 `obj.Free` lowers through the runtime `TObject` helper so that Pascal's null-safe `Free` behavior is preserved.
 
@@ -222,13 +251,13 @@ Representative C++:
 ::rt::p_tobject::p_free(p_o);
 ```
 
-### 1.11 Procedure variables and `of object`
+### 1.12 Procedure variables and `of object`
 
 Plain procedural types lower to function pointers or `std::function`-like helpers depending on context. `procedure/function ... of object` lowers to `::rt::tp2cc_MethodPtr<...>`.
 
 Method pointers are represented as code-plus-self pairs. The emitter generates thunks where needed so a Pascal method can be called through that runtime carrier.
 
-### 1.12 Properties
+### 1.13 Properties
 
 Properties are not magical storage in the generated code. They lower to:
 
@@ -254,7 +283,7 @@ p_obj->p_set_value(42);
 
 or direct field access when the property maps to a field.
 
-### 1.13 `with`
+### 1.14 `with`
 
 `with` is implemented by binding the lowered target into a temporary C++ name and resolving later identifiers against that stack before ordinary lexical lookup.
 
@@ -263,11 +292,11 @@ The compiler tries to preserve lvalue behavior:
 - true lvalue `with` targets become `auto &`
 - rvalue/cast-like cases become `auto`
 
-### 1.14 `absolute`
+### 1.15 `absolute`
 
 `absolute` declarations lower to storage aliases, not copies. The emitter uses explicit reinterpretation helpers to bind the alias to the target bytes.
 
-### 1.15 `is` and `as`
+### 1.16 `is` and `as`
 
 Pascal runtime type checks on classes lower to C++ RTTI operations.
 
@@ -285,7 +314,7 @@ if (dynamic_cast<p_tfoo *>(p_x) != nullptr) { ... }
 p_y = dynamic_cast<p_tfoo *>(p_x);
 ```
 
-### 1.16 Nested procedures
+### 1.17 Nested procedures
 
 Nested procedures/functions lower to capturing lambdas and `std::function`-style wrappers when needed. This is how tp2cc preserves lexical capture and nested-scope behavior in C++.
 
@@ -414,18 +443,34 @@ The parser currently rejects several Delphi/FPC class-method features such as:
 
 This is an intentional current limitation.
 
-### 3.7 Open-array constructor edge cases
+### 3.7 Metaclass reflection subset
+
+Metaclass support exists, but it is not a full Delphi/FPC RTTI surface.
+
+Supported today:
+
+- `class of T`
+- class identifiers as metaclass values
+- constructor/class-method dispatch through metaclass values
+- `ClassType`
+- `InstanceSize`
+
+Not generally supported today:
+
+- arbitrary reflective metaclass members such as `.ClassName`
+
+### 3.8 Open-array constructor edge cases
 
 Open-array actuals from simple list syntax are supported. Some more complex forms, especially with range-like syntax in those contexts, are still limited.
 
-### 3.8 Bare `raise` and constructor-only behavior
+### 3.9 Bare `raise` and constructor-only behavior
 
 Some context-sensitive Pascal behavior is enforced directly by the emitter. For example:
 
 - bare `raise` is only valid where the compiler tracks an active exception context
 - some constructor-only control flow such as `fail` is restricted
 
-### 3.9 Runtime and backend stubs
+### 3.10 Runtime and backend stubs
 
 The prelude still contains some stubbed or placeholder functionality, especially for low-level platform glue and backend-specific edges. Some old bootstrap paths work by avoiding those code paths rather than by having a complete final runtime model.
 
@@ -493,6 +538,8 @@ The runtime carries the common object/class support needed by generated code:
 - null-safe `Free`
 - method-pointer carriers
 - metaclass descriptors
+- metaclass value constructors/class-method thunks
+- `ClassType` / `InstanceSize`
 - RTTI-driven `is` / `as` support through generated C++ RTTI usage
 
 ### 4.6 Reinterpretation and raw storage helpers

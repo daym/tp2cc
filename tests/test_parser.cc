@@ -788,6 +788,18 @@ void test_expr_precedence() {
   CHECK_EQ(error_count() - before, 0);
 }
 
+void test_c_style_shift_exprs_parse_like_shl_shr() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "program p;\n"
+      "var x : integer;\n"
+      "begin\n"
+      "  x := (1 << 3) + (32 >> 2);\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+}
+
 void test_set_literal_in_expr() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1047,6 +1059,7 @@ int main() {
   RUN_TEST(test_statement_repeat_for_case_with);
   RUN_TEST(test_goto_and_label);
   RUN_TEST(test_expr_precedence);
+  RUN_TEST(test_c_style_shift_exprs_parse_like_shl_shr);
   RUN_TEST(test_set_literal_in_expr);
   RUN_TEST(test_call_with_write_formatter);
   RUN_TEST(test_procedural_type_decl);

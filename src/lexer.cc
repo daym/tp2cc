@@ -692,11 +692,13 @@ Token Lexer::scan_punctuation() {
     case '<':
       if (peek() == '=') { get(); t.kind = Tok::LtEq; t.text = "<="; }
       else if (peek() == '>') { get(); t.kind = Tok::NotEq; t.text = "<>"; }
+      else if (peek() == '<') { get(); t.kind = Tok::KwShl; t.text = "<<"; }
       else { t.kind = Tok::Lt; t.text = "<"; }
       break;
     case '>':
       if (peek() == '=') { get(); t.kind = Tok::GtEq; t.text = ">="; }
       else if (peek() == '<') { get(); t.kind = Tok::SymDiff; t.text = "><"; }
+      else if (peek() == '>') { get(); t.kind = Tok::KwShr; t.text = ">>"; }
       else { t.kind = Tok::Gt; t.text = ">"; }
       break;
     case ':':
