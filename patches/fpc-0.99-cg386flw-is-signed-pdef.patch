@@ -1,0 +1,30 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-25
+Subject: Call is_signed on secondfor loop types directly to avoid narrowing tenumdef to torddef (fpc 0.99)
+License: expat
+
+compiler/cg386flw.pas's `secondfor' computes whether the loop counter
+is signed with:
+
+    count_var_is_signed := is_signed(porddef(p^.t2^.resulttype));
+
+That narrowing is unnecessary and wrong. `is_signed' already accepts a
+plain `pdef' and handles both ordinal defs and enum defs. When the loop
+counter type is an enum, the old cast first lies that the `tenumdef'
+pointer is really a `torddef', and the translated bootstrap then
+downcasts the object to the wrong dynamic type in step 5.
+
+Fix: pass `p^.t2^.resulttype' directly to `is_signed'.
+
+--- a/compiler/cg386flw.pas
++++ b/compiler/cg386flw.pas
+@@ -232,7 +232,7 @@
+ 
+          { produce start assignment }
+          cleartempgen;
+          secondpass(p^.left);
+-         count_var_is_signed:=is_signed(porddef(p^.t2^.resulttype));
++         count_var_is_signed:=is_signed(p^.t2^.resulttype);
+          if temptovalue then
+              begin
+               if p^.t2^.location.loc=LOC_CREGISTER then
