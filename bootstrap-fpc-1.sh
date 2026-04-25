@@ -41,6 +41,7 @@ export CXXFLAGS
 export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1}"
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
 BOOT_ROOT="${BOOTSTRAP_ROOT:-$ROOT/build/fpc-1.0.6-bootstrap}"
+HOST_BUILD="${TP2CC_BUILD:-$ROOT/build-tp2cc-host}"
 CLEAN_SRC="$BOOT_ROOT/source"
 STAGE1_DIR="$BOOT_ROOT/stage1"
 STAGE2_DIR="$BOOT_ROOT/stage2"
@@ -61,6 +62,15 @@ require_i386_toolchain() {
       exit 1
       ;;
   esac
+}
+
+build_translator() {
+  echo "== [2/7] build tp2cc translator =="
+  # Keep the host translator build separate from the bootstrap output tree.
+  # That avoids mixed-architecture object reuse and does not require wiping
+  # the default `build/` directory just to rebuild `tp2cc` for i686.
+  rm -rf "$HOST_BUILD"
+  make -j"$JOBS" BUILD="$HOST_BUILD" "$HOST_BUILD/bin/tp2cc"
 }
 
 copy_clean_source() {
@@ -103,13 +113,10 @@ install_support_files() {
 }
 
 build_stage1() {
-  echo "== [2/7] build tp2cc translator =="
-  make -j"$JOBS" build/bin/tp2cc
-
   echo "== [3/7] translate FPC 1.0.6 compiler to C++ =="
   rm -rf "$STAGE1_DIR" "$STAGE1_LOGDIR"
   mkdir -p "$STAGE1_DIR"
-  ./build/bin/tp2cc emit-all \
+  "$HOST_BUILD/bin/tp2cc" emit-all \
     -dFPC -dI386 -dLINUX -dUNIX \
     -dNOTARGETAMIGA -dNOTARGETBEOS -dNOTARGETFREEBSD \
     -dNOTARGETGO32V1 -dNOTARGETGO32V2 -dNOTARGETOS2 \
@@ -195,6 +202,7 @@ fi
 
 require_i386_toolchain
 copy_clean_source
+build_translator
 build_stage1
 
 compile_pp_stage "5/7" "$STAGE1_DIR/pp" "$STAGE1_DIR" "$STAGE2_DIR"

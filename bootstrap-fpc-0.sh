@@ -29,6 +29,7 @@ JOBS="${JOBS:-8}"
 CXX="${CXX:-g++}"
 ENTRY_FILE="../rpm/compiler/pp.pas"
 OUT_DIR="build/emitted"
+HOST_BUILD="${TP2CC_BUILD:-$ROOT/build-tp2cc-host}"
 STAGE2_DIR="$ROOT/build/stage2"
 STAGE3_DIR="$ROOT/build/stage3"
 RPM_DIR="$ROOT/../rpm"
@@ -69,6 +70,15 @@ install_support_files() {
   fi
 }
 
+build_translator() {
+  echo "== [1/6] build tp2cc translator =="
+  # Keep the host translator build separate from the bootstrap output tree.
+  # That avoids mixed-architecture object reuse and does not require wiping
+  # the default `build/` directory just to rebuild `tp2cc` for i686.
+  rm -rf "$HOST_BUILD"
+  make -j"$JOBS" BUILD="$HOST_BUILD" "$HOST_BUILD/bin/tp2cc"
+}
+
 compile_pp_stage() {
   stage_name="$1"
   pp_bin="$2"
@@ -107,14 +117,12 @@ verify_compiler() {
   echo "ok: $stage_name ($pp_bin)"
 }
 
-echo "== [1/6] build tp2cc translator =="
-make clean
-make -j"$JOBS"
+build_translator
 
 echo "== [2/6] emit C++ from Pascal =="
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
-./build/bin/tp2cc emit-all \
+"$HOST_BUILD/bin/tp2cc" emit-all \
   -dFPC -dI386 -dLINUX -dUNIX \
   -dNOTARGETGO32V1 -dNOTARGETGO32V2 -dNOTARGETOS2 \
   -dNOTARGETPALMOS -dNOTARGETWIN32 \
