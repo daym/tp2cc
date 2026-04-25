@@ -1784,6 +1784,42 @@ void test_property_field_and_default_index_lowering() {
   CHECK(contains(out.impl, "p_lst->p_put(2, p_p);"));
 }
 
+void test_property_result_default_index_read_write_lowering() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titems = class\n"
+      "    function get(index : longint) : pointer;\n"
+      "    procedure put(index : longint; value : pointer);\n"
+      "    property items[index : longint] : pointer read get write put; default;\n"
+      "  end;\n"
+      "  tbox = class\n"
+      "  private\n"
+      "    flist : titems;\n"
+      "  public\n"
+      "    property list : titems read flist;\n"
+      "  end;\n"
+      "procedure demo(box : tbox; p : pointer);\n"
+      "implementation\n"
+      "function titems.get(index : longint) : pointer;\n"
+      "begin\n"
+      "  get := nil;\n"
+      "end;\n"
+      "procedure titems.put(index : longint; value : pointer);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo(box : tbox; p : pointer);\n"
+      "begin\n"
+      "  p := box.list[1];\n"
+      "  box.list[2] := p;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_p = p_box->p_flist->p_get(1);"));
+  CHECK(contains(out.impl, "p_box->p_flist->p_put(2, p_p);"));
+  CHECK(!contains(out.impl, "unsupported property write accessor"));
+}
+
 void test_implicit_property_lookup_in_method_body() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2752,6 +2788,42 @@ void test_indexed_implicit_property_in_method_body() {
   CHECK(!contains(out.impl, "p_items[0]"));
 }
 
+void test_indexed_implicit_property_result_write_in_method_body() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titems = class\n"
+      "    function get(index : longint) : pointer;\n"
+      "    procedure put(index : longint; value : pointer);\n"
+      "    property items[index : longint] : pointer read get write put; default;\n"
+      "  end;\n"
+      "  tbox = class\n"
+      "  private\n"
+      "    flist : titems;\n"
+      "  public\n"
+      "    procedure demo(p : pointer);\n"
+      "    property list : titems read flist;\n"
+      "  end;\n"
+      "implementation\n"
+      "function titems.get(index : longint) : pointer;\n"
+      "begin\n"
+      "  get := nil;\n"
+      "end;\n"
+      "procedure titems.put(index : longint; value : pointer);\n"
+      "begin\n"
+      "end;\n"
+      "procedure tbox.demo(p : pointer);\n"
+      "begin\n"
+      "  p := list[1];\n"
+      "  list[2] := p;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_p = this->p_flist->p_get(1);"));
+  CHECK(contains(out.impl, "this->p_flist->p_put(2, p_p);"));
+  CHECK(!contains(out.impl, "property is read-only"));
+}
+
 void test_function_result_member_access_uses_pointer_semantics() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -3308,6 +3380,7 @@ int main() {
   RUN_TEST(test_absolute_const_param_alias_stays_const_reference);
   RUN_TEST(test_property_getter_setter_lowering);
   RUN_TEST(test_property_field_and_default_index_lowering);
+  RUN_TEST(test_property_result_default_index_read_write_lowering);
   RUN_TEST(test_implicit_property_lookup_in_method_body);
   RUN_TEST(test_procvar_property_stmt_and_value_context);
   RUN_TEST(test_default_indexed_procvar_property_stmt_autocalls);
@@ -3351,6 +3424,7 @@ int main() {
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
   RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);
   RUN_TEST(test_indexed_implicit_property_in_method_body);
+  RUN_TEST(test_indexed_implicit_property_result_write_in_method_body);
   RUN_TEST(test_function_result_member_access_uses_pointer_semantics);
   RUN_TEST(test_pointer_typed_field_chain_keeps_arrow_access);
   RUN_TEST(test_with_cast_binds_pointer_rvalue_by_value);

@@ -264,6 +264,8 @@ Properties are not magical storage in the generated code. They lower to:
 - direct field access
 - getter calls
 - setter calls
+- default/indexed property reads and writes on the property result, when a
+  non-indexed property returns an indexable/container object
 
 depending on the property declaration.
 
@@ -282,6 +284,40 @@ p_obj->p_set_value(42);
 ```
 
 or direct field access when the property maps to a field.
+
+Indexed properties lower in the obvious way:
+
+Pascal:
+
+```pascal
+p := Obj[1];
+Obj[2] := p;
+```
+
+Representative C++:
+
+```cpp
+p_p = p_obj->p_get(1);
+p_obj->p_put(2, p_p);
+```
+
+And when a non-indexed property returns a container object with a default
+indexed property, tp2cc lowers through the property result rather than
+treating the outer property as the write target:
+
+Pascal:
+
+```pascal
+p := Box.List[1];
+Box.List[2] := p;
+```
+
+Representative C++:
+
+```cpp
+p_p = p_box->p_flist->p_get(1);
+p_box->p_flist->p_put(2, p_p);
+```
 
 ### 1.14 `with`
 
@@ -407,6 +443,11 @@ Currently rejected:
 - indexing through a packed aggregate field
 
 except for narrow byte-aligned cases such as some character and byte-like carriers.
+
+These checks happen before property lowering as well. If reaching a field,
+container, or property target would first require misaligned packed-member
+access, tp2cc reports that statically instead of emitting a setter call or
+field write through a misaligned base.
 
 This is why some old FPC sources needed source-side depacking of in-memory backend tables.
 

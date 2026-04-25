@@ -2367,7 +2367,8 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
           cls = deduce_class_alias(*mem.base);
         }
         if (!cls.empty()) {
-          if (auto* prop = registry->lookup_class_property(cls, mem.name))
+          if (auto* prop = registry->lookup_class_property(cls, mem.name);
+              prop && !prop->params.empty())
             return prop->type.get();
         }
       }
@@ -4770,8 +4771,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
         if (!cls.empty()) {
           if (auto* prop = registry->lookup_class_property(cls, mem.name)) {
-            return lower_property_read(i.loc, expr_to_cxx(*mem.base), cls, *prop,
-                                       indices);
+            if (!prop->params.empty()) {
+              return lower_property_read(i.loc, expr_to_cxx(*mem.base), cls,
+                                         *prop, indices);
+            }
           }
         }
       }
@@ -4785,15 +4788,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (cls.empty()) continue;
             if (auto* prop =
                     registry->lookup_class_property(cls, std::string(name))) {
-              return lower_property_read(i.loc, it->cxx_text, cls, *prop,
-                                         indices);
+              if (!prop->params.empty()) {
+                return lower_property_read(i.loc, it->cxx_text, cls, *prop,
+                                           indices);
+              }
             }
           }
           if (current_class_name.empty()) return std::nullopt;
           if (auto* prop = registry->lookup_class_property(current_class_name,
                                                            std::string(name))) {
-            return lower_property_read(i.loc, implicit_self_cxx(),
-                                       current_class_name, *prop, indices);
+            if (!prop->params.empty()) {
+              return lower_property_read(i.loc, implicit_self_cxx(),
+                                         current_class_name, *prop, indices);
+            }
           }
           return std::nullopt;
         };
@@ -6197,10 +6204,12 @@ void Emitter::emit_stmt(const Stmt& s) {
           }
           if (!cls.empty()) {
             if (auto* prop = registry->lookup_class_property(cls, mem.name)) {
-              emitln(lower_property_write(a.loc, expr_to_cxx(*mem.base), cls, *prop,
-                                          indices, *a.value) +
-                     ";");
-              break;
+              if (!prop->params.empty()) {
+                emitln(lower_property_write(a.loc, expr_to_cxx(*mem.base), cls,
+                                            *prop, indices, *a.value) +
+                       ";");
+                break;
+              }
             }
           }
         }
@@ -6214,16 +6223,20 @@ void Emitter::emit_stmt(const Stmt& s) {
               if (cls.empty()) continue;
               if (auto* prop = registry->lookup_class_property(
                       cls, std::string(name))) {
-                return lower_property_write(a.loc, it->cxx_text, cls, *prop,
-                                            indices, *a.value);
+                if (!prop->params.empty()) {
+                  return lower_property_write(a.loc, it->cxx_text, cls, *prop,
+                                              indices, *a.value);
+                }
               }
             }
             if (current_class_name.empty()) return std::nullopt;
             if (auto* prop = registry->lookup_class_property(
                     current_class_name, std::string(name))) {
-              return lower_property_write(a.loc, implicit_self_cxx(),
-                                          current_class_name, *prop, indices,
-                                          *a.value);
+              if (!prop->params.empty()) {
+                return lower_property_write(a.loc, implicit_self_cxx(),
+                                            current_class_name, *prop, indices,
+                                            *a.value);
+              }
             }
             return std::nullopt;
           };
