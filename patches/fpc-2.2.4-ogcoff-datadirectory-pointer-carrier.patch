@@ -1,0 +1,79 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-25
+Subject: Route ogcoff DataDirectory accesses through an explicit pointer carrier
+License: expat
+
+`compiler/ogcoff.pas` reads and updates entries in the packed PE optional
+header's `DataDirectory` array. Directly indexing that packed aggregate
+subfield is not something tp2cc can lower safely.
+
+Keep the on-disk packed layout unchanged, but introduce a typed pointer
+carrier for the `DataDirectory` array and use that for the later read and
+write paths.
+
+diff --git a/compiler/ogcoff.pas b/compiler/ogcoff.pas
+index 8f90076463..790d8ec0b0 100644
+--- a/compiler/ogcoff.pas
++++ b/compiler/ogcoff.pas
+@@ -44,6 +44,8 @@ interface
+          vaddr : longint;
+          size  : longint;
+        end;
++       tcoffpedatadirarray = array[0..PE_DATADIR_ENTRIES-1] of tcoffpedatadir;
++       ptcoffpedatadirarray = ^tcoffpedatadirarray;
+        tcoffheader = packed record
+          mach   : word;
+          nsects : smallint;
+@@ -2128,12 +2130,14 @@ const pemagic : array[0..3] of byte = (
+         procedure UpdateDataDir(const secname:string;idx:longint);
+         var
+           exesec : TExeSection;
++          datadirs : ptcoffpedatadirarray;
+         begin
+           exesec:=FindExeSection(secname);
+           if assigned(exesec) then
+             begin
+-              peoptheader.DataDirectory[idx].vaddr:=exesec.mempos;
+-              peoptheader.DataDirectory[idx].size:=exesec.Size;
++              datadirs:=ptcoffpedatadirarray(@peoptheader.DataDirectory);
++              datadirs^[idx].vaddr:=exesec.mempos;
++              datadirs^[idx].size:=exesec.Size;
+            end;
+         end;
+ 
+@@ -2712,6 +2716,7 @@ const pemagic : array[0..3] of byte = (
+         i         : longint;
+         found     : boolean;
+         sechdr    : tCoffSecHdr;
++        datadirs  : ptcoffpedatadirarray;
+ {$ifdef win32}
+         p : pointer;
+ {$endif win32}
+@@ -2752,6 +2757,7 @@ const pemagic : array[0..3] of byte = (
+           end;
+         { Read optheader }
+         DLLreader.Read(peheader,sizeof(tcoffpeoptheader));
++        datadirs:=ptcoffpedatadirarray(@peheader.DataDirectory);
+         { Section headers }
+         found:=false;
+         for i:=1 to header.nsects do
+@@ -2761,8 +2767,8 @@ const pemagic : array[0..3] of byte = (
+                 Comment(V_Error,'Error reading coff file '+DLLName);
+                 exit;
+               end;
+-            if (sechdr.rvaofs<=peheader.DataDirectory[PE_DATADIR_EDATA].vaddr) and
+-               (peheader.DataDirectory[PE_DATADIR_EDATA].vaddr<sechdr.rvaofs+sechdr.vsize) then
++            if (sechdr.rvaofs<=datadirs^[PE_DATADIR_EDATA].vaddr) and
++               (datadirs^[PE_DATADIR_EDATA].vaddr<sechdr.rvaofs+sechdr.vsize) then
+               begin
+                 found:=true;
+                 break;
+@@ -2774,7 +2780,7 @@ const pemagic : array[0..3] of byte = (
+             exit;
+           end;
+         { Process edata }
+-        DLLReader.Seek(sechdr.datapos+peheader.DataDirectory[PE_DATADIR_EDATA].vaddr-sechdr.rvaofs);
++        DLLReader.Seek(sechdr.datapos+datadirs^[PE_DATADIR_EDATA].vaddr-sechdr.rvaofs);
+         DLLReader.Read(expdir,sizeof(expdir));
+         for i:=0 to expdir.NumNames-1 do
+           begin
