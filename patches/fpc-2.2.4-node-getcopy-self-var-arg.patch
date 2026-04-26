@@ -1,0 +1,31 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-26
+Subject: Pass tnode.getcopy's self through a local var to satisfy C++ var-binding
+License: expat
+
+`tnode.getcopy` passes `self` to `foreachnodestatic`'s `var n: tnode`
+parameter. Pascal allows this; C++ does not, because `this` is `T*
+const` and cannot bind to a `T*&` parameter slot.
+
+Materialise a local `tnode` variable seeded from `self` and pass that
+to the var parameter. The Pascal-side semantics match
+(foreachnodestatic walks the subtree by reading `n` and the helper
+function it calls writes only to local fields, never reseating `n`),
+so the round-tripped slot stays consistent.
+
+--- a/compiler/node.pas
++++ b/compiler/node.pas
+@@ -850,8 +850,11 @@ implementation
+
+
+     function tnode.getcopy : tnode;
++      var
++        cur : tnode;
+       begin
+         result:=dogetcopy;
+-        foreachnodestatic(pm_postprocess,self,@cleanupcopiedto,nil);
++        cur:=self;
++        foreachnodestatic(pm_postprocess,cur,@cleanupcopiedto,nil);
+       end;
+
+
