@@ -6630,6 +6630,10 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
       } else if (m.kind == ObjectMemberKind::Method) {
         // Method signature. We do NOT emit the body here -- bodies live in
         // the implementation .cc, emitted as `ret Class::method(...) { }`.
+        // Exception: `virtual; abstract;` Pascal methods have no
+        // implementation-side body in the source, so we emit an inline
+        // fail-fast definition right here. Without it the vtable carries
+        // a slot whose definition the linker can't find.
         const auto& pd = *m.method;
         std::string ret = proc_return_type_to_cxx(pd);
         std::string prefix;
@@ -6651,8 +6655,18 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
           // compiler can construct the same placeholder classes.
           if (pd.is_override) suffix = " override";
         }
-        emitln(prefix + ret + " " + mangle(pd.name) + "(" +
-               param_list_to_cxx(pd.params) + ")" + suffix + ";");
+        if (pd.is_abstract && !pd.is_class_method) {
+          // Inline fail-fast body. Returning a non-void value would
+          // require fabricating one; `::std::abort()` aborts before any
+          // value is needed, and C++ accepts the function as having a
+          // valid path because abort is `[[noreturn]]`.
+          emitln(prefix + ret + " " + mangle(pd.name) + "(" +
+                 param_list_to_cxx(pd.params) + ")" + suffix +
+                 " { ::std::abort(); }");
+        } else {
+          emitln(prefix + ret + " " + mangle(pd.name) + "(" +
+                 param_list_to_cxx(pd.params) + ")" + suffix + ";");
+        }
         if (!pd.is_class_method) emit_method_pointer_thunk(name, pd, ret);
       }
     }

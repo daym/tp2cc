@@ -2724,6 +2724,13 @@ void test_empty_inherited_class_decl_emits_real_struct() {
 }
 
 void test_abstract_method_emits_fail_fast_virtual_body() {
+  // `virtual; abstract;` Pascal methods have no source-side body, so
+  // the emitter must provide one inline -- otherwise the vtable slot
+  // refers to an undefined symbol and the link fails. Pure-virtual
+  // (`= 0`) is not used because some Pascal classes are still
+  // instantiated despite carrying placeholder abstract methods; the
+  // fail-fast `abort()` body keeps the class constructible while
+  // turning any actual call into an immediate stop.
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -2733,8 +2740,10 @@ void test_abstract_method_emits_fail_fast_virtual_body() {
       "  end;\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "virtual void p_doit();"));
+  CHECK(contains(out.header,
+                 "virtual void p_doit() { ::std::abort(); }"));
   CHECK(!contains(out.header, "virtual void p_doit() = 0;"));
+  CHECK(!contains(out.header, "virtual void p_doit();"));
 }
 
 void test_pointer_sized_integer_aliases_lower_through_rt() {
