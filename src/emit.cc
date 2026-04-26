@@ -3808,7 +3808,18 @@ Emitter::ResolvedCall Emitter::resolve_call(
     }
     auto cur = registry->units.find(current_unit_name);
     if (cur != registry->units.end()) {
-      append(cur->second.find_procs(name), current_unit_name);
+      // Pascal scope: a decl in the current unit shadows same-named
+      // decls reached through `uses`. Without this stop, an unqualified
+      // call in a unit that has its own local helper would aggregate
+      // both the local and the uses-imported overloads -- and if both
+      // sides have a same-typed match (comphook's local `tostr(longint)`
+      // and cutils' overloaded `tostr(longint)`), the picker sees two
+      // tied Exact candidates and (correctly) flags the call ambiguous.
+      // The Pascal lookup never reaches cutils in that case at all.
+      if (auto* local = cur->second.find_procs(name); local && !local->empty()) {
+        append(local, current_unit_name);
+        return out;
+      }
       for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
            ++it) {
         auto uit = registry->units.find(*it);

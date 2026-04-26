@@ -3293,6 +3293,77 @@ void test_overload_ambiguous_two_default_arg_overloads_reports_error() {
   CHECK(error_count() > before);
 }
 
+void test_overload_local_unit_shadows_uses_chain_overloads() {
+  // Pascal scope: a same-named decl in the current unit hides
+  // overloads imported through `uses`. Without this rule, a local
+  // non-overload and an imported overload with the same signature would
+  // tie at Exact and produce a spurious ambiguity.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses cutils;\n"
+      "function tostr(i : longint) : shortstring;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "function tostr(i : longint) : shortstring; begin tostr := ''; end;\n"
+      "procedure run;\n"
+      "var x : longint;\n"
+      "    s : shortstring;\n"
+      "begin\n"
+      "  s := tostr(x);\n"
+      "end;\n"
+      "end.\n",
+      {{"cutils.pas",
+        "unit cutils;\n"
+        "interface\n"
+        "function tostr(i : qword) : shortstring;    overload;\n"
+        "function tostr(i : int64) : shortstring;    overload;\n"
+        "function tostr(i : cardinal) : shortstring; overload;\n"
+        "function tostr(i : longint) : shortstring;  overload;\n"
+        "implementation\n"
+        "function tostr(i : qword) : shortstring;    begin tostr := ''; end;\n"
+        "function tostr(i : int64) : shortstring;    begin tostr := ''; end;\n"
+        "function tostr(i : cardinal) : shortstring; begin tostr := ''; end;\n"
+        "function tostr(i : longint) : shortstring;  begin tostr := ''; end;\n"
+        "end.\n"}});
+  // Local tostr wins -- spelled with the current unit's namespace, not
+  // p_cutils's.
+  CHECK(contains(out.impl, "p_u::p_tostr") || contains(out.impl, "p_tostr(p_x)"));
+  CHECK(!contains(out.impl, "p_cutils::p_tostr("));
+}
+
+void test_overload_exact_match_dominates_widening_alternatives() {
+  // The fpc bootstrap calls `tostr(status.currentline)` where
+  // `currentline` is `longint`. With four overloads (qword, int64,
+  // cardinal, longint) only `tostr(longint)` is Exact; the others are
+  // widenings or sign changes. Exact must dominate -- no ambiguity.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type ts = record line : longint; end;\n"
+      "function tostr(i : qword) : shortstring;    overload;\n"
+      "function tostr(i : int64) : shortstring;    overload;\n"
+      "function tostr(i : cardinal) : shortstring; overload;\n"
+      "function tostr(i : longint) : shortstring;  overload;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "function tostr(i : qword) : shortstring;    begin tostr := ''; end;\n"
+      "function tostr(i : int64) : shortstring;    begin tostr := ''; end;\n"
+      "function tostr(i : cardinal) : shortstring; begin tostr := ''; end;\n"
+      "function tostr(i : longint) : shortstring;  begin tostr := ''; end;\n"
+      "var s : ts;\n"
+      "    hs : shortstring;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  hs := tostr(s.line);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "static_cast<int32_t>"));
+  CHECK(!contains(out.impl, "static_cast<int64_t>"));
+  CHECK(!contains(out.impl, "static_cast<uint32_t>"));
+  CHECK(!contains(out.impl, "static_cast<uint64_t>"));
+}
+
 void test_overload_picks_narrowest_widening_target() {
   // `tostr(qword)` and `tostr(cardinal)` both widen `byte` (uint8) but
   // `cardinal` (uint32) is the narrower target. Without a width-distance
@@ -4427,6 +4498,8 @@ int main() {
   RUN_TEST(test_overload_ambiguous_default_arg_vs_no_default_reports_error);
   RUN_TEST(test_overload_ambiguous_two_default_arg_overloads_reports_error);
   RUN_TEST(test_overload_default_arg_extends_arity_disambiguates_cleanly);
+  RUN_TEST(test_overload_local_unit_shadows_uses_chain_overloads);
+  RUN_TEST(test_overload_exact_match_dominates_widening_alternatives);
   RUN_TEST(test_overload_picks_narrowest_widening_target);
   RUN_TEST(test_property_read_lowers_to_getter_call);
   RUN_TEST(test_property_write_lowers_to_setter_call);
