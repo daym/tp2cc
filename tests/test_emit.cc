@@ -1343,6 +1343,7 @@ void test_overloaded_string_and_bool_call_keeps_boolean_argument_raw() {
       "  p.addpath(s, false);\n"
       "end;\n"
       "end.\n");
+  std::fprintf(stderr, "DEBUG addpath impl:\n%s\n", out.impl.c_str());
   CHECK(contains(out.impl, "p_p->p_addpath(p_s, false);"));
   CHECK(!contains(out.impl, "::rt::tp2cc_shortstring_of<255>(false)"));
 }
@@ -3209,6 +3210,43 @@ void test_overload_picks_unsigned_widening_over_sign_change() {
   CHECK(contains(out.impl, "p_tostr(static_cast<uint64_t>(p_v))"));
 }
 
+void test_overload_aggregates_candidates_across_uses_chain() {
+  // When the SAME callable name is declared in multiple visible units
+  // with different arities (e.g. `FileExists(name)` in sysutils/rt and
+  // `FileExists(name, allowcache)` in cfileutils), the picker must see
+  // both candidates so arity filtering can pick correctly. The bug was
+  // returning on the first non-empty match, so __rt__'s 1-arg
+  // `fileexists` shadowed cfileutils' 2-arg version and 2-arg call
+  // sites failed to match.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses\n"
+      "  cfileutils;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "begin\n"
+      "  if fileexists('a.txt') then ;\n"
+      "  if fileexists('b.txt', false) then ;\n"
+      "end;\n"
+      "end.\n",
+      {{"cfileutils.pas",
+        "unit cfileutils;\n"
+        "interface\n"
+        "function FileExists(const F : string; allowcache : boolean) : boolean;\n"
+        "implementation\n"
+        "function FileExists(const F : string; allowcache : boolean) : boolean;\n"
+        "begin\n"
+        "  fileexists := false;\n"
+        "end;\n"
+        "end.\n"}});
+  // 1-arg call resolves to rt's sysutils-side fileexists.
+  CHECK(contains(out.impl, "::rt::p_fileexists("));
+  // 2-arg call resolves to cfileutils' overload, not the rt one.
+  CHECK(contains(out.impl, "p_cfileutils::p_fileexists("));
+}
+
 void test_recursive_call_var_param_gets_param_info_for_reinterpret_ref() {
   // A recursive call to the current function: `resolve_name` rewrites the
   // bare function name to its result slot for assignments like `f := f(...)`,
@@ -4136,6 +4174,7 @@ int main() {
   RUN_TEST(test_overload_picks_pchar_to_shortstring_over_ansistring);
   RUN_TEST(test_sizeof_lowers_to_int32_to_match_pascal_longint_semantics);
   RUN_TEST(test_overload_picks_unsigned_widening_over_sign_change);
+  RUN_TEST(test_overload_aggregates_candidates_across_uses_chain);
   RUN_TEST(test_recursive_call_var_param_gets_param_info_for_reinterpret_ref);
   RUN_TEST(test_with_block_bare_free_lowers_through_static_helper);
   RUN_TEST(test_metaclass_member_base_emits_with_implicit_zero_arg_call);

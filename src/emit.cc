@@ -1038,6 +1038,11 @@ struct Emitter {
   struct ResolvedOverload {
     const ast::ProcDecl* decl = nullptr;
     bool from_overload_set = false;  // true if >1 candidate considered
+    // Unit owning `decl`, when the picker chose from an overload set.
+    // The call site uses this to spell the callee with the right
+    // namespace prefix; otherwise `expr_to_cxx(callee)` would emit a
+    // first-match name that disagrees with the picked decl's arity.
+    std::string defining_unit;
   };
   ResolvedOverload resolve_overloaded_call_decl(
       const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
@@ -3697,26 +3702,33 @@ Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
   // first non-empty match was wrong: e.g. unqualified `FileExists` has
   // a 1-arg form in sysutils (registered under __rt__) and a 2-arg
   // form in cfileutils; the picker needs both to filter by arity.
+  // Each entry carries the unit it came from so the caller can spell
+  // the picked overload with the right namespace prefix.
+  struct ProcCandFromUnit {
+    ProcInfo info;
+    std::string unit;
+  };
   auto unit_proc_lookup_all = [&](const std::string& name,
                                   const std::string* qualifier_unit) {
-    std::vector<ProcInfo> out;
-    auto append = [&](const std::vector<ProcInfo>* v) {
+    std::vector<ProcCandFromUnit> out;
+    auto append = [&](const std::vector<ProcInfo>* v, const std::string& u) {
       if (!v) return;
-      out.insert(out.end(), v->begin(), v->end());
+      for (const auto& pi : *v) out.push_back({pi, u});
     };
     if (qualifier_unit) {
       auto it = registry->units.find(*qualifier_unit);
-      if (it != registry->units.end()) append(it->second.find_export_procs(name));
+      if (it != registry->units.end())
+        append(it->second.find_export_procs(name), *qualifier_unit);
       return out;
     }
     auto cur = registry->units.find(current_unit_name);
     if (cur != registry->units.end()) {
-      append(cur->second.find_procs(name));
+      append(cur->second.find_procs(name), current_unit_name);
       for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
            ++it) {
         auto uit = registry->units.find(*it);
         if (uit == registry->units.end()) continue;
-        append(uit->second.find_export_procs(name));
+        append(uit->second.find_export_procs(name), *it);
       }
     }
     return out;
@@ -3743,14 +3755,37 @@ Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
     }
     return deduce_class_alias(*mem.base);
   };
-  // Try to assemble a list of candidate ProcDecls. Free-function and
-  // class-method overload sets feed into the same picker.
-  std::vector<const ProcDecl*> candidates;
-  auto fill_from_proc_set = [&](const std::vector<ProcInfo>& set) {
-    for (const auto& pi : set) if (pi.decl) candidates.push_back(pi.decl.get());
+  // Assemble candidates from free-function and class-method overload sets.
+  // Each candidate carries enough info for arity-filtering even when its
+  // ProcDecl is absent (rt builtins are registered without a decl, but
+  // their param_count is known); the type-based picker only runs against
+  // the subset that has decls.
+  struct AnyCand {
+    const ProcDecl* decl = nullptr;     // may be null for rt builtins
+    size_t param_count = 0;
+    bool accepts_zero_args = false;
+    std::string unit;                   // empty for class methods
+  };
+  std::vector<AnyCand> all_cands;
+  auto fill_from_proc_set = [&](const std::vector<ProcCandFromUnit>& set) {
+    for (const auto& c : set) {
+      AnyCand a;
+      a.decl = c.info.decl.get();
+      a.param_count = c.info.param_count;
+      a.accepts_zero_args = c.info.accepts_zero_args;
+      a.unit = c.unit;
+      all_cands.push_back(std::move(a));
+    }
   };
   auto fill_from_method_set = [&](const std::vector<MethodSig>& set) {
-    for (const auto& ms : set) if (ms.decl) candidates.push_back(ms.decl.get());
+    for (const auto& ms : set) {
+      if (!ms.decl) continue;
+      AnyCand a;
+      a.decl = ms.decl.get();
+      a.param_count = ms.param_count;
+      a.accepts_zero_args = ms.accepts_zero_args;
+      all_cands.push_back(std::move(a));
+    }
   };
 
   std::string method_name;
@@ -3771,7 +3806,7 @@ Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
         fill_from_method_set(*set);
       }
     }
-    if (candidates.empty()) {
+    if (all_cands.empty()) {
       fill_from_proc_set(unit_proc_lookup_all(id.name, nullptr));
     }
   } else if (callee.kind == Kind::Member) {
@@ -3794,20 +3829,71 @@ Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
     }
   }
 
-  if (candidates.size() > 1) {
-    out.decl = pick_overload(candidates, args);
-    if (out.decl) {
-      // Genuine pick from viable candidates -- caller may safely insert
-      // disambiguating casts since we know which overload Pascal chose.
-      out.from_overload_set = true;
+  // Arity-filter using ProcInfo metadata so rt builtins (which have no
+  // decl) participate in the filter even though they cannot be ranked
+  // by the type-based picker.
+  std::vector<AnyCand> arity_ok;
+  for (const auto& a : all_cands) {
+    if (a.decl) {
+      std::vector<FlatCallParamInfo> flat;
+      flatten_call_param_info(a.decl, flat);
+      if (args.size() > flat.size()) continue;
+      bool ok = true;
+      for (size_t i = args.size(); i < flat.size(); ++i) {
+        if (!flat[i].default_value) { ok = false; break; }
+      }
+      if (!ok) continue;
     } else {
-      // No viable candidate -- fall back to whatever single-decl resolution
-      // would have done. Do NOT mark `from_overload_set` because we have
-      // no authoritative pick to anchor the cast on.
+      // rt builtin: param_count is exact; `accepts_zero_args` lets some
+      // builtins (writeln/readln/halt) be called with zero args
+      // regardless.
+      if (args.size() == 0 && a.accepts_zero_args) {
+        // ok
+      } else if (args.size() != a.param_count) {
+        continue;
+      }
+    }
+    arity_ok.push_back(a);
+  }
+
+  if (arity_ok.size() == 1) {
+    // Single arity-viable candidate -- C++ overload resolution already
+    // narrows by arity, so no per-arg cast is needed. Just remember the
+    // defining unit so the call site can spell the namespace correctly
+    // even when single-name lookup would have found a different unit's
+    // version of this name.
+    out.decl = arity_ok[0].decl ? arity_ok[0].decl : resolve_call_decl(callee);
+    if (all_cands.size() > 1) {
+      out.defining_unit = arity_ok[0].unit;
+    }
+    return out;
+  }
+
+  if (arity_ok.size() > 1) {
+    // Multiple arity-viable candidates -- run the type-based picker over
+    // the subset that has decls. rt builtins without decls cannot be
+    // ranked, so they are excluded; if all viable candidates lack decls
+    // we fall back to single-name resolution.
+    std::vector<const ProcDecl*> with_decl;
+    for (const auto& a : arity_ok) {
+      if (a.decl) with_decl.push_back(a.decl);
+    }
+    if (with_decl.empty()) {
+      out.decl = resolve_call_decl(callee);
+      return out;
+    }
+    out.decl = pick_overload(with_decl, args);
+    if (out.decl) {
+      out.from_overload_set = true;
+      for (const auto& a : arity_ok) {
+        if (a.decl == out.decl) { out.defining_unit = a.unit; break; }
+      }
+    } else {
       out.decl = resolve_call_decl(callee);
     }
     return out;
   }
+
   out.decl = resolve_call_decl(callee);
   return out;
 }
@@ -5716,6 +5802,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       is_callee_context_ = true;
       std::string callee_text = expr_to_cxx(*c.callee);
       is_callee_context_ = false;
+      // When the picker had multiple visible units to choose from, the
+      // bare `expr_to_cxx` lookup above resolves to the first visible
+      // unit's copy of the name, which can disagree with the picked
+      // overload's actual home (e.g. rt's 1-arg `FileExists` vs
+      // cfileutils' 2-arg `FileExists`). Re-spell the callee against
+      // the picked unit when the callee is an unqualified ident so we
+      // land on the right C++ function.
+      if (!picked.defining_unit.empty() && c.callee->kind == Kind::Ident) {
+        const auto& id = static_cast<const Ident&>(*c.callee);
+        callee_text = unit_namespace_prefix(picked.defining_unit) + mangle(id.name);
+      }
       bool is_tpexcept_setjmp = false;
       if (c.args.size() == 1) {
         if (c.callee->kind == Kind::Ident && registry) {
