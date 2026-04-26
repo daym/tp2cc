@@ -837,6 +837,7 @@ struct Emitter {
   std::optional<UntypedStorageIndexView> untyped_storage_index_view(
       const ast::Index& i);
   std::string param_list_to_cxx(const std::vector<Param>& params);
+  std::string proc_return_type_to_cxx(const ProcDecl& pd);
   void emit_method_pointer_thunk(const std::string& owner_name,
                                  const ast::ProcDecl& pd,
                                  const std::string& ret);
@@ -5495,14 +5496,7 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
         // Method signature. We do NOT emit the body here -- bodies live in
         // the implementation .cc, emitted as `ret Class::method(...) { }`.
         const auto& pd = *m.method;
-        std::string ret;
-        if (pd.pkind == ProcKind::Function && pd.return_type) {
-          ret = type_to_cxx(*pd.return_type);
-        } else if (pd.pkind == ProcKind::Constructor) {
-          ret = "bool";  // Pascal constructors return failure status
-        } else {
-          ret = "void";
-        }
+        std::string ret = proc_return_type_to_cxx(pd);
         std::string prefix;
         if (pd.is_class_method) {
           // Current class-method support is the non-virtual subset only:
@@ -5516,8 +5510,11 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
         }
         std::string suffix;
         if (!pd.is_class_method) {
-          if (pd.is_abstract) suffix = " = 0";
-          else if (pd.is_override) suffix = " override";
+          // Native FPC still instantiates some classes that carry abstract
+          // placeholder methods. Model those methods as fail-fast virtuals in
+          // C++ instead of pure-virtual slots so the translated bootstrap
+          // compiler can construct the same placeholder classes.
+          if (pd.is_override) suffix = " override";
         }
         emitln(prefix + ret + " " + mangle(pd.name) + "(" +
                param_list_to_cxx(pd.params) + ")" + suffix + ";");
@@ -5905,6 +5902,16 @@ std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
   return out;
 }
 
+std::string Emitter::proc_return_type_to_cxx(const ProcDecl& pd) {
+  if (pd.pkind == ProcKind::Function && pd.return_type) {
+    return type_to_cxx(*pd.return_type);
+  }
+  if (pd.pkind == ProcKind::Constructor) {
+    return "bool";
+  }
+  return "void";
+}
+
 void Emitter::emit_method_pointer_thunk(const std::string& owner_name,
                                         const ProcDecl& pd,
                                         const std::string& ret) {
@@ -6047,7 +6054,7 @@ void Emitter::emit_decl(const Decl& d, bool in_header) {
           // up-front so calls earlier in the file resolve.
           emit_proc_decl_signature(pd);
         }
-      } else if (!pd.is_external && !pd.is_abstract && pd.body) {
+      } else if (!pd.is_external && (pd.body || pd.is_abstract)) {
         if (block_depth > 0) {
           // Nested proc. C++ forbids nested function definitions; emit
           // as a lambda captured by reference so it sees the enclosing
@@ -6773,18 +6780,22 @@ static void emit_forward_struct_decls(Emitter& e,
 
 void Emitter::emit_proc_body(const ProcDecl& pd) {
   // Header line: ret ClassName::Method(args) or ret Method(args).
-  std::string ret;
-  if (pd.pkind == ProcKind::Function && pd.return_type) {
-    ret = type_to_cxx(*pd.return_type);
-  } else if (pd.pkind == ProcKind::Constructor) {
-    ret = "bool";
-  } else {
-    ret = "void";
-  }
+  std::string ret = proc_return_type_to_cxx(pd);
   std::string qname = mangle(pd.name);
   if (!pd.of_type.empty()) qname = mangle(pd.of_type) + "::" + qname;
   emitln(ret + " " + qname + "(" + param_list_to_cxx(pd.params) + ") {");
   indent();
+
+  if (pd.is_abstract && !pd.body) {
+    // Pascal's abstract methods are often placeholder hooks on classes that
+    // native FPC still instantiates. Emit a fail-fast body instead of a pure
+    // virtual so the translated class layout stays constructible while any
+    // accidental call still stops immediately.
+    emitln("::std::abort();");
+    dedent();
+    emitln("}");
+    return;
+  }
 
   // Save outer state and set for this body.
   std::string saved_name = current_fn_name;

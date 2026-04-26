@@ -2576,6 +2576,22 @@ void test_empty_inherited_class_decl_emits_real_struct() {
   CHECK(contains(out.header, "extern p_echild* p_child;"));
 }
 
+void test_abstract_method_emits_fail_fast_virtual_body() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    procedure doit; virtual; abstract;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "virtual void p_doit();"));
+  CHECK(!contains(out.header, "virtual void p_doit() = 0;"));
+  CHECK(contains(out.impl, "void p_tbase::p_doit() {"));
+  CHECK(contains(out.impl, "::std::abort();"));
+}
+
 void test_pointer_sized_integer_aliases_lower_through_rt() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -3606,6 +3622,7 @@ int main() {
   RUN_TEST(test_class_types_lower_to_pointers_and_implicit_tobject);
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
   RUN_TEST(test_empty_inherited_class_decl_emits_real_struct);
+  RUN_TEST(test_abstract_method_emits_fail_fast_virtual_body);
   RUN_TEST(test_pointer_sized_integer_aliases_lower_through_rt);
   RUN_TEST(test_tclass_alias_lowers_through_rt);
   RUN_TEST(test_class_constructor_call_allocates_instance);
