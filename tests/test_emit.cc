@@ -3247,6 +3247,224 @@ void test_overload_aggregates_candidates_across_uses_chain() {
   CHECK(contains(out.impl, "p_cfileutils::p_fileexists("));
 }
 
+void test_overload_ambiguous_default_arg_vs_no_default_reports_error() {
+  // `f(x : longint)` and `f(x : longint = 5)` are both viable for `f(7)`:
+  // the first by exact match, the second also by exact match (default
+  // unused). Neither dominates on the conversion-rank vector. The picker
+  // must report ambiguity instead of silently picking one.
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure f(x : longint); overload;\n"
+      "procedure f(x : longint = 5); overload;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure f(x : longint); begin end;\n"
+      "procedure f(x : longint = 5); begin end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  f(7);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_overload_ambiguous_two_default_arg_overloads_reports_error() {
+  // `f(a : longint = 1; b : shortstring = 'x')` and
+  // `f(a : longint;     b : shortstring = 'x')`: a 2-arg call `f(7,'y')`
+  // matches both with identical conversion ranks. Pascal-level
+  // ambiguous; must error.
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure f(a : longint = 1; b : shortstring = 'x'); overload;\n"
+      "procedure f(a : longint;     b : shortstring = 'x'); overload;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure f(a : longint = 1; b : shortstring = 'x'); begin end;\n"
+      "procedure f(a : longint;     b : shortstring = 'x'); begin end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  f(7, 'y');\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_overload_default_arg_extends_arity_disambiguates_cleanly() {
+  // Sanity check the converse: `f(x : longint)` and `f(x : longint;
+  // y : shortstring)`. A 2-arg call must select the second overload and
+  // must NOT be flagged as ambiguous.
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure f(x : longint); overload;\n"
+      "procedure f(x : longint; y : shortstring); overload;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure f(x : longint); begin end;\n"
+      "procedure f(x : longint; y : shortstring); begin end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  f(7, 'y');\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "p_f("));
+}
+
+void test_property_read_lowers_to_getter_call() {
+  // `obj.x` where `x` is a non-indexed property with a `read getter`
+  // accessor must lower the read to the getter call -- emitting a raw
+  // member access would skip Pascal's read semantics.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = class\n"
+      "  private\n"
+      "    function getval : longint;\n"
+      "  public\n"
+      "    property val : longint read getval;\n"
+      "  end;\n"
+      "function read_it(b : tbox) : longint;\n"
+      "implementation\n"
+      "function tbox.getval : longint;\n"
+      "begin\n"
+      "  getval := 0;\n"
+      "end;\n"
+      "function read_it(b : tbox) : longint;\n"
+      "begin\n"
+      "  read_it := b.val;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_b->p_getval()"));
+  CHECK(!contains(out.impl, "p_b->p_val"));
+}
+
+void test_property_write_lowers_to_setter_call() {
+  // Assignment to a property must lower to its `write setter` call.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = class\n"
+      "  private\n"
+      "    procedure setval(v : longint);\n"
+      "  public\n"
+      "    property val : longint write setval;\n"
+      "  end;\n"
+      "procedure write_it(b : tbox);\n"
+      "implementation\n"
+      "procedure tbox.setval(v : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure write_it(b : tbox);\n"
+      "begin\n"
+      "  b.val := 42;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_b->p_setval("));
+  CHECK(!contains(out.impl, "p_b->p_val ="));
+}
+
+void test_property_read_through_field_lowers_to_field_access() {
+  // `read fieldname` (no getter) must lower to the underlying field
+  // access, not a phantom `p_fieldname()` method call.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = class\n"
+      "  private\n"
+      "    fval : longint;\n"
+      "  public\n"
+      "    property val : longint read fval write fval;\n"
+      "  end;\n"
+      "function read_it(b : tbox) : longint;\n"
+      "implementation\n"
+      "function read_it(b : tbox) : longint;\n"
+      "begin\n"
+      "  read_it := b.val;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_b->p_fval"));
+}
+
+void test_default_indexed_property_obj_brackets_calls_getter() {
+  // `obj[i]` where `obj` is of a class with a `default` indexed
+  // property must lower to the property's read accessor with the
+  // index passed in, not to raw subscripting.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class end;\n"
+      "  tlist = class\n"
+      "  private\n"
+      "    function getitem(i : longint) : titem;\n"
+      "  public\n"
+      "    property items[i : longint] : titem read getitem; default;\n"
+      "  end;\n"
+      "function pick(l : tlist; i : longint) : titem;\n"
+      "implementation\n"
+      "function tlist.getitem(i : longint) : titem;\n"
+      "begin\n"
+      "  getitem := nil;\n"
+      "end;\n"
+      "function pick(l : tlist; i : longint) : titem;\n"
+      "begin\n"
+      "  pick := l[i];\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_l->p_getitem(p_i)"));
+  CHECK(!contains(out.impl, "p_l[p_i]"));
+}
+
+void test_property_read_returning_class_then_default_index_chains_through_getter() {
+  // Non-indexed property read followed by a default indexed property.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class end;\n"
+      "  tinner = class\n"
+      "  private\n"
+      "    function getitem(i : longint) : titem;\n"
+      "  public\n"
+      "    property items[i : longint] : titem read getitem; default;\n"
+      "  end;\n"
+      "  touter = class\n"
+      "  private\n"
+      "    function getinner : tinner;\n"
+      "  public\n"
+      "    property inner : tinner read getinner;\n"
+      "  end;\n"
+      "function pick(o : touter; i : longint) : titem;\n"
+      "implementation\n"
+      "function tinner.getitem(i : longint) : titem;\n"
+      "begin\n"
+      "  getitem := nil;\n"
+      "end;\n"
+      "function touter.getinner : tinner;\n"
+      "begin\n"
+      "  getinner := nil;\n"
+      "end;\n"
+      "function pick(o : touter; i : longint) : titem;\n"
+      "begin\n"
+      "  pick := o.inner[i];\n"
+      "end;\n"
+      "end.\n");
+  // First the outer property's getter is called, then the inner class's
+  // default-indexed-property getter on the result.
+  CHECK(contains(out.impl, "p_o->p_getinner()"));
+  CHECK(contains(out.impl, "p_getitem(p_i)"));
+  CHECK(!contains(out.impl, "p_o->p_inner["));
+}
+
 void test_recursive_call_var_param_gets_param_info_for_reinterpret_ref() {
   // A recursive call to the current function: `resolve_name` rewrites the
   // bare function name to its result slot for assignments like `f := f(...)`,
@@ -4175,6 +4393,14 @@ int main() {
   RUN_TEST(test_sizeof_lowers_to_int32_to_match_pascal_longint_semantics);
   RUN_TEST(test_overload_picks_unsigned_widening_over_sign_change);
   RUN_TEST(test_overload_aggregates_candidates_across_uses_chain);
+  RUN_TEST(test_overload_ambiguous_default_arg_vs_no_default_reports_error);
+  RUN_TEST(test_overload_ambiguous_two_default_arg_overloads_reports_error);
+  RUN_TEST(test_overload_default_arg_extends_arity_disambiguates_cleanly);
+  RUN_TEST(test_property_read_lowers_to_getter_call);
+  RUN_TEST(test_property_write_lowers_to_setter_call);
+  RUN_TEST(test_property_read_through_field_lowers_to_field_access);
+  RUN_TEST(test_default_indexed_property_obj_brackets_calls_getter);
+  RUN_TEST(test_property_read_returning_class_then_default_index_chains_through_getter);
   RUN_TEST(test_recursive_call_var_param_gets_param_info_for_reinterpret_ref);
   RUN_TEST(test_with_block_bare_free_lowers_through_static_helper);
   RUN_TEST(test_metaclass_member_base_emits_with_implicit_zero_arg_call);

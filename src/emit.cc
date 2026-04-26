@@ -1027,7 +1027,15 @@ struct Emitter {
   // call-site argument expressions. Used by both free-function overload
   // sets (built from `ProcInfo::decl`) and class-method overload sets
   // (built from `MethodSig::decl`); the picker only needs the decls.
-  const ast::ProcDecl* pick_overload(
+  // Result of overload picking. `ambiguous` distinguishes "no candidate
+  // dominates" (Pascal-level error -- caller must diagnose) from
+  // "no candidate is viable at all" (decl null, ambiguous false; caller
+  // can fall back to single-decl resolution).
+  struct PickResult {
+    const ast::ProcDecl* decl = nullptr;
+    bool ambiguous = false;
+  };
+  PickResult pick_overload(
       const std::vector<const ast::ProcDecl*>& candidates,
       const std::vector<const ast::Expr*>& args);
   // Single entry point for resolving a Pascal call expression. Returns
@@ -1065,6 +1073,11 @@ struct Emitter {
     // lands on the same overload Pascal picked. When arity alone
     // narrows to one candidate, casts are not needed.
     bool needs_arg_casts = false;
+    // Set when two or more arity-viable candidates were mutually
+    // incomparable on type-rank. The call site reports a Pascal-level
+    // "ambiguous call" error and emits `decl=null`. We do not silently
+    // pick one -- silent pick has been a real source of miscompiles.
+    bool ambiguous = false;
   };
   ResolvedCall resolve_call(
       const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
@@ -3651,15 +3664,17 @@ Emitter::ConvRank Emitter::rank_conversion(const TypeExpr* arg,
   return ConvRank::NotViable;
 }
 
-const ProcDecl* Emitter::pick_overload(
+Emitter::PickResult Emitter::pick_overload(
     const std::vector<const ProcDecl*>& candidates,
     const std::vector<const Expr*>& args) {
-  if (candidates.empty()) return nullptr;
-  if (candidates.size() == 1) return candidates[0];
+  if (candidates.empty()) return {};
+  if (candidates.size() == 1) return {candidates[0], false};
 
   // Filter candidates by arity (with default-arg slack), then score each
   // viable one by a per-arg conversion rank vector. Pick a strict winner:
   // ranks <= every rival at every position AND strictly < at least one.
+  // If no candidate strictly dominates all rivals, the call is ambiguous;
+  // signal that to the caller so it can report a Pascal-level error.
   struct Scored {
     const ProcDecl* decl;
     std::vector<ConvRank> ranks;
@@ -3686,12 +3701,17 @@ const ProcDecl* Emitter::pick_overload(
     }
     if (ok) viable.push_back(std::move(s));
   }
-  if (viable.empty()) return nullptr;
-  if (viable.size() == 1) return viable[0].decl;
+  if (viable.empty()) return {};
+  if (viable.size() == 1) return {viable[0].decl, false};
 
   auto dominates = [](const Scored& a, const Scored& b) {
+    // Per-arg ranks: a dominates b iff a's rank is no worse at every
+    // position AND strictly better at least once. With unequal arg
+    // vectors (defaulted slots make `ranks.size() != args.size()` for
+    // some candidates) we only compare the explicit-arg portion.
+    size_t n = std::min(a.ranks.size(), b.ranks.size());
     bool any_strict = false;
-    for (size_t i = 0; i < a.ranks.size(); ++i) {
+    for (size_t i = 0; i < n; ++i) {
       if (a.ranks[i] > b.ranks[i]) return false;
       if (a.ranks[i] < b.ranks[i]) any_strict = true;
     }
@@ -3704,13 +3724,14 @@ const ProcDecl* Emitter::pick_overload(
   for (size_t i = 0; i < viable.size(); ++i) {
     if (i == best) continue;
     if (!dominates(viable[best], viable[i])) {
-      // No strict winner -> ambiguous. Fall back to the first candidate to
-      // keep emission moving; the C++ compiler may still pick a unique
-      // candidate even when Pascal cannot.
-      return candidates[0];
+      // No strict winner -- two or more candidates are mutually
+      // incomparable on the arg ranks. This is a Pascal-level
+      // ambiguous-call error; the caller is responsible for
+      // diagnosing it.
+      return {nullptr, /*ambiguous=*/true};
     }
   }
-  return viable[best].decl;
+  return {viable[best].decl, false};
 }
 
 Emitter::ResolvedCall Emitter::resolve_call(
@@ -3913,20 +3934,26 @@ Emitter::ResolvedCall Emitter::resolve_call(
       out.decl = resolve_call_decl(callee);
       return out;
     }
-    const ProcDecl* picked_decl = pick_overload(with_decl, args);
-    if (!picked_decl) {
+    PickResult pr = pick_overload(with_decl, args);
+    if (pr.ambiguous) {
+      // Surface ambiguity to the caller; do NOT pick one silently.
+      out.decl = nullptr;
+      out.ambiguous = true;
+      return out;
+    }
+    if (!pr.decl) {
       out.decl = resolve_call_decl(callee);
       return out;
     }
     for (const auto& a : arity_ok) {
-      if (a.decl == picked_decl) {
+      if (a.decl == pr.decl) {
         adopt(a, /*ran_type_picker=*/true);
         return out;
       }
     }
-    // Defensive: picked_decl came from with_decl, which came from
+    // Defensive: pr.decl came from with_decl, which came from
     // arity_ok, so the loop above must have hit. Fall through anyway.
-    out.decl = picked_decl;
+    out.decl = pr.decl;
     out.needs_arg_casts = true;
     return out;
   }
@@ -5822,6 +5849,22 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       call_args.reserve(c.args.size());
       for (const auto& arg : c.args) call_args.push_back(arg.get());
       ResolvedCall resolved = resolve_call(*c.callee, call_args);
+      if (resolved.ambiguous) {
+        // Pascal-level ambiguous call: two or more overloads were
+        // mutually incomparable on the conversion-rank vector. Report
+        // and emit a placeholder so the build fails loudly rather than
+        // silently picking one and hoping C++ figures it out.
+        std::string name;
+        if (c.callee->kind == Kind::Ident) {
+          name = static_cast<const Ident&>(*c.callee).name;
+        } else if (c.callee->kind == Kind::Member) {
+          name = static_cast<const Member&>(*c.callee).name;
+        }
+        report_error(c.loc,
+                     "ambiguous call to overloaded '" + name +
+                     "': no candidate dominates on argument conversions");
+        return "/* ambiguous call to '" + name + "' */";
+      }
       const ProcDecl* call_decl = resolved.decl;
       append_defaulted_trailing_call_args(call_decl, call_args);
       std::vector<bool> call_untyped_arg(call_args.size(), false);
