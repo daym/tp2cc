@@ -2931,6 +2931,46 @@ void test_class_identifier_value_lowers_to_metaclass_descriptor() {
                  "p_result = (p_x->p_classtype() == tp2cc_metaclass_value_p_tchild());"));
 }
 
+void test_packed_field_typed_cast_assignment_uses_memcpy_store() {
+  // `longint(p.d1) := X` where `d1` is in a `packed record`. Forming a
+  // `T&` to a packed field is UB; the emitter routes the assignment
+  // through `tp2cc_reinterpret_store` (memcpy) instead.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tg = packed record d1 : longword; end;\n"
+      "procedure run(var p : tg; v : longint);\n"
+      "implementation\n"
+      "procedure run(var p : tg; v : longint);\n"
+      "begin\n"
+      "  longint(p.d1) := v;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<int32_t>(&(p_p.p_d1), p_v);"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_storage_ref<int32_t>"));
+}
+
+void test_inc_packed_field_routes_through_memcpy_inc() {
+  // `Inc(p.f, n)` where `f` is in a `packed record` -- direct member
+  // access, no outer typed cast. The emitter uses the field's own
+  // declared type as the operand and routes through
+  // `tp2cc_reinterpret_inc`.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tdir = packed record name_ord : word; end;\n"
+      "procedure run(var p : tdir; n : word);\n"
+      "implementation\n"
+      "procedure run(var p : tdir; n : word);\n"
+      "begin\n"
+      "  inc(p.name_ord, n);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_inc<uint16_t>(&(p_p.p_name_ord), p_n);"));
+}
+
 void test_overload_picks_shortstring_target_for_short_string_arg() {
   // When a callee has both `f(string)` and `f(ansistring)` overloads,
   // a `string[N]` argument (N < 255) should resolve to the `string`
@@ -3866,6 +3906,8 @@ int main() {
   RUN_TEST(test_metaclass_alias_and_concrete_class_value_lowering);
   RUN_TEST(test_metaclass_cast_keeps_concrete_descriptor);
   RUN_TEST(test_class_identifier_value_lowers_to_metaclass_descriptor);
+  RUN_TEST(test_packed_field_typed_cast_assignment_uses_memcpy_store);
+  RUN_TEST(test_inc_packed_field_routes_through_memcpy_inc);
   RUN_TEST(test_overload_picks_shortstring_target_for_short_string_arg);
   RUN_TEST(test_overload_picks_pchar_to_shortstring_over_ansistring);
   RUN_TEST(test_overload_picks_unsigned_widening_over_sign_change);

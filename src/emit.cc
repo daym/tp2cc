@@ -857,6 +857,20 @@ struct Emitter {
   bool type_is_value_object(const ast::TypeExpr* t);
   std::string primitive_cast_lvalue_ref(const ast::Call& c);
   std::string primitive_cast_untyped_storage_ptr(const ast::Call& c);
+  std::string primitive_cast_packed_field_ptr(const ast::Call& c);
+  // Carries the result of `packed_field_storage_ref`. `void_ptr_text` is
+  // an `&(field_expr)` snippet -- safe to consume only via the memcpy-based
+  // runtime helpers (`tp2cc_reinterpret_load` / `_store` / `_inc` / `_dec`).
+  // Going through `*reinterpret_cast<T*>(p)` instead would re-introduce the
+  // misaligned-`T*`-deref UB the existing `[[gnu::packed]]` emit deliberately
+  // makes the compiler complain about. `elem_cxx` is the C++ type to use as
+  // the load/store operand at the call site.
+  struct PackedFieldStorage {
+    std::string void_ptr_text;
+    std::string elem_cxx;
+  };
+  std::optional<PackedFieldStorage> packed_field_storage_ref(
+      const ast::Expr& e);
   struct UntypedStorageIndexView {
     std::string elem_cxx;
     std::string ptr_cxx;
@@ -1642,6 +1656,53 @@ std::string Emitter::primitive_cast_untyped_storage_ptr(const Call& c) {
     }
   }
   return expr_to_cxx(*peeled);
+}
+
+// Returns `&(field_expr)` when `c` is a primitive type-cast over a scalar
+// field of a packed record (e.g. `longint(g.d1)` where `g` has type
+// `tguid = packed record d1: LongWord; ... end`). Empty otherwise.
+//
+// The returned text is a *void*-convertible address-of expression*. C++
+// permits taking the address of any object regardless of alignment, but
+// dereferencing the resulting pointer through a `T*` for which the
+// alignment isn't satisfied is UB ([expr.reinterpret.cast]/7,
+// [basic.lval]). Callers must therefore feed the text only into runtime
+// helpers that read/write through `memcpy` (`tp2cc_reinterpret_load`,
+// `tp2cc_reinterpret_store`, `tp2cc_reinterpret_inc`, `tp2cc_reinterpret_dec`).
+// Routing it through `*reinterpret_cast<T*>(p)` -- including via
+// `tp2cc_reinterpret_storage_ref<T>(void*)` -- would reintroduce the UB
+// the existing `[[gnu::packed]]` emit went out of its way to make the
+// compiler complain about.
+std::string Emitter::primitive_cast_packed_field_ptr(const Call& c) {
+  if (c.args.size() != 1 || c.callee->kind != Kind::Ident) return {};
+  const auto& id = static_cast<const Ident&>(*c.callee);
+  if (!is_primitive_type(id.name)) return {};
+  const Expr* peeled = peel_primitive_casts(c.args[0].get());
+  if (!peeled || peeled->kind != Kind::Member) return {};
+  const auto& m = static_cast<const Member&>(*peeled);
+  const TypeExpr* base_type = deduce_type(*m.base);
+  if (!type_is_packed_record(base_type)) return {};
+  return "&(" + expr_to_cxx(*peeled) + ")";
+}
+
+// Same shape as `primitive_cast_packed_field_ptr`, but for a *bare*
+// packed-record-field access -- no outer primitive type-cast wrapping it.
+// Used by call sites like `Inc(g.d1, n)` where the field's own declared
+// type is the operand type for the read-modify-write. Returns
+// `(void_ptr_text, elem_cxx)` so callers can feed both into the
+// memcpy-based runtime helpers; same UB caveat applies (the address-of
+// text MUST only be consumed via `tp2cc_reinterpret_load` / `_store` /
+// `_inc` / `_dec`, never via a `T*` deref).
+std::optional<Emitter::PackedFieldStorage>
+Emitter::packed_field_storage_ref(const Expr& e) {
+  if (e.kind != Kind::Member) return std::nullopt;
+  const auto& m = static_cast<const Member&>(e);
+  const TypeExpr* base_type = deduce_type(*m.base);
+  if (!type_is_packed_record(base_type)) return std::nullopt;
+  const TypeExpr* field_type =
+      lookup_record_field_type_in_type(base_type, m.name);
+  if (!field_type) return std::nullopt;
+  return PackedFieldStorage{"&(" + expr_to_cxx(e) + ")", type_to_cxx(*field_type)};
 }
 
 std::optional<Emitter::UntypedStorageIndexView>
@@ -5150,6 +5211,21 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
             return op + "<" + primitive_type_cxx(id.name) + ">(" + ptr + ")";
           }
+          // `inc(T(packed_record.field))`: the packed field cannot be
+          // bound as `T&`, so route through the same memcpy-based path as
+          // untyped storage. The address-of is byte-safe because
+          // `tp2cc_reinterpret_inc` reads/writes via memcpy.
+          if (std::string ptr = primitive_cast_packed_field_ptr(inner);
+              !ptr.empty()) {
+            const auto& id = static_cast<const Ident&>(*inner.callee);
+            std::string op = (n == "inc") ? "::rt::tp2cc_reinterpret_inc"
+                                          : "::rt::tp2cc_reinterpret_dec";
+            if (c.args.size() == 2) {
+              return op + "<" + primitive_type_cxx(id.name) + ">(" + ptr + ", " +
+                     expr_to_cxx(*c.args[1]) + ")";
+            }
+            return op + "<" + primitive_type_cxx(id.name) + ">(" + ptr + ")";
+          }
           if (std::string ref = primitive_cast_lvalue_ref(inner);
               !ref.empty()) {
             std::string op = (n == "inc") ? "::rt::p_inc" : "::rt::p_dec";
@@ -5159,6 +5235,21 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return op + "(" + ref + ")";
           }
           // Fall through to generic emission.
+        } else if ((n == "inc" || n == "dec") &&
+                   (c.args.size() == 1 || c.args.size() == 2)) {
+          // `inc(packed_record.field)` without an outer typed cast: same
+          // packed-field problem as the cast case above, but the operand
+          // type is the field's own declared type rather than a cast type.
+          if (auto storage = packed_field_storage_ref(*c.args[0])) {
+            std::string op = (n == "inc") ? "::rt::tp2cc_reinterpret_inc"
+                                          : "::rt::tp2cc_reinterpret_dec";
+            if (c.args.size() == 2) {
+              return op + "<" + storage->elem_cxx + ">(" + storage->void_ptr_text +
+                     ", " + expr_to_cxx(*c.args[1]) + ")";
+            }
+            return op + "<" + storage->elem_cxx + ">(" + storage->void_ptr_text + ")";
+          }
+          // Fall through to generic emission for non-packed scalar args.
         } else if (n == "new" && !c.args.empty()) {
           // Expression-form `new(T)` or `new(T, Ctor(args))`. The first
           // arg is the *pointer-type name* (an Ident), which we already
@@ -6803,6 +6894,16 @@ void Emitter::emit_stmt(const Stmt& s) {
         const auto& c = static_cast<const Call&>(*a.target);
         if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
           if (std::string ptr = primitive_cast_untyped_storage_ptr(c);
+              !ptr.empty()) {
+            const auto& id = static_cast<const Ident&>(*c.callee);
+            emitln("::rt::tp2cc_reinterpret_store<" + primitive_type_cxx(id.name) +
+                   ">(" + ptr + ", " + expr_to_cxx(*a.value) + ");");
+            break;
+          }
+          // `T(packed_record.field) := rhs` -- forming a `T&` to a packed
+          // field is UB, so route the assignment through `memcpy` via
+          // `tp2cc_reinterpret_store` instead of `lvalue_ref = rhs;`.
+          if (std::string ptr = primitive_cast_packed_field_ptr(c);
               !ptr.empty()) {
             const auto& id = static_cast<const Ident&>(*c.callee);
             emitln("::rt::tp2cc_reinterpret_store<" + primitive_type_cxx(id.name) +
