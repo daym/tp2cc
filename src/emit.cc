@@ -818,6 +818,38 @@ struct Emitter {
   std::string pointer_type_to_cxx(const TyPointer& p);
   std::string procedural_type_to_cxx(const TyProcedural& p);
   std::string procedural_param_types_to_cxx(const std::vector<Param>& params);
+  // Per-field decl info used by both the inline and named record-emission
+  // paths. `type_cxx` is the resolved C++ type spelling (kept separately
+  // because the named path also needs it for `sizeof(...)` offset
+  // tracking); `decl` is `type_cxx + " " + mangled_name`, the form a
+  // C++ struct body wants for the field declaration.
+  struct RecordFieldDecl {
+    const ast::TypeExpr* type;     // raw field type, for offset/packed checks
+    std::string type_cxx;          // resolved C++ type spelling
+    std::string mangled_name;      // `p_<pascal_name>`
+    std::string decl;              // `<type_cxx> <mangled_name>`
+  };
+  std::vector<RecordFieldDecl> record_field_decls(
+      const std::vector<ast::RecordField>& fields);
+
+  // Layout description for a packed record: per-field offset expressions
+  // (in declaration order, with mangled field names) plus the total size
+  // expression. Used by both the named type-decl path (asserts via
+  // `offsetof(<typename>, ...)`) and the variable-decl path (asserts via
+  // `offsetof(decltype(<varname>), ...)` for inline anonymous records).
+  struct PackedRecordLayout {
+    std::vector<std::pair<std::string, std::string>> field_offsets;
+    std::string size_expr;
+  };
+  PackedRecordLayout compute_packed_record_layout(const ast::TyRecord& tr);
+  // Emit the offsetof / sizeof static_asserts for a packed record. The
+  // type expression `type_text` is whatever names the record at the emit
+  // site -- a typedef name for the named-decl path, `decltype(varname)`
+  // for an inline anonymous record bound to a variable.
+  void emit_packed_record_asserts(const std::string& type_text,
+                                  const PackedRecordLayout& layout,
+                                  std::string_view label);
+
   std::string named_type_to_cxx(const TypeExpr* t, std::string_view name,
                                 std::string_view name_prefix = {});
   std::string method_pointer_helper_name(const ast::ProcDecl& pd);
@@ -1982,6 +2014,84 @@ std::string Emitter::procedural_type_to_cxx(const TyProcedural& p) {
   return ret + " (*)(" + params + ")";
 }
 
+std::vector<Emitter::RecordFieldDecl>
+Emitter::record_field_decls(const std::vector<RecordField>& fields) {
+  std::vector<RecordFieldDecl> out;
+  for (const auto& f : fields) {
+    std::string type_cxx = f.type ? type_to_cxx(*f.type) : std::string("int32_t");
+    for (const auto& fn : f.names) {
+      RecordFieldDecl entry;
+      entry.type = f.type.get();
+      entry.type_cxx = type_cxx;
+      entry.mangled_name = mangle(fn);
+      entry.decl = named_type_to_cxx(f.type.get(), entry.mangled_name);
+      out.push_back(std::move(entry));
+    }
+  }
+  return out;
+}
+
+Emitter::PackedRecordLayout
+Emitter::compute_packed_record_layout(const TyRecord& tr) {
+  PackedRecordLayout out;
+  out.size_expr = "0";
+  auto append_run =
+      [&](const std::vector<RecordField>& fields, std::string& size_expr) {
+    for (const auto& field : record_field_decls(fields)) {
+      out.field_offsets.emplace_back(field.mangled_name, size_expr);
+      size_expr = "(" + size_expr + " + sizeof(" + field.type_cxx + "))";
+    }
+  };
+  append_run(tr.fields, out.size_expr);
+  if (tr.has_variant) {
+    if (!tr.variant_tag_name.empty() && tr.variant_tag_type) {
+      RecordField tag_field;
+      tag_field.names.push_back(tr.variant_tag_name);
+      tag_field.type = tr.variant_tag_type;
+      append_run({tag_field}, out.size_expr);
+    }
+    std::vector<std::string> case_sizes;
+    for (const auto& vc : tr.variant_cases) {
+      if (vc.fields.empty()) continue;
+      std::string case_size_expr = "0";
+      for (const auto& field : record_field_decls(vc.fields)) {
+        // Variant-case fields share the same outer offset; the per-case
+        // base is `(packed_size_expr + case_size_so_far)`.
+        const std::string field_offset =
+            "(" + out.size_expr + " + " + case_size_expr + ")";
+        out.field_offsets.emplace_back(field.mangled_name, field_offset);
+        case_size_expr =
+            "(" + case_size_expr + " + sizeof(" + field.type_cxx + "))";
+      }
+      case_sizes.push_back(case_size_expr);
+    }
+    if (!case_sizes.empty()) {
+      std::string max_case = case_sizes.front();
+      for (size_t i = 1; i < case_sizes.size(); ++i) {
+        max_case = "((" + max_case + ") < (" + case_sizes[i] + ") ? (" +
+                   case_sizes[i] + ") : (" + max_case + "))";
+      }
+      out.size_expr = "(" + out.size_expr + " + " + max_case + ")";
+    }
+  }
+  return out;
+}
+
+void Emitter::emit_packed_record_asserts(const std::string& type_text,
+                                         const PackedRecordLayout& layout,
+                                         std::string_view label) {
+  for (const auto& [field_name, offset_expr] : layout.field_offsets) {
+    emitln("static_assert(offsetof(" + type_text + ", " + field_name +
+           ") == " + offset_expr + ", "
+           "\"packed record '" + std::string(label) + "' must place field '" +
+           field_name + "' at the exact Pascal byte offset with no inserted "
+           "padding.\");");
+  }
+  emitln("static_assert(sizeof(" + type_text + ") == " + layout.size_expr +
+         ", \"packed record '" + std::string(label) +
+         "' must have the exact packed Pascal size.\");");
+}
+
 std::string Emitter::named_type_to_cxx(const TypeExpr* t, std::string_view name,
                                        std::string_view name_prefix) {
   if (!t) {
@@ -2035,11 +2145,29 @@ std::string Emitter::type_to_cxx(const TypeExpr& t) {
       if (tf.is_text || !tf.element) return "::rt::tp2cc_TextFile";
       return "::rt::tp2cc_TypedFile<" + type_to_cxx(*tf.element) + ">";
     }
-    case Kind::TyRecord:
+    case Kind::TyRecord: {
+      // Inline anonymous record used as a type-expression -- e.g. a local
+      // var declared as `r : packed record a, b : byte; end;`. Emit a C++
+      // anonymous struct so subsequent field accesses resolve correctly.
+      // Variant cases are deliberately not lowered here; if encountered,
+      // fall back to the stub so the bug is visible at C++ compile time
+      // rather than silently miscompiled.
+      const auto& tr = static_cast<const TyRecord&>(t);
+      if (tr.has_variant) return "/* inline-variant-record */ int32_t";
+      std::string out = "struct ";
+      if (tr.is_packed) out += "[[gnu::packed]] ";
+      out += "{ ";
+      for (const auto& field : record_field_decls(tr.fields)) {
+        out += field.decl + "; ";
+      }
+      out += "}";
+      return out;
+    }
     case Kind::TyObject:
-      // Anonymous record/object in-place -- rare; emit a stub. Named
-      // records/objects come via TyName above.
-      return "/* inline-record */ int32_t";
+      // Inline anonymous object: rare, and the C++ shape would need a
+      // base-class context the type-expression position can't carry.
+      // Stub so the call site fails loudly if it ever appears.
+      return "/* inline-object */ int32_t";
     default:                 return "/* unsupported-type */ int32_t";
   }
 }
@@ -6036,52 +6164,25 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
     // to the packed Pascal size. Emit the ordinary `[[gnu::packed]]` struct,
     // then assert the resulting `offsetof(...)` / `sizeof(...)` after the
     // complete type is known.
-    std::vector<std::pair<std::string, std::string>> packed_offsets;
-    auto max_expr = [](const std::vector<std::string>& exprs) -> std::string {
-      if (exprs.empty()) return "0";
-      std::string out = exprs.front();
-      for (size_t i = 1; i < exprs.size(); ++i) {
-        out = "((" + out + ") < (" + exprs[i] + ") ? (" + exprs[i] + ") : (" + out + "))";
-      }
-      return out;
-    };
-    std::string packed_size_expr = "0";
-    auto emit_field =
-        [&](const TypeExpr* field_type, const std::string& ft, const std::string& fn,
-            const std::string* packed_offset_expr) {
-      emitln(named_type_to_cxx(field_type, mangle(fn)) + ";");
-      if (tr.is_packed && packed_offset_expr) {
-        packed_offsets.emplace_back(mangle(fn), *packed_offset_expr);
+    auto emit_field_decls = [&](const std::vector<RecordField>& fs) {
+      for (const auto& field : record_field_decls(fs)) {
+        emitln(field.decl + ";");
       }
     };
-
-    for (const auto& f : tr.fields) {
-      std::string ft = f.type ? type_to_cxx(*f.type) : std::string("int32_t");
-      for (const auto& fn : f.names) {
-        std::string field_offset = packed_size_expr;
-        emit_field(f.type.get(), ft, fn, tr.is_packed ? &field_offset : nullptr);
-        if (tr.is_packed) {
-          packed_size_expr = "(" + packed_size_expr + " + sizeof(" + ft + "))";
-        }
-      }
-    }
+    emit_field_decls(tr.fields);
     if (tr.has_variant) {
       // Pascal variant records expose their case-fields directly on the
       // outer record -- `rec.fieldOfCase1` works without saying which case.
       // We match that by emitting one anonymous struct per case inside an
       // anonymous union. GCC accepts this as an extension.
       if (!tr.variant_tag_name.empty() && tr.variant_tag_type) {
-        std::string ft = type_to_cxx(*tr.variant_tag_type);
-        std::string field_offset = packed_size_expr;
-        emit_field(tr.variant_tag_type.get(),
-                   ft, tr.variant_tag_name, tr.is_packed ? &field_offset : nullptr);
-        if (tr.is_packed) {
-          packed_size_expr = "(" + packed_size_expr + " + sizeof(" + ft + "))";
-        }
+        RecordField tag_field;
+        tag_field.names.push_back(tr.variant_tag_name);
+        tag_field.type = tr.variant_tag_type;
+        emit_field_decls({tag_field});
       }
       emitln("union {");
       indent();
-      std::vector<std::string> variant_case_sizes;
       for (const auto& vc : tr.variant_cases) {
         if (vc.fields.empty()) continue;
         std::string case_open = "struct ";
@@ -6089,38 +6190,20 @@ void Emitter::emit_type_decl(const TypeDecl& td, bool) {
         case_open += "{";
         emitln(case_open);
         indent();
-        std::string case_size_expr = "0";
-        for (const auto& f : vc.fields) {
-          std::string ft = f.type ? type_to_cxx(*f.type) : std::string("int32_t");
-          for (const auto& fn : f.names) {
-            std::string field_offset = "(" + packed_size_expr + " + " + case_size_expr + ")";
-            emit_field(f.type.get(), ft, fn, tr.is_packed ? &field_offset : nullptr);
-            if (tr.is_packed) {
-              case_size_expr = "(" + case_size_expr + " + sizeof(" + ft + "))";
-            }
-          }
-        }
-        if (tr.is_packed) variant_case_sizes.push_back(case_size_expr);
+        emit_field_decls(vc.fields);
         dedent();
         emitln("};");
       }
       dedent();
       emitln("};");
-      if (tr.is_packed) {
-        packed_size_expr = "(" + packed_size_expr + " + " + max_expr(variant_case_sizes) + ")";
-      }
     }
     dedent();
     emitln("};");
-    if (tr.is_packed && !packed_offsets.empty()) {
-      for (const auto& [field_name, offset_expr] : packed_offsets) {
-        emitln("static_assert(offsetof(" + name + ", " + field_name + ") == " +
-               offset_expr + ", "
-               "\"packed record '" + name + "' must place field '" + field_name +
-               "' at the exact Pascal byte offset with no inserted padding.\");");
+    if (tr.is_packed) {
+      const PackedRecordLayout layout = compute_packed_record_layout(tr);
+      if (!layout.field_offsets.empty()) {
+        emit_packed_record_asserts(name, layout, name);
       }
-      emitln("static_assert(sizeof(" + name + ") == " + packed_size_expr + ", "
-             "\"packed record '" + name + "' must have the exact packed Pascal size.\");");
     }
     return;
   }
@@ -6500,6 +6583,15 @@ void Emitter::emit_var_decl(const VarDecl& vd, bool in_header) {
     report_error(vd.loc, "external variables are unsupported");
     return;
   }
+  // Inline anonymous packed records bound to a var lose access to a
+  // typedef name for `offsetof`/`sizeof` asserts -- but `decltype(var)`
+  // is a usable substitute, so we emit the same layout asserts the
+  // named-type-decl path already enforces.
+  const TyRecord* inline_packed_record = nullptr;
+  if (vd.type && vd.type->kind == Kind::TyRecord) {
+    const auto& tr = static_cast<const TyRecord&>(*vd.type);
+    if (tr.is_packed) inline_packed_record = &tr;
+  }
   for (const auto& n : vd.names) {
     std::string name = mangle(n);
     std::string decl = named_type_to_cxx(vd.type.get(), name);
@@ -6529,6 +6621,13 @@ void Emitter::emit_var_decl(const VarDecl& vd, bool in_header) {
       // init, so plain `T name;` is already equivalent to value-init
       // for the trivial types we emit.
       emitln(decl + ";");
+    }
+    if (inline_packed_record) {
+      const PackedRecordLayout layout =
+          compute_packed_record_layout(*inline_packed_record);
+      if (!layout.field_offsets.empty()) {
+        emit_packed_record_asserts("decltype(" + name + ")", layout, n);
+      }
     }
   }
 }

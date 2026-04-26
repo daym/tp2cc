@@ -2931,6 +2931,42 @@ void test_class_identifier_value_lowers_to_metaclass_descriptor() {
                  "p_result = (p_x->p_classtype() == tp2cc_metaclass_value_p_tchild());"));
 }
 
+void test_inline_anonymous_packed_record_var_lowers_to_struct() {
+  // Inline anonymous packed record bound to a local var: emits a real
+  // C++ anonymous struct so field accesses resolve, and emits the same
+  // offsetof/sizeof layout asserts the named-record path uses, this
+  // time anchored on `decltype(varname)`.
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var\n"
+      "  rec : packed record\n"
+      "    a, b, c : byte;\n"
+      "    payload : array[0..3] of byte;\n"
+      "  end;\n"
+      "begin\n"
+      "  rec.a := 1;\n"
+      "end;\n"
+      "end.\n");
+  // Struct lowered properly, NOT stubbed as int32_t.
+  CHECK(contains(out.impl, "struct [[gnu::packed]] {"));
+  CHECK(!contains(out.impl, "/* inline-record */ int32_t p_rec"));
+  CHECK(contains(out.impl, "uint8_t p_a;"));
+  CHECK(contains(out.impl, "uint8_t p_b;"));
+  CHECK(contains(out.impl, "uint8_t p_c;"));
+  CHECK(contains(out.impl, "::rt::tp2cc_Array<uint8_t, 0, ((3) - (0) + 1)> p_payload;"));
+  // Field access on the local works.
+  CHECK(contains(out.impl, "p_rec.p_a = 1;"));
+  // Layout asserts use `decltype(p_rec)` since there's no typedef name.
+  CHECK(contains(out.impl,
+                 "static_assert(offsetof(decltype(p_rec), p_a) == 0"));
+  CHECK(contains(out.impl,
+                 "static_assert(sizeof(decltype(p_rec)) =="));
+}
+
 void test_packed_field_typed_cast_assignment_uses_memcpy_store() {
   // `longint(p.d1) := X` where `d1` is in a `packed record`. Forming a
   // `T&` to a packed field is UB; the emitter routes the assignment
@@ -3926,6 +3962,7 @@ int main() {
   RUN_TEST(test_metaclass_alias_and_concrete_class_value_lowering);
   RUN_TEST(test_metaclass_cast_keeps_concrete_descriptor);
   RUN_TEST(test_class_identifier_value_lowers_to_metaclass_descriptor);
+  RUN_TEST(test_inline_anonymous_packed_record_var_lowers_to_struct);
   RUN_TEST(test_packed_field_typed_cast_assignment_uses_memcpy_store);
   RUN_TEST(test_inc_packed_field_routes_through_memcpy_inc);
   RUN_TEST(test_overload_picks_shortstring_target_for_short_string_arg);
