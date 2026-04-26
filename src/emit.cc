@@ -395,6 +395,7 @@ const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
       {"tclass", "::rt::p_tclass"},
       {"tfpuexception", "::rt::p_tfpuexception"},
       {"tfpuexceptionmask", "::rt::p_tfpuexceptionmask"},
+      {"tsearchrec", "::rt::p_tsearchrec"},
       {"tsystemtime", "::rt::p_tsystemtime"},
       {"tmethod", "::rt::p_tmethod"},
   };
