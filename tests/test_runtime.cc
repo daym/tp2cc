@@ -374,6 +374,9 @@ void test_ansistring_storage_slot_holds_payload_pointer() {
 }
 
 void test_new_and_dispose_share_malloc_storage_family() {
+  // ISO Pascal / Turbo Pascal / FPC leave the pointer value undefined
+  // after `Dispose(p)`. The runtime no longer nils the slot defensively;
+  // this test only asserts the destructor ran.
   DisposeProbe::destroys = 0;
 
   DisposeProbe* p = nullptr;
@@ -382,11 +385,15 @@ void test_new_and_dispose_share_malloc_storage_family() {
   p->value = 7;
 
   p_dispose(p);
-  CHECK(p == nullptr);
   CHECK_EQ(DisposeProbe::destroys, 1);
 }
 
 void test_dispose_releases_plain_storage_grown_with_reallocmem() {
+  // Smoke test that `dispose` accepts storage previously grown with
+  // `reallocmem`. The pointer's post-dispose value is undefined per
+  // Pascal, so we don't assert anything about `p` after the call --
+  // only that the call returns without aborting and the address-sanitizer
+  // sees a clean free.
   struct MoveListLike {
     int32_t count;
     void* data[1];
@@ -399,7 +406,6 @@ void test_dispose_releases_plain_storage_grown_with_reallocmem() {
   p->count = 8;
 
   p_dispose(p);
-  CHECK(p == nullptr);
 }
 
 void test_ansistring_setlength_and_insert_delete_keep_bytes_stable() {

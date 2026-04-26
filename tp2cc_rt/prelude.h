@@ -4025,12 +4025,17 @@ inline void p_new(P*& p) {
   ::new (raw) P{};
 }
 
+// Pascal `Dispose(p)` -- destroy the pointed-to object and free its
+// heap storage. ISO Pascal, Turbo Pascal, and FPC all leave the
+// pointer value undefined after the call; we take the pointer by
+// value so the same overload handles real `var p : ^T` lvalues and
+// typed-cast rvalues like `dispose(PEntry(list[i]))`. The caller's
+// slot, if any, is unchanged -- that matches Pascal's contract.
 template <typename P>
-inline void p_dispose(P*& p) {
+inline void p_dispose(P* p) {
   if (!p) return;
   std::destroy_at(p);
   std::free(static_cast<void*>(p));
-  p = nullptr;
 }
 
 // --- Program control --------------------------------------------------------
