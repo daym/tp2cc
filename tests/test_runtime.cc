@@ -438,6 +438,23 @@ void test_ansistring_setlength_and_insert_delete_keep_bytes_stable() {
   CHECK_EQ(p_to_std_string(s), std::string("abcd"));
 }
 
+void test_ansistring_compares_equal_to_single_char_pascal_style() {
+  // Pascal lifts a Char to a one-character string when comparing
+  // against a string. The AnsiString-vs-Char overloads here implement
+  // that lift directly: equal iff length 1 and bytes[0] matches.
+  auto one = tp2cc_ansistring_of("c");
+  auto two = tp2cc_ansistring_of("ab");
+  auto empty = tp2cc_ansistring_of("");
+  CHECK(one == tp2cc_char_of('c'));
+  CHECK(tp2cc_char_of('c') == one);
+  CHECK(!(one == tp2cc_char_of('d')));
+  CHECK(!(two == tp2cc_char_of('a')));
+  CHECK(!(empty == tp2cc_char_of(' ')));
+  CHECK(one != tp2cc_char_of('d'));
+  CHECK(tp2cc_char_of('d') != one);
+  CHECK(!(one != tp2cc_char_of('c')));
+}
+
 void test_ansistring_converts_to_shortstring_with_pascal_truncation() {
   tp2cc_AnsiString s = tp2cc_ansistring_of("abcdef");
   auto shorty = static_cast<tp2cc_ShortString<4>>(s);
@@ -1113,6 +1130,7 @@ int main() {
   RUN_TEST(test_new_and_dispose_share_malloc_storage_family);
   RUN_TEST(test_dispose_releases_plain_storage_grown_with_reallocmem);
   RUN_TEST(test_ansistring_setlength_and_insert_delete_keep_bytes_stable);
+  RUN_TEST(test_ansistring_compares_equal_to_single_char_pascal_style);
   RUN_TEST(test_ansistring_converts_to_shortstring_with_pascal_truncation);
   RUN_TEST(test_shortstring_char_concat_grows_capacity);
   RUN_TEST(test_shortstring_single_nul_char_keeps_length_one);

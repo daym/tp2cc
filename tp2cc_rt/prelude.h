@@ -1327,6 +1327,26 @@ inline bool operator==(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b)
   return p_string_compare(a, b) == 0;
 }
 
+// Pascal compares strings against a single `Char` literal by lifting
+// the char to a one-character string of the same family, then doing
+// a string compare. C++ doesn't have an implicit `p_char -> AnsiString`
+// conversion (deliberately -- that path causes ambiguity in
+// overload resolution elsewhere), so wire the lifted equality
+// directly. True iff the AnsiString has length 1 and its first byte
+// matches.
+inline bool operator==(const tp2cc_AnsiString& a, p_char b) {
+  return a.length() == 1 && a.bytes()[0] == b;
+}
+inline bool operator==(p_char a, const tp2cc_AnsiString& b) {
+  return b == a;
+}
+inline bool operator!=(const tp2cc_AnsiString& a, p_char b) {
+  return !(a == b);
+}
+inline bool operator!=(p_char a, const tp2cc_AnsiString& b) {
+  return !(a == b);
+}
+
 template <int N>
 inline bool operator==(const p_char* a, const tp2cc_ShortString<N>& b) {
   if (!a) return b.size() == 0;
