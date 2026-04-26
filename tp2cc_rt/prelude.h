@@ -4974,6 +4974,20 @@ inline void p_packtime(DateTime& t, int32_t& p) {
 }
 inline constexpr p_char p_directoryseparator = tp2cc_char_of('/');
 inline constexpr p_char p_driveseparator = tp2cc_char_of(':');
+
+// Append the platform directory separator if the path does not already
+// end with one (and is non-empty). On Linux this is `/`. The empty
+// string stays empty -- Pascal's sysutils returns the input unchanged
+// in that case.
+template <typename Str>
+inline tp2cc_AnsiString p_includetrailingpathdelimiter(const Str& input) {
+  std::string s = p_to_std_string(input);
+  if (s.empty() || s.back() == p_char_to_c(p_directoryseparator)) {
+    return tp2cc_ansistring_of(s.c_str());
+  }
+  s.push_back(p_char_to_c(p_directoryseparator));
+  return tp2cc_ansistring_of(s.c_str());
+}
 // `set of char` so cross-platform path code can recognise foreign
 // separators (e.g. accept '\' even on unix); cfileutils.pas tests `s[i] in
 // AllowDirectorySeparators` against arbitrary input paths.

@@ -176,6 +176,18 @@ void test_runtime_path_helpers_match_compiler_expectations() {
   CHECK_EQ(p_to_std_string(p_extractfileext(path)), std::string(".gz"));
   CHECK_EQ(p_to_std_string(p_changefileext(path, tp2cc_ansistring_of(".o"))),
            std::string("/tmp/archive.tar.o"));
+
+  // IncludeTrailingPathDelimiter appends `/` only when missing. Empty
+  // input round-trips to empty per Pascal's sysutils contract.
+  CHECK_EQ(p_to_std_string(p_includetrailingpathdelimiter(
+                tp2cc_ansistring_of("/tmp"))),
+           std::string("/tmp/"));
+  CHECK_EQ(p_to_std_string(p_includetrailingpathdelimiter(
+                tp2cc_ansistring_of("/tmp/"))),
+           std::string("/tmp/"));
+  CHECK_EQ(p_to_std_string(p_includetrailingpathdelimiter(
+                tp2cc_ansistring_of(""))),
+           std::string(""));
 }
 
 void test_runtime_tdatetime_decodes_current_and_dos_times() {
