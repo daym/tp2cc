@@ -2926,6 +2926,7 @@ struct SearchRec { int32_t p_time = 0; int32_t p_size = 0;
 using p_searchrec = SearchRec;
 using p_tsearchrec = SearchRec;
 inline constexpr int32_t p_fadirectory = 0x10;
+inline constexpr int32_t p_faarchive = 0x20;
 inline void p_searchrec_fill(SearchRec& rec, const std::string& path) {
   struct stat st{};
   if (::stat(path.c_str(), &st) != 0) return;
