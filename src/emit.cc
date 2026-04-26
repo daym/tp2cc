@@ -3691,27 +3691,35 @@ Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
     out.decl = resolve_call_decl(callee);
     return out;
   }
-  // Free-function overload set lookup: walk the current unit's uses chain
-  // and return the full ProcInfo vector (not just the first hit).
-  auto unit_proc_lookup = [&](const std::string& name,
-                              const std::string* qualifier_unit)
-      -> const std::vector<ProcInfo>* {
+  // Free-function overload set lookup. Pascal merges candidates from
+  // every visible unit (current unit's own procs + each unit on the
+  // uses chain), so the picker sees them all together. Returning the
+  // first non-empty match was wrong: e.g. unqualified `FileExists` has
+  // a 1-arg form in sysutils (registered under __rt__) and a 2-arg
+  // form in cfileutils; the picker needs both to filter by arity.
+  auto unit_proc_lookup_all = [&](const std::string& name,
+                                  const std::string* qualifier_unit) {
+    std::vector<ProcInfo> out;
+    auto append = [&](const std::vector<ProcInfo>* v) {
+      if (!v) return;
+      out.insert(out.end(), v->begin(), v->end());
+    };
     if (qualifier_unit) {
       auto it = registry->units.find(*qualifier_unit);
-      if (it == registry->units.end()) return nullptr;
-      return it->second.find_export_procs(name);
+      if (it != registry->units.end()) append(it->second.find_export_procs(name));
+      return out;
     }
     auto cur = registry->units.find(current_unit_name);
     if (cur != registry->units.end()) {
-      if (auto* v = cur->second.find_procs(name)) return v;
+      append(cur->second.find_procs(name));
       for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
            ++it) {
         auto uit = registry->units.find(*it);
         if (uit == registry->units.end()) continue;
-        if (auto* v = uit->second.find_export_procs(name)) return v;
+        append(uit->second.find_export_procs(name));
       }
     }
-    return nullptr;
+    return out;
   };
   // Receiver-class lookup: given an unqualified or member callee, figure
   // out the Pascal class hosting the method, mirrors `resolve_call_decl`'s
@@ -3764,7 +3772,7 @@ Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
       }
     }
     if (candidates.empty()) {
-      if (auto* set = unit_proc_lookup(id.name, nullptr)) fill_from_proc_set(*set);
+      fill_from_proc_set(unit_proc_lookup_all(id.name, nullptr));
     }
   } else if (callee.kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(callee);
@@ -3773,9 +3781,7 @@ Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
       const auto& id = static_cast<const Ident&>(*mem.base);
       if (registry->units.count(id.name)) {
         unit_qualified = true;
-        if (auto* set = unit_proc_lookup(mem.name, &id.name)) {
-          fill_from_proc_set(*set);
-        }
+        fill_from_proc_set(unit_proc_lookup_all(mem.name, &id.name));
       }
     }
     if (!unit_qualified) {
