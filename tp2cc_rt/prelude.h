@@ -1522,6 +1522,13 @@ inline constexpr int32_t p_vtansistring = 11;
 // modes for .ppu/.res files; the value just has to round-trip without
 // colliding with the real fmOpen* bits.
 inline constexpr int32_t p_fmsharedenynone = 0x40;
+// Variant type tag for "string argument" used by IDispatch dispatch
+// descriptors. The bootstrap compiler tags each translate_disp_call arg
+// with these `varXxx` codes; only the literal `varStrArg` appears in
+// the source, so this is the single tag we need to expose. The compiler
+// itself never invokes IDispatch -- the constant just has to be present
+// so ncal.pas's `translate_disp_call` body translates cleanly.
+inline constexpr int32_t p_varstrarg = 0x48;
 
 struct p_tsystemtime {
   uint16_t p_year = 0;
