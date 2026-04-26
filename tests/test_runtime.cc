@@ -172,6 +172,11 @@ void test_runtime_path_helpers_match_compiler_expectations() {
   const auto path = tp2cc_ansistring_of("/tmp/archive.tar.gz");
 
   CHECK_EQ(p_to_std_string(p_extractfilepath(path)), std::string("/tmp/"));
+  CHECK_EQ(p_to_std_string(p_extractfiledir(path)), std::string("/tmp"));
+  CHECK_EQ(p_to_std_string(p_extractfiledir(tp2cc_ansistring_of("/foo.txt"))),
+           std::string("/"));
+  CHECK_EQ(p_to_std_string(p_extractfiledir(tp2cc_ansistring_of("foo.txt"))),
+           std::string(""));
   CHECK_EQ(p_to_std_string(p_extractfilename(path)), std::string("archive.tar.gz"));
   CHECK_EQ(p_to_std_string(p_extractfileext(path)), std::string(".gz"));
   CHECK_EQ(p_to_std_string(p_changefileext(path, tp2cc_ansistring_of(".o"))),

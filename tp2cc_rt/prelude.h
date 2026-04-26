@@ -3106,6 +3106,19 @@ inline tp2cc_AnsiString p_extractfilepath(const Str& input) {
 }
 
 template <typename Str>
+inline tp2cc_AnsiString p_extractfiledir(const Str& input) {
+  std::string dir, name, ext;
+  tp2cc_split_path(p_to_std_string(input), dir, name, ext);
+  // ExtractFilePath returns "/tmp/", ExtractFileDir returns "/tmp" --
+  // same path, no trailing separator. Root ("/") keeps its slash so
+  // "ExtractFileDir('/foo.txt')" still resolves to "/".
+  if (dir.size() > 1 && (dir.back() == '/' || dir.back() == '\\')) {
+    dir.pop_back();
+  }
+  return tp2cc_ansistring_of(dir.c_str());
+}
+
+template <typename Str>
 inline tp2cc_AnsiString p_extractfilename(const Str& input) {
   std::string dir, name, ext;
   tp2cc_split_path(p_to_std_string(input), dir, name, ext);
