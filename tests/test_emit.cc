@@ -3293,6 +3293,32 @@ void test_overload_ambiguous_two_default_arg_overloads_reports_error() {
   CHECK(error_count() > before);
 }
 
+void test_forward_decl_does_not_create_duplicate_overload_candidate() {
+  // `function f : T; forward;` followed later by the actual
+  // `function f : T; begin ... end;` body. Both decls flow through
+  // typereg; if the forward stub were registered as a separate
+  // ProcInfo the picker would see two identically-typed candidates
+  // and (correctly) flag the call ambiguous. Only the implementation body
+  // should land in the registry.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "function statement : longint; forward;\n"
+      "procedure run;\n"
+      "var i : longint;\n"
+      "begin\n"
+      "  i := statement();\n"
+      "end;\n"
+      "function statement : longint;\n"
+      "begin\n"
+      "  statement := 0;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_statement()"));
+}
+
 void test_overload_local_unit_shadows_uses_chain_overloads() {
   // Pascal scope: a same-named decl in the current unit hides
   // overloads imported through `uses`. Without this rule, a local
@@ -4498,6 +4524,7 @@ int main() {
   RUN_TEST(test_overload_ambiguous_default_arg_vs_no_default_reports_error);
   RUN_TEST(test_overload_ambiguous_two_default_arg_overloads_reports_error);
   RUN_TEST(test_overload_default_arg_extends_arity_disambiguates_cleanly);
+  RUN_TEST(test_forward_decl_does_not_create_duplicate_overload_candidate);
   RUN_TEST(test_overload_local_unit_shadows_uses_chain_overloads);
   RUN_TEST(test_overload_exact_match_dominates_widening_alternatives);
   RUN_TEST(test_overload_picks_narrowest_widening_target);

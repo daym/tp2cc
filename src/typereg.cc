@@ -148,6 +148,12 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         auto pd_sp = std::static_pointer_cast<const ProcDecl>(d);
         const auto& pd = *pd_sp;
         if (!pd.of_type.empty()) continue;  // method body -- class handles it
+        // Forward decls are bound to a real implementation later in the
+        // same unit; registering both as separate ProcInfos would make
+        // overload resolution see two identically-typed candidates and
+        // (correctly) flag the call ambiguous. Skip the forward stub --
+        // the implementation pass will register the real one.
+        if (pd.is_forward) break;
         ProcInfo p;
         p.defining_unit = unit;
         p.decl = pd_sp;
