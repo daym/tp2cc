@@ -5041,16 +5041,21 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
 
         if (n == "sizeof" && c.args.size() == 1) {
-          // `sizeof(T)` on a type name -- map primitives to their C++
-          // expansion through the normal type-name lowering path.
-          // `sizeof(expr)` on any value expression stays as C++ `sizeof(expr)`.
+          // Pascal `sizeof` returns `longint`, but C++ `sizeof` is
+          // `size_t` (typically `unsigned int` or `unsigned long`). Wrap
+          // the result so arithmetic and overload resolution at the call
+          // site see the Pascal-correct signed int32_t -- otherwise e.g.
+          // `tostr(sizeof(aint))` ends up ambiguous against the
+          // qword/int64/longint overload set.
+          std::string inner;
           if (c.args[0]->kind == Kind::Ident) {
             const auto& tn = static_cast<const Ident&>(*c.args[0]);
             if (is_visible_type_name(tn.name)) {
-              return "sizeof(" + type_name_text_to_cxx(tn.name) + ")";
+              inner = "sizeof(" + type_name_text_to_cxx(tn.name) + ")";
             }
           }
-          return "sizeof(" + expr_to_cxx(*c.args[0]) + ")";
+          if (inner.empty()) inner = "sizeof(" + expr_to_cxx(*c.args[0]) + ")";
+          return "static_cast<int32_t>(" + inner + ")";
         } else if (n == "typeof" && c.args.size() == 1 &&
                    c.args[0]->kind == Kind::Ident && registry) {
           // Pascal `typeof(T)` takes a TYPE NAME, not a value. In C++

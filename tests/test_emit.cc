@@ -3043,6 +3043,26 @@ void test_overload_picks_pchar_to_shortstring_over_ansistring() {
   CHECK(!contains(out.impl, "p_upper(static_cast<::rt::p_char>"));
 }
 
+void test_sizeof_lowers_to_int32_to_match_pascal_longint_semantics() {
+  // Pascal `sizeof` returns `longint`; emitting raw C++ `sizeof(...)`
+  // would yield `size_t` (unsigned), which then bombs against an
+  // overload set that has signed/unsigned variants of the same width
+  // (qword / int64 / longint) -- everything is one standard conversion
+  // away, equally ranked, ambiguous.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type myrec = record x : longint; end;\n"
+      "function note(n : longint) : longint;\n"
+      "implementation\n"
+      "function note(n : longint) : longint;\n"
+      "begin\n"
+      "  note := sizeof(myrec);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "static_cast<int32_t>(sizeof(p_myrec))"));
+}
+
 void test_overload_picks_unsigned_widening_over_sign_change() {
   // For an unsigned arg, `f(uint64)` (IntWideningSameSign, rank 4)
   // beats both `f(int64)` and `f(int32)` (OrdinalSignChange, rank 9).
@@ -3910,6 +3930,7 @@ int main() {
   RUN_TEST(test_inc_packed_field_routes_through_memcpy_inc);
   RUN_TEST(test_overload_picks_shortstring_target_for_short_string_arg);
   RUN_TEST(test_overload_picks_pchar_to_shortstring_over_ansistring);
+  RUN_TEST(test_sizeof_lowers_to_int32_to_match_pascal_longint_semantics);
   RUN_TEST(test_overload_picks_unsigned_widening_over_sign_change);
   RUN_TEST(test_class_alias_in_value_position_lowers_to_underlying_metaclass);
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
