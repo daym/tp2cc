@@ -1506,6 +1506,20 @@ using p_sw_word    = uint32_t;
 // linux / file descriptors
 using p_thandle   = int32_t;
 using p_tfiletime = int64_t;
+using p_tdatetime = double;
+using p_currency  = int64_t;
+using p_pansistring = tp2cc_AnsiString*;
+
+struct p_tsystemtime {
+  uint16_t p_year = 0;
+  uint16_t p_month = 0;
+  uint16_t p_dayofweek = 0;
+  uint16_t p_day = 0;
+  uint16_t p_hour = 0;
+  uint16_t p_minute = 0;
+  uint16_t p_second = 0;
+  uint16_t p_milliseconds = 0;
+};
 
 // signal handler (syslinux) + POSIX signal numbers used by catch.pas.
 using p_signalhandler = void (*)(int32_t);
@@ -1520,6 +1534,42 @@ inline constexpr int32_t p_sigfpe  = 8;
 inline constexpr int32_t p_sigkill = 9;
 inline constexpr int32_t p_sigsegv = 11;
 inline constexpr int32_t p_sigterm = 15;
+
+template <typename T>
+inline T p_swapendian(T value) {
+  if constexpr (std::is_enum_v<T>) {
+    using Plain = std::underlying_type_t<T>;
+    using Unsigned = std::make_unsigned_t<Plain>;
+    Unsigned bits = static_cast<Unsigned>(value);
+    if constexpr (sizeof(Unsigned) == 1) {
+      return value;
+    } else if constexpr (sizeof(Unsigned) == 2) {
+      return static_cast<T>(static_cast<Plain>(__builtin_bswap16(bits)));
+    } else if constexpr (sizeof(Unsigned) == 4) {
+      return static_cast<T>(static_cast<Plain>(__builtin_bswap32(bits)));
+    } else if constexpr (sizeof(Unsigned) == 8) {
+      return static_cast<T>(static_cast<Plain>(__builtin_bswap64(bits)));
+    } else {
+      static_assert(sizeof(Unsigned) <= 8,
+                    "p_swapendian only supports 1/2/4/8-byte ordinal values");
+    }
+  } else {
+    using Unsigned = std::make_unsigned_t<T>;
+    Unsigned bits = static_cast<Unsigned>(value);
+    if constexpr (sizeof(Unsigned) == 1) {
+      return value;
+    } else if constexpr (sizeof(Unsigned) == 2) {
+      return static_cast<T>(__builtin_bswap16(bits));
+    } else if constexpr (sizeof(Unsigned) == 4) {
+      return static_cast<T>(__builtin_bswap32(bits));
+    } else if constexpr (sizeof(Unsigned) == 8) {
+      return static_cast<T>(__builtin_bswap64(bits));
+    } else {
+      static_assert(sizeof(Unsigned) <= 8,
+                    "p_swapendian only supports 1/2/4/8-byte ordinal values");
+    }
+  }
+}
 
 template <typename T>
 inline constexpr int tp2cc_ordinal_value(T x) {
@@ -2945,6 +2995,98 @@ inline void p_fsplit(const tp2cc_ShortString<>& input, tp2cc_ShortString<>& dir,
   name = tp2cc_shortstring_of<>(name_part.c_str());
   ext = tp2cc_shortstring_of<>(ext_part.c_str());
 }
+inline void tp2cc_split_path(const std::string& input, std::string& dir,
+                             std::string& name, std::string& ext) {
+  std::string path = input;
+  std::string prefix;
+  if (path.size() >= 2 &&
+      std::isalpha(static_cast<unsigned char>(path[0])) &&
+      path[1] == ':') {
+    prefix = path.substr(0, 2);
+    path.erase(0, 2);
+  }
+
+  size_t last_sep = path.find_last_of("/\\");
+  std::string leaf = path;
+  dir = prefix;
+  if (last_sep != std::string::npos) {
+    dir += path.substr(0, last_sep + 1);
+    leaf = path.substr(last_sep + 1);
+  }
+
+  size_t dot = leaf.find_last_of('.');
+  if (dot != std::string::npos && dot != 0) {
+    name = leaf.substr(0, dot);
+    ext = leaf.substr(dot);
+  } else {
+    name = leaf;
+    ext.clear();
+  }
+}
+
+template <typename Str>
+inline tp2cc_AnsiString p_extractfilepath(const Str& input) {
+  std::string dir, name, ext;
+  tp2cc_split_path(p_to_std_string(input), dir, name, ext);
+  return tp2cc_ansistring_of(dir.c_str());
+}
+
+template <typename Str>
+inline tp2cc_AnsiString p_extractfilename(const Str& input) {
+  std::string dir, name, ext;
+  tp2cc_split_path(p_to_std_string(input), dir, name, ext);
+  return tp2cc_ansistring_of((name + ext).c_str());
+}
+
+template <typename Str>
+inline tp2cc_AnsiString p_extractfileext(const Str& input) {
+  std::string dir, name, ext;
+  tp2cc_split_path(p_to_std_string(input), dir, name, ext);
+  return tp2cc_ansistring_of(ext.c_str());
+}
+
+template <typename Path, typename Ext>
+inline tp2cc_AnsiString p_changefileext(const Path& input, const Ext& ext) {
+  std::string dir, name, old_ext;
+  tp2cc_split_path(p_to_std_string(input), dir, name, old_ext);
+  return tp2cc_ansistring_of((dir + name + p_to_std_string(ext)).c_str());
+}
+
+template <typename Str>
+inline tp2cc_AnsiString p_expandfilename(const Str& input) {
+  return tp2cc_ansistring_of(p_to_std_string(p_fexpand(tp2cc_shortstring_of<>(p_to_std_string(input).c_str()))).c_str());
+}
+
+template <typename Str>
+inline tp2cc_AnsiString p_getenvironmentvariable(const Str& name) {
+  std::string key = p_to_std_string(name);
+  const char* value = std::getenv(key.c_str());
+  return tp2cc_ansistring_of(value ? value : "");
+}
+
+template <typename Str>
+inline bool p_deletefile(const Str& name) {
+  return std::remove(p_to_std_string(name).c_str()) == 0;
+}
+
+template <typename Str>
+inline bool p_fileexists(const Str& name) {
+  struct stat st{};
+  return ::stat(p_to_std_string(name).c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+template <typename Str>
+inline bool p_directoryexists(const Str& name) {
+  struct stat st{};
+  return ::stat(p_to_std_string(name).c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+template <typename OldName, typename NewName>
+inline bool p_renamefile(const OldName& old_name, const NewName& new_name) {
+  return std::rename(p_to_std_string(old_name).c_str(),
+                     p_to_std_string(new_name).c_str()) == 0;
+}
+
 // FExpand: produce a fully-qualified, lexically normalised form of
 // `path`.  This is a string operation: GetDir is read once for the
 // cwd, and otherwise the filesystem is not touched.  Non-existent
@@ -3028,6 +3170,237 @@ inline tp2cc_ShortString<> p_fexpand(const tp2cc_ShortString<>& s) {
   }
 
   return tp2cc_shortstring_of<>(out.c_str());
+}
+
+inline constexpr int64_t tp2cc_tdatetime_unix_epoch_days = 25569;
+
+inline int64_t tp2cc_days_from_civil(int32_t year, uint32_t month, uint32_t day) {
+  year -= month <= 2;
+  const int32_t era = (year >= 0 ? year : year - 399) / 400;
+  const uint32_t yoe = static_cast<uint32_t>(year - era * 400);
+  const uint32_t doy = (153 * (month + (month > 2 ? static_cast<uint32_t>(-3) : 9)) + 2) / 5 + day - 1;
+  const uint32_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + static_cast<int32_t>(doe) - 719468;
+}
+
+inline void tp2cc_civil_from_days(int64_t days, int32_t& year, uint32_t& month,
+                                  uint32_t& day) {
+  days += 719468;
+  const int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+  const uint32_t doe = static_cast<uint32_t>(days - era * 146097);
+  const uint32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  year = static_cast<int32_t>(yoe) + static_cast<int32_t>(era) * 400;
+  const uint32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const uint32_t mp = (5 * doy + 2) / 153;
+  day = doy - (153 * mp + 2) / 5 + 1;
+  month = mp < 10 ? mp + 3 : mp - 9;
+  year += month <= 2;
+}
+
+inline p_tdatetime tp2cc_make_tdatetime(int32_t year, uint32_t month,
+                                        uint32_t day, uint32_t hour = 0,
+                                        uint32_t minute = 0,
+                                        uint32_t second = 0,
+                                        uint32_t millisecond = 0) {
+  const int64_t days =
+      tp2cc_days_from_civil(year, month, day) + tp2cc_tdatetime_unix_epoch_days;
+  const uint64_t msec =
+      ((static_cast<uint64_t>(hour) * 60 + minute) * 60 + second) * 1000 + millisecond;
+  return static_cast<p_tdatetime>(days) +
+         static_cast<p_tdatetime>(msec) / 86400000.0;
+}
+
+inline void tp2cc_decode_tdatetime(p_tdatetime value, int32_t& year,
+                                   uint32_t& month, uint32_t& day,
+                                   uint32_t& hour, uint32_t& minute,
+                                   uint32_t& second, uint32_t& millisecond) {
+  double day_part = std::floor(value);
+  double frac = value - day_part;
+  if (frac < 0) {
+    frac += 1.0;
+    day_part -= 1.0;
+  }
+  int64_t days = static_cast<int64_t>(day_part) - tp2cc_tdatetime_unix_epoch_days;
+  tp2cc_civil_from_days(days, year, month, day);
+
+  uint64_t total_msec = static_cast<uint64_t>(std::llround(frac * 86400000.0));
+  if (total_msec >= 86400000ull) {
+    total_msec = 0;
+    tp2cc_civil_from_days(days + 1, year, month, day);
+  }
+  hour = static_cast<uint32_t>(total_msec / 3600000ull);
+  total_msec %= 3600000ull;
+  minute = static_cast<uint32_t>(total_msec / 60000ull);
+  total_msec %= 60000ull;
+  second = static_cast<uint32_t>(total_msec / 1000ull);
+  millisecond = static_cast<uint32_t>(total_msec % 1000ull);
+}
+
+inline p_tdatetime p_filedatetodatetime(int32_t filedate) {
+  const uint32_t sec2 = static_cast<uint32_t>(filedate & 31u);
+  const uint32_t minute = static_cast<uint32_t>((filedate >> 5) & 63u);
+  const uint32_t hour = static_cast<uint32_t>((filedate >> 11) & 31u);
+  const uint32_t day = static_cast<uint32_t>((filedate >> 16) & 31u);
+  const uint32_t month = static_cast<uint32_t>((filedate >> 21) & 15u);
+  const uint32_t year = static_cast<uint32_t>(((filedate >> 25) & 127u) + 1980u);
+  return tp2cc_make_tdatetime(static_cast<int32_t>(year), month, day, hour,
+                              minute, sec2 * 2u, 0);
+}
+
+inline void p_decodedate(p_tdatetime value, uint16_t& year, uint16_t& month,
+                         uint16_t& day) {
+  int32_t y = 0;
+  uint32_t m = 0, d = 0, hh = 0, mm = 0, ss = 0, ms = 0;
+  tp2cc_decode_tdatetime(value, y, m, d, hh, mm, ss, ms);
+  year = static_cast<uint16_t>(y);
+  month = static_cast<uint16_t>(m);
+  day = static_cast<uint16_t>(d);
+}
+
+inline void p_decodetime(p_tdatetime value, uint16_t& hour, uint16_t& minute,
+                         uint16_t& second, uint16_t& msec) {
+  int32_t y = 0;
+  uint32_t m = 0, d = 0, hh = 0, mm = 0, ss = 0, ms = 0;
+  tp2cc_decode_tdatetime(value, y, m, d, hh, mm, ss, ms);
+  hour = static_cast<uint16_t>(hh);
+  minute = static_cast<uint16_t>(mm);
+  second = static_cast<uint16_t>(ss);
+  msec = static_cast<uint16_t>(ms);
+}
+
+inline p_tdatetime p_date() {
+  std::time_t now = std::time(nullptr);
+  std::tm lt{};
+  ::localtime_r(&now, &lt);
+  return tp2cc_make_tdatetime(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
+}
+
+inline p_tdatetime p_time() {
+  struct timeval tv{};
+  ::gettimeofday(&tv, nullptr);
+  std::tm lt{};
+  std::time_t now = static_cast<std::time_t>(tv.tv_sec);
+  ::localtime_r(&now, &lt);
+  return static_cast<p_tdatetime>(
+      ((lt.tm_hour * 60 + lt.tm_min) * 60 + lt.tm_sec) * 1000 + tv.tv_usec / 1000) /
+         86400000.0;
+}
+
+inline void p_getlocaltime(p_tsystemtime& out) {
+  struct timeval tv{};
+  ::gettimeofday(&tv, nullptr);
+  std::time_t now = static_cast<std::time_t>(tv.tv_sec);
+  std::tm lt{};
+  if (!::localtime_r(&now, &lt)) {
+    out = {};
+    return;
+  }
+  out.p_year = static_cast<uint16_t>(lt.tm_year + 1900);
+  out.p_month = static_cast<uint16_t>(lt.tm_mon + 1);
+  out.p_dayofweek = static_cast<uint16_t>(lt.tm_wday);
+  out.p_day = static_cast<uint16_t>(lt.tm_mday);
+  out.p_hour = static_cast<uint16_t>(lt.tm_hour);
+  out.p_minute = static_cast<uint16_t>(lt.tm_min);
+  out.p_second = static_cast<uint16_t>(lt.tm_sec);
+  out.p_milliseconds = static_cast<uint16_t>(tv.tv_usec / 1000);
+}
+
+inline int32_t tp2cc_stat_to_filedatetime(const struct stat& st) {
+  std::tm lt{};
+  std::time_t when = st.st_mtime;
+  if (!::localtime_r(&when, &lt)) return -1;
+  int32_t packed = ((lt.tm_year + 1900 - 1980) & 127);
+  packed = (packed << 4) | ((lt.tm_mon + 1) & 15);
+  packed = (packed << 5) | (lt.tm_mday & 31);
+  packed = (packed << 5) | (lt.tm_hour & 31);
+  packed = (packed << 6) | (lt.tm_min & 63);
+  packed = (packed << 5) | ((lt.tm_sec / 2) & 31);
+  return packed;
+}
+
+inline int32_t p_filegetdate(p_thandle handle) {
+  struct stat st{};
+  return ::fstat(handle, &st) == 0 ? tp2cc_stat_to_filedatetime(st) : -1;
+}
+
+inline int32_t p_filesetdate(p_thandle handle, int32_t age) {
+  std::tm tmv{};
+  tmv.tm_year = static_cast<int>(((age >> 25) & 127) + 80);
+  tmv.tm_mon = static_cast<int>(((age >> 21) & 15) - 1);
+  tmv.tm_mday = static_cast<int>((age >> 16) & 31);
+  tmv.tm_hour = static_cast<int>((age >> 11) & 31);
+  tmv.tm_min = static_cast<int>((age >> 5) & 63);
+  tmv.tm_sec = static_cast<int>(age & 31) * 2;
+  std::time_t when = std::mktime(&tmv);
+  if (when == static_cast<std::time_t>(-1)) return -1;
+  timespec ts[2]{};
+  ts[0].tv_sec = when;
+  ts[1].tv_sec = when;
+  return ::futimens(handle, ts) == 0 ? 0 : -1;
+}
+
+template <typename Str>
+inline int32_t p_fileage(const Str& name) {
+  struct stat st{};
+  return ::stat(p_to_std_string(name).c_str(), &st) == 0
+             ? tp2cc_stat_to_filedatetime(st)
+             : -1;
+}
+
+inline p_thandle p_getfilehandle(tp2cc_TextFile& f) {
+  return f.f ? ::fileno(f.f) : -1;
+}
+
+template <typename T>
+inline p_thandle p_getfilehandle(tp2cc_TypedFile<T>& f) {
+  return f.f ? ::fileno(f.f) : -1;
+}
+
+template <typename Path, typename Cmd>
+inline int32_t p_executeprocess(const Path& path, const Cmd& command_line) {
+  std::vector<std::string> args;
+  std::string exe = p_to_std_string(path);
+  if (!exe.empty()) {
+    args.push_back(exe);
+  }
+  auto rest = p_split_commandline(p_to_std_string(command_line));
+  args.insert(args.end(), rest.begin(), rest.end());
+  p_spawn_process(args);
+  return p_last_dosexitcode;
+}
+
+inline int32_t p_executeprocess(const tp2cc_AnsiString& path,
+                                const tp2cc_OpenArray<tp2cc_AnsiString>& args) {
+  std::vector<std::string> argv;
+  std::string exe = p_to_std_string(path);
+  if (!exe.empty()) argv.push_back(exe);
+  for (const auto& arg : args) argv.push_back(p_to_std_string(arg));
+  p_spawn_process(argv);
+  return p_last_dosexitcode;
+}
+
+inline tp2cc_AnsiString p_stringofchar(p_char c, p_sizeint count) {
+  tp2cc_AnsiString out{};
+  if (count <= 0) return out;
+  out.set_length(count);
+  p_char* bytes = out.mutable_bytes();
+  for (int32_t i = 0; i < count; ++i) bytes[i] = c;
+  return out;
+}
+
+template <typename A, typename B>
+inline int32_t p_ansicomparefilename(const A& lhs, const B& rhs) {
+  auto normalize = [](std::string s) {
+    for (char& c : s) {
+      if (c == '\\') c = '/';
+    }
+    return s;
+  };
+  std::string a = normalize(p_to_std_string(lhs));
+  std::string b = normalize(p_to_std_string(rhs));
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
 
 // `EpochToLocal(epoch, var year,month,day,hour,minute,second)`
@@ -3208,6 +3581,15 @@ requires (!std::is_pointer_v<T>)
 inline void p_fillword(T& dest, int32_t count, uint16_t value) {
   p_fillword(static_cast<void*>(std::addressof(dest)), count, value);
 }
+inline void p_filldword(void* dest, int32_t count, uint32_t value) {
+  auto* p = static_cast<uint32_t*>(dest);
+  for (int32_t i = 0; i < count; ++i) p[i] = value;
+}
+template <typename T>
+requires (!std::is_pointer_v<T>)
+inline void p_filldword(T& dest, int32_t count, uint32_t value) {
+  p_filldword(static_cast<void*>(std::addressof(dest)), count, value);
+}
 
 inline int32_t p_compareword(const void* a, const void* b, int32_t count) {
   auto* pa = static_cast<const uint16_t*>(a);
@@ -3236,6 +3618,26 @@ template <typename A, typename B>
 inline int32_t p_comparebyte(const A& a, const B& b, int32_t count) {
   return p_comparebyte(static_cast<const void*>(std::addressof(a)),
                        static_cast<const void*>(std::addressof(b)), count);
+}
+inline int32_t p_comparechar(const void* a, const void* b, int32_t count) {
+  return p_comparebyte(a, b, count);
+}
+template <typename A, typename B>
+inline int32_t p_comparechar(const A& a, const B& b, int32_t count) {
+  return p_comparebyte(a, b, count);
+}
+
+inline int32_t p_indexbyte(const void* data, int32_t count, uint8_t needle) {
+  auto* p = static_cast<const uint8_t*>(data);
+  for (int32_t i = 0; i < count; ++i) {
+    if (p[i] == needle) return i;
+  }
+  return -1;
+}
+template <typename T, typename Needle>
+inline int32_t p_indexbyte(const T& data, int32_t count, Needle needle) {
+  return p_indexbyte(static_cast<const void*>(std::addressof(data)), count,
+                     static_cast<uint8_t>(needle));
 }
 
 template <typename Elem, typename Needle>

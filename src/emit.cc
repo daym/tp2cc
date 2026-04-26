@@ -363,10 +363,13 @@ const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
       {"punicodecharmapping", "::rt::p_punicodecharmapping"},
       {"tunicodemap", "::rt::p_tunicodemap"},
       {"punicodemap", "::rt::p_punicodemap"},
+      {"currency", "::rt::p_currency"},
       {"datetime", "::rt::p_datetime"},
+      {"tdatetime", "::rt::p_tdatetime"},
       {"dirstr", "::rt::p_dirstr"},
       {"namestr", "::rt::p_namestr"},
       {"extstr", "::rt::p_extstr"},
+      {"pansistring", "::rt::p_pansistring"},
       {"pathstr", "::rt::p_pathstr"},
       {"ptrint", "::rt::p_ptrint"},
       {"ptruint", "::rt::p_ptruint"},
@@ -376,6 +379,7 @@ const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
       {"sizeuint", "::rt::p_sizeuint"},
       {"stat", "::rt::p_stat"},
       {"tclass", "::rt::p_tclass"},
+      {"tsystemtime", "::rt::p_tsystemtime"},
       {"tmethod", "::rt::p_tmethod"},
   };
   return m;

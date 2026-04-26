@@ -168,6 +168,96 @@ void test_charset_runtime_registers_and_loads_mappings() {
   delete loaded;
 }
 
+void test_runtime_path_helpers_match_compiler_expectations() {
+  const auto path = tp2cc_ansistring_of("/tmp/archive.tar.gz");
+
+  CHECK_EQ(p_to_std_string(p_extractfilepath(path)), std::string("/tmp/"));
+  CHECK_EQ(p_to_std_string(p_extractfilename(path)), std::string("archive.tar.gz"));
+  CHECK_EQ(p_to_std_string(p_extractfileext(path)), std::string(".gz"));
+  CHECK_EQ(p_to_std_string(p_changefileext(path, tp2cc_ansistring_of(".o"))),
+           std::string("/tmp/archive.tar.o"));
+}
+
+void test_runtime_tdatetime_decodes_current_and_dos_times() {
+  const p_tdatetime midnight =
+      tp2cc_make_tdatetime(2024, 2, 3, 0, 0, 0, 0);
+  const p_tdatetime stamped =
+      tp2cc_make_tdatetime(2024, 2, 3, 4, 5, 6, 0);
+
+  uint16_t year = 0, month = 0, day = 0;
+  uint16_t hour = 0, minute = 0, second = 0, msec = 0;
+  p_decodedate(midnight, year, month, day);
+  CHECK_EQ(year, 2024);
+  CHECK_EQ(month, 2);
+  CHECK_EQ(day, 3);
+
+  p_decodetime(stamped, hour, minute, second, msec);
+  CHECK_EQ(hour, 4);
+  CHECK_EQ(minute, 5);
+  CHECK_EQ(second, 6);
+  CHECK_EQ(msec, 0);
+
+  DateTime dos{};
+  dos.p_year = 2024;
+  dos.p_month = 2;
+  dos.p_day = 3;
+  dos.p_hour = 4;
+  dos.p_min = 5;
+  dos.p_sec = 6;
+  int32_t filedate = 0;
+  p_packtime(dos, filedate);
+  const p_tdatetime converted = p_filedatetodatetime(filedate);
+  p_decodedate(converted, year, month, day);
+  p_decodetime(converted, hour, minute, second, msec);
+  CHECK_EQ(year, 2024);
+  CHECK_EQ(month, 2);
+  CHECK_EQ(day, 3);
+  CHECK_EQ(hour, 4);
+  CHECK_EQ(minute, 5);
+  CHECK_EQ(second, 6);
+}
+
+void test_runtime_file_helpers_expose_real_sysutils_surface() {
+  char path[] = "/tmp/tp2cc-file-XXXXXX";
+  int fd = ::mkstemp(path);
+  CHECK(fd >= 0);
+  std::FILE* f = ::fdopen(fd, "w+");
+  CHECK(f != nullptr);
+  std::fputs("hello", f);
+  std::fflush(f);
+
+  tp2cc_TextFile tf{};
+  tf.f = f;
+  tf.name = tp2cc_shortstring_of<>(path);
+
+  CHECK(p_fileexists(tp2cc_ansistring_of(path)));
+  CHECK_EQ(p_getfilehandle(tf), fd);
+  const int32_t age = p_filegetdate(fd);
+  CHECK(age != -1);
+  CHECK_EQ(p_filesetdate(fd, age), 0);
+  CHECK_EQ(p_fileage(tp2cc_ansistring_of(path)), age);
+
+  std::fclose(f);
+  CHECK(p_deletefile(tp2cc_ansistring_of(path)));
+  CHECK(!p_fileexists(tp2cc_ansistring_of(path)));
+}
+
+void test_runtime_swap_fill_and_compare_helpers() {
+  CHECK_EQ(p_swapendian<uint16_t>(0x1234u), 0x3412u);
+  CHECK_EQ(p_swapendian<uint32_t>(0x12345678u), 0x78563412u);
+
+  uint32_t words[4]{};
+  p_filldword(words, 4, 0xaabbccddu);
+  for (uint32_t word : words) CHECK_EQ(word, 0xaabbccddu);
+
+  const auto s1 = tp2cc_shortstring_of<>("abc");
+  const auto s2 = tp2cc_shortstring_of<>("abd");
+  CHECK(p_comparechar(s1[1], s2[1], 2) < 0);
+  CHECK_EQ(p_indexbyte("abc\0", 4, static_cast<uint8_t>('c')), 2);
+  CHECK_EQ(p_to_std_string(p_stringofchar(tp2cc_char_of('x'), 3)), std::string("xxx"));
+  CHECK_EQ(p_ansicomparefilename("/tmp/a", "/tmp/a"), 0);
+}
+
 void test_getmem_typed_pointer_keeps_requested_prefix_size() {
   using HugeSymIndex = tp2cc_Array<void*, 0, 536870911>;
 
@@ -986,6 +1076,10 @@ int main() {
   RUN_TEST(test_val_keeps_leading_zero_decimals_decimal);
   RUN_TEST(test_bootstrap_pointer_sized_aliases_are_32bit);
   RUN_TEST(test_charset_runtime_registers_and_loads_mappings);
+  RUN_TEST(test_runtime_path_helpers_match_compiler_expectations);
+  RUN_TEST(test_runtime_tdatetime_decodes_current_and_dos_times);
+  RUN_TEST(test_runtime_file_helpers_expose_real_sysutils_surface);
+  RUN_TEST(test_runtime_swap_fill_and_compare_helpers);
   RUN_TEST(test_getmem_typed_pointer_keeps_requested_prefix_size);
   RUN_TEST(test_shortstring_pointer_deref_uses_live_prefix_storage);
   RUN_TEST(test_shortstring_pointer_deref_interoperates_with_string_ops);

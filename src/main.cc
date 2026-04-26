@@ -117,6 +117,42 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
     h << "  return ::rt::tp2cc_metaclass_value_p_exception();\n";
     h << "}\n";
     h << "\n";
+    h << "// Re-export the Pascal-visible SysUtils surface that the compiler\n";
+    h << "// reaches through qualified unit names when SysUtils itself stays an\n";
+    h << "// external RTL stub.\n";
+    static constexpr const char* kSysutilsTypeAliases[] = {
+        "p_tdatetime",
+        "p_tsystemtime",
+        "p_pansistring",
+    };
+    for (const char* name : kSysutilsTypeAliases) {
+      h << "using " << name << " = ::rt::" << name << ";\n";
+    }
+    static constexpr const char* kSysutilsValueAliases[] = {
+        "p_changefileext",
+        "p_getenvironmentvariable",
+        "p_expandfilename",
+        "p_executeprocess",
+        "p_getlocaltime",
+        "p_decodetime",
+        "p_decodedate",
+        "p_filedatetodatetime",
+        "p_time",
+        "p_date",
+        "p_fileexists",
+        "p_directoryexists",
+        "p_renamefile",
+        "p_filegetdate",
+        "p_filesetdate",
+        "p_fileage",
+        "p_getfilehandle",
+        "p_stringofchar",
+        "p_ansicomparefilename",
+    };
+    for (const char* name : kSysutilsValueAliases) {
+      h << "using ::rt::" << name << ";\n";
+    }
+    h << "\n";
     h << "// Compiler units catch a small SysUtils exception hierarchy even\n";
     h << "// when the full SysUtils unit is not translated. Keep just the\n";
     h << "// classes the compiler sources reference, with the same inheritance\n";

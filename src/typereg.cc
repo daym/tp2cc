@@ -203,6 +203,8 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"maxavail",   0, true,  false, "longint"},
       {"paramcount", 0, true,  false, "longint"},
       {"dosexitcode",0, true,  false, "longint"},
+      {"date",       0, true,  false, "tdatetime"},
+      {"time",       0, true,  false, "tdatetime"},
       {"writeln",    1, false, true,  ""},
       {"write",      1, false, true,  ""},
       {"readln",     1, false, true,  ""},
