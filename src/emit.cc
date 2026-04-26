@@ -4298,6 +4298,21 @@ Emitter::ResolveResult Emitter::resolve_name(
         r.accepts_zero_args = true;
         return r;
       }
+      // `with obj do ... Free;` -- bare-Ident form of `obj.Free`. The
+      // Member-form has its own lowering through `maybe_lower_class_free_member`;
+      // mirror it here so the inherited TObject method is found via the
+      // with-bound expression rather than the registry chain (TObject
+      // itself is built-in, not in `registry->classes`, so a generic
+      // class-method lookup dead-ends before reaching it).
+      if (const auto* ci = class_info_for_type_name(cls);
+          ci && ci->is_reference_type && name == "free") {
+        r.cxx = "::rt::p_tobject::p_free(" + it->cxx_text + ")";
+        r.kind = ResolvedKind::WithMethod;
+        // The expression is already a complete call; no implicit-zero-arg
+        // wrap is wanted at the use site.
+        r.is_callable = false;
+        return r;
+      }
       if (!cls.empty()) {
         if (auto* m = registry->lookup_class_method(cls, name)) {
           r.cxx = it->cxx_text + access + mangle(name);

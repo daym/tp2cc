@@ -3209,6 +3209,33 @@ void test_overload_picks_unsigned_widening_over_sign_change() {
   CHECK(contains(out.impl, "p_tostr(static_cast<uint64_t>(p_v))"));
 }
 
+void test_with_block_bare_free_lowers_through_static_helper() {
+  // `with obj do ... Free;` -- the bare Ident `Free` should resolve to
+  // the same null-safe TObject-static helper as the Member form `obj.Free`,
+  // anchored on the with-bound expression. Without this, `Free` falls
+  // through to the rt-fallback as `::rt::p_free` which doesn't exist.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TFoo = class\n"
+      "  end;\n"
+      "procedure run(obj : TFoo);\n"
+      "implementation\n"
+      "procedure run(obj : TFoo);\n"
+      "begin\n"
+      "  with obj do begin\n"
+      "    Free;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  // The `with` binding is materialised as a `tp2cc_with_<N>` reference;
+  // what matters is that the bare `Free` lowered through the static
+  // helper anchored on that binding rather than the rt-fallback.
+  CHECK(contains(out.impl, "::rt::p_tobject::p_free(tp2cc_with_0);"));
+  CHECK(!contains(out.impl, "::rt::p_free"));
+}
+
 void test_metaclass_member_base_emits_with_implicit_zero_arg_call() {
   // `TBaseClass(classtype).Create(...)` -- the cast result has metaclass
   // type, so the Member emit goes through the metaclass-member-access
@@ -4077,6 +4104,7 @@ int main() {
   RUN_TEST(test_overload_picks_pchar_to_shortstring_over_ansistring);
   RUN_TEST(test_sizeof_lowers_to_int32_to_match_pascal_longint_semantics);
   RUN_TEST(test_overload_picks_unsigned_widening_over_sign_change);
+  RUN_TEST(test_with_block_bare_free_lowers_through_static_helper);
   RUN_TEST(test_metaclass_member_base_emits_with_implicit_zero_arg_call);
   RUN_TEST(test_class_alias_in_value_position_lowers_to_underlying_metaclass);
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
