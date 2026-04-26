@@ -948,6 +948,8 @@ struct Emitter {
                              const ast::TypeExpr* param_type,
                              bool untyped_arg,
                              bool mutable_ref_arg);
+  std::string lower_implicit_zero_arg_call(const std::string& callee_text,
+                                           const ast::ProcDecl* decl);
   std::string lower_property_read(Location where,
                                   const std::string& base_cxx,
                                   const std::string& class_name,
@@ -3245,6 +3247,32 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
   return "((void*)&(" + arg_text + "))";
 }
 
+std::string Emitter::lower_implicit_zero_arg_call(const std::string& callee_text,
+                                                  const ProcDecl* decl) {
+  if (!decl) return callee_text + "()";
+
+  std::vector<const Expr*> args;
+  append_defaulted_trailing_call_args(decl, args);
+  if (args.empty()) return callee_text + "()";
+
+  std::vector<bool> untyped_arg(args.size(), false);
+  std::vector<bool> mutable_ref_arg(args.size(), false);
+  std::vector<const TypeExpr*> param_types(args.size(), nullptr);
+  mark_call_param_info(decl, untyped_arg, mutable_ref_arg, param_types);
+
+  // Bare Pascal `foo;` / `obj.meth;` can still mean a call when the omitted
+  // trailing actuals all come from defaults. Rebuild that full call here so
+  // implicit-call sites share the same argument lowering as explicit `Call`.
+  std::string out = callee_text + "(";
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (i) out += ", ";
+    out += lower_call_arg(*args[i], param_types[i], untyped_arg[i],
+                          mutable_ref_arg[i]);
+  }
+  out += ")";
+  return out;
+}
+
 std::string Emitter::lower_property_read(
     Location where, const std::string& base_cxx, const std::string& class_name,
     const PropertyInfo& prop, const std::vector<const Expr*>& indices) {
@@ -3938,7 +3966,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // function names as procedural-pointer values.
       bool want_call = !is_callee_context_ && block_depth > 0 &&
                        rr.is_callable && rr.accepts_zero_args;
-      return want_call ? rr.cxx + "()" : rr.cxx;
+      return want_call ? lower_implicit_zero_arg_call(rr.cxx, rr.proc) : rr.cxx;
     }
     case Kind::Binary: {
       const auto& n = static_cast<const Binary&>(e);
@@ -4227,7 +4255,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             std::string text = mangle(base_name) + "::" + mangle(m.name);
             bool want_call = !is_callee_context_ &&
                              rr.is_callable && rr.accepts_zero_args;
-            return want_call ? text + "()" : text;
+            return want_call ? lower_implicit_zero_arg_call(text, rr.proc) : text;
           }
         }
       }
@@ -4248,7 +4276,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               std::string text = base_cxx + "->" + mangle(m.name);
               bool want_call = !is_callee_context_ &&
                                method->accepts_zero_args;
-              return want_call ? text + "()" : text;
+              return want_call
+                         ? lower_implicit_zero_arg_call(text, method->decl.get())
+                         : text;
             }
           }
           if (ascii_lower(m.name) == "create") {
@@ -4300,7 +4330,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (is_callee_context_ || !registry) return text;
       if (bcls.empty()) return text;
       if (const auto* method = registry->lookup_class_method(bcls, m.name)) {
-        if (method->accepts_zero_args) text += "()";
+        if (method->accepts_zero_args) {
+          text = lower_implicit_zero_arg_call(text, method->decl.get());
+        }
       }
       return text;
     }
@@ -5083,6 +5115,13 @@ std::optional<std::string> Emitter::maybe_convert_proc_value(
   const TypeExpr* canon = canonicalize_type(target);
   if (!(canon && canon->kind == Kind::TyProcedural)) return std::nullopt;
   const auto& proc = static_cast<const TyProcedural&>(*canon);
+
+  if (proc.is_method && e.kind == Kind::NilLit) {
+    // `... of object` still uses the plain two-slot `tp2cc_MethodPtr` carrier.
+    // A typed Pascal `nil` for that target becomes an explicit empty carrier
+    // value here; the runtime type itself stays a dumb aggregate.
+    return type_to_cxx(*target) + "{}";
+  }
 
   // Typed procvar destinations want the callable value itself. In ordinary
   // value context the emitter auto-calls parameterless routines, so turn that

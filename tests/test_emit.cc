@@ -774,6 +774,26 @@ void test_method_trailing_default_argument_is_lowered() {
   CHECK(contains(out.impl, "->p_message(1, 9);"));
 }
 
+void test_method_pointer_trailing_default_nil_is_lowered_as_empty_value() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tqueue = procedure(msg : integer) of object;\n"
+      "procedure note(onqueue : tqueue = nil);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure note(onqueue : tqueue);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  note;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_note(p_tqueue{});"));
+}
+
 void test_singleton_typed_array_const() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -3556,6 +3576,7 @@ int main() {
   RUN_TEST(test_typed_array_const_with_inline_subrange_element_type);
   RUN_TEST(test_free_function_trailing_default_argument_is_lowered);
   RUN_TEST(test_method_trailing_default_argument_is_lowered);
+  RUN_TEST(test_method_pointer_trailing_default_nil_is_lowered_as_empty_value);
   RUN_TEST(test_singleton_typed_array_const);
   RUN_TEST(test_nested_array_type);
   RUN_TEST(test_named_subrange_array_type);
