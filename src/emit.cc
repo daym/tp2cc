@@ -3070,6 +3070,16 @@ const ProcDecl* Emitter::resolve_call_decl(const Expr& callee) {
   }
   if (callee.kind != Kind::Member || !registry) return nullptr;
   const auto& mem = static_cast<const Member&>(callee);
+  if (mem.base->kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(*mem.base);
+    if (registry->units.count(id.name)) {
+      // Unit-qualified calls (`verbose.message(...)`, `cfileutils.fileexists(...)`)
+      // still need the callee declaration here so trailing default arguments
+      // can be materialized before we emit the C++ call.
+      ResolveResult rr = resolve_name(mem.name, QualifierKind::Unit, id.name);
+      return rr.proc;
+    }
+  }
   std::string cls;
   if (mem.base->kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(*mem.base);

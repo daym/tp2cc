@@ -774,6 +774,24 @@ void test_method_trailing_default_argument_is_lowered() {
   CHECK(contains(out.impl, "->p_message(1, 9);"));
 }
 
+void test_unit_qualified_trailing_default_argument_is_lowered() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure note(w : integer; code : integer = 7);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure note(w : integer; code : integer);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  u.note(1);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_u::p_note(1, 7);"));
+}
+
 void test_method_pointer_trailing_default_nil_is_lowered_as_empty_value() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -3614,6 +3632,7 @@ int main() {
   RUN_TEST(test_typed_array_const_with_inline_subrange_element_type);
   RUN_TEST(test_free_function_trailing_default_argument_is_lowered);
   RUN_TEST(test_method_trailing_default_argument_is_lowered);
+  RUN_TEST(test_unit_qualified_trailing_default_argument_is_lowered);
   RUN_TEST(test_method_pointer_trailing_default_nil_is_lowered_as_empty_value);
   RUN_TEST(test_singleton_typed_array_const);
   RUN_TEST(test_nested_array_type);
