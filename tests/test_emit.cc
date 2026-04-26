@@ -2931,6 +2931,30 @@ void test_class_identifier_value_lowers_to_metaclass_descriptor() {
                  "p_result = (p_x->p_classtype() == tp2cc_metaclass_value_p_tchild());"));
 }
 
+void test_class_alias_in_value_position_lowers_to_underlying_metaclass() {
+  // `texportalias = texportbase;` is a Pascal type alias (not a new class).
+  // In value position the alias name still means the underlying class's
+  // metaclass, so passing the alias as a value must lower to the aliased
+  // class's metaclass-value function.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  texportbase = class\n"
+      "  end;\n"
+      "  texportalias = texportbase;\n"
+      "procedure registerit(c : tclass);\n"
+      "implementation\n"
+      "procedure registerit(c : tclass);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  registerit(texportalias);\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_registerit(tp2cc_metaclass_value_p_texportbase());"));
+}
+
 void test_metaclass_derived_constructor_surface_stays_visible() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -3737,6 +3761,7 @@ int main() {
   RUN_TEST(test_metaclass_alias_and_concrete_class_value_lowering);
   RUN_TEST(test_metaclass_cast_keeps_concrete_descriptor);
   RUN_TEST(test_class_identifier_value_lowers_to_metaclass_descriptor);
+  RUN_TEST(test_class_alias_in_value_position_lowers_to_underlying_metaclass);
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
   RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);
   RUN_TEST(test_inheritsfrom_uses_runtime_tclass_and_method_call);

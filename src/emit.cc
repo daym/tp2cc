@@ -3979,6 +3979,24 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             ci && ci->is_reference_type) {
           return metaclass_value_fn_cxx(n.name) + "()";
         }
+        // Type aliases of reference classes (`texportlibwdosx = texportlibwin`)
+        // appear in value position to mean the underlying class's metaclass.
+        // Follow the alias chain to its concrete class and emit that metaclass.
+        if (registry) {
+          auto ait = registry->aliases.find(ascii_lower(n.name));
+          if (ait != registry->aliases.end() && ait->second.target) {
+            const TypeExpr* canon =
+                registry->canonicalize(ait->second.target.get());
+            if (canon && canon->kind == Kind::TyName) {
+              const std::string& target =
+                  static_cast<const TyName&>(*canon).name;
+              if (const auto* tci = class_info_for_type_name(target);
+                  tci && tci->is_reference_type) {
+                return metaclass_value_fn_cxx(target) + "()";
+              }
+            }
+          }
+        }
       }
       // At namespace scope (block_depth == 0) we leave callable
       // names bare: Pascal typed-const initialisers reference
