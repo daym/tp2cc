@@ -3293,6 +3293,37 @@ void test_overload_ambiguous_two_default_arg_overloads_reports_error() {
   CHECK(error_count() > before);
 }
 
+void test_overload_picks_narrowest_widening_target() {
+  // `tostr(qword)` and `tostr(cardinal)` both widen `byte` (uint8) but
+  // `cardinal` (uint32) is the narrower target. Without a width-distance
+  // tiebreaker the two would tie at `IntWideningSameSign` and the call
+  // would be flagged ambiguous.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function tostr(i : qword) : shortstring;    overload;\n"
+      "function tostr(i : int64) : shortstring;    overload;\n"
+      "function tostr(i : cardinal) : shortstring; overload;\n"
+      "function tostr(i : longint) : shortstring;  overload;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "function tostr(i : qword) : shortstring;    begin tostr := ''; end;\n"
+      "function tostr(i : int64) : shortstring;    begin tostr := ''; end;\n"
+      "function tostr(i : cardinal) : shortstring; begin tostr := ''; end;\n"
+      "function tostr(i : longint) : shortstring;  begin tostr := ''; end;\n"
+      "procedure run;\n"
+      "var b : byte;\n"
+      "    s : shortstring;\n"
+      "begin\n"
+      "  s := tostr(b);\n"
+      "end;\n"
+      "end.\n");
+  // Cast wraps the picked overload's param type (cardinal -> uint32_t)
+  // because four candidates remain after arity narrowing.
+  CHECK(contains(out.impl, "static_cast<uint32_t>"));
+  CHECK(!contains(out.impl, "static_cast<uint64_t>"));
+}
+
 void test_overload_default_arg_extends_arity_disambiguates_cleanly() {
   // Sanity check the converse: `f(x : longint)` and `f(x : longint;
   // y : shortstring)`. A 2-arg call must select the second overload and
@@ -4396,6 +4427,7 @@ int main() {
   RUN_TEST(test_overload_ambiguous_default_arg_vs_no_default_reports_error);
   RUN_TEST(test_overload_ambiguous_two_default_arg_overloads_reports_error);
   RUN_TEST(test_overload_default_arg_extends_arity_disambiguates_cleanly);
+  RUN_TEST(test_overload_picks_narrowest_widening_target);
   RUN_TEST(test_property_read_lowers_to_getter_call);
   RUN_TEST(test_property_write_lowers_to_setter_call);
   RUN_TEST(test_property_read_through_field_lowers_to_field_access);

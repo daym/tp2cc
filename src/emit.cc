@@ -1020,9 +1020,23 @@ struct Emitter {
     Variant            = 10,  // any -> variant or variant -> any
     NotViable = 255,
   };
-  ConvRank rank_conversion(const ast::TypeExpr* arg,
-                           const ast::TypeExpr* param,
-                           bool var_param);
+  // Conversion score: the major rank above plus a tie-breaking
+  // `distance`. Within a single rank, Pascal prefers the candidate
+  // whose target type is the closest fit to the source -- e.g. a
+  // `byte` argument prefers `tostr(cardinal)` over `tostr(qword)`
+  // even though both are `IntWideningSameSign`. `distance` encodes
+  // that: smaller distance wins. 0 means "no distance applies"
+  // (e.g. Exact, Equal). The picker compares (rank, distance)
+  // lexicographically; without this, equal-rank widenings tie and
+  // the call gets flagged ambiguous.
+  struct ConvScore {
+    ConvRank rank = ConvRank::NotViable;
+    int distance = 0;
+    bool viable() const { return rank != ConvRank::NotViable; }
+  };
+  ConvScore rank_conversion(const ast::TypeExpr* arg,
+                            const ast::TypeExpr* param,
+                            bool var_param);
   // Picks the Pascal-best ProcDecl from a list of candidates given the
   // call-site argument expressions. Used by both free-function overload
   // sets (built from `ProcInfo::decl`) and class-method overload sets
@@ -3480,13 +3494,13 @@ bool Emitter::proc_accepts_zero_args(const ProcDecl& decl) {
 //
 // A defaulted-trailing-arg fill is rank 1 and handled at the call-site
 // expansion (`append_defaulted_trailing_call_args`), not here.
-Emitter::ConvRank Emitter::rank_conversion(const TypeExpr* arg,
-                                           const TypeExpr* param,
-                                           bool var_param) {
-  if (!arg || !param) return ConvRank::NotViable;
+Emitter::ConvScore Emitter::rank_conversion(const TypeExpr* arg,
+                                            const TypeExpr* param,
+                                            bool var_param) {
+  if (!arg || !param) return {};
   const TypeExpr* a = canonicalize_type(arg);
   const TypeExpr* p = canonicalize_type(param);
-  if (!a || !p) return ConvRank::NotViable;
+  if (!a || !p) return {};
 
   auto type_text = [&](const TypeExpr* t) {
     return t ? type_to_cxx(*t) : std::string{};
@@ -3495,7 +3509,7 @@ Emitter::ConvRank Emitter::rank_conversion(const TypeExpr* arg,
   // 1. Exact identity (same canonical type by C++ spelling).
   std::string a_cxx = type_text(a);
   std::string p_cxx = type_text(p);
-  if (!a_cxx.empty() && a_cxx == p_cxx) return ConvRank::Exact;
+  if (!a_cxx.empty() && a_cxx == p_cxx) return {ConvRank::Exact, 0};
 
   // 2. Equal-modulo-distinct/subrange. Strip TyDistinct/TySubrange wrappers
   // on both sides; if the remaining canonical types match, treat as Equal.
@@ -3514,7 +3528,7 @@ Emitter::ConvRank Emitter::rank_conversion(const TypeExpr* arg,
   const TypeExpr* a_under = strip_wrap(a);
   const TypeExpr* p_under = strip_wrap(p);
   if (a_under && p_under && type_text(a_under) == type_text(p_under)) {
-    return ConvRank::Equal;
+    return {ConvRank::Equal, 0};
   }
 
   // var/const/out params: only ranks 1..3 are valid. Stop here for them
@@ -3528,20 +3542,23 @@ Emitter::ConvRank Emitter::rank_conversion(const TypeExpr* arg,
       if (aci && pci) {
         std::unordered_set<std::string> seen;
         std::string cur = aci->name;
+        int depth = 0;
         while (!cur.empty() && !seen.count(cur)) {
-          if (cur == pci->name) return ConvRank::ClassHierarchy;
+          if (cur == pci->name) return {ConvRank::ClassHierarchy, depth};
           seen.insert(cur);
           auto cit = registry ? registry->classes.find(cur)
                               : decltype(registry->classes)::const_iterator{};
           if (!registry || cit == registry->classes.end()) break;
           cur = cit->second.parent;
+          ++depth;
         }
       }
     }
-    return ConvRank::NotViable;
+    return {};
   }
 
   // 3. Class hierarchy: a derived class may pass to an ancestor parameter.
+  // The fewer hops up the hierarchy, the better fit (closer ancestor wins).
   if (a->kind == Kind::TyName && p->kind == Kind::TyName) {
     const auto* aci = class_info_for_type_name(
         static_cast<const TyName&>(*a).name);
@@ -3550,13 +3567,15 @@ Emitter::ConvRank Emitter::rank_conversion(const TypeExpr* arg,
     if (aci && pci) {
       std::unordered_set<std::string> seen;
       std::string cur = aci->name;
+      int depth = 0;
       while (!cur.empty() && !seen.count(cur)) {
-        if (cur == pci->name) return ConvRank::ClassHierarchy;
+        if (cur == pci->name) return {ConvRank::ClassHierarchy, depth};
         seen.insert(cur);
         auto cit = registry ? registry->classes.find(cur)
                             : decltype(registry->classes)::const_iterator{};
         if (!registry || cit == registry->classes.end()) break;
         cur = cit->second.parent;
+        ++depth;
       }
     }
   }
@@ -3566,17 +3585,21 @@ Emitter::ConvRank Emitter::rank_conversion(const TypeExpr* arg,
     return primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
   };
 
-  // 4. Integer widening with same signedness.
+  // 4. Integer widening with same signedness. Distance is the bit-width
+  // gap between source and target -- Pascal prefers the smallest target
+  // that contains the source (byte->cardinal beats byte->qword).
   if (const auto* ai = prim_of(a); ai && ai->int_kind != PrimitiveIntKind::None) {
     if (const auto* pi = prim_of(p);
         pi && pi->int_kind == ai->int_kind && pi->bits >= ai->bits &&
         pi->bits != 0 && ai->bits != 0) {
-      return ConvRank::IntWideningSameSign;
+      return {ConvRank::IntWideningSameSign,
+              static_cast<int>(pi->bits) - static_cast<int>(ai->bits)};
     }
   }
 
   // 5. Real widening (single -> double -> extended). Pascal real types
   // are floats with monotonically increasing precision in this order.
+  // Distance is the rank gap so single->double beats single->extended.
   auto real_rank = [](std::string_view name) -> int {
     if (name == "single") return 1;
     if (name == "double" || name == "real") return 2;
@@ -3586,7 +3609,7 @@ Emitter::ConvRank Emitter::rank_conversion(const TypeExpr* arg,
   if (a->kind == Kind::TyName && p->kind == Kind::TyName) {
     int ar = real_rank(ascii_lower(static_cast<const TyName&>(*a).name));
     int pr = real_rank(ascii_lower(static_cast<const TyName&>(*p).name));
-    if (ar > 0 && pr > 0 && pr >= ar) return ConvRank::RealWidening;
+    if (ar > 0 && pr > 0 && pr >= ar) return {ConvRank::RealWidening, pr - ar};
   }
 
   // String-family helpers. ShortString comes either as `TyString` (parsed
@@ -3613,7 +3636,7 @@ Emitter::ConvRank Emitter::rank_conversion(const TypeExpr* arg,
   // still accepts it). Since we don't always know N statically here, just
   // recognise the family and rank it.
   if (is_shortstring_param(a) && is_shortstring_param(p)) {
-    return ConvRank::StringSameTagWiden;
+    return {ConvRank::StringSameTagWiden, 0};
   }
 
   // 7-8. String cross-tag conversions, split by target family. Char/PChar
@@ -3626,42 +3649,44 @@ Emitter::ConvRank Emitter::rank_conversion(const TypeExpr* arg,
   const bool arg_is_shortstring = is_shortstring_param(a);
   const bool arg_is_ansistring = is_ansistring(a);
   if (arg_is_ansistring && param_is_shortstring) {
-    return ConvRank::StringToShortString;
+    return {ConvRank::StringToShortString, 0};
   }
   if (is_char(a) && param_is_shortstring) {
-    return ConvRank::StringToShortString;
+    return {ConvRank::StringToShortString, 0};
   }
   if (type_is_pcharish(a) && param_is_shortstring) {
-    return ConvRank::StringToShortString;
+    return {ConvRank::StringToShortString, 0};
   }
   if (arg_is_shortstring && param_is_ansistring) {
-    return ConvRank::StringToAnsiString;
+    return {ConvRank::StringToAnsiString, 0};
   }
   if (is_char(a) && param_is_ansistring) {
-    return ConvRank::StringToAnsiString;
+    return {ConvRank::StringToAnsiString, 0};
   }
   if (type_is_pcharish(a) && param_is_ansistring) {
-    return ConvRank::StringToAnsiString;
+    return {ConvRank::StringToAnsiString, 0};
   }
   if ((arg_is_shortstring || arg_is_ansistring) && type_is_pcharish(p)) {
-    return ConvRank::StringToAnsiString;
+    return {ConvRank::StringToAnsiString, 0};
   }
 
-  // 9. Ordinal signedness change (longint <-> longword, etc.).
+  // 9. Ordinal signedness change (longint <-> longword, etc.). Distance
+  // is the bit-width gap so byte->longint beats byte->int64.
   if (const auto* ai = prim_of(a);
       ai && ai->int_kind != PrimitiveIntKind::None) {
     if (const auto* pi = prim_of(p);
         pi && pi->int_kind != PrimitiveIntKind::None && pi->bits >= ai->bits &&
         pi->bits != 0 && ai->bits != 0) {
-      return ConvRank::OrdinalSignChange;
+      return {ConvRank::OrdinalSignChange,
+              static_cast<int>(pi->bits) - static_cast<int>(ai->bits)};
     }
   }
 
-  // 9. Variant: not really used by the bootstrap compiler, but reserve
+  // Variant: not really used by the bootstrap compiler, but reserve
   // the slot. Left as `NotViable` for now; real variant support would
   // need TyVariant detection in the AST.
 
-  return ConvRank::NotViable;
+  return {};
 }
 
 Emitter::PickResult Emitter::pick_overload(
@@ -3677,7 +3702,7 @@ Emitter::PickResult Emitter::pick_overload(
   // signal that to the caller so it can report a Pascal-level error.
   struct Scored {
     const ProcDecl* decl;
-    std::vector<ConvRank> ranks;
+    std::vector<ConvScore> scores;
   };
   std::vector<Scored> viable;
   for (const ProcDecl* decl : candidates) {
@@ -3692,28 +3717,38 @@ Emitter::PickResult Emitter::pick_overload(
     if (!ok) continue;
 
     Scored s{decl, {}};
-    s.ranks.reserve(args.size());
+    s.scores.reserve(args.size());
     for (size_t i = 0; i < args.size(); ++i) {
       const TypeExpr* arg_t = deduce_type(*args[i]);
-      ConvRank r = rank_conversion(arg_t, flat[i].type, flat[i].mutable_ref);
-      if (r == ConvRank::NotViable) { ok = false; break; }
-      s.ranks.push_back(r);
+      ConvScore r = rank_conversion(arg_t, flat[i].type, flat[i].mutable_ref);
+      if (!r.viable()) { ok = false; break; }
+      s.scores.push_back(r);
     }
     if (ok) viable.push_back(std::move(s));
   }
   if (viable.empty()) return {};
   if (viable.size() == 1) return {viable[0].decl, false};
 
-  auto dominates = [](const Scored& a, const Scored& b) {
-    // Per-arg ranks: a dominates b iff a's rank is no worse at every
+  // Lexicographic compare of (rank, distance): a "less" b means a is
+  // a tighter fit at this arg position (better rank, or same rank with
+  // smaller distance).
+  auto score_less = [](const ConvScore& a, const ConvScore& b) {
+    if (a.rank != b.rank) return a.rank < b.rank;
+    return a.distance < b.distance;
+  };
+  auto score_greater = [&](const ConvScore& a, const ConvScore& b) {
+    return score_less(b, a);
+  };
+  auto dominates = [&](const Scored& a, const Scored& b) {
+    // Per-arg scores: a dominates b iff a's score is no worse at every
     // position AND strictly better at least once. With unequal arg
-    // vectors (defaulted slots make `ranks.size() != args.size()` for
+    // vectors (defaulted slots make `scores.size() != args.size()` for
     // some candidates) we only compare the explicit-arg portion.
-    size_t n = std::min(a.ranks.size(), b.ranks.size());
+    size_t n = std::min(a.scores.size(), b.scores.size());
     bool any_strict = false;
     for (size_t i = 0; i < n; ++i) {
-      if (a.ranks[i] > b.ranks[i]) return false;
-      if (a.ranks[i] < b.ranks[i]) any_strict = true;
+      if (score_greater(a.scores[i], b.scores[i])) return false;
+      if (score_less(a.scores[i], b.scores[i])) any_strict = true;
     }
     return any_strict;
   };
