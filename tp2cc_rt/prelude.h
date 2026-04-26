@@ -1457,6 +1457,37 @@ using p_namestr = tp2cc_ShortString<255>;
 using p_extstr  = tp2cc_ShortString<255>;
 using p_pathstr = tp2cc_ShortString<255>;
 using p_comstr  = tp2cc_ShortString<255>;
+using p_tunicodechar = uint16_t;
+using p_tunicodestring = p_tunicodechar*;
+
+// The bootstrap compiler's `widestr` path imports RTL `charset` as an
+// external-unit stub. Keep only the Pascal-visible enum/record/function
+// surface that those translated compiler units actually name in `::rt`.
+enum p_tunicodecharmappingflag {
+  p_umf_noinfo,
+  p_umf_leadbyte,
+  p_umf_undefined,
+  p_umf_unused,
+};
+
+struct p_tunicodecharmapping {
+  p_tunicodechar p_unicode = 0;
+  p_tunicodecharmappingflag p_flag = p_umf_noinfo;
+  uint8_t p_reserved = 0;
+};
+
+using p_punicodecharmapping = p_tunicodecharmapping*;
+
+struct p_tunicodemap;
+using p_punicodemap = p_tunicodemap*;
+
+struct p_tunicodemap {
+  tp2cc_ShortString<20> p_cpname{};
+  p_punicodecharmapping p_map = nullptr;
+  int32_t p_lastchar = 0;
+  p_punicodemap p_next = nullptr;
+  bool p_internalmap = false;
+};
 
 // The current tp2cc bootstrap runtime targets 32-bit hosts only. Match
 // FPC's CPU32 aliases here so translated compiler code sees pointer-sized
@@ -2439,6 +2470,118 @@ inline std::string p_to_std_string(const char* s) {
 }
 inline std::string p_to_std_string(const p_char* s) {
   return s ? std::string(p_c_str(s)) : std::string();
+}
+
+inline p_punicodemap& tp2cc_charset_mappings() {
+  static p_punicodemap mappings = nullptr;
+  return mappings;
+}
+
+// The compiler only relies on the small `charset` API used by `widestr` and the
+// generated cp*.pas tables: register prebuilt maps, optionally load a table from
+// a text file, then do direct byte/unicode lookups. Keep that implementation
+// here so external-unit stubs can bind to `::rt::...` without growing a second
+// runtime library layer.
+inline void p_registermapping(p_punicodemap p) {
+  if (!p) return;
+  p->p_next = tp2cc_charset_mappings();
+  tp2cc_charset_mappings() = p;
+}
+
+template <typename S>
+inline p_punicodemap p_getmap(const S& s) {
+  const std::string target = p_to_std_string(s);
+  for (p_punicodemap hp = tp2cc_charset_mappings(); hp; hp = hp->p_next) {
+    if (p_to_std_string(hp->p_cpname) == target) return hp;
+  }
+  return nullptr;
+}
+
+template <typename S>
+inline bool p_mappingavailable(const S& s) {
+  return p_getmap(s) != nullptr;
+}
+
+inline p_tunicodechar p_getunicode(p_char c, p_punicodemap p) {
+  if (!p || !p->p_map) return 0;
+  const int32_t idx = static_cast<int32_t>(p_char_byte(c));
+  if (idx > p->p_lastchar) return 0;
+  return p->p_map[idx].p_unicode;
+}
+
+inline tp2cc_ShortString<> p_getascii(p_tunicodechar c, p_punicodemap p) {
+  if (!p || !p->p_map) return tp2cc_shortstring_of<>(tp2cc_char_of(' '));
+  for (int32_t i = 0; i <= p->p_lastchar; ++i) {
+    if (p->p_map[i].p_unicode != c) continue;
+    if (i < 256) {
+      return tp2cc_shortstring_of<>(tp2cc_char_of(static_cast<uint8_t>(i)));
+    }
+    tp2cc_ShortString<> out{};
+    out.length = 2;
+    out.data[0] = tp2cc_char_of(static_cast<uint8_t>(i / 256));
+    out.data[1] = tp2cc_char_of(static_cast<uint8_t>(i % 256));
+    return out;
+  }
+  return tp2cc_shortstring_of<>(tp2cc_char_of(' '));
+}
+
+template <typename CpName, typename FileName>
+inline p_punicodemap p_loadunicodemapping(const CpName& cpname,
+                                          const FileName& filename) {
+  const std::string path = p_to_std_string(filename);
+  std::FILE* in = std::fopen(path.c_str(), "r");
+  if (!in) return nullptr;
+
+  std::vector<p_tunicodecharmapping> data(256);
+  int32_t lastchar = -1;
+  char line[1024];
+  while (std::fgets(line, sizeof(line), in)) {
+    if (!(line[0] == '0' && (line[1] == 'x' || line[1] == 'X'))) continue;
+
+    char* end = nullptr;
+    long charpos = std::strtol(line + 2, &end, 16);
+    if (end == line + 2 || charpos < 0) {
+      std::fclose(in);
+      return nullptr;
+    }
+
+    while (*end && *end != '0' && *end != '#') ++end;
+
+    p_tunicodecharmapping entry{};
+    if (*end == '#') {
+      std::string marker(end);
+      entry.p_unicode = 0xffff;
+      entry.p_flag = (marker.rfind("#DBCS LEAD BYTE", 0) == 0)
+                         ? p_umf_leadbyte
+                         : p_umf_unused;
+    } else if (*end == '0' && (end[1] == 'x' || end[1] == 'X')) {
+      long unicodevalue = std::strtol(end + 2, &end, 16);
+      if (unicodevalue < 0 || unicodevalue > 0xffff) {
+        std::fclose(in);
+        return nullptr;
+      }
+      entry.p_unicode = static_cast<p_tunicodechar>(unicodevalue);
+      entry.p_flag = p_umf_noinfo;
+    } else {
+      continue;
+    }
+
+    if (static_cast<size_t>(charpos) >= data.size()) {
+      data.resize(static_cast<size_t>(charpos) + 1024);
+    }
+    data[static_cast<size_t>(charpos)] = entry;
+    if (charpos > lastchar) lastchar = static_cast<int32_t>(charpos);
+  }
+  std::fclose(in);
+
+  auto* map = new p_tunicodemap{};
+  map->p_cpname = tp2cc_shortstring_of<20>(cpname);
+  map->p_lastchar = lastchar;
+  map->p_internalmap = false;
+  map->p_map =
+      data.empty() ? nullptr : new p_tunicodecharmapping[data.size()]();
+  for (size_t i = 0; i < data.size(); ++i) map->p_map[i] = data[i];
+  return map;
 }
 
 inline int32_t p_strtoint(const tp2cc_ShortString<>& s) {

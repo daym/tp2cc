@@ -117,6 +117,57 @@ void test_bootstrap_pointer_sized_aliases_are_32bit() {
   CHECK_EQ(p_maxint, std::numeric_limits<int32_t>::max());
 }
 
+void test_charset_runtime_registers_and_loads_mappings() {
+  static p_tunicodecharmapping builtins[256]{};
+  static p_tunicodemap builtin_map{};
+  static bool initialized = false;
+  if (!initialized) {
+    for (int i = 0; i < 256; ++i) {
+      builtins[i].p_unicode = static_cast<p_tunicodechar>(i);
+      builtins[i].p_flag = p_umf_noinfo;
+    }
+    builtin_map.p_cpname = tp2cc_shortstring_of<20>("cp-test");
+    builtin_map.p_map = builtins;
+    builtin_map.p_lastchar = 255;
+    builtin_map.p_internalmap = true;
+    builtin_map.p_next = nullptr;
+    p_registermapping(&builtin_map);
+    initialized = true;
+  }
+
+  p_punicodemap found = p_getmap(tp2cc_shortstring_of<>("cp-test"));
+  CHECK(found == &builtin_map);
+  CHECK(p_mappingavailable(tp2cc_shortstring_of<>("cp-test")));
+  CHECK_EQ(p_getunicode(tp2cc_char_of('A'), found), 65);
+  CHECK_EQ(p_to_std_string(p_getascii(65, found)), std::string("A"));
+
+  char path[] = "/tmp/tp2cc-charset-XXXXXX";
+  int fd = ::mkstemp(path);
+  CHECK(fd >= 0);
+  std::FILE* out = ::fdopen(fd, "w");
+  CHECK(out != nullptr);
+  std::fputs("0x41 0x0041\n", out);
+  std::fputs("0x81 #DBCS LEAD BYTE\n", out);
+  std::fclose(out);
+
+  p_punicodemap loaded =
+      p_loadunicodemapping(tp2cc_shortstring_of<>("cp-file"),
+                           tp2cc_shortstring_of<>(path));
+  ::unlink(path);
+
+  CHECK(loaded != nullptr);
+  CHECK_EQ(p_to_std_string(loaded->p_cpname), std::string("cp-file"));
+  CHECK_EQ(loaded->p_lastchar, 0x81);
+  CHECK(loaded->p_map != nullptr);
+  CHECK_EQ(loaded->p_map[0x41].p_unicode, 0x41);
+  CHECK_EQ(loaded->p_map[0x41].p_flag, p_umf_noinfo);
+  CHECK_EQ(loaded->p_map[0x81].p_unicode, 0xffff);
+  CHECK_EQ(loaded->p_map[0x81].p_flag, p_umf_leadbyte);
+
+  delete[] loaded->p_map;
+  delete loaded;
+}
+
 void test_getmem_typed_pointer_keeps_requested_prefix_size() {
   using HugeSymIndex = tp2cc_Array<void*, 0, 536870911>;
 
@@ -934,6 +985,7 @@ int main() {
   RUN_TEST(test_val_handles_bootstrap_integer_forms);
   RUN_TEST(test_val_keeps_leading_zero_decimals_decimal);
   RUN_TEST(test_bootstrap_pointer_sized_aliases_are_32bit);
+  RUN_TEST(test_charset_runtime_registers_and_loads_mappings);
   RUN_TEST(test_getmem_typed_pointer_keeps_requested_prefix_size);
   RUN_TEST(test_shortstring_pointer_deref_uses_live_prefix_storage);
   RUN_TEST(test_shortstring_pointer_deref_interoperates_with_string_ops);

@@ -641,11 +641,28 @@ These helpers exist specifically so tp2cc does not need to form unsafe C++ refer
 The runtime also carries higher-level helpers for:
 
 - Pascal text and typed file operations
+- the Pascal-visible `charset` surface used by compiler `widestr`/`cp*.pas`
 - memory allocation and disposal
 - environment and process helpers
 - numeric/string formatting helpers
 - scope-exit support for `try .. finally`
 - various old RTL compatibility entry points
+
+For bootstrap compiler units that import RTL `charset` as an external-unit
+stub, the prelude exposes only the Pascal-visible names those units actually
+bind to in `::rt`:
+
+- `p_tunicodechar`
+- `p_tunicodestring`
+- `p_tunicodecharmappingflag`
+- `p_tunicodecharmapping`
+- `p_tunicodemap`
+- `p_registermapping`
+- `p_getmap`
+- `p_mappingavailable`
+- `p_getunicode`
+- `p_getascii`
+- `p_loadunicodemapping`
 
 ## 5. Practical Reading Guide
 
