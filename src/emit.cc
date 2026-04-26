@@ -3903,7 +3903,19 @@ Emitter::ResolvedCall Emitter::resolve_call(
     bool unit_qualified = false;
     if (mem.base->kind == Kind::Ident) {
       const auto& id = static_cast<const Ident&>(*mem.base);
-      if (registry->units.count(id.name)) {
+      // A bare ident here can be a unit name AND a local/field name --
+      // e.g. fpc's compiler unit `symtable` plus a `symtable` field on
+      // tabstractrecorddef. Pascal lexical scope says locals/fields
+      // shadow unit names, so try the receiver-class interpretation
+      // first; only fall back to unit-qualified lookup when the ident
+      // is purely a unit reference.
+      bool ident_is_value =
+          local_scope.count(id.name) > 0 ||
+          (registry && !current_class_name.empty() &&
+           (registry->lookup_class_field(current_class_name, id.name) ||
+            registry->lookup_class_property(current_class_name, id.name) ||
+            registry->lookup_class_method(current_class_name, id.name)));
+      if (!ident_is_value && registry->units.count(id.name)) {
         unit_qualified = true;
         fill_from_proc_set(unit_proc_lookup_all(mem.name, &id.name));
       }

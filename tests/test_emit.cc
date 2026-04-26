@@ -3293,6 +3293,53 @@ void test_overload_ambiguous_two_default_arg_overloads_reports_error() {
   CHECK(error_count() > before);
 }
 
+void test_class_field_shadows_unit_name_in_member_call() {
+  // When a class field name happens to match a unit name visible
+  // through `uses` (here: `symtable` is both a unit and a field on
+  // `tabstractrec`), Pascal lexical scope says the field wins for
+  // `symtable.foreach(...)` -- the call lowers to a method call on
+  // the field's instance, not a unit-qualified free-function call.
+  // Without this, the resolver mistakes the receiver for a unit and
+  // returns no decl, leaving method-pointer args (`@handler`) lowered
+  // as raw `&p_handler` member-pointers that won't convert to the
+  // callback's `tp2cc_MethodPtr` type.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses symtable;\n"
+      "type\n"
+      "  titem = class end;\n"
+      "  tcb = procedure(p:titem; arg:pointer) of object;\n"
+      "  tcontainer = class\n"
+      "    procedure foreach(cb : tcb; arg : pointer);\n"
+      "  end;\n"
+      "  tabstractrec = class\n"
+      "    symtable : tcontainer;\n"
+      "    procedure handler(p:titem; arg:pointer);\n"
+      "  end;\n"
+      "  tderived = class(tabstractrec)\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tcontainer.foreach(cb : tcb; arg : pointer); begin end;\n"
+      "procedure tabstractrec.handler(p:titem; arg:pointer); begin end;\n"
+      "procedure tderived.run;\n"
+      "begin\n"
+      "  symtable.foreach(@handler, nil);\n"
+      "end;\n"
+      "end.\n",
+      {{"symtable.pas",
+        "unit symtable;\n"
+        "interface\n"
+        "implementation\n"
+        "end.\n"}});
+  // Method-pointer construction must land on the field's foreach,
+  // wrapping the @handler reference as a (code, self) pair.
+  CHECK(contains(out.impl, "p_symtable->p_foreach"));
+  CHECK(contains(out.impl, "tp2cc_method_code"));
+  CHECK(!contains(out.impl, "p_symtable::p_foreach"));
+}
+
 void test_forward_decl_does_not_create_duplicate_overload_candidate() {
   // `function f : T; forward;` followed later by the actual
   // `function f : T; begin ... end;` body. Both decls flow through
@@ -4524,6 +4571,7 @@ int main() {
   RUN_TEST(test_overload_ambiguous_default_arg_vs_no_default_reports_error);
   RUN_TEST(test_overload_ambiguous_two_default_arg_overloads_reports_error);
   RUN_TEST(test_overload_default_arg_extends_arity_disambiguates_cleanly);
+  RUN_TEST(test_class_field_shadows_unit_name_in_member_call);
   RUN_TEST(test_forward_decl_does_not_create_duplicate_overload_candidate);
   RUN_TEST(test_overload_local_unit_shadows_uses_chain_overloads);
   RUN_TEST(test_overload_exact_match_dominates_widening_alternatives);
