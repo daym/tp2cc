@@ -1929,12 +1929,26 @@ std::string Emitter::set_type_to_cxx(const TySet& s) {
 }
 
 std::string Emitter::enum_type_to_cxx(const TyEnum& e, const std::string&) {
-  // An anonymous enum inside a type alias is unusual. Emit an inline
-  // anonymous enum with unprefixed C++ syntax. This function is called
-  // when the enum appears at the RHS of `type X = (...)` -- emission of
-  // that decl handles the full `enum class X { ... }` form.
-  // For nested anonymous positions, just return int32_t.
-  return "int32_t";
+  // Inline anonymous enum used as a type-expression -- e.g. a class
+  // field declared as `libctype : (libc5, glibc2, glibc21, uclibc);`
+  // (fpc-2.2.4/compiler/systems/t_linux.pas). Emit an inline C++
+  // anonymous enum with the same underlying width so the member
+  // identifiers are accessible in the enclosing scope (member functions
+  // of the surrounding class for a class-field, or the surrounding
+  // function body for a local-typed var).
+  if (e.members.empty()) return "int32_t";
+  std::string out = "enum : ";
+  out += enum_underlying_type_to_cxx(e);
+  out += " { ";
+  for (size_t i = 0; i < e.members.size(); ++i) {
+    if (i) out += ", ";
+    out += mangle(e.members[i].name);
+    if (e.members[i].value) {
+      out += " = " + const_value_to_cxx(*e.members[i].value);
+    }
+  }
+  out += " }";
+  return out;
 }
 
 std::string Emitter::array_type_to_cxx(const TyArray& a) {
@@ -4352,6 +4366,15 @@ Emitter::ResolveResult Emitter::resolve_name(
     if (registry->lookup_class_field(current_class_name, name)) {
       r.cxx = mangle(name);
       r.kind = ResolvedKind::ClassField;
+      return r;
+    }
+    // Inline anonymous enum used as a class-field type contributes its
+    // members to the enclosing class scope. C++ resolves the bare name
+    // through the enclosing-class scope at the use site, so we emit
+    // unqualified.
+    if (registry->class_has_enum_member(current_class_name, name)) {
+      r.cxx = mangle(name);
+      r.kind = ResolvedKind::EnumMember;
       return r;
     }
   }

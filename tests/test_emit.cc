@@ -2931,6 +2931,37 @@ void test_class_identifier_value_lowers_to_metaclass_descriptor() {
                  "p_result = (p_x->p_classtype() == tp2cc_metaclass_value_p_tchild());"));
 }
 
+void test_inline_anonymous_enum_class_field_resolves_members() {
+  // `libctype : (libc5, glibc2, glibc21, uclibc);` declared as a class
+  // field type makes the four constants visible in the enclosing class
+  // scope. The emitter lowers the field type to a real C++ inline enum
+  // so the constants are accessible there, and `class_has_enum_member`
+  // makes the resolver emit them unqualified rather than falling
+  // through to the `::rt::p_<name>` unknown-fallback.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tlinker = class\n"
+      "    libctype : (libc5, glibc2, glibc21, uclibc);\n"
+      "    procedure setup;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tlinker.setup;\n"
+      "begin\n"
+      "  libctype := glibc21;\n"
+      "end;\n"
+      "end.\n");
+  // Field type lowered to an inline enum, NOT stubbed as `int32_t`.
+  CHECK(contains(out.header, "enum : "));
+  CHECK(contains(out.header, "p_glibc21"));
+  CHECK(!contains(out.header, "int32_t p_libctype;"));
+  // Bare `glibc21` in the method body resolves unqualified, not
+  // `::rt::p_glibc21`.
+  CHECK(contains(out.impl, "p_libctype = p_glibc21;"));
+  CHECK(!contains(out.impl, "::rt::p_glibc21"));
+}
+
 void test_inline_anonymous_packed_record_var_lowers_to_struct() {
   // Inline anonymous packed record bound to a local var: emits a real
   // C++ anonymous struct so field accesses resolve, and emits the same
@@ -3962,6 +3993,7 @@ int main() {
   RUN_TEST(test_metaclass_alias_and_concrete_class_value_lowering);
   RUN_TEST(test_metaclass_cast_keeps_concrete_descriptor);
   RUN_TEST(test_class_identifier_value_lowers_to_metaclass_descriptor);
+  RUN_TEST(test_inline_anonymous_enum_class_field_resolves_members);
   RUN_TEST(test_inline_anonymous_packed_record_var_lowers_to_struct);
   RUN_TEST(test_packed_field_typed_cast_assignment_uses_memcpy_store);
   RUN_TEST(test_inc_packed_field_routes_through_memcpy_inc);

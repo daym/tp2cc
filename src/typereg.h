@@ -79,6 +79,13 @@ struct ClassInfo {
   // use `lookup_class_methods`.
   std::unordered_map<std::string, std::vector<MethodSig>> methods;
   std::unordered_map<std::string, PropertyInfo> properties;
+  // Names of enum constants contributed by inline anonymous enum types
+  // used as class field types (e.g. `libctype : (libc5, glibc2, ...);`).
+  // Pascal exposes those constants in the enclosing class scope; member
+  // bodies that reference them by bare identifier resolve through this
+  // set so the emitter does not fall through to an `::rt::p_<name>`
+  // unknown-fallback.
+  std::unordered_set<std::string> enum_members;
   std::string default_property_name;
 };
 
@@ -244,6 +251,11 @@ struct TypeRegistry {
   std::string direct_type_name(const ast::TypeExpr* te) const;
 
   const FieldInfo* lookup_class_field(
+      const std::string& class_name, const std::string& member) const;
+
+  // True if `member` is a member of an inline anonymous enum used as
+  // a field type on `class_name` (or any of its ancestors).
+  bool class_has_enum_member(
       const std::string& class_name, const std::string& member) const;
 
   // Single-method shim: returns the first overload (the one declared

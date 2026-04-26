@@ -53,6 +53,14 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
       FieldInfo fi;
       fi.type = m.field_type;
       for (const auto& n : m.field_names) ci.fields[lc(n)] = fi;
+      // Inline anonymous enum used as the field type contributes its
+      // members to the enclosing class scope -- they're visible by bare
+      // identifier inside the class's member functions, just like any
+      // class constant.
+      if (m.field_type && m.field_type->kind == Kind::TyEnum) {
+        const auto& te = static_cast<const TyEnum&>(*m.field_type);
+        for (const auto& em : te.members) ci.enum_members.insert(lc(em.name));
+      }
     } else if (m.kind == ObjectMemberKind::Method && m.method) {
       const auto& pd = *m.method;
       MethodSig ms;
@@ -301,6 +309,21 @@ const FieldInfo* TypeRegistry::lookup_class_field(
     class_name = cit->second.parent;
   }
   return nullptr;
+}
+
+bool TypeRegistry::class_has_enum_member(
+    const std::string& class_name_in, const std::string& member) const {
+  std::string class_name = lc(class_name_in);
+  std::string key = lc(member);
+  std::unordered_set<std::string> seen;
+  while (!class_name.empty() && !seen.count(class_name)) {
+    seen.insert(class_name);
+    auto cit = classes.find(class_name);
+    if (cit == classes.end()) return false;
+    if (cit->second.enum_members.count(key)) return true;
+    class_name = cit->second.parent;
+  }
+  return false;
 }
 
 const MethodSig* TypeRegistry::lookup_class_method(
