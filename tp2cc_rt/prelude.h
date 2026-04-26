@@ -1510,6 +1510,19 @@ using p_tdatetime = double;
 using p_currency  = int64_t;
 using p_pansistring = tp2cc_AnsiString*;
 
+using p_pcardinal = uint32_t*;
+using p_pcurrency = p_currency*;
+using p_pint64    = int64_t*;
+
+// Only `vtAnsiString` is needed: ncgld.pas locally redeclares all the
+// other vt* tags in a procedure-scoped `const` block, so the bare name
+// `vtAnsiString` is the only one that falls through to the system unit.
+inline constexpr int32_t p_vtansistring = 11;
+// Win32 share-mode flag, no-op on POSIX. The compiler ORs it into open
+// modes for .ppu/.res files; the value just has to round-trip without
+// colliding with the real fmOpen* bits.
+inline constexpr int32_t p_fmsharedenynone = 0x40;
+
 struct p_tsystemtime {
   uint16_t p_year = 0;
   uint16_t p_month = 0;
@@ -2060,20 +2073,32 @@ tp2cc_Set<Elem> set_of(std::initializer_list<Elem> xs) {
   return tp2cc_Set<Elem>::from_list(xs);
 }
 
+// compiler.pas masks FPU exceptions around the main compile so constant
+// folding does not raise stray FP traps. The actual mask read/write
+// happens via tp2cc_get/set_exception_mask_bits below; the enum/set here
+// just gives the source-level names that compiler.pas references.
+enum p_tfpuexception : uint8_t {
+  p_exinvalidop,
+  p_exdenormalized,
+  p_exzerodivide,
+  p_exoverflow,
+  p_exunderflow,
+  p_exprecision,
+};
+using p_tfpuexceptionmask = tp2cc_Set<p_tfpuexception>;
+
 // Pascal `Math.GetExceptionMask` / `SetExceptionMask` use the same six-bit
 // exception-mask layout across targets. Keep that API in the runtime so the
 // translated compiler does not need the full `Math` unit just to mask FP
 // traps before constant folding.
-template <typename Elem>
-inline tp2cc_Set<Elem> p_getexceptionmask() {
-  tp2cc_Set<Elem> mask{};
+inline p_tfpuexceptionmask p_getexceptionmask() {
+  p_tfpuexceptionmask mask{};
   mask.bits[0] = static_cast<unsigned char>(tp2cc_get_exception_mask_bits() & 0x3Fu);
   return mask;
 }
 
-template <typename Elem>
-inline tp2cc_Set<Elem> p_setexceptionmask(tp2cc_Set<Elem> mask) {
-  tp2cc_Set<Elem> previous{};
+inline p_tfpuexceptionmask p_setexceptionmask(p_tfpuexceptionmask mask) {
+  p_tfpuexceptionmask previous{};
   previous.bits[0] = static_cast<unsigned char>(
       tp2cc_set_exception_mask_bits(static_cast<uint8_t>(mask.bits[0] & 0x3Fu)));
   return previous;
@@ -4761,6 +4786,49 @@ inline void p_str(long double v, tp2cc_AnsiString& out) {
   out = buf;
 }
 
+// Pascal `HexStr(val, cnt)` -- uppercase, zero-padded to `cnt` digits, no
+// leading `$`. Truncates the high digits if `cnt` is smaller than the
+// natural width (matches fpc behaviour: callers like ogmap.pas pass
+// `sizeof(aint)*2` so width tracks the integer size explicitly).
+inline tp2cc_ShortString<> p_hexstr(int64_t val, uint8_t cnt) {
+  uint64_t bits = static_cast<uint64_t>(val);
+  if (cnt > 16) cnt = 16;
+  char buf[17];
+  for (int i = cnt - 1; i >= 0; --i) {
+    uint8_t nyb = static_cast<uint8_t>(bits & 0xF);
+    buf[i] = static_cast<char>(nyb < 10 ? '0' + nyb : 'A' + (nyb - 10));
+    bits >>= 4;
+  }
+  buf[cnt] = '\0';
+  return tp2cc_shortstring_of<>(buf);
+}
+inline tp2cc_ShortString<> p_hexstr(int32_t val, uint8_t cnt) {
+  return p_hexstr(static_cast<int64_t>(static_cast<uint32_t>(val)), cnt);
+}
+inline tp2cc_ShortString<> p_hexstr(uint32_t val, uint8_t cnt) {
+  return p_hexstr(static_cast<int64_t>(val), cnt);
+}
+inline tp2cc_ShortString<> p_hexstr(uint64_t val, uint8_t cnt) {
+  return p_hexstr(static_cast<int64_t>(val), cnt);
+}
+// Pointer overload uses the natural pointer width; fpc returns a string
+// whose length matches `sizeof(pointer)*2`.
+inline tp2cc_ShortString<> p_hexstr(const void* p) {
+  return p_hexstr(static_cast<int64_t>(reinterpret_cast<uintptr_t>(p)),
+                  static_cast<uint8_t>(sizeof(void*) * 2));
+}
+
+// `FreeAndNil(var obj)` -- null-safe Free, then clear obj to nil. The
+// Pascal var parameter is untyped; the emitter passes a real reference so
+// we get the pointer's storage back to overwrite. Templated to keep the
+// obj-pointer type intact for the Pascal class destruction sequence.
+template <typename T>
+inline void p_freeandnil(T*& obj) {
+  T* tmp = obj;
+  obj = nullptr;
+  p_tobject::p_free(tmp);
+}
+
 // --- high / low intrinsics --------------------------------------------------
 //
 // Pascal `High(x)` and `Low(x)` return the highest/lowest index of an array
@@ -4901,6 +4969,11 @@ inline void p_packtime(DateTime& t, int32_t& p) {
 }
 inline constexpr p_char p_directoryseparator = tp2cc_char_of('/');
 inline constexpr p_char p_driveseparator = tp2cc_char_of(':');
+// `set of char` so cross-platform path code can recognise foreign
+// separators (e.g. accept '\' even on unix); cfileutils.pas tests `s[i] in
+// AllowDirectorySeparators` against arbitrary input paths.
+inline tp2cc_Set<p_char> p_allowdirectoryseparators =
+    set_of<p_char>({tp2cc_char_of('/'), tp2cc_char_of('\\')});
 inline int32_t p_extraoptions = 0;
 inline int32_t p_moduleindex = 0;
 template <int N, int M>

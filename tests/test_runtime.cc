@@ -327,24 +327,16 @@ void test_shortstring_pointer_deref_interoperates_with_string_ops() {
 
 void test_exception_mask_roundtrips() {
 #if defined(__linux__)
-  enum TestFPUException : uint8_t {
-    ExInvalidOp,
-    ExDenormalized,
-    ExZeroDivide,
-    ExOverflow,
-    ExUnderflow,
-    ExPrecision
-  };
-
-  const auto original = p_getexceptionmask<TestFPUException>();
-  const auto masked = tp2cc_Set<TestFPUException>::from_list(
-      {ExInvalidOp, ExDenormalized, ExZeroDivide, ExOverflow, ExUnderflow, ExPrecision});
+  const auto original = p_getexceptionmask();
+  const auto masked = p_tfpuexceptionmask::from_list(
+      {p_exinvalidop, p_exdenormalized, p_exzerodivide,
+       p_exoverflow, p_exunderflow, p_exprecision});
 
   CHECK_EQ(p_setexceptionmask(masked), original);
-  CHECK_EQ(p_getexceptionmask<TestFPUException>(), masked);
+  CHECK_EQ(p_getexceptionmask(), masked);
 
   CHECK_EQ(p_setexceptionmask(original), masked);
-  CHECK_EQ(p_getexceptionmask<TestFPUException>(), original);
+  CHECK_EQ(p_getexceptionmask(), original);
 #endif
 }
 

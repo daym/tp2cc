@@ -211,6 +211,10 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"read",       1, false, true,  ""},
       {"halt",       1, false, true,  ""},
       {"swapvectors",0, false, false, ""},
+      {"hexstr",     1, true,  false, "shortstring"},
+      {"freeandnil", 1, false, false, ""},
+      {"getexceptionmask", 0, true, false, "tfpuexceptionmask"},
+      {"setexceptionmask", 1, true, false, "tfpuexceptionmask"},
   };
   // Synthetic unit "rt::" holds the builtins so lookups that walk
   // the uses chain can find them as an always-available fallback.

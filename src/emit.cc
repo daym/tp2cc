@@ -370,6 +370,9 @@ const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
       {"namestr", "::rt::p_namestr"},
       {"extstr", "::rt::p_extstr"},
       {"pansistring", "::rt::p_pansistring"},
+      {"pcardinal", "::rt::p_pcardinal"},
+      {"pcurrency", "::rt::p_pcurrency"},
+      {"pint64", "::rt::p_pint64"},
       {"pathstr", "::rt::p_pathstr"},
       {"ptrint", "::rt::p_ptrint"},
       {"ptruint", "::rt::p_ptruint"},
@@ -379,6 +382,8 @@ const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
       {"sizeuint", "::rt::p_sizeuint"},
       {"stat", "::rt::p_stat"},
       {"tclass", "::rt::p_tclass"},
+      {"tfpuexception", "::rt::p_tfpuexception"},
+      {"tfpuexceptionmask", "::rt::p_tfpuexceptionmask"},
       {"tsystemtime", "::rt::p_tsystemtime"},
       {"tmethod", "::rt::p_tmethod"},
   };
