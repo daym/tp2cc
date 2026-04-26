@@ -1,0 +1,53 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-25
+Subject: Use @map[0] for codepage unicode tables
+License: expat
+
+The `charset` API expects `tunicodemap.map` to hold a
+`punicodecharmapping`, i.e. a pointer to the first table element.
+
+Most of the codepage units already spell that as `@map[0]`, but
+`cp1251`, `cp866`, and `cp8859_5` still use bare `@map`. Align those
+three outliers with the existing working units so the bootstrap compiler
+passes the first element pointer rather than the address of the array
+wrapper.
+
+diff --git a/compiler/cp1251.pas b/compiler/cp1251.pas
+index a2534fb..20db7a9 100644
+--- a/compiler/cp1251.pas
++++ b/compiler/cp1251.pas
+@@ -270,7 +270,7 @@ unit cp1251;
+ 
+      unicodemap : tunicodemap = (
+        cpname : 'cp1251';
+-       map : @map;
++       map : @map[0];
+        lastchar : 255;
+        next : nil;
+        internalmap : true
+diff --git a/compiler/cp866.pas b/compiler/cp866.pas
+index 435528b..0bdcb74 100644
+--- a/compiler/cp866.pas
++++ b/compiler/cp866.pas
+@@ -270,7 +270,7 @@ unit cp866;
+ 
+      unicodemap : tunicodemap = (
+        cpname : 'cp866';
+-       map : @map;
++       map : @map[0];
+        lastchar : 255;
+        next : nil;
+        internalmap : true
+diff --git a/compiler/cp8859_5.pas b/compiler/cp8859_5.pas
+index e859ff0..97a2b2f 100644
+--- a/compiler/cp8859_5.pas
++++ b/compiler/cp8859_5.pas
+@@ -270,7 +270,7 @@ unit cp8859_5;
+ 
+      unicodemap : tunicodemap = (
+        cpname : '8859-5';
+-       map : @map;
++       map : @map[0];
+        lastchar : 255;
+        next : nil;
+        internalmap : true
