@@ -459,10 +459,56 @@ void test_low_high_use_resolved_pascal_type() {
                  "const auto p_maxindex = ::std::numeric_limits<uint16_t>::max();"));
   CHECK(contains(out.impl,
                  "if ((p_a == ::std::numeric_limits<uint16_t>::max()))"));
-  CHECK(contains(out.impl, "while ((p_tarr::low() <= p_tarr::high()))"));
+  // Array `low`/`high` lower to the dim's literal bounds (recursing
+  // through `low_high_expr_for_type` -> TyArray -> dims[0] subrange).
+  CHECK(contains(out.impl, "while ((0 <= 2))"));
   CHECK(!contains(out.impl, "p_high(p_a)"));
   CHECK(!contains(out.impl, "p_low(p_arr)"));
   CHECK(!contains(out.impl, "p_high(p_arr)"));
+}
+
+void test_low_high_on_local_array_type_lowers_to_index_bounds() {
+  // `low(arrtype)` / `high(arrtype)` where the type is a function-local
+  // array alias. The arg is a type name (no value to deduce_type), so
+  // the dispatch must recurse through `low_high_expr_for_type` ->
+  // TyArray -> dims[0] subrange to recover the literal bounds.
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "type localarr = array[0..7] of byte;\n"
+      "var i : longint;\n"
+      "begin\n"
+      "  for i := low(localarr) to high(localarr) do begin end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "auto tp2cc_from = (0);"));
+  CHECK(contains(out.impl, "auto tp2cc_to = (7);"));
+  CHECK(!contains(out.impl, "::rt::p_low("));
+  CHECK(!contains(out.impl, "::rt::p_high("));
+}
+
+void test_system_qualified_low_high_lowers_like_unqualified() {
+  // `system.low(int64)` / `system.high(int64)` -- Pascal allows the
+  // explicit System-unit qualification on the intrinsic. Treat as
+  // identical to bare `low`/`high` for emission.
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "function run(p : int64) : int64;\n"
+      "implementation\n"
+      "function run(p : int64) : int64;\n"
+      "begin\n"
+      "  if p > system.high(int64) div 2 then run := 0;\n"
+      "  if p < system.low(int64) div 2 then run := 0;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::std::numeric_limits<int64_t>::max()"));
+  CHECK(contains(out.impl, "::std::numeric_limits<int64_t>::min()"));
+  CHECK(!contains(out.impl, "::rt::p_low("));
+  CHECK(!contains(out.impl, "::rt::p_high("));
 }
 
 void test_char_array_typed_const_uses_explicit_array_literal_helper() {
@@ -3869,6 +3915,8 @@ int main() {
   RUN_TEST(test_explicit_enum_array_bounds_use_ordinal_range);
   RUN_TEST(test_distinct_ordinal_array_bounds_use_underlying_range);
   RUN_TEST(test_low_high_use_resolved_pascal_type);
+  RUN_TEST(test_low_high_on_local_array_type_lowers_to_index_bounds);
+  RUN_TEST(test_system_qualified_low_high_lowers_like_unqualified);
   RUN_TEST(test_char_array_typed_const_uses_explicit_array_literal_helper);
   RUN_TEST(test_char_array_assignment_uses_explicit_array_literal_helper);
   RUN_TEST(test_nested_array_typed_const_braces_each_array_wrapper);

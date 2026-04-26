@@ -2258,6 +2258,16 @@ std::string Emitter::low_high_expr_for_type(const TypeExpr* t,
     const auto& r = static_cast<const TySubrange&>(*t);
     return const_value_to_cxx(want_low ? *r.lo : *r.hi);
   }
+  if (t->kind == Kind::TyArray) {
+    // `low(arr)` / `high(arr)` on an array TYPE (not a value): the
+    // bounds come from the index type. Recurse on the first dimension.
+    // Open/dynamic arrays need a value to ask `p_length` of, which the
+    // type-only path doesn't have -- caller will fall back.
+    const auto& arr = static_cast<const TyArray&>(*t);
+    if (arr.array_kind != ArrayKind::Fixed) return {};
+    if (arr.dims.empty()) return {};
+    return low_high_expr_for_type(arr.dims[0].get(), want_low);
+  }
   return {};
 }
 
@@ -5128,6 +5138,33 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       //                                                   the C++ type is
       //                                                   compound
       //   * `new(...)` / `dispose(...)`                 -> placement form
+      // `system.low(...)` / `system.high(...)`: Pascal sometimes spells
+      // these intrinsics with an explicit `system.` qualifier. System is
+      // the implicit unit, so semantically these are identical to the
+      // bare-name form -- forward to the same low/high lowering instead
+      // of falling through to a runtime call.
+      if (c.callee->kind == Kind::Member) {
+        const auto& mem = static_cast<const Member&>(*c.callee);
+        if (mem.base->kind == Kind::Ident &&
+            ascii_lower(static_cast<const Ident&>(*mem.base).name) == "system" &&
+            (mem.name == "low" || mem.name == "high") && c.args.size() == 1) {
+          const bool want_low = (mem.name == "low");
+          if (c.args[0]->kind == Kind::Ident) {
+            const auto& a = static_cast<const Ident&>(*c.args[0]);
+            if (std::string rewrite =
+                    low_high_expr_for_named_type(a.name, want_low);
+                !rewrite.empty()) {
+              return rewrite;
+            }
+          }
+          if (const TypeExpr* at = deduce_type(*c.args[0])) {
+            if (std::string rewrite = low_high_expr_for_type(at, want_low);
+                !rewrite.empty()) {
+              return rewrite;
+            }
+          }
+        }
+      }
       if (c.callee->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*c.callee);
         const std::string& n = id.name;
