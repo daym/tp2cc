@@ -302,17 +302,11 @@ using p_ppointer = void**;
 // The translated `sysutils` stub aliases into `rt::`, and compiler units
 // declare exception subclasses against that alias. Keep a minimal base
 // available here so those classes compile before a full SysUtils exists.
-struct p_exception : p_tobject {
-  using inherited = p_tobject;
-  using inherited::p_create;
-
-  p_tclass p_classtype() const override;
-  int32_t p_instancesize() const override;
-
-  bool p_create(const tp2cc_ShortString<255>&) {
-    return true;
-  }
-};
+// `p_exception`'s definition lives lower down -- the `p_message` field is
+// `tp2cc_AnsiString`, whose full type isn't yet visible here. The forward
+// declaration earlier in this header is enough for the metaclass
+// machinery; subclasses and `new p_exception` users land below
+// `tp2cc_AnsiString` so the field has a complete type.
 
 inline const tp2cc_metaclass_p_tobject* tp2cc_metaclass_value_p_tobject() {
   static const tp2cc_metaclass_p_tobject value{+[]() -> p_tobject* {
@@ -321,28 +315,6 @@ inline const tp2cc_metaclass_p_tobject* tp2cc_metaclass_value_p_tobject() {
     return tp2cc_ptr;
   }};
   return &value;
-}
-
-inline const tp2cc_metaclass_p_exception* tp2cc_metaclass_value_p_exception() {
-  static const tp2cc_metaclass_p_exception value{
-      +[]() -> p_tobject* {
-        auto* tp2cc_ptr = new p_exception{};
-        tp2cc_ptr->p_create();
-        return tp2cc_ptr;
-      }};
-  return &value;
-}
-
-inline p_tclass tp2cc_metaclass_p_exception::tp2cc_parentclass() const {
-  return tp2cc_metaclass_value_p_tobject();
-}
-
-inline p_tclass p_exception::p_classtype() const {
-  return tp2cc_metaclass_value_p_exception();
-}
-
-inline int32_t p_exception::p_instancesize() const {
-  return static_cast<int32_t>(sizeof(*this));
 }
 
 // Pascal `try .. finally` runs the cleanup block on every exit path:
@@ -1013,6 +985,54 @@ class tp2cc_AnsiString {
     assign_bytes(s, len);
   }
 };
+
+// `p_exception`'s field `p_message` needs `tp2cc_AnsiString` to be a
+// complete type, so the struct lives here rather than next to
+// `p_tobject`. Forward declarations earlier in the header let the
+// metaclass machinery refer to it ahead of this point.
+struct p_exception : p_tobject {
+  using inherited = p_tobject;
+  using inherited::p_create;
+
+  // Pascal `Exception.Message` -- sysutils declares this as `string`
+  // under `{$H+}`, which is `AnsiString`. Stored on the base so every
+  // derived exception (`EOSError`, `EIntError`, ...) has it for free.
+  tp2cc_AnsiString p_message;
+
+  p_tclass p_classtype() const override;
+  int32_t p_instancesize() const override;
+
+  bool p_create(const tp2cc_ShortString<255>& msg) {
+    p_message = msg;
+    return true;
+  }
+  bool p_create(const tp2cc_AnsiString& msg) {
+    p_message = msg;
+    return true;
+  }
+};
+
+inline const tp2cc_metaclass_p_exception* tp2cc_metaclass_value_p_exception() {
+  static const tp2cc_metaclass_p_exception value{
+      +[]() -> p_tobject* {
+        auto* tp2cc_ptr = new p_exception{};
+        tp2cc_ptr->p_create();
+        return tp2cc_ptr;
+      }};
+  return &value;
+}
+
+inline p_tclass tp2cc_metaclass_p_exception::tp2cc_parentclass() const {
+  return tp2cc_metaclass_value_p_tobject();
+}
+
+inline p_tclass p_exception::p_classtype() const {
+  return tp2cc_metaclass_value_p_exception();
+}
+
+inline int32_t p_exception::p_instancesize() const {
+  return static_cast<int32_t>(sizeof(*this));
+}
 
 inline tp2cc_AnsiString tp2cc_ansistring_of(std::nullptr_t) {
   return tp2cc_AnsiString{};
