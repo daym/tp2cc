@@ -224,6 +224,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"freeandnil", 1, false, false, ""},
       {"getexceptionmask", 0, true, false, "tfpuexceptionmask"},
       {"setexceptionmask", 1, true, false, "tfpuexceptionmask"},
+      {"fileexists", 1, true,  false, "boolean"},
   };
   // Synthetic unit "rt::" holds the builtins so lookups that walk
   // the uses chain can find them as an always-available fallback.
