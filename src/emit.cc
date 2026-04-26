@@ -1030,22 +1030,46 @@ struct Emitter {
   const ast::ProcDecl* pick_overload(
       const std::vector<const ast::ProcDecl*>& candidates,
       const std::vector<const ast::Expr*>& args);
-  // Like `resolve_call_decl` but consults the full overload set on the
-  // callee's name and picks the Pascal-best match for the given args.
-  // Returns the picked declaration plus a flag indicating whether the
-  // overload set had more than one candidate (so the caller can decide
-  // whether to emit a disambiguating cast for C++ overload resolution).
-  struct ResolvedOverload {
-    const ast::ProcDecl* decl = nullptr;
-    bool from_overload_set = false;  // true if >1 candidate considered
-    // Unit owning `decl`, when the picker chose from an overload set.
-    // The call site uses this to spell the callee with the right
-    // namespace prefix; otherwise `expr_to_cxx(callee)` would emit a
-    // first-match name that disagrees with the picked decl's arity.
-    std::string defining_unit;
+  // Single entry point for resolving a Pascal call expression. Returns
+  // both the picked decl AND the information needed to emit the C++ callee
+  // text. `format_resolved_callee` is the only place the call branch
+  // turns this into text -- the call branch never calls `expr_to_cxx`
+  // directly on the callee, so resolution and emitted text cannot disagree.
+  //
+  // `callee_kind` records whether the callee needs special C++ output.
+  // `FreeFunctionInUnit` is
+  // the only case that overrides default expression
+  // formatting; otherwise
+  // the callee text comes from `expr_to_cxx(callee)`.
+  // (This refactor is deliberately scoped to free-function output --
+  // class-method/instance-receiver spelling still flows through the
+  // existing expr_to_cxx logic. Per-overload mangling would let us
+  // drop the per-arg `static_cast` workaround entirely; that is a
+  // larger follow-up, intentionally not done here.)
+  enum class ResolvedCalleeKind {
+    Unknown,             // emitter spells callee via expr_to_cxx(callee)
+    FreeFunctionInUnit,  // emitter spells callee as <unit_ns>::<mangled_name>
   };
-  ResolvedOverload resolve_overloaded_call_decl(
+  struct ResolvedCall {
+    const ast::ProcDecl* decl = nullptr;
+    ResolvedCalleeKind shape = ResolvedCalleeKind::Unknown;
+    // For `FreeFunctionInUnit`: the unit that owns `decl`. Drives the
+    // namespace prefix in `format_resolved_callee`.
+    std::string defining_unit;
+    // Pascal-side member/proc name (unmangled, lowercased). Used by
+    // `format_resolved_callee` for `FreeFunctionInUnit`.
+    std::string member_name;
+    // True iff the resolver had to pick among multiple arity-viable
+    // candidates by type-rank scoring. The call site wraps each value
+    // arg in `static_cast<param_type>(...)` so C++ overload resolution
+    // lands on the same overload Pascal picked. When arity alone
+    // narrows to one candidate, casts are not needed.
+    bool needs_arg_casts = false;
+  };
+  ResolvedCall resolve_call(
       const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
+  std::string format_resolved_callee(const ResolvedCall& resolved,
+                                     const ast::Expr& callee_ast);
   void flatten_call_param_info(const ast::ProcDecl* decl,
                                std::vector<FlatCallParamInfo>& flat_params);
   void append_defaulted_trailing_call_args(
@@ -3689,9 +3713,14 @@ const ProcDecl* Emitter::pick_overload(
   return viable[best].decl;
 }
 
-Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
+Emitter::ResolvedCall Emitter::resolve_call(
     const Expr& callee, const std::vector<const Expr*>& args) {
-  ResolvedOverload out;
+  ResolvedCall out;
+  if (callee.kind == Kind::Ident) {
+    out.member_name = static_cast<const Ident&>(callee).name;
+  } else if (callee.kind == Kind::Member) {
+    out.member_name = static_cast<const Member&>(callee).name;
+  }
   if (!registry) {
     out.decl = resolve_call_decl(callee);
     return out;
@@ -3788,16 +3817,9 @@ Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
     }
   };
 
-  std::string method_name;
-  if (callee.kind == Kind::Ident) {
-    method_name = static_cast<const Ident&>(callee).name;
-  } else if (callee.kind == Kind::Member) {
-    method_name = static_cast<const Member&>(callee).name;
-  }
-
   if (callee.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(callee);
-    // 1. Class methods of the current class take priority over unit-level
+    // Class methods of the current class take priority over unit-level
     // procs with the same name -- matches Pascal's own scope rules and
     // `resolve_call_decl`.
     if (!current_class_name.empty()) {
@@ -3856,24 +3878,33 @@ Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
     arity_ok.push_back(a);
   }
 
+  // Helper: a chosen candidate's defining unit drives the
+  // `FreeFunctionInUnit` spelling, so promote whichever AnyCand we
+  // pick into the ResolvedCall struct uniformly.
+  auto adopt = [&](const AnyCand& chosen, bool ran_type_picker) {
+    out.decl = chosen.decl ? chosen.decl : resolve_call_decl(callee);
+    out.needs_arg_casts = ran_type_picker;
+    if (!chosen.unit.empty()) {
+      out.shape = ResolvedCalleeKind::FreeFunctionInUnit;
+      out.defining_unit = chosen.unit;
+    }
+  };
+
   if (arity_ok.size() == 1) {
     // Single arity-viable candidate -- C++ overload resolution already
-    // narrows by arity, so no per-arg cast is needed. Just remember the
-    // defining unit so the call site can spell the namespace correctly
-    // even when single-name lookup would have found a different unit's
-    // version of this name.
-    out.decl = arity_ok[0].decl ? arity_ok[0].decl : resolve_call_decl(callee);
-    if (all_cands.size() > 1) {
-      out.defining_unit = arity_ok[0].unit;
-    }
+    // narrows by arity, so no per-arg cast is needed. Adopt the
+    // candidate (its `unit`, if any, locks the spelling to the right
+    // namespace even when single-name lookup would have found a
+    // different unit's version of this name).
+    adopt(arity_ok[0], /*ran_type_picker=*/false);
     return out;
   }
 
   if (arity_ok.size() > 1) {
-    // Multiple arity-viable candidates -- run the type-based picker over
-    // the subset that has decls. rt builtins without decls cannot be
-    // ranked, so they are excluded; if all viable candidates lack decls
-    // we fall back to single-name resolution.
+    // Multiple arity-viable candidates -- run the type-based picker
+    // over the subset that has decls. rt builtins without decls cannot
+    // be ranked, so they are excluded; if all viable candidates lack
+    // decls we fall back to single-name resolution.
     std::vector<const ProcDecl*> with_decl;
     for (const auto& a : arity_ok) {
       if (a.decl) with_decl.push_back(a.decl);
@@ -3882,20 +3913,49 @@ Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
       out.decl = resolve_call_decl(callee);
       return out;
     }
-    out.decl = pick_overload(with_decl, args);
-    if (out.decl) {
-      out.from_overload_set = true;
-      for (const auto& a : arity_ok) {
-        if (a.decl == out.decl) { out.defining_unit = a.unit; break; }
-      }
-    } else {
+    const ProcDecl* picked_decl = pick_overload(with_decl, args);
+    if (!picked_decl) {
       out.decl = resolve_call_decl(callee);
+      return out;
     }
+    for (const auto& a : arity_ok) {
+      if (a.decl == picked_decl) {
+        adopt(a, /*ran_type_picker=*/true);
+        return out;
+      }
+    }
+    // Defensive: picked_decl came from with_decl, which came from
+    // arity_ok, so the loop above must have hit. Fall through anyway.
+    out.decl = picked_decl;
+    out.needs_arg_casts = true;
     return out;
   }
 
   out.decl = resolve_call_decl(callee);
   return out;
+}
+
+std::string Emitter::format_resolved_callee(
+    const ResolvedCall& resolved, const Expr& callee_ast) {
+  // The single source of truth for C++ callee text. Every Call branch
+  // emit path goes through this -- do NOT add a parallel
+  // `expr_to_cxx(callee)` call elsewhere; the two would diverge.
+  if (resolved.callee_kind == ResolvedCalleeKind::FreeFunctionInUnit &&
+      !resolved.defining_unit.empty()) {
+    return unit_namespace_prefix(resolved.defining_unit) +
+           mangle(resolved.member_name);
+  }
+  // Fallback: receivers, class-qualified static calls, and anything
+  // the resolver classified as `Unknown` flow through the existing
+  // expression formatter, which already handles
+  // `instance->method`/`Class::method`/`unit::name`/with-binding. We
+  // keep that path here rather than reimplementing it because it is
+  // tied to the emitter's deduce_class_alias / with-stack state.
+  bool prev_callee_ctx = is_callee_context_;
+  is_callee_context_ = true;
+  std::string text = expr_to_cxx(callee_ast);
+  is_callee_context_ = prev_callee_ctx;
+  return text;
 }
 
 void Emitter::flatten_call_param_info(
@@ -5761,20 +5821,33 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       std::vector<const Expr*> call_args;
       call_args.reserve(c.args.size());
       for (const auto& arg : c.args) call_args.push_back(arg.get());
-      ResolvedOverload picked =
-          resolve_overloaded_call_decl(*c.callee, call_args);
-      const ProcDecl* call_decl = picked.decl;
+      ResolvedCall resolved = resolve_call(*c.callee, call_args);
+      const ProcDecl* call_decl = resolved.decl;
       append_defaulted_trailing_call_args(call_decl, call_args);
       std::vector<bool> call_untyped_arg(call_args.size(), false);
       std::vector<bool> call_mutable_ref_arg(call_args.size(), false);
       std::vector<const TypeExpr*> call_param_types(call_args.size(), nullptr);
-      if (picked.from_overload_set && call_decl) {
-        // Pull param info directly from the picked overload so per-arg
-        // types match the C++ overload we want to land on. Without this,
-        // `collect_call_param_info` would re-resolve via `find_proc` and
-        // get whichever overload happened to be first in the registry.
-        mark_call_param_info(call_decl, call_untyped_arg, call_mutable_ref_arg,
-                             call_param_types);
+      if (call_decl) {
+        // Use the resolver's picked decl directly so per-arg types match
+        // exactly the overload we are landing on. The builtin-helper hook
+        // (move/fillchar/etc.) still runs because it overrides specific
+        // slots that the decl-based path leaves null.
+        if (c.callee->kind == Kind::Ident) {
+          mark_builtin_memory_helper_param_info(
+              static_cast<const Ident&>(*c.callee).name,
+              call_untyped_arg, call_mutable_ref_arg, call_param_types);
+        } else if (c.callee->kind == Kind::Member) {
+          const auto& mem = static_cast<const Member&>(*c.callee);
+          if (mem.base->kind == Kind::Ident &&
+              ascii_lower(static_cast<const Ident&>(*mem.base).name) ==
+                  "system") {
+            mark_builtin_memory_helper_param_info(
+                mem.name, call_untyped_arg, call_mutable_ref_arg,
+                call_param_types);
+          }
+        }
+        mark_call_param_info(call_decl, call_untyped_arg,
+                             call_mutable_ref_arg, call_param_types);
       } else {
         collect_call_param_info(*c.callee, call_untyped_arg,
                                 call_mutable_ref_arg, call_param_types);
@@ -5799,20 +5872,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
         }
       }
-      is_callee_context_ = true;
-      std::string callee_text = expr_to_cxx(*c.callee);
-      is_callee_context_ = false;
-      // When the picker had multiple visible units to choose from, the
-      // bare `expr_to_cxx` lookup above resolves to the first visible
-      // unit's copy of the name, which can disagree with the picked
-      // overload's actual home (e.g. rt's 1-arg `FileExists` vs
-      // cfileutils' 2-arg `FileExists`). Re-spell the callee against
-      // the picked unit when the callee is an unqualified ident so we
-      // land on the right C++ function.
-      if (!picked.defining_unit.empty() && c.callee->kind == Kind::Ident) {
-        const auto& id = static_cast<const Ident&>(*c.callee);
-        callee_text = unit_namespace_prefix(picked.defining_unit) + mangle(id.name);
-      }
+      std::string callee_text = format_resolved_callee(resolved, *c.callee);
       bool is_tpexcept_setjmp = false;
       if (c.args.size() == 1) {
         if (c.callee->kind == Kind::Ident && registry) {
@@ -5850,7 +5910,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         // procedural-type params (`static_cast<funcptr>(value)` is
         // ill-formed and overload resolution against a function-pointer
         // slot does not produce ambiguity with value-type overloads).
-        if (picked.from_overload_set && call_param_types[i] &&
+        if (resolved.needs_arg_casts && call_param_types[i] &&
             !call_mutable_ref_arg[i] && !call_untyped_arg[i]) {
           const TypeExpr* canon_pt = canonicalize_type(call_param_types[i]);
           if (!canon_pt || canon_pt->kind != Kind::TyProcedural) {
