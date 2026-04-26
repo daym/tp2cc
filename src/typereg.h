@@ -72,7 +72,12 @@ struct ClassInfo {
   // destruction via `.Free'.  Emit decisions fork on this flag.
   bool is_reference_type = false;
   std::unordered_map<std::string, FieldInfo> fields;
-  std::unordered_map<std::string, MethodSig> methods;
+  // Pascal allows overloaded methods (multiple `procedure foo(...)`
+  // declarations on the same class), so the registry tracks the full set
+  // per name. Single-method consumers may pick any overload via the
+  // shim accessor on `TypeRegistry`; overload-aware call sites should
+  // use `lookup_class_methods`.
+  std::unordered_map<std::string, std::vector<MethodSig>> methods;
   std::unordered_map<std::string, PropertyInfo> properties;
   std::string default_property_name;
 };
@@ -241,7 +246,15 @@ struct TypeRegistry {
   const FieldInfo* lookup_class_field(
       const std::string& class_name, const std::string& member) const;
 
+  // Single-method shim: returns the first overload (the one declared
+  // earliest in source order). Wrong answer for overloaded names whose
+  // overloads differ in arity / return type / `accepts_zero_args` --
+  // those queries depend on which overload the call actually resolves to.
+  // Use `lookup_class_methods` and pick by argument types instead.
   const MethodSig* lookup_class_method(
+      const std::string& class_name, const std::string& member) const;
+  // Full overload set, walking up the inheritance chain.
+  const std::vector<MethodSig>* lookup_class_methods(
       const std::string& class_name, const std::string& member) const;
 
   const PropertyInfo* lookup_class_property(

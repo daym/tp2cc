@@ -67,7 +67,7 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
       for (const auto& p : pd.params) pc += p.names.size();
       ms.param_count = pc;
       ms.accepts_zero_args = proc_accepts_zero_args(pd);
-      ci.methods[lc(pd.name)] = ms;
+      ci.methods[lc(pd.name)].push_back(ms);
     } else if (m.kind == ObjectMemberKind::Property) {
       PropertyInfo pi;
       pi.type = m.property.type;
@@ -304,6 +304,15 @@ const FieldInfo* TypeRegistry::lookup_class_field(
 }
 
 const MethodSig* TypeRegistry::lookup_class_method(
+    const std::string& class_name_in, const std::string& member) const {
+  if (auto* set = lookup_class_methods(class_name_in, member);
+      set && !set->empty()) {
+    return &(*set)[0];
+  }
+  return nullptr;
+}
+
+const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
     const std::string& class_name_in, const std::string& member) const {
   std::string class_name = lc(class_name_in);
   std::string key = lc(member);

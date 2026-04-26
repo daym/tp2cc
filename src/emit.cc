@@ -104,6 +104,17 @@ std::string ascii_lower(std::string_view text) {
   return s;
 }
 
+// Pascal class methods can be overloaded; the registry stores them as a
+// vector per name. Most consumers want one representative MethodSig --
+// either the first overload (for kind/decl/virtual queries that overloads
+// share) or any overload that happens to be there. This helper centralises
+// the "skip empty / take front" boilerplate so iteration sites do not have
+// to redo it.
+const tp2cc::MethodSig* representative_method(
+    const std::vector<tp2cc::MethodSig>& sigs) {
+  return sigs.empty() ? nullptr : &sigs.front();
+}
+
 // Some emit paths already know the exact C++ carrier type they need,
 // for example `tp2cc_OpenArray<T>` instead of the generic array-to-pointer
 // decay used elsewhere. In those cases we must only attach the name and
@@ -965,8 +976,12 @@ struct Emitter {
   ConvRank rank_conversion(const ast::TypeExpr* arg,
                            const ast::TypeExpr* param,
                            bool var_param);
+  // Picks the Pascal-best ProcDecl from a list of candidates given the
+  // call-site argument expressions. Used by both free-function overload
+  // sets (built from `ProcInfo::decl`) and class-method overload sets
+  // (built from `MethodSig::decl`); the picker only needs the decls.
   const ast::ProcDecl* pick_overload(
-      const std::vector<tp2cc::ProcInfo>& candidates,
+      const std::vector<const ast::ProcDecl*>& candidates,
       const std::vector<const ast::Expr*>& args);
   // Like `resolve_call_decl` but consults the full overload set on the
   // callee's name and picks the Pascal-best match for the given args.
@@ -1283,14 +1298,19 @@ std::vector<Emitter::MetaclassCallable> Emitter::collect_metaclass_callables(
     if (it == registry->classes.end()) continue;
     std::vector<std::string> names;
     names.reserve(it->second.methods.size());
-    for (const auto& [name, sig] : it->second.methods) {
-      if (sig.kind == SymKind::Constructor || sig.kind == SymKind::ClassMethod) {
+    // Pascal does not let overloads of one name disagree on
+    // Constructor/ClassMethod-ness, so the representative overload's kind
+    // classifies the whole slot for the metaclass-callable test.
+    for (const auto& [name, sigs] : it->second.methods) {
+      const MethodSig* sig = representative_method(sigs);
+      if (!sig) continue;
+      if (sig->kind == SymKind::Constructor || sig->kind == SymKind::ClassMethod) {
         names.push_back(name);
       }
     }
     std::sort(names.begin(), names.end());
     for (const auto& name : names) {
-      const MethodSig* sig = &it->second.methods.at(name);
+      const MethodSig* sig = representative_method(it->second.methods.at(name));
       auto pit = pos.find(name);
       if (pit == pos.end()) {
         pos[name] = out.size();
@@ -1337,8 +1357,12 @@ Emitter::find_metaclass_callable_impl(std::string_view concrete_class,
     auto it = registry->classes.find(cls);
     if (it == registry->classes.end()) break;
     auto mit = it->second.methods.find(target.name);
-    if (mit != it->second.methods.end() && matches_target(mit->second)) {
-      return MetaclassCallableImpl{cls, &mit->second, false};
+    if (mit != it->second.methods.end()) {
+      for (const auto& candidate : mit->second) {
+        if (matches_target(candidate)) {
+          return MetaclassCallableImpl{cls, &candidate, false};
+        }
+      }
     }
     cls = it->second.parent;
   }
@@ -3364,10 +3388,10 @@ Emitter::ConvRank Emitter::rank_conversion(const TypeExpr* arg,
 }
 
 const ProcDecl* Emitter::pick_overload(
-    const std::vector<ProcInfo>& candidates,
+    const std::vector<const ProcDecl*>& candidates,
     const std::vector<const Expr*>& args) {
   if (candidates.empty()) return nullptr;
-  if (candidates.size() == 1) return candidates[0].decl.get();
+  if (candidates.size() == 1) return candidates[0];
 
   // Filter candidates by arity (with default-arg slack), then score each
   // viable one by a per-arg conversion rank vector. Pick a strict winner:
@@ -3377,8 +3401,7 @@ const ProcDecl* Emitter::pick_overload(
     std::vector<ConvRank> ranks;
   };
   std::vector<Scored> viable;
-  for (const auto& cand : candidates) {
-    const ProcDecl* decl = cand.decl.get();
+  for (const ProcDecl* decl : candidates) {
     if (!decl) continue;
     std::vector<FlatCallParamInfo> flat;
     flatten_call_param_info(decl, flat);
@@ -3417,10 +3440,10 @@ const ProcDecl* Emitter::pick_overload(
   for (size_t i = 0; i < viable.size(); ++i) {
     if (i == best) continue;
     if (!dominates(viable[best], viable[i])) {
-      // No strict winner -> ambiguous. Fall back to the first overload to
+      // No strict winner -> ambiguous. Fall back to the first candidate to
       // keep emission moving; the C++ compiler may still pick a unique
       // candidate even when Pascal cannot.
-      return candidates[0].decl.get();
+      return candidates[0];
     }
   }
   return viable[best].decl;
@@ -3433,12 +3456,10 @@ Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
     out.decl = resolve_call_decl(callee);
     return out;
   }
-  // For unqualified or unit-qualified identifiers, walk the same uses chain
-  // `resolve_name` walks but collect the overload set instead of the first
-  // hit. Methods (`receiver.method(...)`) keep the existing single-decl
-  // path -- class overload sets are not yet modelled in the registry.
-  auto name_lookup = [&](const std::string& name,
-                         const std::string* qualifier_unit)
+  // Free-function overload set lookup: walk the current unit's uses chain
+  // and return the full ProcInfo vector (not just the first hit).
+  auto unit_proc_lookup = [&](const std::string& name,
+                              const std::string* qualifier_unit)
       -> const std::vector<ProcInfo>* {
     if (qualifier_unit) {
       auto it = registry->units.find(*qualifier_unit);
@@ -3457,20 +3478,83 @@ Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
     }
     return nullptr;
   };
-  const std::vector<ProcInfo>* set = nullptr;
+  // Receiver-class lookup: given an unqualified or member callee, figure
+  // out the Pascal class hosting the method, mirrors `resolve_call_decl`'s
+  // class-method branch.
+  auto receiver_class = [&](const Expr& c) -> std::string {
+    if (c.kind == Kind::Ident) {
+      // Bare method name resolves against the current class first
+      // (mirrors `resolve_call_decl`).
+      return current_class_name;
+    }
+    if (c.kind != Kind::Member) return {};
+    const auto& mem = static_cast<const Member&>(c);
+    if (mem.base->kind == Kind::Ident) {
+      const auto& id = static_cast<const Ident&>(*mem.base);
+      if (id.name == "self") return current_class_name;
+      if (registry->classes.count(id.name) ||
+          registry->records.count(id.name)) {
+        return id.name;
+      }
+      return deduce_class_alias(*mem.base);
+    }
+    return deduce_class_alias(*mem.base);
+  };
+  // Try to assemble a list of candidate ProcDecls. Free-function and
+  // class-method overload sets feed into the same picker.
+  std::vector<const ProcDecl*> candidates;
+  auto fill_from_proc_set = [&](const std::vector<ProcInfo>& set) {
+    for (const auto& pi : set) if (pi.decl) candidates.push_back(pi.decl.get());
+  };
+  auto fill_from_method_set = [&](const std::vector<MethodSig>& set) {
+    for (const auto& ms : set) if (ms.decl) candidates.push_back(ms.decl.get());
+  };
+
+  std::string method_name;
   if (callee.kind == Kind::Ident) {
-    set = name_lookup(static_cast<const Ident&>(callee).name, nullptr);
+    method_name = static_cast<const Ident&>(callee).name;
+  } else if (callee.kind == Kind::Member) {
+    method_name = static_cast<const Member&>(callee).name;
+  }
+
+  if (callee.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(callee);
+    // 1. Class methods of the current class take priority over unit-level
+    // procs with the same name -- matches Pascal's own scope rules and
+    // `resolve_call_decl`.
+    if (!current_class_name.empty()) {
+      if (auto* set = registry->lookup_class_methods(current_class_name,
+                                                     id.name)) {
+        fill_from_method_set(*set);
+      }
+    }
+    if (candidates.empty()) {
+      if (auto* set = unit_proc_lookup(id.name, nullptr)) fill_from_proc_set(*set);
+    }
   } else if (callee.kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(callee);
+    bool unit_qualified = false;
     if (mem.base->kind == Kind::Ident) {
       const auto& id = static_cast<const Ident&>(*mem.base);
       if (registry->units.count(id.name)) {
-        set = name_lookup(mem.name, &id.name);
+        unit_qualified = true;
+        if (auto* set = unit_proc_lookup(mem.name, &id.name)) {
+          fill_from_proc_set(*set);
+        }
+      }
+    }
+    if (!unit_qualified) {
+      std::string cls = receiver_class(callee);
+      if (!cls.empty()) {
+        if (auto* set = registry->lookup_class_methods(cls, mem.name)) {
+          fill_from_method_set(*set);
+        }
       }
     }
   }
-  if (set && set->size() > 1) {
-    out.decl = pick_overload(*set, args);
+
+  if (candidates.size() > 1) {
+    out.decl = pick_overload(candidates, args);
     if (out.decl) {
       // Genuine pick from viable candidates -- caller may safely insert
       // disambiguating casts since we know which overload Pascal chose.
