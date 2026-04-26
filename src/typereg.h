@@ -129,12 +129,15 @@ struct UnitInfo {
   // visible within this unit's own procs/method bodies.
   std::unordered_map<std::string, VarInfo> iface_vars;
   std::unordered_map<std::string, ConstInfo> iface_consts;
-  std::unordered_map<std::string, ProcInfo> iface_procs;
+  // Pascal allows multiple `function foo(...)` declarations under the same
+  // name (`overload`); the registry keeps the full set so the emitter can
+  // do Pascal-style overload resolution at call sites.
+  std::unordered_map<std::string, std::vector<ProcInfo>> iface_procs;
   std::unordered_set<std::string> iface_types;
   std::unordered_set<std::string> iface_enum_members;
   std::unordered_map<std::string, VarInfo> impl_vars;
   std::unordered_map<std::string, ConstInfo> impl_consts;
-  std::unordered_map<std::string, ProcInfo> impl_procs;
+  std::unordered_map<std::string, std::vector<ProcInfo>> impl_procs;
   std::unordered_set<std::string> impl_types;
   std::unordered_set<std::string> impl_enum_members;
 
@@ -155,7 +158,22 @@ struct UnitInfo {
   const ConstInfo* find_const(const std::string& n) const {
     return find(iface_consts, impl_consts, n);
   }
+  // Returns the first-registered overload. WRONG ANSWER for overloaded
+  // names -- `accepts_zero_args`, `param_count`, and `return_type` are all
+  // per-overload, and the right value depends on which overload the call
+  // resolves to. This stays only as a transitional shim for callers that
+  // haven't been switched to the overload-aware path yet; it works in
+  // practice today because every overload set in the bootstrap source
+  // (`upper`, `lower`, `tostr`, `maybequoted`) happens to share arity and
+  // return type across its overloads. Use `find_procs` and pick by
+  // arg types whenever a real call site is involved.
   const ProcInfo* find_proc(const std::string& n) const {
+    if (auto* v = find(iface_procs, impl_procs, n); v && !v->empty()) {
+      return &(*v)[0];
+    }
+    return nullptr;
+  }
+  const std::vector<ProcInfo>* find_procs(const std::string& n) const {
     return find(iface_procs, impl_procs, n);
   }
   bool has_type(const std::string& n) const {
@@ -178,7 +196,14 @@ struct UnitInfo {
     auto it = iface_consts.find(n);
     return it == iface_consts.end() ? nullptr : &it->second;
   }
+  // Same caveat as `find_proc`: returns one arbitrary overload. Overloaded
+  // call sites must use `find_export_procs` and pick by arg types.
   const ProcInfo* find_export_proc(const std::string& n) const {
+    auto it = iface_procs.find(n);
+    if (it == iface_procs.end() || it->second.empty()) return nullptr;
+    return &it->second[0];
+  }
+  const std::vector<ProcInfo>* find_export_procs(const std::string& n) const {
     auto it = iface_procs.find(n);
     return it == iface_procs.end() ? nullptr : &it->second;
   }

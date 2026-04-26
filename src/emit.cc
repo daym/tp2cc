@@ -941,6 +941,44 @@ struct Emitter {
   };
   bool proc_accepts_zero_args(const ast::ProcDecl& decl);
   const ast::ProcDecl* resolve_call_decl(const ast::Expr& callee);
+
+  // Pascal/FPC overload-resolution conversion ranks. Lower = better. See
+  // the rank table in `rank_conversion`. `NotViable` means no conversion
+  // exists (or only an explicit one); the candidate is filtered out.
+  enum class ConvRank : uint8_t {
+    Exact = 1,             // identity after canonicalization
+    Equal = 2,             // equal-modulo-distinct/subrange (same underlying)
+    ClassHierarchy = 3,    // descendant -> ancestor class
+    IntWideningSameSign = 4,  // byte->word->longint, etc.
+    RealWidening = 5,      // single->double->extended
+    StringSameTagWiden = 6,   // ShortString<N> -> ShortString<M>, M >= N
+    // Cross-tag string conversions split by target family because Pascal's
+    // tiebreaker prefers ShortString-typed params over AnsiString-typed
+    // params when both are viable for the same source (the compiler
+    // bootstrap runs under `{$H-}` semantics: `string` aliases ShortString).
+    StringToShortString = 7,  // Char/PChar/AnsiString -> ShortString
+    StringToAnsiString  = 8,  // Char/PChar/ShortString -> AnsiString; ShortString/AnsiString -> PChar
+    OrdinalSignChange   = 9,  // longint <-> longword
+    Variant            = 10,  // any -> variant or variant -> any
+    NotViable = 255,
+  };
+  ConvRank rank_conversion(const ast::TypeExpr* arg,
+                           const ast::TypeExpr* param,
+                           bool var_param);
+  const ast::ProcDecl* pick_overload(
+      const std::vector<tp2cc::ProcInfo>& candidates,
+      const std::vector<const ast::Expr*>& args);
+  // Like `resolve_call_decl` but consults the full overload set on the
+  // callee's name and picks the Pascal-best match for the given args.
+  // Returns the picked declaration plus a flag indicating whether the
+  // overload set had more than one candidate (so the caller can decide
+  // whether to emit a disambiguating cast for C++ overload resolution).
+  struct ResolvedOverload {
+    const ast::ProcDecl* decl = nullptr;
+    bool from_overload_set = false;  // true if >1 candidate considered
+  };
+  ResolvedOverload resolve_overloaded_call_decl(
+      const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
   void flatten_call_param_info(const ast::ProcDecl* decl,
                                std::vector<FlatCallParamInfo>& flat_params);
   void append_defaulted_trailing_call_args(
@@ -3112,6 +3150,343 @@ bool Emitter::proc_accepts_zero_args(const ProcDecl& decl) {
   return true;
 }
 
+// Pascal/FPC overload resolution conversion-rank table.
+//
+//   rank | name                    | example
+//   -----+-------------------------+----------------------------------------
+//    1   | Exact                   | tidstring -> tidstring (same canonical)
+//    2   | Equal                   | TSubrangeInt -> Integer (same underlying)
+//    3   | ClassHierarchy          | TButton -> TControl
+//    4   | IntWideningSameSign     | byte -> word -> longint (same signedness)
+//    5   | RealWidening            | single -> double -> extended
+//    6   | StringSameTagWiden      | ShortString<N> -> ShortString<M>, M >= N
+//    7   | StringToShortString     | Char -> ShortString; PChar -> ShortString;
+//        |                         | AnsiString -> ShortString
+//    8   | StringToAnsiString      | Char -> AnsiString; PChar -> AnsiString;
+//        |                         | ShortString -> AnsiString;
+//        |                         | ShortString/AnsiString -> PChar
+//    9   | OrdinalSignChange       | longint -> longword (or back)
+//   10   | Variant                 | anything <-> variant
+//    -   | NotViable               | no implicit conversion exists
+//
+// Ranks 7 vs 8 split because Pascal under `{$H-}` (compiler-bootstrap
+// default) prefers ShortString-typed parameters over AnsiString-typed
+// parameters when both are otherwise tied -- e.g. `upper(PChar)` picks
+// `upper(string)` over `upper(ansistring)`.
+//
+// `var`/`const`/`out` parameters require ranks 1..3 only (Pascal does not
+// allow implicit conversion through a var/out alias).
+//
+// A defaulted-trailing-arg fill is rank 1 and handled at the call-site
+// expansion (`append_defaulted_trailing_call_args`), not here.
+Emitter::ConvRank Emitter::rank_conversion(const TypeExpr* arg,
+                                           const TypeExpr* param,
+                                           bool var_param) {
+  if (!arg || !param) return ConvRank::NotViable;
+  const TypeExpr* a = canonicalize_type(arg);
+  const TypeExpr* p = canonicalize_type(param);
+  if (!a || !p) return ConvRank::NotViable;
+
+  auto type_text = [&](const TypeExpr* t) {
+    return t ? type_to_cxx(*t) : std::string{};
+  };
+
+  // 1. Exact identity (same canonical type by C++ spelling).
+  std::string a_cxx = type_text(a);
+  std::string p_cxx = type_text(p);
+  if (!a_cxx.empty() && a_cxx == p_cxx) return ConvRank::Exact;
+
+  // 2. Equal-modulo-distinct/subrange. Strip TyDistinct/TySubrange wrappers
+  // on both sides; if the remaining canonical types match, treat as Equal.
+  auto strip_wrap = [&](const TypeExpr* t) {
+    while (t && (t->kind == Kind::TyDistinct || t->kind == Kind::TySubrange)) {
+      if (t->kind == Kind::TyDistinct) {
+        t = canonicalize_type(
+            static_cast<const TyDistinct&>(*t).underlying.get());
+      } else {
+        t = builtin_integer_type("longint");  // subrange -> base int
+        break;
+      }
+    }
+    return t;
+  };
+  const TypeExpr* a_under = strip_wrap(a);
+  const TypeExpr* p_under = strip_wrap(p);
+  if (a_under && p_under && type_text(a_under) == type_text(p_under)) {
+    return ConvRank::Equal;
+  }
+
+  // var/const/out params: only ranks 1..3 are valid. Stop here for them
+  // unless we can find a class-hierarchy match below.
+  if (var_param) {
+    if (a->kind == Kind::TyName && p->kind == Kind::TyName) {
+      const auto& an = static_cast<const TyName&>(*a).name;
+      const auto& pn = static_cast<const TyName&>(*p).name;
+      const auto* aci = class_info_for_type_name(an);
+      const auto* pci = class_info_for_type_name(pn);
+      if (aci && pci) {
+        std::unordered_set<std::string> seen;
+        std::string cur = aci->name;
+        while (!cur.empty() && !seen.count(cur)) {
+          if (cur == pci->name) return ConvRank::ClassHierarchy;
+          seen.insert(cur);
+          auto cit = registry ? registry->classes.find(cur)
+                              : decltype(registry->classes)::const_iterator{};
+          if (!registry || cit == registry->classes.end()) break;
+          cur = cit->second.parent;
+        }
+      }
+    }
+    return ConvRank::NotViable;
+  }
+
+  // 3. Class hierarchy: a derived class may pass to an ancestor parameter.
+  if (a->kind == Kind::TyName && p->kind == Kind::TyName) {
+    const auto* aci = class_info_for_type_name(
+        static_cast<const TyName&>(*a).name);
+    const auto* pci = class_info_for_type_name(
+        static_cast<const TyName&>(*p).name);
+    if (aci && pci) {
+      std::unordered_set<std::string> seen;
+      std::string cur = aci->name;
+      while (!cur.empty() && !seen.count(cur)) {
+        if (cur == pci->name) return ConvRank::ClassHierarchy;
+        seen.insert(cur);
+        auto cit = registry ? registry->classes.find(cur)
+                            : decltype(registry->classes)::const_iterator{};
+        if (!registry || cit == registry->classes.end()) break;
+        cur = cit->second.parent;
+      }
+    }
+  }
+
+  auto prim_of = [&](const TypeExpr* t) -> const PrimitiveInfo* {
+    if (!t || t->kind != Kind::TyName) return nullptr;
+    return primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
+  };
+
+  // 4. Integer widening with same signedness.
+  if (const auto* ai = prim_of(a); ai && ai->int_kind != PrimitiveIntKind::None) {
+    if (const auto* pi = prim_of(p);
+        pi && pi->int_kind == ai->int_kind && pi->bits >= ai->bits &&
+        pi->bits != 0 && ai->bits != 0) {
+      return ConvRank::IntWideningSameSign;
+    }
+  }
+
+  // 5. Real widening (single -> double -> extended). Pascal real types
+  // are floats with monotonically increasing precision in this order.
+  auto real_rank = [](std::string_view name) -> int {
+    if (name == "single") return 1;
+    if (name == "double" || name == "real") return 2;
+    if (name == "extended" || name == "comp") return 3;
+    return 0;
+  };
+  if (a->kind == Kind::TyName && p->kind == Kind::TyName) {
+    int ar = real_rank(ascii_lower(static_cast<const TyName&>(*a).name));
+    int pr = real_rank(ascii_lower(static_cast<const TyName&>(*p).name));
+    if (ar > 0 && pr > 0 && pr >= ar) return ConvRank::RealWidening;
+  }
+
+  // String-family helpers. ShortString comes either as `TyString` (parsed
+  // `string[N]`) or as a `TyName` whose canonical resolves to ShortString.
+  auto is_shortstring_param = [&](const TypeExpr* t) {
+    if (!t) return false;
+    if (t->kind == Kind::TyString) return true;
+    if (t->kind != Kind::TyName) return false;
+    const auto& n = ascii_lower(static_cast<const TyName&>(*t).name);
+    return n == "string" || n == "shortstring";
+  };
+  auto is_ansistring = [&](const TypeExpr* t) {
+    return t && t->kind == Kind::TyName &&
+           ascii_lower(static_cast<const TyName&>(*t).name) == "ansistring";
+  };
+  auto is_char = [&](const TypeExpr* t) {
+    return t && t->kind == Kind::TyName &&
+           ascii_lower(static_cast<const TyName&>(*t).name) == "char";
+  };
+
+  // 6. ShortString-to-ShortString (same string family). Both kinds resolve
+  // to ::rt::tp2cc_ShortString<N> in C++; Pascal allows the assignment as
+  // long as M >= N (truncation otherwise is a runtime concern, but Pascal
+  // still accepts it). Since we don't always know N statically here, just
+  // recognise the family and rank it.
+  if (is_shortstring_param(a) && is_shortstring_param(p)) {
+    return ConvRank::StringSameTagWiden;
+  }
+
+  // 7-8. String cross-tag conversions, split by target family. Char/PChar
+  // sources and AnsiString-source converging on a ShortString param are
+  // rank 7; the same sources converging on AnsiString (and any string
+  // family converging on PChar) are rank 8 -- matches Pascal's preference
+  // for ShortString-typed parameters under `{$H-}` semantics.
+  const bool param_is_shortstring = is_shortstring_param(p);
+  const bool param_is_ansistring = is_ansistring(p);
+  const bool arg_is_shortstring = is_shortstring_param(a);
+  const bool arg_is_ansistring = is_ansistring(a);
+  if (arg_is_ansistring && param_is_shortstring) {
+    return ConvRank::StringToShortString;
+  }
+  if (is_char(a) && param_is_shortstring) {
+    return ConvRank::StringToShortString;
+  }
+  if (type_is_pcharish(a) && param_is_shortstring) {
+    return ConvRank::StringToShortString;
+  }
+  if (arg_is_shortstring && param_is_ansistring) {
+    return ConvRank::StringToAnsiString;
+  }
+  if (is_char(a) && param_is_ansistring) {
+    return ConvRank::StringToAnsiString;
+  }
+  if (type_is_pcharish(a) && param_is_ansistring) {
+    return ConvRank::StringToAnsiString;
+  }
+  if ((arg_is_shortstring || arg_is_ansistring) && type_is_pcharish(p)) {
+    return ConvRank::StringToAnsiString;
+  }
+
+  // 9. Ordinal signedness change (longint <-> longword, etc.).
+  if (const auto* ai = prim_of(a);
+      ai && ai->int_kind != PrimitiveIntKind::None) {
+    if (const auto* pi = prim_of(p);
+        pi && pi->int_kind != PrimitiveIntKind::None && pi->bits >= ai->bits &&
+        pi->bits != 0 && ai->bits != 0) {
+      return ConvRank::OrdinalSignChange;
+    }
+  }
+
+  // 9. Variant: not really used by the bootstrap compiler, but reserve
+  // the slot. Left as `NotViable` for now; real variant support would
+  // need TyVariant detection in the AST.
+
+  return ConvRank::NotViable;
+}
+
+const ProcDecl* Emitter::pick_overload(
+    const std::vector<ProcInfo>& candidates,
+    const std::vector<const Expr*>& args) {
+  if (candidates.empty()) return nullptr;
+  if (candidates.size() == 1) return candidates[0].decl.get();
+
+  // Filter candidates by arity (with default-arg slack), then score each
+  // viable one by a per-arg conversion rank vector. Pick a strict winner:
+  // ranks <= every rival at every position AND strictly < at least one.
+  struct Scored {
+    const ProcDecl* decl;
+    std::vector<ConvRank> ranks;
+  };
+  std::vector<Scored> viable;
+  for (const auto& cand : candidates) {
+    const ProcDecl* decl = cand.decl.get();
+    if (!decl) continue;
+    std::vector<FlatCallParamInfo> flat;
+    flatten_call_param_info(decl, flat);
+    if (args.size() > flat.size()) continue;
+    bool ok = true;
+    for (size_t i = args.size(); i < flat.size(); ++i) {
+      if (!flat[i].default_value) { ok = false; break; }
+    }
+    if (!ok) continue;
+
+    Scored s{decl, {}};
+    s.ranks.reserve(args.size());
+    for (size_t i = 0; i < args.size(); ++i) {
+      const TypeExpr* arg_t = deduce_type(*args[i]);
+      ConvRank r = rank_conversion(arg_t, flat[i].type, flat[i].mutable_ref);
+      if (r == ConvRank::NotViable) { ok = false; break; }
+      s.ranks.push_back(r);
+    }
+    if (ok) viable.push_back(std::move(s));
+  }
+  if (viable.empty()) return nullptr;
+  if (viable.size() == 1) return viable[0].decl;
+
+  auto dominates = [](const Scored& a, const Scored& b) {
+    bool any_strict = false;
+    for (size_t i = 0; i < a.ranks.size(); ++i) {
+      if (a.ranks[i] > b.ranks[i]) return false;
+      if (a.ranks[i] < b.ranks[i]) any_strict = true;
+    }
+    return any_strict;
+  };
+  size_t best = 0;
+  for (size_t i = 1; i < viable.size(); ++i) {
+    if (dominates(viable[i], viable[best])) best = i;
+  }
+  for (size_t i = 0; i < viable.size(); ++i) {
+    if (i == best) continue;
+    if (!dominates(viable[best], viable[i])) {
+      // No strict winner -> ambiguous. Fall back to the first overload to
+      // keep emission moving; the C++ compiler may still pick a unique
+      // candidate even when Pascal cannot.
+      return candidates[0].decl.get();
+    }
+  }
+  return viable[best].decl;
+}
+
+Emitter::ResolvedOverload Emitter::resolve_overloaded_call_decl(
+    const Expr& callee, const std::vector<const Expr*>& args) {
+  ResolvedOverload out;
+  if (!registry) {
+    out.decl = resolve_call_decl(callee);
+    return out;
+  }
+  // For unqualified or unit-qualified identifiers, walk the same uses chain
+  // `resolve_name` walks but collect the overload set instead of the first
+  // hit. Methods (`receiver.method(...)`) keep the existing single-decl
+  // path -- class overload sets are not yet modelled in the registry.
+  auto name_lookup = [&](const std::string& name,
+                         const std::string* qualifier_unit)
+      -> const std::vector<ProcInfo>* {
+    if (qualifier_unit) {
+      auto it = registry->units.find(*qualifier_unit);
+      if (it == registry->units.end()) return nullptr;
+      return it->second.find_export_procs(name);
+    }
+    auto cur = registry->units.find(current_unit_name);
+    if (cur != registry->units.end()) {
+      if (auto* v = cur->second.find_procs(name)) return v;
+      for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
+           ++it) {
+        auto uit = registry->units.find(*it);
+        if (uit == registry->units.end()) continue;
+        if (auto* v = uit->second.find_export_procs(name)) return v;
+      }
+    }
+    return nullptr;
+  };
+  const std::vector<ProcInfo>* set = nullptr;
+  if (callee.kind == Kind::Ident) {
+    set = name_lookup(static_cast<const Ident&>(callee).name, nullptr);
+  } else if (callee.kind == Kind::Member) {
+    const auto& mem = static_cast<const Member&>(callee);
+    if (mem.base->kind == Kind::Ident) {
+      const auto& id = static_cast<const Ident&>(*mem.base);
+      if (registry->units.count(id.name)) {
+        set = name_lookup(mem.name, &id.name);
+      }
+    }
+  }
+  if (set && set->size() > 1) {
+    out.decl = pick_overload(*set, args);
+    if (out.decl) {
+      // Genuine pick from viable candidates -- caller may safely insert
+      // disambiguating casts since we know which overload Pascal chose.
+      out.from_overload_set = true;
+    } else {
+      // No viable candidate -- fall back to whatever single-decl resolution
+      // would have done. Do NOT mark `from_overload_set` because we have
+      // no authoritative pick to anchor the cast on.
+      out.decl = resolve_call_decl(callee);
+    }
+    return out;
+  }
+  out.decl = resolve_call_decl(callee);
+  return out;
+}
+
 void Emitter::flatten_call_param_info(
     const ProcDecl* decl, std::vector<FlatCallParamInfo>& flat_params) {
   flat_params.clear();
@@ -4865,16 +5240,30 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
         }
       }
-      const ProcDecl* call_decl = resolve_call_decl(*c.callee);
+      // Build the explicit-args list first so overload resolution can score
+      // candidates by their static types; defaults are filled per-overload
+      // after the pick.
       std::vector<const Expr*> call_args;
       call_args.reserve(c.args.size());
       for (const auto& arg : c.args) call_args.push_back(arg.get());
+      ResolvedOverload picked =
+          resolve_overloaded_call_decl(*c.callee, call_args);
+      const ProcDecl* call_decl = picked.decl;
       append_defaulted_trailing_call_args(call_decl, call_args);
       std::vector<bool> call_untyped_arg(call_args.size(), false);
       std::vector<bool> call_mutable_ref_arg(call_args.size(), false);
       std::vector<const TypeExpr*> call_param_types(call_args.size(), nullptr);
-      collect_call_param_info(*c.callee, call_untyped_arg,
-                              call_mutable_ref_arg, call_param_types);
+      if (picked.from_overload_set && call_decl) {
+        // Pull param info directly from the picked overload so per-arg
+        // types match the C++ overload we want to land on. Without this,
+        // `collect_call_param_info` would re-resolve via `find_proc` and
+        // get whichever overload happened to be first in the registry.
+        mark_call_param_info(call_decl, call_untyped_arg, call_mutable_ref_arg,
+                             call_param_types);
+      } else {
+        collect_call_param_info(*c.callee, call_untyped_arg,
+                                call_mutable_ref_arg, call_param_types);
+      }
       if (c.args.empty() && c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         if (auto free_call = maybe_lower_class_free_member(*mem.base, mem.name)) {
@@ -4921,8 +5310,29 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       std::string out = callee_text + "(";
       for (size_t i = 0; i < call_args.size(); ++i) {
         if (i) out += ", ";
-        out += lower_call_arg(*call_args[i], call_param_types[i],
-                              call_untyped_arg[i], call_mutable_ref_arg[i]);
+        std::string arg_text = lower_call_arg(*call_args[i], call_param_types[i],
+                                              call_untyped_arg[i],
+                                              call_mutable_ref_arg[i]);
+        // For overloaded callees, force the C++ compiler onto the picked
+        // overload by casting every value-arg to the picked param's type.
+        // C++ ranks competing implicit conversions equally in many cases
+        // (ShortString-to-ShortString vs ShortString-to-AnsiString;
+        // uint32->uint64 vs uint32->int32) so without this cast the C++
+        // call is ambiguous even though Pascal already chose. Skip for
+        // var/const/out (the call site passes the storage as-is), for
+        // untyped params (no concrete C++ type to cast to), and for
+        // procedural-type params (`static_cast<funcptr>(value)` is
+        // ill-formed and overload resolution against a function-pointer
+        // slot does not produce ambiguity with value-type overloads).
+        if (picked.from_overload_set && call_param_types[i] &&
+            !call_mutable_ref_arg[i] && !call_untyped_arg[i]) {
+          const TypeExpr* canon_pt = canonicalize_type(call_param_types[i]);
+          if (!canon_pt || canon_pt->kind != Kind::TyProcedural) {
+            arg_text = "static_cast<" + type_to_cxx(*call_param_types[i]) +
+                       ">(" + arg_text + ")";
+          }
+        }
+        out += arg_text;
       }
       out += ")";
       return out;

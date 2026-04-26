@@ -148,7 +148,8 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         for (const auto& par : pd.params) pc += par.names.size();
         p.param_count = pc;
         p.accepts_zero_args = proc_accepts_zero_args(pd);
-        if (ui) (is_interface ? ui->iface_procs : ui->impl_procs)[lc(pd.name)] = p;
+        if (ui) (is_interface ? ui->iface_procs : ui->impl_procs)[lc(pd.name)]
+                    .push_back(p);
         break;
       }
       case Kind::VarDecl: {
@@ -228,7 +229,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     p.is_function = b.is_fn;
     p.accepts_zero_args = b.zero_ok || b.params == 0;
     p.return_type_name = b.ret;
-    rtui.iface_procs[b.name] = p;
+    rtui.iface_procs[b.name].push_back(p);
   }
   units["__rt__"] = std::move(rtui);
 

@@ -2931,6 +2931,111 @@ void test_class_identifier_value_lowers_to_metaclass_descriptor() {
                  "p_result = (p_x->p_classtype() == tp2cc_metaclass_value_p_tchild());"));
 }
 
+void test_overload_picks_shortstring_target_for_short_string_arg() {
+  // When a callee has both `f(string)` and `f(ansistring)` overloads,
+  // a `string[N]` argument (N < 255) should resolve to the `string`
+  // overload. C++ overload resolution alone treats both as equally
+  // ranked single user-defined conversions; the emitter inserts a
+  // disambiguating `static_cast<ShortString<255>>(...)` so the C++
+  // compiler lands on the same overload Pascal would.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tidstring = string[127];\n"
+      "function upper(const s : string) : string;\n"
+      "function upper(const s : ansistring) : ansistring;\n"
+      "procedure run(const id : tidstring);\n"
+      "implementation\n"
+      "function upper(const s : string) : string;\n"
+      "begin\n"
+      "  upper := s;\n"
+      "end;\n"
+      "function upper(const s : ansistring) : ansistring;\n"
+      "begin\n"
+      "  upper := s;\n"
+      "end;\n"
+      "procedure run(const id : tidstring);\n"
+      "begin\n"
+      "  upper(id);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_upper(static_cast<::rt::tp2cc_ShortString<>>(p_id))"));
+}
+
+void test_overload_picks_pchar_to_shortstring_over_ansistring() {
+  // PChar -> ShortString is rank 7; PChar -> AnsiString is rank 8 in the
+  // emitter's Pascal-overload table. The split exists because Pascal
+  // under `{$H-}` (the bootstrap compiler's mode) prefers ShortString
+  // parameters when both string-family overloads would otherwise tie.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function upper(const c : char) : char;\n"
+      "function upper(const s : string) : string;\n"
+      "function upper(const s : ansistring) : ansistring;\n"
+      "procedure run(p : pchar);\n"
+      "implementation\n"
+      "function upper(const c : char) : char;\n"
+      "begin\n"
+      "  upper := c;\n"
+      "end;\n"
+      "function upper(const s : string) : string;\n"
+      "begin\n"
+      "  upper := s;\n"
+      "end;\n"
+      "function upper(const s : ansistring) : ansistring;\n"
+      "begin\n"
+      "  upper := s;\n"
+      "end;\n"
+      "procedure run(p : pchar);\n"
+      "begin\n"
+      "  upper(p);\n"
+      "end;\n"
+      "end.\n");
+  // The arg goes through `tp2cc_shortstring_of<255>(p_p)` because
+  // `lower_call_arg` already pre-wraps PChar values for stringish params;
+  // what matters is that the outer cast targets ShortString (the picked
+  // overload) rather than AnsiString or `p_char`.
+  CHECK(contains(out.impl,
+                 "p_upper(static_cast<::rt::tp2cc_ShortString<>>("));
+  CHECK(!contains(out.impl, "p_upper(static_cast<::rt::tp2cc_AnsiString>"));
+  CHECK(!contains(out.impl, "p_upper(static_cast<::rt::p_char>"));
+}
+
+void test_overload_picks_unsigned_widening_over_sign_change() {
+  // For an unsigned arg, `f(uint64)` (IntWideningSameSign, rank 4)
+  // beats both `f(int64)` and `f(int32)` (OrdinalSignChange, rank 9).
+  // C++ would otherwise call all three candidates ambiguous because
+  // every conversion is a single standard conversion.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function tostr(i : qword) : string;\n"
+      "function tostr(i : int64) : string;\n"
+      "function tostr(i : longint) : string;\n"
+      "procedure run(v : cardinal);\n"
+      "implementation\n"
+      "function tostr(i : qword) : string;\n"
+      "begin\n"
+      "  tostr := '';\n"
+      "end;\n"
+      "function tostr(i : int64) : string;\n"
+      "begin\n"
+      "  tostr := '';\n"
+      "end;\n"
+      "function tostr(i : longint) : string;\n"
+      "begin\n"
+      "  tostr := '';\n"
+      "end;\n"
+      "procedure run(v : cardinal);\n"
+      "begin\n"
+      "  tostr(v);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_tostr(static_cast<uint64_t>(p_v))"));
+}
+
 void test_class_alias_in_value_position_lowers_to_underlying_metaclass() {
   // `texportalias = texportbase;` is a Pascal type alias (not a new class).
   // In value position the alias name still means the underlying class's
@@ -3761,6 +3866,9 @@ int main() {
   RUN_TEST(test_metaclass_alias_and_concrete_class_value_lowering);
   RUN_TEST(test_metaclass_cast_keeps_concrete_descriptor);
   RUN_TEST(test_class_identifier_value_lowers_to_metaclass_descriptor);
+  RUN_TEST(test_overload_picks_shortstring_target_for_short_string_arg);
+  RUN_TEST(test_overload_picks_pchar_to_shortstring_over_ansistring);
+  RUN_TEST(test_overload_picks_unsigned_widening_over_sign_change);
   RUN_TEST(test_class_alias_in_value_position_lowers_to_underlying_metaclass);
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
   RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);
