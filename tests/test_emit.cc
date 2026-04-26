@@ -3209,6 +3209,38 @@ void test_overload_picks_unsigned_widening_over_sign_change() {
   CHECK(contains(out.impl, "p_tostr(static_cast<uint64_t>(p_v))"));
 }
 
+void test_recursive_call_var_param_gets_param_info_for_reinterpret_ref() {
+  // A recursive call to the current function: `resolve_name` rewrites the
+  // bare function name to its result slot for assignments like `f := f(...)`,
+  // but `resolve_call_decl` must still recover the actual proc decl so
+  // arg/param type info reaches `lower_call_arg`. Without that, a
+  // var-T pointer parameter receiving a subclass-field expression
+  // misses the reinterpret_storage_ref lowering and C++ rejects the
+  // pointer-base mismatch.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TNode = class\n"
+      "  end;\n"
+      "  TBlock = class(TNode)\n"
+      "  end;\n"
+      "  TCall = class(TNode)\n"
+      "    body : TBlock;\n"
+      "  end;\n"
+      "function visit(var n : TNode) : boolean;\n"
+      "implementation\n"
+      "function visit(var n : TNode) : boolean;\n"
+      "begin\n"
+      "  result := false;\n"
+      "  if n is TCall then\n"
+      "    result := visit(TCall(n).body) or result;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_storage_ref<p_tnode*>"));
+}
+
 void test_with_block_bare_free_lowers_through_static_helper() {
   // `with obj do ... Free;` -- the bare Ident `Free` should resolve to
   // the same null-safe TObject-static helper as the Member form `obj.Free`,
@@ -4104,6 +4136,7 @@ int main() {
   RUN_TEST(test_overload_picks_pchar_to_shortstring_over_ansistring);
   RUN_TEST(test_sizeof_lowers_to_int32_to_match_pascal_longint_semantics);
   RUN_TEST(test_overload_picks_unsigned_widening_over_sign_change);
+  RUN_TEST(test_recursive_call_var_param_gets_param_info_for_reinterpret_ref);
   RUN_TEST(test_with_block_bare_free_lowers_through_static_helper);
   RUN_TEST(test_metaclass_member_base_emits_with_implicit_zero_arg_call);
   RUN_TEST(test_class_alias_in_value_position_lowers_to_underlying_metaclass);

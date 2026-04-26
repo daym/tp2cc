@@ -3336,6 +3336,27 @@ const ProcDecl* Emitter::resolve_call_decl(const Expr& callee) {
   if (callee.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(callee);
     if (!registry) return nullptr;
+    // Recursive calls: `resolve_name` rewrites the current function's
+    // own name to its result slot (Pascal `f := f(...)` is the common
+    // case), but for *call lowering* we still need the proc decl so
+    // arg/param type info reaches `lower_call_arg`. Look up the decl
+    // directly in the current unit before falling through to the
+    // result-slot rewrite.
+    auto current_unit_proc = [&](const std::string& name)
+        -> const ProcDecl* {
+      auto it = registry->units.find(current_unit_name);
+      if (it == registry->units.end()) return nullptr;
+      const auto* pi = it->second.find_proc(name);
+      return (pi && pi->decl) ? pi->decl.get() : nullptr;
+    };
+    if (current_fn_is_function && !current_fn_name.empty() &&
+        id.name == current_fn_name) {
+      if (auto* d = current_unit_proc(id.name)) return d;
+    }
+    if (outer_result_type && !outer_result_name.empty() &&
+        id.name == outer_result_name) {
+      if (auto* d = current_unit_proc(id.name)) return d;
+    }
     if (!current_class_name.empty()) {
       if (auto* m = registry->lookup_class_method(current_class_name, id.name)) {
         return m->decl.get();
@@ -4668,6 +4689,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // spelled with the function's name.
       if (is_callee_context_ && current_fn_is_function &&
           !current_fn_name.empty() && n.name == current_fn_name) {
+        return mangle(n.name);
+      }
+      // Same suppression for the *outer* function-name when emitting a
+      // nested function body. Without this, a recursive call to the
+      // outer function (e.g. `foreachnodestatic` calling itself from
+      // inside its own nested `process_children`) gets rewritten to the
+      // outer result-slot (`p_result(...)`), producing "expression
+      // cannot be used as a function".
+      if (is_callee_context_ && outer_result_type &&
+          !outer_result_name.empty() && n.name == outer_result_name) {
         return mangle(n.name);
       }
       ResolveResult rr = resolve_name(n.name);
