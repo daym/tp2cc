@@ -3649,6 +3649,32 @@ void test_property_read_returning_class_then_default_index_chains_through_getter
   CHECK(!contains(out.impl, "p_o->p_inner["));
 }
 
+void test_inline_anon_enum_in_var_decl_bleeds_members_into_unit_scope() {
+  // Pascal: `var x : (a, b, c);` is an inline anonymous enum at a
+  // var-decl position. fpc accepts this and the enum members `a`, `b`,
+  // `c` are visible by bare name in the enclosing scope. Without
+  // registering them in the unit's enum-member set, the resolver
+  // treats them as unknown identifiers and falls through to a
+  // `::rt::p_a` prefix that the C++ compiler then rejects.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "var x : (alpha, beta, gamma);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "begin\n"
+      "  x := alpha;\n"
+      "  if x = beta then ;\n"
+      "end;\n"
+      "end.\n");
+  // Bare name resolves through the current unit's `using namespace`.
+  CHECK(contains(out.impl, "p_x = p_alpha"));
+  CHECK(contains(out.impl, "(p_x == p_beta)"));
+  CHECK(!contains(out.impl, "::rt::p_alpha"));
+  CHECK(!contains(out.impl, "::rt::p_beta"));
+}
+
 void test_recursive_call_var_param_gets_param_info_for_reinterpret_ref() {
   // A recursive call to the current function: `resolve_name` rewrites the
   // bare function name to its result slot for assignments like `f := f(...)`,
@@ -4590,6 +4616,7 @@ int main() {
   RUN_TEST(test_property_read_through_field_lowers_to_field_access);
   RUN_TEST(test_default_indexed_property_obj_brackets_calls_getter);
   RUN_TEST(test_property_read_returning_class_then_default_index_chains_through_getter);
+  RUN_TEST(test_inline_anon_enum_in_var_decl_bleeds_members_into_unit_scope);
   RUN_TEST(test_recursive_call_var_param_gets_param_info_for_reinterpret_ref);
   RUN_TEST(test_with_block_bare_free_lowers_through_static_helper);
   RUN_TEST(test_metaclass_member_base_emits_with_implicit_zero_arg_call);

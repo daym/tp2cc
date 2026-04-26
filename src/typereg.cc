@@ -174,6 +174,18 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         for (const auto& n : vd.names) {
           if (ui) (is_interface ? ui->iface_vars : ui->impl_vars)[lc(n)] = v;
         }
+        // Pascal: an inline anonymous enum used as a var-decl type
+        // bleeds its members into the enclosing scope. Same rule as
+        // class-field inline enums; without this, the resolver can't
+        // find the members and falls through to the unknown-name
+        // ::rt:: prefix.
+        if (ui && vd.type && vd.type->kind == Kind::TyEnum) {
+          const auto& te = static_cast<const TyEnum&>(*vd.type);
+          for (const auto& em : te.members) {
+            (is_interface ? ui->iface_enum_members : ui->impl_enum_members)
+                .insert(lc(em.name));
+          }
+        }
         break;
       }
       case Kind::ConstDecl: {
@@ -184,6 +196,15 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         c.value = cd.value;
         if (ui)
           (is_interface ? ui->iface_consts : ui->impl_consts)[lc(cd.name)] = c;
+        // Same rule for typed consts: `const x : (a, b) = a;` -- if this
+        // source construct lands in the source, the members must be visible.
+        if (ui && cd.type && cd.type->kind == Kind::TyEnum) {
+          const auto& te = static_cast<const TyEnum&>(*cd.type);
+          for (const auto& em : te.members) {
+            (is_interface ? ui->iface_enum_members : ui->impl_enum_members)
+                .insert(lc(em.name));
+          }
+        }
         break;
       }
       default:
