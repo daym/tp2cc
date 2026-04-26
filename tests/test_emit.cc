@@ -3209,6 +3209,34 @@ void test_overload_picks_unsigned_widening_over_sign_change() {
   CHECK(contains(out.impl, "p_tostr(static_cast<uint64_t>(p_v))"));
 }
 
+void test_metaclass_member_base_emits_with_implicit_zero_arg_call() {
+  // `TBaseClass(classtype).Create(...)` -- the cast result has metaclass
+  // type, so the Member emit goes through the metaclass-member-access
+  // branch. That branch must lower the cast's inner `classtype` with
+  // its implicit zero-arg call parens; otherwise C++ rejects the result
+  // as "invalid use of member function 'classtype' (did you forget the
+  // '&' ?)". The base expression must be emitted outside callee context so
+  // implicit parameterless calls still get their `()` suffix.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TList = class\n"
+      "  end;\n"
+      "  TBase = class(TList)\n"
+      "    function clone(L : TList) : TBase; virtual;\n"
+      "  end;\n"
+      "  TBaseClass = class of TBase;\n"
+      "implementation\n"
+      "function TBase.clone(L : TList) : TBase;\n"
+      "begin\n"
+      "  result := TBaseClass(classtype).Create(L);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "(p_classtype())"));
+  CHECK(!contains(out.impl, "(p_classtype))"));
+}
+
 void test_class_alias_in_value_position_lowers_to_underlying_metaclass() {
   // `texportalias = texportbase;` is a Pascal type alias (not a new class).
   // In value position the alias name still means the underlying class's
@@ -4049,6 +4077,7 @@ int main() {
   RUN_TEST(test_overload_picks_pchar_to_shortstring_over_ansistring);
   RUN_TEST(test_sizeof_lowers_to_int32_to_match_pascal_longint_semantics);
   RUN_TEST(test_overload_picks_unsigned_widening_over_sign_change);
+  RUN_TEST(test_metaclass_member_base_emits_with_implicit_zero_arg_call);
   RUN_TEST(test_class_alias_in_value_position_lowers_to_underlying_metaclass);
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
   RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);

@@ -4987,7 +4987,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (registry) {
         const std::string metaclass = metaclass_target_name(deduce_type(*m.base));
         if (!metaclass.empty()) {
+          // Member's base is an *object-position* expression, not a callee.
+          // Suppress callee-context auto-call suppression while emitting it
+          // so e.g. `TBaseClass(classtype).Create(...)` lowers the inner
+          // `classtype` with implicit-call parens. Object-member access
+          // below does the same save/false/restore dance.
+          bool saved_callee = is_callee_context_;
+          is_callee_context_ = false;
           std::string base_cxx = expr_to_cxx(*m.base);
+          is_callee_context_ = saved_callee;
           if (const auto* method =
                   registry->lookup_class_method(metaclass, m.name)) {
             if (method->kind == SymKind::Constructor ||
