@@ -1,0 +1,46 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-26
+Subject: Store ncnv printnodeinfo's convtyp2str as string[255] instead of pchar
+License: expat
+
+`ttypeconvnode.printnodeinfo` keeps a per-`tconverttype` name table:
+
+  convtyp2str : array[tconverttype] of pchar = (
+    'tc_none', 'tc_equal', 'tc_not_possible', ...);
+  ...
+  write(t, ', convtype = ', strpas(convtyp2str[convtype]));
+
+The typed-const initializer relies on Pascal's "string-literal decays
+to pchar" rule for typed constants -- each entry is the address of the
+string literal in the binary's read-only data. The read site then
+calls `strpas` to convert each pchar back to a Pascal string for
+`write`.
+
+tp2cc does not lower typed-const arrays of `pchar` initialized from
+string literals into a clean C++ form (the literals would have to land
+in a separate storage area whose addresses are then captured into the
+array initializer; const-expression initialization across translation
+units gets tangled). Storing the entries as `string[255]` puts the
+shortstring data inline in the array, no pchar storage needed and no
+`strpas` at the read site.
+
+--- a/compiler/ncnv.pas
++++ b/compiler/ncnv.pas
+@@ -732,7 +732,7 @@
+
+     procedure ttypeconvnode.printnodeinfo(var t : text);
+       const
+-        convtyp2str : array[tconverttype] of pchar = (
++        convtyp2str : array[tconverttype] of string[255] = (
+           'tc_none',
+           'tc_equal',
+           'tc_not_possible',
+@@ -776,7 +776,7 @@
+         );
+       begin
+         inherited printnodeinfo(t);
+-        write(t,', convtype = ',strpas(convtyp2str[convtype]));
++        write(t,', convtype = ',convtyp2str[convtype]);
+       end;
+
+
