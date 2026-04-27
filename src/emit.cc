@@ -5512,6 +5512,41 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return "(" + mangle(id.name) + ")";
         }
       }
+      // Pascal `@p^.field` computes the address of `field` inside the
+      // pointee of `p`; under fpc no memory is read through `p`. The
+      // naive C++ `&deref(p).field` binds a reference to `*p`, which
+      // is UB when `p` is nil. Lower through integer arithmetic +
+      // reinterpret_cast<T*> so the C++ output never derefs `p`.
+      // Restrict to record pointees so `offsetof` stays on standard-
+      // layout types.
+      if (registry && a.operand && a.operand->kind == Kind::Member) {
+        const auto& m = static_cast<const Member&>(*a.operand);
+        if (m.base && m.base->kind == Kind::Deref) {
+          const auto& d = static_cast<const Deref&>(*m.base);
+          const TypeExpr* pt = deduce_type(*d.operand);
+          if (pt) pt = canonicalize_type(pt);
+          if (pt && pt->kind == Kind::TyPointer) {
+            const TypeExpr* target =
+                canonicalize_type(static_cast<const TyPointer&>(*pt).target.get());
+            if (target && target->kind == Kind::TyName) {
+              const auto& tn = static_cast<const TyName&>(*target);
+              std::string rec_lc = ascii_lower(tn.name);
+              if (registry->records.count(rec_lc)) {
+                if (const auto* fi = registry->lookup_record_field(rec_lc, m.name)) {
+                  std::string struct_cxx = named_type_struct_cxx(rec_lc);
+                  std::string field_cxx = mangle(m.name);
+                  std::string field_type_cxx =
+                      fi->type ? type_to_cxx(*fi->type) : std::string("void");
+                  return "reinterpret_cast<" + field_type_cxx +
+                         "*>(reinterpret_cast<uintptr_t>(" +
+                         expr_to_cxx(*d.operand) + ") + offsetof(" +
+                         struct_cxx + ", " + field_cxx + "))";
+                }
+              }
+            }
+          }
+        }
+      }
       bool saved = is_callee_context_;
       is_callee_context_ = true;
       std::string inner = expr_to_cxx(*a.operand);

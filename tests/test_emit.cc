@@ -2620,6 +2620,32 @@ void test_local_var_inline_anon_enum_resolves_members() {
   CHECK(contains(out.impl, "p_mode = p_lookup"));
 }
 
+void test_addr_of_pointer_deref_field_uses_offsetof_arithmetic() {
+  // `ptrint(@p^.field) - ptrint(p)` computes a field offset even when `p`
+  // is nil. Lowering through `&deref(p).field` would bind a C++ reference
+  // to `*p`; use integer arithmetic plus `offsetof` so the pointer value is
+  // not dereferenced.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    a : longint;\n"
+      "    b : longint;\n"
+      "  end;\n"
+      "  prec = ^trec;\n"
+      "function offset(p : prec) : longint;\n"
+      "implementation\n"
+      "function offset(p : prec) : longint;\n"
+      "begin\n"
+      "  offset := ptrint(@p^.b) - ptrint(p);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(p_p) + offsetof("));
+  CHECK(!contains(out.impl, "&::rt::tp2cc_deref(p_p).p_b"));
+}
+
 void test_set_to_int_cast_uses_endian_safe_helper() {
   // ncgrtti.pas computes interface-flag words as `longint([flagA, flagB])`.
   // A plain C-style cast would invoke a non-existent
@@ -4893,6 +4919,7 @@ int main() {
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
   RUN_TEST(test_local_var_inline_anon_enum_resolves_members);
+  RUN_TEST(test_addr_of_pointer_deref_field_uses_offsetof_arithmetic);
   RUN_TEST(test_set_to_int_cast_uses_endian_safe_helper);
   RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);
   RUN_TEST(test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes);
