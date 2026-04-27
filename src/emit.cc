@@ -1034,7 +1034,14 @@ struct Emitter {
     StringToShortString = 7,  // Char/PChar/AnsiString -> ShortString
     StringToAnsiString  = 8,  // Char/PChar/ShortString -> AnsiString; ShortString/AnsiString -> PChar
     OrdinalSignChange   = 9,  // longint <-> longword
-    Variant            = 10,  // any -> variant or variant -> any
+    // Integer narrowing (longint -> shortint, etc). Pascal accepts this
+    // for value/const parameters with a runtime range check; the picker
+    // must rank it as viable but worse than any widening or sign change.
+    // Without this slot the picker rejects all narrowing-target overloads
+    // as NotViable and `Var(s, aint(x), code)` / overloaded calls with a
+    // shortint param signature can't be picked.
+    IntNarrowing        = 10,
+    Variant             = 11,  // any -> variant or variant -> any
     NotViable = 255,
   };
   // Conversion score: the major rank above plus a tie-breaking
@@ -3696,6 +3703,22 @@ Emitter::ConvScore Emitter::rank_conversion(const TypeExpr* arg,
         pi->bits != 0 && ai->bits != 0) {
       return {ConvRank::OrdinalSignChange,
               static_cast<int>(pi->bits) - static_cast<int>(ai->bits)};
+    }
+  }
+
+  // 10. Integer narrowing (target narrower than source). Pascal accepts
+  // this for value/const params (with a runtime range check on the
+  // value), so the picker must rank it as viable -- just below sign
+  // change. Distance is how many bits got dropped; smaller distance
+  // (less narrowing) is preferred when two narrowing-target overloads
+  // compete.
+  if (const auto* ai = prim_of(a);
+      ai && ai->int_kind != PrimitiveIntKind::None) {
+    if (const auto* pi = prim_of(p);
+        pi && pi->int_kind != PrimitiveIntKind::None &&
+        pi->bits != 0 && ai->bits != 0 && pi->bits < ai->bits) {
+      return {ConvRank::IntNarrowing,
+              static_cast<int>(ai->bits) - static_cast<int>(pi->bits)};
     }
   }
 

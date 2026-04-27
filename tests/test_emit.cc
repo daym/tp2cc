@@ -3477,6 +3477,47 @@ void test_overload_picks_narrowest_widening_target() {
   CHECK(!contains(out.impl, "static_cast<uint64_t>"));
 }
 
+void test_overload_int_narrowing_to_shortint_param_is_viable() {
+  // Pascal lets a longint argument bind to a shortint value parameter
+  // (with a runtime range check). The picker must rank narrowing as
+  // viable -- otherwise the only matching overload of a function whose
+  // formal parameter is `shortint` falls out as NotViable, the picker
+  // returns null, and the call site silently drops the defaulted
+  // trailing args. fpc's ogcoff.pas calls
+  // `createsection(name, current_settings.alignment.procalign, ...)`
+  // where `procalign : longint` and the formal is `aalign : shortint`.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tobj = class\n"
+      "  function take(name : shortstring; align : shortint;\n"
+      "                discard : boolean = true) : longint; overload;\n"
+      "  function take(kind : longint; name : shortstring = '') : longint; overload;\n"
+      "end;\n"
+      "procedure run(o : tobj);\n"
+      "implementation\n"
+      "function tobj.take(name : shortstring; align : shortint;\n"
+      "                   discard : boolean) : longint;\n"
+      "begin take := 0; end;\n"
+      "function tobj.take(kind : longint; name : shortstring) : longint;\n"
+      "begin take := 0; end;\n"
+      "procedure run(o : tobj);\n"
+      "var n : longint;\n"
+      "    s : shortstring;\n"
+      "    r : longint;\n"
+      "begin\n"
+      "  r := o.take(s, n);\n"
+      "end;\n"
+      "end.\n");
+  // Picker chose the (string, shortint, ...) overload -- the longint
+  // arg got narrowed to int8_t. Cast wrapping forces C++ overload
+  // resolution onto the same overload; default-fill adds the
+  // boolean=true trailing arg.
+  CHECK(contains(out.impl, "static_cast<int8_t>"));
+  CHECK(contains(out.impl, "p_take("));
+  CHECK(contains(out.impl, "static_cast<bool>(true)"));  // defaulted DiscardDuplicate
+}
+
 void test_overload_default_arg_extends_arity_disambiguates_cleanly() {
   // Sanity check the converse: `f(x : longint)` and `f(x : longint;
   // y : shortstring)`. A 2-arg call must select the second overload and
@@ -4700,6 +4741,7 @@ int main() {
   RUN_TEST(test_overload_local_unit_shadows_uses_chain_overloads);
   RUN_TEST(test_overload_exact_match_dominates_widening_alternatives);
   RUN_TEST(test_overload_picks_narrowest_widening_target);
+  RUN_TEST(test_overload_int_narrowing_to_shortint_param_is_viable);
   RUN_TEST(test_property_read_lowers_to_getter_call);
   RUN_TEST(test_property_write_lowers_to_setter_call);
   RUN_TEST(test_property_read_through_field_lowers_to_field_access);
