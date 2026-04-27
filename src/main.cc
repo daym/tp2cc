@@ -154,29 +154,28 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
     }
     h << "\n";
     h << "// Compiler units catch a small SysUtils exception hierarchy even\n";
-    h << "// when the full SysUtils unit is not translated. Keep just the\n";
-    h << "// classes the compiler sources reference, with the same inheritance\n";
-    h << "// shape they get from rtl/objpas/sysutils/sysutilh.inc.\n";
-    struct StubClass {
-      const char* name;
-      const char* parent;
-      bool has_error_code;
+    h << "// when the full SysUtils unit is not translated. The exception\n";
+    h << "// classes themselves live in `::rt::` (so checked-arith helpers\n";
+    h << "// can throw them); alias each into `p_sysutils` so translated\n";
+    h << "// code that says `on E: SysUtils.EIntOverflow do` resolves to\n";
+    h << "// the same C++ class the runtime throws.\n";
+    static constexpr const char* kRtAliasedExceptionClasses[] = {
+        "p_eexternal",
+        "p_einterror",
+        "p_eintoverflow",
+        "p_erangeerror",
+        "p_edivbyzero",
     };
-    static constexpr StubClass kStubClasses[] = {
-        {"p_eexternal", "p_exception", false},
-        {"p_einterror", "p_eexternal", false},
-        {"p_eintoverflow", "p_einterror", false},
-        {"p_eoserror", "p_exception", true},
-    };
-    for (const auto& cls : kStubClasses) {
-      h << "struct " << cls.name << " : public " << cls.parent << " {\n";
-      h << "  using inherited = " << cls.parent << ";\n";
-      h << "  using inherited::p_create;\n";
-      if (cls.has_error_code) {
-        h << "  int32_t p_errorcode = 0;\n";
-      }
-      h << "};\n";
+    for (const char* name : kRtAliasedExceptionClasses) {
+      h << "using " << name << " = ::rt::" << name << ";\n";
     }
+    // EOSError carries an `errorcode` field that the rt-side base class
+    // does not provide; keep it as a stub redeclaration here.
+    h << "struct p_eoserror : public p_exception {\n";
+    h << "  using inherited = p_exception;\n";
+    h << "  using inherited::p_create;\n";
+    h << "  int32_t p_errorcode = 0;\n";
+    h << "};\n";
     h << "}  // namespace p_sysutils\n";
     return;
   }

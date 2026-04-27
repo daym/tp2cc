@@ -1471,6 +1471,7 @@ ExprPtr Parser::parse_expr() {
     auto b = std::make_shared<Binary>();
     b->loc = loc; b->op = op;
     b->lhs = std::move(lhs); b->rhs = std::move(rhs);
+    b->q_check = lex_.overflow_check_active();
     lhs = std::move(b);
   }
 }
@@ -1500,6 +1501,7 @@ ExprPtr Parser::parse_simple_expr() {
     auto b = std::make_shared<Binary>();
     b->loc = loc; b->op = op;
     b->lhs = std::move(lhs); b->rhs = std::move(rhs);
+    b->q_check = lex_.overflow_check_active();
     lhs = std::move(b);
   }
 }
@@ -1523,6 +1525,7 @@ ExprPtr Parser::parse_term() {
     auto b = std::make_shared<Binary>();
     b->loc = loc; b->op = op;
     b->lhs = std::move(lhs); b->rhs = std::move(rhs);
+    b->q_check = lex_.overflow_check_active();
     lhs = std::move(b);
   }
 }
@@ -1534,6 +1537,7 @@ ExprPtr Parser::parse_factor() {
     auto u = std::make_shared<Unary>();
     u->loc = loc; u->op = op;
     u->operand = parse_factor();
+    u->q_check = lex_.overflow_check_active();
     return u;
   }
   if (check(Tok::KwNot)) {

@@ -2641,6 +2641,33 @@ void test_and_with_not_of_xor_short_circuits() {
   CHECK(!contains(out.impl, ") & ::rt::p_not("));
 }
 
+void test_q_plus_routes_integer_arith_through_checked_helpers() {
+  // `{$Q+}` enables Pascal's runtime overflow check on integer
+  // arithmetic. fpc-source uses it as compile-error flow (nadd.pas
+  // catches EIntOverflow from `lv+rv`). Translated code under Q+
+  // must route through helpers that raise `p_eintoverflow`; a
+  // sibling function under Q- stays on plain `+`.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function add_q(a, b : longint) : longint;\n"
+      "function add_n(a, b : longint) : longint;\n"
+      "implementation\n"
+      "{$Q+}\n"
+      "function add_q(a, b : longint) : longint;\n"
+      "begin\n"
+      "  add_q := a + b;\n"
+      "end;\n"
+      "{$Q-}\n"
+      "function add_n(a, b : longint) : longint;\n"
+      "begin\n"
+      "  add_n := a + b;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_add_checked(p_a, p_b)"));
+  CHECK(contains(out.impl, "(p_a + p_b)"));
+}
+
 void test_qword_const_cast_produces_64bit_literal_for_shifts() {
   // n386mat.pas computes `qword(1) shl (32+l) div d` -- the explicit
   // qword cast tells fpc to do the shift in 64 bits. A folded literal
@@ -4960,6 +4987,7 @@ int main() {
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
   RUN_TEST(test_local_var_inline_anon_enum_resolves_members);
   RUN_TEST(test_and_with_not_of_xor_short_circuits);
+  RUN_TEST(test_q_plus_routes_integer_arith_through_checked_helpers);
   RUN_TEST(test_qword_const_cast_produces_64bit_literal_for_shifts);
   RUN_TEST(test_addr_of_pointer_deref_field_uses_offsetof_arithmetic);
   RUN_TEST(test_set_to_int_cast_uses_endian_safe_helper);

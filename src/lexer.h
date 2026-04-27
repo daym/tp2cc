@@ -27,6 +27,16 @@ class Lexer {
   // Produce the next token. Returns Tok::Eof when all sources exhausted.
   Token next();
 
+  // Pascal `{$Q+}` / `{$OVERFLOWCHECKS+}` enable runtime overflow
+  // detection on integer arithmetic. The fpc compiler's own source
+  // is built with Q+ (see compiler/ppc.cfg) and uses the resulting
+  // `EIntOverflow` exceptions as compile-time control flow (see
+  // nadd.pas's `try ... except on E:EIntOverflow do ...` blocks).
+  // Tracked here so `{$ifopt Q+}` queries return the live state and
+  // the parser can stamp each arithmetic AST node with the active
+  // setting.
+  bool overflow_check_active() const;
+
  private:
   struct Input {
     std::shared_ptr<SourceFile> file;
@@ -84,6 +94,13 @@ class Lexer {
   std::unordered_set<std::string> defines_;           // lowercased
   std::unordered_map<std::string, Tok> keywords_;     // lowercased -> kind
   std::vector<std::filesystem::path> include_dirs_;
+
+  // Live `{$Q+/-}` / `{$OVERFLOWCHECKS+/-}` state. Pascal directives are
+  // forward-only by file but units commonly save/restore via
+  // `{$ifopt Q+}{$define ...}{$Q-}{$endif} ... {$ifdef ...}{$Q+}{$endif}`
+  // patterns; the lexer just tracks the current value, the parser
+  // snapshots it onto each arithmetic node.
+  bool q_check_ = false;
 
   // For peek() we keep the current input on the back of stack_.
 };

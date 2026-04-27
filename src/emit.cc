@@ -5220,6 +5220,29 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
         return expr_to_cxx(operand);
       };
+      // Pascal `{$Q+}` makes integer add/sub/mul/inc/dec raise
+      // EIntOverflow on overflow. Route through a checked helper when the
+      // parser snapshotted Q+ active and both operands are integer-typed;
+      // floats and sets stay on plain operators.
+      auto operand_is_integer = [&](const Expr& x) {
+        const TypeExpr* t = deduce_type(x);
+        if (!t) return false;
+        t = canonicalize_type(t);
+        if (!t || t->kind != Kind::TyName) return false;
+        const PrimitiveInfo* pi = primitive_info(
+            ascii_lower(static_cast<const TyName&>(*t).name));
+        return pi && (pi->int_kind == PrimitiveIntKind::Signed ||
+                      pi->int_kind == PrimitiveIntKind::Unsigned);
+      };
+      if (n.q_check &&
+          (n.op == BinOp::Add || n.op == BinOp::Sub || n.op == BinOp::Mul) &&
+          operand_is_integer(*n.lhs) && operand_is_integer(*n.rhs)) {
+        const char* fn = (n.op == BinOp::Add) ? "tp2cc_add_checked"
+                       : (n.op == BinOp::Sub) ? "tp2cc_sub_checked"
+                                              : "tp2cc_mul_checked";
+        return std::string("::rt::") + fn + "(" + emit_operand(*n.lhs, *n.rhs) +
+               ", " + emit_operand(*n.rhs, *n.lhs) + ")";
+      }
       const char* op = "?";
       switch (n.op) {
         case BinOp::Add:    op = "+"; break;
@@ -5256,6 +5279,21 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           static_cast<const IntLit&>(*n.operand).value ==
               (uint64_t{1} << 63)) {
         return "::std::numeric_limits<int64_t>::min()";
+      }
+      // `{$Q+}` extends to unary minus on integer types -- `-INT_MIN`
+      // raises EIntOverflow.
+      if (n.op == UnOp::Neg && n.q_check && n.operand) {
+        const TypeExpr* t = deduce_type(*n.operand);
+        if (t) t = canonicalize_type(t);
+        if (t && t->kind == Kind::TyName) {
+          const PrimitiveInfo* pi = primitive_info(
+              ascii_lower(static_cast<const TyName&>(*t).name));
+          if (pi && (pi->int_kind == PrimitiveIntKind::Signed ||
+                     pi->int_kind == PrimitiveIntKind::Unsigned)) {
+            return "::rt::tp2cc_negate_checked(" +
+                   expr_to_cxx(*n.operand) + ")";
+          }
+        }
       }
       const char* op = (n.op == UnOp::Neg) ? "-" : "+";
       return std::string(op) + expr_to_cxx(*n.operand);

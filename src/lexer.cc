@@ -363,16 +363,19 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     return;
   }
   if (head == "ifopt") {
-    // `{$ifopt X+}` / `{$ifopt X-}` queries a compiler switch state
-    // (range-checks, IO checks, etc). The bootstrap doesn't track
-    // those; treat as false so neither branch's body is required to
-    // compile, matching what most callers want.
+    // `{$ifopt X+}` / `{$ifopt X-}` queries a compiler switch state.
+    // We track the Q (overflow-check) switch live; everything else
+    // returns false so neither branch's body is required to compile,
+    // matching what most callers want.
     bool parent_ok = accepting();
+    bool cond = false;
+    std::string opt = lower(trim(rest));
+    if (opt == "q+" || opt == "overflowchecks+") cond = q_check_;
+    else if (opt == "q-" || opt == "overflowchecks-") cond = !q_check_;
     IfdefFrame f;
-    f.accepting = false;
-    f.any_taken = false;
+    f.accepting = parent_ok && cond;
+    f.any_taken = f.accepting;
     f.in_else = false;
-    (void)parent_ok;
     ifdef_stack_.push_back(f);
     return;
   }
@@ -454,8 +457,24 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     return;
   }
 
+  // Pascal `{$Q+/-}` / `{$overflowchecks+/-}` toggle the integer-overflow
+  // check. Track the live setting so `{$ifopt Q+}` queries above and the
+  // parser's per-node snapshot both see it.
+  if (head == "q+" || head == "overflowchecks+") {
+    q_check_ = true;
+    return;
+  }
+  if (head == "q-" || head == "overflowchecks-") {
+    q_check_ = false;
+    return;
+  }
+
   // Everything else (mode, I+, R-, S-, H-, F+, ASMMODE, L, linklib, appid,
   // apptype, memory, stacksize, heapsize, etc) is silently accepted.
+}
+
+bool Lexer::overflow_check_active() const {
+  return q_check_;
 }
 
 void Lexer::do_include(std::string_view arg, Location where) {

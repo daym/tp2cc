@@ -154,6 +154,10 @@ enum class BinOp : uint8_t {
 struct Binary : Expr {
   BinOp op;
   ExprPtr lhs, rhs;
+  // Snapshot of `{$Q+}` / `{$overflowchecks+}` at the point this node
+  // was parsed. The emitter routes integer arithmetic through checked
+  // helpers when set; otherwise plain `+` / `-` / `*`.
+  bool q_check = false;
   Binary() : Expr(Kind::Binary) {}
 };
 
@@ -162,6 +166,7 @@ enum class UnOp : uint8_t { Neg, Plus, Not };
 struct Unary : Expr {
   UnOp op;
   ExprPtr operand;
+  bool q_check = false;
   Unary() : Expr(Kind::Unary) {}
 };
 

@@ -1041,6 +1041,81 @@ inline int32_t p_exception::p_instancesize() const {
   return static_cast<int32_t>(sizeof(*this));
 }
 
+// Pascal sysutils exception hierarchy used by `{$Q+}` / `{$R+}` /
+// `try ... except on E:EIntOverflow do ...`. The sysutils-stub
+// generator (src/main.cc) aliases these names into `p_sysutils` so
+// translated code in either configuration sees the same C++ classes.
+struct p_eexternal : p_exception {
+  using inherited = p_exception;
+  using inherited::p_create;
+};
+struct p_einterror : p_eexternal {
+  using inherited = p_eexternal;
+  using inherited::p_create;
+};
+struct p_eintoverflow : p_einterror {
+  using inherited = p_einterror;
+  using inherited::p_create;
+};
+struct p_erangeerror : p_einterror {
+  using inherited = p_einterror;
+  using inherited::p_create;
+};
+struct p_edivbyzero : p_einterror {
+  using inherited = p_einterror;
+  using inherited::p_create;
+};
+
+[[noreturn]] inline void tp2cc_throw_int_overflow() {
+  auto* e = new p_eintoverflow{};
+  e->p_create();
+  throw static_cast<p_tobject*>(e);
+}
+
+// Checked integer arithmetic for `{$Q+}`. Signed types use
+// `__builtin_*_overflow` so the compiler emits an INTO-equivalent
+// path; unsigned types match Pascal's wraparound semantics under
+// Q+ (Pascal does not overflow-check unsigned).
+template <typename T>
+inline std::enable_if_t<std::is_signed_v<T>, T> tp2cc_add_checked(T a, T b) {
+  T r;
+  if (__builtin_add_overflow(a, b, &r)) tp2cc_throw_int_overflow();
+  return r;
+}
+template <typename T>
+inline std::enable_if_t<std::is_signed_v<T>, T> tp2cc_sub_checked(T a, T b) {
+  T r;
+  if (__builtin_sub_overflow(a, b, &r)) tp2cc_throw_int_overflow();
+  return r;
+}
+template <typename T>
+inline std::enable_if_t<std::is_signed_v<T>, T> tp2cc_mul_checked(T a, T b) {
+  T r;
+  if (__builtin_mul_overflow(a, b, &r)) tp2cc_throw_int_overflow();
+  return r;
+}
+template <typename T>
+inline std::enable_if_t<std::is_signed_v<T>, T> tp2cc_negate_checked(T x) {
+  if (x == std::numeric_limits<T>::min()) tp2cc_throw_int_overflow();
+  return static_cast<T>(-x);
+}
+template <typename T>
+inline std::enable_if_t<std::is_unsigned_v<T>, T> tp2cc_add_checked(T a, T b) {
+  return static_cast<T>(a + b);
+}
+template <typename T>
+inline std::enable_if_t<std::is_unsigned_v<T>, T> tp2cc_sub_checked(T a, T b) {
+  return static_cast<T>(a - b);
+}
+template <typename T>
+inline std::enable_if_t<std::is_unsigned_v<T>, T> tp2cc_mul_checked(T a, T b) {
+  return static_cast<T>(a * b);
+}
+template <typename T>
+inline std::enable_if_t<std::is_unsigned_v<T>, T> tp2cc_negate_checked(T x) {
+  return static_cast<T>(-x);
+}
+
 inline tp2cc_AnsiString tp2cc_ansistring_of(std::nullptr_t) {
   return tp2cc_AnsiString{};
 }
