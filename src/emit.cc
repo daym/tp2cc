@@ -383,13 +383,6 @@ const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
 
 const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
   static const std::unordered_map<std::string, const char*> m = {
-      {"tunicodechar", "::rt::p_tunicodechar"},
-      {"tunicodestring", "::rt::p_tunicodestring"},
-      {"tunicodecharmappingflag", "::rt::p_tunicodecharmappingflag"},
-      {"tunicodecharmapping", "::rt::p_tunicodecharmapping"},
-      {"punicodecharmapping", "::rt::p_punicodecharmapping"},
-      {"tunicodemap", "::rt::p_tunicodemap"},
-      {"punicodemap", "::rt::p_punicodemap"},
       {"currency", "::rt::p_currency"},
       {"datetime", "::rt::p_datetime"},
       {"tdatetime", "::rt::p_tdatetime"},

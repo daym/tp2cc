@@ -1629,30 +1629,6 @@ void test_runtime_aliases_cover_currency_systemtime_and_pansistring() {
   CHECK(contains(out.impl, "::rt::p_pansistring p_ps{};"));
 }
 
-void test_charset_stub_type_names_are_explicitly_qualified() {
-  auto out = compile_snippet_with_registry(
-      "unit u;\n"
-      "interface\n"
-      "uses charset;\n"
-      "var\n"
-      "  m : punicodemap;\n"
-      "  rec : tunicodemap;\n"
-      "  item : tunicodecharmapping;\n"
-      "  flag : tunicodecharmappingflag;\n"
-      "procedure demo;\n"
-      "implementation\n"
-      "procedure demo;\n"
-      "begin\n"
-      "  flag := umf_noinfo;\n"
-      "end;\n"
-      "end.\n");
-  CHECK(contains(out.header, "extern ::rt::p_punicodemap p_m;"));
-  CHECK(contains(out.header, "extern ::rt::p_tunicodemap p_rec;"));
-  CHECK(contains(out.header, "extern ::rt::p_tunicodecharmapping p_item;"));
-  CHECK(contains(out.header, "extern ::rt::p_tunicodecharmappingflag p_flag;"));
-  CHECK(contains(out.impl, "p_flag = ::rt::p_umf_noinfo;"));
-}
-
 void test_tmethod_type_name_is_explicitly_qualified() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -4871,7 +4847,6 @@ int main() {
   RUN_TEST(test_runtime_alias_type_names_are_explicitly_qualified);
   RUN_TEST(test_tdatetime_and_runtime_date_time_lower_through_rt);
   RUN_TEST(test_runtime_aliases_cover_currency_systemtime_and_pansistring);
-  RUN_TEST(test_charset_stub_type_names_are_explicitly_qualified);
   RUN_TEST(test_tmethod_type_name_is_explicitly_qualified);
   RUN_TEST(test_local_enum_members_do_not_fall_back_to_runtime);
   RUN_TEST(test_sizeof_visible_type_uses_type_spelling_not_identifier_lookup);
