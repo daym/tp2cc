@@ -3905,10 +3905,16 @@ Emitter::ResolvedCall Emitter::resolve_call(
 
   if (callee.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(callee);
-    // Class methods of the current class take priority over unit-level
-    // procs with the same name -- Pascal's normal scope order
-    // (locals/enclosing -> class+ancestors -> unit -> uses).
-    if (!current_class_name.empty()) {
+    // Pascal scope: locals/enclosing -> with-bindings -> class+ancestors
+    // -> unit -> uses. A bare Ident inside `with X do` resolves against
+    // X's class methods first, then falls back to current-class methods,
+    // then unit procs. Innermost with wins (rbegin walk).
+    for (auto wit = with_stack.rbegin(); wit != with_stack.rend(); ++wit) {
+      if (wit->class_name.empty()) continue;
+      gather_class_methods(wit->class_name, id.name);
+      if (!all_cands.empty()) break;
+    }
+    if (all_cands.empty() && !current_class_name.empty()) {
       gather_class_methods(current_class_name, id.name);
     }
     if (all_cands.empty()) {

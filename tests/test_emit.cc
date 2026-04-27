@@ -3518,6 +3518,55 @@ void test_overload_int_narrowing_to_shortint_param_is_viable() {
   CHECK(contains(out.impl, "static_cast<bool>(true)"));  // defaulted DiscardDuplicate
 }
 
+void test_overload_resolves_through_with_block_bare_ident_call() {
+  // `with X do begin foo(...) end` -- the bare Ident `foo` resolves
+  // against X's class methods, not against the surrounding scope.
+  // ogcoff.pas does this with `createsection(...)` inside
+  // `with internalobjdata do ...`. If the picker doesn't walk the
+  // with-stack, it sees zero candidates, falls back to single-decl
+  // resolution, and picks the wrong overload by declaration order.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tkind = (ka, kb);\n"
+      "  torder = (oa, ob);\n"
+      "  topt = (a, b);\n"
+      "  topts = set of topt;\n"
+      "  tobj = class\n"
+      "    function take(kind : tkind; name : shortstring = '';\n"
+      "                  order : torder = oa) : longint; overload;\n"
+      "    function take(name : shortstring; align : shortint;\n"
+      "                  opts : topts;\n"
+      "                  discard : boolean = true) : longint; overload;\n"
+      "  end;\n"
+      "  thost = class\n"
+      "    inner : tobj;\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "implementation\n"
+      "function tobj.take(kind : tkind; name : shortstring;\n"
+      "                   order : torder) : longint;\n"
+      "begin take := 0; end;\n"
+      "function tobj.take(name : shortstring; align : shortint;\n"
+      "                   opts : topts; discard : boolean) : longint;\n"
+      "begin take := 0; end;\n"
+      "procedure thost.run;\n"
+      "var s : shortstring;\n"
+      "    n : longint;\n"
+      "    e : topts;\n"
+      "    r : longint;\n"
+      "begin\n"
+      "  with inner do\n"
+      "    r := take(s, n, e);\n"
+      "end;\n"
+      "end.\n");
+  // Picker found overload 2 through the with-binding. Default-fill
+  // adds the boolean (true), and longint -> shortint narrows.
+  CHECK(contains(out.impl, "static_cast<int8_t>"));
+  CHECK(contains(out.impl, "static_cast<bool>(true)"));
+}
+
 void test_overload_default_arg_extends_arity_disambiguates_cleanly() {
   // Sanity check the converse: `f(x : longint)` and `f(x : longint;
   // y : shortstring)`. A 2-arg call must select the second overload and
@@ -4742,6 +4791,7 @@ int main() {
   RUN_TEST(test_overload_exact_match_dominates_widening_alternatives);
   RUN_TEST(test_overload_picks_narrowest_widening_target);
   RUN_TEST(test_overload_int_narrowing_to_shortint_param_is_viable);
+  RUN_TEST(test_overload_resolves_through_with_block_bare_ident_call);
   RUN_TEST(test_property_read_lowers_to_getter_call);
   RUN_TEST(test_property_write_lowers_to_setter_call);
   RUN_TEST(test_property_read_through_field_lowers_to_field_access);
