@@ -153,8 +153,18 @@ build_stage1() {
   # initial recursive unit walk must see the same target-unit graph as the
   # later stage compilers, or dbgdwarf gets pulled in before the cfg can
   # exclude it.
+  # FPC's own `options.pas` defines `FPC_HAS_TYPE_EXTENDED` (and the
+  # other `FPC_HAS_TYPE_*` macros) at runtime when targeting i386, but
+  # that code never executes during tp2cc translation. The compiler
+  # source uses `{$if defined(cpuextended) and defined(FPC_HAS_TYPE_EXTENDED)}`
+  # to gate i386 80-bit-real codegen and the matching assembler-writer
+  # cases; without these defines, tp2cc prunes the asm-writer cases
+  # while leaving the codegen sites intact, producing `ait_real_80bit`
+  # nodes the assembler can't write (internalerror 2006012201).
   "$HOST_BUILD/bin/tp2cc" emit-all \
     -dFPC -dCPUI386 -dI386 -dLINUX -dUNIX \
+    -dFPC_HAS_TYPE_EXTENDED -dFPC_HAS_TYPE_DOUBLE \
+    -dFPC_HAS_TYPE_SINGLE -dFPC_HAS_RESOURCES \
     -dNoDbgDwarf \
     -dNOTARGETAMIGA -dNOTARGETBEOS -dNOTARGETFREEBSD \
     -dNOTARGETGO32V1 -dNOTARGETGO32V2 -dNOTARGETOS2 \
