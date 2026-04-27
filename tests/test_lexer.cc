@@ -271,6 +271,52 @@ void test_directive_nested_ifdef() {
   CHECK_EQ(ts[2].text, std::string("a_after"));
 }
 
+void test_directive_if_defined_picks_correct_branch() {
+  // `{$if defined(SYM)}` must choose the active platform branch;
+  // otherwise inactive branch names are tokenized as if they were live.
+  auto ts = lex_all(
+      "{$if defined(unix)}\n"
+      "unix_branch\n"
+      "{$elseif defined(win32) or defined(win64)}\n"
+      "win_branch\n"
+      "{$else}\n"
+      "other_branch\n"
+      "{$endif}\n",
+      {"unix"});
+  CHECK_EQ(ts.size(), size_t{1});
+  CHECK_EQ(ts[0].text, std::string("unix_branch"));
+}
+
+void test_directive_if_elseif_falls_through_to_match() {
+  // Same chain, but the unix predicate is false -- the elseif must
+  // run and pick the win branch.
+  auto ts = lex_all(
+      "{$if defined(unix)}\n"
+      "unix_branch\n"
+      "{$elseif defined(win32) or defined(win64)}\n"
+      "win_branch\n"
+      "{$else}\n"
+      "other_branch\n"
+      "{$endif}\n",
+      {"win64"});
+  CHECK_EQ(ts.size(), size_t{1});
+  CHECK_EQ(ts[0].text, std::string("win_branch"));
+}
+
+void test_directive_if_unknown_predicate_falls_to_else() {
+  // Anything outside the supported subset (defined / not / and / or /
+  // parens) evaluates to false, and an `{$else}` branch wins. This
+  // keeps unknown predicates from being silently accepted.
+  auto ts = lex_all(
+      "{$if FPC_FULLVERSION >= 20100}\n"
+      "modern\n"
+      "{$else}\n"
+      "legacy\n"
+      "{$endif}\n");
+  CHECK_EQ(ts.size(), size_t{1});
+  CHECK_EQ(ts[0].text, std::string("legacy"));
+}
+
 void test_directive_define_undef() {
   auto ts = lex_all(
       "{$define X}\n"
@@ -453,6 +499,9 @@ int main() {
   RUN_TEST(test_directive_ifndef);
   RUN_TEST(test_directive_else);
   RUN_TEST(test_directive_nested_ifdef);
+  RUN_TEST(test_directive_if_defined_picks_correct_branch);
+  RUN_TEST(test_directive_if_elseif_falls_through_to_match);
+  RUN_TEST(test_directive_if_unknown_predicate_falls_to_else);
   RUN_TEST(test_directive_define_undef);
   RUN_TEST(test_inactive_ifdef_skips_full_string_literals);
   RUN_TEST(test_directive_builtin_macro_expands_deterministically);

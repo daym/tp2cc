@@ -51,6 +51,12 @@ class Lexer {
 
   void handle_directive(std::string_view body, Location where);
   void do_include(std::string_view arg, Location where);
+  // Evaluate a `{$if EXPR}` / `{$elseif EXPR}` body. Supports the
+  // subset the bootstrap actually uses: `defined(SYM)`, `not`, `and`,
+  // `or`, parens. Anything outside this subset evaluates to false --
+  // unrecognised predicates skip both branches, which is the safer
+  // default for our purposes.
+  bool eval_if_expr(std::string_view expr);
 
   Token scan_identifier_or_keyword();
   Token scan_number();

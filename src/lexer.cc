@@ -213,6 +213,125 @@ std::string trim(std::string_view s) {
 
 }  // namespace
 
+// Tiny recursive-descent evaluator for `{$if EXPR}` bodies. The grammar:
+//   expr   = or_expr
+//   or_expr  = and_expr ('or' and_expr)*
+//   and_expr = unary ('and' unary)*
+//   unary    = 'not' unary | primary
+//   primary  = '(' expr ')' | 'defined' '(' IDENT ')' | TRUE | FALSE
+// Anything that doesn't parse as one of those (e.g. integer-comparison
+// predicates like `FPC_FULLVERSION >= 20100`) makes the WHOLE
+// expression evaluate to false; the bootstrap doesn't use those forms
+// so the safe-skip default is fine.
+namespace {
+
+struct IfExprParser {
+  std::string_view src;
+  size_t pos = 0;
+  bool ok = true;
+  const std::unordered_set<std::string>* defines;
+
+  void skip_ws() {
+    while (pos < src.size() && (src[pos] == ' ' || src[pos] == '\t')) ++pos;
+  }
+  bool eof() { skip_ws(); return pos >= src.size(); }
+  bool match_char(char c) {
+    skip_ws();
+    if (pos < src.size() && src[pos] == c) { ++pos; return true; }
+    return false;
+  }
+  bool match_word(std::string_view w) {
+    skip_ws();
+    if (pos + w.size() > src.size()) return false;
+    for (size_t i = 0; i < w.size(); ++i) {
+      char c = src[pos + i];
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+      if (c != w[i]) return false;
+    }
+    // Word boundary: next char must not be ident-continuation.
+    size_t end = pos + w.size();
+    if (end < src.size()) {
+      char nc = src[end];
+      if (std::isalnum(static_cast<unsigned char>(nc)) || nc == '_') {
+        return false;
+      }
+    }
+    pos = end;
+    return true;
+  }
+  std::string read_ident() {
+    skip_ws();
+    size_t start = pos;
+    while (pos < src.size() &&
+           (std::isalnum(static_cast<unsigned char>(src[pos])) ||
+            src[pos] == '_')) {
+      ++pos;
+    }
+    std::string out;
+    out.reserve(pos - start);
+    for (size_t i = start; i < pos; ++i) {
+      char c = src[i];
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+      out.push_back(c);
+    }
+    return out;
+  }
+
+  bool parse_primary() {
+    skip_ws();
+    if (match_char('(')) {
+      bool v = parse_expr();
+      if (!match_char(')')) ok = false;
+      return v;
+    }
+    // `defined(SYM)`
+    size_t saved = pos;
+    if (match_word("defined")) {
+      if (!match_char('(')) { ok = false; return false; }
+      std::string sym = read_ident();
+      if (!match_char(')')) { ok = false; return false; }
+      return defines && defines->count(sym) > 0;
+    }
+    pos = saved;
+    if (match_word("true")) return true;
+    if (match_word("false")) return false;
+    // Anything else (ident, integer, comparison) -> bail out as false.
+    ok = false;
+    return false;
+  }
+  bool parse_unary() {
+    if (match_word("not")) return !parse_unary();
+    return parse_primary();
+  }
+  bool parse_and() {
+    bool v = parse_unary();
+    while (match_word("and")) {
+      bool r = parse_unary();
+      v = v && r;
+    }
+    return v;
+  }
+  bool parse_expr() {
+    bool v = parse_and();
+    while (match_word("or")) {
+      bool r = parse_and();
+      v = v || r;
+    }
+    return v;
+  }
+};
+
+}  // namespace
+
+bool Lexer::eval_if_expr(std::string_view expr) {
+  IfExprParser p{expr, 0, true, &defines_};
+  bool v = p.parse_expr();
+  if (!p.ok) return false;
+  // Trailing junk -> false (match unknown-predicate behavior).
+  if (!p.eof()) return false;
+  return v;
+}
+
 void Lexer::handle_directive(std::string_view body, Location where) {
   auto [head, rest] = split_directive(body);
   if (head.empty()) return;
@@ -230,9 +349,24 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     ifdef_stack_.push_back(f);
     return;
   }
-  if (head == "if" || head == "ifopt") {
-    // Treat unknown `if` / `ifopt` conditions as FALSE conservatively.
-    // This matches what most bootstrap use-cases need; we can refine later.
+  if (head == "if") {
+    // Evaluate the boolean expression -- enough subset for the Pascal
+    // bootstrap (defined(SYM), not/and/or, parens). Anything else
+    // evaluates to false, matching the previous conservative default.
+    bool parent_ok = accepting();
+    bool cond = eval_if_expr(rest);
+    IfdefFrame f;
+    f.accepting = parent_ok && cond;
+    f.any_taken = f.accepting;
+    f.in_else = false;
+    ifdef_stack_.push_back(f);
+    return;
+  }
+  if (head == "ifopt") {
+    // `{$ifopt X+}` / `{$ifopt X-}` queries a compiler switch state
+    // (range-checks, IO checks, etc). The bootstrap doesn't track
+    // those; treat as false so neither branch's body is required to
+    // compile, matching what most callers want.
     bool parent_ok = accepting();
     IfdefFrame f;
     f.accepting = false;
@@ -240,6 +374,25 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     f.in_else = false;
     (void)parent_ok;
     ifdef_stack_.push_back(f);
+    return;
+  }
+  if (head == "elseif") {
+    if (ifdef_stack_.empty()) {
+      report_error(where, "{$elseif} without matching {$if}");
+      return;
+    }
+    auto& f = ifdef_stack_.back();
+    if (f.in_else) {
+      report_error(where, "{$elseif} after {$else}");
+      return;
+    }
+    bool parent_ok = true;
+    for (size_t i = 0; i + 1 < ifdef_stack_.size(); ++i) {
+      if (!ifdef_stack_[i].accepting) { parent_ok = false; break; }
+    }
+    bool cond = eval_if_expr(rest);
+    f.accepting = parent_ok && !f.any_taken && cond;
+    if (f.accepting) f.any_taken = true;
     return;
   }
   if (head == "else") {
