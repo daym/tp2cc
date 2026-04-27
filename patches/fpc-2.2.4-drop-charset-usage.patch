@@ -1,0 +1,150 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-27
+Subject: Drop the charset/codepage path from the bootstrap compiler
+License: expat
+
+The 2.2.4 compiler reaches `rtl/inc/charset.pp` and the per-codepage
+unit tables (cp437.pas, cp8859_1.pas, ...) for one purpose: convert
+non-UTF-8 source bytes into wide chars during lexing of widestring
+literals. The bootstrap target (compiling fpc itself) has zero
+widestring literals in its source tree, so the path is never
+exercised at runtime -- it is link-only baggage that drags `charset`
+and the cp* tables into the unit graph.
+
+Drop the dependency entirely:
+- `widestr.pas`: remove `uses charset` plus the cp* unit imports;
+  collapse `asciichar2unicode` / `ascii2unicode` / `cpavailable` to
+  byte-to-widechar pass-through so the surface stays callable for
+  `scandir.pas`'s `{$CodePage X}` directive handling.
+- `options.pas`: remove `uses charset`; drop the `-Fm <name>`
+  loadunicodemapping handler since there is no longer a charset
+  registry to populate.
+
+Source files using non-UTF-8 widestring literals will silently
+widen each byte to its codepoint (identity for ASCII, lossy for
+non-ASCII) -- acceptable for the bootstrap, which never produces
+such input. The post-bootstrap compiler can be rebuilt against
+upstream-pristine sources to recover full charset support.
+
+--- a/compiler/widestr.pas	2026-04-27 16:40:58.368695523 +0000
++++ b/compiler/widestr.pas	2026-04-27 16:41:47.393136517 +0000
+@@ -28,7 +28,7 @@
+   interface
+ 
+     uses
+-       charset,globtype
++       globtype
+        ;
+ 
+ 
+@@ -62,9 +62,6 @@
+   implementation
+ 
+     uses
+-      cp8859_1,cp850,cp437,
+-      { cyrillic code pages }
+-      cp1251,cp866,cp8859_5,
+       globals,cutils;
+ 
+ 
+@@ -154,16 +151,9 @@
+       end;
+ 
+     function asciichar2unicode(c : char) : tcompilerwidechar;
+-      var
+-         m : punicodemap;
+       begin
+-         if (current_settings.sourcecodepage <> 'utf8') then
+-           begin
+-             m:=getmap(current_settings.sourcecodepage);
+-             asciichar2unicode:=getunicode(c,m);
+-           end
+-         else
+-           result:=tcompilerwidechar(c);
++         { bootstrap stub: byte-to-widechar pass-through. }
++         asciichar2unicode:=tcompilerwidechar(c);
+       end;
+ 
+     function unicode2asciichar(c : tcompilerwidechar) : char;
+@@ -179,31 +169,18 @@
+          source : pchar;
+          dest   : tcompilerwidecharptr;
+          i      : SizeInt;
+-         m      : punicodemap;
+       begin
+-         m:=getmap(current_settings.sourcecodepage);
++         { bootstrap stub: byte-to-widechar pass-through. }
+          setlengthwidestring(r,l);
+          source:=p;
+          r^.len:=l;
+          dest:=tcompilerwidecharptr(r^.data);
+-         if (current_settings.sourcecodepage <> 'utf8') then
+-           begin
+-             for i:=1 to l do
+-                begin
+-                  dest^:=getunicode(source^,m);
+-                  inc(dest);
+-                  inc(source);
+-                end;
+-           end
+-         else
+-           begin
+-             for i:=1 to l do
+-                begin
+-                  dest^:=tcompilerwidechar(source^);
+-                  inc(dest);
+-                  inc(source);
+-                end;
+-           end;
++         for i:=1 to l do
++            begin
++              dest^:=tcompilerwidechar(source^);
++              inc(dest);
++              inc(source);
++            end;
+       end;
+ 
+     procedure unicode2ascii(r : pcompilerwidestring;p:pchar);
+@@ -263,7 +240,8 @@
+ 
+     function cpavailable(const s : string) : boolean;
+       begin
+-          cpavailable:=mappingavailable(lower(s));
++          { bootstrap stub: accept any codepage name; pass-through is identity. }
++          cpavailable:=true;
+       end;
+ 
+ end.
+--- a/compiler/options.pas	2026-04-27 16:40:58.371108697 +0000
++++ b/compiler/options.pas	2026-04-27 16:42:49.960550896 +0000
+@@ -71,7 +71,6 @@
+ 
+ uses
+   widestr,
+-  charset,
+   SysUtils,
+   version,
+   cutils,cmsgs,
+@@ -386,7 +385,6 @@
+   error : integer;
+   j,l   : longint;
+   d,s   : TCmdStr;
+-  unicodemapping : punicodemap;
+ begin
+   if opt='' then
+    exit;
+@@ -759,14 +757,6 @@
+                      else
+                        includesearchpath.AddPath(More,true);
+                    end;
+-                 'm' :
+-                   begin
+-                     unicodemapping:=loadunicodemapping(More,More+'.txt');
+-                     if assigned(unicodemapping) then
+-                       registermapping(unicodemapping)
+-                     else
+-                       IllegalPara(opt);
+-                   end;
+                  'g' :
+                    Message2(option_obsolete_switch_use_new,'-Fg','-Fl');
+                  'l' :
