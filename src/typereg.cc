@@ -269,6 +269,73 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   }
   units["__rt__"] = std::move(rtui);
 
+  // Register the rt-side reference classes (tobject, exception, ...) so
+  // the normal class-method lookup walks Pascal's parent chain into
+  // them. Without this, a translated class that inherits Create from these
+  // (e.g. `EListError = class(Exception)` calling
+  // `EListError.Create(msg)`) doesn't resolve to a constructor -- the
+  // constructor-call lowering falls back to a plain method call, which
+  // fails because the rt method is non-static.
+  //
+  // Each MethodSig carries a synthesized ProcDecl with real params, so
+  // consumers that walk `decl->params` (param_list_to_cxx,
+  // procedural_param_types_to_cxx, ...) work uniformly. Without the
+  // synthesized decl, every such consumer would need to special-case
+  // null and we'd be back to ad-hoc.
+  auto make_typename = [](const std::string& n) {
+    auto t = std::make_shared<ast::TyName>();
+    t->name = n;
+    return t;
+  };
+  auto make_method = [&](const std::string& name, ast::ProcKind pkind,
+                         std::vector<ast::Param> params) {
+    auto pd = std::make_shared<ast::ProcDecl>(/*class_method=*/false);
+    pd->pkind = pkind;
+    pd->name = name;
+    pd->params = std::move(params);
+    MethodSig ms;
+    ms.kind = (pkind == ast::ProcKind::Constructor) ? SymKind::Constructor
+              : (pkind == ast::ProcKind::Destructor) ? SymKind::Destructor
+                                                     : SymKind::Method;
+    size_t pc = 0;
+    for (const auto& p : pd->params) pc += p.names.empty() ? 1 : p.names.size();
+    ms.param_count = pc;
+    ms.accepts_zero_args = (pc == 0);
+    ms.decl = pd;
+    return ms;
+  };
+  auto add_rt_class = [&](const std::string& name, const std::string& parent,
+                          std::vector<MethodSig> methods) {
+    ClassInfo ci;
+    ci.name = name;
+    ci.parent = parent;
+    ci.defining_unit = "__rt__";
+    ci.is_reference_type = true;
+    for (auto& m : methods) {
+      const std::string mname = m.decl->name;
+      ci.methods[mname].push_back(std::move(m));
+    }
+    classes[name] = std::move(ci);
+  };
+
+  add_rt_class("tobject", "",
+               {make_method("create",  ast::ProcKind::Constructor, {}),
+                make_method("destroy", ast::ProcKind::Destructor,  {}),
+                make_method("free",    ast::ProcKind::Procedure,   {})});
+
+  // sysutils' Exception ancestor. `Create(const Msg: string)`; the
+  // array-of-const `CreateFmt` cousin is not registered (its only
+  // call site is rewritten by
+  // patches/fpc-2.2.4-replace-array-of-const-calls-with-string-concat
+  // to use plain Create).
+  ast::Param exc_msg;
+  exc_msg.mode = ast::Param::Const;
+  exc_msg.names = {"msg"};
+  exc_msg.type = make_typename("string");
+  add_rt_class("exception", "tobject",
+               {make_method("create", ast::ProcKind::Constructor,
+                            {exc_msg})});
+
   for (const auto* u : us) {
     if (!u) continue;
     UnitInfo ui;

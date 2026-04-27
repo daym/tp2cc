@@ -3709,6 +3709,36 @@ void test_inherited_call_routes_through_pascal_picker() {
   CHECK(contains(out.impl, "static_cast<::rt::tp2cc_ShortString<>"));
 }
 
+void test_inherited_exception_create_lowers_as_constructor_call() {
+  // `EFoo = class(Exception)` inherits `Create(const Msg: string)` from
+  // sysutils' Exception (which is an rt builtin). A call site of the
+  // form `EFoo.Create('msg')` must lower as a Pascal constructor call:
+  // allocate a fresh instance, then dispatch to `p_create(msg)` on it.
+  // Before tobject/exception were in the registry, the constructor
+  // lookup found nothing for `EFoo`, the lowering fell back to a plain
+  // method call, and the C++ compiler refused
+  // `p_efoo::p_create('msg')` (non-static method called without an
+  // object).
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  efoo = class(exception);\n"
+      "procedure boom;\n"
+      "implementation\n"
+      "procedure boom;\n"
+      "begin\n"
+      "  raise efoo.create('bad');\n"
+      "end;\n"
+      "end.\n");
+  // Constructor lowering: allocate, then call p_create on the new
+  // instance.
+  CHECK(contains(out.impl, "new p_efoo"));
+  CHECK(contains(out.impl, "tp2cc_ptr->p_create("));
+  // Must NOT be a static-style call.
+  CHECK(!contains(out.impl, "p_efoo::p_create("));
+}
+
 void test_recursive_call_var_param_gets_param_info_for_reinterpret_ref() {
   // A recursive call to the current function: `resolve_name` rewrites the
   // bare function name to its result slot for assignments like `f := f(...)`,
@@ -4652,6 +4682,7 @@ int main() {
   RUN_TEST(test_property_read_returning_class_then_default_index_chains_through_getter);
   RUN_TEST(test_inline_anon_enum_in_var_decl_bleeds_members_into_unit_scope);
   RUN_TEST(test_inherited_call_routes_through_pascal_picker);
+  RUN_TEST(test_inherited_exception_create_lowers_as_constructor_call);
   RUN_TEST(test_recursive_call_var_param_gets_param_info_for_reinterpret_ref);
   RUN_TEST(test_with_block_bare_free_lowers_through_static_helper);
   RUN_TEST(test_metaclass_member_base_emits_with_implicit_zero_arg_call);
