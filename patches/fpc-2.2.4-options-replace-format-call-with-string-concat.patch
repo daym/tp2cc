@@ -1,0 +1,43 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-27
+Subject: Build FPC_FULLVERSION via string concat instead of SysUtils.Format
+License: expat
+
+`Format('%d%.02d%.02d', [v, r, p])` is the only `Format` call in the
+bootstrap-compiled compiler, and the only `array of const` argument
+list reachable in stage1 (dbgdwarf is excluded by `-dNoDbgDwarf`).
+
+Routing it through `Format` would require `array of const` parameter
+support in the emitter (TVarRec-shaped variadic packs) plus a `Format`
+implementation in the rt prelude.
+
+--- a/compiler/options.pas
++++ b/compiler/options.pas
+@@ -91,6 +91,15 @@
+   ppcaltcfg,
+   param_file    : string;   { file to compile specified on the commandline }
+ 
++{ Two-digit zero-padded `tostr` -- the bootstrap path replaces a single
++  SysUtils.Format('%d%.02d%.02d', ...) call with string concatenation so
++  the rt subset does not need `Format` plus full `array of const`. }
++function tp2cc_pad2(v : longint) : string;
++begin
++  if v < 10 then tp2cc_pad2 := '0' + tostr(v)
++  else tp2cc_pad2 := tostr(v);
++end;
++
+ {****************************************************************************
+                                  Defines
+ ****************************************************************************}
+@@ -2537,7 +2546,10 @@
+   set_system_macro('FPC_VERSION',version_nr);
+   set_system_macro('FPC_RELEASE',release_nr);
+   set_system_macro('FPC_PATCH',patch_nr);
+-  set_system_macro('FPC_FULLVERSION',Format('%d%.02d%.02d',[StrToInt(version_nr),StrToInt(release_nr),StrToInt(patch_nr)]));
++  set_system_macro('FPC_FULLVERSION',
++                   tostr(StrToInt(version_nr)) +
++                   tp2cc_pad2(StrToInt(release_nr)) +
++                   tp2cc_pad2(StrToInt(patch_nr)));
+ 
+   for i:=low(tfeature) to high(tfeature) do
+     if i in features then
