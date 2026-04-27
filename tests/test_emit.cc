@@ -4126,6 +4126,31 @@ void test_statement_context_member_destroy_autocalls() {
   CHECK(contains(out.impl, "p_list->p_destroy();"));
 }
 
+void test_val_var_arg_typecast_reinterprets_storage() {
+  // Pascal's `Val(S; var V; var Code)` writes to caller storage, so a
+  // call-site typecast on the var slot -- `Val(s, aword(result), code)`
+  // -- must reinterpret `result`'s storage as the cast target. Without
+  // marking Val's 2nd slot as mutable_ref in the builtin-helper info
+  // table, the cast lowers as a value rvalue and the unsigned `p_val`
+  // overload (which takes `UInt&`) fails to match.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var\n"
+      "  s : shortstring;\n"
+      "  result : longint;\n"
+      "  code : integer;\n"
+      "begin\n"
+      "  val(s, cardinal(result), code);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_storage_ref<uint32_t>(p_result)"));
+}
+
 void test_var_arg_class_cast_reinterprets_storage_slot() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -4698,6 +4723,7 @@ int main() {
   RUN_TEST(test_pointer_typed_field_chain_keeps_arrow_access);
   RUN_TEST(test_with_cast_binds_pointer_rvalue_by_value);
   RUN_TEST(test_statement_context_member_destroy_autocalls);
+  RUN_TEST(test_val_var_arg_typecast_reinterprets_storage);
   RUN_TEST(test_var_arg_class_cast_reinterprets_storage_slot);
   RUN_TEST(test_var_arg_derived_pointer_slot_reinterprets_storage);
   RUN_TEST(test_nested_proc_var_arg_keeps_storage_semantics);

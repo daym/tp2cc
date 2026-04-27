@@ -311,6 +311,22 @@ void mark_builtin_memory_helper_param_info(
       lower == "dispose" || lower == "strdispose") {
     mark(0, /*is_untyped=*/false, /*is_mutable=*/true);
   }
+  // Pascal `Val(S; var V; var Code)` and `Str(X; var S)` write to caller
+  // storage. Mark the var-mode slots so a call-site typecast like
+  // `Val(s, aword(result), code)` lowers through `lower_call_arg`'s
+  // mutable-ref-cast path -- it rebinds the `result` storage as the
+  // typecast's target type, which matches the unsigned `p_val` rt
+  // overload. Without this, the cast lowers as a value rvalue and the
+  // overload set fails to match.
+  if (lower == "val") {
+    mark(1, /*is_untyped=*/false, /*is_mutable=*/true);
+    mark(2, /*is_untyped=*/false, /*is_mutable=*/true);
+    return;
+  }
+  if (lower == "str") {
+    mark(1, /*is_untyped=*/false, /*is_mutable=*/true);
+    return;
+  }
 }
 
 enum class PrimitiveIntKind : uint8_t { None, Signed, Unsigned };
