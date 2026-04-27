@@ -1,15 +1,18 @@
 Author: Danny Milosavljevic <dannym@friendly-machines.com>
 Date: 2026-04-27
-Subject: Build FPC_FULLVERSION via string concat instead of SysUtils.Format
+Subject: Replace SysUtils.Format and Exception.CreateFmt calls with string concat
 License: expat
 
-`Format('%d%.02d%.02d', [v, r, p])` is the only `Format` call in the
-bootstrap-compiled compiler, and the only `array of const` argument
-list reachable in stage1 (dbgdwarf is excluded by `-dNoDbgDwarf`).
+The bootstrap reaches `array of const` parameters in two places: the
+FPC_FULLVERSION `Format` call in options.pas and two
+`EListError.CreateFmt(Msg, [Data])` calls in cclasses.pas. Avoid
+adding `array of const` lowering plus rt Format/CreateFmt helpers --
+just rewrite both shapes as string concatenation.
 
-Routing it through `Format` would require `array of const` parameter
-support in the emitter (TVarRec-shaped variadic packs) plus a `Format`
-implementation in the rt prelude.
+The Format result is byte-identical for single-digit version
+components (zero-pad helper). CreateFmt loses `%d` substitution and
+appends the value as a trailing `(N)`; the helpers are only reached
+on bad list indices.
 
 --- a/compiler/options.pas
 +++ b/compiler/options.pas
@@ -41,3 +44,23 @@ implementation in the rt prelude.
  
    for i:=low(tfeature) to high(tfeature) do
      if i in features then
+--- a/compiler/cclasses.pas
++++ b/compiler/cclasses.pas
+@@ -605,7 +605,7 @@
+ 
+ class procedure TFPList.Error(const Msg: string; Data: PtrInt);
+ begin
+-  Raise EListError.CreateFmt(Msg,[Data]) at get_caller_addr(get_frame);
++  Raise EListError.Create(Msg + ' (' + tostr(Data) + ')') at get_caller_addr(get_frame);
+ end;
+ 
+ procedure TFPList.Exchange(Index1, Index2: Integer);
+@@ -1257,7 +1257,7 @@
+ 
+ class procedure TFPHashList.Error(const Msg: string; Data: PtrInt);
+ begin
+-  Raise EListError.CreateFmt(Msg,[Data]) at get_caller_addr(get_frame);
++  Raise EListError.Create(Msg + ' (' + tostr(Data) + ')') at get_caller_addr(get_frame);
+ end;
+ 
+ function TFPHashList.Expand: TFPHashList;
