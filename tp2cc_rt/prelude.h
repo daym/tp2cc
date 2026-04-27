@@ -3015,6 +3015,11 @@ inline void p_getdir(int, tp2cc_ShortString<N>& out) {
   if (::getcwd(buf, sizeof(buf)) == nullptr) out = tp2cc_shortstring_of<N>("");
   else out = tp2cc_shortstring_of<N>(buf);
 }
+inline void p_getdir(int, tp2cc_AnsiString& out) {
+  char buf[PATH_MAX > 0 ? PATH_MAX : 4096]{};
+  if (::getcwd(buf, sizeof(buf)) == nullptr) out = nullptr;
+  else out = buf;  // AnsiString::operator=(const char*)
+}
 inline void p_erase(const tp2cc_ShortString<>& path) {
   p_last_ioresult = std::remove(p_to_std_string(path).c_str()) == 0 ? 0 : 2;
 }
