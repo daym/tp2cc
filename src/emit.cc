@@ -3877,8 +3877,26 @@ Emitter::ResolvedCall Emitter::resolve_call(
   } else if (callee.kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(callee);
     bool unit_qualified = false;
+    bool inherited_call = false;
     if (mem.base->kind == Kind::Ident) {
       const auto& id = static_cast<const Ident&>(*mem.base);
+      // `inherited Foo(args)` looks up `Foo` in the PARENT class chain
+      // (skipping the current class). The picker then runs the same
+      // arity + conv-rank disambiguation as any other method call --
+      // C++ overload resolution on `inherited::p_foo` is no longer the
+      // last word, so a Pascal-disambiguated call lands on the right
+      // overload even when C++ would have picked differently.
+      if (id.name == "inherited" && !current_class_name.empty()) {
+        inherited_call = true;
+        auto cit = registry->classes.find(current_class_name);
+        if (cit != registry->classes.end()) {
+          std::string parent = cit->second.parent;
+          if (parent.empty() && cit->second.is_reference_type) {
+            parent = "tobject";
+          }
+          gather_class_methods(parent, mem.name);
+        }
+      }
       // A bare ident here can be a unit name AND a local/field name --
       // e.g. fpc's compiler unit `symtable` plus a `symtable` field on
       // tabstractrecorddef. Pascal lexical scope says locals/fields
@@ -3891,12 +3909,13 @@ Emitter::ResolvedCall Emitter::resolve_call(
            (registry->lookup_class_field(current_class_name, id.name) ||
             registry->lookup_class_property(current_class_name, id.name) ||
             registry->lookup_class_method(current_class_name, id.name)));
-      if (!ident_is_value && registry->units.count(id.name)) {
+      if (!inherited_call && !ident_is_value &&
+          registry->units.count(id.name)) {
         unit_qualified = true;
         gather_unit_procs(mem.name, &id.name);
       }
     }
-    if (!unit_qualified) {
+    if (!inherited_call && !unit_qualified) {
       gather_class_methods(receiver_class(callee), mem.name);
     }
   }

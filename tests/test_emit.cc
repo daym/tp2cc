@@ -3675,6 +3675,40 @@ void test_inline_anon_enum_in_var_decl_bleeds_members_into_unit_scope() {
   CHECK(!contains(out.impl, "::rt::p_beta"));
 }
 
+void test_inherited_call_routes_through_pascal_picker() {
+  // `inherited Foo(args)` looks up Foo in the parent chain. With two
+  // ShortString-vs-AnsiString overloads on the parent, Pascal picks
+  // the ShortString one for a ShortString argument; the resolver must
+  // do the picking and force a static_cast on the arg so C++ overload
+  // resolution lands on the same parent overload.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    procedure foo(s : shortstring); overload; virtual;\n"
+      "    procedure foo(s : ansistring); overload; virtual;\n"
+      "  end;\n"
+      "  tderived = class(tbase)\n"
+      "    procedure foo(s : shortstring); override;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tbase.foo(s : shortstring); begin end;\n"
+      "procedure tbase.foo(s : ansistring); begin end;\n"
+      "procedure tderived.foo(s : shortstring);\n"
+      "var hs : shortstring;\n"
+      "begin\n"
+      "  inherited foo(hs);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "inherited::p_foo("));
+  // Picker disambiguated to the ShortString-typed overload, so the
+  // arg is wrapped in static_cast<ShortString<>>(...) -- without that,
+  // C++ might pick the AnsiString version when the source is
+  // implicitly convertible to both.
+  CHECK(contains(out.impl, "static_cast<::rt::tp2cc_ShortString<>"));
+}
+
 void test_recursive_call_var_param_gets_param_info_for_reinterpret_ref() {
   // A recursive call to the current function: `resolve_name` rewrites the
   // bare function name to its result slot for assignments like `f := f(...)`,
@@ -4617,6 +4651,7 @@ int main() {
   RUN_TEST(test_default_indexed_property_obj_brackets_calls_getter);
   RUN_TEST(test_property_read_returning_class_then_default_index_chains_through_getter);
   RUN_TEST(test_inline_anon_enum_in_var_decl_bleeds_members_into_unit_scope);
+  RUN_TEST(test_inherited_call_routes_through_pascal_picker);
   RUN_TEST(test_recursive_call_var_param_gets_param_info_for_reinterpret_ref);
   RUN_TEST(test_with_block_bare_free_lowers_through_static_helper);
   RUN_TEST(test_metaclass_member_base_emits_with_implicit_zero_arg_call);
