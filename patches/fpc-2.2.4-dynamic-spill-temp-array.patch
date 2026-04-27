@@ -1,0 +1,82 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-27
+Subject: Use a dynamic array for spills
+License: expat
+
+`Tspill_temp_list = array[tsuperregister] of Treference` declares a
+static array spanning the full superregister range (~1.7 MB for the
+i386 word-indexed range). `trgobj.spill_registers` allocates only
+`sizeof(treference)*maxreg` bytes and treats that as a pointer to
+the static-typed array, indexing within `[0..maxreg-1]`. fpc itself
+passes `const spilltemplist` by hidden reference, so the partial
+allocation never matters under native fpc.
+
+The C++ translation lowers `const arr : <static-array-type>` as
+pass-by-value. Each call to `instr_spill_register` then copy-
+constructs the full 1.7 MB static type from the under-allocated
+buffer, reading past the end of the heap region.
+
+Switch the type to `array of Treference` (dynamic array, carried as
+length+pointer) and use `SetLength` / `:=nil` instead of `allocmem`
+/ `freemem`. Both fpc and the C++ translation now see a small
+handle-sized value; pass-by-value (or any other lowering) only
+copies the handle.
+
+--- a/compiler/rgobj.pas	2026-04-27 22:16:41.474499337 +0000
++++ b/compiler/rgobj.pas	2026-04-27 22:17:23.225884959 +0000
+@@ -111,7 +111,7 @@
+       end;
+       tspillregsinfo = array[0..3] of tspillreginfo;
+ 
+-      Tspill_temp_list=array[tsuperregister] of Treference;
++      Tspill_temp_list=array of Treference;
+ 
+       {#------------------------------------------------------------------
+ 
+@@ -1706,7 +1706,7 @@
+         t : tsuperregister;
+         p,q : Tai;
+         regs_to_spill_set:Tsuperregisterset;
+-        spill_temps : ^Tspill_temp_list;
++        spill_temps : Tspill_temp_list;
+         supreg : tsuperregister;
+         templist : TAsmList;
+       begin
+@@ -1714,7 +1714,7 @@
+         live_registers.clear;
+         for i:=first_imaginary to maxreg-1 do
+           exclude(reginfo[i].flags,ri_selected);
+-        spill_temps:=allocmem(sizeof(treference)*maxreg);
++        SetLength(spill_temps,maxreg);
+         supregset_reset(regs_to_spill_set,false,$ffff);
+         { Allocate temps and insert in front of the list }
+         templist:=TAsmList.create;
+@@ -1733,7 +1733,7 @@
+               tg.gettemp(templist,
+                          max(tcgsize2size[reg_cgsize(newreg(regtype,t,R_SUBWHOLE))],
+                              tcgsize2size[reg_cgsize(newreg(regtype,t,reginfo[t].subreg))]),
+-                         tt_noreuse,spill_temps^[t]);
++                         tt_noreuse,spill_temps[t]);
+             end;
+         list.insertlistafter(headertai,templist);
+         templist.free;
+@@ -1773,7 +1773,7 @@
+                 with Taicpu(p) do
+                   begin
+                     current_filepos:=fileinfo;
+-                    if instr_spill_register(list,taicpu(p),regs_to_spill_set,spill_temps^) then
++                    if instr_spill_register(list,taicpu(p),regs_to_spill_set,spill_temps) then
+                       spill_registers:=true;
+                   end;
+             end;
+@@ -1783,8 +1783,8 @@
+         {Safe: this procedure is only called if there are spilled nodes.}
+         with spillednodes do
+           for i:=0 to length-1 do
+-            tg.ungettemp(list,spill_temps^[buf^[i]]);
+-        freemem(spill_temps);
++            tg.ungettemp(list,spill_temps[buf^[i]]);
++        spill_temps:=nil;
+       end;
+ 
+ 
