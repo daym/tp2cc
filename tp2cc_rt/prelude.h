@@ -843,6 +843,13 @@ struct tp2cc_AnsiStringCharRef {
   int index = 0;  // zero-based byte index within the payload
 
   operator p_char() const;
+  // Mirror tp2cc_ShortStringCharRef: Pascal `byte(s[i])` lowers as
+  // `(uint8_t)(s[i])`, and we need the same explicit conversion path
+  // for AnsiString as for ShortString or the cast at the call site
+  // fails to chain through the proxy. Without this, `byte(ansi[i])`
+  // builds for ShortString and breaks for AnsiString -- the kind of
+  // type-asymmetry that hides p_char-vs-uint8_t mistakes.
+  explicit operator uint8_t() const;
   tp2cc_AnsiStringCharRef& operator=(p_char value);
   tp2cc_AnsiStringCharRef& operator=(const tp2cc_AnsiStringCharRef& other);
   p_char* operator&();
@@ -1101,6 +1108,10 @@ inline tp2cc_ShortStringPtrRef<N>::operator tp2cc_AnsiString() const {
 
 inline tp2cc_AnsiStringCharRef::operator p_char() const {
   return owner->data[index];
+}
+
+inline tp2cc_AnsiStringCharRef::operator uint8_t() const {
+  return p_char_byte(owner->data[index]);
 }
 
 inline tp2cc_AnsiStringCharRef& tp2cc_AnsiStringCharRef::operator=(p_char value) {

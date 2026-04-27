@@ -381,6 +381,26 @@ void test_ansistring_copy_on_write_preserves_original() {
   CHECK_EQ(p_to_std_string(copy), std::string("zbc"));
 }
 
+void test_ansistring_index_proxy_has_byte_cast_like_shortstring() {
+  // Pascal `byte(s[i])` lowers as `(uint8_t)(p_s[p_i])` for both
+  // ShortString and AnsiString. ShortStringCharRef's `explicit
+  // operator uint8_t()` makes that work; AnsiStringCharRef has to
+  // expose the same conversion or the same Pascal source builds
+  // for ShortString-typed variables and breaks for AnsiString.
+  // Pascal-style 1-based indexing on both proxies: s[1] is the first
+  // character.
+  tp2cc_AnsiString s = tp2cc_ansistring_of("Az");
+  // Pre-fix this static_cast did not compile.
+  uint8_t a = static_cast<uint8_t>(s[1]);
+  uint8_t z = static_cast<uint8_t>(s[2]);
+  CHECK_EQ(a, static_cast<uint8_t>('A'));
+  CHECK_EQ(z, static_cast<uint8_t>('z'));
+  // Mirror the ShortString side so the symmetry is locked.
+  tp2cc_ShortString<> ss = tp2cc_shortstring_of<>("Az");
+  CHECK_EQ(static_cast<uint8_t>(ss[1]), static_cast<uint8_t>('A'));
+  CHECK_EQ(static_cast<uint8_t>(ss[2]), static_cast<uint8_t>('z'));
+}
+
 void test_ansistring_storage_slot_holds_payload_pointer() {
   tp2cc_AnsiString s = tp2cc_ansistring_of("hello");
 
@@ -1131,6 +1151,7 @@ int main() {
   RUN_TEST(test_exception_mask_roundtrips);
   RUN_TEST(test_8087cw_compatibility_tracks_mask_bits);
   RUN_TEST(test_ansistring_copy_on_write_preserves_original);
+  RUN_TEST(test_ansistring_index_proxy_has_byte_cast_like_shortstring);
   RUN_TEST(test_ansistring_storage_slot_holds_payload_pointer);
   RUN_TEST(test_new_and_dispose_share_malloc_storage_family);
   RUN_TEST(test_dispose_releases_plain_storage_grown_with_reallocmem);
