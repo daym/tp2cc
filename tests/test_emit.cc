@@ -3518,6 +3518,83 @@ void test_overload_int_narrowing_to_shortint_param_is_viable() {
   CHECK(contains(out.impl, "static_cast<bool>(true)"));  // defaulted DiscardDuplicate
 }
 
+void test_overload_picks_string_concat_arg_against_string_param() {
+  // `'*' + name` is a Pascal string-concat Binary expression. Without
+  // deduce_type returning a string type for it, the picker filters
+  // every string-typed overload as NotViable and the wrong overload
+  // gets selected. fpc's ogbase.pas does this with
+  // `createsection('*'+aname, 0, [])`.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tobj = class\n"
+      "  function take(kind : longint;\n"
+      "                name : shortstring = '') : longint; overload;\n"
+      "  function take(name : shortstring;\n"
+      "                count : longint = 0) : longint; overload;\n"
+      "end;\n"
+      "procedure run(o : tobj; suffix : shortstring);\n"
+      "implementation\n"
+      "function tobj.take(kind : longint; name : shortstring) : longint;\n"
+      "begin take := 0; end;\n"
+      "function tobj.take(name : shortstring; count : longint) : longint;\n"
+      "begin take := 0; end;\n"
+      "procedure run(o : tobj; suffix : shortstring);\n"
+      "var r : longint;\n"
+      "begin\n"
+      "  r := o.take('*' + suffix);\n"
+      "end;\n"
+      "end.\n");
+  // Picker chose the string-typed overload; the deduced concat type
+  // satisfies the rank-Exact match against the string param. The
+  // longint default (0) was filled in.
+  CHECK(contains(out.impl, "p_take("));
+  CHECK(contains(out.impl, "static_cast<int32_t>(0)"));  // default-filled
+}
+
+void test_overload_picks_empty_set_literal_against_typed_set_param() {
+  // Pascal's `[]` empty set literal is context-typed: it adopts the
+  // target param's set element type. Without the picker treating an
+  // empty SetLit as Exact-rank against a TySet param, every set-taking
+  // overload gets filtered as NotViable and the wrong overload is
+  // selected (or default-fill never runs). fpc's ogbase.pas hits this
+  // with `createsection('*__image_base__', 0, [])`.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  topt = (a, b);\n"
+      "  topts = set of topt;\n"
+      "  tobj = class\n"
+      "    function take(kind : longint) : longint; overload;\n"
+      "    function take(name : shortstring; align : shortint;\n"
+      "                  opts : topts;\n"
+      "                  discard : boolean = true) : longint; overload;\n"
+      "  end;\n"
+      "procedure run(o : tobj);\n"
+      "implementation\n"
+      "function tobj.take(kind : longint) : longint;\n"
+      "begin take := 0; end;\n"
+      "function tobj.take(name : shortstring; align : shortint;\n"
+      "                   opts : topts; discard : boolean) : longint;\n"
+      "begin take := 0; end;\n"
+      "procedure run(o : tobj);\n"
+      "var r : longint;\n"
+      "begin\n"
+      "  r := o.take('hello', 0, []);\n"
+      "end;\n"
+      "end.\n");
+  // Picker chose the (string, shortint, topts, bool=default) overload.
+  // The empty `[]` lowered as a typed `tp2cc_Set<topt>{}`, and the
+  // boolean default was filled in.
+  CHECK(contains(out.impl, "tp2cc_Set<p_topt>{}") ||
+        contains(out.impl, "p_topts>{}"));
+  // Default-fill produced the trailing `true` arg (raw or cast-wrapped
+  // depending on whether type-rank picking ran).
+  CHECK(contains(out.impl, ", true)") ||
+        contains(out.impl, "static_cast<bool>(true)"));
+}
+
 void test_overload_resolves_through_with_block_bare_ident_call() {
   // `with X do begin foo(...) end` -- the bare Ident `foo` resolves
   // against X's class methods, not against the surrounding scope.
@@ -4792,6 +4869,8 @@ int main() {
   RUN_TEST(test_overload_picks_narrowest_widening_target);
   RUN_TEST(test_overload_int_narrowing_to_shortint_param_is_viable);
   RUN_TEST(test_overload_resolves_through_with_block_bare_ident_call);
+  RUN_TEST(test_overload_picks_string_concat_arg_against_string_param);
+  RUN_TEST(test_overload_picks_empty_set_literal_against_typed_set_param);
   RUN_TEST(test_property_read_lowers_to_getter_call);
   RUN_TEST(test_property_write_lowers_to_setter_call);
   RUN_TEST(test_property_read_through_field_lowers_to_field_access);
