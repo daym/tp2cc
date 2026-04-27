@@ -385,6 +385,7 @@ const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
       {"pcurrency", "::rt::p_pcurrency"},
       {"pint64", "::rt::p_pint64"},
       {"pathstr", "::rt::p_pathstr"},
+      {"ppointer", "::rt::p_ppointer"},
       {"ptrint", "::rt::p_ptrint"},
       {"ptruint", "::rt::p_ptruint"},
       {"searchrec", "::rt::p_searchrec"},
