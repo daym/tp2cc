@@ -315,7 +315,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       const std::string mname = m.decl->name;
       ci.methods[mname].push_back(std::move(m));
     }
-    classes[name] = std::move(ci);
+    rt_classes[name] = std::move(ci);
   };
 
   add_rt_class("tobject", "",
@@ -432,16 +432,36 @@ const MethodSig* TypeRegistry::lookup_class_method(
 
 const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
     const std::string& class_name_in, const std::string& member) const {
+  // Walk the class chain looking for `member`, consulting translated
+  // classes first; when the chain bottoms out into a name not in `classes`
+  // (e.g. `Exception`, the parent of a translated `EFoo`), continue into
+  // `rt_classes` so methods inherited from rt-side classes (like
+  // `Exception.Create(string)`) still resolve. The lookup walks both
+  // stores; code-gen iterates only `classes`.
   std::string class_name = lc(class_name_in);
   std::string key = lc(member);
   std::unordered_set<std::string> seen;
+  auto step = [&](const std::unordered_map<std::string, ClassInfo>& store)
+      -> std::pair<const std::vector<MethodSig>*, std::string> {
+    auto cit = store.find(class_name);
+    if (cit == store.end()) return {nullptr, std::string{}};
+    auto mit = cit->second.methods.find(key);
+    if (mit != cit->second.methods.end()) {
+      return {&mit->second, std::string{}};
+    }
+    return {nullptr, cit->second.parent};
+  };
   while (!class_name.empty() && !seen.count(class_name)) {
     seen.insert(class_name);
-    auto cit = classes.find(class_name);
-    if (cit == classes.end()) return nullptr;
-    auto mit = cit->second.methods.find(key);
-    if (mit != cit->second.methods.end()) return &mit->second;
-    class_name = cit->second.parent;
+    auto [hit, parent] = step(classes);
+    if (hit) return hit;
+    if (parent.empty()) {
+      auto [rt_hit, rt_parent] = step(rt_classes);
+      if (rt_hit) return rt_hit;
+      class_name = rt_parent;
+      continue;
+    }
+    class_name = parent;
   }
   return nullptr;
 }

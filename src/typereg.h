@@ -230,8 +230,18 @@ struct UnitInfo {
 struct TypeRegistry {
   std::unordered_map<std::string, UnitInfo> units;
 
-  // Indexed by unqualified lowercased type-alias name.
+  // User-source classes only. The emitter iterates this map for code
+  // generation (struct emission, vtable wiring, metaclass surfaces, ...);
+  // it must NOT contain rt-side classes (tobject, exception, ...) -- those
+  // have hand-written machinery in `tp2cc_rt/prelude.h` and any generated
+  // override would conflict with the fixed C++ struct shape.
   std::unordered_map<std::string, ClassInfo> classes;
+  // rt-side reference classes (tobject, exception, ...). Method lookups
+  // (`lookup_class_method[s]`) consult this when a translated class chain
+  // reaches a runtime parent, so a source class that inherits Create from
+  // Exception still resolves to the synthesized constructor signature.
+  // Code-gen never touches this table.
+  std::unordered_map<std::string, ClassInfo> rt_classes;
   std::unordered_map<std::string, RecordInfo> records;
   std::unordered_map<std::string, EnumInfoReg> enums;
   std::unordered_map<std::string, AliasInfo> aliases;   // includes pointer aliases
