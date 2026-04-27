@@ -5654,6 +5654,21 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "::rt::tp2cc_reinterpret_load<" + primitive_type_cxx(n) +
                    ">(" + expr_to_cxx(*peeled) + ")";
           }
+          if (const PrimitiveInfo* info = primitive_info(n);
+              info && (info->int_kind == PrimitiveIntKind::Signed ||
+                       info->int_kind == PrimitiveIntKind::Unsigned)) {
+            const TypeExpr* source_ty = canonicalize_type(deduce_type(*c.args[0]));
+            bool source_is_set =
+                c.args[0]->kind == Kind::SetLit ||
+                (source_ty && source_ty->kind == Kind::TySet);
+            if (source_is_set) {
+              // Pascal `longint(set)` packs the set's element bits into
+              // an integer (element i -> bit i). The set source can be
+              // an rvalue literal `[a,b,c]`, so don't gate on lvalue.
+              return "::rt::tp2cc_set_to_int<" + primitive_type_cxx(n) +
+                     ">(" + arg0() + ")";
+            }
+          }
           if (peeled && expr_is_storage_lvalue(*c.args[0])) {
             const TypeExpr* source_ty = canonicalize_type(deduce_type(*peeled));
             if (source_ty &&

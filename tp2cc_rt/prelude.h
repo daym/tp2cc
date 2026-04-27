@@ -2189,6 +2189,20 @@ constexpr DstSet tp2cc_set_cast(const tp2cc_Array<Elem, Lo, N>& src) {
   return dst;
 }
 
+// Pascal `Tprim(set)` packs the set's bit array into an integer:
+// element i ends up at bit i of the result. Doing this by memcpy
+// would inherit host endianness; spell out the bytes so the result
+// is the same on big-endian hosts.
+template <typename T, typename E>
+constexpr T tp2cc_set_to_int(const tp2cc_Set<E>& s) {
+  static_assert(std::is_integral_v<T>);
+  static_assert(sizeof(T) <= tp2cc_Set<E>::Nb);
+  T out = 0;
+  for (size_t i = 0; i < sizeof(T); ++i)
+    out |= static_cast<T>(s.bits[i]) << (i * 8);
+  return out;
+}
+
 // Mixed-type variadic `set_of` -- Pascal set literals like
 // `[newline, #13, '{', ';']` mix a CharConst (our wrapper for Pascal
 // `const X = 'c'`) with plain char literals. A single

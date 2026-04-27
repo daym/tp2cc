@@ -2623,6 +2623,27 @@ void test_set_range_literal_uses_integer_ordinal_loop() {
   CHECK(!contains(out.impl, "++tp2cc_i"));
 }
 
+void test_set_to_int_cast_uses_endian_safe_helper() {
+  // ncgrtti.pas computes interface-flag words as `longint([flagA, flagB])`.
+  // A plain C-style cast would invoke a non-existent
+  // `tp2cc_Set::operator int`, and a memcpy would tie the result to
+  // host endianness. The runtime helper packs element i into bit i
+  // explicitly, regardless of host byte order.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tflag = (fa, fb, fc, fd);\n"
+      "function pack : longint;\n"
+      "implementation\n"
+      "function pack : longint;\n"
+      "begin\n"
+      "  pack := longint([fa, fc]);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_set_to_int<int32_t>("));
+}
+
 void test_untyped_const_method_thunk_keeps_raw_storage_pointer() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -4875,6 +4896,7 @@ int main() {
   RUN_TEST(test_typed_set_literal_uses_surrounding_set_type);
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
+  RUN_TEST(test_set_to_int_cast_uses_endian_safe_helper);
   RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);
   RUN_TEST(test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes);
   RUN_TEST(test_class_types_lower_to_pointers_and_implicit_tobject);
