@@ -2641,6 +2641,35 @@ void test_and_with_not_of_xor_short_circuits() {
   CHECK(!contains(out.impl, ") & ::rt::p_not("));
 }
 
+void test_r_plus_routes_narrowing_assignment_through_range_check() {
+  // `{$R+}` raises ERangeError on narrowing assignment. The bootstrap
+  // path that hits this: `value_currency : currency := bestreal` in
+  // ncon.pas's trealconstnode.create. Real -> integer assignments
+  // under R+ must route through the helper; sibling assignments
+  // under R- stay as plain `=`.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure narrow_r(v : extended);\n"
+      "procedure narrow_n(v : extended);\n"
+      "implementation\n"
+      "{$R+}\n"
+      "procedure narrow_r(v : extended);\n"
+      "var c : int64;\n"
+      "begin\n"
+      "  c := v;\n"
+      "end;\n"
+      "{$R-}\n"
+      "procedure narrow_n(v : extended);\n"
+      "var c : int64;\n"
+      "begin\n"
+      "  c := v;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_range_check_assign<int64_t>(p_v)"));
+  CHECK(contains(out.impl, "p_c = p_v;"));
+}
+
 void test_q_plus_routes_integer_arith_through_checked_helpers() {
   // `{$Q+}` enables Pascal's runtime overflow check on integer
   // arithmetic. fpc-source uses it as compile-error flow (nadd.pas
@@ -4987,6 +5016,7 @@ int main() {
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
   RUN_TEST(test_local_var_inline_anon_enum_resolves_members);
   RUN_TEST(test_and_with_not_of_xor_short_circuits);
+  RUN_TEST(test_r_plus_routes_narrowing_assignment_through_range_check);
   RUN_TEST(test_q_plus_routes_integer_arith_through_checked_helpers);
   RUN_TEST(test_qword_const_cast_produces_64bit_literal_for_shifts);
   RUN_TEST(test_addr_of_pointer_deref_field_uses_offsetof_arithmetic);

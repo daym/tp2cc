@@ -372,6 +372,8 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     std::string opt = lower(trim(rest));
     if (opt == "q+" || opt == "overflowchecks+") cond = q_check_;
     else if (opt == "q-" || opt == "overflowchecks-") cond = !q_check_;
+    else if (opt == "r+" || opt == "rangechecks+") cond = r_check_;
+    else if (opt == "r-" || opt == "rangechecks-") cond = !r_check_;
     IfdefFrame f;
     f.accepting = parent_ok && cond;
     f.any_taken = f.accepting;
@@ -468,6 +470,14 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     q_check_ = false;
     return;
   }
+  if (head == "r+" || head == "rangechecks+") {
+    r_check_ = true;
+    return;
+  }
+  if (head == "r-" || head == "rangechecks-") {
+    r_check_ = false;
+    return;
+  }
 
   // Everything else (mode, I+, R-, S-, H-, F+, ASMMODE, L, linklib, appid,
   // apptype, memory, stacksize, heapsize, etc) is silently accepted.
@@ -475,6 +485,10 @@ void Lexer::handle_directive(std::string_view body, Location where) {
 
 bool Lexer::overflow_check_active() const {
   return q_check_;
+}
+
+bool Lexer::range_check_active() const {
+  return r_check_;
 }
 
 void Lexer::do_include(std::string_view arg, Location where) {

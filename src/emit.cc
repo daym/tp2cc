@@ -7757,6 +7757,48 @@ void Emitter::emit_stmt(const Stmt& s) {
                ");");
         break;
       }
+      // `{$R+}` narrowing-assignment range check. Wraps the rhs in a
+      // helper that raises `p_erangeerror` when the source value
+      // can't be represented in the target type. Applied when the
+      // target is an integer primitive and the source is real, OR
+      // both are integers and the source is wider than the target.
+      // Same-or-narrower integer of the same width / sign is left
+      // alone -- C++ implicit conversion already preserves the bits.
+      if (a.r_check && target_ty) {
+        const TypeExpr* tcanon = canonicalize_type(target_ty);
+        if (tcanon && tcanon->kind == Kind::TyName) {
+          const PrimitiveInfo* dst = primitive_info(
+              ascii_lower(static_cast<const TyName&>(*tcanon).name));
+          if (dst && (dst->int_kind == PrimitiveIntKind::Signed ||
+                      dst->int_kind == PrimitiveIntKind::Unsigned)) {
+            const TypeExpr* src_ty = deduce_type(*a.value);
+            if (src_ty) src_ty = canonicalize_type(src_ty);
+            const PrimitiveInfo* src = nullptr;
+            bool src_is_real = false;
+            if (src_ty && src_ty->kind == Kind::TyName) {
+              std::string sn = ascii_lower(
+                  static_cast<const TyName&>(*src_ty).name);
+              src = primitive_info(sn);
+              src_is_real = sn == "single" || sn == "double" ||
+                            sn == "real" || sn == "extended" ||
+                            sn == "comp" || sn == "bestreal";
+            }
+            bool wrap = false;
+            if (src_is_real) {
+              wrap = true;
+            } else if (src && (src->int_kind == PrimitiveIntKind::Signed ||
+                               src->int_kind == PrimitiveIntKind::Unsigned)) {
+              if (src->bits > dst->bits || src->int_kind != dst->int_kind) {
+                wrap = true;
+              }
+            }
+            if (wrap) {
+              rhs_cxx = "::rt::tp2cc_range_check_assign<" +
+                        std::string(dst->cxx) + ">(" + rhs_cxx + ")";
+            }
+          }
+        }
+      }
       emitln(target_cxx + " = " + rhs_cxx + ";");
       break;
     }

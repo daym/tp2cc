@@ -1188,6 +1188,7 @@ StmtPtr Parser::parse_labeled_or_simple() {
     a->loc = loc;
     a->target = std::move(lhs);
     a->value = parse_expr();
+    a->r_check = lex_.range_check_active();
     return a;
   }
   auto es = std::make_shared<ExprStmt>();

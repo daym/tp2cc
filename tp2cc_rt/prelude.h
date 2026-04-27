@@ -1072,6 +1072,72 @@ struct p_edivbyzero : p_einterror {
   throw static_cast<p_tobject*>(e);
 }
 
+[[noreturn]] inline void tp2cc_throw_range_error() {
+  auto* e = new p_erangeerror{};
+  e->p_create();
+  throw static_cast<p_tobject*>(e);
+}
+
+// `{$R+}` range-checking on narrowing assignments. Pascal raises
+// ERangeError when the source value cannot be represented in the
+// destination type. Two flavors:
+//   - integer source widened or narrowed: check src in [DstT::min,
+//     DstT::max].
+//   - real source assigned to integer target: check finite + in
+//     range. Pascal's `currency := bestreal` also lands here; fpc's
+//     constant evaluator depends on this trapping when -Inf would
+//     otherwise stamp INT64_MIN into a typed const.
+template <typename DstT, typename SrcT>
+inline std::enable_if_t<std::is_integral_v<DstT> && std::is_integral_v<SrcT>,
+                        DstT>
+tp2cc_range_check_assign(SrcT src) {
+  using Limits = std::numeric_limits<DstT>;
+  if constexpr (std::is_signed_v<SrcT> == std::is_signed_v<DstT>) {
+    if (src < static_cast<SrcT>(Limits::min()) ||
+        src > static_cast<SrcT>(Limits::max())) {
+      tp2cc_throw_range_error();
+    }
+  } else if constexpr (std::is_signed_v<SrcT>) {
+    // Signed -> Unsigned: negative values are always out of range.
+    if (src < 0) tp2cc_throw_range_error();
+    using USrc = std::make_unsigned_t<SrcT>;
+    if (static_cast<USrc>(src) > static_cast<USrc>(Limits::max())) {
+      tp2cc_throw_range_error();
+    }
+  } else {
+    // Unsigned -> Signed: only the high end matters.
+    using UDst = std::make_unsigned_t<DstT>;
+    if (Limits::max() >= 0 &&
+        src > static_cast<SrcT>(static_cast<UDst>(Limits::max()))) {
+      tp2cc_throw_range_error();
+    }
+  }
+  return static_cast<DstT>(src);
+}
+
+template <typename DstT, typename SrcT>
+inline std::enable_if_t<std::is_integral_v<DstT> && std::is_floating_point_v<SrcT>,
+                        DstT>
+tp2cc_range_check_assign(SrcT src) {
+  using Limits = std::numeric_limits<DstT>;
+  // NaN, +/-Inf, and out-of-range finite values all raise.
+  if (!(src == src) ||
+      src < static_cast<SrcT>(Limits::min()) ||
+      src > static_cast<SrcT>(Limits::max())) {
+    tp2cc_throw_range_error();
+  }
+  return static_cast<DstT>(src);
+}
+
+template <typename DstT, typename SrcT>
+inline std::enable_if_t<std::is_floating_point_v<DstT>, DstT>
+tp2cc_range_check_assign(SrcT src) {
+  // Real -> real never raises (any finite/infinite/NaN bestreal fits
+  // in any target real type once promoted/demoted via the standard
+  // conversion).
+  return static_cast<DstT>(src);
+}
+
 // Checked integer arithmetic for `{$Q+}`. Signed types use
 // `__builtin_*_overflow` so the compiler emits an INTO-equivalent
 // path; unsigned types match Pascal's wraparound semantics under

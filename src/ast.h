@@ -241,6 +241,10 @@ struct Compound : Stmt {
 struct Assign : Stmt {
   ExprPtr target;
   ExprPtr value;
+  // Snapshot of `{$R+}` / `{$rangechecks+}` at parse time. The
+  // emitter inserts a runtime range check on narrowing conversions
+  // (real -> int, wider-int -> narrower-int, ...) when set.
+  bool r_check = false;
   Assign() : Stmt(Kind::Assign) {}
 };
 

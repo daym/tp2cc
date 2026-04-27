@@ -37,6 +37,12 @@ class Lexer {
   // setting.
   bool overflow_check_active() const;
 
+  // Pascal `{$R+}` / `{$rangechecks+}` enables runtime range checks
+  // (subrange/enum bounds, array indices, narrowing assignments).
+  // Tracked alongside `{$Q+}`; the parser snapshots into Assign /
+  // Index nodes that the emitter then routes through checked helpers.
+  bool range_check_active() const;
+
  private:
   struct Input {
     std::shared_ptr<SourceFile> file;
@@ -101,6 +107,7 @@ class Lexer {
   // patterns; the lexer just tracks the current value, the parser
   // snapshots it onto each arithmetic node.
   bool q_check_ = false;
+  bool r_check_ = false;
 
   // For peek() we keep the current input on the back of stack_.
 };
