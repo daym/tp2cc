@@ -585,11 +585,11 @@ void test_str_formats_real_values() {
 
 void test_reinterpret_bytes_copies_raw_object_bytes() {
   long double v = 10.0L;
-  auto bytes = tp2cc_reinterpret_bytes<tp2cc_Array<uint8_t, 0, 10>>(v);
+  auto bytes = tp2cc_reinterpret_bytes<tp2cc_Array<uint8_t, 0, sizeof(v)>>(v);
   uint8_t raw[sizeof(v)] = {};
 
   std::memcpy(raw, &v, sizeof(v));
-  for (int i = 0; i < 10; ++i) {
+  for (size_t i = 0; i < sizeof(v); ++i) {
     CHECK_EQ(bytes.data[i], raw[i]);
   }
 }
