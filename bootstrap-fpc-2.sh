@@ -19,19 +19,14 @@ ROOT=$(pwd)
 JOBS="${JOBS:-8}"
 CXX="${CXX:-g++}"
 CC="${CC:-gcc}"
-if [ -n "${FPC2_SRC:-}" ]; then
-  SOURCE_DIR="$FPC2_SRC"
-elif [ -n "${FPC200_SRC:-}" ]; then
-  SOURCE_DIR="$FPC200_SRC"
-elif [ -d "$ROOT/../fpc-2.0.2/compiler" ]; then
-  SOURCE_DIR="$ROOT/../fpc-2.0.2"
-else
-  SOURCE_DIR="$ROOT/../fpc-2/src"
+if [ -z "${FPC2_SRC:-}" ]; then
+  echo "error: FPC2_SRC must be set to the FPC 2.x source tree to bootstrap" >&2
+  exit 1
 fi
+SOURCE_DIR="$FPC2_SRC"
 
-# Print the source path AND its declared version up front. The fall-through
-# above silently picks whichever sibling tree happens to exist, so without
-# this echo a "fpc 2.2.4 bootstrap" run can quietly build 2.0.2 instead.
+# Print the source path AND its declared version up front so a silent
+# target mismatch can't hide.
 fpc_source_version() {
   local v="$SOURCE_DIR/compiler/version.pas"
   [ -r "$v" ] || { echo "unknown"; return; }
