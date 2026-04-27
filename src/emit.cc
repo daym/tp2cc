@@ -3781,63 +3781,74 @@ Emitter::ResolvedCall Emitter::resolve_call(
     out.decl = resolve_call_decl(callee);
     return out;
   }
-  // Free-function overload set lookup. Pascal merges candidates from
-  // every visible unit (current unit's own procs + each unit on the
-  // uses chain), so the picker sees them all together. Returning the
-  // first non-empty match was wrong: e.g. unqualified `FileExists` has
-  // a 1-arg form in sysutils (registered under __rt__) and a 2-arg
-  // form in cfileutils; the picker needs both to filter by arity.
-  // Each entry carries the unit it came from so the caller can spell
-  // the picked overload with the right namespace prefix.
-  struct ProcCandFromUnit {
-    ProcInfo info;
-    std::string unit;
+  // Method overloads and free-function overloads share the SAME picker.
+  // The only differences are how candidates are gathered: methods come
+  // from `lookup_class_methods` (which already walks the parent chain),
+  // free functions come from the unit's procs and the visible uses
+  // chain. Both feed into one `all_cands` row type that downstream
+  // arity filtering and conversion-rank scoring don't distinguish
+  // between. (`inherited foo(...)` is a separate AST shape lowered at
+  // emit time -- it does NOT route through here. Its picking is done
+  // by C++ rather than by this resolver.)
+  struct AnyCand {
+    const ProcDecl* decl = nullptr;     // may be null for rt builtins
+    size_t param_count = 0;
+    bool accepts_zero_args = false;
+    std::string unit;                   // empty for class methods
   };
-  auto unit_proc_lookup_all = [&](const std::string& name,
-                                  const std::string* qualifier_unit) {
-    std::vector<ProcCandFromUnit> out;
+  std::vector<AnyCand> all_cands;
+  auto add_proc_cand = [&](const ProcInfo& pi, const std::string& unit) {
+    all_cands.push_back({pi.decl.get(), pi.param_count,
+                         pi.accepts_zero_args, unit});
+  };
+  auto add_method_cand = [&](const MethodSig& ms) {
+    if (!ms.decl) return;  // class stubs without a decl are skipped
+    all_cands.push_back({ms.decl.get(), ms.param_count,
+                         ms.accepts_zero_args, {}});
+  };
+  auto gather_unit_procs = [&](const std::string& name,
+                                const std::string* qualifier_unit) {
     auto append = [&](const std::vector<ProcInfo>* v, const std::string& u) {
       if (!v) return;
-      for (const auto& pi : *v) out.push_back({pi, u});
+      for (const auto& pi : *v) add_proc_cand(pi, u);
     };
     if (qualifier_unit) {
       auto it = registry->units.find(*qualifier_unit);
       if (it != registry->units.end())
         append(it->second.find_export_procs(name), *qualifier_unit);
-      return out;
+      return;
     }
     auto cur = registry->units.find(current_unit_name);
-    if (cur != registry->units.end()) {
-      // Pascal scope: a decl in the current unit shadows same-named
-      // decls reached through `uses`. Without this stop, an unqualified
-      // call in a unit that has its own local helper would aggregate
-      // both the local and the uses-imported overloads -- and if both
-      // sides have a same-typed match (comphook's local `tostr(longint)`
-      // and cutils' overloaded `tostr(longint)`), the picker sees two
-      // tied Exact candidates and (correctly) flags the call ambiguous.
-      // The Pascal lookup never reaches cutils in that case at all.
-      if (auto* local = cur->second.find_procs(name); local && !local->empty()) {
-        append(local, current_unit_name);
-        return out;
-      }
-      for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
-           ++it) {
-        auto uit = registry->units.find(*it);
-        if (uit == registry->units.end()) continue;
-        append(uit->second.find_export_procs(name), *it);
-      }
+    if (cur == registry->units.end()) return;
+    // Pascal scope: a decl in the current unit shadows same-named decls
+    // reached through `uses`. Without this stop, an unqualified call
+    // in a unit that has its own local helper would aggregate both the
+    // local and the uses-imported overloads -- and if both sides have
+    // a same-typed match (comphook's local `tostr(longint)` plus
+    // cutils' overloaded `tostr(longint)`), the picker sees two tied
+    // Exact candidates and flags the call ambiguous. Pascal's lookup
+    // never reaches cutils in that case at all.
+    if (auto* local = cur->second.find_procs(name); local && !local->empty()) {
+      append(local, current_unit_name);
+      return;
     }
-    return out;
+    for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
+         ++it) {
+      auto uit = registry->units.find(*it);
+      if (uit == registry->units.end()) continue;
+      append(uit->second.find_export_procs(name), *it);
+    }
   };
-  // Receiver-class lookup: given an unqualified or member callee, figure
-  // out the Pascal class hosting the method, mirrors `resolve_call_decl`'s
-  // class-method branch.
+  auto gather_class_methods = [&](const std::string& cls,
+                                   const std::string& name) {
+    if (cls.empty()) return;
+    auto* set = registry->lookup_class_methods(cls, name);
+    if (!set) return;
+    for (const auto& ms : *set) add_method_cand(ms);
+  };
+  // Receiver class for a member callee. Returns empty for callees that
+  // don't have a class-typed receiver (e.g. unit-qualified or untyped).
   auto receiver_class = [&](const Expr& c) -> std::string {
-    if (c.kind == Kind::Ident) {
-      // Bare method name resolves against the current class first
-      // (mirrors `resolve_call_decl`).
-      return current_class_name;
-    }
     if (c.kind != Kind::Member) return {};
     const auto& mem = static_cast<const Member&>(c);
     if (mem.base->kind == Kind::Ident) {
@@ -3851,52 +3862,17 @@ Emitter::ResolvedCall Emitter::resolve_call(
     }
     return deduce_class_alias(*mem.base);
   };
-  // Assemble candidates from free-function and class-method overload sets.
-  // Each candidate carries enough info for arity-filtering even when its
-  // ProcDecl is absent (rt builtins are registered without a decl, but
-  // their param_count is known); the type-based picker only runs against
-  // the subset that has decls.
-  struct AnyCand {
-    const ProcDecl* decl = nullptr;     // may be null for rt builtins
-    size_t param_count = 0;
-    bool accepts_zero_args = false;
-    std::string unit;                   // empty for class methods
-  };
-  std::vector<AnyCand> all_cands;
-  auto fill_from_proc_set = [&](const std::vector<ProcCandFromUnit>& set) {
-    for (const auto& c : set) {
-      AnyCand a;
-      a.decl = c.info.decl.get();
-      a.param_count = c.info.param_count;
-      a.accepts_zero_args = c.info.accepts_zero_args;
-      a.unit = c.unit;
-      all_cands.push_back(std::move(a));
-    }
-  };
-  auto fill_from_method_set = [&](const std::vector<MethodSig>& set) {
-    for (const auto& ms : set) {
-      if (!ms.decl) continue;
-      AnyCand a;
-      a.decl = ms.decl.get();
-      a.param_count = ms.param_count;
-      a.accepts_zero_args = ms.accepts_zero_args;
-      all_cands.push_back(std::move(a));
-    }
-  };
 
   if (callee.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(callee);
     // Class methods of the current class take priority over unit-level
-    // procs with the same name -- matches Pascal's own scope rules and
-    // `resolve_call_decl`.
+    // procs with the same name -- Pascal's normal scope order
+    // (locals/enclosing -> class+ancestors -> unit -> uses).
     if (!current_class_name.empty()) {
-      if (auto* set = registry->lookup_class_methods(current_class_name,
-                                                     id.name)) {
-        fill_from_method_set(*set);
-      }
+      gather_class_methods(current_class_name, id.name);
     }
     if (all_cands.empty()) {
-      fill_from_proc_set(unit_proc_lookup_all(id.name, nullptr));
+      gather_unit_procs(id.name, nullptr);
     }
   } else if (callee.kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(callee);
@@ -3911,22 +3887,17 @@ Emitter::ResolvedCall Emitter::resolve_call(
       // is purely a unit reference.
       bool ident_is_value =
           local_scope.count(id.name) > 0 ||
-          (registry && !current_class_name.empty() &&
+          (!current_class_name.empty() &&
            (registry->lookup_class_field(current_class_name, id.name) ||
             registry->lookup_class_property(current_class_name, id.name) ||
             registry->lookup_class_method(current_class_name, id.name)));
       if (!ident_is_value && registry->units.count(id.name)) {
         unit_qualified = true;
-        fill_from_proc_set(unit_proc_lookup_all(mem.name, &id.name));
+        gather_unit_procs(mem.name, &id.name);
       }
     }
     if (!unit_qualified) {
-      std::string cls = receiver_class(callee);
-      if (!cls.empty()) {
-        if (auto* set = registry->lookup_class_methods(cls, mem.name)) {
-          fill_from_method_set(*set);
-        }
-      }
+      gather_class_methods(receiver_class(callee), mem.name);
     }
   }
 
