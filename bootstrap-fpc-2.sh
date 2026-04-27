@@ -29,6 +29,21 @@ else
   SOURCE_DIR="$ROOT/../fpc-2/src"
 fi
 
+# Print the source path AND its declared version up front. The fall-through
+# above silently picks whichever sibling tree happens to exist, so without
+# this echo a "fpc 2.2.4 bootstrap" run can quietly build 2.0.2 instead.
+fpc_source_version() {
+  local v="$SOURCE_DIR/compiler/version.pas"
+  [ -r "$v" ] || { echo "unknown"; return; }
+  awk -F"'" '
+    /version_nr *=/ { vn=$2 }
+    /release_nr *=/ { rn=$2 }
+    /patch_nr *=/   { pn=$2 }
+    END { if (vn != "") print vn"."rn"."pn; else print "unknown" }
+  ' "$v"
+}
+echo "FPC source: $SOURCE_DIR (version $(fpc_source_version))"
+
 # Keep the translated compiler under sanitizer instrumentation, but make
 # findings fatal so a "successful" bootstrap never masks active UB.
 SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=address,undefined}"
