@@ -2620,6 +2620,25 @@ void test_local_var_inline_anon_enum_resolves_members() {
   CHECK(contains(out.impl, "p_mode = p_lookup"));
 }
 
+void test_qword_const_cast_produces_64bit_literal_for_shifts() {
+  // n386mat.pas computes `qword(1) shl (32+l) div d` -- the explicit
+  // qword cast tells fpc to do the shift in 64 bits. A folded literal
+  // without a width tag stays at C++ `int`, and `1 << (32+l)` with
+  // l>0 hits 32-bit shift-count UB.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function shl_test(l : longint; d : longint) : qword;\n"
+      "implementation\n"
+      "function shl_test(l : longint; d : longint) : qword;\n"
+      "begin\n"
+      "  shl_test := qword(1) shl (32 + l) div d;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "((uint64_t)(1))"));
+  CHECK(!contains(out.impl, " (1 << "));
+}
+
 void test_addr_of_pointer_deref_field_uses_offsetof_arithmetic() {
   // `ptrint(@p^.field) - ptrint(p)` computes a field offset even when `p`
   // is nil. Lowering through `&deref(p).field` would bind a C++ reference
@@ -4919,6 +4938,7 @@ int main() {
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
   RUN_TEST(test_local_var_inline_anon_enum_resolves_members);
+  RUN_TEST(test_qword_const_cast_produces_64bit_literal_for_shifts);
   RUN_TEST(test_addr_of_pointer_deref_field_uses_offsetof_arithmetic);
   RUN_TEST(test_set_to_int_cast_uses_endian_safe_helper);
   RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);

@@ -6416,10 +6416,19 @@ std::optional<std::string> Emitter::maybe_convert_const_int_expr(
       convert_const_int_value(e.loc, value->value, target, explicit_conversion,
                               /*diagnose=*/true);
   if (!converted || !converted->type) return std::nullopt;
-  if (converted->type->int_kind == PrimitiveIntKind::Unsigned) {
-    return uint64_literal_text(converted->bits);
+  std::string literal =
+      (converted->type->int_kind == PrimitiveIntKind::Unsigned)
+          ? uint64_literal_text(converted->bits)
+          : signed_bits_literal_text(converted->bits, *converted->type);
+  // A 64-bit Pascal cast (`qword(1)`, `int64(...)`) must produce a
+  // 64-bit C++ value; without an explicit type the integer promotions
+  // leave the literal at `int`, and a subsequent `<<` by >= 32 hits
+  // shift-count UB. Wrap so the type of the C++ expression matches the
+  // Pascal cast.
+  if (converted->type->bits == 64) {
+    literal = "((" + std::string(converted->type->cxx) + ")(" + literal + "))";
   }
-  return signed_bits_literal_text(converted->bits, *converted->type);
+  return literal;
 }
 
 std::optional<std::string> Emitter::maybe_convert_proc_value(
