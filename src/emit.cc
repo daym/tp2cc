@@ -8167,12 +8167,23 @@ void Emitter::emit_proc_body(const ProcDecl& pd) {
         if (!insert_local_name(vd.loc, nm)) continue;
         if (vd.type) local_types[nm] = vd.type.get();
       }
+      // Inline anonymous enum used as a var type (`var m : (a, b);`)
+      // bleeds its members into the enclosing scope -- same rule as
+      // class fields and unit-level vars (see typereg.cc:177).
+      if (vd.type && vd.type->kind == Kind::TyEnum && !vd.names.empty()) {
+        local_enums[vd.names.front()] =
+            static_cast<const ast::TyEnum*>(vd.type.get());
+      }
     } else if (l->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
       if (!insert_local_name(cd.loc, cd.name)) continue;
       local_consts[cd.name] = &cd;
       if (const TypeExpr* ct = deduce_const_decl_type(cd)) {
         local_types[cd.name] = ct;
+      }
+      if (cd.type && cd.type->kind == Kind::TyEnum) {
+        local_enums[cd.name] =
+            static_cast<const ast::TyEnum*>(cd.type.get());
       }
     } else if (l->kind == Kind::TypeDecl) {
       // Pascal's local `type` section is statically visible to the
@@ -8375,12 +8386,20 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
         if (!insert_local_name(vd.loc, nm)) continue;
         if (vd.type) local_types[nm] = vd.type.get();
       }
+      if (vd.type && vd.type->kind == Kind::TyEnum && !vd.names.empty()) {
+        local_enums[vd.names.front()] =
+            static_cast<const ast::TyEnum*>(vd.type.get());
+      }
     } else if (l->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
       if (!insert_local_name(cd.loc, cd.name)) continue;
       local_consts[cd.name] = &cd;
       if (const TypeExpr* ct = deduce_const_decl_type(cd)) {
         local_types[cd.name] = ct;
+      }
+      if (cd.type && cd.type->kind == Kind::TyEnum) {
+        local_enums[cd.name] =
+            static_cast<const ast::TyEnum*>(cd.type.get());
       }
     } else if (l->kind == Kind::TypeDecl) {
       const auto& td = static_cast<const TypeDecl&>(*l);

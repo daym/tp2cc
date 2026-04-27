@@ -2623,6 +2623,27 @@ void test_set_range_literal_uses_integer_ordinal_loop() {
   CHECK(!contains(out.impl, "++tp2cc_i"));
 }
 
+void test_local_var_inline_anon_enum_resolves_members() {
+  // ncgrtti.pas declares `mode:(lookup,search);` as an inline anonymous
+  // enum on a function-local var. Without registering the enum's
+  // members in the proc's local scope, bare references to `lookup`
+  // fall through resolve_name to the unknown-fallback `::rt::p_lookup`.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var mode : (lookup, search);\n"
+      "begin\n"
+      "  mode := lookup;\n"
+      "  if mode = lookup then begin end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(!contains(out.impl, "::rt::p_lookup"));
+  CHECK(contains(out.impl, "p_mode = p_lookup"));
+}
+
 void test_set_to_int_cast_uses_endian_safe_helper() {
   // ncgrtti.pas computes interface-flag words as `longint([flagA, flagB])`.
   // A plain C-style cast would invoke a non-existent
@@ -4896,6 +4917,7 @@ int main() {
   RUN_TEST(test_typed_set_literal_uses_surrounding_set_type);
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
+  RUN_TEST(test_local_var_inline_anon_enum_resolves_members);
   RUN_TEST(test_set_to_int_cast_uses_endian_safe_helper);
   RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);
   RUN_TEST(test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes);
