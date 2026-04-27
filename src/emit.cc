@@ -1017,6 +1017,24 @@ struct Emitter {
   bool proc_accepts_zero_args(const ast::ProcDecl& decl);
   const ast::ProcDecl* resolve_call_decl(const ast::Expr& callee);
 
+  // One row in a callable-name lookup result. `decl` is null for rt
+  // builtins that the registry tracks without an AST (writeln, ...);
+  // arity filtering still works through `param_count` /
+  // `accepts_zero_args`.
+  struct AnyCand {
+    const ast::ProcDecl* decl = nullptr;
+    size_t param_count = 0;
+    bool accepts_zero_args = false;
+    std::string unit;  // empty for class methods and nested procs
+  };
+  // Pascal lookup order for an unqualified callable name:
+  //   with-stack -> nested procs -> current class chain ->
+  //   current unit's own procs -> uses chain.
+  // The first contributing scope wins; the uses chain aggregates so
+  // the picker sees same-name overloads spread across imports.
+  void gather_callable_in_pascal_scope(const std::string& name,
+                                       std::vector<AnyCand>& cands);
+
   // Pascal/FPC overload-resolution conversion ranks. Lower = better. See
   // the rank table in `rank_conversion`. `NotViable` means no conversion
   // exists (or only an explicit one); the candidate is filtered out.
@@ -3458,38 +3476,73 @@ void Emitter::mark_call_param_info(
   }
 }
 
+void Emitter::gather_callable_in_pascal_scope(
+    const std::string& name, std::vector<AnyCand>& cands) {
+  if (!registry) return;
+  auto add_method_set = [&](const std::vector<MethodSig>* set) {
+    if (!set) return;
+    for (const auto& ms : *set) {
+      if (!ms.decl) continue;
+      cands.push_back({ms.decl.get(), ms.param_count,
+                       ms.accepts_zero_args, {}});
+    }
+  };
+  auto try_class = [&](const std::string& cls) -> bool {
+    if (cls.empty()) return false;
+    auto* set = registry->lookup_class_methods(cls, name);
+    if (!set || set->empty()) return false;
+    add_method_set(set);
+    return !cands.empty();
+  };
+
+  for (auto wit = with_stack.rbegin(); wit != with_stack.rend(); ++wit) {
+    if (try_class(wit->class_name)) return;
+  }
+  if (auto nit = local_nested_fns.find(name); nit != local_nested_fns.end()) {
+    if (nit->second.decl) {
+      cands.push_back({nit->second.decl, nit->second.param_count,
+                       nit->second.accepts_zero_args, {}});
+    }
+    return;
+  }
+  if (try_class(current_class_name)) return;
+  auto cur = registry->units.find(current_unit_name);
+  if (cur == registry->units.end()) return;
+  // A decl in the current unit shadows same-named decls reached
+  // through `uses`. Without this stop, comphook's local
+  // `tostr(longint)` plus cutils' `tostr(longint)` would both reach
+  // the picker as tied Exact candidates and surface as ambiguous,
+  // even though Pascal's lookup never reaches cutils in that case.
+  if (auto* local = cur->second.find_procs(name); local && !local->empty()) {
+    for (const auto& pi : *local) {
+      cands.push_back({pi.decl.get(), pi.param_count,
+                       pi.accepts_zero_args, current_unit_name});
+    }
+    return;
+  }
+  for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
+       ++it) {
+    auto uit = registry->units.find(*it);
+    if (uit == registry->units.end()) continue;
+    if (auto* v = uit->second.find_export_procs(name)) {
+      for (const auto& pi : *v) {
+        cands.push_back({pi.decl.get(), pi.param_count,
+                         pi.accepts_zero_args, *it});
+      }
+    }
+  }
+}
+
 const ProcDecl* Emitter::resolve_call_decl(const Expr& callee) {
   if (callee.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(callee);
     if (!registry) return nullptr;
-    // Recursive calls: `resolve_name` rewrites the current function's
-    // own name to its result slot (Pascal `f := f(...)` is the common
-    // case), but for *call lowering* we still need the proc decl so
-    // arg/param type info reaches `lower_call_arg`. Look up the decl
-    // directly in the current unit before falling through to the
-    // result-slot rewrite.
-    auto current_unit_proc = [&](const std::string& name)
-        -> const ProcDecl* {
-      auto it = registry->units.find(current_unit_name);
-      if (it == registry->units.end()) return nullptr;
-      const auto* pi = it->second.find_proc(name);
-      return (pi && pi->decl) ? pi->decl.get() : nullptr;
-    };
-    if (current_fn_is_function && !current_fn_name.empty() &&
-        id.name == current_fn_name) {
-      if (auto* d = current_unit_proc(id.name)) return d;
+    std::vector<AnyCand> cands;
+    gather_callable_in_pascal_scope(id.name, cands);
+    for (const auto& c : cands) {
+      if (c.decl) return c.decl;
     }
-    if (outer_result_type && !outer_result_name.empty() &&
-        id.name == outer_result_name) {
-      if (auto* d = current_unit_proc(id.name)) return d;
-    }
-    if (!current_class_name.empty()) {
-      if (auto* m = registry->lookup_class_method(current_class_name, id.name)) {
-        return m->decl.get();
-      }
-    }
-    ResolveResult rr = resolve_name(id.name);
-    return rr.proc;
+    return nullptr;
   }
   if (callee.kind != Kind::Member || !registry) return nullptr;
   const auto& mem = static_cast<const Member&>(callee);
@@ -3883,20 +3936,10 @@ Emitter::ResolvedCall Emitter::resolve_call(
     return out;
   }
   // Method overloads and free-function overloads share the SAME picker.
-  // The only differences are how candidates are gathered: methods come
-  // from `lookup_class_methods` (which already walks the parent chain),
-  // free functions come from the unit's procs and the visible uses
-  // chain. Both feed into one `all_cands` row type that downstream
-  // arity filtering and conversion-rank scoring don't distinguish
-  // between. (`inherited foo(...)` is a separate AST shape lowered at
-  // emit time -- it does NOT route through here. Its picking is done
-  // by C++ rather than by this resolver.)
-  struct AnyCand {
-    const ProcDecl* decl = nullptr;     // may be null for rt builtins
-    size_t param_count = 0;
-    bool accepts_zero_args = false;
-    std::string unit;                   // empty for class methods
-  };
+  // Methods come from `lookup_class_methods` (which walks the parent
+  // chain); free functions come from the unit's procs and the visible
+  // uses chain. (`inherited foo(...)` is a separate AST shape lowered
+  // at emit time -- it does NOT route through here.)
   std::vector<AnyCand> all_cands;
   auto add_proc_cand = [&](const ProcInfo& pi, const std::string& unit) {
     all_cands.push_back({pi.decl.get(), pi.param_count,
@@ -3966,21 +4009,7 @@ Emitter::ResolvedCall Emitter::resolve_call(
 
   if (callee.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(callee);
-    // Pascal scope: locals/enclosing -> with-bindings -> class+ancestors
-    // -> unit -> uses. A bare Ident inside `with X do` resolves against
-    // X's class methods first, then falls back to current-class methods,
-    // then unit procs. Innermost with wins (rbegin walk).
-    for (auto wit = with_stack.rbegin(); wit != with_stack.rend(); ++wit) {
-      if (wit->class_name.empty()) continue;
-      gather_class_methods(wit->class_name, id.name);
-      if (!all_cands.empty()) break;
-    }
-    if (all_cands.empty() && !current_class_name.empty()) {
-      gather_class_methods(current_class_name, id.name);
-    }
-    if (all_cands.empty()) {
-      gather_unit_procs(id.name, nullptr);
-    }
+    gather_callable_in_pascal_scope(id.name, all_cands);
   } else if (callee.kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(callee);
     bool unit_qualified = false;
