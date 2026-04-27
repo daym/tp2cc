@@ -2594,44 +2594,51 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
           }
           return nullptr;
         }
-        // String concatenation. Pascal's `+` on string operands returns
-        // a string. Without this the picker can't rank a `'*'+name`
-        // argument against a string-typed parameter and overloads on
-        // the call site fall through as NotViable.
-        if (b.op == BinOp::Add) {
-          const TypeExpr* lt = deduce_type(*b.lhs);
-          const TypeExpr* rt = deduce_type(*b.rhs);
-          auto is_string_like = [&](const TypeExpr* t) {
-            if (!t) return false;
-            if (t->kind == Kind::TyString) return true;
-            if (t->kind == Kind::TyName) {
-              const auto& nm = ascii_lower(static_cast<const TyName&>(*t).name);
-              return nm == "string" || nm == "shortstring" ||
-                     nm == "ansistring";
-            }
-            return false;
-          };
-          auto is_string_lit_or_char = [&](const Expr& x) {
-            return x.kind == Kind::StringLit ||
-                   (x.kind == Kind::Ident &&
-                    static_cast<const Ident&>(x).name.empty() == false);
-          };
-          (void)is_string_lit_or_char;
-          if (is_string_like(lt) || is_string_like(rt) ||
-              b.lhs->kind == Kind::StringLit || b.rhs->kind == Kind::StringLit) {
-            // If either side is AnsiString, the result is AnsiString;
-            // otherwise default to ShortString (matches `{$H-}` semantics
-            // and the common bootstrap path).
-            auto is_ansistring = [&](const TypeExpr* t) {
-              return t && t->kind == Kind::TyName &&
-                     ascii_lower(static_cast<const TyName&>(*t).name) ==
-                         "ansistring";
-            };
-            if (is_ansistring(lt) || is_ansistring(rt)) {
-              return named_pascal_type("ansistring");
-            }
-            return named_pascal_type("shortstring");
+        // String / set binary ops. Pascal's `+`/`-`/`*` are
+        // overloaded on string concat (Add) and set ops (Add union,
+        // Sub difference, Mul intersection). Without typing these
+        // here the picker can't rank a `'*'+name` argument against a
+        // string-typed parameter, or a `setA - [x]` argument against
+        // a typed-set parameter, and the overload set falls through
+        // as NotViable.
+        const TypeExpr* lt = deduce_type(*b.lhs);
+        const TypeExpr* rt = deduce_type(*b.rhs);
+        auto is_string_like = [&](const TypeExpr* t) {
+          if (!t) return false;
+          if (t->kind == Kind::TyString) return true;
+          if (t->kind == Kind::TyName) {
+            const auto& nm = ascii_lower(static_cast<const TyName&>(*t).name);
+            return nm == "string" || nm == "shortstring" ||
+                   nm == "ansistring";
           }
+          return false;
+        };
+        auto canon_set = [&](const TypeExpr* t) -> const TypeExpr* {
+          if (!t) return nullptr;
+          const TypeExpr* c = canonicalize_type(t);
+          return (c && c->kind == Kind::TySet) ? c : nullptr;
+        };
+        if (b.op == BinOp::Add &&
+            (is_string_like(lt) || is_string_like(rt) ||
+             b.lhs->kind == Kind::StringLit || b.rhs->kind == Kind::StringLit)) {
+          auto is_ansistring = [&](const TypeExpr* t) {
+            return t && t->kind == Kind::TyName &&
+                   ascii_lower(static_cast<const TyName&>(*t).name) ==
+                       "ansistring";
+          };
+          if (is_ansistring(lt) || is_ansistring(rt)) {
+            return named_pascal_type("ansistring");
+          }
+          return named_pascal_type("shortstring");
+        }
+        if (b.op == BinOp::Add || b.op == BinOp::Sub || b.op == BinOp::Mul) {
+          // Set union (+) / difference (-) / intersection (*). Pascal
+          // forbids mixing element types, so either typed operand
+          // (canonicalizing to TySet) anchors the whole expression.
+          // The other side may be a `[...]` SetLit with no anchor of
+          // its own; we still know the result type.
+          if (const TypeExpr* lset = canon_set(lt)) return b.lhs->kind == Kind::SetLit ? lset : lt;
+          if (const TypeExpr* rset = canon_set(rt)) return b.rhs->kind == Kind::SetLit ? rset : rt;
         }
       }
       break;

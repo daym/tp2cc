@@ -3595,6 +3595,48 @@ void test_overload_picks_empty_set_literal_against_typed_set_param() {
         contains(out.impl, "static_cast<bool>(true)"));
 }
 
+void test_overload_picks_set_difference_arg_against_typed_set_param() {
+  // Pascal's `set - set` (set difference) returns the same set type as
+  // its operands. Without typing the binary expression here, the
+  // picker can't rank a `setvar - [literal]` argument against a
+  // typed-set parameter; both overloads fall through as NotViable.
+  // fpc's ogcoff.pas hits this with
+  // `createsection(name, align, sectiontype2options(...) - [oso_keep])`.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  topt = (a, b);\n"
+      "  topts = set of topt;\n"
+      "  tobj = class\n"
+      "    function take(kind : longint) : longint; overload;\n"
+      "    function take(name : shortstring; opts : topts;\n"
+      "                  discard : boolean = true) : longint; overload;\n"
+      "    function options : topts;\n"
+      "  end;\n"
+      "procedure run(o : tobj);\n"
+      "implementation\n"
+      "function tobj.take(kind : longint) : longint;\n"
+      "begin take := 0; end;\n"
+      "function tobj.take(name : shortstring; opts : topts;\n"
+      "                   discard : boolean) : longint;\n"
+      "begin take := 0; end;\n"
+      "function tobj.options : topts;\n"
+      "begin options := []; end;\n"
+      "procedure run(o : tobj);\n"
+      "var r : longint;\n"
+      "begin\n"
+      "  r := o.take('hello', o.options - [a]);\n"
+      "end;\n"
+      "end.\n");
+  // Picker chose the (string, topts, bool=default) overload. The set
+  // difference was typed and matched the topts param.
+  CHECK(contains(out.impl, "p_take("));
+  // Default-fill produced the trailing boolean.
+  CHECK(contains(out.impl, ", true)") ||
+        contains(out.impl, "static_cast<bool>(true)"));
+}
+
 void test_overload_resolves_through_with_block_bare_ident_call() {
   // `with X do begin foo(...) end` -- the bare Ident `foo` resolves
   // against X's class methods, not against the surrounding scope.
@@ -4871,6 +4913,7 @@ int main() {
   RUN_TEST(test_overload_resolves_through_with_block_bare_ident_call);
   RUN_TEST(test_overload_picks_string_concat_arg_against_string_param);
   RUN_TEST(test_overload_picks_empty_set_literal_against_typed_set_param);
+  RUN_TEST(test_overload_picks_set_difference_arg_against_typed_set_param);
   RUN_TEST(test_property_read_lowers_to_getter_call);
   RUN_TEST(test_property_write_lowers_to_setter_call);
   RUN_TEST(test_property_read_through_field_lowers_to_field_access);
