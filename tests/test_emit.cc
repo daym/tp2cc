@@ -2620,6 +2620,27 @@ void test_local_var_inline_anon_enum_resolves_members() {
   CHECK(contains(out.impl, "p_mode = p_lookup"));
 }
 
+void test_and_with_not_of_xor_short_circuits() {
+  // Three chained Pascal `and`s where the third's RHS is `not(bool xor
+  // bool)`. Without recognising xor-of-bools as bool, the last `and`
+  // falls back to bitwise `&`, evaluating both sides unconditionally
+  // -- and an earlier clause may have downcast a node to a derived
+  // type, which is UB when the runtime type doesn't match. Both `and`s
+  // must emit `&&` so short-circuit guards the downcast.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function f(a, b : longint) : boolean;\n"
+      "implementation\n"
+      "function f(a, b : longint) : boolean;\n"
+      "begin\n"
+      "  f := (a = 1) and (b = 2) and not ((a = 3) xor (b = 4));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "&& ::rt::p_not("));
+  CHECK(!contains(out.impl, ") & ::rt::p_not("));
+}
+
 void test_qword_const_cast_produces_64bit_literal_for_shifts() {
   // n386mat.pas computes `qword(1) shl (32+l) div d` -- the explicit
   // qword cast tells fpc to do the shift in 64 bits. A folded literal
@@ -4938,6 +4959,7 @@ int main() {
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
   RUN_TEST(test_local_var_inline_anon_enum_resolves_members);
+  RUN_TEST(test_and_with_not_of_xor_short_circuits);
   RUN_TEST(test_qword_const_cast_produces_64bit_literal_for_shifts);
   RUN_TEST(test_addr_of_pointer_deref_field_uses_offsetof_arithmetic);
   RUN_TEST(test_set_to_int_cast_uses_endian_safe_helper);

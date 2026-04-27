@@ -5190,7 +5190,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               bop == BinOp::LtEq || bop == BinOp::GtEq ||
               bop == BinOp::In || bop == BinOp::Is)
             return true;
-          if (bop == BinOp::And || bop == BinOp::Or)
+          if (bop == BinOp::And || bop == BinOp::Or || bop == BinOp::Xor)
             return is_bool(*bx.lhs) && is_bool(*bx.rhs);
         }
         if (x.kind == Kind::Unary &&
