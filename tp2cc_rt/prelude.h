@@ -5052,6 +5052,9 @@ inline void p_packtime(DateTime& t, int32_t& p) {
 }
 inline constexpr p_char p_directoryseparator = tp2cc_char_of('/');
 inline constexpr p_char p_driveseparator = tp2cc_char_of(':');
+// PATH-list separator (the one between entries in $PATH-style strings),
+// not the drive-letter colon.
+inline constexpr p_char p_pathseparator = tp2cc_char_of(':');
 
 // Append the platform directory separator if the path does not already
 // end with one (and is non-empty). On Linux this is `/`. The empty
