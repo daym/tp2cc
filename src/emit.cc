@@ -801,6 +801,7 @@ struct Emitter {
   std::string type_name_text_to_cxx(std::string_view name);
   std::string named_type_struct_cxx(std::string_view name);
   std::string visible_type_prefix(std::string_view name);
+  bool registry_knows_type(std::string_view name);
   std::string metaclass_struct_cxx(std::string_view class_name);
   std::string metaclass_value_fn_cxx(std::string_view class_name);
   std::vector<MetaclassCallable> collect_metaclass_callables(
@@ -1288,7 +1289,20 @@ struct Emitter {
 
 std::string Emitter::type_name_to_cxx(const TyName& n) {
   if (is_primitive_type(n.name)) return primitive_type_cxx(n.name);
-  if (std::string rt = runtime_named_type_cxx(n.name); !rt.empty()) return rt;
+  // The runtime_named_type_map shortcut is a fallback for stub units
+  // (Pascal `uses X` where X is not on tp2cc's `-Fu` path -- e.g.
+  // `math` for the 2.2.4 bootstrap). It must NOT override a translated
+  // unit's own declaration of the same name -- under 2.0.2,
+  // `compiler/globals.pas` declares `TFPUException` locally and the
+  // user-side namespace is the truth; routing through `::rt::` there
+  // creates a parallel C++ type that does not match the body.
+  if (registry_knows_type(n.name)) {
+    // Fall through to the registry-aware named_type_struct_cxx path
+    // (which uses `visible_type_prefix` to qualify by translated
+    // unit). Reference-class wrapping is handled below.
+  } else if (std::string rt = runtime_named_type_cxx(n.name); !rt.empty()) {
+    return rt;
+  }
   // Delphi/FPC `class` names denote references to heap objects, so
   // plain uses of the type name lower to a pointer type. The raw struct
   // spelling is kept separate in `named_type_struct_cxx()` for places
@@ -1325,9 +1339,13 @@ std::string Emitter::type_name_text_to_cxx(std::string_view name) {
 }
 
 std::string Emitter::named_type_struct_cxx(std::string_view name) {
-  if (std::string rt = runtime_named_type_cxx(ascii_lower(std::string(name)));
-      !rt.empty()) {
-    return rt;
+  // Same registry-first / rt-fallback ordering as type_name_to_cxx; see
+  // the comment there.
+  if (!registry_knows_type(name)) {
+    if (std::string rt = runtime_named_type_cxx(ascii_lower(std::string(name)));
+        !rt.empty()) {
+      return rt;
+    }
   }
   if (std::string cls =
           builtin_reference_class_struct_cxx(ascii_lower(std::string(name)));
@@ -1389,6 +1407,31 @@ std::string Emitter::visible_type_prefix(std::string_view name) {
   }
 
   return {};
+}
+
+// Did any translated unit (the current one, a uses-chain unit, or a
+// global registry table) declare this type? Drives "use translated
+// namespace" vs "fall through to runtime_named_type_map" in
+// `type_name_to_cxx` / `named_type_struct_cxx` -- a translated user
+// unit's declaration must win over an rt-side stub of the same name.
+bool Emitter::registry_knows_type(std::string_view name) {
+  if (!registry) return false;
+  std::string lower = ascii_lower(std::string(name));
+  if (local_type_aliases_scoped.count(lower) || local_enums.count(lower)) {
+    return true;
+  }
+  if (auto cur = registry->units.find(current_unit_name);
+      cur != registry->units.end()) {
+    if (cur->second.has_type(lower)) return true;
+    for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
+         ++it) {
+      auto uit = registry->units.find(*it);
+      if (uit == registry->units.end()) continue;
+      if (uit->second.has_export_type(lower)) return true;
+    }
+  }
+  return registry->classes.count(lower) || registry->records.count(lower) ||
+         registry->enums.count(lower) || registry->aliases.count(lower);
 }
 
 std::string Emitter::metaclass_struct_cxx(std::string_view class_name) {
