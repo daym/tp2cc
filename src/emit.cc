@@ -1032,6 +1032,12 @@ struct Emitter {
   //   current unit's own procs -> uses chain.
   // The first contributing scope wins; the uses chain aggregates so
   // the picker sees same-name overloads spread across imports.
+  void append_class_method_cands(const std::string& cls,
+                                  const std::string& name,
+                                  std::vector<AnyCand>& cands);
+  void append_unit_export_proc_cands(const std::string& unit,
+                                      const std::string& name,
+                                      std::vector<AnyCand>& cands);
   void gather_callable_in_pascal_scope(const std::string& name,
                                        std::vector<AnyCand>& cands);
 
@@ -3476,23 +3482,40 @@ void Emitter::mark_call_param_info(
   }
 }
 
+void Emitter::append_class_method_cands(
+    const std::string& cls, const std::string& name,
+    std::vector<AnyCand>& cands) {
+  if (!registry || cls.empty()) return;
+  auto* set = registry->lookup_class_methods(cls, name);
+  if (!set) return;
+  for (const auto& ms : *set) {
+    if (!ms.decl) continue;
+    cands.push_back({ms.decl.get(), ms.param_count,
+                     ms.accepts_zero_args, {}});
+  }
+}
+
+void Emitter::append_unit_export_proc_cands(
+    const std::string& unit, const std::string& name,
+    std::vector<AnyCand>& cands) {
+  if (!registry) return;
+  auto it = registry->units.find(unit);
+  if (it == registry->units.end()) return;
+  auto* v = it->second.find_export_procs(name);
+  if (!v) return;
+  for (const auto& pi : *v) {
+    cands.push_back({pi.decl.get(), pi.param_count,
+                     pi.accepts_zero_args, unit});
+  }
+}
+
 void Emitter::gather_callable_in_pascal_scope(
     const std::string& name, std::vector<AnyCand>& cands) {
   if (!registry) return;
-  auto add_method_set = [&](const std::vector<MethodSig>* set) {
-    if (!set) return;
-    for (const auto& ms : *set) {
-      if (!ms.decl) continue;
-      cands.push_back({ms.decl.get(), ms.param_count,
-                       ms.accepts_zero_args, {}});
-    }
-  };
   auto try_class = [&](const std::string& cls) -> bool {
-    if (cls.empty()) return false;
-    auto* set = registry->lookup_class_methods(cls, name);
-    if (!set || set->empty()) return false;
-    add_method_set(set);
-    return !cands.empty();
+    size_t before = cands.size();
+    append_class_method_cands(cls, name, cands);
+    return cands.size() != before;
   };
 
   for (auto wit = with_stack.rbegin(); wit != with_stack.rend(); ++wit) {
@@ -3522,14 +3545,7 @@ void Emitter::gather_callable_in_pascal_scope(
   }
   for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
        ++it) {
-    auto uit = registry->units.find(*it);
-    if (uit == registry->units.end()) continue;
-    if (auto* v = uit->second.find_export_procs(name)) {
-      for (const auto& pi : *v) {
-        cands.push_back({pi.decl.get(), pi.param_count,
-                         pi.accepts_zero_args, *it});
-      }
-    }
+    append_unit_export_proc_cands(*it, name, cands);
   }
 }
 
@@ -3941,57 +3957,8 @@ Emitter::ResolvedCall Emitter::resolve_call(
   // uses chain. (`inherited foo(...)` is a separate AST shape lowered
   // at emit time -- it does NOT route through here.)
   std::vector<AnyCand> all_cands;
-  auto add_proc_cand = [&](const ProcInfo& pi, const std::string& unit) {
-    all_cands.push_back({pi.decl.get(), pi.param_count,
-                         pi.accepts_zero_args, unit});
-  };
-  auto add_method_cand = [&](const MethodSig& ms) {
-    if (!ms.decl) return;  // class stubs without a decl are skipped
-    all_cands.push_back({ms.decl.get(), ms.param_count,
-                         ms.accepts_zero_args, {}});
-  };
-  auto gather_unit_procs = [&](const std::string& name,
-                                const std::string* qualifier_unit) {
-    auto append = [&](const std::vector<ProcInfo>* v, const std::string& u) {
-      if (!v) return;
-      for (const auto& pi : *v) add_proc_cand(pi, u);
-    };
-    if (qualifier_unit) {
-      auto it = registry->units.find(*qualifier_unit);
-      if (it != registry->units.end())
-        append(it->second.find_export_procs(name), *qualifier_unit);
-      return;
-    }
-    auto cur = registry->units.find(current_unit_name);
-    if (cur == registry->units.end()) return;
-    // Pascal scope: a decl in the current unit shadows same-named decls
-    // reached through `uses`. Without this stop, an unqualified call
-    // in a unit that has its own local helper would aggregate both the
-    // local and the uses-imported overloads -- and if both sides have
-    // a same-typed match (comphook's local `tostr(longint)` plus
-    // cutils' overloaded `tostr(longint)`), the picker sees two tied
-    // Exact candidates and flags the call ambiguous. Pascal's lookup
-    // never reaches cutils in that case at all.
-    if (auto* local = cur->second.find_procs(name); local && !local->empty()) {
-      append(local, current_unit_name);
-      return;
-    }
-    for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
-         ++it) {
-      auto uit = registry->units.find(*it);
-      if (uit == registry->units.end()) continue;
-      append(uit->second.find_export_procs(name), *it);
-    }
-  };
-  auto gather_class_methods = [&](const std::string& cls,
-                                   const std::string& name) {
-    if (cls.empty()) return;
-    auto* set = registry->lookup_class_methods(cls, name);
-    if (!set) return;
-    for (const auto& ms : *set) add_method_cand(ms);
-  };
-  // Receiver class for a member callee. Returns empty for callees that
-  // don't have a class-typed receiver (e.g. unit-qualified or untyped).
+  // Receiver class for a member callee. Empty for callees that don't
+  // have a class-typed receiver (e.g. unit-qualified or untyped).
   auto receiver_class = [&](const Expr& c) -> std::string {
     if (c.kind != Kind::Member) return {};
     const auto& mem = static_cast<const Member&>(c);
@@ -4030,7 +3997,7 @@ Emitter::ResolvedCall Emitter::resolve_call(
           if (parent.empty() && cit->second.is_reference_type) {
             parent = "tobject";
           }
-          gather_class_methods(parent, mem.name);
+          append_class_method_cands(parent, mem.name, all_cands);
         }
       }
       // A bare ident here can be a unit name AND a local/field name --
@@ -4048,11 +4015,11 @@ Emitter::ResolvedCall Emitter::resolve_call(
       if (!inherited_call && !ident_is_value &&
           registry->units.count(id.name)) {
         unit_qualified = true;
-        gather_unit_procs(mem.name, &id.name);
+        append_unit_export_proc_cands(id.name, mem.name, all_cands);
       }
     }
     if (!inherited_call && !unit_qualified) {
-      gather_class_methods(receiver_class(callee), mem.name);
+      append_class_method_cands(receiver_class(callee), mem.name, all_cands);
     }
   }
 
