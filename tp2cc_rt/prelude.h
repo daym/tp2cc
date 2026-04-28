@@ -5161,16 +5161,19 @@ template <typename F>
 inline void p_popen(F&, const tp2cc_ShortString<>&, char) {}
 template <typename F>
 inline void p_popen(F&, const tp2cc_ShortString<>&, p_char) {}
-inline void p_pclose(tp2cc_TextFile& f) {
+// fpc's `unix.PClose(var f): cint` returns the wait status of the
+// piped child (or -1/errno on failure). assemble.pas tests `<> 0`.
+inline int32_t p_pclose(tp2cc_TextFile& f) {
   int rc = 0;
   if (f.f) {
     rc = ::pclose(f.f);
     f.f = nullptr;
   }
   p_set_ioresult(f, rc == -1 ? errno : 0);
+  return static_cast<int32_t>(rc);
 }
 template <typename F>
-inline void p_pclose(F&) {}
+inline int32_t p_pclose(F&) { return 0; }
 // STUB: file timestamp get/set used by assembler/link bookkeeping.
 template <typename F, typename T> inline void p_getftime(F&&, T&) {}
 template <typename F, typename T> inline void p_setftime(F&&, T) {}
@@ -5279,6 +5282,42 @@ inline GetEnvResult p_getenv(const tp2cc_ShortString<>& name) {
   for (int i = 0; i < n; ++i) buf[i] = p_char_to_c(name.data[i]);
   return {std::getenv(buf)};
 }
+// `baseunix.fpgetenv` is plain libc getenv returning pchar. Compiler
+// units (globals.pas etc.) use it directly; the result is owned by
+// libc and treated as read-only by callers.
+inline p_char* p_fpgetenv(const tp2cc_ShortString<>& name) {
+  char buf[260]{};
+  int n = name.length < 255 ? name.length : 255;
+  for (int i = 0; i < n; ++i) buf[i] = p_char_to_c(name.data[i]);
+  buf[n] = '\0';
+  const char* v = std::getenv(buf);
+  return v ? p_from_c_str_copy(v) : nullptr;
+}
+inline p_char* p_fpgetenv(p_char* name) {
+  return p_fpgetenv(tp2cc_shortstring_of<>(name));
+}
+inline p_char* p_fpgetenv(const p_char* name) {
+  return p_fpgetenv(tp2cc_shortstring_of<>(name));
+}
+// `baseunix.fpchmod` returns the syscall result (0 on success, -1 on
+// failure with errno). Mirror that, distinct from rt::p_chmod which
+// returns a boolean.
+inline int32_t p_fpchmod(const tp2cc_ShortString<>& path, int32_t mode) {
+  return ::chmod(p_to_std_string(path).c_str(),
+                 static_cast<mode_t>(mode));
+}
+inline int32_t p_fpchmod(const tp2cc_AnsiString& path, int32_t mode) {
+  return ::chmod(reinterpret_cast<const char*>(path.bytes()),
+                 static_cast<mode_t>(mode));
+}
+// Pascal `unaligned(...)' is a compiler intrinsic that reads its
+// argument without an alignment assumption. The translated callers
+// always wrap an already-loaded value (e.g. `unaligned(pword(@buf[i])^)`
+// in ppu.pas), so by the time it reaches us the bytes are already in
+// a value of the right type and identity is the right lowering on
+// x86-class targets that tolerate unaligned scalar reads.
+template <typename T>
+inline T p_unaligned(const T& v) { return v; }
 // Pascal `Linux.Shell(cmd)` -- run a command via `/bin/sh -c`, i.e.
 // POSIX `system(3)`. Used by the compiler for wildcard expansion.
 template <int N>
@@ -5287,6 +5326,16 @@ inline int32_t p_shell(const tp2cc_ShortString<N>& cmd) {
   // intentionally do not provide a `/bin/sh` path.
   p_spawn_process({"sh", "-c", p_to_std_string(cmd)});
   return p_last_dosexitcode;
+}
+// `unix.fpsystem` is system(3); compiler/globals.pas exposes it as
+// the `Shell` helper. Reuse the rt::p_shell defined just above which
+// already handles spawning and capturing the exit code.
+template <int N>
+inline int32_t p_fpsystem(const tp2cc_ShortString<N>& cmd) {
+  return p_shell(cmd);
+}
+inline int32_t p_fpsystem(const tp2cc_AnsiString& cmd) {
+  return p_shell(static_cast<tp2cc_ShortString<>>(cmd));
 }
 inline int32_t p_dosexitcode() { return p_last_dosexitcode; }
 // Used by fpc 1.0.6 as an existence check for the drive.
