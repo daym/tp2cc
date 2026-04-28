@@ -769,7 +769,11 @@ inline p_char* p_ansistring_empty_bytes() {
 }
 
 inline bool p_ansistring_is_empty_bytes(const p_char* data) {
-  return data == p_ansistring_empty_bytes();
+  // A zero-initialised AnsiString (e.g. an aggregate field that bypassed
+  // the in-class default member initialiser via memset/calloc) has
+  // `data == nullptr`. Treat that as the empty sentinel so callers don't
+  // dereference the would-be header.
+  return data == nullptr || data == p_ansistring_empty_bytes();
 }
 
 inline AnsiStringHeader* p_ansistring_header(p_char* data) {
