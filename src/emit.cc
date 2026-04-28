@@ -373,6 +373,16 @@ const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
       {"int64",       {"int64_t",         PrimitiveIntKind::Signed,   64}},
       {"qword",       {"uint64_t",        PrimitiveIntKind::Unsigned, 64}},
       {"dword",       {"uint32_t",        PrimitiveIntKind::Unsigned, 32}},
+      // FPC integer aliases that route through `::rt::` -- listed
+      // here so the emitter's integer-typed checks (Q+ overflow,
+      // R+ range) recognise the operand as integer. The cxx spelling
+      // matches `runtime_named_type_map` so the type name still
+      // resolves the same way for declarations.
+      {"currency",    {"::rt::p_currency", PrimitiveIntKind::Signed,   64}},
+      {"ptrint",      {"::rt::p_ptrint",   PrimitiveIntKind::Signed,   32}},
+      {"ptruint",     {"::rt::p_ptruint",  PrimitiveIntKind::Unsigned, 32}},
+      {"sizeint",     {"::rt::p_sizeint",  PrimitiveIntKind::Signed,   32}},
+      {"sizeuint",    {"::rt::p_sizeuint", PrimitiveIntKind::Unsigned, 32}},
       {"string",      {"::rt::tp2cc_ShortString<>", PrimitiveIntKind::None,  0}},
       {"shortstring", {"::rt::tp2cc_ShortString<>", PrimitiveIntKind::None,  0}},
       {"ansistring",  {"::rt::tp2cc_AnsiString", PrimitiveIntKind::None,      0}},

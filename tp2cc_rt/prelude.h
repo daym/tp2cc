@@ -1138,47 +1138,52 @@ tp2cc_range_check_assign(SrcT src) {
   return static_cast<DstT>(src);
 }
 
-// Checked integer arithmetic for `{$Q+}`. Signed types use
-// `__builtin_*_overflow` so the compiler emits an INTO-equivalent
-// path; unsigned types match Pascal's wraparound semantics under
-// Q+ (Pascal does not overflow-check unsigned).
-template <typename T>
-inline std::enable_if_t<std::is_signed_v<T>, T> tp2cc_add_checked(T a, T b) {
-  T r;
-  if (__builtin_add_overflow(a, b, &r)) tp2cc_throw_int_overflow();
+// Checked integer arithmetic for `{$Q+}`. Pascal's mixed-type rules
+// promote operands to a common type before the operation, then
+// overflow-check at that type. Mirror that with `std::common_type_t`:
+// C++'s usual arithmetic conversions match Pascal's promotion rules
+// closely enough for fpc's bootstrap source, and `__builtin_*_overflow`
+// detects the overflow at the promoted type. Pascal does not check
+// unsigned arithmetic under Q+, but `__builtin_*_overflow` for unsigned
+// types just reports the wraparound, which we accept silently.
+template <typename A, typename B>
+constexpr std::common_type_t<A, B> tp2cc_add_checked(A a, B b) {
+  using R = std::common_type_t<A, B>;
+  R r;
+  R ax = static_cast<R>(a);
+  R bx = static_cast<R>(b);
+  if (__builtin_add_overflow(ax, bx, &r)) {
+    if constexpr (std::is_signed_v<R>) tp2cc_throw_int_overflow();
+  }
+  return r;
+}
+template <typename A, typename B>
+constexpr std::common_type_t<A, B> tp2cc_sub_checked(A a, B b) {
+  using R = std::common_type_t<A, B>;
+  R r;
+  R ax = static_cast<R>(a);
+  R bx = static_cast<R>(b);
+  if (__builtin_sub_overflow(ax, bx, &r)) {
+    if constexpr (std::is_signed_v<R>) tp2cc_throw_int_overflow();
+  }
+  return r;
+}
+template <typename A, typename B>
+constexpr std::common_type_t<A, B> tp2cc_mul_checked(A a, B b) {
+  using R = std::common_type_t<A, B>;
+  R r;
+  R ax = static_cast<R>(a);
+  R bx = static_cast<R>(b);
+  if (__builtin_mul_overflow(ax, bx, &r)) {
+    if constexpr (std::is_signed_v<R>) tp2cc_throw_int_overflow();
+  }
   return r;
 }
 template <typename T>
-inline std::enable_if_t<std::is_signed_v<T>, T> tp2cc_sub_checked(T a, T b) {
-  T r;
-  if (__builtin_sub_overflow(a, b, &r)) tp2cc_throw_int_overflow();
-  return r;
-}
-template <typename T>
-inline std::enable_if_t<std::is_signed_v<T>, T> tp2cc_mul_checked(T a, T b) {
-  T r;
-  if (__builtin_mul_overflow(a, b, &r)) tp2cc_throw_int_overflow();
-  return r;
-}
-template <typename T>
-inline std::enable_if_t<std::is_signed_v<T>, T> tp2cc_negate_checked(T x) {
-  if (x == std::numeric_limits<T>::min()) tp2cc_throw_int_overflow();
-  return static_cast<T>(-x);
-}
-template <typename T>
-inline std::enable_if_t<std::is_unsigned_v<T>, T> tp2cc_add_checked(T a, T b) {
-  return static_cast<T>(a + b);
-}
-template <typename T>
-inline std::enable_if_t<std::is_unsigned_v<T>, T> tp2cc_sub_checked(T a, T b) {
-  return static_cast<T>(a - b);
-}
-template <typename T>
-inline std::enable_if_t<std::is_unsigned_v<T>, T> tp2cc_mul_checked(T a, T b) {
-  return static_cast<T>(a * b);
-}
-template <typename T>
-inline std::enable_if_t<std::is_unsigned_v<T>, T> tp2cc_negate_checked(T x) {
+constexpr T tp2cc_negate_checked(T x) {
+  if constexpr (std::is_signed_v<T>) {
+    if (x == std::numeric_limits<T>::min()) tp2cc_throw_int_overflow();
+  }
   return static_cast<T>(-x);
 }
 
