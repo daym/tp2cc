@@ -1187,6 +1187,21 @@ constexpr T tp2cc_negate_checked(T x) {
   return static_cast<T>(-x);
 }
 
+// Wrap-on-overflow signed-integer negation for the {$Q-} default case.
+// Plain `-x` on a signed integer is UB when x is the type's minimum, even
+// though i386 (and so fpc native) silently returns the same value. Going
+// through the unsigned twin gives that wrap behaviour without tripping
+// UBSan, and the C++ compiler folds it back to a single `neg`.
+template <typename T>
+constexpr T tp2cc_wrap_negate(T x) {
+  if constexpr (std::is_signed_v<T> && std::is_integral_v<T>) {
+    using U = std::make_unsigned_t<T>;
+    return static_cast<T>(static_cast<U>(0) - static_cast<U>(x));
+  } else {
+    return static_cast<T>(-x);
+  }
+}
+
 inline tp2cc_AnsiString tp2cc_ansistring_of(std::nullptr_t) {
   return tp2cc_AnsiString{};
 }

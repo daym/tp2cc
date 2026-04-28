@@ -2670,6 +2670,34 @@ void test_r_plus_routes_narrowing_assignment_through_range_check() {
   CHECK(contains(out.impl, "p_c = p_v;"));
 }
 
+void test_q_minus_routes_signed_negate_through_wrap_helper() {
+  // Plain `-x` on a signed integer is UB in C++ when x is the type's
+  // minimum. nmat.pas's tunaryminusnode.simplify hits this on
+  // `-value_currency` after a real->int truncation has produced
+  // INT64_MIN; fpc native gets away with it because i386's `neg`
+  // wraps. Match that without UB by routing Q- signed negation
+  // through tp2cc_wrap_negate.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function neg_q(v : int64) : int64;\n"
+      "function neg_n(v : int64) : int64;\n"
+      "implementation\n"
+      "{$Q+}\n"
+      "function neg_q(v : int64) : int64;\n"
+      "begin\n"
+      "  neg_q := -v;\n"
+      "end;\n"
+      "{$Q-}\n"
+      "function neg_n(v : int64) : int64;\n"
+      "begin\n"
+      "  neg_n := -v;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_negate_checked(p_v)"));
+  CHECK(contains(out.impl, "::rt::tp2cc_wrap_negate(p_v)"));
+}
+
 void test_q_plus_routes_integer_arith_through_checked_helpers() {
   // `{$Q+}` enables Pascal's runtime overflow check on integer
   // arithmetic. fpc-source uses it as compile-error flow (nadd.pas
@@ -5017,6 +5045,7 @@ int main() {
   RUN_TEST(test_local_var_inline_anon_enum_resolves_members);
   RUN_TEST(test_and_with_not_of_xor_short_circuits);
   RUN_TEST(test_r_plus_routes_narrowing_assignment_through_range_check);
+  RUN_TEST(test_q_minus_routes_signed_negate_through_wrap_helper);
   RUN_TEST(test_q_plus_routes_integer_arith_through_checked_helpers);
   RUN_TEST(test_qword_const_cast_produces_64bit_literal_for_shifts);
   RUN_TEST(test_addr_of_pointer_deref_field_uses_offsetof_arithmetic);

@@ -5291,15 +5291,21 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return "::std::numeric_limits<int64_t>::min()";
       }
       // `{$Q+}` extends to unary minus on integer types -- `-INT_MIN`
-      // raises EIntOverflow.
-      if (n.op == UnOp::Neg && n.q_check && n.operand) {
+      // raises EIntOverflow. Under `{$Q-}`, route signed integer negation
+      // through tp2cc_wrap_negate so plain `-INT_MIN` (UB in C++, but
+      // silently wrapping on i386) doesn't trip UBSan.
+      if (n.op == UnOp::Neg && n.operand) {
         const TypeExpr* t = deduce_type(*n.operand);
         if (t) t = canonicalize_type(t);
         if (t && t->kind == Kind::TyName) {
           const PrimitiveInfo* pi = primitive_info(
               ascii_lower(static_cast<const TyName&>(*t).name));
-          if (pi && (pi->int_kind == PrimitiveIntKind::Signed ||
-                     pi->int_kind == PrimitiveIntKind::Unsigned)) {
+          if (pi && pi->int_kind == PrimitiveIntKind::Signed) {
+            const char* helper = n.q_check ? "::rt::tp2cc_negate_checked"
+                                           : "::rt::tp2cc_wrap_negate";
+            return std::string(helper) + "(" + expr_to_cxx(*n.operand) + ")";
+          }
+          if (pi && pi->int_kind == PrimitiveIntKind::Unsigned && n.q_check) {
             return "::rt::tp2cc_negate_checked(" +
                    expr_to_cxx(*n.operand) + ")";
           }
