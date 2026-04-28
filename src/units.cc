@@ -62,6 +62,8 @@ int UnitGraph::parse_recursive(const fs::path& path) {
   int errs_before = error_count();
   Lexer lex(std::move(sf), include_paths_);
   for (const auto& d : defines_) lex.define(d);
+  lex.set_overflow_check_default(overflow_check_default_);
+  lex.set_range_check_default(range_check_default_);
   Parser parser(lex);
   auto node = parser.parse();
   int errs = error_count() - errs_before;

@@ -35,6 +35,10 @@ struct CliOptions {
   std::vector<std::string> defines;
   std::vector<fs::path> unit_paths;     // -Fu<dir>
   std::vector<fs::path> include_paths;  // -Fi<dir>
+  // Pascal `{$Q+}` / `{$R+}` initial state. Mirrors fpc's `-Co` /
+  // `-Cr` cmdline flags. Source-level directives override.
+  bool overflow_check = false;
+  bool range_check = false;
 };
 
 // Reserved extension point: if tp2cc ever needs to predefine symbols
@@ -50,12 +54,16 @@ std::unique_ptr<Lexer> make_lexer(const std::string& path,
   auto lex = std::make_unique<Lexer>(std::move(sf), opts.include_paths);
   define_default_symbols(*lex);
   for (const auto& d : opts.defines) lex->define(d);
+  lex->set_overflow_check_default(opts.overflow_check);
+  lex->set_range_check_default(opts.range_check);
   return lex;
 }
 
 void configure_graph(UnitGraph& g, const CliOptions& opts) {
   define_default_symbols(g);
   for (const auto& d : opts.defines) g.define(d);
+  g.set_overflow_check_default(opts.overflow_check);
+  g.set_range_check_default(opts.range_check);
   for (const auto& p : opts.unit_paths) g.add_search_root(p);
   for (const auto& p : opts.include_paths) g.add_include_path(p);
 }
@@ -477,6 +485,8 @@ int main(int argc, char** argv) {
         opts.include_paths.emplace_back(std::string(a.substr(3)));
         continue;
       }
+      if (a == "-Co") { opts.overflow_check = true; continue; }
+      if (a == "-Cr") { opts.range_check = true; continue; }
       if (!a.empty() && a[0] == '-') {
         std::fprintf(stderr, "unknown option: %s\n", argv[i]);
         usage();

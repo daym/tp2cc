@@ -43,6 +43,12 @@ class Lexer {
   // Index nodes that the emitter then routes through checked helpers.
   bool range_check_active() const;
 
+  // Initial `{$Q+}` / `{$R+}` state supplied by `-Co` / `-Cr` command-line
+  // flags. Source-level `{$Q+/-}` / `{$R+/-}` directives still override
+  // forward from their position.
+  void set_overflow_check_default(bool on);
+  void set_range_check_default(bool on);
+
  private:
   struct Input {
     std::shared_ptr<SourceFile> file;

@@ -44,6 +44,11 @@ class UnitGraph {
   // Predefine a preprocessor symbol used when parsing each unit.
   void define(std::string name);
 
+  // Initial `{$Q+}` / `{$R+}` state for every unit parsed through this
+  // graph. Source-level directives still override forward.
+  void set_overflow_check_default(bool on) { overflow_check_default_ = on; }
+  void set_range_check_default(bool on) { range_check_default_ = on; }
+
   // Parse a single program/unit file and recursively discover only the units
   // reachable through its `uses` graph. Search roots are still used to locate
   // referenced units by filename.
@@ -70,6 +75,8 @@ class UnitGraph {
   std::vector<std::filesystem::path> roots_;
   std::vector<std::filesystem::path> include_paths_;
   std::vector<std::string> defines_;
+  bool overflow_check_default_ = false;
+  bool range_check_default_ = false;
 
   // Map lowercased unit name -> ParsedUnit.
   std::unordered_map<std::string, ParsedUnit> units_;

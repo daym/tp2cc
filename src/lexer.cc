@@ -491,6 +491,9 @@ bool Lexer::range_check_active() const {
   return r_check_;
 }
 
+void Lexer::set_overflow_check_default(bool on) { q_check_ = on; }
+void Lexer::set_range_check_default(bool on) { r_check_ = on; }
+
 void Lexer::do_include(std::string_view arg, Location where) {
   std::string a = trim(arg);
   if (a.empty()) {
