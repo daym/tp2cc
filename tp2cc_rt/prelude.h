@@ -90,6 +90,16 @@ inline p_char* p_from_c_str_copy(const char* s) {
   return buf.data();
 }
 
+template <typename T>
+inline void* tp2cc_const_untyped_ptr(const T& value) {
+  // Untyped Pascal `const` parameters may receive temporaries, including
+  // function-result aggregates. Bind through a const reference so the
+  // temporary stays alive for the enclosing call expression, then pass the
+  // raw storage address that the Pascal callee expects.
+  return const_cast<void*>(
+      static_cast<const void*>(std::addressof(value)));
+}
+
 template <typename Fn>
 inline void* p_funptr_bits(Fn fn) {
   static_assert(std::is_pointer_v<Fn>,

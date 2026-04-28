@@ -4333,6 +4333,9 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
       local_untyped_params.count(static_cast<const Ident&>(arg).name)) {
     return arg_text;
   }
+  if (!mutable_ref_arg && !expr_is_storage_lvalue(arg)) {
+    return "::rt::tp2cc_const_untyped_ptr(" + arg_text + ")";
+  }
   return "((void*)&(" + arg_text + "))";
 }
 

@@ -2839,6 +2839,38 @@ void test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes() {
   CHECK(contains(out.impl, "p_sink(((void*)&(::rt::tp2cc_deref(p_p))), 1);"));
 }
 
+void test_untyped_const_temporary_uses_addressable_helper() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    a, b : longint;\n"
+      "  end;\n"
+      "  twriter = object\n"
+      "    procedure sink(const b; len : longint);\n"
+      "  end;\n"
+      "function buildrec(x : longint) : trec;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure twriter.sink(const b; len : longint);\n"
+      "begin\n"
+      "end;\n"
+      "function buildrec(x : longint) : trec;\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "var\n"
+      "  w : twriter;\n"
+      "begin\n"
+      "  w.sink(buildrec(42), sizeof(trec));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_const_untyped_ptr(p_u::p_buildrec(42))"));
+  CHECK(!contains(out.impl, "&(p_u::p_buildrec(42))"));
+}
+
 void test_class_types_lower_to_pointers_and_implicit_tobject() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -5054,6 +5086,7 @@ int main() {
   RUN_TEST(test_set_to_int_cast_uses_endian_safe_helper);
   RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);
   RUN_TEST(test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes);
+  RUN_TEST(test_untyped_const_temporary_uses_addressable_helper);
   RUN_TEST(test_class_types_lower_to_pointers_and_implicit_tobject);
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
   RUN_TEST(test_empty_inherited_class_decl_emits_real_struct);
