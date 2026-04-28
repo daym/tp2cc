@@ -1,0 +1,35 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-28
+Subject: Reset scanner global `c' when a fresh scanner takes its first file
+License: expat
+
+`scanner.pas` keeps `c' (the scanner's lookahead character) as a
+unit-level `var', shared across every `tscannerfile' instance. When
+one scanner runs to end-of-file it leaves `c' at #26, and that value
+survives into the next scanner.
+
+The first thing `tscannerfile.reload' does is short-circuit on
+`(c=#26) and (not assigned(inputfile.next))'. For a freshly created
+scanner the new inputfile has no `next', so the leftover #26 makes
+the scanner exit before its very first buffer fill. The parser then
+sees an empty token stream and reports "Syntax error, UNIT expected
+but end of file found" against the unit it just opened.
+
+Reset `c' to #0 in `tscannerfile.firstfile' before calling `reload'
+so each scanner starts with a clean lookahead state.
+
+--- a/compiler/scanner.pas
++++ b/compiler/scanner.pas
+@@ -1780,6 +1780,12 @@
+
+     procedure tscannerfile.firstfile;
+       begin
++      { the scanner's `c' is a unit-level global that survives across
++        scanner instances. If the previous scanner exited at EOF it
++        left c=#26, and reload's first guard then short-circuits this
++        scanner's initial buffer fill. Reset c so the new file gets
++        read normally. }
++        c:=#0;
+       { load block }
+         if not openinputfile then
+           Message1(scan_f_cannot_open_input,inputfile.name^);
