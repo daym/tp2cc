@@ -147,30 +147,64 @@ build_stage1() {
   echo "== [3/7] translate FPC 2 compiler to C++ =="
   rm -rf "$STAGE1_DIR" "$STAGE1_LOGDIR"
   mkdir -p "$STAGE1_DIR"
-  # Exclude dbgdwarf here for the same reason as in the generated cfg: the
-  # current 2.2.4 i386 bootstrap does not need the dwarf debug-info backend,
-  # and that unit still depends on unsupported array-of-const parsing. The
-  # initial recursive unit walk must see the same target-unit graph as the
-  # later stage compilers, or dbgdwarf gets pulled in before the cfg can
-  # exclude it.
-  # FPC's own `options.pas` defines `FPC_HAS_TYPE_EXTENDED` (and the
-  # other `FPC_HAS_TYPE_*` macros) at runtime when targeting i386, but
-  # that code never executes during tp2cc translation. The compiler
-  # source uses `{$if defined(cpuextended) and defined(FPC_HAS_TYPE_EXTENDED)}`
-  # to gate i386 80-bit-real codegen and the matching assembler-writer
-  # cases; without these defines, tp2cc prunes the asm-writer cases
-  # while leaving the codegen sites intact, producing `ait_real_80bit`
-  # nodes the assembler can't write (internalerror 2006012201).
+
+  # Provide the conditional-compile macros that the Pascal compiler defines
+  # for an i386-linux target. tp2cc evaluates `{$if defined(...)}' while
+  # translating the sources, before the translated compiler's option parser
+  # can call `def_system_macro' at runtime, so these definitions must be
+  # present here to select the same source branches.
+  #
+  # Sources (compiler/options.pas):
+  #   - target shortname + extradefines: TargetOptions
+  #   - endian/abi/feature/cpu/fpu macros: same procedure
+  #   - global VER*, FPC_*, FPC_HAS_TYPE_*, FPC_HAS_FEATURE_*: read_arguments
+  #   - FPC_LINK_STATIC default: top of file
+  fpc_auto_defines="\
+-dFPC \
+-dVER2 -dVER2_2 -dVER2_2_4 \
+-dLINUX -dUNIX -dHASUNIX \
+-dENDIAN_LITTLE -dFPC_LITTLE_ENDIAN \
+-dFPC_DARWIN_PASCALMAIN -dFPC_DARWIN_JMP_MAIN \
+-dPARAOUTFILE -dRESSTRSECTIONS \
+-dFPC_HASFIXED64BITVARIANT -dFPC_HASINTERNALOLEVARIANT2VARIANTCAST \
+-dFPC_HAS_VARSETS -dFPC_HAS_VALGRINDBOOL -dFPC_HAS_STR_CURRENCY \
+-dFPC_REAL2REAL_FIXED \
+-dFPC_STRTOCHARARRAYPROC -dFPC_STRTOSHORTSTRINGPROC \
+-dFPC_OBJFPC_EXTENDED_IF \
+-dFPC_SUPPORTS_UNALIGNED -dFPC_UNALIGNED_FIXED \
+-dFPC_HAS_MEMBAR -dFPC_NEW_BIGENDIAN_SETS -dFPC_SETBASE_USED \
+-dINTERNAL_BACKTRACE -dSTR_CONCAT_PROCS -dREGCALL \
+-dFPC_HAS_FEATURE_SUPPORT \
+-dCPU86 -dCPU87 -dCPU386 -dCPUI386 -dCPU32 -dI386 \
+-dCPUPENTIUM -dFPUX87 \
+-dFPC_HAS_TYPE_EXTENDED -dFPC_HAS_TYPE_DOUBLE -dFPC_HAS_TYPE_SINGLE \
+-dFPC_HAS_RESOURCES \
+-dFPC_LINK_STATIC \
+-dFPC_HAS_FEATURE_HEAP -dFPC_HAS_FEATURE_INITFINAL \
+-dFPC_HAS_FEATURE_RTTI -dFPC_HAS_FEATURE_CLASSES \
+-dFPC_HAS_FEATURE_EXCEPTIONS -dFPC_HAS_FEATURE_EXITCODE \
+-dFPC_HAS_FEATURE_ANSISTRINGS -dFPC_HAS_FEATURE_WIDESTRINGS \
+-dFPC_HAS_FEATURE_TEXTIO -dFPC_HAS_FEATURE_CONSOLEIO \
+-dFPC_HAS_FEATURE_FILEIO -dFPC_HAS_FEATURE_RANDOM \
+-dFPC_HAS_FEATURE_VARIANTS -dFPC_HAS_FEATURE_OBJECTS \
+-dFPC_HAS_FEATURE_DYNARRAYS -dFPC_HAS_FEATURE_THREADING \
+-dFPC_HAS_FEATURE_COMMANDARGS -dFPC_HAS_FEATURE_PROCESSES \
+-dFPC_HAS_FEATURE_STACKCHECK -dFPC_HAS_FEATURE_DYNLIBS"
+
+  # tp2cc-specific knobs: prune target backends we don't translate, and
+  # force the dwarf debug-info backend off (it pulls array-of-const
+  # parsing tp2cc doesn't yet handle).
+  tp2cc_target_prune="\
+-dNoDbgDwarf \
+-dNOTARGETAMIGA -dNOTARGETBEOS -dNOTARGETFREEBSD \
+-dNOTARGETGO32V1 -dNOTARGETGO32V2 -dNOTARGETOS2 \
+-dNOTARGETPALMOS -dNOTARGETQNX -dNOTARGETSUNOS \
+-dNOTARGETWIN32 -dNOTARGETNETBSD -dNOTARGETOPENBSD \
+-dNOTARGETDARWIN -dNOTARGETNETWARE -dNOTARGETEMX"
+
   "$HOST_BUILD/bin/tp2cc" emit-all \
-    -dFPC -dCPUI386 -dI386 -dLINUX -dUNIX \
-    -dFPC_HAS_TYPE_EXTENDED -dFPC_HAS_TYPE_DOUBLE \
-    -dFPC_HAS_TYPE_SINGLE -dFPC_HAS_RESOURCES \
-    -dNoDbgDwarf \
-    -dNOTARGETAMIGA -dNOTARGETBEOS -dNOTARGETFREEBSD \
-    -dNOTARGETGO32V1 -dNOTARGETGO32V2 -dNOTARGETOS2 \
-    -dNOTARGETPALMOS -dNOTARGETQNX -dNOTARGETSUNOS \
-    -dNOTARGETWIN32 -dNOTARGETNETBSD -dNOTARGETOPENBSD \
-    -dNOTARGETDARWIN -dNOTARGETNETWARE -dNOTARGETEMX \
+    $fpc_auto_defines \
+    $tp2cc_target_prune \
     $(compiler_dir_flags) \
     -Fi"$CLEAN_SRC/rtl/inc" \
     -Fi"$CLEAN_SRC/rtl/i386" \
