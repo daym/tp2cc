@@ -281,15 +281,20 @@ bool tyname_is(const TypeExpr* t, std::string_view expected) {
          ascii_lower(static_cast<const TyName&>(*t).name) == expected;
 }
 
+enum class UntypedArgKind : uint8_t { None, Const, Mutable };
+
 void mark_builtin_memory_helper_param_info(
-    std::string_view name, std::vector<bool>& untyped_arg,
+    std::string_view name, std::vector<UntypedArgKind>& untyped_arg,
     std::vector<bool>& mutable_ref_arg,
     std::vector<const ast::TypeExpr*>& param_types) {
   const std::string lower = ascii_lower(name);
 
-  auto mark = [&](size_t index, bool is_untyped, bool is_mutable,
+  auto mark = [&](size_t index, UntypedArgKind untyped_kind, bool is_mutable,
                   const ast::TypeExpr* type = nullptr) {
-    if (index < untyped_arg.size() && is_untyped) untyped_arg[index] = true;
+    if (index < untyped_arg.size() &&
+        untyped_kind != UntypedArgKind::None) {
+      untyped_arg[index] = untyped_kind;
+    }
     if (index < mutable_ref_arg.size() && is_mutable) mutable_ref_arg[index] = true;
     if (index < param_types.size()) param_types[index] = type;
   };
@@ -299,17 +304,17 @@ void mark_builtin_memory_helper_param_info(
   // lowering path here so calls like `FillChar(FList^[I], ...)` become
   // `&slot` in C++ instead of reinterpreting the pointer value stored there.
   if (lower == "fillchar" || lower == "fillword") {
-    mark(0, /*is_untyped=*/true, /*is_mutable=*/true);
+    mark(0, UntypedArgKind::Mutable, /*is_mutable=*/true);
     return;
   }
   if (lower == "move") {
-    mark(0, /*is_untyped=*/true, /*is_mutable=*/false);
-    mark(1, /*is_untyped=*/true, /*is_mutable=*/true);
+    mark(0, UntypedArgKind::Const, /*is_mutable=*/false);
+    mark(1, UntypedArgKind::Mutable, /*is_mutable=*/true);
     return;
   }
   if (lower == "getmem" || lower == "freemem" || lower == "reallocmem" ||
       lower == "dispose" || lower == "strdispose") {
-    mark(0, /*is_untyped=*/false, /*is_mutable=*/true);
+    mark(0, UntypedArgKind::None, /*is_mutable=*/true);
   }
   // Pascal `Val(S; var V; var Code)` and `Str(X; var S)` write to caller
   // storage. Mark the var-mode slots so a call-site typecast like
@@ -319,12 +324,12 @@ void mark_builtin_memory_helper_param_info(
   // overload. Without this, the cast lowers as a value rvalue and the
   // overload set fails to match.
   if (lower == "val") {
-    mark(1, /*is_untyped=*/false, /*is_mutable=*/true);
-    mark(2, /*is_untyped=*/false, /*is_mutable=*/true);
+    mark(1, UntypedArgKind::None, /*is_mutable=*/true);
+    mark(2, UntypedArgKind::None, /*is_mutable=*/true);
     return;
   }
   if (lower == "str") {
-    mark(1, /*is_untyped=*/false, /*is_mutable=*/true);
+    mark(1, UntypedArgKind::None, /*is_mutable=*/true);
     return;
   }
 }
@@ -1154,16 +1159,16 @@ struct Emitter {
   void append_defaulted_trailing_call_args(
       const ast::ProcDecl* decl, std::vector<const ast::Expr*>& args);
   void mark_call_param_info(const ast::ProcDecl* decl,
-                            std::vector<bool>& untyped_arg,
+                            std::vector<UntypedArgKind>& untyped_arg,
                             std::vector<bool>& mutable_ref_arg,
                             std::vector<const ast::TypeExpr*>& param_types);
   void collect_call_param_info(const ast::Expr& callee,
-                               std::vector<bool>& untyped_arg,
+                               std::vector<UntypedArgKind>& untyped_arg,
                                std::vector<bool>& mutable_ref_arg,
                                std::vector<const ast::TypeExpr*>& param_types);
   std::string lower_call_arg(const ast::Expr& arg,
                              const ast::TypeExpr* param_type,
-                             bool untyped_arg,
+                             UntypedArgKind untyped_arg,
                              bool mutable_ref_arg);
   std::string lower_implicit_zero_arg_call(const std::string& callee_text,
                                            const ast::ProcDecl* decl);
@@ -1208,7 +1213,7 @@ struct Emitter {
       std::string_view class_name, std::string_view member_name,
       const std::vector<const ast::Expr*>& args,
       const std::vector<const ast::TypeExpr*>& param_types,
-      const std::vector<bool>& untyped_arg,
+      const std::vector<UntypedArgKind>& untyped_arg,
       const std::vector<bool>& mutable_ref_arg);
 
   // ---------------------------------------------------------------------
@@ -3509,14 +3514,19 @@ std::string Emitter::open_array_constructor_to_cxx(const SetLit& s,
 }
 
 void Emitter::mark_call_param_info(
-    const ProcDecl* decl, std::vector<bool>& untyped_arg,
+    const ProcDecl* decl, std::vector<UntypedArgKind>& untyped_arg,
     std::vector<bool>& mutable_ref_arg,
     std::vector<const TypeExpr*>& param_types) {
   if (!decl) return;
   size_t ai = 0;
   for (const auto& p : decl->params) {
     for (size_t k = 0; k < p.names.size(); ++k) {
-      if (ai < untyped_arg.size() && !p.type) untyped_arg[ai] = true;
+      if (ai < untyped_arg.size() && !p.type) {
+        untyped_arg[ai] =
+            (p.mode == Param::Var || p.mode == Param::Out)
+                ? UntypedArgKind::Mutable
+                : UntypedArgKind::Const;
+      }
       if (ai < mutable_ref_arg.size()) {
         mutable_ref_arg[ai] =
             p.mode == Param::Var || p.mode == Param::Out ||
@@ -4226,7 +4236,7 @@ void Emitter::append_defaulted_trailing_call_args(
 // adapter type. Keep the lookup in one helper instead of restating it inside
 // the giant call-expression path.
 void Emitter::collect_call_param_info(
-    const Expr& callee, std::vector<bool>& untyped_arg,
+    const Expr& callee, std::vector<UntypedArgKind>& untyped_arg,
     std::vector<bool>& mutable_ref_arg,
     std::vector<const TypeExpr*>& param_types) {
   if (callee.kind == Kind::Ident) {
@@ -4249,7 +4259,7 @@ void Emitter::collect_call_param_info(
 }
 
 std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
-                                    bool untyped_arg,
+                                    UntypedArgKind untyped_arg,
                                     bool mutable_ref_arg) {
   if (param_type && type_is_open_array(param_type) && arg.kind == Kind::SetLit) {
     return open_array_constructor_to_cxx(static_cast<const SetLit&>(arg),
@@ -4261,7 +4271,7 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
   if (mutable_ref_arg && arg.kind == Kind::Call &&
       static_cast<const Call&>(arg).args.size() == 1 &&
       static_cast<const Call&>(arg).callee->kind == Kind::Ident &&
-      (canon_param_type || !untyped_arg)) {
+      (canon_param_type || untyped_arg == UntypedArgKind::None)) {
     const auto& cast = static_cast<const Call&>(arg);
     const auto& id = static_cast<const Ident&>(*cast.callee);
     bool is_type_cast = is_primitive_type(id.name);
@@ -4320,7 +4330,7 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
       arg_text = "::rt::tp2cc_open_array<" + elem_cxx + ">(" + arg_text + ")";
     }
   }
-  if (!untyped_arg) return arg_text;
+  if (untyped_arg == UntypedArgKind::None) return arg_text;
 
   // Untyped Pascal params are already lowered as "pointer to caller storage".
   // Forwarding one of them must preserve the pointer value; taking `&` here
@@ -4333,7 +4343,8 @@ std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
       local_untyped_params.count(static_cast<const Ident&>(arg).name)) {
     return arg_text;
   }
-  if (!mutable_ref_arg && !expr_is_storage_lvalue(arg)) {
+  if (untyped_arg == UntypedArgKind::Const &&
+      !mutable_ref_arg && !expr_is_storage_lvalue(arg)) {
     return "::rt::tp2cc_const_untyped_ptr(" + arg_text + ")";
   }
   return "((void*)&(" + arg_text + "))";
@@ -4347,7 +4358,7 @@ std::string Emitter::lower_implicit_zero_arg_call(const std::string& callee_text
   append_defaulted_trailing_call_args(decl, args);
   if (args.empty()) return callee_text + "()";
 
-  std::vector<bool> untyped_arg(args.size(), false);
+  std::vector<UntypedArgKind> untyped_arg(args.size(), UntypedArgKind::None);
   std::vector<bool> mutable_ref_arg(args.size(), false);
   std::vector<const TypeExpr*> param_types(args.size(), nullptr);
   mark_call_param_info(decl, untyped_arg, mutable_ref_arg, param_types);
@@ -4538,7 +4549,7 @@ std::optional<std::string> Emitter::maybe_lower_class_constructor_call(
     std::string_view class_name, std::string_view member_name,
     const std::vector<const Expr*>& args,
     const std::vector<const TypeExpr*>& param_types,
-    const std::vector<bool>& untyped_arg,
+    const std::vector<UntypedArgKind>& untyped_arg,
     const std::vector<bool>& mutable_ref_arg) {
   if (!registry) return std::nullopt;
   const auto* ci = class_info_for_type_name(class_name);
@@ -4558,15 +4569,15 @@ std::optional<std::string> Emitter::maybe_lower_class_constructor_call(
   std::vector<const Expr*> effective_args(args.begin(), args.end());
   std::vector<const TypeExpr*> effective_param_types(param_types.begin(),
                                                      param_types.end());
-  std::vector<bool> effective_untyped_arg(untyped_arg.begin(),
-                                          untyped_arg.end());
+  std::vector<UntypedArgKind> effective_untyped_arg(untyped_arg.begin(),
+                                                    untyped_arg.end());
   std::vector<bool> effective_mutable_ref_arg(mutable_ref_arg.begin(),
                                               mutable_ref_arg.end());
   append_defaulted_trailing_call_args(method ? method->decl.get() : nullptr,
                                       effective_args);
   if (effective_param_types.size() < effective_args.size()) {
     effective_param_types.resize(effective_args.size(), nullptr);
-    effective_untyped_arg.resize(effective_args.size(), false);
+    effective_untyped_arg.resize(effective_args.size(), UntypedArgKind::None);
     effective_mutable_ref_arg.resize(effective_args.size(), false);
     mark_call_param_info(method ? method->decl.get() : nullptr,
                          effective_untyped_arg, effective_mutable_ref_arg,
@@ -5430,7 +5441,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (!is_callee_context_) {
               std::vector<const Expr*> no_args;
               std::vector<const TypeExpr*> no_param_types;
-              std::vector<bool> no_untyped_arg;
+              std::vector<UntypedArgKind> no_untyped_arg;
               std::vector<bool> no_mutable_ref_arg;
               if (auto ctor_call = maybe_lower_class_constructor_call(
                       base_name, m.name, no_args, no_param_types,
@@ -6028,7 +6039,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             ctor_args.reserve(cc.args.size());
             for (const auto& arg : cc.args) ctor_args.push_back(arg.get());
             append_defaulted_trailing_call_args(ctor_decl, ctor_args);
-            std::vector<bool> untyped_arg(ctor_args.size(), false);
+            std::vector<UntypedArgKind> untyped_arg(ctor_args.size(),
+                                                    UntypedArgKind::None);
             std::vector<bool> mutable_ref_arg(ctor_args.size(), false);
             std::vector<const TypeExpr*> param_types(ctor_args.size(), nullptr);
             mark_call_param_info(ctor_decl, untyped_arg, mutable_ref_arg,
@@ -6161,7 +6173,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       const ProcDecl* call_decl = resolved.decl;
       append_defaulted_trailing_call_args(call_decl, call_args);
-      std::vector<bool> call_untyped_arg(call_args.size(), false);
+      std::vector<UntypedArgKind> call_untyped_arg(call_args.size(),
+                                                   UntypedArgKind::None);
       std::vector<bool> call_mutable_ref_arg(call_args.size(), false);
       std::vector<const TypeExpr*> call_param_types(call_args.size(), nullptr);
       if (call_decl) {
@@ -6248,7 +6261,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         // ill-formed and overload resolution against a function-pointer
         // slot does not produce ambiguity with value-type overloads).
         if (resolved.needs_arg_casts && call_param_types[i] &&
-            !call_mutable_ref_arg[i] && !call_untyped_arg[i]) {
+            !call_mutable_ref_arg[i] &&
+            call_untyped_arg[i] == UntypedArgKind::None) {
           const TypeExpr* canon_pt = canonicalize_type(call_param_types[i]);
           if (!canon_pt || canon_pt->kind != Kind::TyProcedural) {
             arg_text = "static_cast<" + type_to_cxx(*call_param_types[i]) +
@@ -7888,7 +7902,7 @@ void Emitter::emit_stmt(const Stmt& s) {
         // storage stays in one allocation family.
         std::string p = lower_call_arg(*call_expr->args[0],
                                        /*param_type=*/nullptr,
-                                       /*untyped_arg=*/false,
+                                       UntypedArgKind::None,
                                        /*mutable_ref_arg=*/true);
         emitln("::rt::p_new(" + p + ");");
         if (call_expr->args.size() >= 2) {
@@ -7911,7 +7925,8 @@ void Emitter::emit_stmt(const Stmt& s) {
                 }
               }
             }
-            std::vector<bool> untyped_arg(cc.args.size(), false);
+            std::vector<UntypedArgKind> untyped_arg(cc.args.size(),
+                                                    UntypedArgKind::None);
             std::vector<bool> mutable_ref_arg(cc.args.size(), false);
             std::vector<const TypeExpr*> param_types(cc.args.size(), nullptr);
             mark_call_param_info(ctor_decl, untyped_arg, mutable_ref_arg,
@@ -7932,7 +7947,7 @@ void Emitter::emit_stmt(const Stmt& s) {
         // dispose(p) or dispose(p, Done)
         std::string p = lower_call_arg(*call_expr->args[0],
                                        /*param_type=*/nullptr,
-                                       /*untyped_arg=*/false,
+                                       UntypedArgKind::None,
                                        /*mutable_ref_arg=*/true);
         if (call_expr->args.size() >= 2) {
           const auto& second = *call_expr->args[1];

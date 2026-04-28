@@ -1422,6 +1422,26 @@ void test_nested_untyped_var_forwarding_stays_pointer_value() {
   CHECK(!contains(out.impl, "p_inner(((void*)&(p_y)))"));
 }
 
+void test_nested_untyped_const_forwarding_stays_pointer_value() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure inner(const x; len : longint);\n"
+      "procedure outer(const y; len : longint);\n"
+      "implementation\n"
+      "procedure inner(const x; len : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure outer(const y; len : longint);\n"
+      "begin\n"
+      "  inner(y, len);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_inner(p_y, p_len);"));
+  CHECK(!contains(out.impl, "p_inner(::rt::tp2cc_const_untyped_ptr(p_y), p_len);"));
+  CHECK(!contains(out.impl, "p_inner(((void*)&(p_y)), p_len);"));
+}
+
 void test_untyped_method_call_on_variable_uses_storage_address() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -5021,6 +5041,7 @@ int main() {
   RUN_TEST(test_integer_and_or_stays_bitwise);
   RUN_TEST(test_nested_boolean_function_and_short_circuits);
   RUN_TEST(test_nested_untyped_var_forwarding_stays_pointer_value);
+  RUN_TEST(test_nested_untyped_const_forwarding_stays_pointer_value);
   RUN_TEST(test_untyped_method_call_on_variable_uses_storage_address);
   RUN_TEST(test_fillchar_uses_storage_address_for_pointer_slots);
   RUN_TEST(test_move_uses_storage_addresses_for_source_and_destination_slots);
