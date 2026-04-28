@@ -2645,8 +2645,10 @@ void test_r_plus_routes_narrowing_assignment_through_range_check() {
   // `{$R+}` raises ERangeError on narrowing assignment. The bootstrap
   // path that hits this: `value_currency : currency := bestreal` in
   // ncon.pas's trealconstnode.create. Real -> integer assignments
-  // under R+ must route through the helper; sibling assignments
-  // under R- stay as plain `=`.
+  // under R+ must route through the range-check helper; under R-
+  // they still need a truncation helper because plain `(int)real`
+  // is UB in C++ when out of range (i386 silently returns the
+  // "indefinite integer" value, which the helper reproduces).
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -2667,7 +2669,7 @@ void test_r_plus_routes_narrowing_assignment_through_range_check() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "::rt::tp2cc_range_check_assign<int64_t>(p_v)"));
-  CHECK(contains(out.impl, "p_c = p_v;"));
+  CHECK(contains(out.impl, "::rt::tp2cc_real_to_int_trunc<int64_t>(p_v)"));
 }
 
 void test_q_minus_routes_signed_negate_through_wrap_helper() {

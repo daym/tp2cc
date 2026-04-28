@@ -1138,6 +1138,24 @@ tp2cc_range_check_assign(SrcT src) {
   return static_cast<DstT>(src);
 }
 
+// Real -> integer truncation for the {$R-} default. Plain `(int)real`
+// is UB in C++ when the truncated value doesn't fit; i386 silently
+// returns the "indefinite integer" value (the destination type's MIN).
+// Match that here without tripping UBSan, so fpc-style code that
+// assigns IEEE specials to int-typed fields keeps compiling.
+template <typename DstT, typename SrcT>
+inline std::enable_if_t<std::is_integral_v<DstT> && std::is_floating_point_v<SrcT>,
+                        DstT>
+tp2cc_real_to_int_trunc(SrcT src) {
+  using Limits = std::numeric_limits<DstT>;
+  if (!(src == src) ||
+      src < static_cast<SrcT>(Limits::min()) ||
+      src > static_cast<SrcT>(Limits::max())) {
+    return Limits::min();
+  }
+  return static_cast<DstT>(src);
+}
+
 // Checked integer arithmetic for `{$Q+}`. Pascal's mixed-type rules
 // promote operands to a common type before the operation, then
 // overflow-check at that type. Mirror that with `std::common_type_t`:

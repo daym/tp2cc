@@ -7773,14 +7773,14 @@ void Emitter::emit_stmt(const Stmt& s) {
                ");");
         break;
       }
-      // `{$R+}` narrowing-assignment range check. Wraps the rhs in a
-      // helper that raises `p_erangeerror` when the source value
-      // can't be represented in the target type. Applied when the
-      // target is an integer primitive and the source is real, OR
-      // both are integers and the source is wider than the target.
-      // Same-or-narrower integer of the same width / sign is left
-      // alone -- C++ implicit conversion already preserves the bits.
-      if (a.r_check && target_ty) {
+      // Narrowing-assignment lowering. With `{$R+}`, route through
+      // tp2cc_range_check_assign which raises p_erangeerror when the
+      // source can't be represented. With `{$R-}`, real->int still
+      // needs a truncating helper because plain `(int)real` is UB in
+      // C++ when out of range; integer->integer narrowing is fine
+      // (modular truncation is well-defined on unsigned, and gcc
+      // implements two's-complement on signed).
+      if (target_ty) {
         const TypeExpr* tcanon = canonicalize_type(target_ty);
         if (tcanon && tcanon->kind == Kind::TyName) {
           const PrimitiveInfo* dst = primitive_info(
@@ -7799,17 +7799,22 @@ void Emitter::emit_stmt(const Stmt& s) {
                             sn == "real" || sn == "extended" ||
                             sn == "comp" || sn == "bestreal";
             }
-            bool wrap = false;
-            if (src_is_real) {
-              wrap = true;
-            } else if (src && (src->int_kind == PrimitiveIntKind::Signed ||
-                               src->int_kind == PrimitiveIntKind::Unsigned)) {
-              if (src->bits > dst->bits || src->int_kind != dst->int_kind) {
+            if (a.r_check) {
+              bool wrap = false;
+              if (src_is_real) {
                 wrap = true;
+              } else if (src && (src->int_kind == PrimitiveIntKind::Signed ||
+                                 src->int_kind == PrimitiveIntKind::Unsigned)) {
+                if (src->bits > dst->bits || src->int_kind != dst->int_kind) {
+                  wrap = true;
+                }
               }
-            }
-            if (wrap) {
-              rhs_cxx = "::rt::tp2cc_range_check_assign<" +
+              if (wrap) {
+                rhs_cxx = "::rt::tp2cc_range_check_assign<" +
+                          std::string(dst->cxx) + ">(" + rhs_cxx + ")";
+              }
+            } else if (src_is_real) {
+              rhs_cxx = "::rt::tp2cc_real_to_int_trunc<" +
                         std::string(dst->cxx) + ">(" + rhs_cxx + ")";
             }
           }
