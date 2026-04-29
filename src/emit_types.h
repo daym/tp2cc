@@ -22,6 +22,12 @@ class EmitTypeConstRender {
       bool explicit_conversion = false) = 0;
 };
 
+class EmitTypeDiagOps {
+ public:
+  virtual ~EmitTypeDiagOps() = default;
+  virtual void report_error(Location where, const std::string& msg) = 0;
+};
+
 struct EmitRecordFieldDecl {
   // Field declaration metadata shared by named-record emission, inline record
   // spelling, and packed-layout computation.
@@ -45,7 +51,8 @@ struct EmitPackedRecordLayout {
 class EmitTypes {
  public:
   EmitTypes(const TypeRegistry* registry, ScopeStateView& scope,
-            EmitAnalysis& analysis, EmitTypeConstRender& const_render);
+            EmitAnalysis& analysis, EmitTypeConstRender& const_render,
+            EmitTypeDiagOps& diag_ops);
 
   std::string type_to_cxx(const ast::TypeExpr& t);
   std::string type_name_to_cxx(const ast::TyName& n);
@@ -98,6 +105,7 @@ class EmitTypes {
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;
   EmitTypeConstRender& const_render_;
+  EmitTypeDiagOps& diag_ops_;
 };
 
 }  // namespace tp2cc

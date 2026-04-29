@@ -524,6 +524,47 @@ void test_distinct_ordinal_array_bounds_use_underlying_range() {
                  "using p_tmap = ::rt::tp2cc_Array<uint8_t, 0, 65536>;"));
 }
 
+void test_boolean_family_array_bounds_use_boolean_domain() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tkind = array[longbool] of pchar;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(
+      out.header,
+      "using p_tkind = ::rt::tp2cc_Array<::rt::p_char*, false, 2>;"));
+}
+
+void test_signed_ordinal_array_bounds_preserve_negative_low() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tmap = array[smallint] of byte;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(
+      out.header,
+      "using p_tmap = ::rt::tp2cc_Array<uint8_t, ::std::numeric_limits<int16_t>::min(), 65536>;"));
+}
+
+void test_unsupported_fixed_array_index_reports_error_and_stays_array_typed() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tmap = array[qword] of byte;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+  CHECK(contains(out.header,
+                 "using p_tmap = ::rt::tp2cc_Array<uint8_t, 0, 1>;"));
+  CHECK(!contains(out.header, "using p_tmap = uint8_t*;"));
+}
+
 void test_low_high_use_resolved_pascal_type() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -5081,6 +5122,9 @@ int main() {
   RUN_TEST(test_packed_record_shortstring_array_index_is_allowed);
   RUN_TEST(test_explicit_enum_array_bounds_use_ordinal_range);
   RUN_TEST(test_distinct_ordinal_array_bounds_use_underlying_range);
+  RUN_TEST(test_boolean_family_array_bounds_use_boolean_domain);
+  RUN_TEST(test_signed_ordinal_array_bounds_preserve_negative_low);
+  RUN_TEST(test_unsupported_fixed_array_index_reports_error_and_stays_array_typed);
   RUN_TEST(test_low_high_use_resolved_pascal_type);
   RUN_TEST(test_low_high_on_local_array_type_lowers_to_index_bounds);
   RUN_TEST(test_system_qualified_low_high_lowers_like_unqualified);

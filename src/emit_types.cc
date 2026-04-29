@@ -14,11 +14,13 @@ using namespace ast;
 
 EmitTypes::EmitTypes(const TypeRegistry* registry, ScopeStateView& scope,
                      EmitAnalysis& analysis,
-                     EmitTypeConstRender& const_render)
+                     EmitTypeConstRender& const_render,
+                     EmitTypeDiagOps& diag_ops)
     : registry_(registry),
       scope_(scope),
       analysis_(analysis),
-      const_render_(const_render) {}
+      const_render_(const_render),
+      diag_ops_(diag_ops) {}
 
 std::string EmitTypes::type_name_to_cxx(const TyName& n) {
   if (is_primitive_type(n.name)) return primitive_type_cxx(n.name);
@@ -342,16 +344,52 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
     }
   }
   if (tn.name == "boolean" || tn.name == "bytebool") {
+    *lo = "false";
     *size_expr = "2";
     return true;
   }
-  if (tn.name == "byte" || tn.name == "char" || tn.name == "shortint") {
-    *size_expr = "256";
-    return true;
-  }
-  if (tn.name == "word" || tn.name == "smallint" || tn.name == "wordbool") {
-    *size_expr = "65536";
-    return true;
+  if (std::string lowname = ascii_lower(tn.name); is_primitive_type(lowname)) {
+    // Match the old i386 FPC parser's fixed-array index whitelist:
+    //   uchar/u8/u16/s8/s16/s32/bool*/widechar
+    // and reject dword/cardinal/qword/int64 rather than silently decaying to
+    // pointer semantics or inventing a wider-than-Pascal domain.
+    if (lowname == "char" || lowname == "byte") {
+      *size_expr = "256";
+      return true;
+    }
+    if (lowname == "shortint") {
+      *lo = "::std::numeric_limits<int8_t>::min()";
+      *size_expr = "256";
+      return true;
+    }
+    if (lowname == "word") {
+      *size_expr = "65536";
+      return true;
+    }
+    if (lowname == "smallint") {
+      *lo = "::std::numeric_limits<int16_t>::min()";
+      *size_expr = "65536";
+      return true;
+    }
+    if (lowname == "longint" || lowname == "integer") {
+      *lo = "::std::numeric_limits<int32_t>::min()";
+      *size_expr =
+          "((" + ordinal_text("::std::numeric_limits<int32_t>::max()") +
+          ") - (" +
+          ordinal_text("::std::numeric_limits<int32_t>::min()") +
+          ") + 1)";
+      return true;
+    }
+    if (lowname == "widechar") {
+      *size_expr = "65536";
+      return true;
+    }
+    if (lowname == "wordbool" || lowname == "longbool" ||
+        lowname == "qwordbool") {
+      *lo = "false";
+      *size_expr = "2";
+      return true;
+    }
   }
   return false;
 }
@@ -497,10 +535,12 @@ std::string EmitTypes::array_type_to_cxx(const TyArray& a) {
   for (auto it = a.dims.rbegin(); it != a.dims.rend(); ++it) {
     std::string lo, size_expr;
     if (!array_dim_bounds_to_cxx(**it, &lo, &size_expr)) {
-      // If we cannot compute the bounds statically, this is still a semantic
-      // degradation and should eventually become a hard error rather than a
-      // pointer fallback.
-      return type_to_cxx(*a.element) + "*";
+      // Keep unsupported fixed arrays as array wrappers so later emit paths do not
+      // silently change aliasing/value semantics to pointer semantics.
+      diag_ops_.report_error(
+          a.loc,
+          "unsupported fixed array index type; exact Pascal bounds are required");
+      return "::rt::tp2cc_Array<" + ty + ", 0, 1>";
     }
     ty = "::rt::tp2cc_Array<" + ty + ", " + lo + ", " + size_expr + ">";
   }

@@ -1821,7 +1821,7 @@ inline constexpr int tp2cc_ordinal_value(T x) {
 // lot).  Holding a bare C-array as the single member keeps `tp2cc_Array` a
 // simple one-member aggregate, so `tp2cc_Array<R, Lo, N> a = {{.f=1},{.f=2}};`
 // initialises exactly as expected.
-template <typename T, auto Lo, int N>
+template <typename T, auto Lo, std::size_t N>
 struct tp2cc_Array {
   // `T data[N];` -- DELIBERATELY NOT `T data[N]{};`. A default member
   // initialiser makes `std::is_trivial_v<tp2cc_Array>` false even when `T` is
@@ -1870,11 +1870,13 @@ struct tp2cc_Array {
   }
 };
 
-template <typename T, auto Lo, int N, int M>
+template <typename T, auto Lo, std::size_t N, int M>
 constexpr tp2cc_Array<T, Lo, N> tp2cc_array_literal(const tp2cc_ShortString<M>& s) {
   tp2cc_Array<T, Lo, N> out{};
-  const int n = s.length < N ? s.length : N;
-  for (int i = 0; i < n; ++i) {
+  const std::size_t n =
+      static_cast<std::size_t>(s.length) < N ? static_cast<std::size_t>(s.length)
+                                             : N;
+  for (std::size_t i = 0; i < n; ++i) {
     if constexpr (std::is_same_v<T, p_char>)
       out.data[i] = tp2cc_char_of(static_cast<uint8_t>(s.data[i]));
     else
@@ -1883,7 +1885,7 @@ constexpr tp2cc_Array<T, Lo, N> tp2cc_array_literal(const tp2cc_ShortString<M>& 
   return out;
 }
 
-template <typename T, auto Lo, int N>
+template <typename T, auto Lo, std::size_t N>
 constexpr tp2cc_Array<T, Lo, N> tp2cc_array_literal(p_char c) {
   tp2cc_Array<T, Lo, N> out{};
   if (N > 0) {
@@ -1895,27 +1897,27 @@ constexpr tp2cc_Array<T, Lo, N> tp2cc_array_literal(p_char c) {
   return out;
 }
 
-template <typename T, auto Lo, int N>
+template <typename T, auto Lo, std::size_t N>
 constexpr tp2cc_Array<T, Lo, N> tp2cc_array_literal(char c) {
   return tp2cc_array_literal<T, Lo, N>(tp2cc_char_of(c));
 }
 
-template <auto Lo, int ArrN, int StrN>
+template <auto Lo, std::size_t ArrN, int StrN>
 inline bool operator==(const tp2cc_Array<p_char, Lo, ArrN>& a,
                        const tp2cc_ShortString<StrN>& b) {
-  int logical_len = ArrN;
+  std::size_t logical_len = ArrN;
   while (logical_len > 0 &&
-         a.data[static_cast<size_t>(logical_len - 1)] == tp2cc_char_of('\0')) {
+         a.data[logical_len - 1] == tp2cc_char_of('\0')) {
     --logical_len;
   }
-  if (logical_len != b.size()) return false;
-  for (int i = 0; i < logical_len; ++i) {
-    if (a.data[static_cast<size_t>(i)] != b[i + 1]) return false;
+  if (logical_len != static_cast<std::size_t>(b.size())) return false;
+  for (std::size_t i = 0; i < logical_len; ++i) {
+    if (a.data[i] != b[static_cast<int>(i) + 1]) return false;
   }
   return true;
 }
 
-template <int StrN, auto Lo, int ArrN>
+template <int StrN, auto Lo, std::size_t ArrN>
 inline bool operator==(const tp2cc_ShortString<StrN>& a,
                        const tp2cc_Array<p_char, Lo, ArrN>& b) {
   return b == a;
@@ -2004,16 +2006,16 @@ constexpr tp2cc_OpenArray<T> tp2cc_open_array(T* p, int32_t n) {
   return {p, n};
 }
 
-template <typename T, typename U, auto Lo, int N>
+template <typename T, typename U, auto Lo, std::size_t N>
 requires std::is_convertible_v<U*, T*>
 constexpr tp2cc_OpenArray<T> tp2cc_open_array(tp2cc_Array<U, Lo, N>& a) {
-  return {a.data, N};
+  return {a.data, static_cast<int32_t>(N)};
 }
 
-template <typename T, typename U, auto Lo, int N>
+template <typename T, typename U, auto Lo, std::size_t N>
 requires std::is_convertible_v<const U*, T*>
 constexpr tp2cc_OpenArray<T> tp2cc_open_array(const tp2cc_Array<U, Lo, N>& a) {
-  return {a.data, N};
+  return {a.data, static_cast<int32_t>(N)};
 }
 
 template <typename T, typename U>
@@ -2080,7 +2082,7 @@ constexpr auto tp2cc_open_array_of(Args&&... args) {
 template <typename Arr>
 struct ByteReinterpreter;
 
-template <typename Elem, auto Lo, int N>
+template <typename Elem, auto Lo, std::size_t N>
 struct ByteReinterpreter<tp2cc_Array<Elem, Lo, N>> {
   template <typename Src>
   static tp2cc_Array<Elem, Lo, N> cast(const Src& src) {
@@ -2334,7 +2336,7 @@ constexpr DstSet tp2cc_set_cast(const tp2cc_Set<SrcElem>& src) {
   return dst;
 }
 
-template <typename DstSet, typename Elem, auto Lo, int N>
+template <typename DstSet, typename Elem, auto Lo, std::size_t N>
 constexpr DstSet tp2cc_set_cast(const tp2cc_Array<Elem, Lo, N>& src) {
   static_assert(N == DstSet::Nb,
                 "set casts from raw array carriers require exactly 32 bytes");
