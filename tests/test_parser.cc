@@ -194,6 +194,41 @@ void test_enum_explicit_values() {
   }
 }
 
+void test_enum_captures_packenum_directives() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "{$packenum 1}\n"
+      "type\n"
+      "  tone = (a, b, c);\n"
+      "{$minenumsize 2}\n"
+      "  ttwo = (d, e, f);\n"
+      "{$z4}\n"
+      "  tfour = (g, h, i);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  if (u) {
+    CHECK_EQ(u->interface_decls.size(), size_t{3});
+    auto* t1 = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    auto* t2 = dynamic_cast<TypeDecl*>(u->interface_decls[1].get());
+    auto* t4 = dynamic_cast<TypeDecl*>(u->interface_decls[2].get());
+    CHECK(t1 && t2 && t4);
+    if (t1 && t2 && t4) {
+      auto* e1 = dynamic_cast<TyEnum*>(t1->type.get());
+      auto* e2 = dynamic_cast<TyEnum*>(t2->type.get());
+      auto* e4 = dynamic_cast<TyEnum*>(t4->type.get());
+      CHECK(e1 && e2 && e4);
+      if (e1 && e2 && e4) {
+        CHECK_EQ(e1->packenum, uint8_t{1});
+        CHECK_EQ(e2->packenum, uint8_t{2});
+        CHECK_EQ(e4->packenum, uint8_t{4});
+      }
+    }
+  }
+}
+
 void test_record_type() {
   // Uses `name` as a record field; verifies the directive-vs-keyword fix.
   int b = error_count();
@@ -1109,6 +1144,7 @@ int main() {
   RUN_TEST(test_const_decls);
   RUN_TEST(test_type_decls_named_and_enum);
   RUN_TEST(test_enum_explicit_values);
+  RUN_TEST(test_enum_captures_packenum_directives);
   RUN_TEST(test_record_type);
   RUN_TEST(test_variant_record);
   RUN_TEST(test_object_type);

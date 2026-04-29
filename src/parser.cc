@@ -740,6 +740,7 @@ TypePtr Parser::parse_simple_type() {
   if (accept(Tok::LParen)) {
     auto te = std::make_shared<TyEnum>();
     te->loc = loc;
+    te->packenum = static_cast<uint8_t>(lex_.packenum_active());
     while (cur_.kind == Tok::Ident) {
       EnumMember member;
       member.name = cur_.text;

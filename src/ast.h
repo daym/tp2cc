@@ -582,6 +582,11 @@ struct EnumMember {
 };
 
 struct TyEnum : TypeExpr {
+  // Active `{$PACKENUM n}` / `{$MINENUMSIZE n}` / `{$Zn}` at the point this
+  // enum type was declared. FPC defaults to 4-byte enum storage outside TP
+  // mode; smaller values request the minimum storage width, subject to the
+  // enum's signed/unsigned ordinal range.
+  uint8_t packenum = 4;
   std::vector<EnumMember> members;
   TyEnum() : TypeExpr(Kind::TyEnum) {}
 };

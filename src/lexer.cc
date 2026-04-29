@@ -211,6 +211,19 @@ std::string trim(std::string_view s) {
   return std::string(s.substr(a, b - a));
 }
 
+std::optional<int> parse_packenum_value(std::string_view rest) {
+  std::string value = trim(rest);
+  for (char& c : value) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  if (value.empty()) return std::nullopt;
+  if (value == "default" || value == "normal") return 4;
+  if (value == "1") return 1;
+  if (value == "2") return 2;
+  if (value == "4") return 4;
+  return std::nullopt;
+}
+
 }  // namespace
 
 // Tiny recursive-descent evaluator for `{$if EXPR}` bodies. The grammar:
@@ -478,6 +491,30 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     r_check_ = false;
     return;
   }
+  // FPC's default enum storage is 4 bytes (`{$PACKENUM 4}` / `{$Z4}`), but
+  // `{$PACKENUM 1}`, `{$PACKENUM 2}`, `{$MINENUMSIZE ...}`, and `{$Z1/$Z2/$Z4}`
+  // all change the minimum storage width for subsequently declared enums.
+  if (head == "z1") {
+    packenum_ = 1;
+    return;
+  }
+  if (head == "z2") {
+    packenum_ = 2;
+    return;
+  }
+  if (head == "z4") {
+    packenum_ = 4;
+    return;
+  }
+  if (head == "packenum" || head == "minenumsize") {
+    if (std::optional<int> value = parse_packenum_value(rest)) {
+      packenum_ = *value;
+    } else {
+      report_error(where, std::string("illegal {$") + head + "} value: " +
+                              trim(rest));
+    }
+    return;
+  }
 
   // Everything else (mode, I+, R-, S-, H-, F+, ASMMODE, L, linklib, appid,
   // apptype, memory, stacksize, heapsize, etc) is silently accepted.
@@ -490,6 +527,8 @@ bool Lexer::overflow_check_active() const {
 bool Lexer::range_check_active() const {
   return r_check_;
 }
+
+int Lexer::packenum_active() const { return packenum_; }
 
 void Lexer::set_overflow_check_default(bool on) { q_check_ = on; }
 void Lexer::set_range_check_default(bool on) { r_check_ = on; }

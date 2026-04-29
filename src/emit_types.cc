@@ -222,20 +222,47 @@ std::string EmitTypes::enum_underlying_type_to_cxx(const TyEnum& e) {
     }
   }
 
-  // The current bootstrap subset is compiled with {$PACKENUM 1}, so choose the
-  // smallest ordinal storage that can represent the enum's full range. That
-  // keeps packed-record overlays bit-exact without hardcoding enum names here.
-  if (lo >= 0) {
-    uint64_t uhi = static_cast<uint64_t>(hi);
-    if (uhi <= UINT8_MAX) return "uint8_t";
-    if (uhi <= UINT16_MAX) return "uint16_t";
-    if (uhi <= UINT32_MAX) return "uint32_t";
-    return "uint64_t";
+  // Match old FPC's enum storage rule:
+  // - default / `{$PACKENUM 4}` stores as 4 bytes
+  // - `{$PACKENUM 2}` stores as 2 bytes when the signed/unsigned ordinal range
+  //   fits, otherwise 4
+  // - `{$PACKENUM 1}` stores as 1/2/4 depending on the range
+  // Very large explicit ordinals still widen to 8 bytes so the emitted C++
+  // stays representable.
+  int width = 1;
+  if (lo < std::numeric_limits<int32_t>::min() ||
+      hi > std::numeric_limits<uint32_t>::max()) {
+    width = 8;
+  } else if (e.packenum >= 4 || lo < std::numeric_limits<int16_t>::min() ||
+             hi > std::numeric_limits<uint16_t>::max()) {
+    width = 4;
+  } else if (e.packenum >= 2 || lo < std::numeric_limits<int8_t>::min() ||
+             hi > std::numeric_limits<uint8_t>::max()) {
+    width = 2;
   }
-  if (lo >= INT8_MIN && hi <= INT8_MAX) return "int8_t";
-  if (lo >= INT16_MIN && hi <= INT16_MAX) return "int16_t";
-  if (lo >= INT32_MIN && hi <= INT32_MAX) return "int32_t";
-  return "int64_t";
+
+  if (lo < 0) {
+    switch (width) {
+      case 1:
+        return "int8_t";
+      case 2:
+        return "int16_t";
+      case 4:
+        return "int32_t";
+      default:
+        return "int64_t";
+    }
+  }
+  switch (width) {
+    case 1:
+      return "uint8_t";
+    case 2:
+      return "uint16_t";
+    case 4:
+      return "uint32_t";
+    default:
+      return "uint64_t";
+  }
 }
 
 bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,

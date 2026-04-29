@@ -42,6 +42,7 @@ class Lexer {
   // Tracked alongside `{$Q+}`; the parser snapshots into Assign /
   // Index nodes that the emitter then routes through checked helpers.
   bool range_check_active() const;
+  int packenum_active() const;
 
   // Initial `{$Q+}` / `{$R+}` state supplied by `-Co` / `-Cr` command-line
   // flags. Source-level `{$Q+/-}` / `{$R+/-}` directives still override
@@ -114,6 +115,11 @@ class Lexer {
   // snapshots it onto each arithmetic node.
   bool q_check_ = false;
   bool r_check_ = false;
+  // FPC defaults to `{$PACKENUM 4}` outside TP mode. We don't track mode
+  // directives yet, but we do honor explicit `{$PACKENUM ...}`,
+  // `{$MINENUMSIZE ...}`, and `{$Z1/$Z2/$Z4}` switches at the point where an
+  // enum type is parsed.
+  int packenum_ = 4;
 
   // For peek() we keep the current input on the back of stack_.
 };

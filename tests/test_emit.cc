@@ -191,7 +191,7 @@ void test_enum_type() {
       "end.\n");
   // Pascal enums are unscoped -- emit plain `enum` so members are visible
   // at namespace scope, matching Pascal's name lookup.
-  CHECK(contains(out.header, "enum p_tcolor : uint8_t"));
+  CHECK(contains(out.header, "enum p_tcolor : uint32_t"));
   CHECK(contains(out.header, "p_red"));
   CHECK(contains(out.header, "p_green"));
   CHECK(contains(out.header, "p_blue"));
@@ -216,6 +216,7 @@ void test_packed_record_uses_byte_sized_enum_fields() {
   auto out = compile_snippet(
       "unit u;\n"
       "interface\n"
+      "{$packenum 1}\n"
       "type\n"
       "  tsmall = (a, b, c);\n"
       "  trec = packed record\n"
@@ -229,6 +230,28 @@ void test_packed_record_uses_byte_sized_enum_fields() {
   CHECK(contains(out.header, "struct [[gnu::packed]] p_trec {"));
   CHECK(contains(out.header, "p_tsmall p_lo;"));
   CHECK(contains(out.header, "p_tsmall p_kind;"));
+}
+
+void test_packenum_two_uses_word_sized_enum() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "{$packenum 2}\n"
+      "type TColor = (red, green, blue);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "enum p_tcolor : uint16_t"));
+}
+
+void test_minenumsize_alias_uses_packenum_rules() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "{$minenumsize 1}\n"
+      "type TColor = (red, green, blue);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "enum p_tcolor : uint8_t"));
 }
 
 void test_packed_record_shortstring_field_emits_exact_layout_asserts() {
@@ -4977,6 +5000,8 @@ int main() {
   RUN_TEST(test_enum_type);
   RUN_TEST(test_enum_type_with_explicit_values);
   RUN_TEST(test_packed_record_uses_byte_sized_enum_fields);
+  RUN_TEST(test_packenum_two_uses_word_sized_enum);
+  RUN_TEST(test_minenumsize_alias_uses_packenum_rules);
   RUN_TEST(test_packed_record_shortstring_field_emits_exact_layout_asserts);
   RUN_TEST(test_packed_record_array_field_keeps_array_wrapper_with_exact_layout_asserts);
   RUN_TEST(test_packed_variant_record_emits_packed_case_layout_asserts);
