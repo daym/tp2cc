@@ -28,7 +28,7 @@ SOURCE_DIR="${FPC106_SRC:-$ROOT/../fpc-1.0.6/source}"
 # sanitizer findings fatal so a bootstrap never reports success while
 # printing active UB.
 SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=address,undefined}"
-CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -fms-extensions -fpermissive -Wno-narrowing -Wno-microsoft-anon-tag -Wno-permissive $SAN"
+CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -fpermissive -Wno-narrowing $SAN"
 export CXXFLAGS
 
 # FPC relies on process-lifetime cleanup: option parsing, symbol tables,

@@ -11,6 +11,7 @@
 
 #include "diag.h"
 #include "emit.h"
+#include "emit_makefile.h"
 #include "lexer.h"
 #include "parser.h"
 #include "source.h"
@@ -105,6 +106,23 @@ void test_empty_unit_skeleton() {
   CHECK(contains(out.impl, "void tp2cc_unit_fini() {"));
   CHECK(!contains(out.header, "__unit_init"));
   CHECK(!contains(out.impl, "__unit_init"));
+}
+
+void test_emitted_makefile_tracks_sources_headers_and_program() {
+  EmittedBuildManifest manifest;
+  manifest.cc_sources = {"p_pp.cc", "p_globals.cc"};
+  manifest.headers = {"p_pp.h", "p_globals.h", "p_sysutils.h"};
+  manifest.tp2cc_root = "../../..";
+  manifest.program_name = "pp";
+  std::string mk = emit_makefile(manifest);
+  CHECK(contains(mk, "TP2CC_ROOT = ../../.."));
+  CHECK(contains(mk, "CC_SRCS := \\\n  p_globals.cc \\\n  p_pp.cc\n"));
+  CHECK(contains(mk,
+                 "HDRS := \\\n  p_globals.h \\\n  p_pp.h \\\n  p_sysutils.h\n"));
+  CHECK(contains(mk, "PROGRAM = pp"));
+  CHECK(contains(mk, "all: $(PROGRAM)"));
+  CHECK(contains(mk, "$(PROGRAM): $(CC_OBJS) $(EXTRA_OBJS)"));
+  CHECK(contains(mk, "p_%.o: p_%.cc $(HDRS)"));
 }
 
 void test_program_registers_unit_finalizers() {
@@ -5331,6 +5349,7 @@ void test_cxx_reserved_word_identifiers() {
 
 int main() {
   RUN_TEST(test_empty_unit_skeleton);
+  RUN_TEST(test_emitted_makefile_tracks_sources_headers_and_program);
   RUN_TEST(test_program_registers_unit_finalizers);
   RUN_TEST(test_uses_become_includes_without_open_namespaces);
   RUN_TEST(test_scalar_const);

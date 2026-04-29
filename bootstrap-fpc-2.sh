@@ -42,7 +42,7 @@ echo "FPC source: $SOURCE_DIR (version $(fpc_source_version))"
 # Keep the translated compiler under sanitizer instrumentation, but make
 # findings fatal so a "successful" bootstrap never masks active UB.
 SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=address,undefined}"
-CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -fms-extensions -fpermissive -Wno-narrowing -Wno-microsoft-anon-tag -Wno-permissive $SAN"
+CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -fpermissive -Wno-narrowing $SAN"
 CFLAGS="-std=gnu11 -O0 -g -pipe $SAN"
 export CXXFLAGS
 export CFLAGS

@@ -12,6 +12,7 @@
 
 #include "diag.h"
 #include "emit.h"
+#include "emit_makefile.h"
 #include "lexer.h"
 #include "parser.h"
 #include "source.h"
@@ -39,6 +40,7 @@ struct CliOptions {
   // `-Cr` cmdline flags. Source-level directives override.
   bool overflow_check = false;
   bool range_check = false;
+  bool emit_makefile = false;
 };
 
 // Reserved extension point: if tp2cc ever needs to predefine symbols
@@ -192,6 +194,21 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
   h << "namespace p_" << unit_name << " = ::rt;\n";
 }
 
+std::string make_makefile_root(const fs::path& outdir) {
+  std::error_code ec;
+  fs::path cwd = fs::weakly_canonical(fs::current_path(ec), ec);
+  if (ec) return ".";
+  fs::path out_abs = fs::weakly_canonical(outdir, ec);
+  if (ec) return cwd.generic_string();
+  const std::string cwd_s = cwd.generic_string();
+  const std::string out_s = out_abs.generic_string();
+  if (out_s == cwd_s) return ".";
+  if (out_s.rfind(cwd_s + "/", 0) != 0) return cwd_s;
+  fs::path rel = fs::relative(cwd, out_abs, ec);
+  if (ec || rel.empty()) return cwd_s;
+  return rel.generic_string();
+}
+
 int cmd_lex(const CliOptions& opts,
             const std::vector<std::string>& files) {
   if (files.empty()) { std::fprintf(stderr, "lex: no input files\n"); return 2; }
@@ -327,6 +344,8 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
   fs::create_directories(outdir);
   int emitted = 0, failed = 0;
   std::set<std::string> rtl_refs;
+  EmittedBuildManifest manifest;
+  manifest.tp2cc_root = make_makefile_root(fs::path(outdir));
 
   std::vector<const ast::UnitNode*> asts;
   for (const auto& [_, pu] : g.units()) {
@@ -363,6 +382,11 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
       std::ofstream c(fs::path(outdir) / ("p_" + name + ".cc"));
       c << out.impl;
     }
+    manifest.cc_sources.push_back("p_" + name + ".cc");
+    manifest.headers.push_back("p_" + name + ".h");
+    if (pu->ast->is_program && manifest.program_name.empty()) {
+      manifest.program_name = name;
+    }
     auto scan = [&](const std::vector<std::string>& uses) {
       for (const auto& u : uses) {
         std::string lu = to_lower(u);
@@ -376,6 +400,11 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
   for (const auto& u : rtl_refs) {
     std::ofstream h(fs::path(outdir) / ("p_" + u + ".h"));
     write_external_stub(h, u);
+    manifest.headers.push_back("p_" + u + ".h");
+  }
+  if (opts.emit_makefile) {
+    std::ofstream mk(fs::path(outdir) / "Makefile");
+    mk << emit_makefile(manifest);
   }
   std::printf("emit-all: %d emitted, %d failed (of %zu units), "
               "%zu rtl stubs\n",
@@ -404,7 +433,19 @@ int cmd_emit(const CliOptions& opts, const std::string& path,
     std::ofstream c(fs::path(outdir) / ("p_" + stem + ".cc"));
     c << out.impl;
   }
-  std::printf("emitted p_%s.h and p_%s.cc\n", stem.c_str(), stem.c_str());
+  if (opts.emit_makefile) {
+    EmittedBuildManifest manifest;
+    manifest.tp2cc_root = make_makefile_root(fs::path(outdir));
+    manifest.cc_sources.push_back("p_" + stem + ".cc");
+    manifest.headers.push_back("p_" + stem + ".h");
+    if (u->is_program) manifest.program_name = stem;
+    std::ofstream mk(fs::path(outdir) / "Makefile");
+    mk << emit_makefile(manifest);
+    std::printf("emitted p_%s.h, p_%s.cc, and Makefile\n",
+                stem.c_str(), stem.c_str());
+  } else {
+    std::printf("emitted p_%s.h and p_%s.cc\n", stem.c_str(), stem.c_str());
+  }
   return 0;
 }
 
@@ -438,7 +479,7 @@ int cmd_topo(const CliOptions& opts,
 void usage() {
   std::fprintf(stderr,
     "usage:\n"
-    "  tp2cc <subcommand> [-h] [-dSYMBOL]... [-Fu<dir>]... [-Fi<dir>]... "
+    "  tp2cc <subcommand> [-h] [-m] [-dSYMBOL]... [-Fu<dir>]... [-Fi<dir>]... "
     "[--] <args>...\n"
     "\n"
     "subcommands:\n"
@@ -452,6 +493,7 @@ void usage() {
     "\n"
     "options (anywhere after <subcommand>, interleavable with positional):\n"
     "  -h, --help   show this help and exit\n"
+    "  -m           also emit a Makefile in the output directory\n"
     "  -dSYMBOL     predefine SYMBOL for {$ifdef}\n"
     "  -Fu<dir>     add <dir> to unit search path (for `uses`)\n"
     "  -Fi<dir>     add <dir> to include search path (for {$I})\n"
@@ -473,6 +515,7 @@ int main(int argc, char** argv) {
     if (!end_of_opts) {
       if (a == "--") { end_of_opts = true; continue; }
       if (a == "-h" || a == "--help") { usage(); return 0; }
+      if (a == "-m") { opts.emit_makefile = true; continue; }
       if (a.size() > 2 && a[0] == '-' && a[1] == 'd') {
         opts.defines.emplace_back(a.substr(2));
         continue;

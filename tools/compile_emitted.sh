@@ -32,7 +32,7 @@ CXX="${CXX:-g++}"
 # -Wno-narrowing: Pascal freely uses `$80000000`-style hex constants as
 # bitmasks that technically narrow to int32; emission keeps them as plain
 # decimal and we suppress the warning rather than wrap every literal.
-CXXFLAGS="${CXXFLAGS:--std=gnu++20 -I. -O0 -pipe -fms-extensions -fpermissive -Wno-narrowing -Wno-microsoft-anon-tag -Wno-permissive}"
+CXXFLAGS="${CXXFLAGS:--std=gnu++20 -I. -O0 -pipe -fpermissive -Wno-narrowing}"
 
 STATUS="$LOGDIR/build.txt"
 : > "$STATUS"
