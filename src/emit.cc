@@ -1658,10 +1658,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // Fall through to generic emission.
         } else if ((n == "inc" || n == "dec") &&
                    (c.args.size() == 1 || c.args.size() == 2)) {
-          // `inc(packed_record.field)` without an outer typed cast: same
-          // packed-field problem as the cast case above, but the operand
-          // type is the field's own declared type rather than a cast type.
-          if (auto storage = packed_field_storage_ref(*c.args[0])) {
+          // `inc(...)` / `dec(...)` should use one storage rule: if the
+          // target scalar lives in packed storage anywhere along its access
+          // path, route through the bytewise helpers instead of binding `T&`.
+          if (auto storage = storage_.packed_scalar_storage_ref(*c.args[0])) {
             std::string op = (n == "inc") ? "::rt::tp2cc_reinterpret_inc"
                                           : "::rt::tp2cc_reinterpret_dec";
             if (c.args.size() == 2) {

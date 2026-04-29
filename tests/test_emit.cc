@@ -3540,6 +3540,26 @@ void test_inc_packed_field_routes_through_memcpy_inc() {
                  "::rt::tp2cc_reinterpret_inc<uint16_t>(&(p_p.p_name_ord), p_n);"));
 }
 
+void test_inc_local_packed_pointee_field_routes_through_memcpy_inc() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "type\n"
+      "  tdir = packed record name_ord : word; end;\n"
+      "  pdir = ^tdir;\n"
+      "var\n"
+      "  p : pdir;\n"
+      "  n : word;\n"
+      "begin\n"
+      "  inc(p^.name_ord, n);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_inc<uint16_t>("));
+}
+
 void test_unaligned_typed_deref_read_uses_bytewise_load() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -5424,6 +5444,7 @@ int main() {
   RUN_TEST(test_inline_anonymous_packed_record_var_lowers_to_struct);
   RUN_TEST(test_packed_field_typed_cast_assignment_uses_memcpy_store);
   RUN_TEST(test_inc_packed_field_routes_through_memcpy_inc);
+  RUN_TEST(test_inc_local_packed_pointee_field_routes_through_memcpy_inc);
   RUN_TEST(test_unaligned_typed_deref_read_uses_bytewise_load);
   RUN_TEST(test_unaligned_typed_deref_write_uses_bytewise_store);
   RUN_TEST(test_unaligned_pointer_field_read_uses_bytewise_load);

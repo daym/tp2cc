@@ -611,7 +611,13 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         if (bt) cls = metaclass_target_name(bt);
       }
       if (cls.empty()) cls = deduce_class_alias(*m.base);
-      if (cls.empty()) return nullptr;
+      if (cls.empty()) {
+        if (const TypeExpr* rf =
+                lookup_record_field_type_in_type(deduce_type(*m.base), m.name)) {
+          return rf;
+        }
+        return nullptr;
+      }
       if (const auto* ci = class_info_for_type_name(cls);
           ci && ci->is_reference_type) {
         if (m.name == "instancesize") return builtin_integer_type("longint");
@@ -632,6 +638,14 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       }
       if (auto* rf = registry_->lookup_record_field(cls, m.name)) {
         return rf->type.get();
+      }
+      // Procedure-local record aliases can still produce a non-empty
+      // `cls` (e.g. `p^.field` through `type PDir = ^TDir;`) even though the
+      // alias is not in the global registry maps above. Fall back to direct
+      // structural field lookup on the deduced base type before giving up.
+      if (const TypeExpr* rf =
+              lookup_record_field_type_in_type(deduce_type(*m.base), m.name)) {
+        return rf;
       }
       return nullptr;
     }

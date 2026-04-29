@@ -112,6 +112,35 @@ std::optional<EmitBytewiseStorage> EmitStorage::packed_field_storage_ref(
   return bytewise_storage_ref(e);
 }
 
+std::optional<EmitBytewiseStorage> EmitStorage::packed_scalar_storage_ref(
+    const Expr& e) {
+  const TypeExpr* elem_type = analysis_.canonicalize_type(analysis_.deduce_type(e));
+  if (!elem_type) return std::nullopt;
+  switch (elem_type->kind) {
+    case Kind::TyArray:
+    case Kind::TyRecord:
+    case Kind::TyObject:
+    case Kind::TyProcedural:
+    case Kind::TySet:
+    case Kind::TyString:
+      return std::nullopt;
+    default:
+      break;
+  }
+
+  // Any scalar field whose access path crosses a packed record must stay off
+  // the normal `T&` path. We still take the final subobject address, but only
+  // to feed the memcpy-based reinterpret helpers.
+  for (const Expr* cur = &e; cur && cur->kind == Kind::Member;
+       cur = static_cast<const Member&>(*cur).base.get()) {
+    const auto& m = static_cast<const Member&>(*cur);
+    if (type_is_packed_record(analysis_.deduce_type(*m.base))) {
+      return bytewise_storage_ref(e);
+    }
+  }
+  return std::nullopt;
+}
+
 std::optional<EmitUntypedStorageIndexView> EmitStorage::untyped_storage_index_view(
     const Index& i) {
   if (i.indices.size() != 1 || i.base->kind != Kind::Call) return std::nullopt;

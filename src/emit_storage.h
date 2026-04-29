@@ -73,6 +73,8 @@ class EmitStorage {
   std::optional<EmitBytewiseStorage> bytewise_storage_ref(const ast::Expr& e);
   std::optional<EmitBytewiseStorage> packed_field_storage_ref(
       const ast::Expr& e);
+  std::optional<EmitBytewiseStorage> packed_scalar_storage_ref(
+      const ast::Expr& e);
   std::optional<EmitUntypedStorageIndexView> untyped_storage_index_view(
       const ast::Index& i);
 
