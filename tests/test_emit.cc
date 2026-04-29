@@ -3540,6 +3540,65 @@ void test_inc_packed_field_routes_through_memcpy_inc() {
                  "::rt::tp2cc_reinterpret_inc<uint16_t>(&(p_p.p_name_ord), p_n);"));
 }
 
+void test_unaligned_typed_deref_read_uses_bytewise_load() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type pword = ^word;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var\n"
+      "  b : array[0..15] of byte;\n"
+      "  i : longint;\n"
+      "  w : word;\n"
+      "begin\n"
+      "  w := unaligned(pword(@b[i])^);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_unaligned_load<uint16_t>("));
+  CHECK(!contains(out.impl, "::rt::p_unaligned("));
+}
+
+void test_unaligned_typed_deref_write_uses_bytewise_store() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type pword = ^word;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var\n"
+      "  b : array[0..15] of byte;\n"
+      "  i : longint;\n"
+      "  w : word;\n"
+      "begin\n"
+      "  unaligned(pword(@b[i])^) := w;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_unaligned_store<uint16_t>("));
+  CHECK(!contains(out.impl, "::rt::p_unaligned("));
+}
+
+void test_unaligned_pointer_field_read_uses_bytewise_load() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type trec = packed record name : pchar; end;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var\n"
+      "  r : trec;\n"
+      "  p : pchar;\n"
+      "begin\n"
+      "  p := unaligned(r.name);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_unaligned_load<::rt::p_char*>("));
+  CHECK(!contains(out.impl, "::rt::p_unaligned("));
+}
+
 void test_overload_picks_shortstring_target_for_short_string_arg() {
   // When a callee has both `f(string)` and `f(ansistring)` overloads,
   // a `string[N]` argument (N < 255) should resolve to the `string`
@@ -5365,6 +5424,9 @@ int main() {
   RUN_TEST(test_inline_anonymous_packed_record_var_lowers_to_struct);
   RUN_TEST(test_packed_field_typed_cast_assignment_uses_memcpy_store);
   RUN_TEST(test_inc_packed_field_routes_through_memcpy_inc);
+  RUN_TEST(test_unaligned_typed_deref_read_uses_bytewise_load);
+  RUN_TEST(test_unaligned_typed_deref_write_uses_bytewise_store);
+  RUN_TEST(test_unaligned_pointer_field_read_uses_bytewise_load);
   RUN_TEST(test_overload_picks_shortstring_target_for_short_string_arg);
   RUN_TEST(test_overload_picks_pchar_to_shortstring_over_ansistring);
   RUN_TEST(test_sizeof_lowers_to_int32_to_match_pascal_longint_semantics);

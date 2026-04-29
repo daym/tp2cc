@@ -24,9 +24,11 @@ class EmitStorageExprOps {
   virtual void report_error(Location where, const std::string& msg) = 0;
 };
 
-struct EmitPackedFieldStorage {
-  // `&(field_expr)` text safe only for the memcpy-style reinterpret helpers,
-  // never for forming a typed `T*` dereference.
+struct EmitBytewiseStorage {
+  // Byte-addressable storage view safe only for memcpy-style helpers.
+  // The pointer text may denote misaligned storage (`packed` fields,
+  // `unaligned(...)`, typed derefs over byte buffers), so callers must never
+  // turn it into `*reinterpret_cast<T*>(p)` or a C++ reference.
   std::string void_ptr_text;
   std::string elem_cxx;
 };
@@ -49,9 +51,14 @@ struct EmitAbsoluteTargetInfo {
 };
 
 // Storage / aliasing lowering. This module owns the dangerous questions about
-// "same bytes, new type" and "does this expression denote mutable storage?",
-// including packed-field access, `absolute` rebinding, pointer-ish member hops,
-// and the various reinterpret helpers.
+// "same bytes, new type" and "does this expression denote mutable storage?".
+//
+// The intended policy is simple:
+// - naturally aligned ordinary storage uses normal typed lvalues/references
+// - explicit bytewise views (`unaligned(...)`, typed casts over raw storage,
+//   scalar fields inside packed records) go through memcpy-style helpers
+// - aggregate subobjects inside packed records are rejected unless they are
+//   byte-aligned carriers that are safe to index directly
 class EmitStorage {
  public:
   EmitStorage(const TypeRegistry* registry, ScopeStateView& scope,
@@ -63,7 +70,8 @@ class EmitStorage {
   std::string primitive_cast_untyped_storage_ptr(const ast::Call& c);
   std::string primitive_cast_packed_field_ptr(const ast::Call& c);
 
-  std::optional<EmitPackedFieldStorage> packed_field_storage_ref(
+  std::optional<EmitBytewiseStorage> bytewise_storage_ref(const ast::Expr& e);
+  std::optional<EmitBytewiseStorage> packed_field_storage_ref(
       const ast::Expr& e);
   std::optional<EmitUntypedStorageIndexView> untyped_storage_index_view(
       const ast::Index& i);

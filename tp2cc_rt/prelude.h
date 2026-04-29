@@ -2228,6 +2228,20 @@ inline void tp2cc_reinterpret_store(void* p, const T& value) {
   std::memcpy(p, &value, sizeof(T));
 }
 
+// Pascal `unaligned(x)` reads/writes the bytes of `x` without making an
+// alignment claim about the storage. Keep that surface distinct from the more
+// general reinterpret helpers even though the implementation is the same
+// memcpy-based load/store.
+template <typename T>
+inline T tp2cc_unaligned_load(const void* p) {
+  return tp2cc_reinterpret_load<T>(p);
+}
+
+template <typename T>
+inline void tp2cc_unaligned_store(void* p, const T& value) {
+  tp2cc_reinterpret_store<T>(p, value);
+}
+
 inline void* tp2cc_byte_offset(void* p, std::ptrdiff_t n) {
   return static_cast<void*>(static_cast<uint8_t*>(p) + n);
 }
@@ -5415,12 +5429,10 @@ inline int32_t p_fpchmod(const tp2cc_AnsiString& path, int32_t mode) {
   return ::chmod(reinterpret_cast<const char*>(path.bytes()),
                  static_cast<mode_t>(mode));
 }
-// Pascal `unaligned(...)' is a compiler intrinsic that reads its
-// argument without an alignment assumption. The translated callers
-// always wrap an already-loaded value (e.g. `unaligned(pword(@buf[i])^)`
-// in ppu.pas), so by the time it reaches us the bytes are already in
-// a value of the right type and identity is the right lowering on
-// x86-class targets that tolerate unaligned scalar reads.
+// Legacy fallback for `unaligned(...)` when the emitter could not recover a
+// storage address and had to lower the argument as an ordinary expression.
+// The normal lowering path should instead use `tp2cc_unaligned_load/store`
+// above so misaligned storage never becomes a C++ reference first.
 template <typename T>
 inline T p_unaligned(const T& v) { return v; }
 // Pascal `Linux.Shell(cmd)` -- run a command via `/bin/sh -c`, i.e.

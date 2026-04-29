@@ -368,15 +368,14 @@ struct Emitter : ResolveNameProvider,
   std::string primitive_cast_packed_field_ptr(const ast::Call& c) {
     return storage_.primitive_cast_packed_field_ptr(c);
   }
-  // Carries the result of `packed_field_storage_ref`. `void_ptr_text` is
-  // an `&(field_expr)` snippet -- safe to consume only via the memcpy-based
-  // runtime helpers (`tp2cc_reinterpret_load` / `_store` / `_inc` / `_dec`).
-  // Going through `*reinterpret_cast<T*>(p)` instead would re-introduce the
-  // misaligned-`T*`-deref UB the existing `[[gnu::packed]]` emit deliberately
-  // makes the compiler complain about. `elem_cxx` is the C++ type to use as
-  // the load/store operand at the call site.
-  using PackedFieldStorage = EmitPackedFieldStorage;
-  std::optional<PackedFieldStorage> packed_field_storage_ref(
+  // Carries the result of `bytewise_storage_ref` / `packed_field_storage_ref`.
+  // The pointer text is only for byte-copy helpers; it may denote misaligned
+  // storage and must never be turned into `T*` / `T&`.
+  using BytewiseStorage = EmitBytewiseStorage;
+  std::optional<BytewiseStorage> bytewise_storage_ref(const ast::Expr& e) {
+    return storage_.bytewise_storage_ref(e);
+  }
+  std::optional<BytewiseStorage> packed_field_storage_ref(
       const ast::Expr& e) {
     return storage_.packed_field_storage_ref(e);
   }
@@ -1448,6 +1447,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           if (inner.empty()) inner = "sizeof(" + expr_to_cxx(*c.args[0]) + ")";
           return "static_cast<int32_t>(" + inner + ")";
+        } else if (n == "unaligned" && c.args.size() == 1) {
+          // Pascal `unaligned(x)` is an explicit bytewise load/store view,
+          // not permission to manufacture a misaligned `T&`. When the
+          // argument denotes storage, load it via memcpy from the storage
+          // address. Non-storage forms fall back to the runtime helper.
+          if (auto storage = bytewise_storage_ref(*c.args[0])) {
+            return "::rt::tp2cc_unaligned_load<" + storage->elem_cxx + ">(" +
+                   storage->void_ptr_text + ")";
+          }
+          return "::rt::p_unaligned(" + arg0() + ")";
         } else if (n == "typeof" && c.args.size() == 1 &&
                    c.args[0]->kind == Kind::Ident && registry) {
           // Pascal `typeof(T)` takes a TYPE NAME, not a value. In C++

@@ -205,9 +205,17 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
   if (a.target->kind == Kind::Call) {
     const auto& c = static_cast<const Call&>(*a.target);
     if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
+      const auto& id = static_cast<const Ident&>(*c.callee);
+      if (id.name == "unaligned") {
+        if (auto storage = storage_.bytewise_storage_ref(*c.args[0])) {
+          stmt_ops_.emitln("::rt::tp2cc_unaligned_store<" +
+                           storage->elem_cxx + ">(" + storage->void_ptr_text +
+                           ", " + stmt_ops_.expr_to_cxx(*a.value) + ");");
+          return;
+        }
+      }
       if (std::string ptr = storage_.primitive_cast_untyped_storage_ptr(c);
           !ptr.empty()) {
-        const auto& id = static_cast<const Ident&>(*c.callee);
         stmt_ops_.emitln("::rt::tp2cc_reinterpret_store<" +
                          primitive_type_cxx(id.name) + ">(" + ptr + ", " +
                          stmt_ops_.expr_to_cxx(*a.value) + ");");
@@ -218,7 +226,6 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
       // `tp2cc_reinterpret_store` instead of `lvalue_ref = rhs;`.
       if (std::string ptr = storage_.primitive_cast_packed_field_ptr(c);
           !ptr.empty()) {
-        const auto& id = static_cast<const Ident&>(*c.callee);
         stmt_ops_.emitln("::rt::tp2cc_reinterpret_store<" +
                          primitive_type_cxx(id.name) + ">(" + ptr + ", " +
                          stmt_ops_.expr_to_cxx(*a.value) + ");");
@@ -229,7 +236,6 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
         stmt_ops_.emitln(ref + " = " + stmt_ops_.expr_to_cxx(*a.value) + ";");
         return;
       }
-      const auto& id = static_cast<const Ident&>(*c.callee);
       const TypeExpr* tgt = nullptr;
       auto lit = scope_.local_type_aliases_scoped.find(id.name);
       if (lit != scope_.local_type_aliases_scoped.end() && lit->second) {

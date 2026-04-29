@@ -75,21 +75,41 @@ std::string EmitStorage::primitive_cast_packed_field_ptr(const Call& c) {
   const auto& m = static_cast<const Member&>(*peeled);
   const TypeExpr* base_type = analysis_.deduce_type(*m.base);
   if (!type_is_packed_record(base_type)) return {};
-  return "&(" + expr_ops_.expr_to_cxx(*peeled) + ")";
+  if (auto storage = bytewise_storage_ref(*peeled)) return storage->void_ptr_text;
+  return {};
+}
+
+std::optional<EmitBytewiseStorage> EmitStorage::bytewise_storage_ref(
+    const Expr& e) {
+  const Expr* peeled = peel_primitive_casts(&e);
+  const Expr& root = peeled ? *peeled : e;
+  if (!expr_is_storage_lvalue(root)) return std::nullopt;
+
+  const TypeExpr* elem_type = analysis_.deduce_type(root);
+  if (!elem_type) return std::nullopt;
+  const std::string elem_cxx = types_.type_to_cxx(*elem_type);
+
+  if (root.kind == Kind::Deref) {
+    const auto& d = static_cast<const Deref&>(root);
+    return EmitBytewiseStorage{expr_ops_.expr_to_cxx(*d.operand), elem_cxx};
+  }
+  if (root.kind == Kind::Index) {
+    if (auto view = untyped_storage_index_view(static_cast<const Index&>(root))) {
+      return EmitBytewiseStorage{view->ptr_cxx, view->elem_cxx};
+    }
+  }
+  return EmitBytewiseStorage{"&(" + expr_ops_.expr_to_cxx(root) + ")",
+                             elem_cxx};
 }
 
 // Packed-field address plus element spelling for memcpy-style helpers.
-std::optional<EmitPackedFieldStorage> EmitStorage::packed_field_storage_ref(
+std::optional<EmitBytewiseStorage> EmitStorage::packed_field_storage_ref(
     const Expr& e) {
   if (e.kind != Kind::Member) return std::nullopt;
   const auto& m = static_cast<const Member&>(e);
   const TypeExpr* base_type = analysis_.deduce_type(*m.base);
   if (!type_is_packed_record(base_type)) return std::nullopt;
-  const TypeExpr* field_type =
-      analysis_.lookup_record_field_type_in_type(base_type, m.name);
-  if (!field_type) return std::nullopt;
-  return EmitPackedFieldStorage{"&(" + expr_ops_.expr_to_cxx(e) + ")",
-                                types_.type_to_cxx(*field_type)};
+  return bytewise_storage_ref(e);
 }
 
 std::optional<EmitUntypedStorageIndexView> EmitStorage::untyped_storage_index_view(
