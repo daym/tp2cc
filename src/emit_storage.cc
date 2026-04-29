@@ -11,6 +11,26 @@ namespace tp2cc {
 
 using namespace ast;
 
+namespace {
+
+bool is_nonmethod_procedural_type(const TypeExpr* t) {
+  if (!t) return false;
+  t = static_cast<const TypeExpr*>(t);
+  return t->kind == Kind::TyProcedural &&
+         !static_cast<const TyProcedural&>(*t).is_method;
+}
+
+bool is_plain_pointer_type(const TypeExpr* t) {
+  return t && tyname_is(t, "pointer");
+}
+
+std::string reference_class_name(const TypeExpr* t) {
+  if (!t || t->kind != Kind::TyName) return {};
+  return ascii_lower(static_cast<const TyName&>(*t).name);
+}
+
+}  // namespace
+
 EmitStorage::EmitStorage(const TypeRegistry* registry, ScopeStateView& scope,
                          EmitAnalysis& analysis, EmitTypes& types,
                          ResolveNameProvider& resolve_name_provider,
@@ -430,6 +450,84 @@ bool EmitStorage::type_is_open_array(const TypeExpr* t) {
   t = analysis_.canonicalize_type(t);
   return t && t->kind == Kind::TyArray &&
          static_cast<const TyArray&>(*t).array_kind == ArrayKind::Open;
+}
+
+std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
+                                                  const TypeExpr* dst_type,
+                                                  const TypeExpr* src_type,
+                                                  const std::string& source_cxx,
+                                                  bool explicit_pascal_cast,
+                                                  bool source_is_const_storage) {
+  const TypeExpr* dst = analysis_.canonicalize_type(dst_type);
+  const TypeExpr* src = analysis_.canonicalize_type(src_type);
+  if (!dst || !src) return source_cxx;
+
+  const bool dst_proc = is_nonmethod_procedural_type(dst);
+  const bool src_proc = is_nonmethod_procedural_type(src);
+  const bool dst_ptr = type_is_pointerish(dst);
+  const bool src_ptr = type_is_pointerish(src);
+  if (!(dst_ptr || dst_proc) || !(src_ptr || src_proc)) return source_cxx;
+
+  const std::string canonical_dst_cxx = types_.type_to_cxx(*dst);
+  const std::string dst_cxx =
+      dst_cxx_text.empty() ? canonical_dst_cxx : std::string(dst_cxx_text);
+  const std::string src_cxx = types_.type_to_cxx(*src);
+  // Compare canonical spellings here. Use-site casts may request an alias
+  // spelling (`p_tchildclass`) even when both sides already canonicalize to
+  // the same underlying metaclass/pointer type; emitting another cast around
+  // an already-correct explicit Pascal cast only creates review-noise.
+  if (canonical_dst_cxx == src_cxx || dst_cxx == src_cxx) return source_cxx;
+
+  const bool dst_void_ptr = is_plain_pointer_type(dst);
+  const bool src_void_ptr = is_plain_pointer_type(src);
+
+  if (dst_proc && src_void_ptr) {
+    return "::rt::tp2cc_funptr_from_bits<" + dst_cxx + ">(" + source_cxx +
+           ")";
+  }
+  if (dst_void_ptr && src_proc) {
+    return "::rt::tp2cc_funptr_bits(" + source_cxx + ")";
+  }
+
+  if (src_void_ptr || dst_void_ptr) {
+    if (source_is_const_storage && !dst_void_ptr && !dst_proc) {
+      // Pascal `const` untyped storage can still be re-viewed through a typed
+      // pointer variable (`p := b; p[i] ...`), but in C++ that first appears
+      // as `const void*`. Make the qualifier drop explicit instead of leaning
+      // on `-fpermissive`.
+      return "reinterpret_cast<" + dst_cxx + ">(const_cast<void*>(" +
+             source_cxx + "))";
+    }
+    return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
+  }
+
+  const bool dst_ref_class = type_is_reference_class(dst);
+  const bool src_ref_class = type_is_reference_class(src);
+  if (dst_ref_class && src_ref_class) {
+    auto related = [&](std::string_view ancestor, std::string current) {
+      while (!current.empty()) {
+        if (ascii_lower(current) == ascii_lower(std::string(ancestor))) {
+          return true;
+        }
+        const ClassInfo* info = analysis_.class_info_for_type_name(current);
+        if (!info) break;
+        current = info->parent;
+      }
+      return false;
+    };
+    const std::string dst_name = reference_class_name(dst);
+    const std::string src_name = reference_class_name(src);
+    if ((!dst_name.empty() && !src_name.empty()) &&
+        (related(dst_name, src_name) || related(src_name, dst_name))) {
+      return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
+    }
+    if (!explicit_pascal_cast) return source_cxx;
+  }
+
+  if (explicit_pascal_cast || (dst_ptr && src_ptr)) {
+    return "reinterpret_cast<" + dst_cxx + ">(" + source_cxx + ")";
+  }
+  return source_cxx;
 }
 
 std::string EmitStorage::reinterpret_ref_text(const std::string& ty_cxx,

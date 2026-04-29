@@ -231,6 +231,15 @@ struct tp2cc_metaclass_p_exception : public tp2cc_metaclass_p_tobject {
   tp2cc_metaclass_p_exception(tp2cc_metaclass_p_tobject tp2cc_parent)
       : tp2cc_metaclass_p_tobject(tp2cc_parent) {}
 
+  // Generated exception subclasses keep a typed `Exception.Create` slot in
+  // their metaclass descriptors. Accept that narrower thunk directly and
+  // forward it through the root `TObject` metaclass storage.
+  tp2cc_metaclass_p_exception(tp2cc_metaclass_p_tobject tp2cc_parent,
+                              p_exception* (*tp2cc_p_create)())
+      : tp2cc_metaclass_p_tobject(tp2cc_parent) {
+    p_create = reinterpret_cast<p_tobject* (*)()>(tp2cc_p_create);
+  }
+
   p_tclass tp2cc_parentclass() const override;
 };
 

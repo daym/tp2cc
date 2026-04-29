@@ -416,8 +416,20 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
       std::vector<MetaclassCallable> own_callables;
       for (const auto& callable : visible_callables) {
         auto pit = parent_surface.find(callable.name);
-        if (pit == parent_surface.end() ||
-            !same_callable_surface(callable, pit->second)) {
+        const bool same_as_parent =
+            pit != parent_surface.end() &&
+            same_callable_surface(callable, pit->second);
+        if (!same_as_parent) {
+          own_callables.push_back(callable);
+          continue;
+        }
+        if (callable.implicit_root_create ||
+            (callable.sig && callable.sig->kind == SymKind::Constructor)) {
+          // Constructors are special: even when a derived class keeps the same
+          // Pascal parameter surface as its parent, the metaclass slot still
+          // needs a concrete return type (`TChild*`, not `TBase*`). Keep the
+          // derived slot visible so the generated metaclass does not erase the
+          // return type back to the parent's class pointer.
           own_callables.push_back(callable);
         }
       }
@@ -554,7 +566,16 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
           auto pit = parent_surface.find(callable.name);
           if (pit != parent_surface.end() &&
               same_callable_surface(callable, pit->second)) {
-            continue;
+            if (!(callable.implicit_root_create ||
+                  (callable.sig &&
+                   callable.sig->kind == SymKind::Constructor))) {
+              continue;
+            }
+            // Keep same-signature constructors visible in the constructed
+            // metaclass value too. Otherwise the static metaclass descriptor
+            // erases `TChild.Create` back to the parent's create slot even
+            // though the metaclass struct still exposes the derived return
+            // type and constructor pointer member.
           }
           if (!first) out += ", ";
           const auto concrete_impl =
@@ -690,7 +711,7 @@ std::string EmitDecls::param_list_to_cxx(const std::vector<Param>& params) {
     std::string pt;
     std::string name_prefix;
     if (!p.type) {
-      pt = "void*";
+      pt = (p.mode == Param::Const) ? "const void*" : "void*";
     } else {
       if (storage_.type_is_open_array(p.type.get())) {
         pt = types_.open_array_type_to_cxx(*p.type);
@@ -789,7 +810,7 @@ void EmitDecls::emit_method_pointer_thunk(const std::string& owner_name,
   for (const auto& par : pd.params) {
     std::string pt;
     if (!par.type) {
-      pt = "void*";
+      pt = (par.mode == Param::Const) ? "const void*" : "void*";
     } else if (storage_.type_is_open_array(par.type.get())) {
       pt = types_.open_array_type_to_cxx(*par.type);
     } else {

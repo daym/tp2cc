@@ -502,6 +502,13 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       if (nit != scope_.local_nested_fns.end() && nit->second.is_function) {
         return nit->second.return_type;
       }
+      if (scope_.local_untyped_params.count(id.name)) {
+        // Untyped Pascal params are raw storage slots. Treat the identifier
+        // itself as Pascal `pointer` so pointer-slot assignments/casts can
+        // still apply the central coercion rules instead of falling back to
+        // a naked C++ `void*` assignment.
+        return named_pascal_type("pointer");
+      }
       // Self is handled structurally elsewhere; returning nullptr here keeps
       // member-access deduction on the Pascal-facing class-name path.
       if (id.name == "self" && !scope_.current_class_name.empty()) {
@@ -740,6 +747,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         if ((id.name == "char" || id.name == "chr") && c.args.size() == 1) {
           return builtin_char_type();
         }
+        if (id.name == "pointer" && c.args.size() == 1) {
+          return named_pascal_type("pointer");
+        }
         if (id.name == "pchar" && c.args.size() == 1) return builtin_pchar_type();
         if ((id.name == "succ" || id.name == "pred" || id.name == "upcase" ||
              id.name == "abs" || id.name == "sqr") &&
@@ -796,10 +806,29 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
                                   : builtin_string_type();
     }
     case Kind::AddrOf:
-      // Address-of expressions stay untyped here. The emitter later decides
-      // whether the Pascal meaning is "pointer to whole aggregate" or "first
-      // element" based on the use site; plain type deduction does not have
-      // enough context to pick one without miscompiling valid code.
+      // Keep `@array` intentionally untyped: the emitter still needs to pick
+      // between pointer-to-array and pointer-to-first-element at the use site.
+      // Everything else can expose its typed pointer result here so later
+      // pointer-slot coercion sees the actual Pascal pointee type.
+      if (const auto& a = static_cast<const AddrOf&>(e); a.operand) {
+        if (a.operand->kind == Kind::Ident) {
+          const auto& id = static_cast<const Ident&>(*a.operand);
+          if (scope_.local_untyped_params.count(id.name)) {
+            return named_pascal_type("pointer");
+          }
+        }
+        const TypeExpr* operand_ty = deduce_type(*a.operand);
+        const TypeExpr* canon = canonicalize_type(operand_ty);
+        if (operand_ty && canon && canon->kind != Kind::TyArray) {
+          auto tp = std::make_shared<TyPointer>();
+          // The synthesized pointer type borrows the existing operand type; it
+          // is only an emit-time view and does not own or mutate the pointee.
+          tp->target = std::shared_ptr<TypeExpr>(
+              const_cast<TypeExpr*>(operand_ty), [](TypeExpr*) {});
+          synthesized_types_.push_back(tp);
+          return tp.get();
+        }
+      }
       return nullptr;
     default:
       return nullptr;

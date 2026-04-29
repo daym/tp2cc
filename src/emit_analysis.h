@@ -1,8 +1,10 @@
 #pragma once
 
 #include <optional>
+#include <memory>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #include "ast.h"
 #include "emit_context.h"
@@ -104,9 +106,10 @@ class EmitAnalysis {
  private:
   std::string implicit_self_cxx();
 
-  const TypeRegistry* registry_;
+ const TypeRegistry* registry_;
   ScopeStateView& scope_;
   ResolveNameProvider& resolve_name_provider_;
+  std::vector<std::shared_ptr<ast::TypeExpr>> synthesized_types_;
 };
 
 }  // namespace tp2cc

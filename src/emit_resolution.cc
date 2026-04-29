@@ -519,12 +519,14 @@ ResolvedCall EmitResolution::resolve_call(
 
   std::vector<AnyCand> arity_ok;
   for (const auto& a : all_cands) {
-    // Arity-filter first, including default-argument slack. Runtime builtins
-    // without AST decls still participate through the cached `param_count` /
-    // `accepts_zero_args` metadata.
-    if (!a.decl) continue;
+    // Arity-filter first, including default-argument slack. Synthetic runtime
+    // builtins do not carry AST ProcDecls, so they must still participate
+    // here through the cached `param_count` / `accepts_zero_args` metadata;
+    // otherwise a visible imported decl with the same name but wrong arity
+    // can steal the final callee spelling.
     if (args.size() > a.param_count) continue;
     if (args.size() < a.param_count && !a.accepts_zero_args) {
+      if (!a.decl) continue;
       std::vector<FlatCallParamInfo> flat;
       flatten_call_param_info(a.decl, flat);
       bool ok = true;

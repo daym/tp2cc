@@ -489,6 +489,7 @@ std::optional<std::string> EmitTypes::shortstring_capacity_to_cxx(
 }
 
 std::string EmitTypes::pointer_type_to_cxx(const TyPointer& p) {
+  if (!p.target) return "void*";
   return type_to_cxx(*p.target) + "*";
 }
 

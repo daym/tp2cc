@@ -325,8 +325,15 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       return false;
     };
     if (ui) {
-      // Right-to-left is Pascal's uses resolution order.
+      // Right-to-left is Pascal's uses resolution order. Keep the synthetic
+      // `__rt__` unit as the last resort so real imported units can shadow
+      // runtime builtin names such as FPU exception enum members.
       for (auto it = ui->uses.rbegin(); it != ui->uses.rend(); ++it) {
+        if (*it == "__rt__") continue;
+        if (check_unit(*it)) return r;
+      }
+      for (auto it = ui->uses.rbegin(); it != ui->uses.rend(); ++it) {
+        if (*it != "__rt__") continue;
         if (check_unit(*it)) return r;
       }
     }

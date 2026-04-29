@@ -1757,7 +1757,7 @@ void test_visible_pointer_alias_cast_uses_qualified_type_spelling() {
         "end;\n"
         "end.\n"}});
   CHECK(contains(out.impl,
-                 "((p_widestr::p_pcompilerwidestring)(p_raw))"));
+                 "static_cast<p_widestr::p_pcompilerwidestring>(p_raw)"));
   CHECK(!contains(out.impl,
                   "((p_pcompilerwidestring)(p_raw))"));
 }
@@ -1777,8 +1777,129 @@ void test_local_pointer_alias_cast_uses_local_type_spelling() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_deref(((p_psetbytes)(p_raw)))[0]"));
+                 "::rt::tp2cc_deref(static_cast<p_psetbytes>(p_raw))[0]"));
   CHECK(!contains(out.impl, "::rt::tp2cc_deref(::rt::tp2cc_reinterpret_storage_ref<p_psetbytes>(p_raw))[0]"));
+}
+
+void test_implicit_pointer_call_argument_gets_explicit_cast() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pint = ^longint;\n"
+      "procedure take(p : pint);\n"
+      "procedure demo(raw : pointer);\n"
+      "implementation\n"
+      "procedure take(p : pint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo(raw : pointer);\n"
+      "begin\n"
+      "  take(raw);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_take(static_cast<p_pint>(p_raw));"));
+}
+
+void test_pointer_assignment_from_pointer_result_gets_explicit_cast() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  buf : pchar;\n"
+      "begin\n"
+      "  buf := allocmem(4);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_buf = static_cast<::rt::p_char*>(::rt::p_allocmem(4));"));
+}
+
+void test_pointer_builtin_cast_still_coerces_to_typed_pointer_slot() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  raw : pointer;\n"
+      "  p : ppchar;\n"
+      "begin\n"
+      "  p := pointer(raw);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_p = static_cast<::rt::p_char**>(((void*)(p_raw)));"));
+}
+
+void test_addr_of_untyped_param_keeps_pointer_slot_semantics() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo(var data);\n"
+      "implementation\n"
+      "procedure demo(var data);\n"
+      "var\n"
+      "  p : pchar;\n"
+      "begin\n"
+      "  p := @data;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_p = static_cast<::rt::p_char*>((p_data));"));
+}
+
+void test_addr_of_member_assignment_to_typed_pointer_slot_gets_explicit_cast() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class\n"
+      "  end;\n"
+      "  tcallparanode = class(tnode)\n"
+      "    right : tnode;\n"
+      "  end;\n"
+      "  pcallparanode = ^tcallparanode;\n"
+      "procedure demo(pt : tcallparanode);\n"
+      "implementation\n"
+      "procedure demo(pt : tcallparanode);\n"
+      "var\n"
+      "  oldppt : pcallparanode;\n"
+      "begin\n"
+      "  oldppt := @pt.right;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_oldppt = reinterpret_cast<"));
+  CHECK(contains(out.impl, "&p_pt->p_right"));
+}
+
+void test_pointer_function_slot_assignment_uses_funptr_helpers() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "var\n"
+      "  oldexit : pointer;\n"
+      "procedure myexit;\n"
+      "begin\n"
+      "  exitproc := oldexit;\n"
+      "end;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  oldexit := exitproc;\n"
+      "  exitproc := @myexit;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_oldexit = ::rt::tp2cc_funptr_bits(::rt::p_exitproc);"));
+  CHECK(contains(
+      out.impl,
+      "::rt::p_exitproc = ::rt::tp2cc_funptr_from_bits<void (*)()>(p_oldexit);"));
+  CHECK(contains(out.impl, "::rt::p_exitproc = (&p_myexit);"));
 }
 
 void test_runtime_alias_type_names_are_explicitly_qualified() {
@@ -2058,7 +2179,7 @@ void test_pointer_alias_cast_on_pointer_expression_uses_plain_cast() {
       "  l := plongint(@raw[i*4])^;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "((p_plongint)("));
+  CHECK(contains(out.impl, "reinterpret_cast<p_plongint>("));
   CHECK(!contains(out.impl, "::rt::p_plongint("));
 }
 
@@ -2370,7 +2491,8 @@ void test_tobject_cast_preserves_pointer_semantics_for_free() {
       "  inherited destroy;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "::rt::p_tobject::p_free(((::rt::p_tobject*)(p_p)));"));
+  CHECK(contains(out.impl,
+                 "::rt::p_tobject::p_free(static_cast<::rt::p_tobject*>(p_p));"));
   CHECK(!contains(out.impl, "::rt::p_tobject(p_p)"));
 }
 
@@ -3173,10 +3295,13 @@ void test_untyped_const_method_thunk_keeps_raw_storage_pointer() {
       "end.\n");
   // Untyped Pascal params always mean "address of caller storage". Even
   // `const` keeps that raw-storage ABI; it must not turn into
-  // `const void*&` in thunks or procvar signatures.
-  CHECK(contains(out.header, "int32_t p_write(void* p_buffer, int32_t p_count);"));
+  // `const void*&` in thunks or procvar signatures. But the parameter itself
+  // is read-only storage, so the generated C++ surface should say `const
+  // void*`.
   CHECK(contains(out.header,
-                 "static int32_t tp2cc_methodptr_write_const_untyped_value_name_longint_ret_name_longint(void* tp2cc_self, void* p_buffer, int32_t p_count)"));
+                 "int32_t p_write(const void* p_buffer, int32_t p_count);"));
+  CHECK(contains(out.header,
+                 "static int32_t tp2cc_methodptr_write_const_untyped_value_name_longint_ret_name_longint(void* tp2cc_self, const void* p_buffer, int32_t p_count)"));
 }
 
 void test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes() {
@@ -3205,6 +3330,60 @@ void test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes() {
   CHECK(contains(out.impl, "p_sink(((void*)&(p_p)), 1);"));
   CHECK(contains(out.impl, "p_sink(((const void*)(p_p)), 1);"));
   CHECK(!contains(out.impl, "p_sink(((void*)&(::rt::tp2cc_deref(p_p))), 1);"));
+}
+
+void test_untyped_const_pointer_assignment_drops_qualifier_explicitly() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure load(const b);\n"
+      "implementation\n"
+      "procedure load(const b);\n"
+      "var\n"
+      "  p : pchar;\n"
+      "begin\n"
+      "  p := b;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_p = reinterpret_cast<::rt::p_char*>(const_cast<void*>("));
+}
+
+void test_addr_of_untyped_const_pointer_assignment_drops_qualifier_explicitly() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure load(const b);\n"
+      "implementation\n"
+      "procedure load(const b);\n"
+      "var\n"
+      "  p : pchar;\n"
+      "begin\n"
+      "  p := @b;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_p = reinterpret_cast<::rt::p_char*>(const_cast<void*>("));
+}
+
+void test_untyped_const_pointer_cast_drops_qualifier_explicitly() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tobj = object\n"
+      "    procedure load(const b);\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tobj.load(const b);\n"
+      "var\n"
+      "  p : pchar;\n"
+      "begin\n"
+      "  p := pchar(@b);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_p = reinterpret_cast<::rt::p_char*>(const_cast<void*>("));
 }
 
 void test_untyped_const_temporary_uses_addressable_helper() {
@@ -3535,7 +3714,8 @@ void test_metaclass_cast_keeps_concrete_descriptor() {
       "  childcls := tchildclass(basecls);\n"
       "end.\n");
   CHECK(contains(out.impl, "p_basecls = tp2cc_metaclass_value_p_tchild();"));
-  CHECK(contains(out.impl, "p_childcls = ((p_tchildclass)(p_basecls));"));
+  CHECK(contains(out.impl,
+                 "p_childcls = reinterpret_cast<p_tchildclass>(p_basecls);"));
 }
 
 void test_class_identifier_value_lowers_to_metaclass_descriptor() {
@@ -4769,6 +4949,40 @@ void test_metaclass_base_constructor_slot_survives_hidden_child_create() {
   CHECK(contains(out.impl, "p_inst = p_cls->p_create();"));
 }
 
+void test_metaclass_same_signature_constructor_keeps_derived_return_type() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    constructor create;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    constructor create;\n"
+      "  end;\n"
+      "  tchildclass = class of tchild;\n"
+      "var\n"
+      "  cls : tchildclass;\n"
+      "  inst : tchild;\n"
+      "implementation\n"
+      "constructor tbase.create;\n"
+      "begin\n"
+      "end;\n"
+      "constructor tchild.create;\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  inst := cls.create;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "struct tp2cc_metaclass_p_tchild : public tp2cc_metaclass_p_tbase {"));
+  CHECK(contains(out.header, "p_tchild* (*p_create)();"));
+  CHECK(contains(out.header,
+                 "static const tp2cc_metaclass_p_tchild value = "
+                 "tp2cc_metaclass_p_tchild(tp2cc_metaclass_p_tbase("));
+  CHECK(contains(out.impl, "p_inst = p_cls->p_create();"));
+}
+
 void test_inheritsfrom_uses_runtime_tclass_and_method_call() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -4962,8 +5176,8 @@ void test_with_cast_binds_pointer_rvalue_by_value() {
       "    next := nil;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "auto tp2cc_with_0 = ((p_tnode*)(p_p));"));
-  CHECK(!contains(out.impl, "auto& tp2cc_with_0 = ((p_tnode*)(p_p));"));
+  CHECK(contains(out.impl, "auto tp2cc_with_0 = static_cast<p_tnode*>(p_p);"));
+  CHECK(!contains(out.impl, "auto& tp2cc_with_0 = static_cast<p_tnode*>(p_p);"));
   CHECK(contains(out.impl, "tp2cc_with_0->p_next = nullptr;"));
 }
 
@@ -5325,7 +5539,7 @@ void test_reference_class_typecast_is_pointer_cast() {
       "  cast_child := tchild(p);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_result = ((p_tchild*)(p_p));"));
+  CHECK(contains(out.impl, "p_result = static_cast<p_tchild*>(p_p);"));
 }
 
 void test_reference_class_cast_keeps_pointer_member_access() {
@@ -5344,7 +5558,7 @@ void test_reference_class_cast_keeps_pointer_member_access() {
       "  fetch_next := tchild(p).next;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_result = ((p_tchild*)(p_p))->p_next;"));
+  CHECK(contains(out.impl, "p_result = static_cast<p_tchild*>(p_p)->p_next;"));
 }
 
 void test_is_as_use_pointer_target_types() {
@@ -5554,6 +5768,9 @@ int main() {
   RUN_TEST(test_set_to_int_cast_uses_endian_safe_helper);
   RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);
   RUN_TEST(test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes);
+  RUN_TEST(test_untyped_const_pointer_assignment_drops_qualifier_explicitly);
+  RUN_TEST(test_addr_of_untyped_const_pointer_assignment_drops_qualifier_explicitly);
+  RUN_TEST(test_untyped_const_pointer_cast_drops_qualifier_explicitly);
   RUN_TEST(test_untyped_const_temporary_uses_addressable_helper);
   RUN_TEST(test_class_types_lower_to_pointers_and_implicit_tobject);
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
@@ -5601,6 +5818,12 @@ int main() {
   RUN_TEST(test_property_read_through_field_lowers_to_field_access);
   RUN_TEST(test_default_indexed_property_obj_brackets_calls_getter);
   RUN_TEST(test_property_read_returning_class_then_default_index_chains_through_getter);
+  RUN_TEST(test_implicit_pointer_call_argument_gets_explicit_cast);
+  RUN_TEST(test_pointer_assignment_from_pointer_result_gets_explicit_cast);
+  RUN_TEST(test_pointer_builtin_cast_still_coerces_to_typed_pointer_slot);
+  RUN_TEST(test_addr_of_untyped_param_keeps_pointer_slot_semantics);
+  RUN_TEST(test_addr_of_member_assignment_to_typed_pointer_slot_gets_explicit_cast);
+  RUN_TEST(test_pointer_function_slot_assignment_uses_funptr_helpers);
   RUN_TEST(test_inline_anon_enum_in_var_decl_bleeds_members_into_unit_scope);
   RUN_TEST(test_inherited_call_routes_through_pascal_picker);
   RUN_TEST(test_inherited_exception_create_lowers_as_constructor_call);
@@ -5610,6 +5833,7 @@ int main() {
   RUN_TEST(test_class_alias_in_value_position_lowers_to_underlying_metaclass);
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
   RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);
+  RUN_TEST(test_metaclass_same_signature_constructor_keeps_derived_return_type);
   RUN_TEST(test_inheritsfrom_uses_runtime_tclass_and_method_call);
   RUN_TEST(test_indexed_property_result_classtype_autocalls);
   RUN_TEST(test_implicit_indexed_property_result_classtype_autocalls);

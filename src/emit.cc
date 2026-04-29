@@ -459,6 +459,16 @@ struct Emitter : ResolveNameProvider,
   bool type_is_open_array(const ast::TypeExpr* t) {
     return storage_.type_is_open_array(t);
   }
+  std::string coerce_pointer_like_text(std::string_view dst_cxx,
+                                       const ast::TypeExpr* dst_type,
+                                       const ast::TypeExpr* src_type,
+                                       const std::string& source_cxx,
+                                       bool explicit_pascal_cast,
+                                       bool source_is_const_storage = false) {
+    return storage_.coerce_pointer_like_text(dst_cxx, dst_type, src_type,
+                                             source_cxx, explicit_pascal_cast,
+                                             source_is_const_storage);
+  }
   std::string open_array_type_to_cxx(const ast::TypeExpr& t) {
     return types_.open_array_type_to_cxx(t);
   }
@@ -1373,6 +1383,22 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         auto arg0 = [&] {
           return c.args.empty() ? std::string("0") : expr_to_cxx(*c.args[0]);
         };
+        auto arg_is_const_untyped_storage = [&](const Expr& e) {
+          if (e.kind == Kind::Ident) {
+            const auto& arg_id = static_cast<const Ident&>(e);
+            return local_untyped_params.count(arg_id.name) &&
+                   local_const_params.count(arg_id.name);
+          }
+          if (e.kind == Kind::AddrOf) {
+            const auto& a = static_cast<const AddrOf&>(e);
+            if (a.operand && a.operand->kind == Kind::Ident) {
+              const auto& arg_id = static_cast<const Ident&>(*a.operand);
+              return local_untyped_params.count(arg_id.name) &&
+                     local_const_params.count(arg_id.name);
+            }
+          }
+          return false;
+        };
         auto is_visible_type_name = [&](const std::string& type_name) {
           const std::string low = ascii_lower(type_name);
           if (is_primitive_type(low)) return true;
@@ -1515,6 +1541,18 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "::rt::p_chr(" + arg0() + ")";
           }
           if (n == "pointer" || n == "pchar" || n == "ppchar") {
+            TyName cast_name;
+            cast_name.name = n;
+            std::string source =
+                (peeled && expr_is_storage_lvalue(*c.args[0]))
+                    ? expr_to_cxx(*peeled)
+                    : arg0();
+            std::string coerced = coerce_pointer_like_text(
+                primitive_type_cxx(n), &cast_name, deduce_type(*c.args[0]),
+                source,
+                /*explicit_pascal_cast=*/true,
+                arg_is_const_untyped_storage(*c.args[0]));
+            if (coerced != source) return coerced;
             if (peeled && expr_is_storage_lvalue(*c.args[0])) {
               return "((" + primitive_type_cxx(n) + ")(" +
                      expr_to_cxx(*peeled) + "))";
@@ -1537,6 +1575,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             // comes from the runtime root instead of the registry.
             TyName cast_name;
             cast_name.name = n;
+            std::string coerced = coerce_pointer_like_text(
+                type_name_to_cxx(cast_name), &cast_name,
+                deduce_type(*c.args[0]), arg0(),
+                /*explicit_pascal_cast=*/true);
+            if (coerced != arg0()) return coerced;
             return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
           }
           if (registry) {
@@ -1547,6 +1590,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               // classes rather than aliases. Treat them as pointer casts here.
               TyName cast_name;
               cast_name.name = n;
+              std::string coerced = coerce_pointer_like_text(
+                  type_name_to_cxx(cast_name), &cast_name,
+                  deduce_type(*c.args[0]), arg0(),
+                  /*explicit_pascal_cast=*/true);
+              if (coerced != arg0()) return coerced;
               return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
             }
           }
@@ -1561,10 +1609,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
           }
           if (cast_ty && cast_ty->kind == Kind::TyMetaclass) {
-            return "((" + type_name_text_to_cxx(n) + ")(" +
-                   const_value_to_cxx(*c.args[0], cast_ty,
-                                      /*explicit_conversion=*/true) +
-                   "))";
+            std::string source = const_value_to_cxx(*c.args[0], cast_ty,
+                                                    /*explicit_conversion=*/true);
+            std::string coerced = coerce_pointer_like_text(
+                type_name_text_to_cxx(n), cast_ty, deduce_type(*c.args[0]),
+                source,
+                /*explicit_pascal_cast=*/true);
+            if (coerced != source) return coerced;
+            return "((" + type_name_text_to_cxx(n) + ")(" + source + "))";
           }
           if (cast_ty && cast_ty->kind == Kind::TySet) {
             return "::rt::tp2cc_set_cast<" + type_to_cxx(*cast_ty) + ">(" +
@@ -1577,6 +1629,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             // pointer semantics instead of turning into constructor calls.
             TyName cast_name;
             cast_name.name = n;
+            std::string coerced = coerce_pointer_like_text(
+                type_name_to_cxx(cast_name), cast_ty,
+                deduce_type(*c.args[0]), arg0(),
+                /*explicit_pascal_cast=*/true);
+            if (coerced != arg0()) return coerced;
             return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
           }
           const Expr* peeled = peel_primitive_casts(c.args[0].get());
@@ -1760,9 +1817,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         const auto& id = static_cast<const Ident&>(*c.callee);
         bool cast_to_pointer = false;
         std::string cast_type_cxx;
+        const TypeExpr* pointer_cast_ty = nullptr;
         if (id.name == "pointer") {
           cast_to_pointer = true;
           cast_type_cxx = "void*";
+          static TyName pointer_type_name;
+          pointer_type_name.name = "pointer";
+          pointer_cast_ty = &pointer_type_name;
         } else {
           const TypeExpr* tgt = nullptr;
           auto lit = local_type_aliases_scoped.find(id.name);
@@ -1777,10 +1838,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (tgt && tgt->kind == Kind::TyPointer) {
             cast_to_pointer = true;
             cast_type_cxx = type_name_text_to_cxx(id.name);
+            pointer_cast_ty = tgt;
           }
         }
         if (cast_to_pointer) {
           const Expr* peeled = peel_primitive_casts(c.args[0].get());
+          std::string source =
+              (peeled && expr_is_storage_lvalue(*c.args[0]))
+                  ? expr_to_cxx(*peeled)
+                  : expr_to_cxx(*c.args[0]);
+          std::string coerced = coerce_pointer_like_text(
+              cast_type_cxx, pointer_cast_ty, deduce_type(*c.args[0]), source,
+              /*explicit_pascal_cast=*/true);
+          if (coerced != source) return coerced;
           if (peeled && expr_is_storage_lvalue(*c.args[0])) {
             return "((" + cast_type_cxx + ")(" + expr_to_cxx(*peeled) + "))";
           }
@@ -1828,6 +1898,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               if (cast_ty) cast_ty = canonicalize_type(cast_ty);
               if (cast_ty && cast_ty->kind == Kind::TyPointer) {
                 const Expr* peeled = peel_primitive_casts(c.args[0].get());
+                std::string source =
+                    (peeled && expr_is_storage_lvalue(*c.args[0]))
+                        ? expr_to_cxx(*peeled)
+                        : expr_to_cxx(*c.args[0]);
+                std::string coerced = coerce_pointer_like_text(
+                    type_name_text_to_cxx(qualified), cast_ty,
+                    deduce_type(*c.args[0]), source,
+                    /*explicit_pascal_cast=*/true);
+                if (coerced != source) return coerced;
                 if (peeled && expr_is_storage_lvalue(*c.args[0])) {
                   return "((" + type_name_text_to_cxx(qualified) + ")(" +
                          expr_to_cxx(*peeled) + "))";

@@ -444,6 +444,14 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     t->element = std::move(element);
     return t;
   };
+  auto make_procedural = [](bool is_function, std::vector<ast::Param> params,
+                            ast::TypePtr return_type = nullptr) {
+    auto t = std::make_shared<ast::TyProcedural>();
+    t->is_function = is_function;
+    t->params = std::move(params);
+    t->return_type = std::move(return_type);
+    return t;
+  };
   auto make_enum = [](std::vector<std::string> names) {
     auto t = std::make_shared<ast::TyEnum>();
     for (auto& name : names) {
@@ -507,7 +515,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   add_rt_var("stderr", make_typename("text"));
   add_rt_var("output", make_typename("text"));
   add_rt_var("input", make_typename("text"));
-  add_rt_var("exitproc", nullptr);
+  add_rt_var("exitproc", make_procedural(false, {}));
   add_rt_var("erroraddr", make_typename("pointer"));
   add_rt_var("exitcode", make_typename("longint"));
 

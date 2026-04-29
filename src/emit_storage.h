@@ -99,6 +99,19 @@ class EmitStorage {
   bool type_is_stringish(const ast::TypeExpr* t);
   bool type_is_pointerish(const ast::TypeExpr* t);
   bool type_is_open_array(const ast::TypeExpr* t);
+  // Central pointer-like coercion policy used by explicit typecasts, plain
+  // assignments, and value call arguments. Pascal is more permissive than C++
+  // about:
+  //   - `pointer`/`void*` <-> typed data pointers
+  //   - raw data-pointer reinterpretation
+  //   - function pointer <-> `pointer`
+  // so funnel those through one helper instead of sprinkling ad hoc casts.
+  std::string coerce_pointer_like_text(std::string_view dst_cxx,
+                                       const ast::TypeExpr* dst_type,
+                                       const ast::TypeExpr* src_type,
+                                       const std::string& source_cxx,
+                                       bool explicit_pascal_cast,
+                                       bool source_is_const_storage = false);
   std::string reinterpret_ref_text(const std::string& ty_cxx,
                                    const std::string& source_cxx,
                                    bool pointee_view);
