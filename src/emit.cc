@@ -1268,6 +1268,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // reinterpret_cast<T*> so the C++ output never derefs `p`.
       // Restrict to record pointees so `offsetof` stays on standard-
       // layout types.
+      //
+      // When the field itself is an array, keep the emitted address as a
+      // runtime proxy rather than guessing "whole array" vs "first
+      // element" here. Native FPC accepts both contexts for the same
+      // source `@arrfield`; the use site decides.
       if (registry && a.operand && a.operand->kind == Kind::Member) {
         const auto& m = static_cast<const Member&>(*a.operand);
         if (m.base && m.base->kind == Kind::Deref) {
@@ -1286,10 +1291,18 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                   std::string field_cxx = mangle(m.name);
                   std::string field_type_cxx =
                       fi->type ? type_to_cxx(*fi->type) : std::string("void");
-                  return "reinterpret_cast<" + field_type_cxx +
-                         "*>(reinterpret_cast<uintptr_t>(" +
-                         expr_to_cxx(*d.operand) + ") + offsetof(" +
-                         struct_cxx + ", " + field_cxx + "))";
+                  std::string field_addr =
+                      "reinterpret_cast<" + field_type_cxx +
+                      "*>(reinterpret_cast<uintptr_t>(" +
+                      expr_to_cxx(*d.operand) + ") + offsetof(" +
+                      struct_cxx + ", " + field_cxx + "))";
+                  const TypeExpr* field_ty =
+                      fi->type ? canonicalize_type(fi->type.get()) : nullptr;
+                  if (!a.double_addr && field_ty &&
+                      field_ty->kind == Kind::TyArray) {
+                    return "::rt::tp2cc_array_addr(" + field_addr + ")";
+                  }
+                  return field_addr;
                 }
               }
             }
@@ -1300,29 +1313,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       is_callee_context_ = true;
       std::string inner = expr_to_cxx(*a.operand);
       is_callee_context_ = saved;
-      // Pascal `@arr` where `arr` is a flat byte-array (`array of
-      // char` / `array of byte`) typically lands in a `pchar` or
-      // `pointer` context -- the fpc compiler's fill buffers and
-      // inline byte tables do exactly this. For that narrow case
-      // emit `(::rt::p_char*)arr` using `rt::tp2cc_Array<byte>`'s pointer
-      // decay. Anything deeper than one array level (e.g.
-      // `array of array of char`) stays as `&arr` and the source
-      // is expected to use a flatter spelling -- we do not paper
-      // over nested-array type-punning at the translator level.
-      if (registry) {
+      if (!a.double_addr && registry) {
         const TypeExpr* ot = deduce_type(*a.operand);
         if (ot) ot = registry->canonicalize(ot);
         if (ot && ot->kind == Kind::TyArray) {
-          const auto& ar = static_cast<const TyArray&>(*ot);
-          const TypeExpr* elem = ar.element.get();
-          if (elem) elem = registry->canonicalize(elem);
-          if (elem && elem->kind == Kind::TyName) {
-            std::string en = ascii_lower(static_cast<const TyName&>(*elem).name);
-            if (en == "byte" || en == "char" || en == "uint8_t" ||
-                en == "shortint") {
-              return "((::rt::p_char*)(" + inner + "))";
-            }
-          }
+          // Keep raw `@arr` as an address proxy that can convert to both
+          // `^array` and `^element` forms. Native FPC accepts both
+          // assignments and reports ambiguity when both overloads are
+          // equally viable; hardwiring a decay here miscompiles one side.
+          return "::rt::tp2cc_array_addr(" + inner + ")";
         }
       }
       return "(&" + inner + ")";

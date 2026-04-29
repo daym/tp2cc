@@ -720,6 +720,53 @@ void test_open_array_view_uses_dynamic_array_storage() {
   CHECK_EQ(values[1], 8);
 }
 
+void test_array_addr_proxy_converts_to_array_and_element_pointers() {
+  tp2cc_Array<p_char, 0, 4> chars{{tp2cc_char_of('A'), tp2cc_char_of('B'),
+                                   tp2cc_char_of('C'), tp2cc_char_of('\0')}};
+
+  auto addr = tp2cc_array_addr(chars);
+  tp2cc_Array<p_char, 0, 4>* array_ptr = addr;
+  p_char* elem_ptr = addr;
+  void* raw_ptr = addr;
+  uintptr_t bits = static_cast<uintptr_t>(addr);
+
+  CHECK(array_ptr == &chars);
+  CHECK(elem_ptr == reinterpret_cast<p_char*>(&chars));
+  CHECK(raw_ptr == static_cast<void*>(&chars));
+  CHECK(bits == reinterpret_cast<uintptr_t>(&chars));
+}
+
+void test_array_addr_proxy_preserves_constness() {
+  const tp2cc_Array<uint16_t, 1, 2> words{{11, 22}};
+
+  auto addr = tp2cc_array_addr(words);
+  const tp2cc_Array<uint16_t, 1, 2>* array_ptr = addr;
+  const uint16_t* elem_ptr = addr;
+  const void* raw_ptr = addr;
+  uintptr_t bits = static_cast<uintptr_t>(addr);
+
+  CHECK(array_ptr == &words);
+  CHECK(elem_ptr == reinterpret_cast<const uint16_t*>(&words));
+  CHECK(raw_ptr == static_cast<const void*>(&words));
+  CHECK(bits == reinterpret_cast<uintptr_t>(&words));
+}
+
+void test_array_addr_proxy_from_raw_pointer_keeps_same_bits() {
+  using TArray = tp2cc_Array<int32_t, 0, 3>;
+  auto* synthetic = reinterpret_cast<TArray*>(static_cast<uintptr_t>(0x40));
+
+  auto addr = tp2cc_array_addr(synthetic);
+  TArray* array_ptr = addr;
+  int32_t* elem_ptr = addr;
+  void* raw_ptr = addr;
+  uintptr_t bits = static_cast<uintptr_t>(addr);
+
+  CHECK(array_ptr == synthetic);
+  CHECK(elem_ptr == reinterpret_cast<int32_t*>(synthetic));
+  CHECK(raw_ptr == static_cast<void*>(synthetic));
+  CHECK(bits == static_cast<uintptr_t>(0x40));
+}
+
 void test_dos_pack_unpack_time_matches_bit_layout() {
   DateTime in{};
   in.p_year = 2004;
@@ -1131,6 +1178,9 @@ int main() {
   RUN_TEST(test_open_array_helper_owns_temporary_storage);
   RUN_TEST(test_dynamic_array_setlength_detaches_and_zeroes_tail);
   RUN_TEST(test_open_array_view_uses_dynamic_array_storage);
+  RUN_TEST(test_array_addr_proxy_converts_to_array_and_element_pointers);
+  RUN_TEST(test_array_addr_proxy_preserves_constness);
+  RUN_TEST(test_array_addr_proxy_from_raw_pointer_keeps_same_bits);
   RUN_TEST(test_dos_pack_unpack_time_matches_bit_layout);
   RUN_TEST(test_getfattr_reports_directory_bit);
   RUN_TEST(test_set_superset_operator_matches_pascal);

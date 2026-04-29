@@ -821,7 +821,7 @@ void test_const_fixed_array_parameter_stays_value_abi() {
       "end.\n");
   CHECK(contains(out.header, "void p_take(p_tarr p_a);"));
   CHECK(contains(out.impl, "void p_take(p_tarr p_a) {"));
-  CHECK(contains(out.impl, "p_p = (&p_a);"));
+  CHECK(contains(out.impl, "p_p = ::rt::tp2cc_array_addr(p_a);"));
   CHECK(contains(out.impl, "if ((p_a[0] != 0))"));
 }
 
@@ -846,7 +846,7 @@ void test_const_fixed_record_array_parameter_stays_value_abi() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.header, "void p_take(p_tarr p_a);"));
-  CHECK(contains(out.impl, "p_p = (&p_a);"));
+  CHECK(contains(out.impl, "p_p = ::rt::tp2cc_array_addr(p_a);"));
   CHECK(contains(out.impl, "if ((p_a[0].p_x != 0))"));
 }
 
@@ -869,7 +869,7 @@ void test_const_fixed_classref_array_parameter_stays_value_abi() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.header, "void p_take(p_tarr p_a);"));
-  CHECK(contains(out.impl, "p_p = (&p_a);"));
+  CHECK(contains(out.impl, "p_p = ::rt::tp2cc_array_addr(p_a);"));
   CHECK(contains(out.impl, "if ((p_a[0] != nullptr))"));
 }
 
@@ -2958,6 +2958,62 @@ void test_addr_of_pointer_deref_field_uses_offsetof_arithmetic() {
   CHECK(contains(out.impl,
                  "reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(p_p) + offsetof("));
   CHECK(!contains(out.impl, "&::rt::tp2cc_deref(p_p).p_b"));
+}
+
+void test_addr_of_array_value_uses_context_selecting_proxy() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuf = array[0..3] of char;\n"
+      "  pbuf = ^tbuf;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  buf : tbuf;\n"
+      "  pc : pchar;\n"
+      "  pa : pbuf;\n"
+      "begin\n"
+      "  pc := @buf;\n"
+      "  pa := @buf;\n"
+      "end;\n"
+      "end.\n");
+  // Native FPC accepts the same raw `@buf` in both pointer-to-element and
+  // pointer-to-array contexts. Preserve that as one proxy value instead of
+  // hardwiring `@buf` to `@buf[0]` or `^tbuf`.
+  CHECK_EQ(count_substring(out.impl, "::rt::tp2cc_array_addr(p_buf)"),
+           static_cast<size_t>(2));
+  CHECK(!contains(out.impl, "((::rt::p_char*)(p_buf))"));
+  CHECK(!contains(out.impl, "(&p_buf)"));
+}
+
+void test_addr_of_pointer_deref_array_field_uses_offsetof_proxy() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tcode = array[0..3] of char;\n"
+      "  pcode = ^tcode;\n"
+      "  trec = record\n"
+      "    code : tcode;\n"
+      "  end;\n"
+      "  prec = ^trec;\n"
+      "procedure demo(p : prec; var pc : pchar; var pa : pcode);\n"
+      "implementation\n"
+      "procedure demo(p : prec; var pc : pchar; var pa : pcode);\n"
+      "begin\n"
+      "  pc := @p^.code;\n"
+      "  pa := @p^.code;\n"
+      "end;\n"
+      "end.\n");
+  // `@p^.code` must keep the nil-safe `uintptr_t + offsetof` lowering, but
+  // it also has to stay usable as both `pchar` and `^tcode`. The runtime
+  // proxy keeps that address ambiguity until the use site converts it.
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_array_addr(reinterpret_cast<p_tcode*>(reinterpret_cast<uintptr_t>(p_p) + offsetof("));
+  CHECK(!contains(out.impl, "&::rt::tp2cc_deref(p_p).p_code"));
+  CHECK(!contains(out.impl, "((::rt::p_char*)("));
 }
 
 void test_set_to_int_cast_uses_endian_safe_helper() {
@@ -5284,6 +5340,8 @@ int main() {
   RUN_TEST(test_q_plus_routes_integer_arith_through_checked_helpers);
   RUN_TEST(test_qword_const_cast_produces_64bit_literal_for_shifts);
   RUN_TEST(test_addr_of_pointer_deref_field_uses_offsetof_arithmetic);
+  RUN_TEST(test_addr_of_array_value_uses_context_selecting_proxy);
+  RUN_TEST(test_addr_of_pointer_deref_array_field_uses_offsetof_proxy);
   RUN_TEST(test_set_to_int_cast_uses_endian_safe_helper);
   RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);
   RUN_TEST(test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes);
