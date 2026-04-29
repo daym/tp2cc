@@ -13,7 +13,9 @@
 #include <vector>
 
 #include "emit_analysis.h"
+#include "emit_calls.h"
 #include "emit_context.h"
+#include "emit_properties.h"
 #include "emit_resolution.h"
 #include "emit_storage.h"
 #include "emit_types.h"
@@ -51,58 +53,6 @@ constexpr const char* kUnitInitName = "tp2cc_unit_init";
 constexpr const char* kUnitFiniName = "tp2cc_unit_fini";
 constexpr const char* kPascalResultSlotName = "p_result";
 constexpr const char* kCtorStatusSlotName = "tp2cc_ctor_ok";
-enum class UntypedArgKind : uint8_t { None, Const, Mutable };
-
-void mark_builtin_memory_helper_param_info(
-    std::string_view name, std::vector<UntypedArgKind>& untyped_arg,
-    std::vector<bool>& mutable_ref_arg,
-    std::vector<const ast::TypeExpr*>& param_types) {
-  const std::string lower = ascii_lower(name);
-
-  auto mark = [&](size_t index, UntypedArgKind untyped_kind, bool is_mutable,
-                  const ast::TypeExpr* type = nullptr) {
-    if (index < untyped_arg.size() &&
-        untyped_kind != UntypedArgKind::None) {
-      untyped_arg[index] = untyped_kind;
-    }
-    if (index < mutable_ref_arg.size() && is_mutable) mutable_ref_arg[index] = true;
-    if (index < param_types.size()) param_types[index] = type;
-  };
-
-  // Pascal's raw memory helpers all operate on caller storage, not on the
-  // value of the first expression. Reuse the normal untyped-argument
-  // lowering path here so calls like `FillChar(FList^[I], ...)` become
-  // `&slot` in C++ instead of reinterpreting the pointer value stored there.
-  if (lower == "fillchar" || lower == "fillword") {
-    mark(0, UntypedArgKind::Mutable, /*is_mutable=*/true);
-    return;
-  }
-  if (lower == "move") {
-    mark(0, UntypedArgKind::Const, /*is_mutable=*/false);
-    mark(1, UntypedArgKind::Mutable, /*is_mutable=*/true);
-    return;
-  }
-  if (lower == "getmem" || lower == "freemem" || lower == "reallocmem" ||
-      lower == "dispose" || lower == "strdispose") {
-    mark(0, UntypedArgKind::None, /*is_mutable=*/true);
-  }
-  // Pascal `Val(S; var V; var Code)` and `Str(X; var S)` write to caller
-  // storage. Mark the var-mode slots so a call-site typecast like
-  // `Val(s, aword(result), code)` lowers through `lower_call_arg`'s
-  // mutable-ref-cast path -- it rebinds the `result` storage as the
-  // typecast's target type, which matches the unsigned `p_val` rt
-  // overload. Without this, the cast lowers as a value rvalue and the
-  // overload set fails to match.
-  if (lower == "val") {
-    mark(1, UntypedArgKind::None, /*is_mutable=*/true);
-    mark(2, UntypedArgKind::None, /*is_mutable=*/true);
-    return;
-  }
-  if (lower == "str") {
-    mark(1, UntypedArgKind::None, /*is_mutable=*/true);
-    return;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Emitter state
@@ -110,7 +60,9 @@ void mark_builtin_memory_helper_param_info(
 struct Emitter : ResolveNameProvider,
                  ResolutionTypeOps,
                  EmitTypeConstRender,
-                 EmitStorageExprOps {
+                 EmitStorageExprOps,
+                 EmitCallExprOps,
+                 EmitPropertyExprOps {
   std::string header;
   std::string impl;
   // Current sink pointer.
@@ -223,6 +175,8 @@ struct Emitter : ResolveNameProvider,
   EmitTypes types_;
   EmitStorage storage_;
   EmitResolution resolution_;
+  EmitCalls calls_;
+  EmitProperties properties_;
 
   Emitter(const TypeRegistry* registry_in = nullptr,
           const std::vector<std::string>* unit_init_order_in = nullptr)
@@ -257,7 +211,10 @@ struct Emitter : ResolveNameProvider,
         analysis_(registry, scope_state_, *this),
         types_(registry, scope_state_, analysis_, *this),
         storage_(registry, scope_state_, analysis_, types_, *this, *this),
-        resolution_(registry, scope_state_, analysis_, *this) {}
+        resolution_(registry, scope_state_, analysis_, *this),
+        calls_(registry, scope_state_, analysis_, types_, storage_,
+               resolution_, *this),
+        properties_(registry, analysis_, *this) {}
 
   void set_header() { out = &header; }
   void set_impl()   { out = &impl; }
@@ -567,8 +524,6 @@ struct Emitter : ResolveNameProvider,
   std::string open_array_type_to_cxx(const ast::TypeExpr& t) {
     return types_.open_array_type_to_cxx(t);
   }
-  std::string open_array_constructor_to_cxx(const SetLit& s,
-                                            const TypeExpr& param_type);
   std::string reinterpret_ref_text(const std::string& ty_cxx,
                                    const std::string& source_cxx,
                                    bool pointee_view) {
@@ -579,14 +534,9 @@ struct Emitter : ResolveNameProvider,
       const ast::VarDecl& vd) {
     return storage_.resolve_absolute_target(vd);
   }
-  struct FlatCallParamInfo {
-    const ast::TypeExpr* type = nullptr;
-    bool untyped = false;
-    bool mutable_ref = false;
-    const ast::Expr* default_value = nullptr;
-  };
-  bool proc_accepts_zero_args(const ast::ProcDecl& decl);
-  const ast::ProcDecl* resolve_call_decl(const ast::Expr& callee);
+  bool proc_accepts_zero_args(const ast::ProcDecl& decl) {
+    return calls_.proc_accepts_zero_args(decl);
+  }
   // Single entry point for resolving a Pascal call expression. Returns
   // both the picked decl AND the information needed to emit the C++ callee
   // text. `format_resolved_callee` is the only place the call branch
@@ -609,67 +559,83 @@ struct Emitter : ResolveNameProvider,
       const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
   std::string format_resolved_callee(const ResolvedCall& resolved,
                                      const ast::Expr& callee_ast);
-  void flatten_call_param_info(const ast::ProcDecl* decl,
-                               std::vector<FlatCallParamInfo>& flat_params);
   void append_defaulted_trailing_call_args(
-      const ast::ProcDecl* decl, std::vector<const ast::Expr*>& args);
+      const ast::ProcDecl* decl, std::vector<const ast::Expr*>& args) {
+    calls_.append_defaulted_trailing_call_args(decl, args);
+  }
   void mark_call_param_info(const ast::ProcDecl* decl,
                             std::vector<UntypedArgKind>& untyped_arg,
                             std::vector<bool>& mutable_ref_arg,
-                            std::vector<const ast::TypeExpr*>& param_types);
+                            std::vector<const ast::TypeExpr*>& param_types) {
+    calls_.mark_call_param_info(decl, untyped_arg, mutable_ref_arg,
+                                param_types);
+  }
+  void collect_builtin_helper_param_info(
+      const ast::Expr& callee, std::vector<UntypedArgKind>& untyped_arg,
+      std::vector<bool>& mutable_ref_arg,
+      std::vector<const ast::TypeExpr*>& param_types) {
+    calls_.collect_builtin_helper_param_info(callee, untyped_arg,
+                                             mutable_ref_arg, param_types);
+  }
   void collect_call_param_info(const ast::Expr& callee,
                                std::vector<UntypedArgKind>& untyped_arg,
                                std::vector<bool>& mutable_ref_arg,
-                               std::vector<const ast::TypeExpr*>& param_types);
+                               std::vector<const ast::TypeExpr*>& param_types) {
+    calls_.collect_call_param_info(callee, untyped_arg, mutable_ref_arg,
+                                   param_types);
+  }
   std::string lower_call_arg(const ast::Expr& arg,
                              const ast::TypeExpr* param_type,
                              UntypedArgKind untyped_arg,
-                             bool mutable_ref_arg);
+                             bool mutable_ref_arg) {
+    return calls_.lower_call_arg(arg, param_type, untyped_arg,
+                                 mutable_ref_arg);
+  }
   std::string lower_implicit_zero_arg_call(const std::string& callee_text,
-                                           const ast::ProcDecl* decl);
+                                           const ast::ProcDecl* decl) {
+    return calls_.lower_implicit_zero_arg_call(callee_text, decl);
+  }
   std::string lower_property_read(Location where,
                                   const std::string& base_cxx,
                                   const std::string& class_name,
                                   const PropertyInfo& prop,
-                                  const std::vector<const ast::Expr*>& indices);
+                                  const std::vector<const ast::Expr*>& indices) {
+    return properties_.lower_property_read(where, base_cxx, class_name, prop,
+                                           indices);
+  }
   std::string lower_property_write(Location where,
                                    const std::string& base_cxx,
                                    const std::string& class_name,
                                    const PropertyInfo& prop,
                                    const std::vector<const ast::Expr*>& indices,
-                                   const ast::Expr& value);
-  std::optional<std::string> maybe_property_read_text(
-      const std::string& base_cxx,
-      const std::string& class_name,
-      const PropertyInfo& prop,
-      const std::vector<const ast::Expr*>& indices);
-  std::optional<std::string> maybe_property_write_text(
-      const std::string& base_cxx,
-      const std::string& class_name,
-      const PropertyInfo& prop,
-      const std::vector<const ast::Expr*>& indices,
-      const ast::Expr& value);
-  std::string implicit_self_cxx();
-  struct ImplicitPropertyLookup {
-    const PropertyInfo* prop = nullptr;
-    std::string class_name;
-    std::string base_cxx;
-    bool from_with = false;
-  };
+                                   const ast::Expr& value) {
+    return properties_.lower_property_write(where, base_cxx, class_name, prop,
+                                            indices, value);
+  }
   std::optional<ImplicitPropertyLookup> find_implicit_class_property(
-      std::string_view name);
+      std::string_view name) {
+    return analysis_.find_implicit_class_property(name);
+  }
   std::optional<std::string> maybe_lower_implicit_property_write(
       Location where,
       std::string_view name,
-      const ast::Expr& value);
+      const ast::Expr& value) {
+    return properties_.maybe_lower_implicit_property_write(where, name, value);
+  }
   std::optional<std::string> maybe_lower_class_free_member(
-      const ast::Expr& base, std::string_view member_name);
+      const ast::Expr& base, std::string_view member_name) {
+    return calls_.maybe_lower_class_free_member(base, member_name);
+  }
   std::optional<std::string> maybe_lower_class_constructor_call(
       std::string_view class_name, std::string_view member_name,
       const std::vector<const ast::Expr*>& args,
       const std::vector<const ast::TypeExpr*>& param_types,
       const std::vector<UntypedArgKind>& untyped_arg,
-      const std::vector<bool>& mutable_ref_arg);
+      const std::vector<bool>& mutable_ref_arg) {
+    return calls_.maybe_lower_class_constructor_call(
+        class_name, member_name, args, param_types, untyped_arg,
+        mutable_ref_arg);
+  }
 
   // ---------------------------------------------------------------------
   // Pascal name resolution (one function, every emit path goes through
@@ -690,7 +656,9 @@ struct Emitter : ResolveNameProvider,
   using ResolvedKind = tp2cc::ResolvedKind;
   using ResolveResult = tp2cc::ResolveResult;
   std::optional<ResolveResult> maybe_resolve_implicit_property(
-      std::string_view name);
+      std::string_view name) {
+    return properties_.maybe_resolve_implicit_property(name);
+  }
   // Qualifier: empty means unqualified lookup.  Otherwise it's a
   // unit name or a class/record alias name (both lowercased).
   using QualifierKind = tp2cc::QualifierKind;
@@ -900,72 +868,6 @@ bool Emitter::with_bind_has_visible_member(const WithBind& wb,
   return analysis_.with_bind_has_visible_member(wb, name);
 }
 
-std::string Emitter::open_array_constructor_to_cxx(const SetLit& s,
-                                                   const TypeExpr& param_type) {
-  const TypeExpr* canon = canonicalize_type(&param_type);
-  if (!canon || canon->kind != Kind::TyArray) return expr_to_cxx(s);
-  const auto& arr = static_cast<const TyArray&>(*canon);
-  const TypeExpr* elem_type = arr.element.get();
-  if (!elem_type) return "::rt::tp2cc_open_array<int32_t>()";
-  if (s.elements.empty()) return "::rt::tp2cc_open_array<" + type_to_cxx(*elem_type) + ">()";
-
-  // Pascal reuses `[...]` for two different constructs:
-  //   * set literals                -> `[a, b]`
-  //   * open-array actuals in calls -> `foo([a, b])`
-  // Keep the AST simple and decide here from the formal parameter type.
-  for (const auto& el : s.elements) {
-    if (el->kind == Kind::Range) {
-      report_error(s.loc, "ranges in open-array constructors are unsupported");
-      return "::rt::tp2cc_open_array<" + type_to_cxx(*elem_type) + ">()";
-    }
-  }
-
-  std::string out = "::rt::tp2cc_open_array_of<" + type_to_cxx(*elem_type) + ">(";
-  for (size_t i = 0; i < s.elements.size(); ++i) {
-    if (i) out += ", ";
-    out += const_value_to_cxx(*s.elements[i], elem_type);
-  }
-  out += ")";
-  return out;
-}
-
-void Emitter::mark_call_param_info(
-    const ProcDecl* decl, std::vector<UntypedArgKind>& untyped_arg,
-    std::vector<bool>& mutable_ref_arg,
-    std::vector<const TypeExpr*>& param_types) {
-  if (!decl) return;
-  size_t ai = 0;
-  for (const auto& p : decl->params) {
-    for (size_t k = 0; k < p.names.size(); ++k) {
-      if (ai < untyped_arg.size() && !p.type) {
-        untyped_arg[ai] =
-            (p.mode == Param::Var || p.mode == Param::Out)
-                ? UntypedArgKind::Mutable
-                : UntypedArgKind::Const;
-      }
-      if (ai < mutable_ref_arg.size()) {
-        mutable_ref_arg[ai] =
-            p.mode == Param::Var || p.mode == Param::Out ||
-            (p.mode == Param::Const && const_param_needs_mutable_ref(p.type.get()));
-      }
-      if (ai < param_types.size()) param_types[ai] = p.type.get();
-      ++ai;
-    }
-  }
-}
-
-const ProcDecl* Emitter::resolve_call_decl(const Expr& callee) {
-  return resolution_.resolve_call_decl(callee);
-}
-
-bool Emitter::proc_accepts_zero_args(const ProcDecl& decl) {
-  for (const auto& p : decl.params) {
-    size_t count = p.names.empty() ? 1 : p.names.size();
-    if (count != 0 && !p.default_value) return false;
-  }
-  return true;
-}
-
 // Pascal/FPC overload resolution conversion-rank table.
 //
 //   rank | name                    | example
@@ -1021,417 +923,6 @@ std::string Emitter::format_resolved_callee(
   std::string text = expr_to_cxx(callee_ast);
   is_callee_context_ = prev_callee_ctx;
   return text;
-}
-
-void Emitter::flatten_call_param_info(
-    const ProcDecl* decl, std::vector<FlatCallParamInfo>& flat_params) {
-  flat_params.clear();
-  if (!decl) return;
-  for (const auto& p : decl->params) {
-    size_t count = p.names.empty() ? 1 : p.names.size();
-    for (size_t i = 0; i < count; ++i) {
-      FlatCallParamInfo info;
-      info.type = p.type.get();
-      info.untyped = !p.type;
-      info.mutable_ref =
-          p.mode == Param::Var || p.mode == Param::Out ||
-          (p.mode == Param::Const && const_param_needs_mutable_ref(p.type.get()));
-      info.default_value = p.default_value.get();
-      flat_params.push_back(info);
-    }
-  }
-}
-
-void Emitter::append_defaulted_trailing_call_args(
-    const ProcDecl* decl, std::vector<const Expr*>& args) {
-  if (!decl) return;
-  std::vector<FlatCallParamInfo> flat_params;
-  flatten_call_param_info(decl, flat_params);
-  if (args.size() >= flat_params.size()) return;
-
-  // Pascal trailing default parameters are compile-time sugar: the callee sees
-  // an ordinary full argument list, so the emitter expands omitted suffix
-  // actuals here before any later call lowering asks about parameter modes.
-  for (size_t i = args.size(); i < flat_params.size(); ++i) {
-    if (!flat_params[i].default_value) return;
-  }
-  args.reserve(flat_params.size());
-  for (size_t i = args.size(); i < flat_params.size(); ++i) {
-    args.push_back(flat_params[i].default_value);
-  }
-}
-
-// Call emission only cares about parameter metadata for a narrow set of
-// bootstrap-sensitive rewrites: untyped `var` arguments stay as raw storage
-// pointers, `char` actuals may need string wrapping, and open arrays need the
-// adapter type. Keep the lookup in one helper instead of restating it inside
-// the giant call-expression path.
-void Emitter::collect_call_param_info(
-    const Expr& callee, std::vector<UntypedArgKind>& untyped_arg,
-    std::vector<bool>& mutable_ref_arg,
-    std::vector<const TypeExpr*>& param_types) {
-  if (callee.kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(callee);
-    mark_builtin_memory_helper_param_info(id.name, untyped_arg,
-                                          mutable_ref_arg, param_types);
-    mark_call_param_info(resolve_call_decl(callee), untyped_arg, mutable_ref_arg,
-                         param_types);
-    return;
-  }
-  if (callee.kind != Kind::Member) return;
-  const auto& mem = static_cast<const Member&>(callee);
-  if (mem.base->kind == Kind::Ident &&
-      ascii_lower(static_cast<const Ident&>(*mem.base).name) == "system") {
-    mark_builtin_memory_helper_param_info(mem.name, untyped_arg,
-                                          mutable_ref_arg, param_types);
-  }
-  mark_call_param_info(resolve_call_decl(callee), untyped_arg, mutable_ref_arg,
-                       param_types);
-}
-
-std::string Emitter::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
-                                    UntypedArgKind untyped_arg,
-                                    bool mutable_ref_arg) {
-  if (param_type && type_is_open_array(param_type) && arg.kind == Kind::SetLit) {
-    return open_array_constructor_to_cxx(static_cast<const SetLit&>(arg),
-                                         *param_type);
-  }
-  const TypeExpr* arg_type = deduce_type(arg);
-  if (arg_type) arg_type = canonicalize_type(arg_type);
-  const TypeExpr* canon_param_type = canonicalize_type(param_type);
-  if (mutable_ref_arg && arg.kind == Kind::Call &&
-      static_cast<const Call&>(arg).args.size() == 1 &&
-      static_cast<const Call&>(arg).callee->kind == Kind::Ident &&
-      (canon_param_type || untyped_arg == UntypedArgKind::None)) {
-    const auto& cast = static_cast<const Call&>(arg);
-    const auto& id = static_cast<const Ident&>(*cast.callee);
-    bool is_type_cast = is_primitive_type(id.name);
-    if (!is_type_cast && lookup_named_type_expr(id.name)) {
-      is_type_cast = true;
-    }
-    if (is_type_cast && expr_is_storage_lvalue(*cast.args[0])) {
-      std::string ref_type_cxx;
-      if (param_type) {
-        ref_type_cxx = type_to_cxx(*param_type);
-      } else if (is_primitive_type(id.name)) {
-        ref_type_cxx = primitive_type_cxx(id.name);
-      } else {
-        ref_type_cxx = type_name_text_to_cxx(id.name);
-      }
-      return reinterpret_ref_text(ref_type_cxx, expr_to_cxx(*cast.args[0]),
-                                  false);
-    }
-  }
-  if (mutable_ref_arg && canon_param_type && arg_type &&
-      expr_is_storage_lvalue(arg) &&
-      type_is_pointerish(canon_param_type) &&
-      type_is_pointerish(arg_type) &&
-      type_to_cxx(*canon_param_type) != type_to_cxx(*arg_type)) {
-    // Pascal `var`/`out` parameters alias the caller's storage slot. When
-    // the slot holds a more specific pointer type than the formal parameter
-    // (e.g. `var p: TNode` called with a `TBlockNode` field), C++'s normal
-    // derived-to-base conversion produces an rvalue and loses that aliasing.
-    // Reinterpret the slot itself so the callee still sees writable storage.
-    return reinterpret_ref_text(type_to_cxx(*param_type), expr_to_cxx(arg),
-                                false);
-  }
-  if (canon_param_type && type_is_stringish(canon_param_type)) {
-    if (mutable_ref_arg && expr_is_storage_lvalue(arg)) {
-      return expr_to_cxx(arg);
-    }
-    if (arg_type && type_is_stringish(arg_type)) {
-      return expr_to_cxx(arg);
-    }
-    if (type_is_pcharish(arg_type)) {
-      return const_value_to_cxx(arg, param_type);
-    }
-    if (arg.kind != Kind::StringLit && !expr_is_charish(arg)) {
-      return expr_to_cxx(arg);
-    }
-  }
-  std::string arg_text = const_value_to_cxx(arg, param_type);
-  if (type_is_open_array(param_type)) {
-    const TypeExpr* at = arg_type;
-    if (!type_is_open_array(at)) {
-      const TypeExpr* canon_param_type = canonicalize_type(param_type);
-      const auto& arr = static_cast<const TyArray&>(*canon_param_type);
-      const TypeExpr* elem_type = arr.element ? arr.element.get() : nullptr;
-      std::string elem_cxx = elem_type ? type_to_cxx(*elem_type)
-                                       : std::string("int32_t");
-      arg_text = "::rt::tp2cc_open_array<" + elem_cxx + ">(" + arg_text + ")";
-    }
-  }
-  if (untyped_arg == UntypedArgKind::None) return arg_text;
-
-  // Untyped Pascal params are already lowered as "pointer to caller storage".
-  // Forwarding one of them must preserve the pointer value; taking `&` here
-  // would pass the address of the local pointer slot instead.
-  if (arg.kind == Kind::AddrOf &&
-      !static_cast<const AddrOf&>(arg).double_addr) {
-    return "((void*)(" + arg_text + "))";
-  }
-  if (arg.kind == Kind::Ident &&
-      local_untyped_params.count(static_cast<const Ident&>(arg).name)) {
-    return arg_text;
-  }
-  if (untyped_arg == UntypedArgKind::Const &&
-      !mutable_ref_arg && !expr_is_storage_lvalue(arg)) {
-    return "::rt::tp2cc_const_untyped_ptr(" + arg_text + ")";
-  }
-  return "((void*)&(" + arg_text + "))";
-}
-
-std::string Emitter::lower_implicit_zero_arg_call(const std::string& callee_text,
-                                                  const ProcDecl* decl) {
-  if (!decl) return callee_text + "()";
-
-  std::vector<const Expr*> args;
-  append_defaulted_trailing_call_args(decl, args);
-  if (args.empty()) return callee_text + "()";
-
-  std::vector<UntypedArgKind> untyped_arg(args.size(), UntypedArgKind::None);
-  std::vector<bool> mutable_ref_arg(args.size(), false);
-  std::vector<const TypeExpr*> param_types(args.size(), nullptr);
-  mark_call_param_info(decl, untyped_arg, mutable_ref_arg, param_types);
-
-  // Bare Pascal `foo;` / `obj.meth;` can still mean a call when the omitted
-  // trailing actuals all come from defaults. Rebuild that full call here so
-  // implicit-call sites share the same argument lowering as explicit `Call`.
-  std::string out = callee_text + "(";
-  for (size_t i = 0; i < args.size(); ++i) {
-    if (i) out += ", ";
-    out += lower_call_arg(*args[i], param_types[i], untyped_arg[i],
-                          mutable_ref_arg[i]);
-  }
-  out += ")";
-  return out;
-}
-
-std::string Emitter::lower_property_read(
-    Location where, const std::string& base_cxx, const std::string& class_name,
-    const PropertyInfo& prop, const std::vector<const Expr*>& indices) {
-  if (auto text = maybe_property_read_text(base_cxx, class_name, prop, indices)) {
-    return *text;
-  }
-  report_error(where, "unsupported property read accessor '" + prop.read_name + "'");
-  return base_cxx + "." + mangle(prop.read_name);
-}
-
-std::optional<std::string> Emitter::maybe_property_read_text(
-    const std::string& base_cxx, const std::string& class_name,
-    const PropertyInfo& prop, const std::vector<const Expr*>& indices) {
-  // Properties are Pascal-side metadata only. Reads/writes rewrite to the
-  // declared backing field/getter/setter so we do not invent extra C++
-  // members whose names could collide in ways Pascal itself forbids.
-  if (!registry) return std::nullopt;
-  const std::string access =
-      (registry->classes.count(class_name) &&
-       registry->classes.at(class_name).is_reference_type)
-          ? "->"
-          : ".";
-  if (const auto* field = registry->lookup_class_field(class_name, prop.read_name)) {
-    (void)field;
-    std::string text = base_cxx + access + mangle(prop.read_name);
-    for (const auto* idx : indices) {
-      text += "[" + expr_to_cxx(*idx) + "]";
-    }
-    return {text};
-  }
-  if (const auto* method = registry->lookup_class_method(class_name, prop.read_name)) {
-    (void)method;
-    std::string text = base_cxx + access + mangle(prop.read_name) + "(";
-    for (size_t i = 0; i < indices.size(); ++i) {
-      if (i) text += ", ";
-      text += expr_to_cxx(*indices[i]);
-    }
-    text += ")";
-    return {text};
-  }
-  return std::nullopt;
-}
-
-std::string Emitter::lower_property_write(
-    Location where, const std::string& base_cxx, const std::string& class_name,
-    const PropertyInfo& prop, const std::vector<const Expr*>& indices,
-    const Expr& value) {
-  if (auto text = maybe_property_write_text(base_cxx, class_name, prop, indices,
-                                            value)) {
-    return *text;
-  }
-  if (prop.write_name.empty()) {
-    report_error(where, "property is read-only");
-  } else {
-    report_error(where, "unsupported property write accessor '" + prop.write_name +
-                            "'");
-  }
-  return base_cxx;
-}
-
-std::optional<std::string> Emitter::maybe_property_write_text(
-    const std::string& base_cxx, const std::string& class_name,
-    const PropertyInfo& prop, const std::vector<const Expr*>& indices,
-    const Expr& value) {
-  if (!registry) return std::nullopt;
-  const std::string access =
-      (registry->classes.count(class_name) &&
-       registry->classes.at(class_name).is_reference_type)
-          ? "->"
-          : ".";
-  if (prop.write_name.empty()) {
-    return std::nullopt;
-  }
-  std::string rhs = const_value_to_cxx(value, prop.type.get());
-  if (const auto* field = registry->lookup_class_field(class_name, prop.write_name)) {
-    (void)field;
-    std::string text = base_cxx + access + mangle(prop.write_name);
-    for (const auto* idx : indices) {
-      text += "[" + expr_to_cxx(*idx) + "]";
-    }
-    return {text + " = " + rhs};
-  }
-  if (const auto* method = registry->lookup_class_method(class_name, prop.write_name)) {
-    (void)method;
-    std::string text = base_cxx + access + mangle(prop.write_name) + "(";
-    bool first = true;
-    for (const auto* idx : indices) {
-      if (!first) text += ", ";
-      text += expr_to_cxx(*idx);
-      first = false;
-    }
-    if (!first) text += ", ";
-    text += rhs;
-    text += ")";
-    return {text};
-  }
-  return std::nullopt;
-}
-
-std::string Emitter::implicit_self_cxx() {
-  if (!current_class_name.empty()) {
-    if (const auto* ci = class_info_for_type_name(current_class_name)) {
-      return ci->is_reference_type ? "this" : "(*this)";
-    }
-  }
-  return "(*this)";
-}
-
-std::optional<Emitter::ImplicitPropertyLookup>
-Emitter::find_implicit_class_property(std::string_view name) {
-  if (!registry) return std::nullopt;
-  if (local_scope.count(std::string(name))) return std::nullopt;
-
-  // Bare member names inside a method body must resolve exactly like
-  // `self.Name`, including indexed/default properties. Keep the lookup
-  // in one place so reads, writes, and type deduction stay aligned.
-  for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
-    const std::string& cls = it->class_name;
-    if (cls.empty()) continue;
-    if (auto* prop = registry->lookup_class_property(cls, std::string(name))) {
-      return ImplicitPropertyLookup{prop, cls, it->cxx_text, true};
-    }
-  }
-
-  if (current_class_name.empty()) return std::nullopt;
-  if (auto* prop = registry->lookup_class_property(current_class_name,
-                                                   std::string(name))) {
-    return ImplicitPropertyLookup{prop, current_class_name, implicit_self_cxx(),
-                                  false};
-  }
-  return std::nullopt;
-}
-
-std::optional<Emitter::ResolveResult> Emitter::maybe_resolve_implicit_property(
-    std::string_view name) {
-  auto found = find_implicit_class_property(name);
-  if (!found || !found->prop || !found->prop->params.empty()) return std::nullopt;
-  std::vector<const Expr*> no_indices;
-  if (auto text = maybe_property_read_text(found->base_cxx, found->class_name,
-                                           *found->prop, no_indices)) {
-    ResolveResult r;
-    r.kind = found->from_with ? ResolvedKind::WithProperty
-                              : ResolvedKind::ClassProperty;
-    r.cxx = *text;
-    return r;
-  }
-  return std::nullopt;
-}
-
-std::optional<std::string> Emitter::maybe_lower_implicit_property_write(
-    Location where, std::string_view name, const Expr& value) {
-  auto found = find_implicit_class_property(name);
-  if (!found || !found->prop || !found->prop->params.empty()) return std::nullopt;
-  std::vector<const Expr*> no_indices;
-  return lower_property_write(where, found->base_cxx, found->class_name,
-                              *found->prop, no_indices, value);
-}
-
-std::optional<std::string> Emitter::maybe_lower_class_free_member(
-    const Expr& base, std::string_view member_name) {
-  if (member_name != "free" || !expr_is_reference_class(base)) {
-    return std::nullopt;
-  }
-  // Pascal `obj.Free` is the null-safe TObject cleanup entrypoint, not a
-  // normal instance call. Lower it to the runtime static helper so the
-  // null check happens before any C++ member dispatch.
-  return "::rt::p_tobject::p_free(" + expr_to_cxx(base) + ")";
-}
-
-std::optional<std::string> Emitter::maybe_lower_class_constructor_call(
-    std::string_view class_name, std::string_view member_name,
-    const std::vector<const Expr*>& args,
-    const std::vector<const TypeExpr*>& param_types,
-    const std::vector<UntypedArgKind>& untyped_arg,
-    const std::vector<bool>& mutable_ref_arg) {
-  if (!registry) return std::nullopt;
-  const auto* ci = class_info_for_type_name(class_name);
-  if (!ci || !ci->is_reference_type) {
-    return std::nullopt;
-  }
-  const auto* method = registry->lookup_class_method(std::string(class_name),
-                                                     std::string(member_name));
-  bool implicit_root_create = false;
-  if (!method || method->kind != SymKind::Constructor) {
-    if (ascii_lower(std::string(member_name)) != "create" || !args.empty()) {
-      return std::nullopt;
-    }
-    implicit_root_create = true;
-  }
-
-  std::vector<const Expr*> effective_args(args.begin(), args.end());
-  std::vector<const TypeExpr*> effective_param_types(param_types.begin(),
-                                                     param_types.end());
-  std::vector<UntypedArgKind> effective_untyped_arg(untyped_arg.begin(),
-                                                    untyped_arg.end());
-  std::vector<bool> effective_mutable_ref_arg(mutable_ref_arg.begin(),
-                                              mutable_ref_arg.end());
-  append_defaulted_trailing_call_args(method ? method->decl.get() : nullptr,
-                                      effective_args);
-  if (effective_param_types.size() < effective_args.size()) {
-    effective_param_types.resize(effective_args.size(), nullptr);
-    effective_untyped_arg.resize(effective_args.size(), UntypedArgKind::None);
-    effective_mutable_ref_arg.resize(effective_args.size(), false);
-    mark_call_param_info(method ? method->decl.get() : nullptr,
-                         effective_untyped_arg, effective_mutable_ref_arg,
-                         effective_param_types);
-  }
-
-  // Pascal constructor calls on a class value (`TNode.Create`) allocate a
-  // fresh instance and then run the constructor body on that instance. They
-  // are not plain static method calls, even though the emitted C++ helper
-  // itself lives on the struct type.
-  std::string args_cxx;
-  for (size_t i = 0; i < effective_args.size(); ++i) {
-    if (i) args_cxx += ", ";
-    args_cxx += lower_call_arg(*effective_args[i], effective_param_types[i],
-                               effective_untyped_arg[i],
-                               effective_mutable_ref_arg[i]);
-  }
-  std::string struct_ty = named_type_struct_cxx(class_name);
-  return "([&]{ auto tp2cc_ptr = new " + struct_ty + "{}; tp2cc_ptr->" +
-         (implicit_root_create ? std::string("p_create")
-                               : mangle(std::string(member_name))) +
-         "(" + args_cxx +
-         "); return tp2cc_ptr; }())";
 }
 
 size_t procedural_param_count(const TyProcedural& p) {
@@ -3013,20 +2504,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         // exactly the overload we are landing on. The builtin-helper hook
         // (move/fillchar/etc.) still runs because it overrides specific
         // slots that the decl-based path leaves null.
-        if (c.callee->kind == Kind::Ident) {
-          mark_builtin_memory_helper_param_info(
-              static_cast<const Ident&>(*c.callee).name,
-              call_untyped_arg, call_mutable_ref_arg, call_param_types);
-        } else if (c.callee->kind == Kind::Member) {
-          const auto& mem = static_cast<const Member&>(*c.callee);
-          if (mem.base->kind == Kind::Ident &&
-              ascii_lower(static_cast<const Ident&>(*mem.base).name) ==
-                  "system") {
-            mark_builtin_memory_helper_param_info(
-                mem.name, call_untyped_arg, call_mutable_ref_arg,
-                call_param_types);
-          }
-        }
+        collect_builtin_helper_param_info(*c.callee, call_untyped_arg,
+                                          call_mutable_ref_arg,
+                                          call_param_types);
         mark_call_param_info(call_decl, call_untyped_arg,
                              call_mutable_ref_arg, call_param_types);
       } else {
