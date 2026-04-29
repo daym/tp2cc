@@ -16,6 +16,7 @@
 #include "emit_calls.h"
 #include "emit_context.h"
 #include "emit_decls.h"
+#include "emit_lookup.h"
 #include "emit_properties.h"
 #include "emit_procs.h"
 #include "emit_resolution.h"
@@ -155,6 +156,7 @@ struct Emitter : ResolveNameProvider,
   EmitResolution resolution_;
   EmitCalls calls_;
   EmitProperties properties_;
+  EmitLookup lookup_;
   EmitValues values_;
   EmitDecls decls_;
   EmitProcs procs_;
@@ -198,6 +200,7 @@ struct Emitter : ResolveNameProvider,
         calls_(registry, scope_state_, analysis_, types_, storage_,
                resolution_, *this),
         properties_(registry, analysis_, *this),
+        lookup_(registry, scope_state_, analysis_, properties_),
         values_(registry, scope_state_, analysis_, types_, storage_, *this),
         decls_(registry, scope_state_, analysis_, types_, storage_, values_,
                *this),
@@ -260,16 +263,6 @@ struct Emitter : ResolveNameProvider,
   }
   const ast::TypeExpr* canonicalize_type(const ast::TypeExpr* t) {
     return analysis_.canonicalize_type(t);
-  }
-  bool enum_has_explicit_values(const TyEnum& e) {
-    return types_.enum_has_explicit_values(e);
-  }
-  std::optional<int64_t> enum_member_value_int64(const TyEnum& e,
-                                                 size_t index) {
-    return types_.enum_member_value_int64(e, index);
-  }
-  std::string enum_member_value_to_cxx(const TyEnum& e, size_t index) {
-    return types_.enum_member_value_to_cxx(e, index);
   }
   std::string enum_underlying_type_to_cxx(const TyEnum& e) {
     return types_.enum_underlying_type_to_cxx(e);
@@ -345,10 +338,6 @@ struct Emitter : ResolveNameProvider,
   // Pascal casts do not.
   std::optional<std::string> maybe_convert_const_int_expr(
       const Expr& e, const TypeExpr* target, bool explicit_conversion);
-  std::optional<std::string> maybe_convert_proc_value(
-      const Expr& e, const TypeExpr* target);
-  std::optional<std::string> maybe_lower_metaclass_value(
-      const Expr& e, const TypeExpr* target);
 
   // Small helpers.
   bool const_param_needs_mutable_ref(const ast::TypeExpr* t) {
@@ -410,8 +399,6 @@ struct Emitter : ResolveNameProvider,
   // `with` targets can be anonymous local records, so name-based
   // registry lookup is not enough. These helpers walk the stacked
   // bound type itself and recover the member type/text directly.
-  const ast::TypeExpr* lookup_record_field_type_in_with(
-      const WithBind& wb, std::string_view field_name);
   bool with_bind_has_visible_member(const WithBind& wb, std::string_view name);
   bool type_is_packed_record(const ast::TypeExpr* t) {
     return storage_.type_is_packed_record(t);
@@ -587,35 +574,16 @@ struct Emitter : ResolveNameProvider,
         class_name, member_name, args, param_types, untyped_arg,
         mutable_ref_arg);
   }
-
-  // ---------------------------------------------------------------------
-  // Pascal name resolution (one function, every emit path goes through
-  // it). Given a name and optional qualifier, model the full Pascal
-  // lookup:
-  //   - unqualified: `with` -> locals -> enclosing nested fns ->
-  //                  class+ancestors (in method body) -> current unit ->
-  //                  `uses` chain -> rt:: builtins.
-  //   - `Unit.name`: symbols exported by `Unit` (which must be in the
-  //                  current unit's `uses` list).
-  //   - `Class.name` / `obj.name`: class's members walking ancestors.
-  //
-  // The resolved result tells the emitter:
-  //   - how to spell the access in C++,
-  //   - whether it's a parameterless callable (value context -> auto-call),
-  //   - the ProcDecl* for call-site untyped-var arg wrapping,
-  //   - whether it's a field/var/const/enum-member (never auto-call).
   using ResolvedKind = tp2cc::ResolvedKind;
   using ResolveResult = tp2cc::ResolveResult;
-  std::optional<ResolveResult> maybe_resolve_implicit_property(
-      std::string_view name) {
-    return properties_.maybe_resolve_implicit_property(name);
-  }
   // Qualifier: empty means unqualified lookup.  Otherwise it's a
   // unit name or a class/record alias name (both lowercased).
   using QualifierKind = tp2cc::QualifierKind;
   ResolveResult resolve_name(const std::string& name,
                              QualifierKind qk = QualifierKind::None,
-                             const std::string& qualifier = {}) override;
+                             const std::string& qualifier = {}) override {
+    return lookup_.resolve_name(name, qk, qualifier);
+  }
 
   // State: the Pascal identifier of the current function whose body we are
   // emitting (not mangled). Used by `exit`/`exit(v)` translation so we
@@ -657,11 +625,6 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
 
 std::string Emitter::deduce_class_alias(const Expr& e) {
   return analysis_.deduce_class_alias(e);
-}
-
-const TypeExpr* Emitter::lookup_record_field_type_in_with(
-    const WithBind& wb, std::string_view field_name) {
-  return analysis_.lookup_record_field_type_in_with(wb, field_name);
 }
 
 bool Emitter::with_bind_has_visible_member(const WithBind& wb,
@@ -724,299 +687,6 @@ std::string Emitter::format_resolved_callee(
   std::string text = expr_to_cxx(callee_ast);
   is_callee_context_ = prev_callee_ctx;
   return text;
-}
-
-// ---------------------------------------------------------------------------
-// Single-point Pascal name resolution. `resolve_name` walks the real
-// Pascal lookup order and returns a `ResolveResult` every emit site
-// consumes uniformly; this avoids having the same "is it a method?
-// is it a unit-qualified proc? should we auto-call?" logic grow in
-// three different places in the emitter.
-
-Emitter::ResolveResult Emitter::resolve_name(
-    const std::string& name, QualifierKind qk, const std::string& qualifier) {
-  ResolveResult r;
-
-  // ----- Qualified lookups first: `Unit.name` / `Class.name`. -----
-  if (qk == QualifierKind::Unit) {
-    r.cxx = unit_namespace_prefix(qualifier) + mangle(name);
-    if (registry) {
-      auto uit = registry->units.find(qualifier);
-      if (uit != registry->units.end()) {
-        const UnitInfo& u = uit->second;
-        if (auto* pi = u.find_export_proc(name)) {
-          r.kind = ResolvedKind::UnitProc;
-          r.proc = pi->decl.get();
-          r.is_callable = true;
-          r.is_parameterless = (pi->param_count == 0);
-          r.accepts_zero_args = pi->accepts_zero_args;
-          r.return_type_name = pi->return_type_name;
-          return r;
-        }
-        if (u.find_export_var(name)) { r.kind = ResolvedKind::UnitVar; return r; }
-        if (u.find_export_const(name)) { r.kind = ResolvedKind::UnitConst; return r; }
-        if (u.has_export_enum_member(name)) { r.kind = ResolvedKind::EnumMember; return r; }
-        if (u.has_export_type(name)) { r.kind = ResolvedKind::UnitType; return r; }
-      }
-    }
-    // RTL unit we don't parse (e.g. `dos.getenv` when dos.pas isn't in our
-    // source tree). Keep the Pascal unit qualifier in the emitted text and
-    // let the runtime's stub namespace alias own that lookup.
-    r.kind = ResolvedKind::Unknown;
-    return r;
-  }
-  if (qk == QualifierKind::Class) {
-    if (registry) {
-      if (auto* m = registry->lookup_class_method(qualifier, name)) {
-        r.kind = ResolvedKind::ClassMethod;
-        r.proc = m->decl.get();
-        r.is_callable = true;
-        r.is_parameterless = (m->param_count == 0);
-        r.accepts_zero_args = m->accepts_zero_args;
-        r.cxx = mangle(name);  // caller emits the `base.` prefix
-        return r;
-      }
-      if (registry->lookup_class_field(qualifier, name)) {
-        r.kind = ResolvedKind::ClassField;
-        r.cxx = mangle(name);  // caller emits the `base.` prefix
-        return r;
-      }
-    }
-    r.cxx = mangle(name);
-    r.kind = ResolvedKind::Unknown;
-    return r;
-  }
-
-  // ----- Unqualified lookup. -----
-
-  // 1. Function-name-as-read inside its own body -> the implicit Pascal
-  //    result variable.
-  if (current_fn_is_function && current_fn_result_type &&
-      !current_fn_name.empty() && name == current_fn_name) {
-    r.cxx = current_result_slot_name;
-    r.kind = ResolvedKind::ResultSlot;
-    return r;
-  }
-  if (bare_result_type && is_pascal_result_ident(name)) {
-    r.cxx = bare_result_slot_name;
-    r.kind = ResolvedKind::ResultSlot;
-    return r;
-  }
-  if (outer_result_type && !outer_result_name.empty() &&
-      name == outer_result_name) {
-    r.cxx = outer_result_slot_name;
-    r.kind = ResolvedKind::ResultSlot;
-    return r;
-  }
-  // 2. `with X do` bindings (inside-out). Fields and methods of X's
-  //    class (walking ancestors) shadow outer scopes.
-  if (registry) {
-    for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
-      const std::string& cls = it->class_name;
-      const std::string& access = it->access_op;
-      if (const auto* ci = class_info_for_type_name(cls);
-          ci && ci->is_reference_type &&
-          (name == "classtype" || name == "instancesize")) {
-        r.cxx = it->cxx_text + access + mangle(name);
-        r.kind = ResolvedKind::WithMethod;
-        r.is_callable = true;
-        r.is_parameterless = true;
-        r.accepts_zero_args = true;
-        return r;
-      }
-      // `with obj do ... Free;` -- bare-Ident form of `obj.Free`. The
-      // Member-form has its own lowering through `maybe_lower_class_free_member`;
-      // mirror it here so the inherited TObject method is found via the
-      // with-bound expression rather than the registry chain (TObject
-      // itself is built-in, not in `registry->classes`, so a generic
-      // class-method lookup dead-ends before reaching it).
-      if (const auto* ci = class_info_for_type_name(cls);
-          ci && ci->is_reference_type && name == "free") {
-        r.cxx = "::rt::p_tobject::p_free(" + it->cxx_text + ")";
-        r.kind = ResolvedKind::WithMethod;
-        // The expression is already a complete call; no implicit-zero-arg
-        // wrap is wanted at the use site.
-        r.is_callable = false;
-        return r;
-      }
-      if (!cls.empty()) {
-        if (auto* m = registry->lookup_class_method(cls, name)) {
-          r.cxx = it->cxx_text + access + mangle(name);
-          r.kind = ResolvedKind::WithMethod;
-          r.proc = m->decl.get();
-          r.is_callable = true;
-          r.is_parameterless = (m->param_count == 0);
-          r.accepts_zero_args = m->accepts_zero_args;
-          return r;
-        }
-        if (registry->lookup_class_field(cls, name)) {
-          r.cxx = it->cxx_text + access + mangle(name);
-          r.kind = ResolvedKind::WithField;
-          return r;
-        }
-      }
-      if (lookup_record_field_type_in_with(*it, name)) {
-        r.cxx = it->cxx_text + access + mangle(name);
-        r.kind = ResolvedKind::WithField;
-        return r;
-      }
-    }
-  }
-  // 3. Nested parameterless function in the current scope -- stored
-  //    as `std::function<T()>`, so a bare reference is NOT the value.
-  {
-    auto nit = local_nested_fns.find(name);
-    if (nit != local_nested_fns.end()) {
-      r.kind = ResolvedKind::NestedFn;
-      r.cxx = mangle(name);
-       r.proc = nit->second.decl;
-      r.is_callable = true;
-      r.is_parameterless = (nit->second.param_count == 0);
-      r.accepts_zero_args = nit->second.accepts_zero_args;
-      return r;
-    }
-  }
-  // 4. Procedure-local (param, var, typed const, nested-proc-name).
-  if (local_scope.count(name)) {
-    r.kind = ResolvedKind::Local;
-    r.cxx = mangle(name);
-    return r;
-  }
-  for (const auto& [_, en] : local_enums) {
-    if (!en) continue;
-    for (const auto& member : en->members) {
-      if (ascii_lower(member.name) == ascii_lower(name)) {
-        r.kind = ResolvedKind::EnumMember;
-        r.cxx = mangle(name);
-        return r;
-      }
-    }
-  }
-  if (auto prop = maybe_resolve_implicit_property(name)) return *prop;
-  // 5. Current class's members (chain).
-  if (!current_class_name.empty() && registry) {
-    if (const auto* ci = class_info_for_type_name(current_class_name);
-        ci && ci->is_reference_type &&
-        (name == "classtype" || name == "instancesize")) {
-      r.cxx = mangle(name);
-      r.kind = ResolvedKind::ClassMethod;
-      r.is_callable = true;
-      r.is_parameterless = true;
-      r.accepts_zero_args = true;
-      return r;
-    }
-    if (auto* m = registry->lookup_class_method(current_class_name, name)) {
-      r.cxx = mangle(name);
-      r.kind = ResolvedKind::ClassMethod;
-      r.proc = m->decl.get();
-      r.is_callable = true;
-      r.is_parameterless = (m->param_count == 0);
-      r.accepts_zero_args = m->accepts_zero_args;
-      return r;
-    }
-    if (registry->lookup_class_field(current_class_name, name)) {
-      r.cxx = mangle(name);
-      r.kind = ResolvedKind::ClassField;
-      return r;
-    }
-    // Inline anonymous enum used as a class-field type contributes its
-    // members to the enclosing class scope. C++ resolves the bare name
-    // through the enclosing-class scope at the use site, so we emit
-    // unqualified.
-    if (registry->class_has_enum_member(current_class_name, name)) {
-      r.cxx = mangle(name);
-      r.kind = ResolvedKind::EnumMember;
-      return r;
-    }
-  }
-  // 6. Unit-level -- own unit first, then cross-unit (`uses` chain).
-  if (registry) {
-    auto uit = registry->units.find(current_unit_name);
-    const UnitInfo* ui = (uit != registry->units.end())
-                            ? &uit->second : nullptr;
-    bool own = ui && ui->has(name);
-    // Current unit's own symbols shadow everything from `uses`.
-    // Emit bare (C++ picks them up in the current namespace).
-    if (ui) {
-      if (auto* pi = ui->find_proc(name)) {
-        r.cxx = mangle(name);
-        r.kind = ResolvedKind::UnitProc;
-        r.proc = pi->decl.get();
-        r.is_callable = true;
-        r.is_parameterless = (pi->param_count == 0);
-        r.accepts_zero_args = pi->accepts_zero_args;
-        return r;
-      }
-      if (ui->find_var(name)) {
-        r.cxx = mangle(name); r.kind = ResolvedKind::UnitVar; return r;
-      }
-      if (ui->find_const(name)) {
-        r.cxx = mangle(name); r.kind = ResolvedKind::UnitConst; return r;
-      }
-      if (ui->has_enum_member(name)) {
-        r.cxx = mangle(name); r.kind = ResolvedKind::EnumMember; return r;
-      }
-      if (ui->has_type(name)) {
-        r.cxx = mangle(name); r.kind = ResolvedKind::UnitType; return r;
-      }
-    }
-    // Cross-unit lookup: walk the current unit's `uses` list and pick
-    // the first match in a unit that actually exports this name.
-    // Ambiguity between same-named symbols in two `using namespace`'d
-    // units is resolved by emitting the fully-qualified form.
-    auto check_unit = [&](const std::string& un) -> bool {
-      auto it = registry->units.find(un);
-      if (it == registry->units.end()) return false;
-      const UnitInfo& u = it->second;
-      // Synthetic `__rt__` unit holds runtime builtins. Emit them fully
-      // qualified so translated units do not depend on `using namespace
-      // ::rt;` for correctness.
-      const std::string prefix = unit_namespace_prefix(un);
-      // Other units contribute only their interface-exported names.
-      if (auto* pi = u.find_export_proc(name)) {
-        r.cxx = prefix + mangle(name);
-        r.kind = (un == "__rt__") ? ResolvedKind::RtBuiltin
-                                  : ResolvedKind::UnitProc;
-        r.proc = pi->decl.get();
-        r.is_callable = true;
-        r.is_parameterless = (pi->param_count == 0);
-        r.accepts_zero_args = pi->accepts_zero_args;
-        r.return_type_name = pi->return_type_name;
-        return true;
-      }
-      if (u.find_export_var(name)) {
-        r.cxx = prefix + mangle(name);
-        r.kind = ResolvedKind::UnitVar; return true;
-      }
-      if (u.find_export_const(name)) {
-        r.cxx = prefix + mangle(name);
-        r.kind = ResolvedKind::UnitConst; return true;
-      }
-      if (u.has_export_enum_member(name)) {
-        r.cxx = prefix + mangle(name);
-        r.kind = ResolvedKind::EnumMember; return true;
-      }
-      if (u.has_export_type(name)) {
-        r.cxx = prefix + mangle(name);
-        r.kind = ResolvedKind::UnitType; return true;
-      }
-      return false;
-    };
-    if (ui) {
-      // Right-to-left is Pascal's uses resolution order.
-      for (auto it = ui->uses.rbegin(); it != ui->uses.rend(); ++it) {
-        if (check_unit(*it)) return r;
-      }
-    }
-    (void)own;  // already handled by the per-unit lookup above.
-  }
-  // 7. Fallback: unresolved free names are much more often runtime helpers
-  //    than cross-unit symbols. Emit them as explicit `::rt::...`
-  //    references instead of depending on open namespaces in generated
-  //    units.
-  r.cxx = "::rt::" + mangle(name);
-  r.kind = ResolvedKind::Unknown;
-  return r;
 }
 
 // ---------------------------------------------------------------------------

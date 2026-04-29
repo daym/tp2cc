@@ -1,0 +1,340 @@
+#include "emit_lookup.h"
+
+#include <string>
+
+#include "emit_analysis.h"
+#include "emit_properties.h"
+#include "emit_support.h"
+#include "typereg.h"
+
+namespace tp2cc {
+
+EmitLookup::EmitLookup(const TypeRegistry* registry, ScopeStateView& scope,
+                       EmitAnalysis& analysis, EmitProperties& properties)
+    : registry_(registry),
+      scope_(scope),
+      analysis_(analysis),
+      properties_(properties) {}
+
+ResolveResult EmitLookup::resolve_name(const std::string& name,
+                                       QualifierKind qk,
+                                       const std::string& qualifier) {
+  ResolveResult r;
+
+  // ----- Qualified lookups first: `Unit.name` / `Class.name`. -----
+  if (qk == QualifierKind::Unit) {
+    r.cxx = unit_namespace_prefix(qualifier) + mangle(name);
+    if (registry_) {
+      auto uit = registry_->units.find(qualifier);
+      if (uit != registry_->units.end()) {
+        const UnitInfo& u = uit->second;
+        if (auto* pi = u.find_export_proc(name)) {
+          r.kind = ResolvedKind::UnitProc;
+          r.proc = pi->decl.get();
+          r.is_callable = true;
+          r.is_parameterless = (pi->param_count == 0);
+          r.accepts_zero_args = pi->accepts_zero_args;
+          r.return_type_name = pi->return_type_name;
+          return r;
+        }
+        if (u.find_export_var(name)) {
+          r.kind = ResolvedKind::UnitVar;
+          return r;
+        }
+        if (u.find_export_const(name)) {
+          r.kind = ResolvedKind::UnitConst;
+          return r;
+        }
+        if (u.has_export_enum_member(name)) {
+          r.kind = ResolvedKind::EnumMember;
+          return r;
+        }
+        if (u.has_export_type(name)) {
+          r.kind = ResolvedKind::UnitType;
+          return r;
+        }
+      }
+    }
+    // RTL unit unavailable to translation. Keep the Pascal unit qualifier in
+    // the emitted text and let the runtime's stub namespace alias own that
+    // lookup.
+    r.kind = ResolvedKind::Unknown;
+    return r;
+  }
+  if (qk == QualifierKind::Class) {
+    if (registry_) {
+      if (auto* m = registry_->lookup_class_method(qualifier, name)) {
+        r.kind = ResolvedKind::ClassMethod;
+        r.proc = m->decl.get();
+        r.is_callable = true;
+        r.is_parameterless = (m->param_count == 0);
+        r.accepts_zero_args = m->accepts_zero_args;
+        r.cxx = mangle(name);  // caller emits the `base.` prefix
+        return r;
+      }
+      if (registry_->lookup_class_field(qualifier, name)) {
+        r.kind = ResolvedKind::ClassField;
+        r.cxx = mangle(name);  // caller emits the `base.` prefix
+        return r;
+      }
+    }
+    r.cxx = mangle(name);
+    r.kind = ResolvedKind::Unknown;
+    return r;
+  }
+
+  // ----- Unqualified lookup. -----
+
+  // 1. Function-name-as-read inside its own body -> the implicit Pascal
+  //    result variable.
+  if (scope_.current_fn_is_function && scope_.current_fn_result_type &&
+      !scope_.current_fn_name.empty() && name == scope_.current_fn_name) {
+    r.cxx = scope_.current_result_slot_name;
+    r.kind = ResolvedKind::ResultSlot;
+    return r;
+  }
+  if (scope_.bare_result_type && is_pascal_result_ident(name)) {
+    r.cxx = scope_.bare_result_slot_name;
+    r.kind = ResolvedKind::ResultSlot;
+    return r;
+  }
+  if (scope_.outer_result_type && !scope_.outer_result_name.empty() &&
+      name == scope_.outer_result_name) {
+    r.cxx = scope_.outer_result_slot_name;
+    r.kind = ResolvedKind::ResultSlot;
+    return r;
+  }
+
+  // 2. `with X do` bindings (inside-out). Fields and methods of X's
+  //    class (walking ancestors) shadow outer scopes.
+  if (registry_) {
+    for (auto it = scope_.with_stack.rbegin(); it != scope_.with_stack.rend();
+         ++it) {
+      const std::string& cls = it->class_name;
+      const std::string& access = it->access_op;
+      if (const auto* ci = analysis_.class_info_for_type_name(cls);
+          ci && ci->is_reference_type &&
+          (name == "classtype" || name == "instancesize")) {
+        r.cxx = it->cxx_text + access + mangle(name);
+        r.kind = ResolvedKind::WithMethod;
+        r.is_callable = true;
+        r.is_parameterless = true;
+        r.accepts_zero_args = true;
+        return r;
+      }
+      // `with obj do ... Free;` is the bare-identifier form of `obj.Free`.
+      // Resolve it through the active `with` expression so inherited TObject
+      // methods are still available even though TObject is a runtime class
+      // rather than an entry in `registry->classes`.
+      if (const auto* ci = analysis_.class_info_for_type_name(cls);
+          ci && ci->is_reference_type && name == "free") {
+        r.cxx = "::rt::p_tobject::p_free(" + it->cxx_text + ")";
+        r.kind = ResolvedKind::WithMethod;
+        // The expression is already a complete call; no implicit-zero-arg
+        // wrap is wanted at the use site.
+        r.is_callable = false;
+        return r;
+      }
+      if (!cls.empty()) {
+        if (auto* m = registry_->lookup_class_method(cls, name)) {
+          r.cxx = it->cxx_text + access + mangle(name);
+          r.kind = ResolvedKind::WithMethod;
+          r.proc = m->decl.get();
+          r.is_callable = true;
+          r.is_parameterless = (m->param_count == 0);
+          r.accepts_zero_args = m->accepts_zero_args;
+          return r;
+        }
+        if (registry_->lookup_class_field(cls, name)) {
+          r.cxx = it->cxx_text + access + mangle(name);
+          r.kind = ResolvedKind::WithField;
+          return r;
+        }
+      }
+      if (analysis_.lookup_record_field_type_in_with(*it, name)) {
+        r.cxx = it->cxx_text + access + mangle(name);
+        r.kind = ResolvedKind::WithField;
+        return r;
+      }
+    }
+  }
+
+  // 3. Nested parameterless function in the current scope -- stored
+  //    as `std::function<T()>`, so a bare reference is NOT the value.
+  {
+    auto nit = scope_.local_nested_fns.find(name);
+    if (nit != scope_.local_nested_fns.end()) {
+      r.kind = ResolvedKind::NestedFn;
+      r.cxx = mangle(name);
+      r.proc = nit->second.decl;
+      r.is_callable = true;
+      r.is_parameterless = (nit->second.param_count == 0);
+      r.accepts_zero_args = nit->second.accepts_zero_args;
+      return r;
+    }
+  }
+
+  // 4. Procedure-local (param, var, typed const, nested-proc-name).
+  if (scope_.local_scope.count(name)) {
+    r.kind = ResolvedKind::Local;
+    r.cxx = mangle(name);
+    return r;
+  }
+  for (const auto& [_, en] : scope_.local_enums) {
+    if (!en) continue;
+    for (const auto& member : en->members) {
+      if (ascii_lower(member.name) == ascii_lower(name)) {
+        r.kind = ResolvedKind::EnumMember;
+        r.cxx = mangle(name);
+        return r;
+      }
+    }
+  }
+  if (auto prop = properties_.maybe_resolve_implicit_property(name)) {
+    return *prop;
+  }
+
+  // 5. Current class's members (chain).
+  if (!scope_.current_class_name.empty() && registry_) {
+    if (const auto* ci =
+            analysis_.class_info_for_type_name(scope_.current_class_name);
+        ci && ci->is_reference_type &&
+        (name == "classtype" || name == "instancesize")) {
+      r.cxx = mangle(name);
+      r.kind = ResolvedKind::ClassMethod;
+      r.is_callable = true;
+      r.is_parameterless = true;
+      r.accepts_zero_args = true;
+      return r;
+    }
+    if (auto* m = registry_->lookup_class_method(scope_.current_class_name,
+                                                 name)) {
+      r.cxx = mangle(name);
+      r.kind = ResolvedKind::ClassMethod;
+      r.proc = m->decl.get();
+      r.is_callable = true;
+      r.is_parameterless = (m->param_count == 0);
+      r.accepts_zero_args = m->accepts_zero_args;
+      return r;
+    }
+    if (registry_->lookup_class_field(scope_.current_class_name, name)) {
+      r.cxx = mangle(name);
+      r.kind = ResolvedKind::ClassField;
+      return r;
+    }
+    // Inline anonymous enum used as a class-field type contributes its
+    // members to the enclosing class scope. C++ resolves the bare name
+    // through the enclosing-class scope at the use site, so we emit
+    // unqualified.
+    if (registry_->class_has_enum_member(scope_.current_class_name, name)) {
+      r.cxx = mangle(name);
+      r.kind = ResolvedKind::EnumMember;
+      return r;
+    }
+  }
+
+  // 6. Unit-level -- own unit first, then cross-unit (`uses` chain).
+  if (registry_) {
+    auto uit = registry_->units.find(scope_.current_unit_name);
+    const UnitInfo* ui = (uit != registry_->units.end()) ? &uit->second
+                                                          : nullptr;
+    bool own = ui && ui->has(name);
+    // Current unit's own symbols shadow everything from `uses`.
+    // Emit bare (C++ picks them up in the current namespace).
+    if (ui) {
+      if (auto* pi = ui->find_proc(name)) {
+        r.cxx = mangle(name);
+        r.kind = ResolvedKind::UnitProc;
+        r.proc = pi->decl.get();
+        r.is_callable = true;
+        r.is_parameterless = (pi->param_count == 0);
+        r.accepts_zero_args = pi->accepts_zero_args;
+        return r;
+      }
+      if (ui->find_var(name)) {
+        r.cxx = mangle(name);
+        r.kind = ResolvedKind::UnitVar;
+        return r;
+      }
+      if (ui->find_const(name)) {
+        r.cxx = mangle(name);
+        r.kind = ResolvedKind::UnitConst;
+        return r;
+      }
+      if (ui->has_enum_member(name)) {
+        r.cxx = mangle(name);
+        r.kind = ResolvedKind::EnumMember;
+        return r;
+      }
+      if (ui->has_type(name)) {
+        r.cxx = mangle(name);
+        r.kind = ResolvedKind::UnitType;
+        return r;
+      }
+    }
+
+    // Cross-unit lookup: walk the current unit's `uses` list and pick
+    // the first match in a unit that actually exports this name.
+    // Ambiguity between same-named symbols in two `using namespace`'d
+    // units is resolved by emitting the fully-qualified form.
+    auto check_unit = [&](const std::string& un) -> bool {
+      auto it = registry_->units.find(un);
+      if (it == registry_->units.end()) return false;
+      const UnitInfo& u = it->second;
+      // Synthetic `__rt__` unit holds runtime builtins. Emit them fully
+      // qualified so translated units do not depend on `using namespace
+      // ::rt;` for correctness.
+      const std::string prefix = unit_namespace_prefix(un);
+      // Other units contribute only their interface-exported names.
+      if (auto* pi = u.find_export_proc(name)) {
+        r.cxx = prefix + mangle(name);
+        r.kind = (un == "__rt__") ? ResolvedKind::RtBuiltin
+                                  : ResolvedKind::UnitProc;
+        r.proc = pi->decl.get();
+        r.is_callable = true;
+        r.is_parameterless = (pi->param_count == 0);
+        r.accepts_zero_args = pi->accepts_zero_args;
+        r.return_type_name = pi->return_type_name;
+        return true;
+      }
+      if (u.find_export_var(name)) {
+        r.cxx = prefix + mangle(name);
+        r.kind = ResolvedKind::UnitVar;
+        return true;
+      }
+      if (u.find_export_const(name)) {
+        r.cxx = prefix + mangle(name);
+        r.kind = ResolvedKind::UnitConst;
+        return true;
+      }
+      if (u.has_export_enum_member(name)) {
+        r.cxx = prefix + mangle(name);
+        r.kind = ResolvedKind::EnumMember;
+        return true;
+      }
+      if (u.has_export_type(name)) {
+        r.cxx = prefix + mangle(name);
+        r.kind = ResolvedKind::UnitType;
+        return true;
+      }
+      return false;
+    };
+    if (ui) {
+      // Right-to-left is Pascal's uses resolution order.
+      for (auto it = ui->uses.rbegin(); it != ui->uses.rend(); ++it) {
+        if (check_unit(*it)) return r;
+      }
+    }
+    (void)own;  // already handled by the per-unit lookup above.
+  }
+
+  // 7. Fallback: unresolved free names are much more often runtime helpers
+  //    than cross-unit symbols. Emit them as explicit `::rt::...`
+  //    references instead of depending on open namespaces in generated
+  //    units.
+  r.cxx = "::rt::" + mangle(name);
+  r.kind = ResolvedKind::Unknown;
+  return r;
+}
+
+}  // namespace tp2cc
