@@ -10,6 +10,7 @@ namespace tp2cc::ast {
 struct Param;
 struct TypeExpr;
 struct TyName;
+struct TyProcedural;
 }  // namespace tp2cc::ast
 
 namespace tp2cc {
@@ -46,6 +47,7 @@ bool is_pascal_result_ident(std::string_view name);
 std::string encode_helper_ident(std::string_view name);
 std::string encode_helper_type(const ast::TypeExpr& t);
 std::string encode_helper_params(const std::vector<ast::Param>& params);
+size_t procedural_param_count(const ast::TyProcedural& p);
 std::string enum_bound_name(std::string_view type_name, std::string_view which);
 
 enum class PrimitiveIntKind : uint8_t { None, Signed, Unsigned };

@@ -241,6 +241,14 @@ std::string encode_helper_params(const std::vector<ast::Param>& params) {
   return out;
 }
 
+size_t procedural_param_count(const ast::TyProcedural& p) {
+  size_t count = 0;
+  for (const auto& pp : p.params) {
+    count += pp.names.empty() ? 1 : pp.names.size();
+  }
+  return count;
+}
+
 std::string enum_bound_name(std::string_view type_name, std::string_view which) {
   return "tp2cc_enum_" + std::string(which) + "_" +
          encode_helper_ident(type_name);
