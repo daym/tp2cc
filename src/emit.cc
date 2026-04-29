@@ -19,6 +19,7 @@
 #include "emit_resolution.h"
 #include "emit_storage.h"
 #include "emit_types.h"
+#include "emit_values.h"
 #include "diag.h"
 #include "typereg.h"
 
@@ -27,27 +28,6 @@ namespace tp2cc {
 using namespace ast;
 
 namespace {
-
-std::string char_literal_body_to_cxx(char c) {
-  std::string o;
-  switch (c) {
-    case '\\': o += "\\\\"; return o;
-    case '\n': o += "\\n"; return o;
-    case '\r': o += "\\r"; return o;
-    case '\t': o += "\\t"; return o;
-    case '\0': o += "\\0"; return o;
-    default: break;
-  }
-  if (c == '\'') { o += "\\'"; return o; }
-  if ((unsigned char)c < 0x20 || (unsigned char)c >= 0x7f) {
-    char esc[8];
-    std::snprintf(esc, sizeof(esc), "\\x%02x", (unsigned char)c);
-    o += esc;
-    return o;
-  }
-  o.push_back(c);
-  return o;
-}
 
 constexpr const char* kUnitInitName = "tp2cc_unit_init";
 constexpr const char* kUnitFiniName = "tp2cc_unit_fini";
@@ -62,7 +42,8 @@ struct Emitter : ResolveNameProvider,
                  EmitTypeConstRender,
                  EmitStorageExprOps,
                  EmitCallExprOps,
-                 EmitPropertyExprOps {
+                 EmitPropertyExprOps,
+                 EmitValueExprOps {
   std::string header;
   std::string impl;
   // Current sink pointer.
@@ -177,6 +158,7 @@ struct Emitter : ResolveNameProvider,
   EmitResolution resolution_;
   EmitCalls calls_;
   EmitProperties properties_;
+  EmitValues values_;
 
   Emitter(const TypeRegistry* registry_in = nullptr,
           const std::vector<std::string>* unit_init_order_in = nullptr)
@@ -214,7 +196,8 @@ struct Emitter : ResolveNameProvider,
         resolution_(registry, scope_state_, analysis_, *this),
         calls_(registry, scope_state_, analysis_, types_, storage_,
                resolution_, *this),
-        properties_(registry, analysis_, *this) {}
+        properties_(registry, analysis_, *this),
+        values_(registry, scope_state_, analysis_, types_, storage_, *this) {}
 
   void set_header() { out = &header; }
   void set_impl()   { out = &impl; }
@@ -365,6 +348,14 @@ struct Emitter : ResolveNameProvider,
 
   // Expressions -> C++ expression.
   std::string expr_to_cxx(const Expr& e);
+  std::string expr_to_cxx_no_autocall(const Expr& e) override {
+    bool saved = is_callee_context_;
+    is_callee_context_ = true;
+    std::string text = expr_to_cxx(e);
+    is_callee_context_ = saved;
+    return text;
+  }
+  bool in_block_scope() const override { return block_depth > 0; }
   // When a target type is provided, rewrites integer constant
   // expressions to the exact value the destination type would hold,
   // and descends into ArrayConst / RecordConst with the per-element /
@@ -447,18 +438,10 @@ struct Emitter : ResolveNameProvider,
   // for globals and the current scope tables for locals/self-class.
   const ast::TypeExpr* deduce_type(const ast::Expr& e);
   const ast::TypeExpr* deduce_const_decl_type(const ast::ConstDecl& cd);
-  std::optional<ConstIntExprInfo> eval_const_int_expr(
-      const ast::Expr& e,
-      std::unordered_set<std::string>* visiting_const_names = nullptr);
-  std::optional<ConvertedConstInt> convert_const_int_value(
-      Location where, int64_t value, const ast::TypeExpr* target,
-      bool explicit_conversion, bool diagnose);
 
   // `with` targets can be anonymous local records, so name-based
   // registry lookup is not enough. These helpers walk the stacked
   // bound type itself and recover the member type/text directly.
-  const ast::TypeExpr* lookup_record_field_type_in_type(
-      const ast::TypeExpr* type, std::string_view field_name);
   const ast::TypeExpr* lookup_record_field_type_in_with(
       const WithBind& wb, std::string_view field_name);
   bool with_bind_has_visible_member(const WithBind& wb, std::string_view name);
@@ -825,37 +808,12 @@ const TypeExpr* Emitter::deduce_const_decl_type(const ConstDecl& cd) {
   return analysis_.deduce_const_decl_type(cd);
 }
 
-std::optional<ConvertedConstInt> Emitter::convert_const_int_value(
-    Location where, int64_t value, const TypeExpr* target,
-    bool explicit_conversion, bool diagnose) {
-  auto converted = analysis_.convert_const_int_value(
-      where, value, target, explicit_conversion, diagnose);
-  if (!converted) return std::nullopt;
-  ConvertedConstInt out;
-  out.value = converted->value;
-  out.bits = converted->bits;
-  out.type = converted->type;
-  return out;
-}
-
-std::optional<ConstIntExprInfo> Emitter::eval_const_int_expr(
-    const Expr& e, std::unordered_set<std::string>* visiting_const_names) {
-  auto info = analysis_.eval_const_int_expr(e, visiting_const_names);
-  if (!info) return std::nullopt;
-  return ConstIntExprInfo{info->value, info->type};
-}
-
 const TypeExpr* Emitter::deduce_type(const Expr& e) {
   return analysis_.deduce_type(e);
 }
 
 std::string Emitter::deduce_class_alias(const Expr& e) {
   return analysis_.deduce_class_alias(e);
-}
-
-const TypeExpr* Emitter::lookup_record_field_type_in_type(
-    const TypeExpr* type, std::string_view field_name) {
-  return analysis_.lookup_record_field_type_in_type(type, field_name);
 }
 
 const TypeExpr* Emitter::lookup_record_field_type_in_with(
@@ -1231,115 +1189,7 @@ Emitter::ResolveResult Emitter::resolve_name(
 
 std::string Emitter::set_literal_to_cxx(const SetLit& s,
                                         const TypeExpr* target) {
-  const TypeExpr* elem_type = nullptr;
-  if (target) {
-    const TypeExpr* canon = canonicalize_type(target);
-    if (canon && canon->kind == Kind::TySet) {
-      elem_type = static_cast<const TySet&>(*canon).element.get();
-    }
-  }
-
-  bool has_range = false;
-  for (const auto& el : s.elements) {
-    if (el->kind == Kind::Range) {
-      has_range = true;
-      break;
-    }
-  }
-
-  if (elem_type) {
-    const std::string elem_cxx = type_to_cxx(*elem_type);
-    if (s.elements.empty()) return "::rt::tp2cc_Set<" + elem_cxx + ">{}";
-    if (!has_range) {
-      // Pascal set literals inherit the surrounding set type. Make that
-      // explicit in the generated C++ so `typed_set + [EnumValue]` does
-      // not depend on any cross-tp2cc_Set implicit conversion.
-      std::string out = "::rt::tp2cc_Set<" + elem_cxx + ">::from_list({";
-      for (size_t i = 0; i < s.elements.size(); ++i) {
-        if (i) out += ", ";
-        out += const_value_to_cxx(*s.elements[i], elem_type);
-      }
-      out += "})";
-      return out;
-    }
-
-    std::string body = "::rt::tp2cc_Set<" + elem_cxx + "> tp2cc_set{};";
-    for (const auto& el : s.elements) {
-      if (el->kind == Kind::Range) {
-        const auto& r = static_cast<const Range&>(*el);
-        // Pascal set elements are ordinal, so a range like ['a'..'z'] means
-        // "walk the ordinal values from low to high". Iterate in integer
-        // space and cast back to the set element type instead of depending on
-        // wrapper types (e.g. `p_char`) to provide `++`.
-        body += " for (int64_t tp2cc_value = (int64_t)(" +
-                const_value_to_cxx(*r.lo, elem_type) +
-                "); tp2cc_value <= (int64_t)(" +
-                const_value_to_cxx(*r.hi, elem_type) +
-                "); ++tp2cc_value) tp2cc_set.add(static_cast<" + elem_cxx +
-                ">(tp2cc_value));";
-      } else {
-        body += " tp2cc_set.add(" + const_value_to_cxx(*el, elem_type) + ");";
-      }
-    }
-    body += " return tp2cc_set;";
-    const char* cap = (block_depth > 0) ? "[&]" : "[]";
-    return std::string("(") + cap + "{ " + body + " }())";
-  }
-
-  if (s.elements.empty()) {
-    // `[]` in Pascal: untyped empty set. EmptySet converts to any
-    // `tp2cc_Set<T>` implicitly, so the value is usable in any set
-    // context.
-    return "::rt::EmptySet{}";
-  }
-  if (!has_range) {
-    // Variadic-pack form so the element types don't have to
-    // match exactly (Pascal set literals freely mix e.g. a
-    // CharConst `p_newline` with plain char literals like
-    // `'\r'`, `';'`). The tp2cc_Set's element type is deduced from
-    // the first argument.
-    std::string out = "::rt::set_of(";
-    for (size_t i = 0; i < s.elements.size(); ++i) {
-      if (i) out += ", ";
-      out += expr_to_cxx(*s.elements[i]);
-    }
-    out += ")";
-    return out;
-  }
-
-  // Slow path: mixed scalar + range elements. Build a tp2cc_Set in an IIFE
-  // whose element type is deduced from the first element (either a
-  // scalar value or a range low-bound). Use `[&]` inside function
-  // bodies (may reference outer locals); use `[]` at namespace scope
-  // where `[&]` is invalid.
-  std::string first;
-  if (s.elements.front()->kind == Kind::Range) {
-    first = expr_to_cxx(*static_cast<const Range&>(*s.elements.front()).lo);
-  } else {
-    first = expr_to_cxx(*s.elements.front());
-  }
-  // Value-init: `tp2cc_Set` has no default member initialisers, so a
-  // bare temporary would leave the bitmask uninitialised and
-  // `add(...)` only sets specific bits -- every unset bit
-  // would be stack garbage, making `contains()` return true for
-  // arbitrary values.
-  std::string body = "::rt::tp2cc_Set<decltype(" + first + ")> tp2cc_set{};";
-  for (const auto& el : s.elements) {
-    if (el->kind == Kind::Range) {
-      const auto& r = static_cast<const Range&>(*el);
-      // Untyped set literals follow the same ordinal rule; `first` supplies
-      // the chosen element type once we have inferred it from context.
-      body += " for (int64_t tp2cc_value = (int64_t)(" + expr_to_cxx(*r.lo) +
-              "); tp2cc_value <= (int64_t)(" + expr_to_cxx(*r.hi) +
-              "); ++tp2cc_value) tp2cc_set.add(static_cast<decltype(" + first +
-              ")>(tp2cc_value));";
-    } else {
-      body += " tp2cc_set.add(" + expr_to_cxx(*el) + ");";
-    }
-  }
-  body += " return tp2cc_set;";
-  const char* cap = (block_depth > 0) ? "[&]" : "[]";
-  return std::string("(") + cap + "{ " + body + " }())";
+  return values_.set_literal_to_cxx(s, target);
 }
 
 std::string Emitter::expr_to_cxx(const Expr& e) {
@@ -2672,117 +2522,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
 std::string Emitter::const_value_to_cxx(const Expr& e,
                                         const TypeExpr* target,
                                         bool explicit_conversion) {
-  if (!target) return expr_to_cxx(e);
-  if (e.kind == Kind::StringLit) {
-    const auto& lit = static_cast<const StringLit&>(e);
-    const TypeExpr* canon = canonicalize_type(target);
-    if (canon && canon->kind == Kind::TyArray) {
-      const auto& arr = static_cast<const TyArray&>(*canon);
-      const TypeExpr* elem =
-          arr.element ? canonicalize_type(arr.element.get()) : nullptr;
-      std::string lo;
-      std::string size_expr;
-      if (arr.array_kind == ArrayKind::Fixed && arr.dims.size() == 1 && elem &&
-          array_dim_bounds_to_cxx(*arr.dims[0], &lo, &size_expr) &&
-          (tyname_is(elem, "char") || tyname_is(elem, "byte"))) {
-        return "::rt::tp2cc_array_literal<" + type_to_cxx(*elem) + ", " + lo +
-               ", " + size_expr + ">(" + expr_to_cxx(e) + ")";
-      }
-    }
-    if (auto cap = shortstring_capacity_to_cxx(target)) {
-      if (lit.value.size() == 1) {
-        return "::rt::tp2cc_shortstring_of<" + *cap + ">(::rt::tp2cc_char_of('" +
-               char_literal_body_to_cxx(lit.value[0]) + "'))";
-      }
-      std::string out = "::rt::tp2cc_shortstring_literal<" + *cap + ">(";
-      bool first = true;
-      for (char c : lit.value) {
-        if (!first) out += ", ";
-        first = false;
-        out += "::rt::tp2cc_char_of('";
-        out += char_literal_body_to_cxx(c);
-        out += "')";
-      }
-      out += ")";
-      return out;
-    }
-  }
-  // Aggregate initialisers recurse into their element/field type.
-  if (e.kind == Kind::ArrayConst) {
-    const TypeExpr* canon = canonicalize_type(target);
-    std::shared_ptr<TyArray> nested_array_target;
-    const TypeExpr* elem_type = nullptr;
-    if (canon && canon->kind == Kind::TyArray) {
-      const auto& arr = static_cast<const TyArray&>(*canon);
-      if (arr.dims.size() > 1) {
-        nested_array_target = std::make_shared<TyArray>();
-        nested_array_target->dims.assign(arr.dims.begin() + 1, arr.dims.end());
-        nested_array_target->element = arr.element;
-        nested_array_target->is_packed = arr.is_packed;
-        nested_array_target->array_kind = arr.array_kind;
-        elem_type = nested_array_target.get();
-      } else {
-        elem_type = arr.element.get();
-      }
-    }
-    const auto& ac = static_cast<const ArrayConst&>(e);
-    std::string out = "{";
-    for (size_t i = 0; i < ac.elements.size(); ++i) {
-      if (i) out += ", ";
-      out += const_value_to_cxx(*ac.elements[i], elem_type,
-                                explicit_conversion);
-    }
-    out += "}";
-    if (canon && canon->kind == Kind::TyArray) {
-      return "{" + out + "}";
-    }
-    return out;
-  }
-  if (e.kind == Kind::RecordConst) {
-    const auto& rc = static_cast<const RecordConst&>(e);
-    std::string out = "{";
-    for (size_t i = 0; i < rc.fields.size(); ++i) {
-      if (i) out += ", ";
-      const TypeExpr* field_type =
-          lookup_record_field_type_in_type(target, rc.fields[i].first);
-      out += "." + mangle(rc.fields[i].first) + " = " +
-             const_value_to_cxx(*rc.fields[i].second, field_type,
-                                explicit_conversion);
-    }
-    out += "}";
-    return out;
-  }
-  if (e.kind == Kind::SetLit) {
-    return set_literal_to_cxx(static_cast<const SetLit&>(e), target);
-  }
-  if (auto text =
-          maybe_convert_const_int_expr(e, target, explicit_conversion)) {
-    return *text;
-  }
-  if (auto text = maybe_lower_metaclass_value(e, target)) {
-    return *text;
-  }
-  if (auto text = maybe_convert_proc_value(e, target)) {
-    return *text;
-  }
-  std::string out = expr_to_cxx(e);
-  const TypeExpr* source_type = deduce_type(e);
-  if (source_type) source_type = canonicalize_type(source_type);
-  if (auto cap = shortstring_capacity_to_cxx(target);
-      cap && !(source_type && type_is_stringish(source_type))) {
-    out = "::rt::tp2cc_shortstring_of<" + *cap + ">(" + out + ")";
-  }
-  const TypeExpr* canon_target = canonicalize_type(target);
-  if (canon_target &&
-      (tyname_is(canon_target, "ansistring") ||
-       tyname_is(canon_target, "utf8string"))) {
-    if (!(source_type &&
-          (tyname_is(source_type, "ansistring") ||
-           tyname_is(source_type, "utf8string")))) {
-      out = "::rt::tp2cc_ansistring_of(" + out + ")";
-    }
-  }
-  return out;
+  return values_.const_value_to_cxx(e, target, explicit_conversion);
 }
 
 // FPC constant conversions first evaluate the integer constant
@@ -2791,169 +2531,7 @@ std::string Emitter::const_value_to_cxx(const Expr& e,
 // checked path instead of ad-hoc literal special cases.
 std::optional<std::string> Emitter::maybe_convert_const_int_expr(
     const Expr& e, const TypeExpr* target, bool explicit_conversion) {
-  if (!target) return std::nullopt;
-  auto value = eval_const_int_expr(e);
-  if (!value) return std::nullopt;
-  auto converted =
-      convert_const_int_value(e.loc, value->value, target, explicit_conversion,
-                              /*diagnose=*/true);
-  if (!converted || !converted->type) return std::nullopt;
-  std::string literal =
-      (converted->type->int_kind == PrimitiveIntKind::Unsigned)
-          ? uint64_literal_text(converted->bits)
-          : ::tp2cc::signed_bits_literal_text(converted->bits,
-                                              *converted->type);
-  // A 64-bit Pascal cast (`qword(1)`, `int64(...)`) must produce a
-  // 64-bit C++ value; without an explicit type the integer promotions
-  // leave the literal at `int`, and a subsequent `<<` by >= 32 hits
-  // shift-count UB. Wrap so the type of the C++ expression matches the
-  // Pascal cast.
-  if (converted->type->bits == 64) {
-    literal = "((" + std::string(converted->type->cxx) + ")(" + literal + "))";
-  }
-  return literal;
-}
-
-std::optional<std::string> Emitter::maybe_convert_proc_value(
-    const Expr& e, const TypeExpr* target) {
-  if (!target) return std::nullopt;
-  const TypeExpr* canon = canonicalize_type(target);
-  if (!(canon && canon->kind == Kind::TyProcedural)) return std::nullopt;
-  const auto& proc = static_cast<const TyProcedural&>(*canon);
-
-  if (proc.is_method && e.kind == Kind::NilLit) {
-    // `... of object` still uses the plain two-slot `tp2cc_MethodPtr` carrier.
-    // A typed Pascal `nil` for that target becomes an explicit empty carrier
-    // value here; the runtime type itself stays a dumb aggregate.
-    return type_to_cxx(*target) + "{}";
-  }
-
-  // Typed procvar destinations want the callable value itself. In ordinary
-  // value context the emitter auto-calls parameterless routines, so turn that
-  // off here before deciding whether we also need to bind `self`.
-  auto no_autocall = [&](const Expr& src) {
-    bool saved = is_callee_context_;
-    is_callee_context_ = true;
-    std::string text = expr_to_cxx(src);
-    is_callee_context_ = saved;
-    return text;
-  };
-
-  if (!proc.is_method) {
-    switch (e.kind) {
-      case Kind::Ident:
-      case Kind::Member:
-      case Kind::AddrOf:
-        return no_autocall(e);
-      default:
-        return std::nullopt;
-    }
-  }
-
-  if (!registry) return std::nullopt;
-  const std::string target_cxx = type_to_cxx(*target);
-
-  // `... of object` lowers to the runtime tp2cc_MethodPtr wrapper, which stores
-  // the method thunk separately from the bound object pointer.
-  auto method_code_text = [&](const std::string& cls,
-                              const ProcDecl& pd) -> std::string {
-    return "::rt::tp2cc_method_code<&" + mangle(cls) + "::" +
-           method_pointer_helper_name(pd) + ">()";
-  };
-
-  auto bind_method = [&](const std::string& base_cxx, const std::string& cls,
-                         const ProcDecl& pd,
-                         bool base_is_reference_class) -> std::string {
-    std::string self_expr = base_is_reference_class
-                                ? "(void*)(" + base_cxx + ")"
-                                : "(void*)(&(" + base_cxx + "))";
-    return target_cxx + "(" + method_code_text(cls, pd) +
-           ", " + self_expr + ")";
-  };
-
-  auto bind_current_method = [&](const std::string& name)
-      -> std::optional<std::string> {
-    if (current_class_name.empty()) return std::nullopt;
-    if (auto* method = registry->lookup_class_method(current_class_name, name);
-        method && method->decl && !method->decl->is_class_method) {
-      return bind_method("(*this)", current_class_name, *method->decl, false);
-    }
-    return std::nullopt;
-  };
-
-  auto bind_member = [&](const Member& m) -> std::optional<std::string> {
-    std::string cls;
-    if (m.base->kind == Kind::Ident &&
-        static_cast<const Ident&>(*m.base).name == "self") {
-      cls = current_class_name;
-    } else {
-      cls = deduce_class_alias(*m.base);
-    }
-    if (cls.empty()) return std::nullopt;
-    if (auto* method = registry->lookup_class_method(cls, m.name);
-        method && method->decl && !method->decl->is_class_method) {
-      return bind_method(expr_to_cxx(*m.base), cls, *method->decl,
-                         expr_is_reference_class(*m.base));
-    }
-    return std::nullopt;
-  };
-
-  if (e.kind == Kind::Ident) {
-    return bind_current_method(static_cast<const Ident&>(e).name);
-  }
-  if (e.kind == Kind::Member) {
-    return bind_member(static_cast<const Member&>(e));
-  }
-  if (e.kind == Kind::AddrOf) {
-    const auto& a = static_cast<const AddrOf&>(e);
-    if (!a.operand) return std::nullopt;
-    if (a.operand->kind == Kind::Ident) {
-      return bind_current_method(static_cast<const Ident&>(*a.operand).name);
-    }
-    if (a.operand->kind == Kind::Member) {
-      return bind_member(static_cast<const Member&>(*a.operand));
-    }
-  }
-  return std::nullopt;
-}
-
-std::optional<std::string> Emitter::maybe_lower_metaclass_value(
-    const Expr& e, const TypeExpr* target) {
-  const std::string base_name = metaclass_target_name(target);
-  if (base_name.empty()) return std::nullopt;
-
-  auto concrete_class_name = [&](const Expr& src) -> std::string {
-    if (src.kind == Kind::Ident) {
-      const auto& id = static_cast<const Ident&>(src);
-      if (const auto* ci = class_info_for_type_name(id.name);
-          ci && ci->is_reference_type) {
-        return id.name;
-      }
-      return {};
-    }
-    if (src.kind == Kind::Member) {
-      const auto& mem = static_cast<const Member&>(src);
-      if (mem.base->kind != Kind::Ident) return {};
-      const auto& base = static_cast<const Ident&>(*mem.base);
-      const std::string qualified = base.name + "." + mem.name;
-      if (const auto* ci = class_info_for_type_name(qualified);
-          ci && ci->is_reference_type) {
-        return qualified;
-      }
-    }
-    return {};
-  };
-
-  const std::string concrete_name = concrete_class_name(e);
-  if (concrete_name.empty()) return std::nullopt;
-  if (!class_info_for_type_name(base_name)) return std::nullopt;
-
-  // A Pascal class identifier used as a value means "the metaclass value for
-  // that exact concrete class", not the instance type itself. Preserve the
-  // concrete class here so a later cast back to a more specific `class of T`
-  // can recover the derived metaclass descriptor instead of collapsing the
-  // value down to the current assignment target's base type.
-  return metaclass_value_fn_cxx(concrete_name) + "()";
+  return values_.maybe_convert_const_int_expr(e, target, explicit_conversion);
 }
 
 // ---------------------------------------------------------------------------

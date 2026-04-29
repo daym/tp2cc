@@ -20,6 +20,7 @@ struct MethodSig;
 // policy in one support module avoids ad hoc spelling rules elsewhere.
 std::string mangle(std::string_view name);
 std::string ascii_lower(std::string_view text);
+std::string char_literal_body_to_cxx(char c);
 std::string attach_named_cxx_type(std::string_view ty, std::string_view name,
                                   std::string_view name_prefix);
 

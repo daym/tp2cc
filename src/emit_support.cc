@@ -23,6 +23,27 @@ std::string ascii_lower(std::string_view text) {
   return s;
 }
 
+std::string char_literal_body_to_cxx(char c) {
+  std::string o;
+  switch (c) {
+    case '\\': o += "\\\\"; return o;
+    case '\n': o += "\\n"; return o;
+    case '\r': o += "\\r"; return o;
+    case '\t': o += "\\t"; return o;
+    case '\0': o += "\\0"; return o;
+    default: break;
+  }
+  if (c == '\'') { o += "\\'"; return o; }
+  if ((unsigned char)c < 0x20 || (unsigned char)c >= 0x7f) {
+    char esc[8];
+    std::snprintf(esc, sizeof(esc), "\\x%02x", (unsigned char)c);
+    o += esc;
+    return o;
+  }
+  o.push_back(c);
+  return o;
+}
+
 std::string attach_named_cxx_type(std::string_view ty, std::string_view name,
                                   std::string_view name_prefix) {
   if (name_prefix == "const &") {
