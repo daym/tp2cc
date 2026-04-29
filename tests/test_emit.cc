@@ -254,6 +254,47 @@ void test_minenumsize_alias_uses_packenum_rules() {
   CHECK(contains(out.header, "enum p_tcolor : uint8_t"));
 }
 
+void test_subrange_type_uses_minimal_ordinal_storage() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbyte = 0..255;\n"
+      "  tsigned = -1..1;\n"
+      "  tsmall = 1..2;\n"
+      "  tword = 0..65535;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "using p_tbyte = uint8_t;"));
+  CHECK(contains(out.header, "using p_tsigned = int8_t;"));
+  CHECK(contains(out.header, "using p_tsmall = uint8_t;"));
+  CHECK(contains(out.header, "using p_tword = uint16_t;"));
+}
+
+void test_subrange_type_accepts_constant_ordinal_intrinsics() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tcgloc = (loc_invalid, loc_void, loc_creference, loc_reference);\n"
+      "  tcgnonrefloc = low(tcgloc)..pred(loc_creference);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "enum p_tcgloc"));
+  CHECK(contains(out.header, "using p_tcgnonrefloc = int32_t;"));
+}
+
+void test_char_subrange_preserves_char_storage() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tletter = 'a'..'z';\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "using p_tletter = ::rt::p_char;"));
+}
+
 void test_packed_record_shortstring_field_emits_exact_layout_asserts() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -2606,7 +2647,7 @@ void test_typed_set_literal_uses_surrounding_set_type() {
       "  s := s + [3];\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "::rt::tp2cc_Set<int32_t>::from_list({3})"));
+  CHECK(contains(out.impl, "::rt::tp2cc_Set<uint8_t>::from_list({3})"));
 }
 
 void test_explicit_set_cast_uses_runtime_helper() {
@@ -5002,6 +5043,9 @@ int main() {
   RUN_TEST(test_packed_record_uses_byte_sized_enum_fields);
   RUN_TEST(test_packenum_two_uses_word_sized_enum);
   RUN_TEST(test_minenumsize_alias_uses_packenum_rules);
+  RUN_TEST(test_subrange_type_uses_minimal_ordinal_storage);
+  RUN_TEST(test_subrange_type_accepts_constant_ordinal_intrinsics);
+  RUN_TEST(test_char_subrange_preserves_char_storage);
   RUN_TEST(test_packed_record_shortstring_field_emits_exact_layout_asserts);
   RUN_TEST(test_packed_record_array_field_keeps_array_wrapper_with_exact_layout_asserts);
   RUN_TEST(test_packed_variant_record_emits_packed_case_layout_asserts);

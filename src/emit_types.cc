@@ -357,6 +357,15 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
 }
 
 std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
+  auto bound_type = [&](const Expr* e) -> const TypeExpr* {
+    if (!e) return nullptr;
+    const TypeExpr* t = analysis_.deduce_type(*e);
+    return t ? analysis_.canonicalize_type(t) : nullptr;
+  };
+  auto is_char_literal = [&](const Expr* e) -> bool {
+    return e && e->kind == Kind::StringLit &&
+           static_cast<const StringLit&>(*e).value.size() == 1;
+  };
   // If both bounds are enum members of the same enum, preserve that enum type
   // so set/array element typing stays faithful instead of collapsing to int.
   auto bound_enum = [&](const Expr* e) -> std::string {
@@ -380,8 +389,48 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
   std::string le = bound_enum(r.lo.get());
   std::string he = bound_enum(r.hi.get());
   if (!le.empty() && le == he) return le;
-  // Without further info we can only represent the subrange as its base type.
-  return "int32_t";
+
+  const TypeExpr* lo_type = bound_type(r.lo.get());
+  const TypeExpr* hi_type = bound_type(r.hi.get());
+  if ((tyname_is(lo_type, "char") && tyname_is(hi_type, "char")) ||
+      (is_char_literal(r.lo.get()) && is_char_literal(r.hi.get()))) {
+    return primitive_type_cxx("char");
+  }
+  if (tyname_is(lo_type, "widechar") && tyname_is(hi_type, "widechar")) {
+    return primitive_type_cxx("widechar");
+  }
+
+  auto lo_value = analysis_.eval_const_int_expr(*r.lo);
+  auto hi_value = analysis_.eval_const_int_expr(*r.hi);
+  if (!lo_value || !hi_value) return "int32_t";
+
+  int64_t lo = lo_value->value;
+  int64_t hi = hi_value->value;
+  if (lo > hi) std::swap(lo, hi);
+
+  // Match old FPC's ordinal subrange storage rule:
+  // - 0..255 -> byte
+  // - -128..127 -> shortint
+  // - 0..65535 -> word
+  // - -32768..32767 -> smallint
+  // - 0..4294967295 -> longword/cardinal
+  // - otherwise -> longint/int32_t
+  //
+  // We still widen beyond 32 bits if the explicit bounds exceed the classic
+  // longint/cardinal domain so the emitted C++ can represent the source range.
+  if (lo >= 0) {
+    uint64_t uhi = static_cast<uint64_t>(hi);
+    if (uhi <= UINT8_MAX) return primitive_type_cxx("byte");
+    if (uhi <= UINT16_MAX) return primitive_type_cxx("word");
+    if (uhi <= UINT32_MAX) return primitive_type_cxx("cardinal");
+    return primitive_type_cxx("qword");
+  }
+  if (lo >= INT8_MIN && hi <= INT8_MAX) return primitive_type_cxx("shortint");
+  if (lo >= INT16_MIN && hi <= INT16_MAX) {
+    return primitive_type_cxx("smallint");
+  }
+  if (lo >= INT32_MIN && hi <= INT32_MAX) return primitive_type_cxx("longint");
+  return primitive_type_cxx("int64");
 }
 
 std::string EmitTypes::string_type_to_cxx(const TyString& s) {

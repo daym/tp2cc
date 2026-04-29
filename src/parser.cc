@@ -9,6 +9,43 @@ namespace tp2cc {
 
 using namespace ast;
 
+namespace {
+
+bool is_subrange_bound_intrinsic(const std::string& name) {
+  return name == "low" || name == "high" || name == "pred" ||
+         name == "succ" || name == "sizeof";
+}
+
+bool is_constant_subrange_bound_expr(const Expr& e) {
+  switch (e.kind) {
+    case Kind::Ident:
+    case Kind::IntLit:
+    case Kind::StringLit:
+    case Kind::BoolLit:
+    case Kind::Member:
+      return true;
+    case Kind::Unary:
+      return is_constant_subrange_bound_expr(
+          *static_cast<const Unary&>(e).operand);
+    case Kind::Binary: {
+      const auto& b = static_cast<const Binary&>(e);
+      return is_constant_subrange_bound_expr(*b.lhs) &&
+             is_constant_subrange_bound_expr(*b.rhs);
+    }
+    case Kind::Call: {
+      const auto& c = static_cast<const Call&>(e);
+      if (c.callee->kind != Kind::Ident || c.args.size() != 1) return false;
+      const auto& callee = static_cast<const Ident&>(*c.callee);
+      return is_subrange_bound_intrinsic(callee.name) &&
+             is_constant_subrange_bound_expr(*c.args[0]);
+    }
+    default:
+      return false;
+  }
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // Token stream plumbing
 
@@ -736,6 +773,21 @@ TypePtr Parser::parse_type() {
 
 TypePtr Parser::parse_simple_type() {
   Location loc = cur_.loc;
+  auto finish_subrange = [&](ExprPtr lo) -> TypePtr {
+    auto sr = std::make_shared<TySubrange>();
+    sr->loc = loc;
+    sr->lo = std::move(lo);
+    if (sr->lo && !is_constant_subrange_bound_expr(*sr->lo)) {
+      report_error(sr->lo->loc, "non-constant subrange bound");
+    }
+    expect(Tok::DotDot, "subrange");
+    sr->hi = parse_subrange_bound();
+    if (sr->hi && !is_constant_subrange_bound_expr(*sr->hi)) {
+      report_error(sr->hi->loc, "non-constant subrange bound");
+    }
+    return sr;
+  };
+
   // Enum: `( a, b, c )`
   if (accept(Tok::LParen)) {
     auto te = std::make_shared<TyEnum>();
@@ -756,20 +808,19 @@ TypePtr Parser::parse_simple_type() {
     return te;
   }
   // Either a name (possibly qualified) or a subrange literal-start.
-  // Attempt subrange first by trying to parse a bound expression and looking for
-  // `..`. But Pascal named types are simple identifiers, so:
-  //   TypeName | lo .. hi
-  // If the first token is an Ident and the next is NOT `..`, it's a name.
+  // Pascal named types are simple identifiers.  A subrange whose lower bound
+  // starts with an identifier is unambiguous when the next token is `..`.
+  // FPC also uses constant ordinal intrinsics in type bounds, e.g.
+  // `low(TEnum)..pred(EnumMember)` or `0..sizeof(T)-1`.  Accept only those
+  // call expressions in bounds here; arbitrary `foo(...)` is not a type-level
+  // constant.
   if (cur_.kind == Tok::Ident) {
-    // Could still be subrange like `a .. b` where a is an ident.
-    // Look-ahead.
     if (peek().kind == Tok::DotDot) {
-      auto sr = std::make_shared<TySubrange>();
-      sr->loc = loc;
-      sr->lo = parse_subrange_bound();     // will read the ident as primary
-      expect(Tok::DotDot, "subrange");
-      sr->hi = parse_subrange_bound();
-      return sr;
+      return finish_subrange(parse_subrange_bound());
+    }
+    if (peek().kind == Tok::LParen &&
+        is_subrange_bound_intrinsic(cur_.text)) {
+      return finish_subrange(parse_subrange_bound());
     }
     auto tn = std::make_shared<TyName>();
     tn->loc = loc;
@@ -788,12 +839,7 @@ TypePtr Parser::parse_simple_type() {
     return tn;
   }
   // Otherwise, treat as subrange.
-  auto sr = std::make_shared<TySubrange>();
-  sr->loc = loc;
-  sr->lo = parse_subrange_bound();
-  expect(Tok::DotDot, "subrange");
-  sr->hi = parse_subrange_bound();
-  return sr;
+  return finish_subrange(parse_subrange_bound());
 }
 
 TypePtr Parser::parse_array_type(bool packed) {

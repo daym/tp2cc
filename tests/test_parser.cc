@@ -992,6 +992,33 @@ void test_typed_array_constant_with_inline_subrange_element_type() {
   }
 }
 
+void test_subrange_bound_constant_intrinsic_calls() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tcgloc = (loc_invalid, loc_void, loc_creference, loc_reference);\n"
+      "  tcgnonrefloc = low(tcgloc)..pred(loc_creference);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+}
+
+void test_subrange_bound_rejects_nonconstant_calls() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbad = low(foo())..1;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() - before > 0);
+  CHECK(u != nullptr);
+}
+
 void test_typed_record_constant() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1168,6 +1195,8 @@ int main() {
   RUN_TEST(test_directives_as_identifiers);
   RUN_TEST(test_typed_array_constant);
   RUN_TEST(test_typed_array_constant_with_inline_subrange_element_type);
+  RUN_TEST(test_subrange_bound_constant_intrinsic_calls);
+  RUN_TEST(test_subrange_bound_rejects_nonconstant_calls);
   RUN_TEST(test_typed_record_constant);
   RUN_TEST(test_inherited_method_call);
   RUN_TEST(test_directive_as_method_name);
