@@ -1,0 +1,32 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-28
+Subject: Pass FillWord a word count, not a byte count, when zeroing new2oldreg
+License: expat
+
+`compiler/i386/csopt386.pas:433` calls
+
+  fillword(new2oldreg, sizeof(new2oldreg), RS_INVALID);
+
+`new2oldreg' is `TRegArray = array[TRegEnum] of tsuperregister', and
+`tsuperregister = type word' (cgbase.pas:165) -- so `sizeof(new2oldreg)'
+is twice its length-in-words. fpc's `FillWord(var x; count: SizeInt;
+Value: Word)' takes `count' in words, so the call writes 2x the array
+size and overflows the stack frame's `p_startreginfo' slot into
+neighbouring locals. fpc-native bootstraps tolerated this because
+nothing bounds-checks the write; an AddressSanitizer-instrumented
+stage1 (e.g. tp2cc's C++ output) trips on it immediately while
+compiling the linux RTL.
+
+Pass the correct word count.
+
+--- a/compiler/i386/csopt386.pas
++++ b/compiler/i386/csopt386.pas
+@@ -430,7 +430,7 @@
+   with startRegInfo do
+     begin
+       newRegsEncountered := [RS_EBP, RS_ESP];
+-      fillword(new2oldreg,sizeof(new2oldreg),RS_INVALID);
++      fillword(new2oldreg,sizeof(new2oldreg) div sizeof(tsuperregister),RS_INVALID);
+       new2OldReg[RS_EBP] := RS_EBP;
+       new2OldReg[RS_ESP] := RS_ESP;
+       oldRegsEncountered := newRegsEncountered;
