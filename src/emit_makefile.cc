@@ -43,7 +43,7 @@ std::string emit_makefile(const EmittedBuildManifest& manifest) {
   out << "TP2CC_ROOT = "
       << (manifest.tp2cc_root.empty() ? "." : manifest.tp2cc_root) << '\n';
   out << "CPPFLAGS = -I. -I$(TP2CC_ROOT)\n";
-  out << "CXXFLAGS = -std=gnu++20 -O0 -pipe -fpermissive "
+  out << "CXXFLAGS = -std=gnu++20 -O0 -pipe "
          "-Wno-narrowing\n";
   out << "CFLAGS = -std=gnu11 -O0 -pipe\n";
   out << "EXTRA_OBJS =\n";
