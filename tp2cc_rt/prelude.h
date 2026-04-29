@@ -1935,8 +1935,32 @@ class tp2cc_ArrayAddr {
   constexpr operator const void*() const {
     return static_cast<const void*>(p_);
   }
+  template <typename To,
+            typename = std::enable_if_t<
+                std::is_pointer_v<To> ||
+                (std::is_integral_v<To> && !std::is_same_v<To, bool>)>>
+  explicit constexpr operator To() const {
+    if constexpr (std::is_pointer_v<To>) {
+      return reinterpret_cast<To>(p_);
+    } else {
+      return static_cast<To>(reinterpret_cast<uintptr_t>(p_));
+    }
+  }
   explicit constexpr operator uintptr_t() const {
     return reinterpret_cast<uintptr_t>(p_);
+  }
+
+  friend constexpr element_type* operator+(tp2cc_ArrayAddr addr,
+                                           std::ptrdiff_t delta) {
+    return static_cast<element_type*>(addr) + delta;
+  }
+  friend constexpr element_type* operator+(std::ptrdiff_t delta,
+                                           tp2cc_ArrayAddr addr) {
+    return static_cast<element_type*>(addr) + delta;
+  }
+  friend constexpr element_type* operator-(tp2cc_ArrayAddr addr,
+                                           std::ptrdiff_t delta) {
+    return static_cast<element_type*>(addr) - delta;
   }
 
  private:

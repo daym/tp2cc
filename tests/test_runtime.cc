@@ -782,6 +782,18 @@ void test_array_addr_proxy_from_raw_pointer_keeps_same_bits() {
   CHECK(bits == static_cast<uintptr_t>(0x40));
 }
 
+void test_array_addr_proxy_supports_explicit_pointer_and_integer_casts() {
+  tp2cc_Array<p_char, 0, 4> bytes{{tp2cc_char_of('a'), tp2cc_char_of('b'),
+                                   tp2cc_char_of('c'), tp2cc_char_of('\0')}};
+
+  auto addr = tp2cc_array_addr(bytes);
+  p_longint* plong = (p_longint*)addr;
+  p_ptrint raw = (p_ptrint)addr;
+
+  CHECK(plong == reinterpret_cast<p_longint*>(&bytes));
+  CHECK(raw == static_cast<p_ptrint>(reinterpret_cast<uintptr_t>(&bytes)));
+}
+
 void test_dos_pack_unpack_time_matches_bit_layout() {
   DateTime in{};
   in.p_year = 2004;
@@ -1197,6 +1209,7 @@ int main() {
   RUN_TEST(test_array_addr_proxy_converts_to_array_and_element_pointers);
   RUN_TEST(test_array_addr_proxy_preserves_constness);
   RUN_TEST(test_array_addr_proxy_from_raw_pointer_keeps_same_bits);
+  RUN_TEST(test_array_addr_proxy_supports_explicit_pointer_and_integer_casts);
   RUN_TEST(test_dos_pack_unpack_time_matches_bit_layout);
   RUN_TEST(test_getfattr_reports_directory_bit);
   RUN_TEST(test_set_superset_operator_matches_pascal);
