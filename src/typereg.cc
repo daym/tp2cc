@@ -233,6 +233,8 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"odd",        1, true,  false, "boolean"},
       {"ord",        1, true,  false, "longint"},
       {"chr",        1, true,  false, "char"},
+      {"hi",         1, true,  false, ""},
+      {"lo",         1, true,  false, ""},
       {"abs",        1, true,  false, ""},
       {"sqr",        1, true,  false, ""},
       {"sqrt",       1, true,  false, "double"},
@@ -270,14 +272,20 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"freemem",    1, false, false, ""},
       {"freemem",    2, false, false, ""},
       {"reallocmem", 2, false, false, ""},
+      {"allocmem",   1, true,  false, "pointer"},
       {"setlength",  2, false, false, ""},
       {"dispose",    1, false, false, ""},
       {"strdispose", 1, false, false, ""},
       {"val",        3, false, false, ""},
       {"str",        2, false, false, ""},
+      {"strtoint",   1, true,  false, "longint"},
+      {"stringofchar", 2, true, false, "ansistring"},
       {"strlen",     1, true,  false, "longint"},
       {"strpcopy",   2, true,  false, "pchar"},
+      {"assert",     1, false, false, ""},
+      {"assert",     2, false, false, ""},
       {"assign",     2, false, false, ""},
+      {"append",     1, false, false, ""},
       {"reset",      1, false, false, ""},
       {"reset",      2, false, false, ""},
       {"rewrite",    1, false, false, ""},
@@ -292,6 +300,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"insert",     3, false, false, ""},
       {"pos",        2, true,  false, "longint"},
       {"swap",       1, true,  false, "longint"},
+      {"swapendian", 1, true,  false, ""},
       {"upcase",     1, true,  false, "char"},
       {"pred",       1, true,  false, ""},
       {"succ",       1, true,  false, ""},
@@ -306,11 +315,25 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"mkdir",      1, false, false, ""},
       {"rmdir",      1, false, false, ""},
       {"getdir",     2, false, false, ""},
+      {"deletefile", 1, true,  false, "boolean"},
       {"fsearch",    2, true,  false, "shortstring"},
       {"fsplit",     4, false, false, ""},
       {"fexpand",    1, true,  false, "shortstring"},
+      {"extractfilepath", 1, true, false, "ansistring"},
+      {"extractfiledir", 1, true, false, "ansistring"},
+      {"extractfilename", 1, true, false, "ansistring"},
+      {"extractfileext", 1, true, false, "ansistring"},
+      {"changefileext", 2, true, false, "ansistring"},
+      {"ansicomparefilename", 2, true, false, "longint"},
+      {"expandfilename", 1, true, false, "ansistring"},
+      {"getenvironmentvariable", 1, true, false, "ansistring"},
+      {"includetrailingpathdelimiter", 1, true, false, "ansistring"},
       {"getftime",   2, false, false, ""},
       {"setftime",   2, false, false, ""},
+      {"filegetdate", 1, true, false, "longint"},
+      {"filesetdate", 2, true, false, "longint"},
+      {"fileage",    1, true,  false, "longint"},
+      {"getfilehandle", 1, true, false, "longint"},
       {"settextbuf", 2, false, false, ""},
       {"settextbuf", 3, false, false, ""},
       {"strpas",     1, true,  false, "shortstring"},
@@ -320,25 +343,49 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"gettime",    3, false, false, ""},
       {"gettime",    4, false, false, ""},
       {"gettime",    5, false, false, ""},
+      {"getlocaltime", 1, false, false, ""},
+      {"decodedate", 4, false, false, ""},
+      {"decodetime", 5, false, false, ""},
+      {"filedatetodatetime", 1, true, false, "tdatetime"},
+      {"packtime",   2, false, false, ""},
+      {"unpacktime", 2, false, false, ""},
       {"epochtolocal", 7, false, false, ""},
       {"chmod",      2, true,  false, "boolean"},
+      {"fpchmod",    2, true,  false, "longint"},
       {"fstat",      2, true,  false, "boolean"},
+      {"fpfstat",    2, true,  false, "longint"},
+      {"getfattr",   2, false, false, ""},
       {"getenv",     1, true,  false, "shortstring"},
       {"popen",      3, false, false, ""},
+      {"pclose",     1, true,  false, "longint"},
       {"filepos",    1, true,  false, "longint"},
       {"filesize",   1, true,  false, "longint"},
+      {"disksize",   1, true,  false, "longint"},
       {"seek",       2, false, false, ""},
+      {"rename",     2, false, false, ""},
+      {"renamefile", 2, true,  false, "boolean"},
       {"exec",       2, false, false, ""},
+      {"executeprocess", 2, true, false, "longint"},
       {"trunc",      1, true,  false, "longint"},
       {"frac",       1, true,  false, "double"},
+      {"octstr",     2, true,  false, "shortstring"},
       {"signal",     2, true,  false, "signalhandler"},
       {"fpsignal",   2, true,  false, "signalhandler"},
       {"swapvectors",0, false, false, ""},
+      {"runerror",   1, false, true,  ""},
       {"hexstr",     1, true,  false, "shortstring"},
       {"freeandnil", 1, false, false, ""},
       {"getexceptionmask", 0, true, false, "tfpuexceptionmask"},
       {"setexceptionmask", 1, true, false, "tfpuexceptionmask"},
       {"fileexists", 1, true,  false, "boolean"},
+      {"indexbyte",  3, true,  false, "longint"},
+      {"indexword",  3, true,  false, "longint"},
+      {"comparebyte", 3, true, false, "longint"},
+      {"comparechar", 3, true, false, "longint"},
+      {"compareword", 3, true, false, "longint"},
+      {"filldword",  3, false, false, ""},
+      {"get8087cw",  0, true,  false, "word"},
+      {"set8087cw",  1, false, false, ""},
   };
   // Synthetic unit "rt::" holds the builtins so lookups that walk
   // the uses chain can find them as an always-available fallback.
@@ -397,6 +444,15 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     t->element = std::move(element);
     return t;
   };
+  auto make_enum = [](std::vector<std::string> names) {
+    auto t = std::make_shared<ast::TyEnum>();
+    for (auto& name : names) {
+      ast::EnumMember m;
+      m.name = name;
+      t->members.push_back(std::move(m));
+    }
+    return t;
+  };
   auto make_int_lit = [](int64_t value) {
     auto e = std::make_shared<ast::IntLit>();
     e->value = static_cast<uint64_t>(value);
@@ -428,6 +484,17 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
                           std::shared_ptr<const ast::TypeExpr> target) {
     std::string low = lc(name);
     rt_exports.iface_types.insert(low);
+    if (target && target->kind == Kind::TyEnum) {
+      EnumInfoReg ei;
+      ei.name = low;
+      ei.defining_unit = "__rt__";
+      for (const auto& m : static_cast<const TyEnum&>(*target).members) {
+        std::string lm = lc(m.name);
+        ei.members.push_back(lm);
+        rt_exports.iface_enum_members.insert(lm);
+      }
+      enums[low] = std::move(ei);
+    }
     AliasInfo a;
     a.defining_unit = "__rt__";
     a.target = std::move(target);
@@ -447,10 +514,8 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   add_rt_const("sigint", make_typename("longint"), make_int_lit(2));
   add_rt_const("sigfpe", make_typename("longint"), make_int_lit(8));
   add_rt_const("sigsegv", make_typename("longint"), make_int_lit(11));
-  add_rt_const("sig_dfl", make_typename("longint"), make_int_lit(0));
-  add_rt_const("sig_ign", make_typename("longint"), make_int_lit(1));
-  add_rt_const("sig_err", make_typename("longint"), make_neg_int_lit(1));
   add_rt_const("pi", make_typename("double"), nullptr);
+  add_rt_const("maxint", make_typename("longint"), make_int_lit(2147483647));
   add_rt_const("readonly", make_typename("longint"), make_int_lit(0x01));
   add_rt_const("hidden", make_typename("longint"), make_int_lit(0x02));
   add_rt_const("directory", make_typename("longint"), make_int_lit(0x10));
@@ -460,6 +525,13 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   add_rt_const("fadirectory", make_typename("longint"), make_int_lit(0x10));
   add_rt_const("faarchive", make_typename("longint"), make_int_lit(0x20));
   add_rt_const("anyfile", make_typename("longint"), make_int_lit(0x3F));
+  add_rt_const("faanyfile", make_typename("longint"), make_int_lit(0x3F));
+  add_rt_const("fmsharedenynone", make_typename("longint"), make_int_lit(0x40));
+  add_rt_const("vtansistring", make_typename("longint"), make_int_lit(11));
+  add_rt_const("varstrarg", make_typename("longint"), make_int_lit(0x48));
+  add_rt_const("directoryseparator", make_typename("char"), nullptr);
+  add_rt_const("driveseparator", make_typename("char"), nullptr);
+  add_rt_const("pathseparator", make_typename("char"), nullptr);
   add_rt_const("maxlongint", make_typename("longint"),
                make_int_lit(2147483647));
 
@@ -467,13 +539,10 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   // explicitly instead of relying on the old unresolved-name -> ::rt::
   // fallback so casts/member lookups still go through normal type analysis.
   add_rt_alias("signalhandler", make_pointer());
+  add_rt_alias("tfpuexception",
+               make_enum({"exinvalidop", "exdenormalized", "exzerodivide",
+                          "exoverflow", "exunderflow", "exprecision"}));
   add_rt_alias("searchrec", make_record({
-      make_field("time", make_typename("longint")),
-      make_field("size", make_typename("longint")),
-      make_field("attr", make_typename("byte")),
-      make_field("name", make_typename("shortstring")),
-  }));
-  add_rt_alias("tsearchrec", make_record({
       make_field("time", make_typename("longint")),
       make_field("size", make_typename("longint")),
       make_field("attr", make_typename("byte")),
@@ -481,8 +550,11 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   }));
   add_rt_alias("stat", make_record({
       make_field("mtime", make_typename("longint")),
+      make_field("st_mtime", make_typename("longint")),
       make_field("mode", make_typename("longint")),
+      make_field("st_mode", make_typename("longint")),
       make_field("size", make_typename("longint")),
+      make_field("st_size", make_typename("longint")),
   }));
   add_rt_alias("datetime", make_record({
       make_field("year", make_typename("word")),
@@ -493,8 +565,12 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       make_field("sec", make_typename("word")),
   }));
   add_rt_alias("tdatetime", make_typename("double"));
-  add_rt_alias("tfpuexceptionmask", make_set(make_typename("byte")));
+  add_rt_alias("tfpuexceptionmask", make_set(make_typename("tfpuexception")));
+  add_rt_alias("pcardinal", make_pointer(make_typename("cardinal")));
+  add_rt_alias("pcurrency", make_pointer(make_typename("currency")));
+  add_rt_alias("pint64", make_pointer(make_typename("int64")));
   add_rt_alias("ppointer", make_pointer(make_typename("pointer")));
+  add_rt_var("allowdirectoryseparators", make_set(make_typename("char")));
   auto make_method = [&](const std::string& name, ast::ProcKind pkind,
                          std::vector<ast::Param> params) {
     auto pd = std::make_shared<ast::ProcDecl>(/*class_method=*/false);

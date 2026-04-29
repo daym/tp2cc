@@ -33,6 +33,11 @@ std::string EmitValues::set_literal_to_cxx(const SetLit& s,
     }
   }
 
+  auto same_type_cxx = [&](const TypeExpr* a, const TypeExpr* b) {
+    if (!a || !b) return false;
+    return types_.type_to_cxx(*a) == types_.type_to_cxx(*b);
+  };
+
   bool has_range = false;
   for (const auto& el : s.elements) {
     if (el->kind == Kind::Range) {
@@ -42,6 +47,39 @@ std::string EmitValues::set_literal_to_cxx(const SetLit& s,
   }
 
   if (elem_type) {
+    const TypeExpr* canonical_elem_type = analysis_.canonicalize_type(elem_type);
+    if (!has_range && canonical_elem_type &&
+        canonical_elem_type->kind == Kind::TyEnum) {
+      const TypeExpr* common_literal_type = nullptr;
+      bool consistent_literal_type = true;
+      for (const auto& el : s.elements) {
+        const TypeExpr* literal_type = analysis_.deduce_type(*el);
+        literal_type = analysis_.canonicalize_type(literal_type);
+        if (!literal_type) {
+          consistent_literal_type = false;
+          break;
+        }
+        if (!common_literal_type) {
+          common_literal_type = literal_type;
+          continue;
+        }
+        if (!same_type_cxx(common_literal_type, literal_type)) {
+          consistent_literal_type = false;
+          break;
+        }
+      }
+      // Cross-unit calls can context-type a set literal through a runtime enum
+      // alias (`tfpuexceptionmask`) even when every literal member comes from a
+      // unit-local enum (`globals.tfpuexception`). Preserve the literal's more
+      // specific enum type in that case so the generated `tp2cc_Set<...>`
+      // matches the actual Pascal members instead of forcing them through the
+      // runtime alias.
+      if (consistent_literal_type && common_literal_type &&
+          !same_type_cxx(common_literal_type, elem_type)) {
+        elem_type = common_literal_type;
+      }
+    }
+
     const std::string elem_cxx = types_.type_to_cxx(*elem_type);
     if (s.elements.empty()) return "::rt::tp2cc_Set<" + elem_cxx + ">{}";
     if (!has_range) {

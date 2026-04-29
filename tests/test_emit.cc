@@ -2714,6 +2714,65 @@ void test_typed_set_literal_uses_surrounding_set_type() {
   CHECK(contains(out.impl, "::rt::tp2cc_Set<uint8_t>::from_list({3})"));
 }
 
+void test_cross_unit_enum_set_literal_keeps_exported_enum_type() {
+  auto out = compile_snippet_with_registry(
+      "unit pp;\n"
+      "interface\n"
+      "uses globals;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "begin\n"
+      "  SetFPUExceptionMask([exInvalidOp, exDenormalized, exZeroDivide,\n"
+      "                       exOverflow, exUnderflow, exPrecision]);\n"
+      "end;\n"
+      "end.\n",
+      {{"globals.pas",
+        "unit globals;\n"
+        "interface\n"
+        "type\n"
+        "  TFPUException = (exInvalidOp, exDenormalized, exZeroDivide,\n"
+        "                   exOverflow, exUnderflow, exPrecision);\n"
+        "  TFPUExceptionMask = set of TFPUException;\n"
+        "procedure SetFPUExceptionMask(const Mask: TFPUExceptionMask);\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_Set<p_globals::p_tfpuexception>::from_list"));
+  CHECK(!contains(out.impl,
+                  "::rt::tp2cc_Set<::rt::p_tfpuexception>::from_list"));
+}
+
+void test_runtime_enum_members_resolve_explicitly() {
+  auto out = compile_snippet_with_registry(
+      "unit compiler;\n"
+      "interface\n"
+      "implementation\n"
+      "procedure run;\n"
+      "begin\n"
+      "  SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide,\n"
+      "                    exOverflow, exUnderflow, exPrecision]);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_setexceptionmask("));
+  CHECK(contains(out.impl, "::rt::p_exinvalidop"));
+  CHECK(contains(out.impl, "::rt::p_exprecision"));
+}
+
+void test_ansicomparefilename_resolves_explicitly() {
+  auto out = compile_snippet_with_registry(
+      "unit comprsrc;\n"
+      "interface\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var\n"
+      "  i : longint;\n"
+      "begin\n"
+      "  i := AnsiCompareFileName('a', 'b');\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_ansicomparefilename("));
+}
+
 void test_explicit_set_cast_uses_runtime_helper() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -5408,6 +5467,9 @@ int main() {
   RUN_TEST(test_memory_helpers_reinterpret_typecast_pointer_slots);
   RUN_TEST(test_unit_local_enum_array_bounds_win_over_unrelated_same_name_types);
   RUN_TEST(test_typed_set_literal_uses_surrounding_set_type);
+  RUN_TEST(test_cross_unit_enum_set_literal_keeps_exported_enum_type);
+  RUN_TEST(test_runtime_enum_members_resolve_explicitly);
+  RUN_TEST(test_ansicomparefilename_resolves_explicitly);
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
   RUN_TEST(test_local_var_inline_anon_enum_resolves_members);

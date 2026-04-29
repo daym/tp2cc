@@ -401,6 +401,23 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
 
 const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
   if (!registry_) return nullptr;
+  auto find_unit_enum_type = [&](const std::string& unit_name,
+                                 const std::string& member_name)
+      -> const TypeExpr* {
+    const std::string unit_low = ascii_lower(unit_name);
+    const std::string member_low = ascii_lower(member_name);
+    for (const auto& [enum_name, en] : registry_->enums) {
+      if (en.defining_unit != unit_low) continue;
+      for (const auto& member : en.members) {
+        if (member != member_low) continue;
+        if (unit_low == scope_.current_unit_name) {
+          return named_pascal_type(enum_name);
+        }
+        return named_pascal_type(unit_low + "." + enum_name);
+      }
+    }
+    return nullptr;
+  };
   switch (e.kind) {
     case Kind::IntLit:
     case Kind::Unary:
@@ -573,11 +590,17 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       auto cur = registry_->units.find(scope_.current_unit_name);
       if (cur != registry_->units.end()) {
         if (const auto* t = lookup_own(cur->second)) return t;
+        if (const auto* t = find_unit_enum_type(cur->second.name, id.name)) {
+          return t;
+        }
         for (auto it = cur->second.uses.rbegin();
              it != cur->second.uses.rend(); ++it) {
           auto uit = registry_->units.find(*it);
           if (uit == registry_->units.end()) continue;
           if (const auto* t = lookup_export(uit->second)) return t;
+          if (const auto* t = find_unit_enum_type(uit->second.name, id.name)) {
+            return t;
+          }
         }
       }
       return nullptr;
@@ -596,6 +619,14 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
     }
     case Kind::Member: {
       const auto& m = static_cast<const Member&>(e);
+      if (m.base->kind == Kind::Ident) {
+        const auto& id = static_cast<const Ident&>(*m.base);
+        auto uit = registry_->units.find(id.name);
+        if (uit != registry_->units.end() &&
+            uit->second.has_export_enum_member(m.name)) {
+          return find_unit_enum_type(uit->second.name, m.name);
+        }
+      }
       std::string cls;
       if (m.base->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*m.base);

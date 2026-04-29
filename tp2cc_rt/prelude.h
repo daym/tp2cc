@@ -5371,15 +5371,25 @@ inline constexpr int32_t p_anyfile   = 0x3F;
 // STUB: linux unit's `stat` record returned by FStat. Real fpc reads
 // the matching POSIX stat fields; we expose the subset the compiler
 // touches (mtime for timestamp comparisons).
-struct LinuxStat { int32_t p_mtime = 0; int32_t p_mode = 0; int32_t p_size = 0; };
+struct LinuxStat {
+  int32_t p_mtime = 0;
+  int32_t p_st_mtime = 0;
+  int32_t p_mode = 0;
+  int32_t p_st_mode = 0;
+  int32_t p_size = 0;
+  int32_t p_st_size = 0;
+};
 using p_stat = LinuxStat;
 template <int N>
 inline bool p_fstat(const tp2cc_ShortString<N>& path, p_stat& info) {
   struct stat st{};
   if (::stat(tp2cc_to_std_string(path).c_str(), &st) != 0) return false;
   info.p_mtime = static_cast<int32_t>(st.st_mtime);
+  info.p_st_mtime = info.p_mtime;
   info.p_mode = static_cast<int32_t>(st.st_mode);
+  info.p_st_mode = info.p_mode;
   info.p_size = static_cast<int32_t>(st.st_size > INT32_MAX ? INT32_MAX : st.st_size);
+  info.p_st_size = info.p_size;
   return true;
 }
 template <typename File>
@@ -5388,9 +5398,27 @@ inline bool p_fstat(const File& f, p_stat& info) {
   struct stat st{};
   if (::fstat(::fileno(f.f), &st) != 0) return false;
   info.p_mtime = static_cast<int32_t>(st.st_mtime);
+  info.p_st_mtime = info.p_mtime;
   info.p_mode = static_cast<int32_t>(st.st_mode);
+  info.p_st_mode = info.p_mode;
   info.p_size = static_cast<int32_t>(st.st_size > INT32_MAX ? INT32_MAX : st.st_size);
+  info.p_st_size = info.p_size;
   return true;
+}
+inline int32_t p_fpfstat(p_thandle handle, p_stat& info) {
+  struct stat st{};
+  if (::fstat(handle, &st) != 0) return -1;
+  info.p_mtime = static_cast<int32_t>(st.st_mtime);
+  info.p_st_mtime = info.p_mtime;
+  info.p_mode = static_cast<int32_t>(st.st_mode);
+  info.p_st_mode = info.p_mode;
+  info.p_size = static_cast<int32_t>(st.st_size > INT32_MAX ? INT32_MAX : st.st_size);
+  info.p_st_size = info.p_size;
+  return 0;
+}
+template <typename File>
+inline int32_t p_fpfstat(const File& f, p_stat& info) {
+  return p_fstat(f, info) ? 0 : -1;
 }
 
 // Return value of `getenv`. fpc's `dos.getenv` returns tp2cc_ShortString,
@@ -5449,6 +5477,10 @@ inline int32_t p_fpchmod(const tp2cc_ShortString<>& path, int32_t mode) {
   return ::chmod(tp2cc_to_std_string(path).c_str(),
                  static_cast<mode_t>(mode));
 }
+template <int N>
+inline int32_t p_fpchmod(const tp2cc_ShortString<N>& path, int32_t mode) {
+  return p_fpchmod(static_cast<const tp2cc_ShortString<>&>(path), mode);
+}
 inline int32_t p_fpchmod(const tp2cc_AnsiString& path, int32_t mode) {
   return ::chmod(reinterpret_cast<const char*>(path.bytes()),
                  static_cast<mode_t>(mode));
@@ -5468,15 +5500,13 @@ inline int32_t p_shell(const tp2cc_ShortString<N>& cmd) {
   tp2cc_spawn_process({"sh", "-c", tp2cc_to_std_string(cmd)});
   return tp2cc_last_dosexitcode;
 }
-// `unix.fpsystem` is system(3); compiler/globals.pas exposes it as
-// the `Shell` helper. Reuse the rt::p_shell defined just above which
-// already handles spawning and capturing the exit code.
 template <int N>
 inline int32_t p_fpsystem(const tp2cc_ShortString<N>& cmd) {
   return p_shell(cmd);
 }
 inline int32_t p_fpsystem(const tp2cc_AnsiString& cmd) {
-  return p_shell(static_cast<tp2cc_ShortString<>>(cmd));
+  tp2cc_spawn_process({"sh", "-c", tp2cc_to_std_string(cmd)});
+  return tp2cc_last_dosexitcode;
 }
 inline int32_t p_dosexitcode() { return tp2cc_last_dosexitcode; }
 // Used by fpc 1.0.6 as an existence check for the drive.
