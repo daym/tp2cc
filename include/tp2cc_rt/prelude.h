@@ -309,10 +309,9 @@ extern "C" uint8_t tp2cc_set_exception_mask_bits(uint8_t bits);
 extern "C" uint16_t tp2cc_get_8087_control_word(void);
 extern "C" void tp2cc_set_8087_control_word(uint16_t cw);
 
-// Keep the old Pascal-visible low-level control-word hooks available for the
-// bootstrap compiler sources. That compatibility path only carries the six
-// exception-mask bits that `globals.pas` still edits; higher-level code
-// should prefer `GetExceptionMask` / `SetExceptionMask`.
+// Keep the old Pascal-visible low-level control-word hooks available. That
+// compatibility path only carries the six exception-mask bits; higher-level
+// code should prefer `GetExceptionMask` / `SetExceptionMask`.
 inline uint16_t p_get8087cw() { return tp2cc_get_8087_control_word(); }
 inline void p_set8087cw(uint16_t cw) { tp2cc_set_8087_control_word(cw); }
 
@@ -483,9 +482,8 @@ struct tp2cc_ShortString {
     return !(a < b);
   }
 
-  // Pascal occasionally writes `s := +t;` -- a unary `+` on a string,
-  // which is a no-op. Provide the operator so the emitted C++ mirror
-  // (`s = +t;`) type-checks.
+  // Pascal permits unary `+` on a string as a no-op. Provide the operator
+  // so the direct C++ lowering (`s = +t;`) type-checks.
   friend constexpr tp2cc_ShortString operator+(const tp2cc_ShortString& a) { return a; }
 
   // Pascal `s1 + s2` concatenation across any two tp2cc_ShortString capacities.
@@ -1162,10 +1160,9 @@ tp2cc_range_check_assign(SrcT src) {
 }
 
 // Real -> integer truncation for the {$R-} default. Plain `(int)real`
-// is UB in C++ when the truncated value doesn't fit; i386 silently
-// returns the "indefinite integer" value (the destination type's MIN).
-// Match that here without tripping UBSan, so fpc-style code that
-// assigns IEEE specials to int-typed fields keeps compiling.
+// is undefined in C++ when the truncated value does not fit. The Pascal
+// i386 code path produces the destination type's minimum value for that
+// case, so handle the bounds explicitly before casting.
 template <typename DstT, typename SrcT>
 inline std::enable_if_t<std::is_integral_v<DstT> && std::is_floating_point_v<SrcT>,
                         DstT>
@@ -2627,9 +2624,9 @@ struct Range {
 };
 inline Range range(int64_t a, int64_t b) { return {a, b}; }
 
-// --- Pascal value-builtins named exactly as Pascal calls them -------------
-// Keeping these in sync with Pascal's names means the emitter passes
-// calls through verbatim -- no translation table needed.
+// --- Pascal value-builtins -------------------------------------------------
+// Builtin names use the same `p_` prefix as translated Pascal identifiers so
+// normal call emission can target them without a separate builtin call syntax.
 
 template <int N> inline int p_length(const tp2cc_ShortString<N>& s) { return s.length; }
 template <int N> inline int p_length(const tp2cc_ShortStringPtrValue<N>& s) {
@@ -3753,7 +3750,7 @@ inline void p_flush(const tp2cc_TextFile& f) {
 }
 // `blockread` / `blockwrite` are stubs and callers in fpc use either
 // the 3-arg or 4-arg form depending on whether they care about the
-// actually-transferred count. Accept both shapes variadically.
+// actually-transferred count. Accept both call signatures variadically.
 template <typename File, typename Count>
 inline void p_blockread(File& f, void* value, int32_t count, Count& transferred) {
   if (!f.f) {
@@ -5150,8 +5147,8 @@ inline void* p_typeof(...) {
 
 // Pascal `ofs(x)` / `seg(x)` return the 16-bit offset/segment of a
 // far pointer. On flat-model targets both are stubbed to 0.
-template <typename... A> inline int32_t p_ofs(A&&...) { return 0; } // FPC 1: for browse info streaming
-template <typename... A> inline int32_t p_seg(A&&...) { return 0; } // FPC 1: for browse info streaming
+template <typename... A> inline int32_t p_ofs(A&&...) { return 0; }
+template <typename... A> inline int32_t p_seg(A&&...) { return 0; }
 
 // Stubs for DOS/system symbols referenced by the compiler. They are
 // invoked in defensive paths (error reporting, cross-check prints,
@@ -5496,7 +5493,8 @@ inline int32_t p_fpsystem(const tp2cc_AnsiString& cmd) {
   return tp2cc_last_dosexitcode;
 }
 inline int32_t p_dosexitcode() { return tp2cc_last_dosexitcode; }
-// Used by fpc 1.0.6 as an existence check for the drive.
+// Return a positive size for the current filesystem when the bootstrap code
+// probes whether a drive exists.
 inline int32_t p_disksize(uint8_t drive_number) {
   struct statvfs st{};
   if (::statvfs(".", &st) != 0) return -1;

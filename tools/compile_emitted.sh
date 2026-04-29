@@ -61,7 +61,7 @@ trap 'on_signal 1'  HUP
       f="$1"
       base="${f%.cc}"
       cd "$DIR"
-      if $CXX -I. -I"$ROOT" $CXXFLAGS -c "$f" -o "$base.o" 2>"$LOGDIR/$base.log"; then
+      if $CXX -I. -I"$ROOT" -I"$ROOT/include" $CXXFLAGS -c "$f" -o "$base.o" 2>"$LOGDIR/$base.log"; then
         rm -f "$LOGDIR/$base.log"
         echo "OK   $base" >> "$STATUS"
       else

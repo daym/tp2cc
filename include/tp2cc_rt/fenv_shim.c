@@ -91,7 +91,7 @@ uint8_t tp2cc_set_exception_mask_bits(uint8_t bits) {
 uint16_t tp2cc_get_8087_control_word(void) {
   // The translated compiler still spells its startup helper in terms of
   // `Get8087CW` / `Set8087CW`, but it only edits the low exception-mask bits.
-  // Synthesize a stable control-word shape around the authoritative Pascal
+  // Synthesize a stable control-word value around the authoritative Pascal
   // mask instead of pretending to model the full x87 rounding/precision state.
   const uint16_t default_high_bits = 0x0340u;
   return (uint16_t)(default_high_bits | tp2cc_get_exception_mask_bits());

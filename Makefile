@@ -15,7 +15,7 @@ ifeq ($(origin CC), default)
 CC = gcc
 endif
 PREFIX   ?= /usr
-INCLUDES := -Isrc
+INCLUDES := -Isrc -Iinclude
 
 BUILD    := build
 OBJDIR   := $(BUILD)/obj
@@ -35,7 +35,7 @@ ALL_BINS  := $(BINDIR)/tp2cc $(TEST_BINS)
 all: $(ALL_BINS) $(RUNTIME_LIB)
 
 # Make every source file (in src/ or tests/) depend on every header.
-ALL_HEADERS := $(wildcard src/*.h) tp2cc_rt/prelude.h
+ALL_HEADERS := $(wildcard src/*.h) include/tp2cc_rt/prelude.h
 
 $(OBJDIR)/%.o: src/%.cc $(ALL_HEADERS)
 	@mkdir -p $(@D)
@@ -45,7 +45,7 @@ $(OBJDIR)/tests/%.o: tests/%.cc $(ALL_HEADERS)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -Itests -c $< -o $@
 
-$(OBJDIR)/tp2cc_rt/%.o: tp2cc_rt/%.c
+$(OBJDIR)/tp2cc_rt/%.o: include/tp2cc_rt/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -96,4 +96,4 @@ install: all
 	install -m 755 -d $(DESTDIR)$(PREFIX)/lib
 	install -m 755 $(BINDIR)/tp2cc $(DESTDIR)$(PREFIX)/bin/tp2cc
 	install -m 644 $(RUNTIME_LIB) $(DESTDIR)$(PREFIX)/lib/libtp2cc_rt.a
-	install -m 644 tp2cc_rt/prelude.h $(DESTDIR)$(PREFIX)/include/tp2cc_rt/prelude.h
+	install -m 644 include/tp2cc_rt/prelude.h $(DESTDIR)$(PREFIX)/include/tp2cc_rt/prelude.h

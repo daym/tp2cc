@@ -62,7 +62,7 @@ STAGE1_LOGDIR="$BOOT_ROOT/compile-logs-stage1"
 ENTRY_FILE="$SOURCE_DIR/compiler/pp.pas"
 MSG_FILE="$SOURCE_DIR/compiler/msg/errore.msg"
 STARTUP_AS="$CLEAN_SRC/rtl/linux/i386/prt0.as"
-RUNTIME_SHIM="$ROOT/tp2cc_rt/fenv_shim.c"
+RUNTIME_SHIM="$ROOT/include/tp2cc_rt/fenv_shim.c"
 
 compiler_dir_flags() {
   printf '%s ' "-Fu$CLEAN_SRC/compiler" "-Fi$CLEAN_SRC/compiler"

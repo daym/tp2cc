@@ -9,7 +9,7 @@
 #include <string>
 #include <unistd.h>
 
-#include "../tp2cc_rt/prelude.h"
+#include "tp2cc_rt/prelude.h"
 #include "test_util.h"
 
 using namespace rt;

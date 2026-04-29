@@ -112,15 +112,26 @@ void test_emitted_makefile_tracks_sources_headers_and_program() {
   EmittedBuildManifest manifest;
   manifest.cc_sources = {"p_pp.cc", "p_globals.cc"};
   manifest.headers = {"p_pp.h", "p_globals.h", "p_sysutils.h"};
-  manifest.tp2cc_root = "../../..";
+  manifest.pas_sources = {"../compiler/globals.pas", "../compiler/pp.pas"};
+  manifest.tp2cc_program = "../bin/tp2cc";
+  manifest.include_dirs = {"../include", "../../include"};
+  manifest.tp2cc_args = {"emit-all", "-dCPU86", "-Fu../compiler", "--",
+                         "../compiler/pp.pas", "."};
   manifest.program_name = "pp";
   std::string mk = emit_makefile(manifest);
-  CHECK(contains(mk, "TP2CC_ROOT = ../../.."));
+  CHECK(contains(mk, "TP2CC = ../bin/tp2cc"));
+  CHECK(contains(mk,
+                 "CPPFLAGS = -I. -I../include -I../../include"));
   CHECK(contains(mk, "CC_SRCS := \\\n  p_globals.cc \\\n  p_pp.cc\n"));
   CHECK(contains(mk,
                  "HDRS := \\\n  p_globals.h \\\n  p_pp.h \\\n  p_sysutils.h\n"));
+  CHECK(contains(mk,
+                 "PAS_SRCS := \\\n  ../compiler/globals.pas \\\n  ../compiler/pp.pas\n"));
   CHECK(contains(mk, "PROGRAM = pp"));
   CHECK(contains(mk, "all: $(PROGRAM)"));
+  CHECK(contains(mk, "$(CC_SRCS) $(HDRS): $(PAS_SRCS)"));
+  CHECK(contains(mk,
+                 "$(TP2CC) 'emit-all' '-dCPU86' '-Fu../compiler' '--' '../compiler/pp.pas' '.'"));
   CHECK(contains(mk, "$(PROGRAM): $(CC_OBJS) $(EXTRA_OBJS)"));
   CHECK(contains(mk, "p_%.o: p_%.cc $(HDRS)"));
 }

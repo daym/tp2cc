@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -9,6 +10,7 @@
 #include <fstream>
 #include <set>
 #include <unordered_set>
+#include <unistd.h>
 
 #include "diag.h"
 #include "emit.h"
@@ -36,6 +38,8 @@ struct CliOptions {
   std::vector<std::string> defines;
   std::vector<fs::path> unit_paths;     // -Fu<dir>
   std::vector<fs::path> include_paths;  // -Fi<dir>
+  std::vector<std::string> regen_cli_args;
+  std::string invoked_as;
   // Pascal `{$Q+}` / `{$R+}` initial state. Mirrors fpc's `-Co` /
   // `-Cr` cmdline flags. Source-level directives override.
   bool overflow_check = false;
@@ -194,19 +198,93 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
   h << "namespace p_" << unit_name << " = ::rt;\n";
 }
 
-std::string make_makefile_root(const fs::path& outdir) {
+std::optional<fs::path> resolve_tp2cc_program(std::string_view invoked_as) {
+  if (invoked_as.empty()) return std::nullopt;
   std::error_code ec;
-  fs::path cwd = fs::weakly_canonical(fs::current_path(ec), ec);
-  if (ec) return ".";
-  fs::path out_abs = fs::weakly_canonical(outdir, ec);
-  if (ec) return cwd.generic_string();
-  const std::string cwd_s = cwd.generic_string();
-  const std::string out_s = out_abs.generic_string();
-  if (out_s == cwd_s) return ".";
-  if (out_s.rfind(cwd_s + "/", 0) != 0) return cwd_s;
-  fs::path rel = fs::relative(cwd, out_abs, ec);
-  if (ec || rel.empty()) return cwd_s;
+  fs::path raw(invoked_as);
+  if (raw.is_absolute() || raw.has_parent_path()) {
+    fs::path abs = fs::absolute(raw, ec);
+    if (ec) return raw.lexically_normal();
+    return abs.lexically_normal();
+  }
+
+  if (const char* path_env = std::getenv("PATH")) {
+    std::string_view path_list(path_env);
+    size_t start = 0;
+    while (start <= path_list.size()) {
+      size_t end = path_list.find(':', start);
+      std::string_view elem = path_list.substr(
+          start, end == std::string_view::npos ? std::string_view::npos
+                                               : end - start);
+      fs::path dir = elem.empty() ? fs::current_path(ec) : fs::path(elem);
+      if (!ec) {
+        fs::path candidate = dir / raw;
+        if (::access(candidate.c_str(), X_OK) == 0) {
+          fs::path abs = fs::absolute(candidate, ec);
+          if (ec) return candidate.lexically_normal();
+          return abs.lexically_normal();
+        }
+      }
+      if (end == std::string_view::npos) break;
+      start = end + 1;
+    }
+  }
+  return std::nullopt;
+}
+
+std::string make_tp2cc_program(std::string_view invoked_as,
+                               const fs::path& outdir) {
+  if (invoked_as.empty()) return "tp2cc";
+  fs::path raw(invoked_as);
+  if (!raw.is_absolute() && !raw.has_parent_path()) {
+    return std::string(invoked_as);
+  }
+  auto resolved = resolve_tp2cc_program(invoked_as);
+  if (!resolved) return std::string(invoked_as);
+  std::error_code ec;
+  fs::path out_abs = fs::absolute(outdir, ec);
+  if (ec) return resolved->generic_string();
+  fs::path rel = fs::relative(*resolved, out_abs, ec);
+  if (ec || rel.empty()) return resolved->generic_string();
   return rel.generic_string();
+}
+
+std::vector<std::string> make_tp2cc_include_dirs(std::string_view invoked_as,
+                                                 const fs::path& outdir) {
+  std::vector<std::string> dirs;
+  auto resolved = resolve_tp2cc_program(invoked_as);
+  if (!resolved) return dirs;
+
+  std::error_code ec;
+  fs::path out_abs = fs::absolute(outdir, ec);
+  if (ec) return dirs;
+
+  fs::path bin_dir = resolved->parent_path();
+  const fs::path candidates[] = {bin_dir / ".." / "include",
+                                 bin_dir / ".." / ".." / "include"};
+  for (const fs::path& candidate : candidates) {
+    fs::path normalized = candidate.lexically_normal();
+    fs::path rel = fs::relative(normalized, out_abs, ec);
+    if (ec || rel.empty()) {
+      ec.clear();
+      dirs.push_back(normalized.generic_string());
+    } else {
+      dirs.push_back(rel.generic_string());
+    }
+  }
+  return dirs;
+}
+
+std::vector<std::string> make_regen_tp2cc_args(const std::string& subcommand,
+                                               const CliOptions& opts,
+                                               const fs::path& input_path) {
+  std::vector<std::string> args;
+  args.push_back(subcommand);
+  args.insert(args.end(), opts.regen_cli_args.begin(), opts.regen_cli_args.end());
+  args.push_back("--");
+  args.push_back(fs::absolute(input_path).generic_string());
+  args.push_back(".");
+  return args;
 }
 
 int cmd_lex(const CliOptions& opts,
@@ -345,7 +423,10 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
   int emitted = 0, failed = 0;
   std::set<std::string> rtl_refs;
   EmittedBuildManifest manifest;
-  manifest.tp2cc_root = make_makefile_root(fs::path(outdir));
+  manifest.tp2cc_program = make_tp2cc_program(opts.invoked_as, fs::path(outdir));
+  manifest.include_dirs = make_tp2cc_include_dirs(opts.invoked_as, fs::path(outdir));
+  manifest.tp2cc_args =
+      make_regen_tp2cc_args("emit-all", opts, input);
 
   std::vector<const ast::UnitNode*> asts;
   for (const auto& [_, pu] : g.units()) {
@@ -382,6 +463,7 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
       std::ofstream c(fs::path(outdir) / ("p_" + name + ".cc"));
       c << out.impl;
     }
+    manifest.pas_sources.push_back(fs::absolute(pu->path).generic_string());
     manifest.cc_sources.push_back("p_" + name + ".cc");
     manifest.headers.push_back("p_" + name + ".h");
     if (pu->ast->is_program && manifest.program_name.empty()) {
@@ -435,7 +517,10 @@ int cmd_emit(const CliOptions& opts, const std::string& path,
   }
   if (opts.emit_makefile) {
     EmittedBuildManifest manifest;
-    manifest.tp2cc_root = make_makefile_root(fs::path(outdir));
+    manifest.tp2cc_program = make_tp2cc_program(opts.invoked_as, fs::path(outdir));
+    manifest.include_dirs = make_tp2cc_include_dirs(opts.invoked_as, fs::path(outdir));
+    manifest.tp2cc_args = make_regen_tp2cc_args("emit", opts, path);
+    manifest.pas_sources.push_back(fs::absolute(path).generic_string());
     manifest.cc_sources.push_back("p_" + stem + ".cc");
     manifest.headers.push_back("p_" + stem + ".h");
     if (u->is_program) manifest.program_name = stem;
@@ -508,6 +593,7 @@ int main(int argc, char** argv) {
   if (cmd == "-h" || cmd == "--help") { usage(); return 0; }
 
   CliOptions opts;
+  opts.invoked_as = argv[0];
   std::vector<std::string> positional;
   bool end_of_opts = false;
   for (int i = 2; i < argc; ++i) {
@@ -518,18 +604,29 @@ int main(int argc, char** argv) {
       if (a == "-m") { opts.emit_makefile = true; continue; }
       if (a.size() > 2 && a[0] == '-' && a[1] == 'd') {
         opts.defines.emplace_back(a.substr(2));
+        opts.regen_cli_args.emplace_back(argv[i]);
         continue;
       }
       if (a.size() > 3 && a[0] == '-' && a[1] == 'F' && a[2] == 'u') {
         opts.unit_paths.emplace_back(std::string(a.substr(3)));
+        opts.regen_cli_args.emplace_back(argv[i]);
         continue;
       }
       if (a.size() > 3 && a[0] == '-' && a[1] == 'F' && a[2] == 'i') {
         opts.include_paths.emplace_back(std::string(a.substr(3)));
+        opts.regen_cli_args.emplace_back(argv[i]);
         continue;
       }
-      if (a == "-Co") { opts.overflow_check = true; continue; }
-      if (a == "-Cr") { opts.range_check = true; continue; }
+      if (a == "-Co") {
+        opts.overflow_check = true;
+        opts.regen_cli_args.emplace_back(argv[i]);
+        continue;
+      }
+      if (a == "-Cr") {
+        opts.range_check = true;
+        opts.regen_cli_args.emplace_back(argv[i]);
+        continue;
+      }
       if (!a.empty() && a[0] == '-') {
         std::fprintf(stderr, "unknown option: %s\n", argv[i]);
         usage();
