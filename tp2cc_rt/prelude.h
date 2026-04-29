@@ -1755,9 +1755,6 @@ struct p_tsystemtime {
 
 // signal handler (syslinux) + POSIX signal numbers used by catch.pas.
 using p_signalhandler = void (*)(int32_t);
-inline constexpr int32_t p_sig_dfl  = 0;
-inline constexpr int32_t p_sig_ign  = 1;
-inline constexpr int32_t p_sig_err  = -1;
 inline constexpr int32_t p_sighup  = 1;
 inline constexpr int32_t p_sigint  = 2;
 inline constexpr int32_t p_sigquit = 3;
@@ -5330,35 +5327,6 @@ inline tp2cc_TextFile p_input = [] {
 // tccal.pas and gets emitted there. An earlier stub here was taking
 // name precedence over the real thing via `using namespace ::rt`.)
 
-// STUB: target-platform import/export/linker types from back-ends we still
-// skip entirely. Keep the aliases only for units that are not translated at
-// all; once a real unit exists (e.g. `t_win32.pas`), a duplicate runtime
-// alias would collide with the translated class name through `using
-// namespace ::rt`.
-struct StubTargetLib {
-  void p_init() {}
-  // Explicit conversion of the tag struct's address to any pointer
-  // type. We only need the operator defined on the pointer; a
-  // non-template overload isn't viable because the operand side of
-  // `T* = StubTargetLib*` is already a pointer type. Instead we
-  // rely on the call-site emitter wrapping `new(T,Init)` in a
-  // reinterpret_cast to the receiver type -- which it does when the
-  // target alias resolves here (see emit.cc `new(T,Init)` lowering).
-};
-using p_timportlibos2 = StubTargetLib;
-using p_pimportlibos2 = StubTargetLib*;
-using p_timportlibgo32v2 = StubTargetLib;
-using p_pimportlibgo32v2 = StubTargetLib*;
-using p_texportlibos2 = StubTargetLib;
-using p_pexportlibos2 = StubTargetLib*;
-using p_texportlibgo32v2 = StubTargetLib;
-using p_pexportlibgo32v2 = StubTargetLib*;
-using p_tlinkeros2 = StubTargetLib;
-using p_plinkeros2 = StubTargetLib*;
-using p_tlinkergo32v1 = StubTargetLib;
-using p_plinkergo32v1 = StubTargetLib*;
-using p_tlinkergo32v2 = StubTargetLib;
-using p_plinkergo32v2 = StubTargetLib*;
 // DOS file-attribute flags (from fpc's dos unit). Used in
 // FindFirst(mask, attrs, rec) calls for file enumeration.
 inline constexpr int32_t p_readonly  = 0x01;
