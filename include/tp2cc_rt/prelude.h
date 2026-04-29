@@ -5479,9 +5479,7 @@ inline T p_unaligned(const T& v) { return v; }
 // POSIX `system(3)`. Used by the compiler for wildcard expansion.
 template <int N>
 inline int32_t p_shell(const tp2cc_ShortString<N>& cmd) {
-  // Resolve `sh` via PATH so this keeps working in build chroots that
-  // intentionally do not provide a `/bin/sh` path.
-  tp2cc_spawn_process({"sh", "-c", tp2cc_to_std_string(cmd)});
+  tp2cc_spawn_process({"/bin/sh", "-c", tp2cc_to_std_string(cmd)});
   return tp2cc_last_dosexitcode;
 }
 template <int N>
@@ -5489,7 +5487,7 @@ inline int32_t p_fpsystem(const tp2cc_ShortString<N>& cmd) {
   return p_shell(cmd);
 }
 inline int32_t p_fpsystem(const tp2cc_AnsiString& cmd) {
-  tp2cc_spawn_process({"sh", "-c", tp2cc_to_std_string(cmd)});
+  tp2cc_spawn_process({"/bin/sh", "-c", tp2cc_to_std_string(cmd)});
   return tp2cc_last_dosexitcode;
 }
 inline int32_t p_dosexitcode() { return tp2cc_last_dosexitcode; }
