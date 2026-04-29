@@ -1,0 +1,93 @@
+#pragma once
+
+#include <string>
+#include <vector>
+
+#include "ast.h"
+#include "emit_analysis.h"
+#include "emit_context.h"
+#include "emit_resolution_types.h"
+
+namespace tp2cc {
+
+struct ProcInfo;
+struct TypeRegistry;
+
+class EmitResolution {
+ public:
+  EmitResolution(const TypeRegistry* registry, ScopeStateView& scope,
+                 EmitAnalysis& analysis, ResolutionTypeOps& type_ops);
+
+  // Resolve a callee designator to the specific ProcDecl metadata needed by
+  // later call lowering. This is the narrow "what declaration is this?" path
+  // used for parameter-mode/default-argument queries even when full overload
+  // picking is not required.
+  const ast::ProcDecl* resolve_call_decl(const ast::Expr& callee);
+
+  // Pascal/FPC overload-resolution conversion ranks. Lower is better.
+  // `NotViable` means no implicit conversion exists, so the candidate drops
+  // out before the dominance check.
+  ConvScore rank_conversion(const ast::TypeExpr* arg,
+                            const ast::TypeExpr* param,
+                            bool var_param);
+
+  // Pick the Pascal-best ProcDecl from a list of candidates given the
+  // call-site argument expressions. Used by both free-function overload
+  // sets (built from `ProcInfo::decl`) and class-method overload sets
+  // (built from `MethodSig::decl`); the picker only needs the decls.
+  // Result `ambiguous=true` means multiple viable candidates were mutually
+  // incomparable, so the caller must diagnose a Pascal-level ambiguity.
+  PickResult pick_overload(
+      const std::vector<const ast::ProcDecl*>& candidates,
+      const std::vector<const ast::Expr*>& args);
+
+  // Resolve a Pascal call expression all the way to the chosen declaration
+  // plus the spelling policy the emitter should use for the callee. This is
+  // the single semantic entry point for call resolution; printing should not
+  // redo any of this logic ad hoc.
+  ResolvedCall resolve_call(
+      const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
+
+ private:
+  // One row in a callable-name lookup result. `decl` is null only for
+  // metadata-only runtime builtins; arity filtering still uses
+  // `param_count` / `accepts_zero_args`.
+  struct AnyCand {
+    const ast::ProcDecl* decl = nullptr;
+    size_t param_count = 0;
+    bool accepts_zero_args = false;
+    std::string unit;  // empty for class methods and nested procedures
+  };
+
+  // Flatten Pascal formal parameters to call-site slots. Repeated names in one
+  // parameter declaration become one row per actual argument position so the
+  // picker and default-argument expansion reason in call-site order.
+  struct FlatCallParamInfo {
+    const ast::TypeExpr* type = nullptr;
+    bool untyped = false;
+    bool mutable_ref = false;
+    const ast::Expr* default_value = nullptr;
+  };
+
+  // Pascal lookup order for an unqualified callable name:
+  // `with` stack -> nested procs -> current class chain -> current unit ->
+  // uses chain. The first contributing non-uses scope wins; the uses chain
+  // aggregates so same-name overloads across imports compete together.
+  void append_class_method_cands(const std::string& cls,
+                                 const std::string& name,
+                                 std::vector<AnyCand>& cands);
+  void append_unit_export_proc_cands(const std::string& unit,
+                                     const std::string& name,
+                                     std::vector<AnyCand>& cands);
+  void gather_callable_in_pascal_scope(const std::string& name,
+                                       std::vector<AnyCand>& cands);
+  void flatten_call_param_info(const ast::ProcDecl* decl,
+                               std::vector<FlatCallParamInfo>& flat_params);
+
+  const TypeRegistry* registry_;
+  ScopeStateView& scope_;
+  EmitAnalysis& analysis_;
+  ResolutionTypeOps& type_ops_;
+};
+
+}  // namespace tp2cc

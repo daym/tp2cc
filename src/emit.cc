@@ -12,6 +12,9 @@
 #include <unordered_set>
 #include <vector>
 
+#include "emit_analysis.h"
+#include "emit_context.h"
+#include "emit_resolution.h"
 #include "diag.h"
 #include "typereg.h"
 
@@ -42,49 +45,6 @@ std::string char_literal_body_to_cxx(char c) {
   return o;
 }
 
-const ast::TyName* builtin_char_type() {
-  static const ast::TyName t = [] {
-    ast::TyName n;
-    n.name = "char";
-    return n;
-  }();
-  return &t;
-}
-
-const ast::TyName* builtin_string_type() {
-  static const ast::TyName t = [] {
-    ast::TyName n;
-    n.name = "string";
-    return n;
-  }();
-  return &t;
-}
-
-const ast::TyName* builtin_pchar_type() {
-  static const ast::TyName t = [] {
-    ast::TyName n;
-    n.name = "pchar";
-    return n;
-  }();
-  return &t;
-}
-
-const ast::TyName* builtin_boolean_type() {
-  static const ast::TyName t = [] {
-    ast::TyName n;
-    n.name = "boolean";
-    return n;
-  }();
-  return &t;
-}
-
-const ast::TyName* named_pascal_type(std::string_view name) {
-  static std::unordered_map<std::string, ast::TyName> cache;
-  auto [it, inserted] = cache.emplace(std::string(name), ast::TyName{});
-  if (inserted) it->second.name = std::string(name);
-  return &it->second;
-}
-
 // ---------------------------------------------------------------------------
 // Name mangling
 
@@ -102,17 +62,6 @@ std::string ascii_lower(std::string_view text) {
     if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
   }
   return s;
-}
-
-// Pascal class methods can be overloaded; the registry stores them as a
-// vector per name. Most consumers want one representative MethodSig --
-// either the first overload (for kind/decl/virtual queries that overloads
-// share) or any overload that happens to be there. This helper centralises
-// the "skip empty / take front" boilerplate so iteration sites do not have
-// to redo it.
-const tp2cc::MethodSig* representative_method(
-    const std::vector<tp2cc::MethodSig>& sigs) {
-  return sigs.empty() ? nullptr : &sigs.front();
 }
 
 // Some emit paths already know the exact C++ carrier type they need,
@@ -334,17 +283,8 @@ void mark_builtin_memory_helper_param_info(
   }
 }
 
-enum class PrimitiveIntKind : uint8_t { None, Signed, Unsigned };
-
-// Pascal primitive-type table. Single source of truth for every
-// property callers need: the C++ spelling plus, for integer
-// primitives, the signedness and width used when lowering untyped
-// integer literals into a typed context.
-struct PrimitiveInfo {
-  const char* cxx;
-  PrimitiveIntKind int_kind;
-  uint8_t bits;
-};
+using PrimitiveIntKind = tp2cc::PrimitiveIntKind;
+using PrimitiveInfo = tp2cc::PrimitiveInfo;
 
 const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
   static const std::unordered_map<std::string, PrimitiveInfo> m = {
@@ -480,11 +420,6 @@ std::string primitive_type_cxx(std::string_view lowname) {
   return info ? info->cxx : std::string();
 }
 
-uint64_t low_bits(uint64_t value, uint8_t bits) {
-  if (bits >= 64) return value;
-  return value & ((uint64_t{1} << bits) - 1);
-}
-
 std::string uint64_literal_text(uint64_t value) {
   char buf[32];
   const char* fmt =
@@ -492,18 +427,6 @@ std::string uint64_literal_text(uint64_t value) {
   std::snprintf(buf, sizeof(buf), fmt,
                 static_cast<unsigned long long>(value));
   return buf;
-}
-
-std::string signed_bits_literal_text(uint64_t bits, const PrimitiveInfo& info) {
-  if (info.bits == 0) return "0";
-  uint64_t sign_bit = uint64_t{1} << (info.bits - 1);
-  if ((bits & sign_bit) == 0) return uint64_literal_text(bits);
-  if (info.bits == 64 && bits == sign_bit) {
-    return "::std::numeric_limits<" + std::string(info.cxx) + ">::min()";
-  }
-  uint64_t magnitude =
-      (info.bits == 64) ? (uint64_t{0} - bits) : low_bits(~bits + 1, info.bits);
-  return "-" + uint64_literal_text(magnitude);
 }
 
 std::string primitive_low_high_expr(std::string_view lowname, bool want_low) {
@@ -523,138 +446,6 @@ std::string primitive_low_high_expr(std::string_view lowname, bool want_low) {
   return "::std::numeric_limits<" + std::string(info->cxx) + ">::max()";
 }
 
-const ast::TyName* builtin_integer_type(std::string_view lowname) {
-  auto make = [](const char* name) {
-    ast::TyName n;
-    n.name = name;
-    return n;
-  };
-  static const ast::TyName t_shortint = make("shortint");
-  static const ast::TyName t_byte = make("byte");
-  static const ast::TyName t_smallint = make("smallint");
-  static const ast::TyName t_word = make("word");
-  static const ast::TyName t_longint = make("longint");
-  static const ast::TyName t_cardinal = make("cardinal");
-  static const ast::TyName t_int64 = make("int64");
-  static const ast::TyName t_qword = make("qword");
-
-  if (lowname == "shortint") return &t_shortint;
-  if (lowname == "byte") return &t_byte;
-  if (lowname == "smallint") return &t_smallint;
-  if (lowname == "word") return &t_word;
-  if (lowname == "longint" || lowname == "integer") return &t_longint;
-  if (lowname == "cardinal" || lowname == "longword" || lowname == "dword")
-    return &t_cardinal;
-  if (lowname == "int64") return &t_int64;
-  if (lowname == "qword") return &t_qword;
-  return nullptr;
-}
-
-const PrimitiveInfo* primitive_info_for_value(int64_t value) {
-  if (value >= -128 && value <= 127) return primitive_info("shortint");
-  if (value >= 0 && value <= 255) return primitive_info("byte");
-  if (value >= -32768 && value <= 32767) return primitive_info("smallint");
-  if (value >= 0 && value <= 65535) return primitive_info("word");
-  if (value >= INT32_MIN && value <= INT32_MAX) return primitive_info("longint");
-  if (value >= 0) return primitive_info("cardinal");
-  return primitive_info("int64");
-}
-
-const ast::TyName* builtin_integer_type(const PrimitiveInfo* info) {
-  if (info == primitive_info("shortint")) return builtin_integer_type("shortint");
-  if (info == primitive_info("byte")) return builtin_integer_type("byte");
-  if (info == primitive_info("smallint")) return builtin_integer_type("smallint");
-  if (info == primitive_info("word")) return builtin_integer_type("word");
-  if (info == primitive_info("longint")) return builtin_integer_type("longint");
-  if (info == primitive_info("cardinal")) return builtin_integer_type("cardinal");
-  if (info == primitive_info("int64")) return builtin_integer_type("int64");
-  if (info == primitive_info("qword")) return builtin_integer_type("qword");
-  return nullptr;
-}
-
-bool checked_add_int64(int64_t a, int64_t b, int64_t* out) {
-  if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b))
-    return false;
-  *out = a + b;
-  return true;
-}
-
-bool checked_sub_int64(int64_t a, int64_t b, int64_t* out) {
-  if ((b < 0 && a > INT64_MAX + b) || (b > 0 && a < INT64_MIN + b))
-    return false;
-  *out = a - b;
-  return true;
-}
-
-bool checked_mul_int64(int64_t a, int64_t b, int64_t* out) {
-  if (a == 0 || b == 0) {
-    *out = 0;
-    return true;
-  }
-  if (a == -1) {
-    if (b == INT64_MIN) return false;
-    *out = -b;
-    return true;
-  }
-  if (b == -1) {
-    if (a == INT64_MIN) return false;
-    *out = -a;
-    return true;
-  }
-  if (a > 0) {
-    if (b > 0) {
-      if (a > INT64_MAX / b) return false;
-    } else {
-      if (b < INT64_MIN / a) return false;
-    }
-  } else {
-    if (b > 0) {
-      if (a < INT64_MIN / b) return false;
-    } else {
-      if (a != 0 && b < INT64_MAX / a) return false;
-    }
-  }
-  *out = a * b;
-  return true;
-}
-
-bool checked_div_int64(int64_t a, int64_t b, int64_t* out) {
-  if (b == 0) return false;
-  if (a == INT64_MIN && b == -1) return false;
-  *out = a / b;
-  return true;
-}
-
-bool checked_mod_int64(int64_t a, int64_t b, int64_t* out) {
-  if (b == 0) return false;
-  if (a == INT64_MIN && b == -1) {
-    *out = 0;
-    return true;
-  }
-  *out = a % b;
-  return true;
-}
-
-bool checked_shift_count(int64_t shift) {
-  return shift >= 0 && shift < 64;
-}
-
-bool checked_shl_int64(int64_t a, int64_t shift, int64_t* out) {
-  if (!checked_shift_count(shift)) return false;
-  uint64_t bits = static_cast<uint64_t>(a);
-  bits = low_bits(bits << static_cast<unsigned>(shift), 64);
-  *out = static_cast<int64_t>(bits);
-  return true;
-}
-
-bool checked_shr_int64(int64_t a, int64_t shift, int64_t* out) {
-  if (!checked_shift_count(shift)) return false;
-  uint64_t bits = static_cast<uint64_t>(a);
-  bits >>= static_cast<unsigned>(shift);
-  *out = static_cast<int64_t>(bits);
-  return true;
-}
-
 struct ConstIntExprInfo {
   int64_t value = 0;
   const PrimitiveInfo* type = nullptr;
@@ -669,7 +460,7 @@ struct ConvertedConstInt {
 // ---------------------------------------------------------------------------
 // Emitter state
 
-struct Emitter {
+struct Emitter : ResolveNameProvider, ResolutionTypeOps {
   std::string header;
   std::string impl;
   // Current sink pointer.
@@ -732,13 +523,7 @@ struct Emitter {
   // name, store the parameter count and whether it returns a value.
   // Used so bare references to a parameterless nested `function`
   // auto-call (the lambda itself is `std::function<T()>`, not a `T`).
-  struct NestedFn {
-    size_t param_count = 0;
-    bool accepts_zero_args = false;
-    bool is_function = false;
-    const ast::TypeExpr* return_type = nullptr;
-    const ast::ProcDecl* decl = nullptr;
-  };
+  using NestedFn = ScopeStateView::NestedFn;
   std::unordered_map<std::string, NestedFn> local_nested_fns;
   std::unordered_set<std::string> local_nested_forwards;
 
@@ -761,12 +546,7 @@ struct Emitter {
   // inside the body that resolve as fields of one of the targets get
   // rewritten to `target.name`. For auto-call decisions on bare idents,
   // consult these types.
-  struct WithBind {
-    std::string cxx_text;
-    const ast::TypeExpr* type = nullptr;
-    std::string class_name;
-    std::string access_op;
-  };
+  using WithBind = ScopeStateView::WithBind;
   std::vector<WithBind> with_stack;
 
   struct MetaclassCallable {
@@ -788,6 +568,42 @@ struct Emitter {
   // program's `begin..end.` body. tp2cc_Set by the driver only when
   // emitting the `program` unit.
   const std::vector<std::string>* unit_init_order = nullptr;
+  ScopeStateView scope_state_;
+  EmitAnalysis analysis_;
+  EmitResolution resolution_;
+
+  Emitter(const TypeRegistry* registry_in = nullptr,
+          const std::vector<std::string>* unit_init_order_in = nullptr)
+      : registry(registry_in),
+        unit_init_order(unit_init_order_in),
+        scope_state_{current_class_name,
+                     current_unit_name,
+                     lhs_fn_rewrite,
+                     lhs_fn_rewrite_slot,
+                     lhs_outer_result_rewrite,
+                     lhs_outer_result_rewrite_slot,
+                     local_scope,
+                     local_types,
+                     local_consts,
+                     local_untyped_params,
+                     local_nested_fns,
+                     local_nested_forwards,
+                     local_enums,
+                     local_const_params,
+                     local_type_aliases_scoped,
+                     with_stack,
+                     current_fn_name,
+                     current_fn_is_function,
+                     current_fn_is_ctor,
+                     current_fn_result_type,
+                     current_result_slot_name,
+                     bare_result_slot_name,
+                     bare_result_type,
+                     outer_result_name,
+                     outer_result_slot_name,
+                     outer_result_type},
+        analysis_(registry, scope_state_, *this),
+        resolution_(registry, scope_state_, analysis_, *this) {}
 
   void set_header() { out = &header; }
   void set_impl()   { out = &impl; }
@@ -811,7 +627,7 @@ struct Emitter {
   void emit_proc_decl_signature(const ProcDecl& pd);
 
   // Types -> C++ type string.
-  std::string type_to_cxx(const TypeExpr& t);
+  std::string type_to_cxx(const TypeExpr& t) override;
   std::string type_name_to_cxx(const TyName& n);
   std::string type_name_text_to_cxx(std::string_view name);
   std::string named_type_struct_cxx(std::string_view name);
@@ -839,8 +655,6 @@ struct Emitter {
   std::string string_type_to_cxx(const TyString& s);
   std::optional<std::string> shortstring_capacity_to_cxx(
       const TypeExpr* t);
-  std::string shortstring_value_to_cxx(std::string text,
-                                       const TypeExpr* target);
   std::string pointer_type_to_cxx(const TyPointer& p);
   std::string procedural_type_to_cxx(const TyProcedural& p);
   std::string procedural_param_types_to_cxx(const std::vector<Param>& params);
@@ -913,7 +727,6 @@ struct Emitter {
   const ast::TypeExpr* lookup_named_type_expr(std::string_view name);
   bool is_builtin_reference_class_name(std::string_view name) const;
   std::string metaclass_target_name(const ast::TypeExpr* t);
-  bool type_is_value_object(const ast::TypeExpr* t);
   std::string primitive_cast_lvalue_ref(const ast::Call& c);
   std::string primitive_cast_untyped_storage_ptr(const ast::Call& c);
   std::string primitive_cast_packed_field_ptr(const ast::Call& c);
@@ -953,13 +766,9 @@ struct Emitter {
   // for globals and the current scope tables for locals/self-class.
   const ast::TypeExpr* deduce_type(const ast::Expr& e);
   const ast::TypeExpr* deduce_const_decl_type(const ast::ConstDecl& cd);
-  const ast::TypeExpr* deduce_const_info_type(const ConstInfo& c);
   std::optional<ConstIntExprInfo> eval_const_int_expr(
       const ast::Expr& e,
       std::unordered_set<std::string>* visiting_const_names = nullptr);
-  std::optional<ConstIntExprInfo> eval_const_int_cast(
-      const ast::Call& c,
-      std::unordered_set<std::string>* visiting_const_names);
   std::optional<ConvertedConstInt> convert_const_int_value(
       Location where, int64_t value, const ast::TypeExpr* target,
       bool explicit_conversion, bool diagnose);
@@ -992,11 +801,10 @@ struct Emitter {
   bool expr_is_storage_lvalue(const ast::Expr& e);
   bool expr_is_untyped_storage_ref(const ast::Expr& e);
   bool expr_is_charish(const ast::Expr& e);
-  bool type_is_pcharish(const ast::TypeExpr* t);
+  bool type_is_pcharish(const ast::TypeExpr* t) override;
   bool type_is_metaclass(const ast::TypeExpr* t);
   bool type_is_reference_class(const ast::TypeExpr* t);
   bool expr_is_reference_class(const ast::Expr& e);
-  std::string member_access_op(const ast::TypeExpr* t);
   std::string member_access_op(const ast::Expr& e);
   bool type_is_stringish(const ast::TypeExpr* t);
   bool type_is_pointerish(const ast::TypeExpr* t);
@@ -1025,90 +833,6 @@ struct Emitter {
   };
   bool proc_accepts_zero_args(const ast::ProcDecl& decl);
   const ast::ProcDecl* resolve_call_decl(const ast::Expr& callee);
-
-  // One row in a callable-name lookup result. `decl` is null for rt
-  // builtins that the registry tracks without an AST (writeln, ...);
-  // arity filtering still works through `param_count` /
-  // `accepts_zero_args`.
-  struct AnyCand {
-    const ast::ProcDecl* decl = nullptr;
-    size_t param_count = 0;
-    bool accepts_zero_args = false;
-    std::string unit;  // empty for class methods and nested procs
-  };
-  // Pascal lookup order for an unqualified callable name:
-  //   with-stack -> nested procs -> current class chain ->
-  //   current unit's own procs -> uses chain.
-  // The first contributing scope wins; the uses chain aggregates so
-  // the picker sees same-name overloads spread across imports.
-  void append_class_method_cands(const std::string& cls,
-                                  const std::string& name,
-                                  std::vector<AnyCand>& cands);
-  void append_unit_export_proc_cands(const std::string& unit,
-                                      const std::string& name,
-                                      std::vector<AnyCand>& cands);
-  void gather_callable_in_pascal_scope(const std::string& name,
-                                       std::vector<AnyCand>& cands);
-
-  // Pascal/FPC overload-resolution conversion ranks. Lower = better. See
-  // the rank table in `rank_conversion`. `NotViable` means no conversion
-  // exists (or only an explicit one); the candidate is filtered out.
-  enum class ConvRank : uint8_t {
-    Exact = 1,             // identity after canonicalization
-    Equal = 2,             // equal-modulo-distinct/subrange (same underlying)
-    ClassHierarchy = 3,    // descendant -> ancestor class
-    IntWideningSameSign = 4,  // byte->word->longint, etc.
-    RealWidening = 5,      // single->double->extended
-    StringSameTagWiden = 6,   // ShortString<N> -> ShortString<M>, M >= N
-    // Cross-tag string conversions split by target family because Pascal's
-    // tiebreaker prefers ShortString-typed params over AnsiString-typed
-    // params when both are viable for the same source (the compiler
-    // bootstrap runs under `{$H-}` semantics: `string` aliases ShortString).
-    StringToShortString = 7,  // Char/PChar/AnsiString -> ShortString
-    StringToAnsiString  = 8,  // Char/PChar/ShortString -> AnsiString; ShortString/AnsiString -> PChar
-    OrdinalSignChange   = 9,  // longint <-> longword
-    // Integer narrowing (longint -> shortint, etc). Pascal accepts this
-    // for value/const parameters with a runtime range check; the picker
-    // must rank it as viable but worse than any widening or sign change.
-    // Without this slot the picker rejects all narrowing-target overloads
-    // as NotViable and `Var(s, aint(x), code)` / overloaded calls with a
-    // shortint param signature can't be picked.
-    IntNarrowing        = 10,
-    Variant             = 11,  // any -> variant or variant -> any
-    NotViable = 255,
-  };
-  // Conversion score: the major rank above plus a tie-breaking
-  // `distance`. Within a single rank, Pascal prefers the candidate
-  // whose target type is the closest fit to the source -- e.g. a
-  // `byte` argument prefers `tostr(cardinal)` over `tostr(qword)`
-  // even though both are `IntWideningSameSign`. `distance` encodes
-  // that: smaller distance wins. 0 means "no distance applies"
-  // (e.g. Exact, Equal). The picker compares (rank, distance)
-  // lexicographically; without this, equal-rank widenings tie and
-  // the call gets flagged ambiguous.
-  struct ConvScore {
-    ConvRank rank = ConvRank::NotViable;
-    int distance = 0;
-    bool viable() const { return rank != ConvRank::NotViable; }
-  };
-  ConvScore rank_conversion(const ast::TypeExpr* arg,
-                            const ast::TypeExpr* param,
-                            bool var_param);
-  // Picks the Pascal-best ProcDecl from a list of candidates given the
-  // call-site argument expressions. Used by both free-function overload
-  // sets (built from `ProcInfo::decl`) and class-method overload sets
-  // (built from `MethodSig::decl`); the picker only needs the decls.
-  // Result of overload picking. `ambiguous` distinguishes "no candidate
-  // dominates" (Pascal-level error -- caller must diagnose) from
-  // "no candidate is viable at all" (decl null, ambiguous false; caller
-  // can fall back to single-decl resolution).
-  struct PickResult {
-    const ast::ProcDecl* decl = nullptr;
-    bool ambiguous = false;
-  };
-  PickResult pick_overload(
-      const std::vector<const ast::ProcDecl*>& candidates,
-      const std::vector<const ast::Expr*>& args);
   // Single entry point for resolving a Pascal call expression. Returns
   // both the picked decl AND the information needed to emit the C++ callee
   // text. `format_resolved_callee` is the only place the call branch
@@ -1125,31 +849,8 @@ struct Emitter {
   // existing expr_to_cxx logic. Per-overload mangling would let us
   // drop the per-arg `static_cast` workaround entirely; that is a
   // larger follow-up, intentionally not done here.)
-  enum class ResolvedCalleeKind {
-    Unknown,             // emitter spells callee via expr_to_cxx(callee)
-    FreeFunctionInUnit,  // emitter spells callee as <unit_ns>::<mangled_name>
-  };
-  struct ResolvedCall {
-    const ast::ProcDecl* decl = nullptr;
-    ResolvedCalleeKind shape = ResolvedCalleeKind::Unknown;
-    // For `FreeFunctionInUnit`: the unit that owns `decl`. Drives the
-    // namespace prefix in `format_resolved_callee`.
-    std::string defining_unit;
-    // Pascal-side member/proc name (unmangled, lowercased). Used by
-    // `format_resolved_callee` for `FreeFunctionInUnit`.
-    std::string member_name;
-    // True iff the resolver had to pick among multiple arity-viable
-    // candidates by type-rank scoring. The call site wraps each value
-    // arg in `static_cast<param_type>(...)` so C++ overload resolution
-    // lands on the same overload Pascal picked. When arity alone
-    // narrows to one candidate, casts are not needed.
-    bool needs_arg_casts = false;
-    // Set when two or more arity-viable candidates were mutually
-    // incomparable on type-rank. The call site reports a Pascal-level
-    // "ambiguous call" error and emits `decl=null`. We do not silently
-    // pick one -- silent pick has been a real source of miscompiles.
-    bool ambiguous = false;
-  };
+  using ResolvedCalleeKind = tp2cc::ResolvedCalleeKind;
+  using ResolvedCall = tp2cc::ResolvedCall;
   ResolvedCall resolve_call(
       const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
   std::string format_resolved_callee(const ResolvedCall& resolved,
@@ -1232,41 +933,16 @@ struct Emitter {
   //   - whether it's a parameterless callable (value context -> auto-call),
   //   - the ProcDecl* for call-site untyped-var arg wrapping,
   //   - whether it's a field/var/const/enum-member (never auto-call).
-  enum class ResolvedKind {
-    Unknown,          // emit the mangled name; let C++ lookup sort it out
-    ResultSlot,       // Pascal fn's name-as-read inside its own body
-    Local,            // param/local/typed-const/nested-fn-name
-    NestedFn,         // a parameterless nested function value
-    WithField,        // field under a `with X do` binding
-    WithMethod,       // method under a `with X do` binding
-    WithProperty,     // property under a `with X do` binding
-    ClassField,       // member of current class (or ancestor)
-    ClassMethod,      // method of current class (or ancestor)
-    ClassProperty,    // property of current class (or ancestor)
-    UnitVar,
-    UnitConst,
-    UnitProc,
-    UnitType,
-    EnumMember,
-    RtBuiltin,
-  };
-  struct ResolveResult {
-    ResolvedKind kind = ResolvedKind::Unknown;
-    std::string cxx;              // the full C++ expression text
-    bool is_parameterless = false;
-    bool is_callable = false;
-    const ast::ProcDecl* proc = nullptr;   // for call-site analysis
-    bool accepts_zero_args = false;
-    std::string return_type_name;
-  };
+  using ResolvedKind = tp2cc::ResolvedKind;
+  using ResolveResult = tp2cc::ResolveResult;
   std::optional<ResolveResult> maybe_resolve_implicit_property(
       std::string_view name);
   // Qualifier: empty means unqualified lookup.  Otherwise it's a
   // unit name or a class/record alias name (both lowercased).
-  enum class QualifierKind { None, Unit, Class };
+  using QualifierKind = tp2cc::QualifierKind;
   ResolveResult resolve_name(const std::string& name,
                              QualifierKind qk = QualifierKind::None,
-                             const std::string& qualifier = {});
+                             const std::string& qualifier = {}) override;
 
   // State: the Pascal identifier of the current function whose body we are
   // emitting (not mangled). Used by `exit`/`exit(v)` translation so we
@@ -1504,7 +1180,7 @@ std::vector<Emitter::MetaclassCallable> Emitter::collect_metaclass_callables(
     // Constructor/ClassMethod-ness, so the representative overload's kind
     // classifies the whole slot for the metaclass-callable test.
     for (const auto& [name, sigs] : it->second.methods) {
-      const MethodSig* sig = representative_method(sigs);
+      const MethodSig* sig = ::tp2cc::representative_method(sigs);
       if (!sig) continue;
       if (sig->kind == SymKind::Constructor || sig->kind == SymKind::ClassMethod) {
         names.push_back(name);
@@ -1512,7 +1188,8 @@ std::vector<Emitter::MetaclassCallable> Emitter::collect_metaclass_callables(
     }
     std::sort(names.begin(), names.end());
     for (const auto& name : names) {
-      const MethodSig* sig = representative_method(it->second.methods.at(name));
+      const MethodSig* sig =
+          ::tp2cc::representative_method(it->second.methods.at(name));
       auto pit = pos.find(name);
       if (pit == pos.end()) {
         pos[name] = out.size();
@@ -1581,153 +1258,31 @@ Emitter::find_metaclass_callable_impl(std::string_view concrete_class,
 }
 
 const TypeExpr* Emitter::canonicalize_type(const TypeExpr* t) {
-  int hops = 0;
-  while (t && t->kind == Kind::TyName) {
-    if (hops++ >= kMaxAliasChainHops) {
-      throw std::runtime_error(
-          "Emitter::canonicalize_type: alias chain exceeds "
-          "kMaxAliasChainHops; cycle or registry corruption");
-    }
-    const auto& n = static_cast<const TyName&>(*t);
-    auto lit = local_type_aliases_scoped.find(n.name);
-    if (lit != local_type_aliases_scoped.end() && lit->second &&
-        lit->second != t) {
-      t = lit->second;
-      continue;
-    }
-    if (registry) {
-      const TypeExpr* next = registry->canonicalize(t);
-      if (next && next != t) {
-        t = next;
-        continue;
-      }
-    }
-    break;
-  }
-  return t;
+  return analysis_.canonicalize_type(t);
 }
 
 bool Emitter::const_param_needs_mutable_ref(const TypeExpr* t) {
-  if (type_is_reference_class(t)) return false;
-  // Old object-style `object` values still treat `const` mostly as a
-  // calling-convention hint. Their methods may mutate internal bookkeeping
-  // through `self`, so these parameters cannot become `const T&`.
-  return type_is_value_object(t);
+  return analysis_.const_param_needs_mutable_ref(t);
 }
 
 bool Emitter::const_param_needs_const_ref(const TypeExpr* t) {
-  (void)t;
-  // Pascal `const` is not a blanket request for C++ reference semantics.
-  // Use explicit special cases only when the source model proves we need
-  // aliasing. The remaining bootstrap paths do not rely on fixed-array
-  // `const` parameters preserving caller storage identity, so keep them as
-  // plain values.
-  return false;
+  return analysis_.const_param_needs_const_ref(t);
 }
 
 const ClassInfo* Emitter::class_info_for_type_name(std::string_view name) {
-  std::string low = ascii_lower(std::string(name));
-  auto builtin_it = builtin_reference_class_map().find(low);
-  if (builtin_it != builtin_reference_class_map().end()) {
-    static std::unordered_map<std::string, ClassInfo> builtins;
-    auto [it, inserted] = builtins.try_emplace(low);
-    if (inserted) {
-      it->second.name = low;
-      it->second.parent = builtin_it->second.parent;
-      it->second.defining_unit = builtin_it->second.defining_unit;
-      it->second.is_reference_type = true;
-    }
-    return &it->second;
-  }
-
-  if (!registry) return nullptr;
-  auto dot = low.find('.');
-  if (dot == std::string::npos) {
-    auto it = registry->classes.find(low);
-    return it == registry->classes.end() ? nullptr : &it->second;
-  }
-
-  // TypeRegistry indexes classes by unqualified Pascal name. Qualified
-  // references like `unitname.tfoo` therefore need a second defining-unit
-  // check here so `u1.tnode` and `u2.tnode` stay distinguishable.
-  std::string unit = low.substr(0, dot);
-  std::string tail = low.substr(dot + 1);
-  auto it = registry->classes.find(tail);
-  if (it == registry->classes.end()) return nullptr;
-  return it->second.defining_unit == unit ? &it->second : nullptr;
+  return analysis_.class_info_for_type_name(name);
 }
 
 const TypeExpr* Emitter::lookup_named_type_expr(std::string_view name) {
-  std::string low = ascii_lower(std::string(name));
-
-  auto lit = local_type_aliases_scoped.find(low);
-  if (lit != local_type_aliases_scoped.end() && lit->second) {
-    return lit->second;
-  }
-
-  if (!registry) return nullptr;
-
-  auto dot = low.find('.');
-  if (dot != std::string::npos) {
-    std::string unit = low.substr(0, dot);
-    std::string tail = low.substr(dot + 1);
-
-    auto ait = registry->aliases.find(tail);
-    if (ait != registry->aliases.end() &&
-        ait->second.defining_unit == unit &&
-        ait->second.target) {
-      return ait->second.target.get();
-    }
-    auto cit = registry->classes.find(tail);
-    if (cit != registry->classes.end() && cit->second.defining_unit == unit) {
-      return named_pascal_type(name);
-    }
-    auto rit = registry->records.find(tail);
-    if (rit != registry->records.end() && rit->second.defining_unit == unit) {
-      return named_pascal_type(name);
-    }
-    auto eit = registry->enums.find(tail);
-    if (eit != registry->enums.end() && eit->second.defining_unit == unit) {
-      return named_pascal_type(name);
-    }
-    return nullptr;
-  }
-
-  auto ait = registry->aliases.find(low);
-  if (ait != registry->aliases.end() && ait->second.target) {
-    return ait->second.target.get();
-  }
-  if (registry->classes.count(low) || registry->records.count(low) ||
-      registry->enums.count(low)) {
-    return named_pascal_type(name);
-  }
-  return nullptr;
+  return analysis_.lookup_named_type_expr(name);
 }
 
 bool Emitter::is_builtin_reference_class_name(std::string_view name) const {
-  return !builtin_reference_class_struct_cxx(
-              ascii_lower(std::string(name))).empty();
+  return analysis_.is_builtin_reference_class_name(name);
 }
 
 std::string Emitter::metaclass_target_name(const TypeExpr* t) {
-  t = canonicalize_type(t);
-  if (!t || t->kind != Kind::TyMetaclass) return {};
-  return static_cast<const TyMetaclass&>(*t).class_name;
-}
-
-bool Emitter::type_is_value_object(const TypeExpr* t) {
-  t = canonicalize_type(t);
-  if (!t) return false;
-  if (t->kind == Kind::TyObject) {
-    return !static_cast<const TyObject&>(*t).is_reference_type;
-  }
-  if (t->kind != Kind::TyName) return false;
-
-  const auto& n = static_cast<const TyName&>(*t);
-  if (const auto* ci = class_info_for_type_name(n.name)) {
-    return !ci->is_reference_type;
-  }
-  return false;
+  return analysis_.metaclass_target_name(t);
 }
 
 bool Emitter::enum_has_explicit_values(const TyEnum& e) {
@@ -2063,13 +1618,6 @@ std::optional<std::string> Emitter::shortstring_capacity_to_cxx(
   const auto& s = static_cast<const TyString&>(*canon);
   if (s.max_length) return const_value_to_cxx(*s.max_length);
   return std::string("255");
-}
-
-std::string Emitter::shortstring_value_to_cxx(std::string text,
-                                              const TypeExpr* target) {
-  auto cap = shortstring_capacity_to_cxx(target);
-  if (!cap) return text;
-  return "::rt::tp2cc_shortstring_of<" + *cap + ">(" + text + ")";
 }
 
 std::string Emitter::pointer_type_to_cxx(const TyPointer& p) {
@@ -2432,648 +1980,50 @@ std::string Emitter::low_high_expr_for_type(const TypeExpr* t,
 // from the actual type tree, not name-matching heuristics.
 
 const TypeExpr* Emitter::deduce_const_decl_type(const ConstDecl& cd) {
-  if (cd.type) return cd.type.get();
-  auto info = eval_const_int_expr(*cd.value);
-  if (!info || !info->type) return nullptr;
-  return builtin_integer_type(info->type);
-}
-
-const TypeExpr* Emitter::deduce_const_info_type(const ConstInfo& c) {
-  if (c.type) return c.type.get();
-  if (!c.value) return nullptr;
-  auto info = eval_const_int_expr(*c.value);
-  if (!info || !info->type) return nullptr;
-  return builtin_integer_type(info->type);
+  return analysis_.deduce_const_decl_type(cd);
 }
 
 std::optional<ConvertedConstInt> Emitter::convert_const_int_value(
     Location where, int64_t value, const TypeExpr* target,
     bool explicit_conversion, bool diagnose) {
-  if (!target) return std::nullopt;
-  const TypeExpr* canon = canonicalize_type(target);
-  if (!canon || canon->kind != Kind::TyName) return std::nullopt;
-  std::string name = ascii_lower(static_cast<const TyName&>(*canon).name);
-  auto* info = primitive_info(name);
-  if (!info || info->int_kind == PrimitiveIntKind::None) return std::nullopt;
-
-  bool fits = true;
-  if (info->int_kind == PrimitiveIntKind::Unsigned) {
-    if (value < 0) {
-      fits = false;
-    } else if (info->bits < 64) {
-      fits = static_cast<uint64_t>(value) <= ((uint64_t{1} << info->bits) - 1);
-    }
-  } else {
-    int64_t lo = 0;
-    int64_t hi = 0;
-    if (info->bits == 64) {
-      lo = INT64_MIN;
-      hi = INT64_MAX;
-    } else {
-      lo = -(int64_t{1} << (info->bits - 1));
-      hi = (int64_t{1} << (info->bits - 1)) - 1;
-    }
-    fits = value >= lo && value <= hi;
-  }
-  if (!fits && diagnose && !explicit_conversion) {
-    report_warning(where, "range check error while evaluating constants");
-  }
-
-  ConvertedConstInt converted;
-  converted.type = info;
-  converted.bits = low_bits(static_cast<uint64_t>(value), info->bits);
-  if (info->int_kind == PrimitiveIntKind::Unsigned) {
-    converted.value = static_cast<int64_t>(converted.bits);
-    return converted;
-  }
-  if (info->bits == 64) {
-    converted.value = static_cast<int64_t>(converted.bits);
-    return converted;
-  }
-  uint64_t sign_bit = uint64_t{1} << (info->bits - 1);
-  if ((converted.bits & sign_bit) == 0) {
-    converted.value = static_cast<int64_t>(converted.bits);
-  } else {
-    converted.value =
-        static_cast<int64_t>(converted.bits | ~low_bits(UINT64_MAX, info->bits));
-  }
-  return converted;
-}
-
-std::optional<ConstIntExprInfo> Emitter::eval_const_int_cast(
-    const Call& c, std::unordered_set<std::string>* visiting_const_names) {
-  if (c.args.size() != 1 || c.callee->kind != Kind::Ident) return std::nullopt;
-  const auto& callee = static_cast<const Ident&>(*c.callee);
-  if (!is_primitive_type(callee.name)) return std::nullopt;
-  auto* cast_type = builtin_integer_type(callee.name);
-  if (!cast_type) return std::nullopt;
-  auto arg = eval_const_int_expr(*c.args[0], visiting_const_names);
-  if (!arg) return std::nullopt;
-  auto converted =
-      convert_const_int_value(c.loc, arg->value, cast_type, true, false);
+  auto converted = analysis_.convert_const_int_value(
+      where, value, target, explicit_conversion, diagnose);
   if (!converted) return std::nullopt;
-  return ConstIntExprInfo{converted->value, converted->type};
+  ConvertedConstInt out;
+  out.value = converted->value;
+  out.bits = converted->bits;
+  out.type = converted->type;
+  return out;
 }
 
 std::optional<ConstIntExprInfo> Emitter::eval_const_int_expr(
     const Expr& e, std::unordered_set<std::string>* visiting_const_names) {
-  switch (e.kind) {
-    case Kind::IntLit: {
-      const auto& n = static_cast<const IntLit&>(e);
-      if (n.value > static_cast<uint64_t>(INT64_MAX)) return std::nullopt;
-      int64_t value = static_cast<int64_t>(n.value);
-      return ConstIntExprInfo{value, primitive_info_for_value(value)};
-    }
-    case Kind::Unary: {
-      const auto& u = static_cast<const Unary&>(e);
-      auto operand = eval_const_int_expr(*u.operand, visiting_const_names);
-      if (!operand) return std::nullopt;
-      if (u.op == UnOp::Plus) return operand;
-      if (u.op != UnOp::Neg) return std::nullopt;
-      int64_t value = 0;
-      if (!checked_sub_int64(0, operand->value, &value)) return std::nullopt;
-      return ConstIntExprInfo{value, primitive_info_for_value(value)};
-    }
-    case Kind::Binary: {
-      const auto& b = static_cast<const Binary&>(e);
-      auto lhs = eval_const_int_expr(*b.lhs, visiting_const_names);
-      auto rhs = eval_const_int_expr(*b.rhs, visiting_const_names);
-      if (!lhs || !rhs) return std::nullopt;
-      int64_t value = 0;
-      switch (b.op) {
-        case BinOp::Add:
-          if (!checked_add_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
-        case BinOp::Sub:
-          if (!checked_sub_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
-        case BinOp::Mul:
-          if (!checked_mul_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
-        case BinOp::IntDiv:
-          if (!checked_div_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
-        case BinOp::Mod:
-          if (!checked_mod_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
-        case BinOp::Shl:
-          if (!checked_shl_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
-        case BinOp::Shr:
-          if (!checked_shr_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
-        case BinOp::And:
-          value = static_cast<int64_t>(static_cast<uint64_t>(lhs->value) &
-                                       static_cast<uint64_t>(rhs->value));
-          break;
-        case BinOp::Or:
-          value = static_cast<int64_t>(static_cast<uint64_t>(lhs->value) |
-                                       static_cast<uint64_t>(rhs->value));
-          break;
-        case BinOp::Xor:
-          value = static_cast<int64_t>(static_cast<uint64_t>(lhs->value) ^
-                                       static_cast<uint64_t>(rhs->value));
-          break;
-        default:
-          return std::nullopt;
-      }
-      return ConstIntExprInfo{value, primitive_info_for_value(value)};
-    }
-    case Kind::Call:
-      return eval_const_int_cast(static_cast<const Call&>(e),
-                                 visiting_const_names);
-    case Kind::Ident: {
-      const auto& id = static_cast<const Ident&>(e);
-      if (!visiting_const_names) {
-        std::unordered_set<std::string> local_visiting;
-        return eval_const_int_expr(e, &local_visiting);
-      }
-      if (!visiting_const_names->insert(id.name).second) return std::nullopt;
-      auto pop = [&]() { visiting_const_names->erase(id.name); };
-
-      auto maybe_fold_const_decl =
-          [&](const ConstDecl& cd) -> std::optional<ConstIntExprInfo> {
-        // Untyped `const X = ...` is a compile-time constant.
-        // Typed `const X: T = ...` is writable storage in this dialect and
-        // must not be folded through its initializer.
-        if (cd.type || !cd.value) return std::nullopt;
-        return eval_const_int_expr(*cd.value, visiting_const_names);
-      };
-
-      auto maybe_fold_const_info =
-          [&](const ConstInfo& c) -> std::optional<ConstIntExprInfo> {
-        if (c.type || !c.value) return std::nullopt;
-        return eval_const_int_expr(*c.value, visiting_const_names);
-      };
-
-      auto lit = local_consts.find(id.name);
-      if (lit != local_consts.end() && lit->second && lit->second->value) {
-        std::optional<ConstIntExprInfo> out =
-            maybe_fold_const_decl(*lit->second);
-        pop();
-        return out;
-      }
-
-      auto lookup_const = [&](const UnitInfo& u, bool export_only)
-          -> const ConstInfo* {
-        return export_only ? u.find_export_const(id.name) : u.find_const(id.name);
-      };
-
-      if (registry) {
-        auto cur = registry->units.find(current_unit_name);
-        if (cur != registry->units.end()) {
-          if (const auto* c = lookup_const(cur->second, false)) {
-            std::optional<ConstIntExprInfo> out = maybe_fold_const_info(*c);
-            pop();
-            return out;
-          }
-          for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
-               ++it) {
-            auto uit = registry->units.find(*it);
-            if (uit == registry->units.end()) continue;
-            if (const auto* c = lookup_const(uit->second, true)) {
-              std::optional<ConstIntExprInfo> out = maybe_fold_const_info(*c);
-              pop();
-              return out;
-            }
-          }
-        }
-      }
-      pop();
-      return std::nullopt;
-    }
-    default:
-      return std::nullopt;
-  }
+  auto info = analysis_.eval_const_int_expr(e, visiting_const_names);
+  if (!info) return std::nullopt;
+  return ConstIntExprInfo{info->value, info->type};
 }
 
 const TypeExpr* Emitter::deduce_type(const Expr& e) {
-  if (!registry) return nullptr;
-  switch (e.kind) {
-    case Kind::IntLit:
-    case Kind::Unary:
-    case Kind::Binary:
-      if (auto info = eval_const_int_expr(e); info && info->type) {
-        return builtin_integer_type(info->type);
-      }
-      if (e.kind != Kind::Binary) return nullptr;
-      {
-        const auto& b = static_cast<const Binary&>(e);
-        if (b.op == BinOp::Is) return builtin_boolean_type();
-        if (b.op == BinOp::As) {
-          if (b.rhs->kind == Kind::Ident) {
-            const auto& id = static_cast<const Ident&>(*b.rhs);
-            auto ait = registry->aliases.find(id.name);
-            if (ait != registry->aliases.end()) return ait->second.target.get();
-            if (class_info_for_type_name(id.name)) return named_pascal_type(id.name);
-          }
-          return nullptr;
-        }
-        // String / set binary ops. Pascal's `+`/`-`/`*` are
-        // overloaded on string concat (Add) and set ops (Add union,
-        // Sub difference, Mul intersection). Without typing these
-        // here the picker can't rank a `'*'+name` argument against a
-        // string-typed parameter, or a `setA - [x]` argument against
-        // a typed-set parameter, and the overload set falls through
-        // as NotViable.
-        const TypeExpr* lt = deduce_type(*b.lhs);
-        const TypeExpr* rt = deduce_type(*b.rhs);
-        auto is_string_like = [&](const TypeExpr* t) {
-          if (!t) return false;
-          if (t->kind == Kind::TyString) return true;
-          if (t->kind == Kind::TyName) {
-            const auto& nm = ascii_lower(static_cast<const TyName&>(*t).name);
-            return nm == "string" || nm == "shortstring" ||
-                   nm == "ansistring";
-          }
-          return false;
-        };
-        auto canon_set = [&](const TypeExpr* t) -> const TypeExpr* {
-          if (!t) return nullptr;
-          const TypeExpr* c = canonicalize_type(t);
-          return (c && c->kind == Kind::TySet) ? c : nullptr;
-        };
-        if (b.op == BinOp::Add &&
-            (is_string_like(lt) || is_string_like(rt) ||
-             b.lhs->kind == Kind::StringLit || b.rhs->kind == Kind::StringLit)) {
-          auto is_ansistring = [&](const TypeExpr* t) {
-            return t && t->kind == Kind::TyName &&
-                   ascii_lower(static_cast<const TyName&>(*t).name) ==
-                       "ansistring";
-          };
-          if (is_ansistring(lt) || is_ansistring(rt)) {
-            return named_pascal_type("ansistring");
-          }
-          return named_pascal_type("shortstring");
-        }
-        if (b.op == BinOp::Add || b.op == BinOp::Sub || b.op == BinOp::Mul) {
-          // Set union (+) / difference (-) / intersection (*). Pascal
-          // forbids mixing element types, so either typed operand
-          // (canonicalizing to TySet) anchors the whole expression.
-          // The other side may be a `[...]` SetLit with no anchor of
-          // its own; we still know the result type.
-          if (const TypeExpr* lset = canon_set(lt)) return b.lhs->kind == Kind::SetLit ? lset : lt;
-          if (const TypeExpr* rset = canon_set(rt)) return b.rhs->kind == Kind::SetLit ? rset : rt;
-        }
-      }
-      break;
-    case Kind::Ident: {
-      const auto& id = static_cast<const Ident&>(e);
-      // Local variables and parameters shadow everything.
-      auto lit = local_types.find(id.name);
-      if (lit != local_types.end()) return lit->second;
-      auto lcit = local_consts.find(id.name);
-      if (lcit != local_consts.end() && lcit->second)
-        return deduce_const_decl_type(*lcit->second);
-      // Nested functions live in `local_nested_fns`, not `local_types`.
-      // Type deduction still needs to see their result type so boolean
-      // expressions like `if ready and flag then` lower to `&&` even
-      // before the ident emitter auto-calls a parameterless `ready`.
-      auto nit = local_nested_fns.find(id.name);
-      if (nit != local_nested_fns.end() && nit->second.is_function)
-        return nit->second.return_type;
-      // Self -- canonically the current class's type.
-      if (id.name == "self" && !current_class_name.empty()) {
-        // We don't track a direct TypeExpr for the class here. Returning
-        // nullptr is fine; Member access will fall through to class-name
-        // handling via `current_class_name` in the caller.
-        return nullptr;
-      }
-      if (current_fn_is_function && current_fn_result_type &&
-          !current_fn_name.empty() && id.name == current_fn_name) {
-        return current_fn_result_type;
-      }
-      if (bare_result_type && is_pascal_result_ident(id.name)) {
-        return bare_result_type;
-      }
-      if (outer_result_type && !outer_result_name.empty() &&
-          id.name == outer_result_name) {
-        return outer_result_type;
-      }
-      // Class member (inside method body of a known class).
-      if (!current_class_name.empty()) {
-        if (const auto* ci = class_info_for_type_name(current_class_name);
-            ci && ci->is_reference_type) {
-          if (id.name == "instancesize") return builtin_integer_type("longint");
-          if (id.name == "classtype") return named_pascal_type("tclass");
-          if (id.name == "inheritsfrom") return builtin_boolean_type();
-        }
-        if (auto* f = registry->lookup_class_field(current_class_name, id.name))
-          return f->type.get();
-        if (auto* p = registry->lookup_class_property(current_class_name, id.name))
-          return p->type.get();
-        if (auto* m = registry->lookup_class_method(current_class_name, id.name);
-            m && m->decl && m->decl->return_type) {
-          return m->decl->return_type.get();
-        }
-      }
-      // `with X do` bindings contribute fields of their target type --
-      // the ident might name such a field.
-      for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
-        const std::string& ac = it->class_name;
-        if (const auto* ci = class_info_for_type_name(ac);
-            ci && ci->is_reference_type) {
-          if (id.name == "instancesize") return builtin_integer_type("longint");
-          if (id.name == "classtype") return named_pascal_type("tclass");
-          if (id.name == "inheritsfrom") return builtin_boolean_type();
-        }
-        if (!ac.empty()) {
-          if (auto* f = registry->lookup_class_field(ac, id.name))
-            return f->type.get();
-          if (auto* p = registry->lookup_class_property(ac, id.name))
-            return p->type.get();
-          if (auto* m = registry->lookup_class_method(ac, id.name);
-              m && m->decl && m->decl->return_type) {
-            return m->decl->return_type.get();
-          }
-        }
-        if (const TypeExpr* rf = lookup_record_field_type_in_with(*it, id.name))
-          return rf;
-      }
-      // Unit-level lookup: own unit first, then each `uses` entry
-      // (right-to-left). The global last-wins maps on TypeRegistry
-      // are NOT consulted here -- two units can share a name with
-      // different types and the only right answer is to find the
-      // one exported from a unit the current unit actually uses.
-      // Own-unit: both interface and impl visible. Other units:
-      // interface-exports only.
-      auto lookup_own = [&](const UnitInfo& u) -> const TypeExpr* {
-        if (auto* v = u.find_var(id.name)) return v->type.get();
-        if (auto* c = u.find_const(id.name)) return deduce_const_info_type(*c);
-        if (auto* p = u.find_proc(id.name);
-            p && p->decl && p->decl->return_type)
-          return p->decl->return_type.get();
-        return nullptr;
-      };
-      auto lookup_export = [&](const UnitInfo& u) -> const TypeExpr* {
-        if (auto* v = u.find_export_var(id.name)) return v->type.get();
-        if (auto* c = u.find_export_const(id.name)) return deduce_const_info_type(*c);
-        if (auto* p = u.find_export_proc(id.name);
-            p && p->decl && p->decl->return_type)
-          return p->decl->return_type.get();
-        return nullptr;
-      };
-      auto cur = registry->units.find(current_unit_name);
-      if (cur != registry->units.end()) {
-        if (const auto* t = lookup_own(cur->second)) return t;
-        for (auto it = cur->second.uses.rbegin();
-             it != cur->second.uses.rend(); ++it) {
-          auto uit = registry->units.find(*it);
-          if (uit == registry->units.end()) continue;
-          if (const auto* t = lookup_export(uit->second)) return t;
-        }
-      }
-      return nullptr;
-    }
-    case Kind::Deref: {
-      const auto& d = static_cast<const Deref&>(e);
-      const TypeExpr* t = deduce_type(*d.operand);
-      if (!t) return nullptr;
-      t = canonicalize_type(t);
-      if (tyname_is(t, "pchar")) return builtin_char_type();
-      if (tyname_is(t, "ppchar")) return builtin_pchar_type();
-      if (t && t->kind == Kind::TyPointer) {
-        const auto& p = static_cast<const TyPointer&>(*t);
-        return p.target.get();
-      }
-      return nullptr;
-    }
-    case Kind::Member: {
-      const auto& m = static_cast<const Member&>(e);
-      std::string cls;
-      if (m.base->kind == Kind::Ident) {
-        const auto& id = static_cast<const Ident&>(*m.base);
-        if (id.name == "self") cls = current_class_name;
-        else if (registry->classes.count(id.name) ||
-                 registry->records.count(id.name)) cls = id.name;
-      }
-      if (cls.empty()) {
-        const TypeExpr* bt = deduce_type(*m.base);
-        if (bt) cls = metaclass_target_name(bt);
-      }
-      if (cls.empty()) {
-        // Chained accesses like `x.sym.name` and result-slot writes like
-        // `clone.next := nil` must recover the Pascal class alias from the
-        // base expression, not from the canonicalized class body node.
-        // `deduce_class_alias` keeps casts, `self`, and named class values
-        // on that Pascal-facing path.
-        cls = deduce_class_alias(*m.base);
-      }
-      if (cls.empty()) return nullptr;
-      if (const auto* ci = class_info_for_type_name(cls);
-          ci && ci->is_reference_type) {
-        if (m.name == "instancesize") return builtin_integer_type("longint");
-        if (m.name == "classtype") return named_pascal_type("tclass");
-        if (m.name == "inheritsfrom") return builtin_boolean_type();
-      }
-      if (auto* pm = registry->lookup_class_method(cls, m.name)) {
-        if (pm->decl.get() && pm->decl.get()->return_type)
-          return pm->decl.get()->return_type.get();
-        return nullptr;
-      }
-      if (auto* pf = registry->lookup_class_field(cls, m.name))
-        return pf->type.get();
-      if (auto* pp = registry->lookup_class_property(cls, m.name))
-        return pp->type.get();
-      if (auto* rf = registry->lookup_record_field(cls, m.name))
-        return rf->type.get();
-      return nullptr;
-    }
-    case Kind::Index: {
-      const auto& ix = static_cast<const Index&>(e);
-      if (registry && ix.base->kind == Kind::Member) {
-        const auto& mem = static_cast<const Member&>(*ix.base);
-        std::string cls;
-        if (mem.base->kind == Kind::Ident &&
-            static_cast<const Ident&>(*mem.base).name == "self") {
-          cls = current_class_name;
-        } else {
-          cls = deduce_class_alias(*mem.base);
-        }
-        if (!cls.empty()) {
-          if (auto* prop = registry->lookup_class_property(cls, mem.name);
-              prop && !prop->params.empty())
-            return prop->type.get();
-        }
-      }
-      if (registry && ix.base->kind == Kind::Ident) {
-        const auto& id = static_cast<const Ident&>(*ix.base);
-        if (auto found = find_implicit_class_property(id.name);
-            found && found->prop && !found->prop->params.empty()) {
-          return found->prop->type.get();
-        }
-      }
-      const TypeExpr* bt = deduce_type(*ix.base);
-      if (!bt) return nullptr;
-      bt = canonicalize_type(bt);
-      if (bt && bt->kind == Kind::TyString) return builtin_char_type();
-      if (tyname_is(bt, "pchar")) return builtin_char_type();
-      if (tyname_is(bt, "ppchar")) return builtin_pchar_type();
-      if (bt && bt->kind == Kind::TyArray)
-        return static_cast<const TyArray&>(*bt).element.get();
-      if (bt && bt->kind == Kind::TyPointer)
-        return static_cast<const TyPointer&>(*bt).target.get();
-      if (registry) {
-        std::string cls = registry->direct_type_name(bt);
-        if (!cls.empty()) {
-          if (auto* prop = registry->lookup_default_property(cls))
-            return prop->type.get();
-        }
-      }
-      return nullptr;
-    }
-    case Kind::Call: {
-      const auto& c = static_cast<const Call&>(e);
-      const TypeExpr* callee_type = deduce_type(*c.callee);
-      if (callee_type) callee_type = canonicalize_type(callee_type);
-      if (callee_type && callee_type->kind == Kind::TyProcedural) {
-        const auto& p = static_cast<const TyProcedural&>(*callee_type);
-        if (p.is_function) return p.return_type.get();
-      }
-      if (c.callee->kind == Kind::Ident) {
-        const auto& id = static_cast<const Ident&>(*c.callee);
-        if ((id.name == "char" || id.name == "chr") && c.args.size() == 1)
-          return builtin_char_type();
-        if (id.name == "pchar" && c.args.size() == 1) return builtin_pchar_type();
-        if ((id.name == "succ" || id.name == "pred" || id.name == "upcase") &&
-            c.args.size() == 1)
-          return deduce_type(*c.args[0]);
-        auto nit = local_nested_fns.find(id.name);
-        if (nit != local_nested_fns.end() && nit->second.is_function)
-          return nit->second.return_type;
-        // Type cast `T(expr)` -- target type is the alias's own type.
-        auto ait = registry->aliases.find(id.name);
-        if (ait != registry->aliases.end() && c.args.size() == 1)
-          return ait->second.target.get();
-        // Function call -> return type. Per-unit resolution avoids
-        // the last-wins global-map pitfall.
-        ResolveResult rr = resolve_name(id.name);
-        if (rr.proc && rr.proc->return_type)
-          return rr.proc->return_type.get();
-      } else if (c.callee->kind == Kind::Member) {
-        const auto& mem = static_cast<const Member&>(*c.callee);
-        std::string cls;
-        if (mem.base->kind == Kind::Ident) {
-          const auto& id = static_cast<const Ident&>(*mem.base);
-          if (id.name == "self") cls = current_class_name;
-          else if (registry->classes.count(id.name) ||
-                   registry->records.count(id.name)) cls = id.name;
-        }
-        if (cls.empty()) {
-          const TypeExpr* bt = deduce_type(*mem.base);
-          if (bt) cls = metaclass_target_name(bt);
-        }
-        if (cls.empty()) cls = deduce_class_alias(*mem.base);
-        if (!cls.empty()) {
-          if (auto* cm = registry->lookup_class_method(cls, mem.name)) {
-            if (cm->decl.get() && cm->decl.get()->return_type)
-              return cm->decl.get()->return_type.get();
-          }
-        }
-      }
-      return nullptr;
-    }
-    case Kind::StringLit: {
-      const auto& sl = static_cast<const StringLit&>(e);
-      return sl.value.size() == 1 ? builtin_char_type()
-                                  : builtin_string_type();
-    }
-    case Kind::AddrOf: {
-      // Returning a pointer type would be ideal, but synthesising it on
-      // the fly requires owning a TypeExpr we don't have. Unused today.
-      return nullptr;
-    }
-    default:
-      return nullptr;
-  }
-  return nullptr;
+  return analysis_.deduce_type(e);
 }
 
 std::string Emitter::deduce_class_alias(const Expr& e) {
-  if (!registry) return {};
-  // Fast path for `self` -- we already know the class.
-  if (e.kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(e);
-    if (id.name == "self") return current_class_name;
-  } else if (e.kind == Kind::Call) {
-    const auto& c = static_cast<const Call&>(e);
-    if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
-      const auto& id = static_cast<const Ident&>(*c.callee);
-      auto cit = registry->classes.find(id.name);
-      if (cit != registry->classes.end() && cit->second.is_reference_type) {
-        return id.name;
-      }
-    }
-  }
-  const TypeExpr* t = deduce_type(e);
-  if (!t) return {};
-  if (auto cls = metaclass_target_name(t); !cls.empty()) return cls;
-  if (auto cls = registry->direct_type_name(t); !cls.empty()) return cls;
-  return registry->direct_type_name(registry->canonicalize(t));
+  return analysis_.deduce_class_alias(e);
 }
 
 const TypeExpr* Emitter::lookup_record_field_type_in_type(
     const TypeExpr* type, std::string_view field_name) {
-  if (!registry || !type) return nullptr;
-  type = canonicalize_type(type);
-  if (!type) return nullptr;
-  if (type->kind == Kind::TyPointer) {
-    const auto& ptr = static_cast<const TyPointer&>(*type);
-    return lookup_record_field_type_in_type(ptr.target.get(), field_name);
-  }
-  if (type->kind == Kind::TyName) {
-    const auto& tn = static_cast<const TyName&>(*type);
-    if (auto* rf = registry->lookup_record_field(tn.name,
-                                                 std::string(field_name))) {
-      return rf->type.get();
-    }
-  }
-  if (type->kind != Kind::TyRecord) return nullptr;
-
-  const auto& rec = static_cast<const TyRecord&>(*type);
-  auto match_field = [&](const RecordField& rf) -> const TypeExpr* {
-    for (const auto& name : rf.names) {
-      if (ascii_lower(name) == ascii_lower(field_name)) return rf.type.get();
-    }
-    return nullptr;
-  };
-
-  for (const auto& rf : rec.fields) {
-    if (const TypeExpr* ft = match_field(rf)) return ft;
-  }
-  for (const auto& vc : rec.variant_cases) {
-    for (const auto& rf : vc.fields) {
-      if (const TypeExpr* ft = match_field(rf)) return ft;
-    }
-  }
-  return nullptr;
+  return analysis_.lookup_record_field_type_in_type(type, field_name);
 }
 
 const TypeExpr* Emitter::lookup_record_field_type_in_with(
     const WithBind& wb, std::string_view field_name) {
-  if (const TypeExpr* ft = lookup_record_field_type_in_type(
-          wb.type, field_name)) {
-    return ft;
-  }
-  if (!registry || wb.class_name.empty()) return nullptr;
-  if (auto* rf = registry->lookup_record_field(wb.class_name,
-                                               std::string(field_name))) {
-    return rf->type.get();
-  }
-  return nullptr;
+  return analysis_.lookup_record_field_type_in_with(wb, field_name);
 }
 
 bool Emitter::with_bind_has_visible_member(const WithBind& wb,
                                            std::string_view name) {
-  if (!registry) return false;
-  if (!wb.class_name.empty()) {
-    if (registry->lookup_class_method(wb.class_name, std::string(name)) ||
-        registry->lookup_class_field(wb.class_name, std::string(name)) ||
-        registry->lookup_class_property(wb.class_name, std::string(name))) {
-      return true;
-    }
-  }
-  return lookup_record_field_type_in_with(wb, name) != nullptr;
+  return analysis_.with_bind_has_visible_member(wb, name);
 }
 
 bool Emitter::type_is_packed_record(const TypeExpr* t) {
@@ -3305,10 +2255,6 @@ bool Emitter::expr_is_reference_class(const Expr& e) {
   return type_is_reference_class(deduce_type(e));
 }
 
-std::string Emitter::member_access_op(const TypeExpr* t) {
-  return (type_is_reference_class(t) || type_is_metaclass(t)) ? "->" : ".";
-}
-
 std::string Emitter::member_access_op(const Expr& e) {
   const TypeExpr* t = deduce_type(e);
   // Pascal always spells member access as `base.member`, but after lowering
@@ -3538,118 +2484,8 @@ void Emitter::mark_call_param_info(
   }
 }
 
-void Emitter::append_class_method_cands(
-    const std::string& cls, const std::string& name,
-    std::vector<AnyCand>& cands) {
-  if (!registry || cls.empty()) return;
-  auto* set = registry->lookup_class_methods(cls, name);
-  if (!set) return;
-  for (const auto& ms : *set) {
-    if (!ms.decl) continue;
-    cands.push_back({ms.decl.get(), ms.param_count,
-                     ms.accepts_zero_args, {}});
-  }
-}
-
-void Emitter::append_unit_export_proc_cands(
-    const std::string& unit, const std::string& name,
-    std::vector<AnyCand>& cands) {
-  if (!registry) return;
-  auto it = registry->units.find(unit);
-  if (it == registry->units.end()) return;
-  auto* v = it->second.find_export_procs(name);
-  if (!v) return;
-  for (const auto& pi : *v) {
-    cands.push_back({pi.decl.get(), pi.param_count,
-                     pi.accepts_zero_args, unit});
-  }
-}
-
-void Emitter::gather_callable_in_pascal_scope(
-    const std::string& name, std::vector<AnyCand>& cands) {
-  if (!registry) return;
-  auto try_class = [&](const std::string& cls) -> bool {
-    size_t before = cands.size();
-    append_class_method_cands(cls, name, cands);
-    return cands.size() != before;
-  };
-
-  for (auto wit = with_stack.rbegin(); wit != with_stack.rend(); ++wit) {
-    if (try_class(wit->class_name)) return;
-  }
-  if (auto nit = local_nested_fns.find(name); nit != local_nested_fns.end()) {
-    if (nit->second.decl) {
-      cands.push_back({nit->second.decl, nit->second.param_count,
-                       nit->second.accepts_zero_args, {}});
-    }
-    return;
-  }
-  if (try_class(current_class_name)) return;
-  auto cur = registry->units.find(current_unit_name);
-  if (cur == registry->units.end()) return;
-  // A decl in the current unit shadows same-named decls reached
-  // through `uses`. Without this stop, comphook's local
-  // `tostr(longint)` plus cutils' `tostr(longint)` would both reach
-  // the picker as tied Exact candidates and surface as ambiguous,
-  // even though Pascal's lookup never reaches cutils in that case.
-  if (auto* local = cur->second.find_procs(name); local && !local->empty()) {
-    for (const auto& pi : *local) {
-      cands.push_back({pi.decl.get(), pi.param_count,
-                       pi.accepts_zero_args, current_unit_name});
-    }
-    return;
-  }
-  for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
-       ++it) {
-    append_unit_export_proc_cands(*it, name, cands);
-  }
-}
-
 const ProcDecl* Emitter::resolve_call_decl(const Expr& callee) {
-  if (callee.kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(callee);
-    if (!registry) return nullptr;
-    std::vector<AnyCand> cands;
-    gather_callable_in_pascal_scope(id.name, cands);
-    for (const auto& c : cands) {
-      if (c.decl) return c.decl;
-    }
-    return nullptr;
-  }
-  if (callee.kind != Kind::Member || !registry) return nullptr;
-  const auto& mem = static_cast<const Member&>(callee);
-  if (mem.base->kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(*mem.base);
-    if (registry->units.count(id.name)) {
-      // Unit-qualified calls (`verbose.message(...)`, `cfileutils.fileexists(...)`)
-      // still need the callee declaration here so trailing default arguments
-      // can be materialized before we emit the C++ call.
-      ResolveResult rr = resolve_name(mem.name, QualifierKind::Unit, id.name);
-      return rr.proc;
-    }
-  }
-  std::string cls;
-  if (mem.base->kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(*mem.base);
-    if (id.name == "self") {
-      cls = current_class_name;
-    } else if (registry->classes.count(id.name) ||
-               registry->records.count(id.name)) {
-      cls = id.name;
-    } else {
-      // Method calls through a variable or parameter receiver (`source.read`)
-      // still need the receiver's declared Pascal type here so later call
-      // lowering can recover parameter modes and any trailing defaults.
-      cls = deduce_class_alias(*mem.base);
-    }
-  } else {
-    cls = deduce_class_alias(*mem.base);
-  }
-  if (cls.empty()) return nullptr;
-  if (auto* m = registry->lookup_class_method(cls, mem.name)) {
-    return m->decl.get();
-  }
-  return nullptr;
+  return resolution_.resolve_call_decl(callee);
 }
 
 bool Emitter::proc_accepts_zero_args(const ProcDecl& decl) {
@@ -3689,484 +2525,9 @@ bool Emitter::proc_accepts_zero_args(const ProcDecl& decl) {
 //
 // A defaulted-trailing-arg fill is rank 1 and handled at the call-site
 // expansion (`append_defaulted_trailing_call_args`), not here.
-Emitter::ConvScore Emitter::rank_conversion(const TypeExpr* arg,
-                                            const TypeExpr* param,
-                                            bool var_param) {
-  if (!arg || !param) return {};
-  const TypeExpr* a = canonicalize_type(arg);
-  const TypeExpr* p = canonicalize_type(param);
-  if (!a || !p) return {};
-
-  auto type_text = [&](const TypeExpr* t) {
-    return t ? type_to_cxx(*t) : std::string{};
-  };
-
-  // 1. Exact identity (same canonical type by C++ spelling).
-  std::string a_cxx = type_text(a);
-  std::string p_cxx = type_text(p);
-  if (!a_cxx.empty() && a_cxx == p_cxx) return {ConvRank::Exact, 0};
-
-  // 2. Equal-modulo-distinct/subrange. Strip TyDistinct/TySubrange wrappers
-  // on both sides; if the remaining canonical types match, treat as Equal.
-  auto strip_wrap = [&](const TypeExpr* t) {
-    while (t && (t->kind == Kind::TyDistinct || t->kind == Kind::TySubrange)) {
-      if (t->kind == Kind::TyDistinct) {
-        t = canonicalize_type(
-            static_cast<const TyDistinct&>(*t).underlying.get());
-      } else {
-        t = builtin_integer_type("longint");  // subrange -> base int
-        break;
-      }
-    }
-    return t;
-  };
-  const TypeExpr* a_under = strip_wrap(a);
-  const TypeExpr* p_under = strip_wrap(p);
-  if (a_under && p_under && type_text(a_under) == type_text(p_under)) {
-    return {ConvRank::Equal, 0};
-  }
-
-  // var/const/out params: only ranks 1..3 are valid. Stop here for them
-  // unless we can find a class-hierarchy match below.
-  if (var_param) {
-    if (a->kind == Kind::TyName && p->kind == Kind::TyName) {
-      const auto& an = static_cast<const TyName&>(*a).name;
-      const auto& pn = static_cast<const TyName&>(*p).name;
-      const auto* aci = class_info_for_type_name(an);
-      const auto* pci = class_info_for_type_name(pn);
-      if (aci && pci) {
-        std::unordered_set<std::string> seen;
-        std::string cur = aci->name;
-        int depth = 0;
-        while (!cur.empty() && !seen.count(cur)) {
-          if (cur == pci->name) return {ConvRank::ClassHierarchy, depth};
-          seen.insert(cur);
-          auto cit = registry ? registry->classes.find(cur)
-                              : decltype(registry->classes)::const_iterator{};
-          if (!registry || cit == registry->classes.end()) break;
-          cur = cit->second.parent;
-          ++depth;
-        }
-      }
-    }
-    return {};
-  }
-
-  // 3. Class hierarchy: a derived class may pass to an ancestor parameter.
-  // The fewer hops up the hierarchy, the better fit (closer ancestor wins).
-  if (a->kind == Kind::TyName && p->kind == Kind::TyName) {
-    const auto* aci = class_info_for_type_name(
-        static_cast<const TyName&>(*a).name);
-    const auto* pci = class_info_for_type_name(
-        static_cast<const TyName&>(*p).name);
-    if (aci && pci) {
-      std::unordered_set<std::string> seen;
-      std::string cur = aci->name;
-      int depth = 0;
-      while (!cur.empty() && !seen.count(cur)) {
-        if (cur == pci->name) return {ConvRank::ClassHierarchy, depth};
-        seen.insert(cur);
-        auto cit = registry ? registry->classes.find(cur)
-                            : decltype(registry->classes)::const_iterator{};
-        if (!registry || cit == registry->classes.end()) break;
-        cur = cit->second.parent;
-        ++depth;
-      }
-    }
-  }
-
-  auto prim_of = [&](const TypeExpr* t) -> const PrimitiveInfo* {
-    if (!t || t->kind != Kind::TyName) return nullptr;
-    return primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
-  };
-
-  // 4. Integer widening with same signedness. Distance is the bit-width
-  // gap between source and target -- Pascal prefers the smallest target
-  // that contains the source (byte->cardinal beats byte->qword).
-  if (const auto* ai = prim_of(a); ai && ai->int_kind != PrimitiveIntKind::None) {
-    if (const auto* pi = prim_of(p);
-        pi && pi->int_kind == ai->int_kind && pi->bits >= ai->bits &&
-        pi->bits != 0 && ai->bits != 0) {
-      return {ConvRank::IntWideningSameSign,
-              static_cast<int>(pi->bits) - static_cast<int>(ai->bits)};
-    }
-  }
-
-  // 5. Real widening (single -> double -> extended). Pascal real types
-  // are floats with monotonically increasing precision in this order.
-  // Distance is the rank gap so single->double beats single->extended.
-  auto real_rank = [](std::string_view name) -> int {
-    if (name == "single") return 1;
-    if (name == "double" || name == "real") return 2;
-    if (name == "extended" || name == "comp") return 3;
-    return 0;
-  };
-  if (a->kind == Kind::TyName && p->kind == Kind::TyName) {
-    int ar = real_rank(ascii_lower(static_cast<const TyName&>(*a).name));
-    int pr = real_rank(ascii_lower(static_cast<const TyName&>(*p).name));
-    if (ar > 0 && pr > 0 && pr >= ar) return {ConvRank::RealWidening, pr - ar};
-  }
-
-  // String-family helpers. ShortString comes either as `TyString` (parsed
-  // `string[N]`) or as a `TyName` whose canonical resolves to ShortString.
-  auto is_shortstring_param = [&](const TypeExpr* t) {
-    if (!t) return false;
-    if (t->kind == Kind::TyString) return true;
-    if (t->kind != Kind::TyName) return false;
-    const auto& n = ascii_lower(static_cast<const TyName&>(*t).name);
-    return n == "string" || n == "shortstring";
-  };
-  auto is_ansistring = [&](const TypeExpr* t) {
-    return t && t->kind == Kind::TyName &&
-           ascii_lower(static_cast<const TyName&>(*t).name) == "ansistring";
-  };
-  auto is_char = [&](const TypeExpr* t) {
-    return t && t->kind == Kind::TyName &&
-           ascii_lower(static_cast<const TyName&>(*t).name) == "char";
-  };
-
-  // 6. ShortString-to-ShortString (same string family). Both kinds resolve
-  // to ::rt::tp2cc_ShortString<N> in C++; Pascal allows the assignment as
-  // long as M >= N (truncation otherwise is a runtime concern, but Pascal
-  // still accepts it). Since we don't always know N statically here, just
-  // recognise the family and rank it.
-  if (is_shortstring_param(a) && is_shortstring_param(p)) {
-    return {ConvRank::StringSameTagWiden, 0};
-  }
-
-  // 7-8. String cross-tag conversions, split by target family. Char/PChar
-  // sources and AnsiString-source converging on a ShortString param are
-  // rank 7; the same sources converging on AnsiString (and any string
-  // family converging on PChar) are rank 8 -- matches Pascal's preference
-  // for ShortString-typed parameters under `{$H-}` semantics.
-  const bool param_is_shortstring = is_shortstring_param(p);
-  const bool param_is_ansistring = is_ansistring(p);
-  const bool arg_is_shortstring = is_shortstring_param(a);
-  const bool arg_is_ansistring = is_ansistring(a);
-  if (arg_is_ansistring && param_is_shortstring) {
-    return {ConvRank::StringToShortString, 0};
-  }
-  if (is_char(a) && param_is_shortstring) {
-    return {ConvRank::StringToShortString, 0};
-  }
-  if (type_is_pcharish(a) && param_is_shortstring) {
-    return {ConvRank::StringToShortString, 0};
-  }
-  if (arg_is_shortstring && param_is_ansistring) {
-    return {ConvRank::StringToAnsiString, 0};
-  }
-  if (is_char(a) && param_is_ansistring) {
-    return {ConvRank::StringToAnsiString, 0};
-  }
-  if (type_is_pcharish(a) && param_is_ansistring) {
-    return {ConvRank::StringToAnsiString, 0};
-  }
-  if ((arg_is_shortstring || arg_is_ansistring) && type_is_pcharish(p)) {
-    return {ConvRank::StringToAnsiString, 0};
-  }
-
-  // 9. Ordinal signedness change (longint <-> longword, etc.). Distance
-  // is the bit-width gap so byte->longint beats byte->int64.
-  if (const auto* ai = prim_of(a);
-      ai && ai->int_kind != PrimitiveIntKind::None) {
-    if (const auto* pi = prim_of(p);
-        pi && pi->int_kind != PrimitiveIntKind::None && pi->bits >= ai->bits &&
-        pi->bits != 0 && ai->bits != 0) {
-      return {ConvRank::OrdinalSignChange,
-              static_cast<int>(pi->bits) - static_cast<int>(ai->bits)};
-    }
-  }
-
-  // 10. Integer narrowing (target narrower than source). Pascal accepts
-  // this for value/const params (with a runtime range check on the
-  // value), so the picker must rank it as viable -- just below sign
-  // change. Distance is how many bits got dropped; smaller distance
-  // (less narrowing) is preferred when two narrowing-target overloads
-  // compete.
-  if (const auto* ai = prim_of(a);
-      ai && ai->int_kind != PrimitiveIntKind::None) {
-    if (const auto* pi = prim_of(p);
-        pi && pi->int_kind != PrimitiveIntKind::None &&
-        pi->bits != 0 && ai->bits != 0 && pi->bits < ai->bits) {
-      return {ConvRank::IntNarrowing,
-              static_cast<int>(ai->bits) - static_cast<int>(pi->bits)};
-    }
-  }
-
-  // Variant: not really used by the bootstrap compiler, but reserve
-  // the slot. Left as `NotViable` for now; real variant support would
-  // need TyVariant detection in the AST.
-
-  return {};
-}
-
-Emitter::PickResult Emitter::pick_overload(
-    const std::vector<const ProcDecl*>& candidates,
-    const std::vector<const Expr*>& args) {
-  if (candidates.empty()) return {};
-  if (candidates.size() == 1) return {candidates[0], false};
-
-  // Filter candidates by arity (with default-arg slack), then score each
-  // viable one by a per-arg conversion rank vector. Pick a strict winner:
-  // ranks <= every rival at every position AND strictly < at least one.
-  // If no candidate strictly dominates all rivals, the call is ambiguous;
-  // signal that to the caller so it can report a Pascal-level error.
-  struct Scored {
-    const ProcDecl* decl;
-    std::vector<ConvScore> scores;
-  };
-  std::vector<Scored> viable;
-  for (const ProcDecl* decl : candidates) {
-    if (!decl) continue;
-    std::vector<FlatCallParamInfo> flat;
-    flatten_call_param_info(decl, flat);
-    if (args.size() > flat.size()) continue;
-    bool ok = true;
-    for (size_t i = args.size(); i < flat.size(); ++i) {
-      if (!flat[i].default_value) { ok = false; break; }
-    }
-    if (!ok) continue;
-
-    Scored s{decl, {}};
-    s.scores.reserve(args.size());
-    for (size_t i = 0; i < args.size(); ++i) {
-      // Pascal `[...]` (set literal) is context-typed: it adopts the
-      // target parameter's set element type. deduce_type doesn't have a
-      // type for it without context, so handle it here -- if the param
-      // is a set type, treat the literal as Exact (the call-site lowering
-      // produces a properly typed `tp2cc_Set<T>` when the target is
-      // known). Without this, an empty `[]` arg lowers as untyped
-      // EmptySet and the picker filters every set-taking overload as
-      // NotViable.
-      const TypeExpr* canon_param =
-          flat[i].type ? canonicalize_type(flat[i].type) : nullptr;
-      if (args[i]->kind == Kind::SetLit && canon_param &&
-          canon_param->kind == Kind::TySet) {
-        s.scores.push_back({ConvRank::Exact, 0});
-        continue;
-      }
-      const TypeExpr* arg_t = deduce_type(*args[i]);
-      ConvScore r = rank_conversion(arg_t, flat[i].type, flat[i].mutable_ref);
-      if (!r.viable()) { ok = false; break; }
-      s.scores.push_back(r);
-    }
-    if (ok) viable.push_back(std::move(s));
-  }
-  if (viable.empty()) return {};
-  if (viable.size() == 1) return {viable[0].decl, false};
-
-  // Lexicographic compare of (rank, distance): a "less" b means a is
-  // a tighter fit at this arg position (better rank, or same rank with
-  // smaller distance).
-  auto score_less = [](const ConvScore& a, const ConvScore& b) {
-    if (a.rank != b.rank) return a.rank < b.rank;
-    return a.distance < b.distance;
-  };
-  auto score_greater = [&](const ConvScore& a, const ConvScore& b) {
-    return score_less(b, a);
-  };
-  auto dominates = [&](const Scored& a, const Scored& b) {
-    // Per-arg scores: a dominates b iff a's score is no worse at every
-    // position AND strictly better at least once. With unequal arg
-    // vectors (defaulted slots make `scores.size() != args.size()` for
-    // some candidates) we only compare the explicit-arg portion.
-    size_t n = std::min(a.scores.size(), b.scores.size());
-    bool any_strict = false;
-    for (size_t i = 0; i < n; ++i) {
-      if (score_greater(a.scores[i], b.scores[i])) return false;
-      if (score_less(a.scores[i], b.scores[i])) any_strict = true;
-    }
-    return any_strict;
-  };
-  size_t best = 0;
-  for (size_t i = 1; i < viable.size(); ++i) {
-    if (dominates(viable[i], viable[best])) best = i;
-  }
-  for (size_t i = 0; i < viable.size(); ++i) {
-    if (i == best) continue;
-    if (!dominates(viable[best], viable[i])) {
-      // No strict winner -- two or more candidates are mutually
-      // incomparable on the arg ranks. This is a Pascal-level
-      // ambiguous-call error; the caller is responsible for
-      // diagnosing it.
-      return {nullptr, /*ambiguous=*/true};
-    }
-  }
-  return {viable[best].decl, false};
-}
-
 Emitter::ResolvedCall Emitter::resolve_call(
     const Expr& callee, const std::vector<const Expr*>& args) {
-  ResolvedCall out;
-  if (callee.kind == Kind::Ident) {
-    out.member_name = static_cast<const Ident&>(callee).name;
-  } else if (callee.kind == Kind::Member) {
-    out.member_name = static_cast<const Member&>(callee).name;
-  }
-  if (!registry) {
-    out.decl = resolve_call_decl(callee);
-    return out;
-  }
-  // Method overloads and free-function overloads share the SAME picker.
-  // Methods come from `lookup_class_methods` (which walks the parent
-  // chain); free functions come from the unit's procs and the visible
-  // uses chain. (`inherited foo(...)` is a separate AST shape lowered
-  // at emit time -- it does NOT route through here.)
-  std::vector<AnyCand> all_cands;
-  // Receiver class for a member callee. Empty for callees that don't
-  // have a class-typed receiver (e.g. unit-qualified or untyped).
-  auto receiver_class = [&](const Expr& c) -> std::string {
-    if (c.kind != Kind::Member) return {};
-    const auto& mem = static_cast<const Member&>(c);
-    if (mem.base->kind == Kind::Ident) {
-      const auto& id = static_cast<const Ident&>(*mem.base);
-      if (id.name == "self") return current_class_name;
-      if (registry->classes.count(id.name) ||
-          registry->records.count(id.name)) {
-        return id.name;
-      }
-      return deduce_class_alias(*mem.base);
-    }
-    return deduce_class_alias(*mem.base);
-  };
-
-  if (callee.kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(callee);
-    gather_callable_in_pascal_scope(id.name, all_cands);
-  } else if (callee.kind == Kind::Member) {
-    const auto& mem = static_cast<const Member&>(callee);
-    bool unit_qualified = false;
-    bool inherited_call = false;
-    if (mem.base->kind == Kind::Ident) {
-      const auto& id = static_cast<const Ident&>(*mem.base);
-      // `inherited Foo(args)` looks up `Foo` in the PARENT class chain
-      // (skipping the current class). The picker then runs the same
-      // arity + conv-rank disambiguation as any other method call --
-      // C++ overload resolution on `inherited::p_foo` is no longer the
-      // last word, so a Pascal-disambiguated call lands on the right
-      // overload even when C++ would have picked differently.
-      if (id.name == "inherited" && !current_class_name.empty()) {
-        inherited_call = true;
-        auto cit = registry->classes.find(current_class_name);
-        if (cit != registry->classes.end()) {
-          std::string parent = cit->second.parent;
-          if (parent.empty() && cit->second.is_reference_type) {
-            parent = "tobject";
-          }
-          append_class_method_cands(parent, mem.name, all_cands);
-        }
-      }
-      // A bare ident here can be a unit name AND a local/field name --
-      // e.g. fpc's compiler unit `symtable` plus a `symtable` field on
-      // tabstractrecorddef. Pascal lexical scope says locals/fields
-      // shadow unit names, so try the receiver-class interpretation
-      // first; only fall back to unit-qualified lookup when the ident
-      // is purely a unit reference.
-      bool ident_is_value =
-          local_scope.count(id.name) > 0 ||
-          (!current_class_name.empty() &&
-           (registry->lookup_class_field(current_class_name, id.name) ||
-            registry->lookup_class_property(current_class_name, id.name) ||
-            registry->lookup_class_method(current_class_name, id.name)));
-      if (!inherited_call && !ident_is_value &&
-          registry->units.count(id.name)) {
-        unit_qualified = true;
-        append_unit_export_proc_cands(id.name, mem.name, all_cands);
-      }
-    }
-    if (!inherited_call && !unit_qualified) {
-      append_class_method_cands(receiver_class(callee), mem.name, all_cands);
-    }
-  }
-
-  // Arity-filter using ProcInfo metadata so rt builtins (which have no
-  // decl) participate in the filter even though they cannot be ranked
-  // by the type-based picker.
-  std::vector<AnyCand> arity_ok;
-  for (const auto& a : all_cands) {
-    if (a.decl) {
-      std::vector<FlatCallParamInfo> flat;
-      flatten_call_param_info(a.decl, flat);
-      if (args.size() > flat.size()) continue;
-      bool ok = true;
-      for (size_t i = args.size(); i < flat.size(); ++i) {
-        if (!flat[i].default_value) { ok = false; break; }
-      }
-      if (!ok) continue;
-    } else {
-      // rt builtin: param_count is exact; `accepts_zero_args` lets some
-      // builtins (writeln/readln/halt) be called with zero args
-      // regardless.
-      if (args.size() == 0 && a.accepts_zero_args) {
-        // ok
-      } else if (args.size() != a.param_count) {
-        continue;
-      }
-    }
-    arity_ok.push_back(a);
-  }
-
-  // Helper: a chosen candidate's defining unit drives the
-  // `FreeFunctionInUnit` spelling, so promote whichever AnyCand we
-  // pick into the ResolvedCall struct uniformly.
-  auto adopt = [&](const AnyCand& chosen, bool ran_type_picker) {
-    out.decl = chosen.decl ? chosen.decl : resolve_call_decl(callee);
-    out.needs_arg_casts = ran_type_picker;
-    if (!chosen.unit.empty()) {
-      out.shape = ResolvedCalleeKind::FreeFunctionInUnit;
-      out.defining_unit = chosen.unit;
-    }
-  };
-
-  if (arity_ok.size() == 1) {
-    // Single arity-viable candidate -- C++ overload resolution already
-    // narrows by arity, so no per-arg cast is needed. Adopt the
-    // candidate (its `unit`, if any, locks the spelling to the right
-    // namespace even when single-name lookup would have found a
-    // different unit's version of this name).
-    adopt(arity_ok[0], /*ran_type_picker=*/false);
-    return out;
-  }
-
-  if (arity_ok.size() > 1) {
-    // Multiple arity-viable candidates -- run the type-based picker
-    // over the subset that has decls. rt builtins without decls cannot
-    // be ranked, so they are excluded; if all viable candidates lack
-    // decls we fall back to single-name resolution.
-    std::vector<const ProcDecl*> with_decl;
-    for (const auto& a : arity_ok) {
-      if (a.decl) with_decl.push_back(a.decl);
-    }
-    if (with_decl.empty()) {
-      out.decl = resolve_call_decl(callee);
-      return out;
-    }
-    PickResult pr = pick_overload(with_decl, args);
-    if (pr.ambiguous) {
-      // Surface ambiguity to the caller; do NOT pick one silently.
-      out.decl = nullptr;
-      out.ambiguous = true;
-      return out;
-    }
-    if (!pr.decl) {
-      out.decl = resolve_call_decl(callee);
-      return out;
-    }
-    for (const auto& a : arity_ok) {
-      if (a.decl == pr.decl) {
-        adopt(a, /*ran_type_picker=*/true);
-        return out;
-      }
-    }
-    // Defensive: pr.decl came from with_decl, which came from
-    // arity_ok, so the loop above must have hit. Fall through anyway.
-    out.decl = pr.decl;
-    out.needs_arg_casts = true;
-    return out;
-  }
-
-  out.decl = resolve_call_decl(callee);
-  return out;
+  return resolution_.resolve_call(callee, args);
 }
 
 std::string Emitter::format_resolved_callee(
@@ -6490,7 +4851,8 @@ std::optional<std::string> Emitter::maybe_convert_const_int_expr(
   std::string literal =
       (converted->type->int_kind == PrimitiveIntKind::Unsigned)
           ? uint64_literal_text(converted->bits)
-          : signed_bits_literal_text(converted->bits, *converted->type);
+          : ::tp2cc::signed_bits_literal_text(converted->bits,
+                                              *converted->type);
   // A 64-bit Pascal cast (`qword(1)`, `int64(...)`) must produce a
   // 64-bit C++ value; without an explicit type the integer promotions
   // leave the literal at `int`, and a subsequent `<<` by >= 32 hits
@@ -9102,9 +7464,7 @@ void Emitter::emit_tpexcept_unit(const UnitNode& u) {
 
 EmittedUnit emit_unit(const UnitNode& u, const TypeRegistry* registry,
                       const std::vector<std::string>* unit_init_order) {
-  Emitter e;
-  e.registry = registry;
-  if (unit_init_order) e.unit_init_order = unit_init_order;
+  Emitter e(registry, unit_init_order);
   e.emit_unit(u);
   return {std::move(e.header), std::move(e.impl)};
 }
