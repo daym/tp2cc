@@ -14,7 +14,7 @@
 // header.
 // tp2cc models Pascal initialization/conversion explicitly in emitted code and
 // named helpers (`tp2cc_shortstring_of`, `tp2cc_ansistring_of`, `tp2cc_open_array`,
-// `p_method_ptr`, ...), not through hidden C++ construction hooks.
+// `tp2cc_method_ptr`, ...), not through hidden C++ construction hooks.
 // User-declared constructors change the aggregate/POD surface that GCC uses
 // for packed-layout decisions.
 
@@ -68,19 +68,19 @@ inline constexpr p_char tp2cc_char_of(p_char c) {
 inline constexpr p_char tp2cc_char_of(uint8_t c) {
   return static_cast<p_char>(c);
 }
-inline constexpr uint8_t p_char_byte(p_char c) {
+inline constexpr uint8_t tp2cc_char_byte(p_char c) {
   return static_cast<uint8_t>(c);
 }
-inline constexpr char p_char_to_c(p_char c) {
-  return static_cast<char>(p_char_byte(c));
+inline constexpr char tp2cc_char_to_c(p_char c) {
+  return static_cast<char>(tp2cc_char_byte(c));
 }
-inline const char* p_c_str(const p_char* s) {
+inline const char* tp2cc_c_str(const p_char* s) {
   return reinterpret_cast<const char*>(s);
 }
-inline char* p_c_str(p_char* s) {
+inline char* tp2cc_c_str(p_char* s) {
   return reinterpret_cast<char*>(s);
 }
-inline p_char* p_from_c_str_copy(const char* s) {
+inline p_char* tp2cc_from_c_str_copy(const char* s) {
   if (!s) return nullptr;
   thread_local std::vector<p_char> buf;
   size_t n = std::strlen(s);
@@ -101,7 +101,7 @@ inline void* tp2cc_const_untyped_ptr(const T& value) {
 }
 
 template <typename Fn>
-inline void* p_funptr_bits(Fn fn) {
+inline void* tp2cc_funptr_bits(Fn fn) {
   static_assert(std::is_pointer_v<Fn>,
                 "method thunks must use plain function pointers");
   static_assert(sizeof(Fn) == sizeof(void*),
@@ -110,7 +110,7 @@ inline void* p_funptr_bits(Fn fn) {
 }
 
 template <typename Fn>
-inline Fn p_funptr_from_bits(void* bits) {
+inline Fn tp2cc_funptr_from_bits(void* bits) {
   static_assert(std::is_pointer_v<Fn>,
                 "method thunks must use plain function pointers");
   static_assert(sizeof(Fn) == sizeof(void*),
@@ -148,7 +148,7 @@ struct tp2cc_MethodPtr<Ret(Args...)> {
 
   Ret operator()(Args... args) const {
     if (!code) std::abort();
-    Thunk thunk = p_funptr_from_bits<Thunk>(code);
+    Thunk thunk = tp2cc_funptr_from_bits<Thunk>(code);
     if constexpr (std::is_void_v<Ret>) {
       thunk(self, std::forward<Args>(args)...);
       return;
@@ -178,13 +178,13 @@ struct tp2cc_MethodPtr<Ret(Args...)> {
 };
 
 template <typename Sig>
-constexpr tp2cc_MethodPtr<Sig> p_method_ptr(void* code, void* self) {
+constexpr tp2cc_MethodPtr<Sig> tp2cc_method_ptr(void* code, void* self) {
   return {code, self};
 }
 
 template <auto Fn>
 inline void* tp2cc_method_code() {
-  return p_funptr_bits(Fn);
+  return tp2cc_funptr_bits(Fn);
 }
 
 template <int N> struct tp2cc_ShortString;
@@ -377,7 +377,7 @@ struct tp2cc_ShortStringCharRef {
   template <typename T>
   requires std::is_convertible_v<T, p_char>
   constexpr tp2cc_ShortStringCharRef& operator=(T x) {
-    *byte = p_char_byte(static_cast<p_char>(x));
+    *byte = tp2cc_char_byte(static_cast<p_char>(x));
     return *this;
   }
 
@@ -651,7 +651,7 @@ constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(const p_char* s) {
   tp2cc_ShortString<N> out{};
   int n = 0;
   if (s) {
-    while (p_char_byte(s[n]) != 0 && n < N) ++n;
+    while (tp2cc_char_byte(s[n]) != 0 && n < N) ++n;
   }
   out.length = static_cast<uint8_t>(n);
   for (int i = 0; i < n; ++i) out.data[i] = s[i];
@@ -702,8 +702,8 @@ template <typename A, typename B>
 requires (std::is_convertible_v<A, p_char> &&
           std::is_convertible_v<B, p_char>)
 inline constexpr bool operator==(A a, B b) {
-  return p_char_byte(static_cast<p_char>(a)) ==
-         p_char_byte(static_cast<p_char>(b));
+  return tp2cc_char_byte(static_cast<p_char>(a)) ==
+         tp2cc_char_byte(static_cast<p_char>(b));
 }
 template <typename A, typename B>
 requires (std::is_convertible_v<A, p_char> &&
@@ -715,8 +715,8 @@ template <typename A, typename B>
 requires (std::is_convertible_v<A, p_char> &&
           std::is_convertible_v<B, p_char>)
 inline constexpr bool operator<(A a, B b) {
-  return p_char_byte(static_cast<p_char>(a)) <
-         p_char_byte(static_cast<p_char>(b));
+  return tp2cc_char_byte(static_cast<p_char>(a)) <
+         tp2cc_char_byte(static_cast<p_char>(b));
 }
 template <typename A, typename B>
 requires (std::is_convertible_v<A, p_char> &&
@@ -773,56 +773,56 @@ struct AnsiStringHeader {
   int32_t len;
 };
 
-inline p_char* p_ansistring_empty_bytes() {
+inline p_char* tp2cc_ansistring_empty_bytes() {
   static p_char empty[1] = {tp2cc_char_of('\0')};
   return empty;
 }
 
-inline bool p_ansistring_is_empty_bytes(const p_char* data) {
+inline bool tp2cc_ansistring_is_empty_bytes(const p_char* data) {
   // A zero-initialised AnsiString (e.g. an aggregate field that bypassed
   // the in-class default member initialiser via memset/calloc) has
   // `data == nullptr`. Treat that as the empty sentinel so callers don't
   // dereference the would-be header.
-  return data == nullptr || data == p_ansistring_empty_bytes();
+  return data == nullptr || data == tp2cc_ansistring_empty_bytes();
 }
 
-inline AnsiStringHeader* p_ansistring_header(p_char* data) {
+inline AnsiStringHeader* tp2cc_ansistring_header(p_char* data) {
   return reinterpret_cast<AnsiStringHeader*>(
       reinterpret_cast<unsigned char*>(data) - sizeof(AnsiStringHeader));
 }
 
-inline const AnsiStringHeader* p_ansistring_header(const p_char* data) {
+inline const AnsiStringHeader* tp2cc_ansistring_header(const p_char* data) {
   return reinterpret_cast<const AnsiStringHeader*>(
       reinterpret_cast<const unsigned char*>(data) - sizeof(AnsiStringHeader));
 }
 
-inline std::vector<void*>& p_ansistring_allocations() {
+inline std::vector<void*>& tp2cc_ansistring_allocations() {
   static auto* allocations = new std::vector<void*>();
   return *allocations;
 }
 
-inline void p_ansistring_release_all() {
-  auto& allocations = p_ansistring_allocations();
+inline void tp2cc_ansistring_release_all() {
+  auto& allocations = tp2cc_ansistring_allocations();
   for (void* raw : allocations) std::free(raw);
   allocations.clear();
 }
 
-inline void p_ansistring_track_allocation(void* raw) {
+inline void tp2cc_ansistring_track_allocation(void* raw) {
   static bool registered = false;
   if (!registered) {
-    std::atexit(p_ansistring_release_all);
+    std::atexit(tp2cc_ansistring_release_all);
     registered = true;
   }
-  p_ansistring_allocations().push_back(raw);
+  tp2cc_ansistring_allocations().push_back(raw);
 }
 
-inline p_char* p_ansistring_alloc_bytes(int32_t len) {
-  if (len <= 0) return p_ansistring_empty_bytes();
+inline p_char* tp2cc_ansistring_alloc_bytes(int32_t len) {
+  if (len <= 0) return tp2cc_ansistring_empty_bytes();
   auto* raw = static_cast<unsigned char*>(
       std::malloc(sizeof(AnsiStringHeader) +
                   static_cast<size_t>(len + 1) * sizeof(p_char)));
   if (!raw) std::abort();
-  p_ansistring_track_allocation(raw);
+  tp2cc_ansistring_track_allocation(raw);
   auto* hdr = reinterpret_cast<AnsiStringHeader*>(raw);
   hdr->len = len;
   auto* data = reinterpret_cast<p_char*>(raw + sizeof(AnsiStringHeader));
@@ -830,11 +830,11 @@ inline p_char* p_ansistring_alloc_bytes(int32_t len) {
   return data;
 }
 
-inline p_char* p_ansistring_alloc_owned_empty() {
+inline p_char* tp2cc_ansistring_alloc_owned_empty() {
   auto* raw = static_cast<unsigned char*>(
       std::malloc(sizeof(AnsiStringHeader) + sizeof(p_char)));
   if (!raw) std::abort();
-  p_ansistring_track_allocation(raw);
+  tp2cc_ansistring_track_allocation(raw);
   auto* hdr = reinterpret_cast<AnsiStringHeader*>(raw);
   hdr->len = 0;
   auto* data = reinterpret_cast<p_char*>(raw + sizeof(AnsiStringHeader));
@@ -871,7 +871,7 @@ struct tp2cc_AnsiStringCharRef {
 
 class tp2cc_AnsiString {
  public:
-  p_char* data = p_ansistring_empty_bytes();
+  p_char* data = tp2cc_ansistring_empty_bytes();
 
   template <int N>
   tp2cc_AnsiString& operator=(const tp2cc_ShortString<N>& s) {
@@ -901,7 +901,7 @@ class tp2cc_AnsiString {
   }
 
   int32_t length() const {
-    return p_ansistring_is_empty_bytes(data) ? 0 : p_ansistring_header(data)->len;
+    return tp2cc_ansistring_is_empty_bytes(data) ? 0 : tp2cc_ansistring_header(data)->len;
   }
 
   bool empty() const { return length() == 0; }
@@ -914,16 +914,16 @@ class tp2cc_AnsiString {
   }
 
   void clear() {
-    data = p_ansistring_empty_bytes();
+    data = tp2cc_ansistring_empty_bytes();
   }
 
   void ensure_unique() {
-    if (p_ansistring_is_empty_bytes(data)) {
-      data = p_ansistring_alloc_owned_empty();
+    if (tp2cc_ansistring_is_empty_bytes(data)) {
+      data = tp2cc_ansistring_alloc_owned_empty();
       return;
     }
-    int32_t len = p_ansistring_header(data)->len;
-    p_char* fresh = p_ansistring_alloc_bytes(len);
+    int32_t len = tp2cc_ansistring_header(data)->len;
+    p_char* fresh = tp2cc_ansistring_alloc_bytes(len);
     std::memcpy(fresh, data, static_cast<size_t>(len + 1) * sizeof(p_char));
     data = fresh;
   }
@@ -935,7 +935,7 @@ class tp2cc_AnsiString {
     }
 
     int32_t old_len = length();
-    p_char* fresh = p_ansistring_alloc_bytes(new_len);
+    p_char* fresh = tp2cc_ansistring_alloc_bytes(new_len);
     int32_t keep = old_len < new_len ? old_len : new_len;
     if (keep > 0) {
       std::memcpy(fresh, data, static_cast<size_t>(keep) * sizeof(p_char));
@@ -982,7 +982,7 @@ class tp2cc_AnsiString {
       clear();
       return;
     }
-    p_char* fresh = p_ansistring_alloc_bytes(len);
+    p_char* fresh = tp2cc_ansistring_alloc_bytes(len);
     std::memcpy(fresh, src, static_cast<size_t>(len) * sizeof(p_char));
     data = fresh;
   }
@@ -997,12 +997,12 @@ class tp2cc_AnsiString {
   }
 
   void assign_pascal_c_str(const p_char* s) {
-    if (!s || p_char_byte(*s) == 0) {
+    if (!s || tp2cc_char_byte(*s) == 0) {
       clear();
       return;
     }
     int32_t len = 0;
-    while (p_char_byte(s[len]) != 0) ++len;
+    while (tp2cc_char_byte(s[len]) != 0) ++len;
     assign_bytes(s, len);
   }
 };
@@ -1304,7 +1304,7 @@ inline tp2cc_AnsiStringCharRef::operator p_char() const {
 }
 
 inline tp2cc_AnsiStringCharRef::operator uint8_t() const {
-  return p_char_byte(owner->data[index]);
+  return tp2cc_char_byte(owner->data[index]);
 }
 
 inline tp2cc_AnsiStringCharRef& tp2cc_AnsiStringCharRef::operator=(p_char value) {
@@ -1324,49 +1324,49 @@ inline p_char* tp2cc_AnsiStringCharRef::operator&() {
 }
 
 template <int N>
-inline const p_char* p_string_bytes(const tp2cc_ShortString<N>& s) {
+inline const p_char* tp2cc_string_bytes(const tp2cc_ShortString<N>& s) {
   return s.data;
 }
 template <int N>
-inline const p_char* p_string_bytes(const tp2cc_ShortStringPtrValue<N>& s) {
+inline const p_char* tp2cc_string_bytes(const tp2cc_ShortStringPtrValue<N>& s) {
   return s.bytes();
 }
 template <int N>
-inline const p_char* p_string_bytes(const tp2cc_ShortStringPtrRef<N>& s) {
+inline const p_char* tp2cc_string_bytes(const tp2cc_ShortStringPtrRef<N>& s) {
   return s.bytes();
 }
 
-inline const p_char* p_string_bytes(const tp2cc_AnsiString& s) {
+inline const p_char* tp2cc_string_bytes(const tp2cc_AnsiString& s) {
   return s.bytes();
 }
 
 template <int N>
-inline int32_t p_string_length(const tp2cc_ShortString<N>& s) {
+inline int32_t tp2cc_string_length(const tp2cc_ShortString<N>& s) {
   return s.length;
 }
 template <int N>
-inline int32_t p_string_length(const tp2cc_ShortStringPtrValue<N>& s) {
+inline int32_t tp2cc_string_length(const tp2cc_ShortStringPtrValue<N>& s) {
   return s.size();
 }
 template <int N>
-inline int32_t p_string_length(const tp2cc_ShortStringPtrRef<N>& s) {
+inline int32_t tp2cc_string_length(const tp2cc_ShortStringPtrRef<N>& s) {
   return s.size();
 }
 
-inline int32_t p_string_length(const tp2cc_AnsiString& s) {
+inline int32_t tp2cc_string_length(const tp2cc_AnsiString& s) {
   return s.length();
 }
 
 template <typename A, typename B>
-inline int p_string_compare(const A& a, const B& b) {
-  const int32_t a_len = p_string_length(a);
-  const int32_t b_len = p_string_length(b);
-  const p_char* a_bytes = p_string_bytes(a);
-  const p_char* b_bytes = p_string_bytes(b);
+inline int tp2cc_string_compare(const A& a, const B& b) {
+  const int32_t a_len = tp2cc_string_length(a);
+  const int32_t b_len = tp2cc_string_length(b);
+  const p_char* a_bytes = tp2cc_string_bytes(a);
+  const p_char* b_bytes = tp2cc_string_bytes(b);
   int32_t limit = a_len < b_len ? a_len : b_len;
   for (int32_t i = 0; i < limit; ++i) {
-    uint8_t av = p_char_byte(a_bytes[i]);
-    uint8_t bv = p_char_byte(b_bytes[i]);
+    uint8_t av = tp2cc_char_byte(a_bytes[i]);
+    uint8_t bv = tp2cc_char_byte(b_bytes[i]);
     if (av < bv) return -1;
     if (av > bv) return 1;
   }
@@ -1381,7 +1381,7 @@ requires (tp2cc_is_fixed_shortstring_like_v<A> &&
           (tp2cc_is_shortstring_proxy_v<A> ||
            tp2cc_is_shortstring_proxy_v<B>))
 inline constexpr bool operator==(const A& a, const B& b) {
-  return p_string_compare(a, b) == 0;
+  return tp2cc_string_compare(a, b) == 0;
 }
 
 template <typename A, typename B>
@@ -1399,7 +1399,7 @@ requires (tp2cc_is_fixed_shortstring_like_v<A> &&
           (tp2cc_is_shortstring_proxy_v<A> ||
            tp2cc_is_shortstring_proxy_v<B>))
 inline constexpr bool operator<(const A& a, const B& b) {
-  return p_string_compare(a, b) < 0;
+  return tp2cc_string_compare(a, b) < 0;
 }
 
 template <typename A, typename B>
@@ -1408,7 +1408,7 @@ requires (tp2cc_is_fixed_shortstring_like_v<A> &&
           (tp2cc_is_shortstring_proxy_v<A> ||
            tp2cc_is_shortstring_proxy_v<B>))
 inline constexpr bool operator>(const A& a, const B& b) {
-  return p_string_compare(a, b) > 0;
+  return tp2cc_string_compare(a, b) > 0;
 }
 
 template <typename A, typename B>
@@ -1417,7 +1417,7 @@ requires (tp2cc_is_fixed_shortstring_like_v<A> &&
           (tp2cc_is_shortstring_proxy_v<A> ||
            tp2cc_is_shortstring_proxy_v<B>))
 inline constexpr bool operator<=(const A& a, const B& b) {
-  return p_string_compare(a, b) <= 0;
+  return tp2cc_string_compare(a, b) <= 0;
 }
 
 template <typename A, typename B>
@@ -1426,7 +1426,7 @@ requires (tp2cc_is_fixed_shortstring_like_v<A> &&
           (tp2cc_is_shortstring_proxy_v<A> ||
            tp2cc_is_shortstring_proxy_v<B>))
 inline constexpr bool operator>=(const A& a, const B& b) {
-  return p_string_compare(a, b) >= 0;
+  return tp2cc_string_compare(a, b) >= 0;
 }
 
 template <typename A, typename B>
@@ -1441,17 +1441,17 @@ inline constexpr auto operator+(const A& a, const B& b) {
 }
 
 template <typename A, typename B>
-inline tp2cc_AnsiString p_concat_to_ansistring(const A& a, const B& b) {
-  const int32_t a_len = p_string_length(a);
-  const int32_t b_len = p_string_length(b);
+inline tp2cc_AnsiString tp2cc_concat_to_ansistring(const A& a, const B& b) {
+  const int32_t a_len = tp2cc_string_length(a);
+  const int32_t b_len = tp2cc_string_length(b);
   tp2cc_AnsiString out{};
   out.set_length(a_len + b_len);
   if (a_len > 0) {
-    std::memcpy(out.data, p_string_bytes(a),
+    std::memcpy(out.data, tp2cc_string_bytes(a),
                 static_cast<size_t>(a_len) * sizeof(p_char));
   }
   if (b_len > 0) {
-    std::memcpy(out.data + a_len, p_string_bytes(b),
+    std::memcpy(out.data + a_len, tp2cc_string_bytes(b),
                 static_cast<size_t>(b_len) * sizeof(p_char));
   }
   return out;
@@ -1461,16 +1461,16 @@ inline tp2cc_AnsiString operator+(const tp2cc_AnsiString& s) { return tp2cc_ansi
 
 template <int N>
 inline tp2cc_AnsiString operator+(const tp2cc_AnsiString& a, const tp2cc_ShortString<N>& b) {
-  return p_concat_to_ansistring(a, b);
+  return tp2cc_concat_to_ansistring(a, b);
 }
 
 template <int N>
 inline tp2cc_AnsiString operator+(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b) {
-  return p_concat_to_ansistring(a, b);
+  return tp2cc_concat_to_ansistring(a, b);
 }
 
 inline tp2cc_AnsiString operator+(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
-  return p_concat_to_ansistring(a, b);
+  return tp2cc_concat_to_ansistring(a, b);
 }
 
 inline tp2cc_AnsiString operator+(const tp2cc_AnsiString& a, const char* b) {
@@ -1498,7 +1498,7 @@ inline tp2cc_AnsiString operator+(p_char c, const tp2cc_AnsiString& b) {
 }
 
 inline bool operator==(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
-  return p_string_compare(a, b) == 0;
+  return tp2cc_string_compare(a, b) == 0;
 }
 
 inline bool operator!=(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
@@ -1506,29 +1506,29 @@ inline bool operator!=(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
 }
 
 inline bool operator<(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
-  return p_string_compare(a, b) < 0;
+  return tp2cc_string_compare(a, b) < 0;
 }
 
 inline bool operator>(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
-  return p_string_compare(a, b) > 0;
+  return tp2cc_string_compare(a, b) > 0;
 }
 
 inline bool operator<=(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
-  return p_string_compare(a, b) <= 0;
+  return tp2cc_string_compare(a, b) <= 0;
 }
 
 inline bool operator>=(const tp2cc_AnsiString& a, const tp2cc_AnsiString& b) {
-  return p_string_compare(a, b) >= 0;
+  return tp2cc_string_compare(a, b) >= 0;
 }
 
 template <int N>
 inline bool operator==(const tp2cc_AnsiString& a, const tp2cc_ShortString<N>& b) {
-  return p_string_compare(a, b) == 0;
+  return tp2cc_string_compare(a, b) == 0;
 }
 
 template <int N>
 inline bool operator==(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b) {
-  return p_string_compare(a, b) == 0;
+  return tp2cc_string_compare(a, b) == 0;
 }
 
 // Pascal compares strings against a single `Char` literal by lifting
@@ -1613,12 +1613,12 @@ inline bool operator!=(p_char a, const tp2cc_ShortString<N>& b) {
 
 template <int N>
 inline bool operator<(const tp2cc_AnsiString& a, const tp2cc_ShortString<N>& b) {
-  return p_string_compare(a, b) < 0;
+  return tp2cc_string_compare(a, b) < 0;
 }
 
 template <int N>
 inline bool operator<(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b) {
-  return p_string_compare(a, b) < 0;
+  return tp2cc_string_compare(a, b) < 0;
 }
 
 template <int N>
@@ -1633,12 +1633,12 @@ inline bool operator<(p_char a, const tp2cc_ShortString<N>& b) {
 
 template <int N>
 inline bool operator>(const tp2cc_AnsiString& a, const tp2cc_ShortString<N>& b) {
-  return p_string_compare(a, b) > 0;
+  return tp2cc_string_compare(a, b) > 0;
 }
 
 template <int N>
 inline bool operator>(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b) {
-  return p_string_compare(a, b) > 0;
+  return tp2cc_string_compare(a, b) > 0;
 }
 
 template <int N>
@@ -1653,12 +1653,12 @@ inline bool operator>(p_char a, const tp2cc_ShortString<N>& b) {
 
 template <int N>
 inline bool operator<=(const tp2cc_AnsiString& a, const tp2cc_ShortString<N>& b) {
-  return p_string_compare(a, b) <= 0;
+  return tp2cc_string_compare(a, b) <= 0;
 }
 
 template <int N>
 inline bool operator<=(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b) {
-  return p_string_compare(a, b) <= 0;
+  return tp2cc_string_compare(a, b) <= 0;
 }
 
 template <int N>
@@ -1673,12 +1673,12 @@ inline bool operator<=(p_char a, const tp2cc_ShortString<N>& b) {
 
 template <int N>
 inline bool operator>=(const tp2cc_AnsiString& a, const tp2cc_ShortString<N>& b) {
-  return p_string_compare(a, b) >= 0;
+  return tp2cc_string_compare(a, b) >= 0;
 }
 
 template <int N>
 inline bool operator>=(const tp2cc_ShortString<N>& a, const tp2cc_AnsiString& b) {
-  return p_string_compare(a, b) >= 0;
+  return tp2cc_string_compare(a, b) >= 0;
 }
 
 template <int N>
@@ -1809,7 +1809,7 @@ inline T p_swapendian(T value) {
 template <typename T>
 inline constexpr int tp2cc_ordinal_value(T x) {
   if constexpr (std::is_convertible_v<T, p_char>)
-    return static_cast<int>(p_char_byte(static_cast<p_char>(x)));
+    return static_cast<int>(tp2cc_char_byte(static_cast<p_char>(x)));
   else
     return static_cast<int>(x);
 }
@@ -1977,7 +1977,7 @@ constexpr tp2cc_Array<T, Lo, N> tp2cc_array_literal(p_char c) {
     if constexpr (std::is_same_v<T, p_char>)
       out.data[0] = c;
     else
-      out.data[0] = static_cast<T>(p_char_to_c(c));
+      out.data[0] = static_cast<T>(tp2cc_char_to_c(c));
   }
   return out;
 }
@@ -2339,7 +2339,7 @@ struct tp2cc_Set {
 
   static constexpr int idx(Elem e) {
     if constexpr (std::is_same_v<Elem, p_char>)
-      return static_cast<int>(p_char_byte(e));
+      return static_cast<int>(tp2cc_char_byte(e));
     else
       return static_cast<int>(static_cast<int64_t>(e));
   }
@@ -2444,7 +2444,7 @@ constexpr DstSet tp2cc_set_cast(const tp2cc_Array<Elem, Lo, N>& src) {
   DstSet dst{};
   for (int i = 0; i < DstSet::Nb; ++i) {
     if constexpr (std::is_same_v<Elem, p_char>)
-      dst.bits[i] = static_cast<unsigned char>(p_char_byte(src.data[i]));
+      dst.bits[i] = static_cast<unsigned char>(tp2cc_char_byte(src.data[i]));
     else
       dst.bits[i] = static_cast<unsigned char>(src.data[i]);
   }
@@ -2615,20 +2615,20 @@ template <typename T> inline int p_length(const std::array<T, 0>&) { return 0; }
 
 template <int N, typename Src>
 inline void tp2cc_shortstring_assign(tp2cc_ShortString<N>& dest, const Src& src) {
-  const int32_t n = std::min<int32_t>(p_string_length(src), N);
+  const int32_t n = std::min<int32_t>(tp2cc_string_length(src), N);
   dest.length = static_cast<uint8_t>(n);
   if (n > 0) {
-    std::memmove(dest.data, p_string_bytes(src),
+    std::memmove(dest.data, tp2cc_string_bytes(src),
                  static_cast<size_t>(n) * sizeof(p_char));
   }
 }
 
 template <int N, typename Src>
 inline void tp2cc_shortstring_assign(tp2cc_ShortStringPtrRef<N> dest, const Src& src) {
-  const int32_t n = std::min<int32_t>(p_string_length(src), N);
+  const int32_t n = std::min<int32_t>(tp2cc_string_length(src), N);
   *dest.storage = static_cast<uint8_t>(n);
   if (n > 0) {
-    std::memmove(dest.bytes(), p_string_bytes(src),
+    std::memmove(dest.bytes(), tp2cc_string_bytes(src),
                  static_cast<size_t>(n) * sizeof(p_char));
   }
 }
@@ -2667,7 +2667,7 @@ inline void p_setlength(tp2cc_DynArray<T>& a, int new_len) {
 template <typename T>
 requires std::is_convertible_v<T, p_char>
 inline constexpr int32_t p_ord(T x) {
-  return static_cast<int32_t>(p_char_byte(static_cast<p_char>(x)));
+  return static_cast<int32_t>(tp2cc_char_byte(static_cast<p_char>(x)));
 }
 template <typename T>
 requires (!std::is_convertible_v<T, p_char>)
@@ -2840,58 +2840,58 @@ inline int32_t p_memavail() { return 1 << 30; }   // stub: "lots of memory"
 //inline int32_t p_heapavail() { return 1 << 30; }
 //inline int32_t p_maxavail()  { return 1 << 30; }
 
-inline int32_t p_last_ioresult = 0;
+inline int32_t tp2cc_last_ioresult = 0;
 
 template <typename File>
-inline void p_set_ioresult(File& f, int32_t code) {
+inline void tp2cc_set_ioresult(File& f, int32_t code) {
   f.iores = code;
-  p_last_ioresult = code;
+  tp2cc_last_ioresult = code;
 }
 
-inline tp2cc_ShortString<> p_file_name_to_string(const tp2cc_ShortString<>& name) {
+inline tp2cc_ShortString<> tp2cc_file_name_to_string(const tp2cc_ShortString<>& name) {
   return name;
 }
 
 template <typename File>
-inline void p_file_name_to_buf(const File& f, char (&buf)[260]) {
+inline void tp2cc_file_name_to_buf(const File& f, char (&buf)[260]) {
   int n = f.name.length < 255 ? f.name.length : 255;
-  for (int i = 0; i < n; ++i) buf[i] = p_char_to_c(f.name.data[i]);
+  for (int i = 0; i < n; ++i) buf[i] = tp2cc_char_to_c(f.name.data[i]);
   buf[n] = '\0';
 }
 
 template <int N>
-inline std::string p_to_std_string(const tp2cc_ShortString<N>& s) {
+inline std::string tp2cc_to_std_string(const tp2cc_ShortString<N>& s) {
   std::string out;
   out.reserve(s.length);
-  for (int i = 0; i < s.length; ++i) out.push_back(p_char_to_c(s.data[i]));
+  for (int i = 0; i < s.length; ++i) out.push_back(tp2cc_char_to_c(s.data[i]));
   return out;
 }
 
-inline std::string p_to_std_string(const tp2cc_AnsiString& s) {
+inline std::string tp2cc_to_std_string(const tp2cc_AnsiString& s) {
   std::string out;
   out.reserve(static_cast<size_t>(s.length()));
-  for (int i = 0; i < s.length(); ++i) out.push_back(p_char_to_c(s.data[i]));
+  for (int i = 0; i < s.length(); ++i) out.push_back(tp2cc_char_to_c(s.data[i]));
   return out;
 }
 
-inline std::string p_to_std_string(const char* s) {
+inline std::string tp2cc_to_std_string(const char* s) {
   return s ? std::string(s) : std::string();
 }
-inline std::string p_to_std_string(const p_char* s) {
-  return s ? std::string(p_c_str(s)) : std::string();
+inline std::string tp2cc_to_std_string(const p_char* s) {
+  return s ? std::string(tp2cc_c_str(s)) : std::string();
 }
 
 inline int32_t p_strtoint(const tp2cc_ShortString<>& s) {
   char buf[260]{};
-  for (int i = 0; i < s.length; ++i) buf[i] = p_char_to_c(s.data[i]);
+  for (int i = 0; i < s.length; ++i) buf[i] = tp2cc_char_to_c(s.data[i]);
   return std::atoi(buf);
 }
 
 inline int32_t p_strtoint(const tp2cc_AnsiString& s) {
-  return std::atoi(p_to_std_string(s).c_str());
+  return std::atoi(tp2cc_to_std_string(s).c_str());
 }
 
-inline int p_digit_value(char c) {
+inline int tp2cc_digit_value(char c) {
   if (c >= '0' && c <= '9') return c - '0';
   if (c >= 'a' && c <= 'f') return c - 'a' + 10;
   if (c >= 'A' && c <= 'F') return c - 'A' + 10;
@@ -2899,7 +2899,7 @@ inline int p_digit_value(char c) {
 }
 
 template <typename Int>
-inline void p_parse_pascal_integer(const std::string& buf, Int& out,
+inline void tp2cc_parse_pascal_integer(const std::string& buf, Int& out,
                                    int32_t& code) {
   static_assert(std::is_integral_v<Int> && !std::is_same_v<Int, bool>);
 
@@ -2960,7 +2960,7 @@ inline void p_parse_pascal_integer(const std::string& buf, Int& out,
   UInt value = 0;
   bool any = false;
   for (; i < buf.size(); ++i) {
-    int d = p_digit_value(buf[i]);
+    int d = tp2cc_digit_value(buf[i]);
     if (d < 0 || d >= base) {
       fail(i);
       return;
@@ -2994,7 +2994,7 @@ inline void p_parse_pascal_integer(const std::string& buf, Int& out,
   code = 0;
 }
 
-inline std::vector<std::string> p_split_commandline(const std::string& s) {
+inline std::vector<std::string> tp2cc_split_commandline(const std::string& s) {
   std::vector<std::string> args;
   std::string cur;
   char quote = '\0';
@@ -3041,26 +3041,26 @@ inline std::vector<std::string> p_split_commandline(const std::string& s) {
 }
 
 inline int32_t p_doserror = 0;
-inline int32_t p_last_dosexitcode = 0;
+inline int32_t tp2cc_last_dosexitcode = 0;
 
-inline void p_store_wait_status(int status) {
+inline void tp2cc_store_wait_status(int status) {
   p_doserror = 0;
   if (WIFEXITED(status)) {
-    p_last_dosexitcode = WEXITSTATUS(status);
+    tp2cc_last_dosexitcode = WEXITSTATUS(status);
     // glibc's posix_spawnp may defer exec failures to the child instead of reporting them synchronously, and in qemu transparent emulation this does happen.
-    if (p_last_dosexitcode == 127) {
+    if (tp2cc_last_dosexitcode == 127) {
       p_doserror = 8;
-      p_last_dosexitcode = 0;
+      tp2cc_last_dosexitcode = 0;
     }
   } else if (WIFSIGNALED(status)) {
-    p_last_dosexitcode = 128 + WTERMSIG(status);
+    tp2cc_last_dosexitcode = 128 + WTERMSIG(status);
   } else {
-    p_last_dosexitcode = 1;
+    tp2cc_last_dosexitcode = 1;
   }
 }
 
-inline void p_spawn_process(const std::vector<std::string>& args) {
-  p_last_dosexitcode = 0;
+inline void tp2cc_spawn_process(const std::vector<std::string>& args) {
+  tp2cc_last_dosexitcode = 0;
   if (args.empty() || args[0].empty()) {
     p_doserror = ENOENT;
     return;
@@ -3085,26 +3085,26 @@ inline void p_spawn_process(const std::vector<std::string>& args) {
   while (::waitpid(pid, &status, 0) < 0) {
     if (errno != EINTR) {
       p_doserror = errno;
-      p_last_dosexitcode = 0;
+      tp2cc_last_dosexitcode = 0;
       return;
     }
   }
 
-  p_store_wait_status(status);
+  tp2cc_store_wait_status(status);
 }
 
 // Dos/file procedures -- stubbed; real behaviour added as needed.
 struct SearchRec { int32_t p_time = 0; int32_t p_size = 0;
                    uint8_t p_attr = 0; tp2cc_ShortString<> p_name{};
-                   std::vector<std::string> p_matches;
-                   std::size_t p_index = 0; };
+                   std::vector<std::string> tp2cc_matches;
+                   std::size_t tp2cc_index = 0; };
 using p_searchrec = SearchRec;
 using p_tsearchrec = SearchRec;
 inline constexpr int32_t p_fareadonly = 0x01;
 inline constexpr int32_t p_fahidden = 0x02;
 inline constexpr int32_t p_fadirectory = 0x10;
 inline constexpr int32_t p_faarchive = 0x20;
-inline void p_searchrec_fill(SearchRec& rec, const std::string& path) {
+inline void tp2cc_searchrec_fill(SearchRec& rec, const std::string& path) {
   struct stat st{};
   if (::stat(path.c_str(), &st) != 0) return;
   rec.p_time = static_cast<int32_t>(st.st_mtime);
@@ -3115,12 +3115,12 @@ inline void p_searchrec_fill(SearchRec& rec, const std::string& path) {
   rec.p_name = tp2cc_shortstring_of<>((sep == std::string::npos ? path : path.substr(sep + 1)).c_str());
 }
 inline int32_t p_findfirst(const tp2cc_ShortString<>& pattern, int attrs, SearchRec& rec) {
-  rec.p_matches.clear();
-  rec.p_index = 0;
+  rec.tp2cc_matches.clear();
+  rec.tp2cc_index = 0;
   rec.p_attr = 0;
   rec.p_name = tp2cc_shortstring_of<>("");
   glob_t matches{};
-  int rc = ::glob(p_to_std_string(pattern).c_str(), GLOB_NOSORT, nullptr, &matches);
+  int rc = ::glob(tp2cc_to_std_string(pattern).c_str(), GLOB_NOSORT, nullptr, &matches);
   if (rc != 0) {
     ::globfree(&matches);
     p_doserror = 18;
@@ -3131,34 +3131,34 @@ inline int32_t p_findfirst(const tp2cc_ShortString<>& pattern, int attrs, Search
     struct stat st{};
     if (::stat(path, &st) != 0) continue;
     if (attrs == 0x10 && !S_ISDIR(st.st_mode)) continue;
-    rec.p_matches.emplace_back(path);
+    rec.tp2cc_matches.emplace_back(path);
   }
   ::globfree(&matches);
-  if (rec.p_matches.empty()) {
+  if (rec.tp2cc_matches.empty()) {
     p_doserror = 18;
     return p_doserror;
   }
-  p_searchrec_fill(rec, rec.p_matches[0]);
+  tp2cc_searchrec_fill(rec, rec.tp2cc_matches[0]);
   p_doserror = 0;
   return 0;
 }
 inline int32_t p_findnext(SearchRec& rec) {
-  if (rec.p_index + 1 >= rec.p_matches.size()) {
+  if (rec.tp2cc_index + 1 >= rec.tp2cc_matches.size()) {
     p_doserror = 18;
     return p_doserror;
   }
-  ++rec.p_index;
-  p_searchrec_fill(rec, rec.p_matches[rec.p_index]);
+  ++rec.tp2cc_index;
+  tp2cc_searchrec_fill(rec, rec.tp2cc_matches[rec.tp2cc_index]);
   p_doserror = 0;
   return 0;
 }
 inline void p_findclose(SearchRec& rec) {
-  rec.p_matches.clear();
-  rec.p_index = 0;
+  rec.tp2cc_matches.clear();
+  rec.tp2cc_index = 0;
 }
 inline void p_getfattr(tp2cc_TextFile& f, uint16_t& attr) {
   struct stat st{};
-  if (::stat(p_to_std_string(f.name).c_str(), &st) != 0) {
+  if (::stat(tp2cc_to_std_string(f.name).c_str(), &st) != 0) {
     p_doserror = errno;
     attr = 0;
     return;
@@ -3169,7 +3169,7 @@ inline void p_getfattr(tp2cc_TextFile& f, uint16_t& attr) {
 template <typename T>
 inline void p_getfattr(tp2cc_TypedFile<T>& f, uint16_t& attr) {
   struct stat st{};
-  if (::stat(p_to_std_string(f.name).c_str(), &st) != 0) {
+  if (::stat(tp2cc_to_std_string(f.name).c_str(), &st) != 0) {
     p_doserror = errno;
     attr = 0;
     return;
@@ -3178,13 +3178,13 @@ inline void p_getfattr(tp2cc_TypedFile<T>& f, uint16_t& attr) {
   p_doserror = 0;
 }
 inline void p_mkdir(const tp2cc_ShortString<>& path) {
-  p_last_ioresult = ::mkdir(p_to_std_string(path).c_str(), 0777) == 0 ? 0 : 5;
+  tp2cc_last_ioresult = ::mkdir(tp2cc_to_std_string(path).c_str(), 0777) == 0 ? 0 : 5;
 }
 inline void p_rmdir(const tp2cc_ShortString<>& path) {
-  p_last_ioresult = ::rmdir(p_to_std_string(path).c_str()) == 0 ? 0 : 5;
+  tp2cc_last_ioresult = ::rmdir(tp2cc_to_std_string(path).c_str()) == 0 ? 0 : 5;
 }
 inline void p_chdir(const tp2cc_ShortString<>& path) {
-  p_last_ioresult = ::chdir(p_to_std_string(path).c_str()) == 0 ? 0 : 3;
+  tp2cc_last_ioresult = ::chdir(tp2cc_to_std_string(path).c_str()) == 0 ? 0 : 3;
 }
 template <int N>
 inline void p_getdir(int, tp2cc_ShortString<N>& out) {
@@ -3198,21 +3198,21 @@ inline void p_getdir(int, tp2cc_AnsiString& out) {
   else out = buf;  // AnsiString::operator=(const char*)
 }
 inline void p_erase(const tp2cc_ShortString<>& path) {
-  p_last_ioresult = std::remove(p_to_std_string(path).c_str()) == 0 ? 0 : 2;
+  tp2cc_last_ioresult = std::remove(tp2cc_to_std_string(path).c_str()) == 0 ? 0 : 2;
 }
 inline void p_erase(tp2cc_TextFile& f) {      // `erase(f)` after assign(f, name)
   char buf[260]{};
-  p_file_name_to_buf(f, buf);
-  p_set_ioresult(f, std::remove(buf) == 0 ? 0 : 2);
+  tp2cc_file_name_to_buf(f, buf);
+  tp2cc_set_ioresult(f, std::remove(buf) == 0 ? 0 : 2);
 }
 inline void p_rename(const tp2cc_ShortString<>& old_name, const tp2cc_ShortString<>& new_name) {
-  p_last_ioresult =
-      std::rename(p_to_std_string(old_name).c_str(), p_to_std_string(new_name).c_str()) == 0 ? 0 : 5;
+  tp2cc_last_ioresult =
+      std::rename(tp2cc_to_std_string(old_name).c_str(), tp2cc_to_std_string(new_name).c_str()) == 0 ? 0 : 5;
 }
 inline void p_rename(tp2cc_TextFile& f, const tp2cc_ShortString<>& new_name) {
   char buf[260]{};
-  p_file_name_to_buf(f, buf);
-  p_set_ioresult(f, std::rename(buf, p_to_std_string(new_name).c_str()) == 0 ? 0 : 5);
+  tp2cc_file_name_to_buf(f, buf);
+  tp2cc_set_ioresult(f, std::rename(buf, tp2cc_to_std_string(new_name).c_str()) == 0 ? 0 : 5);
 }
 inline tp2cc_ShortString<> p_fsearch(const tp2cc_ShortString<>& name, const tp2cc_ShortString<>&) { return name; }
 inline void p_fsplit(const tp2cc_ShortString<>& input, tp2cc_ShortString<>& dir,
@@ -3220,7 +3220,7 @@ inline void p_fsplit(const tp2cc_ShortString<>& input, tp2cc_ShortString<>& dir,
   std::string path;
   path.reserve(input.length);
   for (int i = 0; i < input.length; ++i) {
-    char c = p_char_to_c(input.data[i]);
+    char c = tp2cc_char_to_c(input.data[i]);
     if (c == '\\') c = '/';
     path.push_back(c);
   }
@@ -3283,14 +3283,14 @@ inline void tp2cc_split_path(const std::string& input, std::string& dir,
 template <typename Str>
 inline tp2cc_AnsiString p_extractfilepath(const Str& input) {
   std::string dir, name, ext;
-  tp2cc_split_path(p_to_std_string(input), dir, name, ext);
+  tp2cc_split_path(tp2cc_to_std_string(input), dir, name, ext);
   return tp2cc_ansistring_of(dir.c_str());
 }
 
 template <typename Str>
 inline tp2cc_AnsiString p_extractfiledir(const Str& input) {
   std::string dir, name, ext;
-  tp2cc_split_path(p_to_std_string(input), dir, name, ext);
+  tp2cc_split_path(tp2cc_to_std_string(input), dir, name, ext);
   // ExtractFilePath returns "/tmp/", ExtractFileDir returns "/tmp" --
   // same path, no trailing separator. Root ("/") keeps its slash so
   // "ExtractFileDir('/foo.txt')" still resolves to "/".
@@ -3303,57 +3303,57 @@ inline tp2cc_AnsiString p_extractfiledir(const Str& input) {
 template <typename Str>
 inline tp2cc_AnsiString p_extractfilename(const Str& input) {
   std::string dir, name, ext;
-  tp2cc_split_path(p_to_std_string(input), dir, name, ext);
+  tp2cc_split_path(tp2cc_to_std_string(input), dir, name, ext);
   return tp2cc_ansistring_of((name + ext).c_str());
 }
 
 template <typename Str>
 inline tp2cc_AnsiString p_extractfileext(const Str& input) {
   std::string dir, name, ext;
-  tp2cc_split_path(p_to_std_string(input), dir, name, ext);
+  tp2cc_split_path(tp2cc_to_std_string(input), dir, name, ext);
   return tp2cc_ansistring_of(ext.c_str());
 }
 
 template <typename Path, typename Ext>
 inline tp2cc_AnsiString p_changefileext(const Path& input, const Ext& ext) {
   std::string dir, name, old_ext;
-  tp2cc_split_path(p_to_std_string(input), dir, name, old_ext);
-  return tp2cc_ansistring_of((dir + name + p_to_std_string(ext)).c_str());
+  tp2cc_split_path(tp2cc_to_std_string(input), dir, name, old_ext);
+  return tp2cc_ansistring_of((dir + name + tp2cc_to_std_string(ext)).c_str());
 }
 
 template <typename Str>
 inline tp2cc_AnsiString p_expandfilename(const Str& input) {
-  return tp2cc_ansistring_of(p_to_std_string(p_fexpand(tp2cc_shortstring_of<>(p_to_std_string(input).c_str()))).c_str());
+  return tp2cc_ansistring_of(tp2cc_to_std_string(p_fexpand(tp2cc_shortstring_of<>(tp2cc_to_std_string(input).c_str()))).c_str());
 }
 
 template <typename Str>
 inline tp2cc_AnsiString p_getenvironmentvariable(const Str& name) {
-  std::string key = p_to_std_string(name);
+  std::string key = tp2cc_to_std_string(name);
   const char* value = std::getenv(key.c_str());
   return tp2cc_ansistring_of(value ? value : "");
 }
 
 template <typename Str>
 inline bool p_deletefile(const Str& name) {
-  return std::remove(p_to_std_string(name).c_str()) == 0;
+  return std::remove(tp2cc_to_std_string(name).c_str()) == 0;
 }
 
 template <typename Str>
 inline bool p_fileexists(const Str& name) {
   struct stat st{};
-  return ::stat(p_to_std_string(name).c_str(), &st) == 0 && S_ISREG(st.st_mode);
+  return ::stat(tp2cc_to_std_string(name).c_str(), &st) == 0 && S_ISREG(st.st_mode);
 }
 
 template <typename Str>
 inline bool p_directoryexists(const Str& name) {
   struct stat st{};
-  return ::stat(p_to_std_string(name).c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+  return ::stat(tp2cc_to_std_string(name).c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 }
 
 template <typename OldName, typename NewName>
 inline bool p_renamefile(const OldName& old_name, const NewName& new_name) {
-  return std::rename(p_to_std_string(old_name).c_str(),
-                     p_to_std_string(new_name).c_str()) == 0;
+  return std::rename(tp2cc_to_std_string(old_name).c_str(),
+                     tp2cc_to_std_string(new_name).c_str()) == 0;
 }
 
 // FExpand: produce a fully-qualified, lexically normalised form of
@@ -3377,7 +3377,7 @@ inline bool p_renamefile(const OldName& old_name, const NewName& new_name) {
 //  - Result is capped to 255 chars by the tp2cc_ShortString carrier size
 //    (silent truncation, Pascal shortstring semantics).
 inline tp2cc_ShortString<> p_fexpand(const tp2cc_ShortString<>& s) {
-  std::string in = p_to_std_string(s);
+  std::string in = tp2cc_to_std_string(s);
 
   // Read cwd up-front.  getcwd(3) with a too-small buffer returns
   // NULL and sets errno=ERANGE; grow and retry.  Cap the growth so a
@@ -3611,7 +3611,7 @@ inline int32_t p_filesetdate(p_thandle handle, int32_t age) {
 template <typename Str>
 inline int32_t p_fileage(const Str& name) {
   struct stat st{};
-  return ::stat(p_to_std_string(name).c_str(), &st) == 0
+  return ::stat(tp2cc_to_std_string(name).c_str(), &st) == 0
              ? tp2cc_stat_to_filedatetime(st)
              : -1;
 }
@@ -3628,24 +3628,24 @@ inline p_thandle p_getfilehandle(tp2cc_TypedFile<T>& f) {
 template <typename Path, typename Cmd>
 inline int32_t p_executeprocess(const Path& path, const Cmd& command_line) {
   std::vector<std::string> args;
-  std::string exe = p_to_std_string(path);
+  std::string exe = tp2cc_to_std_string(path);
   if (!exe.empty()) {
     args.push_back(exe);
   }
-  auto rest = p_split_commandline(p_to_std_string(command_line));
+  auto rest = tp2cc_split_commandline(tp2cc_to_std_string(command_line));
   args.insert(args.end(), rest.begin(), rest.end());
-  p_spawn_process(args);
-  return p_last_dosexitcode;
+  tp2cc_spawn_process(args);
+  return tp2cc_last_dosexitcode;
 }
 
 inline int32_t p_executeprocess(const tp2cc_AnsiString& path,
                                 const tp2cc_OpenArray<tp2cc_AnsiString>& args) {
   std::vector<std::string> argv;
-  std::string exe = p_to_std_string(path);
+  std::string exe = tp2cc_to_std_string(path);
   if (!exe.empty()) argv.push_back(exe);
-  for (const auto& arg : args) argv.push_back(p_to_std_string(arg));
-  p_spawn_process(argv);
-  return p_last_dosexitcode;
+  for (const auto& arg : args) argv.push_back(tp2cc_to_std_string(arg));
+  tp2cc_spawn_process(argv);
+  return tp2cc_last_dosexitcode;
 }
 
 inline tp2cc_AnsiString p_stringofchar(p_char c, p_sizeint count) {
@@ -3665,8 +3665,8 @@ inline int32_t p_ansicomparefilename(const A& lhs, const B& rhs) {
     }
     return s;
   };
-  std::string a = normalize(p_to_std_string(lhs));
-  std::string b = normalize(p_to_std_string(rhs));
+  std::string a = normalize(tp2cc_to_std_string(lhs));
+  std::string b = normalize(tp2cc_to_std_string(rhs));
   if (a < b) return -1;
   if (a > b) return 1;
   return 0;
@@ -3712,10 +3712,10 @@ inline int32_t p_filesize(const File& f) {
 template <typename File>
 inline void p_seek(File& f, int32_t pos) {
   if (!f.f) {
-    p_set_ioresult(f, 103);
+    tp2cc_set_ioresult(f, 103);
     return;
   }
-  p_set_ioresult(f, std::fseek(f.f, pos, SEEK_SET) == 0 ? 0 : 103);
+  tp2cc_set_ioresult(f, std::fseek(f.f, pos, SEEK_SET) == 0 ? 0 : 103);
 }
 //inline void p_truncate(tp2cc_TextFile&) {}
 inline void p_flush(const tp2cc_TextFile& f) {
@@ -3728,22 +3728,22 @@ template <typename File, typename Count>
 inline void p_blockread(File& f, void* value, int32_t count, Count& transferred) {
   if (!f.f) {
     transferred = static_cast<Count>(0);
-    p_set_ioresult(f, 103);
+    tp2cc_set_ioresult(f, 103);
     return;
   }
   transferred = static_cast<Count>(std::fread(value, 1, count, f.f));
-  p_set_ioresult(f, std::ferror(f.f) ? 100 : 0);
+  tp2cc_set_ioresult(f, std::ferror(f.f) ? 100 : 0);
 }
 template <typename File, typename T, typename Count>
 inline void p_blockread(File& f, T& value, int32_t count, Count& transferred) {
   if (!f.f) {
     transferred = static_cast<Count>(0);
-    p_set_ioresult(f, 103);
+    tp2cc_set_ioresult(f, 103);
     return;
   }
   transferred = static_cast<Count>(
       std::fread(static_cast<void*>(std::addressof(value)), 1, count, f.f));
-  p_set_ioresult(f, std::ferror(f.f) ? 100 : 0);
+  tp2cc_set_ioresult(f, std::ferror(f.f) ? 100 : 0);
 }
 template <typename File, typename Count>
 inline void p_blockread(File& f, tp2cc_ShortStringCharRef value, int32_t count,
@@ -3769,17 +3769,17 @@ inline void p_blockread(File& f, void* value, int32_t count) {
 template <typename File>
 inline void p_truncate(File& f) {
   if (!f.f) {
-    p_set_ioresult(f, 103);
+    tp2cc_set_ioresult(f, 103);
     return;
   }
   long pos = std::ftell(f.f);
   if (pos < 0) {
-    p_set_ioresult(f, 103);
+    tp2cc_set_ioresult(f, 103);
     return;
   }
   std::fflush(f.f);
   int rc = ::ftruncate(::fileno(f.f), static_cast<off_t>(pos));
-  p_set_ioresult(f, rc == 0 ? 0 : 103);
+  tp2cc_set_ioresult(f, rc == 0 ? 0 : 103);
 }
 
 template <typename File, typename Count>
@@ -3787,11 +3787,11 @@ inline void p_blockwrite(File& f, const void* value, int32_t count,
                          Count& transferred) {
   if (!f.f) {
     transferred = static_cast<Count>(0);
-    p_set_ioresult(f, 103);
+    tp2cc_set_ioresult(f, 103);
     return;
   }
   transferred = static_cast<Count>(std::fwrite(value, 1, count, f.f));
-  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
+  tp2cc_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
 
 template <typename File, typename T, typename Count>
@@ -3799,13 +3799,13 @@ inline void p_blockwrite(File& f, const T& value, int32_t count,
                          Count& transferred) {
   if (!f.f) {
     transferred = static_cast<Count>(0);
-    p_set_ioresult(f, 103);
+    tp2cc_set_ioresult(f, 103);
     return;
   }
   transferred = static_cast<Count>(
       std::fwrite(static_cast<const void*>(std::addressof(value)), 1, count,
                   f.f));
-  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
+  tp2cc_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
 template <typename File, typename Count>
 inline void p_blockwrite(File& f, tp2cc_ShortStringCharRef value, int32_t count,
@@ -3967,25 +3967,25 @@ template <typename... A> inline void p_read(A&&...) {}
 // lvalue derefs of untyped pointers) without type-checking fuss.
 template <typename... A>
 inline void p_settextbuf(tp2cc_TextFile&, A&&...) {}
-template <typename T> inline int32_t p_ioresult_of(T&&) { return 0; }
+template <typename T> inline int32_t tp2cc_ioresult_of(T&&) { return 0; }
 
 // PChar utilities (strings unit).
 inline int p_strlen(const char* s) { return s ? (int)std::strlen(s) : 0; }
 inline int p_strlen(const p_char* s) {
   if (!s) return 0;
   int n = 0;
-  while (p_char_byte(s[n]) != 0) ++n;
+  while (tp2cc_char_byte(s[n]) != 0) ++n;
   return n;
 }
 inline int p_strlen(const tp2cc_AnsiString& s) { return s.length(); }
 inline tp2cc_ShortString<> p_strpas(const char* s) { return tp2cc_shortstring_of<>(s); }
 inline tp2cc_ShortString<> p_strpas(const p_char* s) { return tp2cc_shortstring_of<>(s); }
 template <int N>
-inline tp2cc_ShortString<N> p_strpas_s(const char* s) {
+inline tp2cc_ShortString<N> tp2cc_strpas_s(const char* s) {
   return tp2cc_shortstring_of<N>(s);
 }
 template <int N>
-inline tp2cc_ShortString<N> p_strpas_s(const p_char* s) {
+inline tp2cc_ShortString<N> tp2cc_strpas_s(const p_char* s) {
   return tp2cc_shortstring_of<N>(s);
 }
 template <int N, typename... Cs>
@@ -4002,7 +4002,7 @@ constexpr tp2cc_ShortString<N> tp2cc_shortstring_literal(Cs... chars) {
   return out;
 }
 inline char* p_strpcopy(char* dest, const tp2cc_ShortString<>& src) {
-  for (int i = 0; i < src.length; ++i) dest[i] = p_char_to_c(src.data[i]);
+  for (int i = 0; i < src.length; ++i) dest[i] = tp2cc_char_to_c(src.data[i]);
   dest[src.length] = 0;
   return dest;
 }
@@ -4012,7 +4012,7 @@ inline p_char* p_strpcopy(p_char* dest, const tp2cc_ShortString<>& src) {
   return dest;
 }
 inline char* p_strpcopy(char* dest, const tp2cc_AnsiString& src) {
-  for (int i = 0; i < src.length(); ++i) dest[i] = p_char_to_c(src.data[i]);
+  for (int i = 0; i < src.length(); ++i) dest[i] = tp2cc_char_to_c(src.data[i]);
   dest[src.length()] = 0;
   return dest;
 }
@@ -4025,8 +4025,8 @@ inline int p_strcomp(const char* a, const char* b) { return std::strcmp(a, b); }
 inline int p_strcomp(const p_char* a, const p_char* b) {
   int i = 0;
   while (true) {
-    uint8_t av = p_char_byte(a[i]);
-    uint8_t bv = p_char_byte(b[i]);
+    uint8_t av = tp2cc_char_byte(a[i]);
+    uint8_t bv = tp2cc_char_byte(b[i]);
     if (av != bv) return av < bv ? -1 : 1;
     if (av == 0) return 0;
     ++i;
@@ -4063,7 +4063,7 @@ inline void p_insert(tp2cc_ShortStringPtrRef<N> src, tp2cc_ShortString<M>& dest,
 // Pascal `insert(c, s, pos)` -- insert a single character.
 template <int M>
 inline void p_insert(p_char c, tp2cc_ShortString<M>& dest, int pos) {
-  char src[2] = {p_char_to_c(c), 0};
+  char src[2] = {tp2cc_char_to_c(c), 0};
   p_insert(src, dest, pos);
 }
 inline void p_insert(const char* src, tp2cc_ShortString<>& dest, int pos) {
@@ -4074,10 +4074,10 @@ inline void p_insert(const p_char* src, tp2cc_ShortString<>& dest, int pos) {
 }
 
 template <typename Src>
-inline void p_insert_bytes(const Src& src, tp2cc_AnsiString& dest, int pos) {
-  int32_t src_len = p_string_length(src);
+inline void tp2cc_insert_bytes(const Src& src, tp2cc_AnsiString& dest, int pos) {
+  int32_t src_len = tp2cc_string_length(src);
   if (src_len <= 0) return;
-  const p_char* src_bytes = p_string_bytes(src);
+  const p_char* src_bytes = tp2cc_string_bytes(src);
   std::vector<p_char> owned_src;
   if (src_bytes == dest.bytes()) {
     owned_src.assign(src_bytes, src_bytes + src_len);
@@ -4098,7 +4098,7 @@ inline void p_insert_bytes(const Src& src, tp2cc_AnsiString& dest, int pos) {
 
 template <int N>
 inline void p_insert(const tp2cc_ShortString<N>& src, tp2cc_AnsiString& dest, int pos) {
-  p_insert_bytes(src, dest, pos);
+  tp2cc_insert_bytes(src, dest, pos);
 }
 
 template <int N>
@@ -4112,19 +4112,19 @@ inline void p_insert(tp2cc_ShortStringPtrRef<N> src, tp2cc_AnsiString& dest, int
 }
 
 inline void p_insert(const tp2cc_AnsiString& src, tp2cc_AnsiString& dest, int pos) {
-  p_insert_bytes(src, dest, pos);
+  tp2cc_insert_bytes(src, dest, pos);
 }
 
 inline void p_insert(p_char c, tp2cc_AnsiString& dest, int pos) {
-  p_insert_bytes(tp2cc_ansistring_of(c), dest, pos);
+  tp2cc_insert_bytes(tp2cc_ansistring_of(c), dest, pos);
 }
 
 inline void p_insert(const char* src, tp2cc_AnsiString& dest, int pos) {
-  p_insert_bytes(tp2cc_ansistring_of(src), dest, pos);
+  tp2cc_insert_bytes(tp2cc_ansistring_of(src), dest, pos);
 }
 
 inline void p_insert(const p_char* src, tp2cc_AnsiString& dest, int pos) {
-  p_insert_bytes(tp2cc_ansistring_of(src), dest, pos);
+  tp2cc_insert_bytes(tp2cc_ansistring_of(src), dest, pos);
 }
 
 // --- Memory / bytewise utilities -------------------------------------------
@@ -4323,8 +4323,8 @@ inline tp2cc_ShortString<> p_paramstr(int i) {
 }
 
 inline int32_t p_ioresult() {
-  int32_t result = p_last_ioresult;
-  p_last_ioresult = 0;
+  int32_t result = tp2cc_last_ioresult;
+  tp2cc_last_ioresult = 0;
   return result;
 }
 
@@ -4483,14 +4483,14 @@ inline int p_pos(p_char c, const tp2cc_AnsiString& hay) {
 // Pascal `val(S, real_var, code_var)` overload.
 template <int N>
 inline void p_val(const tp2cc_ShortString<N>& s, double& out, int32_t& code) {
-  std::string buf = p_to_std_string(s);
+  std::string buf = tp2cc_to_std_string(s);
   char* end = nullptr;
   double v = std::strtod(buf.c_str(), &end);
   if (end && *end == '\0') { out = v; code = 0; }
   else { code = static_cast<int32_t>(end - buf.c_str()) + 1; }
 }
 inline void p_val(const tp2cc_AnsiString& s, double& out, int32_t& code) {
-  std::string buf = p_to_std_string(s);
+  std::string buf = tp2cc_to_std_string(s);
   char* end = nullptr;
   double v = std::strtod(buf.c_str(), &end);
   if (end && *end == '\0') { out = v; code = 0; }
@@ -4514,14 +4514,14 @@ inline void p_val(const tp2cc_AnsiString& s, double& out, Code& code) {
 }
 template <int N>
 inline void p_val(const tp2cc_ShortString<N>& s, long double& out, int32_t& code) {
-  std::string buf = p_to_std_string(s);
+  std::string buf = tp2cc_to_std_string(s);
   char* end = nullptr;
   long double v = std::strtold(buf.c_str(), &end);
   if (end && *end == '\0') { out = v; code = 0; }
   else { code = static_cast<int32_t>(end - buf.c_str()) + 1; }
 }
 inline void p_val(const tp2cc_AnsiString& s, long double& out, int32_t& code) {
-  std::string buf = p_to_std_string(s);
+  std::string buf = tp2cc_to_std_string(s);
   char* end = nullptr;
   long double v = std::strtold(buf.c_str(), &end);
   if (end && *end == '\0') { out = v; code = 0; }
@@ -4660,7 +4660,7 @@ inline tp2cc_ShortString<> p_octstr(Int value, int width) {
 }
 
 inline p_char p_upcase(p_char c) {
-  uint8_t b = p_char_byte(c);
+  uint8_t b = tp2cc_char_byte(c);
   if (b >= 'a' && b <= 'z') b = static_cast<uint8_t>(b - 32);
   return tp2cc_char_of(b);
 }
@@ -4682,120 +4682,120 @@ inline tp2cc_AnsiString p_upcase(const tp2cc_AnsiString& s) {
 
 // Single-value writers to stdout.
 template <int N>
-inline void p_write_one(const tp2cc_ShortString<N>& s) {
-  for (int i = 0; i < s.length; ++i) std::fputc(p_char_to_c(s.data[i]), stdout);
+inline void tp2cc_write_one(const tp2cc_ShortString<N>& s) {
+  for (int i = 0; i < s.length; ++i) std::fputc(tp2cc_char_to_c(s.data[i]), stdout);
 }
-inline void p_write_one(const tp2cc_AnsiString& s) {
-  for (int i = 0; i < s.length(); ++i) std::fputc(p_char_to_c(s.data[i]), stdout);
+inline void tp2cc_write_one(const tp2cc_AnsiString& s) {
+  for (int i = 0; i < s.length(); ++i) std::fputc(tp2cc_char_to_c(s.data[i]), stdout);
 }
-inline void p_write_one(const char* s)    { if (s) std::fputs(s, stdout); }
-inline void p_write_one(const p_char* s)  { if (s) std::fputs(p_c_str(s), stdout); }
-inline void p_write_one(p_char* s)        { p_write_one(const_cast<const p_char*>(s)); }
-inline void p_write_one(int32_t v)        { std::fprintf(stdout, "%d", v); }
-inline void p_write_one(uint32_t v)       { std::fprintf(stdout, "%u", v); }
-inline void p_write_one(int64_t v)        { std::fprintf(stdout, "%lld", (long long)v); }
-inline void p_write_one(uint64_t v)       { std::fprintf(stdout, "%llu", (unsigned long long)v); }
-inline void p_write_one(double v)         { std::fprintf(stdout, "%g", v); }
-inline void p_write_one(long double v)    { std::fprintf(stdout, "%Lg", v); }
-inline void p_write_one(p_char c)         { std::fputc(p_char_to_c(c), stdout); }
-inline void p_write_one(bool b)           { std::fputs(b ? "TRUE" : "FALSE", stdout); }
-inline void p_write_one(const tp2cc_TextFile&)  {}  // first arg of `write(f, ...)`
-template <typename T> inline void p_write_one(T* p) {
+inline void tp2cc_write_one(const char* s)    { if (s) std::fputs(s, stdout); }
+inline void tp2cc_write_one(const p_char* s)  { if (s) std::fputs(tp2cc_c_str(s), stdout); }
+inline void tp2cc_write_one(p_char* s)        { tp2cc_write_one(const_cast<const p_char*>(s)); }
+inline void tp2cc_write_one(int32_t v)        { std::fprintf(stdout, "%d", v); }
+inline void tp2cc_write_one(uint32_t v)       { std::fprintf(stdout, "%u", v); }
+inline void tp2cc_write_one(int64_t v)        { std::fprintf(stdout, "%lld", (long long)v); }
+inline void tp2cc_write_one(uint64_t v)       { std::fprintf(stdout, "%llu", (unsigned long long)v); }
+inline void tp2cc_write_one(double v)         { std::fprintf(stdout, "%g", v); }
+inline void tp2cc_write_one(long double v)    { std::fprintf(stdout, "%Lg", v); }
+inline void tp2cc_write_one(p_char c)         { std::fputc(tp2cc_char_to_c(c), stdout); }
+inline void tp2cc_write_one(bool b)           { std::fputs(b ? "TRUE" : "FALSE", stdout); }
+inline void tp2cc_write_one(const tp2cc_TextFile&)  {}  // first arg of `write(f, ...)`
+template <typename T> inline void tp2cc_write_one(T* p) {
   std::fprintf(stdout, "%p", (void*)p);
 }
 
 template <int N>
-inline void p_write_file_one(std::FILE* out, const tp2cc_ShortString<N>& s) {
+inline void tp2cc_write_file_one(std::FILE* out, const tp2cc_ShortString<N>& s) {
   if (!out) return;
-  for (int i = 0; i < s.length; ++i) std::fputc(p_char_to_c(s.data[i]), out);
+  for (int i = 0; i < s.length; ++i) std::fputc(tp2cc_char_to_c(s.data[i]), out);
 }
-inline void p_write_file_one(std::FILE* out, const tp2cc_AnsiString& s) {
+inline void tp2cc_write_file_one(std::FILE* out, const tp2cc_AnsiString& s) {
   if (!out) return;
-  for (int i = 0; i < s.length(); ++i) std::fputc(p_char_to_c(s.data[i]), out);
+  for (int i = 0; i < s.length(); ++i) std::fputc(tp2cc_char_to_c(s.data[i]), out);
 }
-inline void p_write_file_one(std::FILE* out, const char* s) {
+inline void tp2cc_write_file_one(std::FILE* out, const char* s) {
   if (out && s) std::fputs(s, out);
 }
-inline void p_write_file_one(std::FILE* out, const p_char* s) {
-  if (out && s) std::fputs(p_c_str(s), out);
+inline void tp2cc_write_file_one(std::FILE* out, const p_char* s) {
+  if (out && s) std::fputs(tp2cc_c_str(s), out);
 }
-inline void p_write_file_one(std::FILE* out, p_char* s) {
-  p_write_file_one(out, const_cast<const p_char*>(s));
+inline void tp2cc_write_file_one(std::FILE* out, p_char* s) {
+  tp2cc_write_file_one(out, const_cast<const p_char*>(s));
 }
-inline void p_write_file_one(std::FILE* out, int32_t v) {
+inline void tp2cc_write_file_one(std::FILE* out, int32_t v) {
   if (out) std::fprintf(out, "%d", v);
 }
-inline void p_write_file_one(std::FILE* out, uint32_t v) {
+inline void tp2cc_write_file_one(std::FILE* out, uint32_t v) {
   if (out) std::fprintf(out, "%u", v);
 }
-inline void p_write_file_one(std::FILE* out, int64_t v) {
+inline void tp2cc_write_file_one(std::FILE* out, int64_t v) {
   if (out) std::fprintf(out, "%lld", (long long)v);
 }
-inline void p_write_file_one(std::FILE* out, uint64_t v) {
+inline void tp2cc_write_file_one(std::FILE* out, uint64_t v) {
   if (out) std::fprintf(out, "%llu", (unsigned long long)v);
 }
-inline void p_write_file_one(std::FILE* out, double v) {
+inline void tp2cc_write_file_one(std::FILE* out, double v) {
   if (out) std::fprintf(out, "%g", v);
 }
-inline void p_write_file_one(std::FILE* out, long double v) {
+inline void tp2cc_write_file_one(std::FILE* out, long double v) {
   if (out) std::fprintf(out, "%Lg", v);
 }
-inline void p_write_file_one(std::FILE* out, p_char c) {
-  if (out) std::fputc(p_char_to_c(c), out);
+inline void tp2cc_write_file_one(std::FILE* out, p_char c) {
+  if (out) std::fputc(tp2cc_char_to_c(c), out);
 }
-inline void p_write_file_one(std::FILE* out, bool b) {
+inline void tp2cc_write_file_one(std::FILE* out, bool b) {
   if (out) std::fputs(b ? "TRUE" : "FALSE", out);
 }
-inline void p_write_file_one(std::FILE*, const tp2cc_TextFile&) {}
+inline void tp2cc_write_file_one(std::FILE*, const tp2cc_TextFile&) {}
 template <typename T>
-inline void p_write_file_one(std::FILE* out, T* p) {
+inline void tp2cc_write_file_one(std::FILE* out, T* p) {
   if (out) std::fprintf(out, "%p", (void*)p);
 }
 
 // Variadic write / writeln -- Pascal `write(a, b, c)` and
-// `writeln(f, a, b, c)`. Every arg is emitted via p_write_one.
+// `writeln(f, a, b, c)`. Every arg is emitted via tp2cc_write_one.
 template <typename... Args>
 inline void p_write(Args&&... args) {
-  (p_write_one(std::forward<Args>(args)), ...);
+  (tp2cc_write_one(std::forward<Args>(args)), ...);
 }
 template <typename... Args>
 inline void p_writeln(Args&&... args) {
-  (p_write_one(std::forward<Args>(args)), ...);
+  (tp2cc_write_one(std::forward<Args>(args)), ...);
   std::fputc('\n', stdout);
 }
 template <typename... Args>
 inline void p_write(tp2cc_TextFile& f, Args&&... args) {
   if (!f.f) {
-    p_set_ioresult(f, 103);
+    tp2cc_set_ioresult(f, 103);
     return;
   }
-  (p_write_file_one(f.f, std::forward<Args>(args)), ...);
-  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
+  (tp2cc_write_file_one(f.f, std::forward<Args>(args)), ...);
+  tp2cc_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
 inline void p_write(tp2cc_TextFile& f) {
   if (!f.f) {
-    p_set_ioresult(f, 103);
+    tp2cc_set_ioresult(f, 103);
     return;
   }
-  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
+  tp2cc_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
 template <typename... Args>
 inline void p_writeln(tp2cc_TextFile& f, Args&&... args) {
   if (!f.f) {
-    p_set_ioresult(f, 103);
+    tp2cc_set_ioresult(f, 103);
     return;
   }
-  (p_write_file_one(f.f, std::forward<Args>(args)), ...);
+  (tp2cc_write_file_one(f.f, std::forward<Args>(args)), ...);
   std::fputc('\n', f.f);
-  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
+  tp2cc_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
 inline void p_writeln(tp2cc_TextFile& f) {
   if (!f.f) {
-    p_set_ioresult(f, 103);
+    tp2cc_set_ioresult(f, 103);
     return;
   }
   std::fputc('\n', f.f);
-  p_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
+  tp2cc_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
 
 // --- File-IO placeholders ---------------------------------------------------
@@ -4804,7 +4804,7 @@ template <int N>
 inline void p_assign(tp2cc_TextFile& f, const tp2cc_ShortString<N>& n) {
   f.name = n;
   f.f = nullptr;
-  p_set_ioresult(f, 0);
+  tp2cc_set_ioresult(f, 0);
 }
 template <int N>
 inline void p_assign(tp2cc_TextFile& f, const tp2cc_ShortStringPtrValue<N>& n) {
@@ -4823,9 +4823,9 @@ inline void p_reset(tp2cc_TextFile& f) {
     f.f = nullptr;
   }
   char buf[260]{};
-  p_file_name_to_buf(f, buf);
+  tp2cc_file_name_to_buf(f, buf);
   f.f = std::fopen(buf, "rb");
-  p_set_ioresult(f, f.f ? 0 : 2);  // 2 = file-not-found per fpc convention
+  tp2cc_set_ioresult(f, f.f ? 0 : 2);  // 2 = file-not-found per fpc convention
 }
 inline void p_reset(tp2cc_TextFile& f, int32_t) { p_reset(f); }  // rec size form
 inline void p_rewrite(tp2cc_TextFile& f) {
@@ -4834,9 +4834,9 @@ inline void p_rewrite(tp2cc_TextFile& f) {
     f.f = nullptr;
   }
   char buf[260]{};
-  p_file_name_to_buf(f, buf);
+  tp2cc_file_name_to_buf(f, buf);
   f.f = std::fopen(buf, "wb");
-  p_set_ioresult(f, f.f ? 0 : 5);
+  tp2cc_set_ioresult(f, f.f ? 0 : 5);
 }
 inline void p_rewrite(tp2cc_TextFile& f, int32_t) { p_rewrite(f); }
 inline void p_append(tp2cc_TextFile& f) {
@@ -4845,13 +4845,13 @@ inline void p_append(tp2cc_TextFile& f) {
     f.f = nullptr;
   }
   char buf[260]{};
-  p_file_name_to_buf(f, buf);
+  tp2cc_file_name_to_buf(f, buf);
   f.f = std::fopen(buf, "ab");
-  p_set_ioresult(f, f.f ? 0 : 5);
+  tp2cc_set_ioresult(f, f.f ? 0 : 5);
 }
 inline void p_close(tp2cc_TextFile& f) {
   if (f.f) { std::fclose(f.f); f.f = nullptr; }
-  p_set_ioresult(f, 0);
+  tp2cc_set_ioresult(f, 0);
 }
 inline bool p_eof(tp2cc_TextFile& f) {
   if (!f.f) return true;
@@ -4867,7 +4867,7 @@ template <typename T>
 inline void p_assign(tp2cc_TypedFile<T>& f, const tp2cc_ShortString<>& n) {
   f.name = n;
   f.f = nullptr;
-  p_set_ioresult(f, 0);
+  tp2cc_set_ioresult(f, 0);
 }
 template <typename T, int N>
 inline void p_assign(tp2cc_TypedFile<T>& f, const tp2cc_ShortStringPtrValue<N>& n) {
@@ -4888,9 +4888,9 @@ inline void p_reset(tp2cc_TypedFile<T>& f) {
     f.f = nullptr;
   }
   char buf[260]{};
-  p_file_name_to_buf(f, buf);
+  tp2cc_file_name_to_buf(f, buf);
   f.f = std::fopen(buf, "rb");
-  p_set_ioresult(f, f.f ? 0 : 2);
+  tp2cc_set_ioresult(f, f.f ? 0 : 2);
 }
 template <typename T> inline void p_reset(tp2cc_TypedFile<T>& f, int32_t) { p_reset(f); }
 template <typename T>
@@ -4900,9 +4900,9 @@ inline void p_rewrite(tp2cc_TypedFile<T>& f) {
     f.f = nullptr;
   }
   char buf[260]{};
-  p_file_name_to_buf(f, buf);
+  tp2cc_file_name_to_buf(f, buf);
   f.f = std::fopen(buf, "wb");
-  p_set_ioresult(f, f.f ? 0 : 5);
+  tp2cc_set_ioresult(f, f.f ? 0 : 5);
 }
 template <typename T> inline void p_rewrite(tp2cc_TypedFile<T>& f, int32_t) { p_rewrite(f); }
 template <typename T>
@@ -4912,14 +4912,14 @@ inline void p_append(tp2cc_TypedFile<T>& f) {
     f.f = nullptr;
   }
   char buf[260]{};
-  p_file_name_to_buf(f, buf);
+  tp2cc_file_name_to_buf(f, buf);
   f.f = std::fopen(buf, "ab");
-  p_set_ioresult(f, f.f ? 0 : 5);
+  tp2cc_set_ioresult(f, f.f ? 0 : 5);
 }
 template <typename T>
 inline void p_close(tp2cc_TypedFile<T>& f) {
   if (f.f) { std::fclose(f.f); f.f = nullptr; }
-  p_set_ioresult(f, 0);
+  tp2cc_set_ioresult(f, 0);
 }
 template <typename T>
 inline bool p_eof(const tp2cc_TypedFile<T>& f) {
@@ -4934,7 +4934,7 @@ inline bool p_eof(const tp2cc_TypedFile<T>& f) {
 
 template <int N>
 inline void p_val(const tp2cc_ShortString<N>& s, int32_t& out, int32_t& code) {
-  p_parse_pascal_integer(p_to_std_string(s), out, code);
+  tp2cc_parse_pascal_integer(tp2cc_to_std_string(s), out, code);
 }
 template <int N, typename UInt>
 requires (std::is_integral_v<UInt> && std::is_unsigned_v<UInt> &&
@@ -4945,7 +4945,7 @@ inline void p_val(const tp2cc_ShortString<N>& s, UInt& out, int32_t& code) {
   using ParseUInt =
       std::conditional_t<(sizeof(UInt) <= sizeof(uint32_t)), uint32_t, uint64_t>;
   ParseUInt parsed = 0;
-  p_parse_pascal_integer(p_to_std_string(s), parsed, code);
+  tp2cc_parse_pascal_integer(tp2cc_to_std_string(s), parsed, code);
   if (code != 0 ||
       parsed > static_cast<ParseUInt>(std::numeric_limits<UInt>::max())) {
     out = 0;
@@ -4955,7 +4955,7 @@ inline void p_val(const tp2cc_ShortString<N>& s, UInt& out, int32_t& code) {
   out = static_cast<UInt>(parsed);
 }
 inline void p_val(const tp2cc_AnsiString& s, int32_t& out, int32_t& code) {
-  p_parse_pascal_integer(p_to_std_string(s), out, code);
+  tp2cc_parse_pascal_integer(tp2cc_to_std_string(s), out, code);
 }
 template <int N>
 inline void p_str(int32_t v, tp2cc_ShortString<N>& out) {
@@ -5134,7 +5134,7 @@ inline p_char* p_strnew(const char* s) {
 inline p_char* p_strnew(const p_char* s) {
   if (!s) return nullptr;
   std::size_t n = 0;
-  while (p_char_byte(s[n]) != 0) ++n;
+  while (tp2cc_char_byte(s[n]) != 0) ++n;
   auto* out = static_cast<p_char*>(std::malloc((n + 1) * sizeof(p_char)));
   if (!out) return nullptr;
   for (std::size_t i = 0; i <= n; ++i) out[i] = s[i];
@@ -5146,7 +5146,7 @@ inline void p_strdispose(p_char*& p) {
   p = nullptr;
 }
 inline bool p_chmod(const tp2cc_ShortString<>& path, int32_t newmode) {
-  return ::chmod(p_to_std_string(path).c_str(),
+  return ::chmod(tp2cc_to_std_string(path).c_str(),
                  static_cast<mode_t>(newmode)) == 0;
 }
 inline void p_gettime(uint16_t& hour, uint16_t& minute, uint16_t& second,
@@ -5228,11 +5228,11 @@ inline constexpr p_char p_pathseparator = tp2cc_char_of(':');
 // in that case.
 template <typename Str>
 inline tp2cc_AnsiString p_includetrailingpathdelimiter(const Str& input) {
-  std::string s = p_to_std_string(input);
-  if (s.empty() || s.back() == p_char_to_c(p_directoryseparator)) {
+  std::string s = tp2cc_to_std_string(input);
+  if (s.empty() || s.back() == tp2cc_char_to_c(p_directoryseparator)) {
     return tp2cc_ansistring_of(s.c_str());
   }
-  s.push_back(p_char_to_c(p_directoryseparator));
+  s.push_back(tp2cc_char_to_c(p_directoryseparator));
   return tp2cc_ansistring_of(s.c_str());
 }
 // `set of char` so cross-platform path code can recognise foreign
@@ -5245,10 +5245,10 @@ inline int32_t p_moduleindex = 0;
 template <int N, int M>
 inline void p_exec(const tp2cc_ShortString<N>& command, const tp2cc_ShortString<M>& para) {
   std::vector<std::string> args;
-  args.push_back(p_to_std_string(command));
-  auto rest = p_split_commandline(p_to_std_string(para));
+  args.push_back(tp2cc_to_std_string(command));
+  auto rest = tp2cc_split_commandline(tp2cc_to_std_string(para));
   args.insert(args.end(), rest.begin(), rest.end());
-  p_spawn_process(args);
+  tp2cc_spawn_process(args);
 }
 // Pascal `include(set, elem)` / `exclude(set, elem)` add/remove a
 // single element. Not stubs -- these are real Pascal set builtins.
@@ -5263,9 +5263,9 @@ inline void p_exclude(tp2cc_Set<E1>& s, E2 v) {
 }
 
 inline void p_popen(tp2cc_TextFile& f, const tp2cc_ShortString<>& cmd, p_char mode) {
-  char m[2] = {static_cast<char>(std::tolower(p_char_to_c(mode))), '\0'};
-  f.f = ::popen(p_to_std_string(cmd).c_str(), m);
-  p_set_ioresult(f, f.f ? 0 : 5);
+  char m[2] = {static_cast<char>(std::tolower(tp2cc_char_to_c(mode))), '\0'};
+  f.f = ::popen(tp2cc_to_std_string(cmd).c_str(), m);
+  tp2cc_set_ioresult(f, f.f ? 0 : 5);
 }
 inline void p_popen(tp2cc_TextFile& f, const tp2cc_ShortString<>& cmd, char mode) {
   p_popen(f, cmd, tp2cc_char_of(mode));
@@ -5282,7 +5282,7 @@ inline int32_t p_pclose(tp2cc_TextFile& f) {
     rc = ::pclose(f.f);
     f.f = nullptr;
   }
-  p_set_ioresult(f, rc == -1 ? errno : 0);
+  tp2cc_set_ioresult(f, rc == -1 ? errno : 0);
   return static_cast<int32_t>(rc);
 }
 template <typename F>
@@ -5352,7 +5352,7 @@ using p_stat = LinuxStat;
 template <int N>
 inline bool p_fstat(const tp2cc_ShortString<N>& path, p_stat& info) {
   struct stat st{};
-  if (::stat(p_to_std_string(path).c_str(), &st) != 0) return false;
+  if (::stat(tp2cc_to_std_string(path).c_str(), &st) != 0) return false;
   info.p_mtime = static_cast<int32_t>(st.st_mtime);
   info.p_mode = static_cast<int32_t>(st.st_mode);
   info.p_size = static_cast<int32_t>(st.st_size > INT32_MAX ? INT32_MAX : st.st_size);
@@ -5375,16 +5375,16 @@ inline bool p_fstat(const File& f, p_stat& info) {
 // both `Dos.Getenv` and `Linux.Getenv` call sites.
 struct GetEnvResult {
   const char* raw;  // null-terminated env value, or nullptr if unset
-  operator const p_char*() const { return raw ? p_from_c_str_copy(raw) : nullptr; }
-  operator p_char*() const { return raw ? p_from_c_str_copy(raw) : nullptr; }
+  operator const p_char*() const { return raw ? tp2cc_from_c_str_copy(raw) : nullptr; }
+  operator p_char*() const { return raw ? tp2cc_from_c_str_copy(raw) : nullptr; }
   operator tp2cc_ShortString<>() const {
     return raw ? tp2cc_shortstring_of<>(raw) : tp2cc_shortstring_of<>("");
   }
 };
-inline int32_t p_string_length(const GetEnvResult& s) {
+inline int32_t tp2cc_string_length(const GetEnvResult& s) {
   return s.raw ? static_cast<int32_t>(std::strlen(s.raw)) : 0;
 }
-inline const p_char* p_string_bytes(const GetEnvResult& s) {
+inline const p_char* tp2cc_string_bytes(const GetEnvResult& s) {
   return reinterpret_cast<const p_char*>(s.raw ? s.raw : "");
 }
 template <int N>
@@ -5398,7 +5398,7 @@ inline auto operator+(const GetEnvResult& a, const tp2cc_ShortString<N>& b) {
 inline GetEnvResult p_getenv(const tp2cc_ShortString<>& name) {
   char buf[260]{};
   int n = name.length < 255 ? name.length : 255;
-  for (int i = 0; i < n; ++i) buf[i] = p_char_to_c(name.data[i]);
+  for (int i = 0; i < n; ++i) buf[i] = tp2cc_char_to_c(name.data[i]);
   return {std::getenv(buf)};
 }
 // `baseunix.fpgetenv` is plain libc getenv returning pchar. Compiler
@@ -5407,10 +5407,10 @@ inline GetEnvResult p_getenv(const tp2cc_ShortString<>& name) {
 inline p_char* p_fpgetenv(const tp2cc_ShortString<>& name) {
   char buf[260]{};
   int n = name.length < 255 ? name.length : 255;
-  for (int i = 0; i < n; ++i) buf[i] = p_char_to_c(name.data[i]);
+  for (int i = 0; i < n; ++i) buf[i] = tp2cc_char_to_c(name.data[i]);
   buf[n] = '\0';
   const char* v = std::getenv(buf);
-  return v ? p_from_c_str_copy(v) : nullptr;
+  return v ? tp2cc_from_c_str_copy(v) : nullptr;
 }
 inline p_char* p_fpgetenv(p_char* name) {
   return p_fpgetenv(tp2cc_shortstring_of<>(name));
@@ -5422,7 +5422,7 @@ inline p_char* p_fpgetenv(const p_char* name) {
 // failure with errno). Mirror that, distinct from rt::p_chmod which
 // returns a boolean.
 inline int32_t p_fpchmod(const tp2cc_ShortString<>& path, int32_t mode) {
-  return ::chmod(p_to_std_string(path).c_str(),
+  return ::chmod(tp2cc_to_std_string(path).c_str(),
                  static_cast<mode_t>(mode));
 }
 inline int32_t p_fpchmod(const tp2cc_AnsiString& path, int32_t mode) {
@@ -5441,8 +5441,8 @@ template <int N>
 inline int32_t p_shell(const tp2cc_ShortString<N>& cmd) {
   // Resolve `sh` via PATH so this keeps working in build chroots that
   // intentionally do not provide a `/bin/sh` path.
-  p_spawn_process({"sh", "-c", p_to_std_string(cmd)});
-  return p_last_dosexitcode;
+  tp2cc_spawn_process({"sh", "-c", tp2cc_to_std_string(cmd)});
+  return tp2cc_last_dosexitcode;
 }
 // `unix.fpsystem` is system(3); compiler/globals.pas exposes it as
 // the `Shell` helper. Reuse the rt::p_shell defined just above which
@@ -5454,7 +5454,7 @@ inline int32_t p_fpsystem(const tp2cc_ShortString<N>& cmd) {
 inline int32_t p_fpsystem(const tp2cc_AnsiString& cmd) {
   return p_shell(static_cast<tp2cc_ShortString<>>(cmd));
 }
-inline int32_t p_dosexitcode() { return p_last_dosexitcode; }
+inline int32_t p_dosexitcode() { return tp2cc_last_dosexitcode; }
 // Used by fpc 1.0.6 as an existence check for the drive.
 inline int32_t p_disksize(uint8_t drive_number) {
   struct statvfs st{};
@@ -5482,7 +5482,7 @@ template <typename S, typename N, typename Code,
                                       !std::is_same_v<Code, bool>>>
 inline void p_val(const S& s, N& n, Code& code) {
   int32_t parsed_code = 0;
-  p_parse_pascal_integer(p_to_std_string(s), n, parsed_code);
+  tp2cc_parse_pascal_integer(tp2cc_to_std_string(s), n, parsed_code);
   code = static_cast<Code>(parsed_code);
 }
 

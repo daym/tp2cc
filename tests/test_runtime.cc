@@ -120,26 +120,26 @@ void test_bootstrap_pointer_sized_aliases_are_32bit() {
 void test_runtime_path_helpers_match_compiler_expectations() {
   const auto path = tp2cc_ansistring_of("/tmp/archive.tar.gz");
 
-  CHECK_EQ(p_to_std_string(p_extractfilepath(path)), std::string("/tmp/"));
-  CHECK_EQ(p_to_std_string(p_extractfiledir(path)), std::string("/tmp"));
-  CHECK_EQ(p_to_std_string(p_extractfiledir(tp2cc_ansistring_of("/foo.txt"))),
+  CHECK_EQ(tp2cc_to_std_string(p_extractfilepath(path)), std::string("/tmp/"));
+  CHECK_EQ(tp2cc_to_std_string(p_extractfiledir(path)), std::string("/tmp"));
+  CHECK_EQ(tp2cc_to_std_string(p_extractfiledir(tp2cc_ansistring_of("/foo.txt"))),
            std::string("/"));
-  CHECK_EQ(p_to_std_string(p_extractfiledir(tp2cc_ansistring_of("foo.txt"))),
+  CHECK_EQ(tp2cc_to_std_string(p_extractfiledir(tp2cc_ansistring_of("foo.txt"))),
            std::string(""));
-  CHECK_EQ(p_to_std_string(p_extractfilename(path)), std::string("archive.tar.gz"));
-  CHECK_EQ(p_to_std_string(p_extractfileext(path)), std::string(".gz"));
-  CHECK_EQ(p_to_std_string(p_changefileext(path, tp2cc_ansistring_of(".o"))),
+  CHECK_EQ(tp2cc_to_std_string(p_extractfilename(path)), std::string("archive.tar.gz"));
+  CHECK_EQ(tp2cc_to_std_string(p_extractfileext(path)), std::string(".gz"));
+  CHECK_EQ(tp2cc_to_std_string(p_changefileext(path, tp2cc_ansistring_of(".o"))),
            std::string("/tmp/archive.tar.o"));
 
   // IncludeTrailingPathDelimiter appends `/` only when missing. Empty
   // input round-trips to empty per Pascal's sysutils contract.
-  CHECK_EQ(p_to_std_string(p_includetrailingpathdelimiter(
+  CHECK_EQ(tp2cc_to_std_string(p_includetrailingpathdelimiter(
                 tp2cc_ansistring_of("/tmp"))),
            std::string("/tmp/"));
-  CHECK_EQ(p_to_std_string(p_includetrailingpathdelimiter(
+  CHECK_EQ(tp2cc_to_std_string(p_includetrailingpathdelimiter(
                 tp2cc_ansistring_of("/tmp/"))),
            std::string("/tmp/"));
-  CHECK_EQ(p_to_std_string(p_includetrailingpathdelimiter(
+  CHECK_EQ(tp2cc_to_std_string(p_includetrailingpathdelimiter(
                 tp2cc_ansistring_of(""))),
            std::string(""));
 }
@@ -220,7 +220,7 @@ void test_runtime_swap_fill_and_compare_helpers() {
   const auto s2 = tp2cc_shortstring_of<>("abd");
   CHECK(p_comparechar(s1[1], s2[1], 2) < 0);
   CHECK_EQ(p_indexbyte("abc\0", 4, static_cast<uint8_t>('c')), 2);
-  CHECK_EQ(p_to_std_string(p_stringofchar(tp2cc_char_of('x'), 3)), std::string("xxx"));
+  CHECK_EQ(tp2cc_to_std_string(p_stringofchar(tp2cc_char_of('x'), 3)), std::string("xxx"));
   CHECK_EQ(p_ansicomparefilename("/tmp/a", "/tmp/a"), 0);
 }
 
@@ -274,16 +274,16 @@ void test_shortstring_pointer_deref_interoperates_with_string_ops() {
   tp2cc_shortstring_assign(tp2cc_deref(lhs), foo);
   tp2cc_shortstring_assign(tp2cc_deref(rhs), bar);
 
-  CHECK_EQ(p_to_std_string(foo + tp2cc_deref(rhs)), std::string("foobar"));
-  CHECK_EQ(p_to_std_string(tp2cc_deref(lhs) + tp2cc_deref(rhs)),
+  CHECK_EQ(tp2cc_to_std_string(foo + tp2cc_deref(rhs)), std::string("foobar"));
+  CHECK_EQ(tp2cc_to_std_string(tp2cc_deref(lhs) + tp2cc_deref(rhs)),
            std::string("foobar"));
   CHECK(tp2cc_deref(lhs) < zoo);
   CHECK(zoo > tp2cc_deref(rhs));
-  CHECK_EQ(p_to_std_string(p_copy(tp2cc_deref(lhs), 2, 2)), std::string("oo"));
+  CHECK_EQ(tp2cc_to_std_string(p_copy(tp2cc_deref(lhs), 2, 2)), std::string("oo"));
   CHECK_EQ(p_pos(tp2cc_shortstring_of<>("ar"), tp2cc_deref(rhs)), 2);
 
   p_assign(f, tp2cc_deref(lhs));
-  CHECK_EQ(p_to_std_string(f.name), std::string("foo"));
+  CHECK_EQ(tp2cc_to_std_string(f.name), std::string("foo"));
 
   p_freemem(lhs, p_length(tp2cc_deref(lhs)) + 1);
   p_freemem(rhs, p_length(tp2cc_deref(rhs)) + 1);
@@ -326,8 +326,8 @@ void test_ansistring_copy_on_write_preserves_original() {
 
   copy[1] = tp2cc_char_of('z');
 
-  CHECK_EQ(p_to_std_string(original), std::string("abc"));
-  CHECK_EQ(p_to_std_string(copy), std::string("zbc"));
+  CHECK_EQ(tp2cc_to_std_string(original), std::string("abc"));
+  CHECK_EQ(tp2cc_to_std_string(copy), std::string("zbc"));
 }
 
 void test_ansistring_index_proxy_has_byte_cast_like_shortstring() {
@@ -403,13 +403,13 @@ void test_ansistring_setlength_and_insert_delete_keep_bytes_stable() {
   static_cast<p_char*>(slot)[3] = tp2cc_char_of('d');
 
   CHECK_EQ(p_length(s), 4);
-  CHECK_EQ(p_to_std_string(s), std::string("abcd"));
+  CHECK_EQ(tp2cc_to_std_string(s), std::string("abcd"));
 
   p_delete(s, 2, 2);
-  CHECK_EQ(p_to_std_string(s), std::string("ad"));
+  CHECK_EQ(tp2cc_to_std_string(s), std::string("ad"));
 
   p_insert(tp2cc_shortstring_of<>("bc"), s, 2);
-  CHECK_EQ(p_to_std_string(s), std::string("abcd"));
+  CHECK_EQ(tp2cc_to_std_string(s), std::string("abcd"));
 }
 
 void test_ansistring_compares_equal_to_single_char_pascal_style() {
@@ -433,27 +433,27 @@ void test_ansistring_converts_to_shortstring_with_pascal_truncation() {
   tp2cc_AnsiString s = tp2cc_ansistring_of("abcdef");
   auto shorty = static_cast<tp2cc_ShortString<4>>(s);
 
-  CHECK_EQ(p_to_std_string(shorty), std::string("abcd"));
+  CHECK_EQ(tp2cc_to_std_string(shorty), std::string("abcd"));
 }
 
 void test_shortstring_char_concat_grows_capacity() {
   auto label = tp2cc_shortstring_of<2>(".L") + tp2cc_char_of('e') + tp2cc_char_of('0');
-  CHECK_EQ(p_to_std_string(label), std::string(".Le0"));
+  CHECK_EQ(tp2cc_to_std_string(label), std::string(".Le0"));
 }
 
 void test_shortstring_single_nul_char_keeps_length_one() {
   tp2cc_ShortString<> s = tp2cc_shortstring_of<>(tp2cc_char_of('\0'));
 
   CHECK_EQ(p_length(s), 1);
-  CHECK_EQ(p_char_byte(s.data[0]), 0);
+  CHECK_EQ(tp2cc_char_byte(s.data[0]), 0);
 }
 
 void test_shortstring_nul_char_concat_preserves_embedded_zero() {
   auto s = tp2cc_shortstring_of<>(tp2cc_char_of('\0')) + tp2cc_char_of('A');
 
   CHECK_EQ(p_length(s), 2);
-  CHECK_EQ(p_char_byte(s.data[0]), 0);
-  CHECK_EQ(p_char_byte(s.data[1]), static_cast<uint8_t>('A'));
+  CHECK_EQ(tp2cc_char_byte(s.data[0]), 0);
+  CHECK_EQ(tp2cc_char_byte(s.data[1]), static_cast<uint8_t>('A'));
 }
 
 void test_shortstring_literal_helper_preserves_embedded_nuls() {
@@ -463,13 +463,13 @@ void test_shortstring_literal_helper_preserves_embedded_nuls() {
                                       tp2cc_char_of('\0'));
 
   CHECK_EQ(p_length(s), 7);
-  CHECK_EQ(p_char_byte(s.data[0]), 0x8d);
-  CHECK_EQ(p_char_byte(s.data[1]), 0xb4);
-  CHECK_EQ(p_char_byte(s.data[2]), static_cast<uint8_t>('&'));
-  CHECK_EQ(p_char_byte(s.data[3]), 0);
-  CHECK_EQ(p_char_byte(s.data[4]), 0);
-  CHECK_EQ(p_char_byte(s.data[5]), 0);
-  CHECK_EQ(p_char_byte(s.data[6]), 0);
+  CHECK_EQ(tp2cc_char_byte(s.data[0]), 0x8d);
+  CHECK_EQ(tp2cc_char_byte(s.data[1]), 0xb4);
+  CHECK_EQ(tp2cc_char_byte(s.data[2]), static_cast<uint8_t>('&'));
+  CHECK_EQ(tp2cc_char_byte(s.data[3]), 0);
+  CHECK_EQ(tp2cc_char_byte(s.data[4]), 0);
+  CHECK_EQ(tp2cc_char_byte(s.data[5]), 0);
+  CHECK_EQ(tp2cc_char_byte(s.data[6]), 0);
 }
 
 void test_shortstring_implicitly_converts_between_capacities() {
@@ -477,8 +477,8 @@ void test_shortstring_implicitly_converts_between_capacities() {
   tp2cc_ShortString<> wide = small;
   tp2cc_ShortString<2> narrow = wide;
 
-  CHECK_EQ(p_to_std_string(wide), std::string("abcd"));
-  CHECK_EQ(p_to_std_string(narrow), std::string("ab"));
+  CHECK_EQ(tp2cc_to_std_string(wide), std::string("abcd"));
+  CHECK_EQ(tp2cc_to_std_string(narrow), std::string("ab"));
 }
 
 void test_shortstring_implicitly_converts_to_ansistring() {
@@ -486,17 +486,17 @@ void test_shortstring_implicitly_converts_to_ansistring() {
   tp2cc_AnsiString text = shorty;
 
   CHECK_EQ(text.length(), 3);
-  CHECK_EQ(p_char_byte(text.bytes()[0]), static_cast<uint8_t>('a'));
-  CHECK_EQ(p_char_byte(text.bytes()[1]), static_cast<uint8_t>('b'));
-  CHECK_EQ(p_char_byte(text.bytes()[2]), static_cast<uint8_t>('c'));
-  CHECK_EQ(p_char_byte(text.bytes()[3]), 0);
+  CHECK_EQ(tp2cc_char_byte(text.bytes()[0]), static_cast<uint8_t>('a'));
+  CHECK_EQ(tp2cc_char_byte(text.bytes()[1]), static_cast<uint8_t>('b'));
+  CHECK_EQ(tp2cc_char_byte(text.bytes()[2]), static_cast<uint8_t>('c'));
+  CHECK_EQ(tp2cc_char_byte(text.bytes()[3]), 0);
 }
 
 void test_shortstring_assign_from_char_creates_one_character_string() {
   tp2cc_ShortString<> s{};
   s = tp2cc_char_of('.');
 
-  CHECK_EQ(p_to_std_string(s), std::string("."));
+  CHECK_EQ(tp2cc_to_std_string(s), std::string("."));
 }
 
 void test_strpas_returns_shortstring_up_to_first_nul() {
@@ -504,7 +504,7 @@ void test_strpas_returns_shortstring_up_to_first_nul() {
                         tp2cc_char_of('C'), tp2cc_char_of('\0')};
   tp2cc_ShortString<> s = p_strpas(raw);
 
-  CHECK_EQ(p_to_std_string(s), std::string("AB"));
+  CHECK_EQ(tp2cc_to_std_string(s), std::string("AB"));
 }
 
 void test_ansistring_from_shortstring_keeps_trailing_nul_storage() {
@@ -513,24 +513,24 @@ void test_ansistring_from_shortstring_keeps_trailing_nul_storage() {
                                  tp2cc_char_of('B')));
 
   CHECK_EQ(s.length(), 3);
-  CHECK_EQ(p_char_byte(s.bytes()[0]), static_cast<uint8_t>('A'));
-  CHECK_EQ(p_char_byte(s.bytes()[1]), 0);
-  CHECK_EQ(p_char_byte(s.bytes()[2]), static_cast<uint8_t>('B'));
-  CHECK_EQ(p_char_byte(s.bytes()[3]), 0);
+  CHECK_EQ(tp2cc_char_byte(s.bytes()[0]), static_cast<uint8_t>('A'));
+  CHECK_EQ(tp2cc_char_byte(s.bytes()[1]), 0);
+  CHECK_EQ(tp2cc_char_byte(s.bytes()[2]), static_cast<uint8_t>('B'));
+  CHECK_EQ(tp2cc_char_byte(s.bytes()[3]), 0);
 }
 
 void test_shortstring_charref_inc_and_dec_update_length_slot_storage() {
   tp2cc_ShortString<> s = tp2cc_shortstring_of<>("A");
 
   p_inc(s[1]);
-  CHECK_EQ(p_to_std_string(s), std::string("B"));
+  CHECK_EQ(tp2cc_to_std_string(s), std::string("B"));
 
   p_dec(s[1], 1);
-  CHECK_EQ(p_to_std_string(s), std::string("A"));
+  CHECK_EQ(tp2cc_to_std_string(s), std::string("A"));
 }
 
 void test_octstr_formats_octal_with_zero_padding() {
-  CHECK_EQ(p_to_std_string(p_octstr(9, 4)), std::string("0011"));
+  CHECK_EQ(tp2cc_to_std_string(p_octstr(9, 4)), std::string("0011"));
 }
 
 void test_move_reads_from_const_shortstring_storage() {
@@ -540,7 +540,7 @@ void test_move_reads_from_const_shortstring_storage() {
   p_move(text[1], buf[0], p_length(text));
   buf[p_length(text)] = tp2cc_char_of('\0');
 
-  CHECK_EQ(p_to_std_string(static_cast<p_char*>(buf)), std::string("hello"));
+  CHECK_EQ(tp2cc_to_std_string(static_cast<p_char*>(buf)), std::string("hello"));
 }
 
 void test_shortstring_compares_equal_to_pchar_buffer() {
@@ -560,7 +560,7 @@ void test_insert_accepts_shortstring_pointer_proxy_source() {
 
   p_insert(tp2cc_deref(ptr), dest, 2);
 
-  CHECK_EQ(p_to_std_string(dest), std::string("XabY"));
+  CHECK_EQ(tp2cc_to_std_string(dest), std::string("XabY"));
 }
 
 void test_char_array_compares_equal_to_shortstring_by_live_prefix() {
@@ -577,10 +577,10 @@ void test_str_formats_real_values() {
   tp2cc_ShortString<> s;
 
   p_str(100.0, s);
-  CHECK_EQ(p_to_std_string(s), std::string(" 100"));
+  CHECK_EQ(tp2cc_to_std_string(s), std::string(" 100"));
 
   p_str(0.01, s);
-  CHECK_EQ(p_to_std_string(s), std::string(" 0.01"));
+  CHECK_EQ(tp2cc_to_std_string(s), std::string(" 0.01"));
 }
 
 void test_reinterpret_bytes_copies_raw_object_bytes() {
@@ -853,7 +853,7 @@ void test_explicit_set_cast_copies_bits() {
 
 void test_method_ptr_calls_bound_thunk() {
   MethodPtrCounter counter;
-  auto cb = p_method_ptr<void(int32_t)>(tp2cc_method_code<&method_ptr_add>(), &counter);
+  auto cb = tp2cc_method_ptr<void(int32_t)>(tp2cc_method_code<&method_ptr_add>(), &counter);
 
   CHECK(p_assigned(cb));
   cb(7);
@@ -958,10 +958,10 @@ void test_exception_create_stores_message_for_pascal_message_property() {
   // runtime stub has to actually retain the constructor argument.
   p_exception e;
   e.p_create(tp2cc_shortstring_of<>("disk full"));
-  CHECK_EQ(p_to_std_string(e.p_message), std::string("disk full"));
+  CHECK_EQ(tp2cc_to_std_string(e.p_message), std::string("disk full"));
 
   e.p_create(tp2cc_ansistring_of("permission denied"));
-  CHECK_EQ(p_to_std_string(e.p_message), std::string("permission denied"));
+  CHECK_EQ(tp2cc_to_std_string(e.p_message), std::string("permission denied"));
 }
 
 void test_exception_metaclass_accepts_concrete_root_create_thunk() {
@@ -1080,7 +1080,7 @@ void test_blockread_uses_underlying_shortstring_char_storage() {
   p_blockread(f, text[1], 3, transferred);
   CHECK_EQ(transferred, 3);
   text.length = 3;
-  CHECK_EQ(p_to_std_string(text), std::string("abc"));
+  CHECK_EQ(tp2cc_to_std_string(text), std::string("abc"));
 
   std::fclose(f.f);
   f.f = nullptr;
@@ -1089,7 +1089,7 @@ void test_blockread_uses_underlying_shortstring_char_storage() {
 void test_strnew_allocates_and_disposes_pchar() {
   p_char* text = p_strnew("hello");
   CHECK(text != nullptr);
-  CHECK_EQ(p_to_std_string(text), std::string("hello"));
+  CHECK_EQ(tp2cc_to_std_string(text), std::string("hello"));
   p_strdispose(text);
   CHECK(text == nullptr);
 }
