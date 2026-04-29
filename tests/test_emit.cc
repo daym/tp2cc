@@ -1398,13 +1398,13 @@ void test_typed_const_shortstring_literals_use_target_capacity() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "::rt::tp2cc_ShortString<::rt::p_tokenlenmax> p_emptytok = "
-                 "::rt::tp2cc_shortstring_literal<::rt::p_tokenlenmax>();"));
+                 "::rt::tp2cc_ShortString<p_tokenlenmax> p_emptytok = "
+                 "::rt::tp2cc_shortstring_literal<p_tokenlenmax>();"));
   CHECK(contains(out.header,
-                 "::rt::tp2cc_ShortString<::rt::p_tokenlenmax> p_plustok = "
-                 "::rt::tp2cc_shortstring_of<::rt::p_tokenlenmax>(::rt::tp2cc_char_of('+'));"));
+                 "::rt::tp2cc_ShortString<p_tokenlenmax> p_plustok = "
+                 "::rt::tp2cc_shortstring_of<p_tokenlenmax>(::rt::tp2cc_char_of('+'));"));
   CHECK(!contains(out.header,
-                  "::rt::tp2cc_ShortString<::rt::p_tokenlenmax> p_plustok = "
+                  "::rt::tp2cc_ShortString<p_tokenlenmax> p_plustok = "
                   "::rt::tp2cc_char_of('+');"));
 }
 
@@ -2766,6 +2766,46 @@ void test_local_var_inline_anon_enum_resolves_members() {
       "end.\n");
   CHECK(!contains(out.impl, "::rt::p_lookup"));
   CHECK(contains(out.impl, "p_mode = p_lookup"));
+}
+
+void test_unresolved_free_identifier_reports_error_without_rt_fallback() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var x : longint;\n"
+      "begin\n"
+      "  x := missing;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+  CHECK(contains(out.impl, "p_x = p_missing;"));
+  CHECK(!contains(out.impl, "::rt::p_missing"));
+}
+
+void test_runtime_math_surface_resolves_explicitly() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var r : double; l : longint;\n"
+      "begin\n"
+      "  r := abs(r) + int(pi) + sqrt(exp(ln(1.0)));\n"
+      "  l := round(sqr(r)) + trunc(arctan(r));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "::rt::p_abs("));
+  CHECK(contains(out.impl, "::rt::p_int(::rt::p_pi)"));
+  CHECK(contains(out.impl, "::rt::p_sqrt(::rt::p_exp(::rt::p_ln("));
+  CHECK(contains(out.impl, "::rt::p_round(::rt::p_sqr("));
+  CHECK(contains(out.impl, "::rt::p_trunc(::rt::p_arctan("));
 }
 
 void test_and_with_not_of_xor_short_circuits() {
@@ -5236,6 +5276,8 @@ int main() {
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
   RUN_TEST(test_local_var_inline_anon_enum_resolves_members);
+  RUN_TEST(test_unresolved_free_identifier_reports_error_without_rt_fallback);
+  RUN_TEST(test_runtime_math_surface_resolves_explicitly);
   RUN_TEST(test_and_with_not_of_xor_short_circuits);
   RUN_TEST(test_r_plus_routes_narrowing_assignment_through_range_check);
   RUN_TEST(test_q_minus_routes_signed_negate_through_wrap_helper);

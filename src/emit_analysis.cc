@@ -696,7 +696,8 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           return builtin_char_type();
         }
         if (id.name == "pchar" && c.args.size() == 1) return builtin_pchar_type();
-        if ((id.name == "succ" || id.name == "pred" || id.name == "upcase") &&
+        if ((id.name == "succ" || id.name == "pred" || id.name == "upcase" ||
+             id.name == "abs" || id.name == "sqr") &&
             c.args.size() == 1) {
           return deduce_type(*c.args[0]);
         }
@@ -716,6 +717,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           // Pascal lexical / unit visibility rules, so avoid any global
           // last-wins fallback here.
           return rr.proc->return_type.get();
+        }
+        if (!rr.return_type_name.empty()) {
+          return named_pascal_type(rr.return_type_name);
         }
       } else if (c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);

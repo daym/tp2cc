@@ -770,6 +770,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return mangle(n.name);
       }
       ResolveResult rr = resolve_name(n.name);
+      if (rr.kind == ResolvedKind::Unknown) {
+        report_error(n.loc, "unresolved identifier `" + n.name + "`");
+      }
       if (rr.kind == ResolvedKind::UnitType) {
         if (const auto* ci = class_info_for_type_name(n.name);
             ci && ci->is_reference_type) {

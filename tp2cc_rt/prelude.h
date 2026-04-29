@@ -1755,6 +1755,9 @@ struct p_tsystemtime {
 
 // signal handler (syslinux) + POSIX signal numbers used by catch.pas.
 using p_signalhandler = void (*)(int32_t);
+inline constexpr int32_t p_sig_dfl  = 0;
+inline constexpr int32_t p_sig_ign  = 1;
+inline constexpr int32_t p_sig_err  = -1;
 inline constexpr int32_t p_sighup  = 1;
 inline constexpr int32_t p_sigint  = 2;
 inline constexpr int32_t p_sigquit = 3;
@@ -3001,6 +3004,8 @@ struct SearchRec { int32_t p_time = 0; int32_t p_size = 0;
                    std::size_t p_index = 0; };
 using p_searchrec = SearchRec;
 using p_tsearchrec = SearchRec;
+inline constexpr int32_t p_fareadonly = 0x01;
+inline constexpr int32_t p_fahidden = 0x02;
 inline constexpr int32_t p_fadirectory = 0x10;
 inline constexpr int32_t p_faarchive = 0x20;
 inline void p_searchrec_fill(SearchRec& rec, const std::string& path) {
@@ -5280,6 +5285,12 @@ struct GetEnvResult {
     return raw ? tp2cc_shortstring_of<>(raw) : tp2cc_shortstring_of<>("");
   }
 };
+inline int32_t p_string_length(const GetEnvResult& s) {
+  return s.raw ? static_cast<int32_t>(std::strlen(s.raw)) : 0;
+}
+inline const p_char* p_string_bytes(const GetEnvResult& s) {
+  return reinterpret_cast<const p_char*>(s.raw ? s.raw : "");
+}
 template <int N>
 inline auto operator+(const tp2cc_ShortString<N>& a, const GetEnvResult& b) {
   return a + static_cast<tp2cc_ShortString<>>(b);

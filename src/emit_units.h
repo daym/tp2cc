@@ -40,6 +40,7 @@ class EmitUnits {
 
  private:
   void seed_unit_type_scope(const std::vector<ast::DeclPtr>& decls);
+  void seed_unit_const_scope(const std::vector<ast::DeclPtr>& decls);
   void emit_type_decl_run(const std::vector<ast::DeclPtr>& decls,
                           bool in_header);
   void emit_unit_hook(std::string_view name, const ast::StmtPtr& body);

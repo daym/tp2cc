@@ -231,6 +231,19 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   static const RtBuiltin rt_builtins[] = {
       {"assigned",   1, true,  false, "boolean"},
       {"odd",        1, true,  false, "boolean"},
+      {"ord",        1, true,  false, "longint"},
+      {"chr",        1, true,  false, "char"},
+      {"abs",        1, true,  false, ""},
+      {"sqr",        1, true,  false, ""},
+      {"sqrt",       1, true,  false, "double"},
+      {"sin",        1, true,  false, "double"},
+      {"cos",        1, true,  false, "double"},
+      {"ln",         1, true,  false, "double"},
+      {"exp",        1, true,  false, "double"},
+      {"arctan",     1, true,  false, "double"},
+      {"round",      1, true,  false, "longint"},
+      {"int",        1, true,  false, "double"},
+      {"length",     1, true,  false, "longint"},
       {"eof",        1, true,  true,  "boolean"},  // eof; or eof(f)
       {"eoln",       1, true,  true,  "boolean"},
       {"ioresult",   0, true,  false, "longint"},
@@ -246,6 +259,80 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"readln",     1, false, true,  ""},
       {"read",       1, false, true,  ""},
       {"halt",       1, false, true,  ""},
+      {"inc",        1, false, false, ""},
+      {"inc",        2, false, false, ""},
+      {"dec",        1, false, false, ""},
+      {"dec",        2, false, false, ""},
+      {"fillchar",   3, false, false, ""},
+      {"fillword",   3, false, false, ""},
+      {"move",       3, false, false, ""},
+      {"getmem",     2, false, false, ""},
+      {"freemem",    1, false, false, ""},
+      {"freemem",    2, false, false, ""},
+      {"reallocmem", 2, false, false, ""},
+      {"setlength",  2, false, false, ""},
+      {"dispose",    1, false, false, ""},
+      {"strdispose", 1, false, false, ""},
+      {"val",        3, false, false, ""},
+      {"str",        2, false, false, ""},
+      {"strlen",     1, true,  false, "longint"},
+      {"strpcopy",   2, true,  false, "pchar"},
+      {"assign",     2, false, false, ""},
+      {"reset",      1, false, false, ""},
+      {"reset",      2, false, false, ""},
+      {"rewrite",    1, false, false, ""},
+      {"rewrite",    2, false, false, ""},
+      {"close",      1, false, false, ""},
+      {"blockread",  3, false, false, ""},
+      {"blockread",  4, false, false, ""},
+      {"blockwrite", 3, false, false, ""},
+      {"blockwrite", 4, false, false, ""},
+      {"copy",       3, true,  false, "shortstring"},
+      {"delete",     3, false, false, ""},
+      {"insert",     3, false, false, ""},
+      {"pos",        2, true,  false, "longint"},
+      {"swap",       1, true,  false, "longint"},
+      {"upcase",     1, true,  false, "char"},
+      {"pred",       1, true,  false, ""},
+      {"succ",       1, true,  false, ""},
+      {"include",    2, false, false, ""},
+      {"exclude",    2, false, false, ""},
+      {"paramstr",   1, true,  false, "shortstring"},
+      {"findfirst",  3, true,  false, "longint"},
+      {"findnext",   1, true,  false, "longint"},
+      {"findclose",  1, false, false, ""},
+      {"flush",      1, false, false, ""},
+      {"erase",      1, false, false, ""},
+      {"mkdir",      1, false, false, ""},
+      {"rmdir",      1, false, false, ""},
+      {"getdir",     2, false, false, ""},
+      {"fsearch",    2, true,  false, "shortstring"},
+      {"fsplit",     4, false, false, ""},
+      {"fexpand",    1, true,  false, "shortstring"},
+      {"getftime",   2, false, false, ""},
+      {"setftime",   2, false, false, ""},
+      {"settextbuf", 2, false, false, ""},
+      {"settextbuf", 3, false, false, ""},
+      {"strpas",     1, true,  false, "shortstring"},
+      {"strcomp",    2, true,  false, "longint"},
+      {"strnew",     1, true,  false, "pchar"},
+      {"getdate",    4, false, false, ""},
+      {"gettime",    3, false, false, ""},
+      {"gettime",    4, false, false, ""},
+      {"gettime",    5, false, false, ""},
+      {"epochtolocal", 7, false, false, ""},
+      {"chmod",      2, true,  false, "boolean"},
+      {"fstat",      2, true,  false, "boolean"},
+      {"getenv",     1, true,  false, "shortstring"},
+      {"popen",      3, false, false, ""},
+      {"filepos",    1, true,  false, "longint"},
+      {"filesize",   1, true,  false, "longint"},
+      {"seek",       2, false, false, ""},
+      {"exec",       2, false, false, ""},
+      {"trunc",      1, true,  false, "longint"},
+      {"frac",       1, true,  false, "double"},
+      {"signal",     2, true,  false, "signalhandler"},
+      {"fpsignal",   2, true,  false, "signalhandler"},
       {"swapvectors",0, false, false, ""},
       {"hexstr",     1, true,  false, "shortstring"},
       {"freeandnil", 1, false, false, ""},
@@ -268,6 +355,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     rtui.iface_procs[b.name].push_back(p);
   }
   units["__rt__"] = std::move(rtui);
+  UnitInfo& rt_exports = units["__rt__"];
 
   // Register the rt-side reference classes (tobject, exception, ...) so
   // the normal class-method lookup walks Pascal's parent chain into
@@ -287,6 +375,126 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     t->name = n;
     return t;
   };
+  auto make_pointer = [](ast::TypePtr target = nullptr) {
+    auto t = std::make_shared<ast::TyPointer>();
+    t->target = std::move(target);
+    return t;
+  };
+  auto make_field = [](const std::string& name,
+                       ast::TypePtr type) {
+    ast::RecordField f;
+    f.names = {name};
+    f.type = std::move(type);
+    return f;
+  };
+  auto make_record = [](std::vector<ast::RecordField> fields) {
+    auto t = std::make_shared<ast::TyRecord>();
+    t->fields = std::move(fields);
+    return t;
+  };
+  auto make_set = [](ast::TypePtr element) {
+    auto t = std::make_shared<ast::TySet>();
+    t->element = std::move(element);
+    return t;
+  };
+  auto make_int_lit = [](int64_t value) {
+    auto e = std::make_shared<ast::IntLit>();
+    e->value = static_cast<uint64_t>(value);
+    return e;
+  };
+  auto make_neg_int_lit = [&](int64_t magnitude) {
+    auto e = std::make_shared<ast::Unary>();
+    e->op = ast::UnOp::Neg;
+    e->operand = make_int_lit(magnitude);
+    return e;
+  };
+  auto add_rt_var = [&](const std::string& name,
+                        std::shared_ptr<const ast::TypeExpr> type) {
+    VarInfo v;
+    v.defining_unit = "__rt__";
+    v.type = std::move(type);
+    rt_exports.iface_vars[lc(name)] = std::move(v);
+  };
+  auto add_rt_const = [&](const std::string& name,
+                          std::shared_ptr<const ast::TypeExpr> type,
+                          std::shared_ptr<const ast::Expr> value) {
+    ConstInfo c;
+    c.defining_unit = "__rt__";
+    c.type = std::move(type);
+    c.value = std::move(value);
+    rt_exports.iface_consts[lc(name)] = std::move(c);
+  };
+  auto add_rt_alias = [&](const std::string& name,
+                          std::shared_ptr<const ast::TypeExpr> target) {
+    std::string low = lc(name);
+    rt_exports.iface_types.insert(low);
+    AliasInfo a;
+    a.defining_unit = "__rt__";
+    a.target = std::move(target);
+    aliases[low] = std::move(a);
+  };
+
+  // Runtime globals/constants that old compiler trees refer to directly.
+  add_rt_var("doserror", make_typename("longint"));
+  add_rt_var("filemode", make_typename("longint"));
+  add_rt_var("stderr", make_typename("text"));
+  add_rt_var("output", make_typename("text"));
+  add_rt_var("input", make_typename("text"));
+  add_rt_var("exitproc", nullptr);
+  add_rt_var("erroraddr", make_typename("pointer"));
+  add_rt_var("exitcode", make_typename("longint"));
+
+  add_rt_const("sigint", make_typename("longint"), make_int_lit(2));
+  add_rt_const("sigfpe", make_typename("longint"), make_int_lit(8));
+  add_rt_const("sigsegv", make_typename("longint"), make_int_lit(11));
+  add_rt_const("sig_dfl", make_typename("longint"), make_int_lit(0));
+  add_rt_const("sig_ign", make_typename("longint"), make_int_lit(1));
+  add_rt_const("sig_err", make_typename("longint"), make_neg_int_lit(1));
+  add_rt_const("pi", make_typename("double"), nullptr);
+  add_rt_const("readonly", make_typename("longint"), make_int_lit(0x01));
+  add_rt_const("hidden", make_typename("longint"), make_int_lit(0x02));
+  add_rt_const("directory", make_typename("longint"), make_int_lit(0x10));
+  add_rt_const("archive", make_typename("longint"), make_int_lit(0x20));
+  add_rt_const("fareadonly", make_typename("longint"), make_int_lit(0x01));
+  add_rt_const("fahidden", make_typename("longint"), make_int_lit(0x02));
+  add_rt_const("fadirectory", make_typename("longint"), make_int_lit(0x10));
+  add_rt_const("faarchive", make_typename("longint"), make_int_lit(0x20));
+  add_rt_const("anyfile", make_typename("longint"), make_int_lit(0x3F));
+  add_rt_const("maxlongint", make_typename("longint"),
+               make_int_lit(2147483647));
+
+  // Runtime type names that Pascal code can mention directly. Model them
+  // explicitly instead of relying on the old unresolved-name -> ::rt::
+  // fallback so casts/member lookups still go through normal type analysis.
+  add_rt_alias("signalhandler", make_pointer());
+  add_rt_alias("searchrec", make_record({
+      make_field("time", make_typename("longint")),
+      make_field("size", make_typename("longint")),
+      make_field("attr", make_typename("byte")),
+      make_field("name", make_typename("shortstring")),
+  }));
+  add_rt_alias("tsearchrec", make_record({
+      make_field("time", make_typename("longint")),
+      make_field("size", make_typename("longint")),
+      make_field("attr", make_typename("byte")),
+      make_field("name", make_typename("shortstring")),
+  }));
+  add_rt_alias("stat", make_record({
+      make_field("mtime", make_typename("longint")),
+      make_field("mode", make_typename("longint")),
+      make_field("size", make_typename("longint")),
+  }));
+  add_rt_alias("datetime", make_record({
+      make_field("year", make_typename("word")),
+      make_field("month", make_typename("word")),
+      make_field("day", make_typename("word")),
+      make_field("hour", make_typename("word")),
+      make_field("min", make_typename("word")),
+      make_field("sec", make_typename("word")),
+  }));
+  add_rt_alias("tdatetime", make_typename("double"));
+  add_rt_alias("tfpuexceptionmask", make_set(make_typename("byte")));
+  add_rt_alias("ppointer", make_pointer(make_typename("pointer")));
   auto make_method = [&](const std::string& name, ast::ProcKind pkind,
                          std::vector<ast::Param> params) {
     auto pd = std::make_shared<ast::ProcDecl>(/*class_method=*/false);

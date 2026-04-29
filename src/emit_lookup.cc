@@ -180,6 +180,11 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     r.cxx = mangle(name);
     return r;
   }
+  if (scope_.local_consts.count(name)) {
+    r.kind = ResolvedKind::Local;
+    r.cxx = mangle(name);
+    return r;
+  }
   for (const auto& [_, en] : scope_.local_enums) {
     if (!en) continue;
     for (const auto& member : en->members) {
@@ -328,11 +333,11 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     (void)own;  // already handled by the per-unit lookup above.
   }
 
-  // 7. Fallback: unresolved free names are much more often runtime helpers
-  //    than cross-unit symbols. Emit them as explicit `::rt::...`
-  //    references instead of depending on open namespaces in generated
-  //    units.
-  r.cxx = "::rt::" + mangle(name);
+  // 7. Fallback: keep unresolved free names in Pascal identifier space.
+  // Known runtime helpers already resolve through the synthetic `__rt__`
+  // unit on every unit's uses-chain; reaching this fallback therefore means
+  // "lookup failed", not "implicit runtime builtin".
+  r.cxx = mangle(name);
   r.kind = ResolvedKind::Unknown;
   return r;
 }
