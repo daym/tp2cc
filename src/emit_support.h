@@ -7,6 +7,7 @@
 #include <vector>
 
 namespace tp2cc::ast {
+struct Param;
 struct TypeExpr;
 struct TyName;
 }  // namespace tp2cc::ast
@@ -19,6 +20,8 @@ struct MethodSig;
 // policy in one support module avoids ad hoc spelling rules elsewhere.
 std::string mangle(std::string_view name);
 std::string ascii_lower(std::string_view text);
+std::string attach_named_cxx_type(std::string_view ty, std::string_view name,
+                                  std::string_view name_prefix);
 
 // Pascal class methods are stored as overload vectors per name. Many emit
 // paths only need a representative signature for shared metadata
@@ -39,6 +42,9 @@ const ast::TyName* named_pascal_type(std::string_view name);
 // translated units.
 std::string nested_result_slot_name(std::string_view fn_name);
 bool is_pascal_result_ident(std::string_view name);
+std::string encode_helper_ident(std::string_view name);
+std::string encode_helper_type(const ast::TypeExpr& t);
+std::string encode_helper_params(const std::vector<ast::Param>& params);
 std::string enum_bound_name(std::string_view type_name, std::string_view which);
 
 enum class PrimitiveIntKind : uint8_t { None, Signed, Unsigned };

@@ -15,6 +15,8 @@
 #include "emit_analysis.h"
 #include "emit_context.h"
 #include "emit_resolution.h"
+#include "emit_storage.h"
+#include "emit_types.h"
 #include "diag.h"
 #include "typereg.h"
 
@@ -45,191 +47,10 @@ std::string char_literal_body_to_cxx(char c) {
   return o;
 }
 
-// ---------------------------------------------------------------------------
-// Name mangling
-
-// Identifiers already start with `p_` in the output. Pascal built-in type
-// names map directly to C++ types below without the prefix.
-std::string mangle(std::string_view name) {
-  std::string s("p_");
-  s.append(name);
-  return s;
-}
-
-std::string ascii_lower(std::string_view text) {
-  std::string s(text);
-  for (char& ch : s) {
-    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
-  }
-  return s;
-}
-
-// Some emit paths already know the exact C++ carrier type they need,
-// for example `tp2cc_OpenArray<T>` instead of the generic array-to-pointer
-// decay used elsewhere. In those cases we must only attach the name and
-// any `&` / `const &` declarator text here, not re-derive the type from
-// the Pascal AST and lose the chosen ABI.
-std::string attach_named_cxx_type(std::string_view ty, std::string_view name,
-                                  std::string_view name_prefix) {
-  if (name_prefix == "const &") {
-    std::string out = "const " + std::string(ty) + "&";
-    if (!name.empty()) out += " " + std::string(name);
-    return out;
-  }
-  if (name.empty()) {
-    return name_prefix.empty() ? std::string(ty)
-                               : std::string(ty) + " " +
-                                     std::string(name_prefix);
-  }
-  return std::string(ty) + " " + std::string(name_prefix) +
-         std::string(name);
-}
-
 constexpr const char* kUnitInitName = "tp2cc_unit_init";
 constexpr const char* kUnitFiniName = "tp2cc_unit_fini";
 constexpr const char* kPascalResultSlotName = "p_result";
 constexpr const char* kCtorStatusSlotName = "tp2cc_ctor_ok";
-
-std::string nested_result_slot_name(std::string_view fn_name) {
-  return "tp2cc_result_" + mangle(fn_name);
-}
-
-bool is_pascal_result_ident(std::string_view name) {
-  return ascii_lower(name) == "result";
-}
-
-std::string encode_helper_ident(std::string_view name) {
-  std::string out;
-  if (name.empty()) return "empty";
-  for (char ch : name) {
-    if (ch >= 'A' && ch <= 'Z') {
-      out.push_back(static_cast<char>(ch - 'A' + 'a'));
-    } else if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) {
-      out.push_back(ch);
-    } else if (ch == '_') {
-      out += "_u";
-    } else {
-      out += "x";
-      constexpr char kHex[] = "0123456789abcdef";
-      out.push_back(kHex[(static_cast<unsigned char>(ch) >> 4) & 0xF]);
-      out.push_back(kHex[static_cast<unsigned char>(ch) & 0xF]);
-    }
-  }
-  return out;
-}
-
-std::string encode_helper_type(const TypeExpr& t);
-
-std::string encode_helper_param_mode(Param::Mode mode) {
-  switch (mode) {
-    case Param::Value: return "value";
-    case Param::Var: return "var";
-    case Param::Const: return "const";
-    case Param::Out: return "out";
-  }
-  return "value";
-}
-
-std::string encode_helper_params(const std::vector<Param>& params) {
-  if (params.empty()) return "noargs";
-  std::string out;
-  for (const auto& param : params) {
-    size_t repeats = param.names.empty() ? 1 : param.names.size();
-    std::string type_code =
-        param.type ? encode_helper_type(*param.type) : std::string("untyped");
-    for (size_t i = 0; i < repeats; ++i) {
-      if (!out.empty()) out += "_";
-      out += encode_helper_param_mode(param.mode);
-      out += "_";
-      out += type_code;
-    }
-  }
-  return out;
-}
-
-std::string encode_helper_type(const TypeExpr& t) {
-  switch (t.kind) {
-    case Kind::TyName:
-      return "name_" + encode_helper_ident(static_cast<const TyName&>(t).name);
-    case Kind::TyArray: {
-      const auto& a = static_cast<const TyArray&>(t);
-      std::string out;
-      switch (a.array_kind) {
-        case ArrayKind::Open:
-          out = "openarr";
-          break;
-        case ArrayKind::Dynamic:
-          out = "dynarr";
-          break;
-        case ArrayKind::Fixed:
-          out = "arr";
-          out += std::to_string(a.dims.size());
-          break;
-      }
-      out += "_";
-      out += a.element ? encode_helper_type(*a.element)
-                       : std::string("void");
-      return out;
-    }
-    case Kind::TyRecord:
-      return "record";
-    case Kind::TyObject: {
-      const auto& o = static_cast<const TyObject&>(t);
-      return o.is_reference_type ? "class" : "object";
-    }
-    case Kind::TySet:
-      return "set_" + encode_helper_type(*static_cast<const TySet&>(t).element);
-    case Kind::TyFile: {
-      const auto& f = static_cast<const TyFile&>(t);
-      if (f.is_text) return "text";
-      return f.element ? "file_" + encode_helper_type(*f.element)
-                       : std::string("file_untyped");
-    }
-    case Kind::TyPointer: {
-      const auto& p = static_cast<const TyPointer&>(t);
-      return p.target ? "ptr_" + encode_helper_type(*p.target)
-                      : std::string("ptr_void");
-    }
-    case Kind::TyProcedural: {
-      const auto& p = static_cast<const TyProcedural&>(t);
-      std::string out = p.is_method ? "method" : "proc";
-      out += p.is_function ? "_fn_" : "_proc_";
-      out += encode_helper_params(p.params);
-      out += "_ret_";
-      out += (p.is_function && p.return_type)
-                 ? encode_helper_type(*p.return_type)
-                 : std::string("void");
-      return out;
-    }
-    case Kind::TyEnum:
-      return "enum";
-    case Kind::TySubrange:
-      return "subrange";
-    case Kind::TyString: {
-      const auto& s = static_cast<const TyString&>(t);
-      return s.max_length ? "string_sized" : std::string("string");
-    }
-    case Kind::TyMetaclass:
-      return "metaclass_" +
-             encode_helper_ident(static_cast<const TyMetaclass&>(t).class_name);
-    case Kind::TyDistinct:
-      return "distinct_" +
-             encode_helper_type(*static_cast<const TyDistinct&>(t).underlying);
-    default:
-      return "type";
-  }
-}
-
-std::string enum_bound_name(std::string_view type_name, std::string_view which) {
-  return "tp2cc_enum_" + std::string(which) + "_" +
-         encode_helper_ident(type_name);
-}
-
-bool tyname_is(const TypeExpr* t, std::string_view expected) {
-  return t && t->kind == Kind::TyName &&
-         ascii_lower(static_cast<const TyName&>(*t).name) == expected;
-}
-
 enum class UntypedArgKind : uint8_t { None, Const, Mutable };
 
 void mark_builtin_memory_helper_param_info(
@@ -283,184 +104,13 @@ void mark_builtin_memory_helper_param_info(
   }
 }
 
-using PrimitiveIntKind = tp2cc::PrimitiveIntKind;
-using PrimitiveInfo = tp2cc::PrimitiveInfo;
-
-const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
-  static const std::unordered_map<std::string, PrimitiveInfo> m = {
-      {"integer",     {"int32_t",         PrimitiveIntKind::Signed,   32}},
-      {"longint",     {"int32_t",         PrimitiveIntKind::Signed,   32}},
-      {"cardinal",    {"uint32_t",        PrimitiveIntKind::Unsigned, 32}},
-      {"longword",    {"uint32_t",        PrimitiveIntKind::Unsigned, 32}},
-      {"smallint",    {"int16_t",         PrimitiveIntKind::Signed,   16}},
-      {"word",        {"uint16_t",        PrimitiveIntKind::Unsigned, 16}},
-      {"shortint",    {"int8_t",          PrimitiveIntKind::Signed,    8}},
-      {"byte",        {"uint8_t",         PrimitiveIntKind::Unsigned,  8}},
-      {"char",        {"::rt::p_char",    PrimitiveIntKind::None,      0}},
-      // FPC's WideChar is still a 16-bit ordinal code unit in 2.0.x.
-      // Keep it as a plain 16-bit value type here; the compiler-side
-      // bootstrap helper in compiler/widestr.pas handles wide string
-      // storage/decoding separately.
-      {"widechar",    {"uint16_t",        PrimitiveIntKind::Unsigned, 16}},
-      {"boolean",     {"bool",            PrimitiveIntKind::None,      0}},
-      {"bytebool",    {"uint8_t",         PrimitiveIntKind::Unsigned,  8}},
-      {"wordbool",    {"uint16_t",        PrimitiveIntKind::Unsigned, 16}},
-      {"longbool",    {"uint32_t",        PrimitiveIntKind::Unsigned, 32}},
-      {"single",      {"float",           PrimitiveIntKind::None,      0}},
-      {"double",      {"double",          PrimitiveIntKind::None,      0}},
-      {"real",        {"double",          PrimitiveIntKind::None,      0}},
-      {"extended",    {"long double",     PrimitiveIntKind::None,      0}},
-      {"comp",        {"long double",     PrimitiveIntKind::None,      0}},
-      {"pointer",     {"void*",           PrimitiveIntKind::None,      0}},
-      {"pchar",       {"::rt::p_char*",   PrimitiveIntKind::None,      0}},
-      {"ppchar",      {"::rt::p_char**",  PrimitiveIntKind::None,      0}},
-      {"text",        {"::rt::tp2cc_TextFile",  PrimitiveIntKind::None,      0}},
-      {"int64",       {"int64_t",         PrimitiveIntKind::Signed,   64}},
-      {"qword",       {"uint64_t",        PrimitiveIntKind::Unsigned, 64}},
-      {"dword",       {"uint32_t",        PrimitiveIntKind::Unsigned, 32}},
-      // FPC integer aliases that route through `::rt::` -- listed
-      // here so the emitter's integer-typed checks (Q+ overflow,
-      // R+ range) recognise the operand as integer. The cxx spelling
-      // matches `runtime_named_type_map` so the type name still
-      // resolves the same way for declarations.
-      {"currency",    {"::rt::p_currency", PrimitiveIntKind::Signed,   64}},
-      {"ptrint",      {"::rt::p_ptrint",   PrimitiveIntKind::Signed,   32}},
-      {"ptruint",     {"::rt::p_ptruint",  PrimitiveIntKind::Unsigned, 32}},
-      {"sizeint",     {"::rt::p_sizeint",  PrimitiveIntKind::Signed,   32}},
-      {"sizeuint",    {"::rt::p_sizeuint", PrimitiveIntKind::Unsigned, 32}},
-      {"string",      {"::rt::tp2cc_ShortString<>", PrimitiveIntKind::None,  0}},
-      {"shortstring", {"::rt::tp2cc_ShortString<>", PrimitiveIntKind::None,  0}},
-      {"ansistring",  {"::rt::tp2cc_AnsiString", PrimitiveIntKind::None,      0}},
-      {"utf8string",  {"::rt::tp2cc_AnsiString", PrimitiveIntKind::None,      0}},
-  };
-  return m;
-}
-
-const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
-  static const std::unordered_map<std::string, const char*> m = {
-      {"currency", "::rt::p_currency"},
-      {"datetime", "::rt::p_datetime"},
-      {"tdatetime", "::rt::p_tdatetime"},
-      {"dirstr", "::rt::p_dirstr"},
-      {"namestr", "::rt::p_namestr"},
-      {"extstr", "::rt::p_extstr"},
-      {"pansistring", "::rt::p_pansistring"},
-      {"pcardinal", "::rt::p_pcardinal"},
-      {"pcurrency", "::rt::p_pcurrency"},
-      {"pint64", "::rt::p_pint64"},
-      {"pathstr", "::rt::p_pathstr"},
-      {"ppointer", "::rt::p_ppointer"},
-      {"ptrint", "::rt::p_ptrint"},
-      {"ptruint", "::rt::p_ptruint"},
-      {"searchrec", "::rt::p_searchrec"},
-      {"signalhandler", "::rt::p_signalhandler"},
-      {"sizeint", "::rt::p_sizeint"},
-      {"sizeuint", "::rt::p_sizeuint"},
-      {"stat", "::rt::p_stat"},
-      {"tclass", "::rt::p_tclass"},
-      {"tfpuexception", "::rt::p_tfpuexception"},
-      {"tfpuexceptionmask", "::rt::p_tfpuexceptionmask"},
-      {"tsearchrec", "::rt::p_tsearchrec"},
-      {"tsystemtime", "::rt::p_tsystemtime"},
-      {"tmethod", "::rt::p_tmethod"},
-  };
-  return m;
-}
-
-std::string runtime_named_type_cxx(std::string_view lowname) {
-  auto it = runtime_named_type_map().find(ascii_lower(std::string(lowname)));
-  return it == runtime_named_type_map().end() ? std::string()
-                                              : std::string(it->second);
-}
-
-struct BuiltinReferenceClassInfo {
-  const char* struct_cxx;
-  const char* parent;
-  const char* defining_unit;
-};
-
-const std::unordered_map<std::string, BuiltinReferenceClassInfo>&
-builtin_reference_class_map() {
-  static const std::unordered_map<std::string, BuiltinReferenceClassInfo> m = {
-      {"tobject", {"::rt::p_tobject", "", "__rt__"}},
-      {"exception", {"::rt::p_exception", "tobject", "sysutils"}},
-      {"eexternal", {"p_sysutils::p_eexternal", "exception", "sysutils"}},
-      {"einterror", {"p_sysutils::p_einterror", "eexternal", "sysutils"}},
-      {"eintoverflow",
-       {"p_sysutils::p_eintoverflow", "einterror", "sysutils"}},
-      {"eoserror", {"p_sysutils::p_eoserror", "exception", "sysutils"}},
-  };
-  return m;
-}
-
-std::string builtin_reference_class_struct_cxx(std::string_view lowname) {
-  auto it =
-      builtin_reference_class_map().find(ascii_lower(std::string(lowname)));
-  return it == builtin_reference_class_map().end()
-             ? std::string()
-             : std::string(it->second.struct_cxx);
-}
-
-std::string unit_namespace_prefix(std::string_view unit_name) {
-  return unit_name == "__rt__" ? std::string("::rt::")
-                               : (mangle(unit_name) + "::");
-}
-
-const PrimitiveInfo* primitive_info(std::string_view lowname) {
-  auto it = primitive_type_map().find(std::string(lowname));
-  return it == primitive_type_map().end() ? nullptr : &it->second;
-}
-
-bool is_primitive_type(std::string_view lowname) {
-  return primitive_info(lowname) != nullptr;
-}
-
-std::string primitive_type_cxx(std::string_view lowname) {
-  auto* info = primitive_info(lowname);
-  return info ? info->cxx : std::string();
-}
-
-std::string uint64_literal_text(uint64_t value) {
-  char buf[32];
-  const char* fmt =
-      (value > static_cast<uint64_t>(INT64_MAX)) ? "%lluULL" : "%llu";
-  std::snprintf(buf, sizeof(buf), fmt,
-                static_cast<unsigned long long>(value));
-  return buf;
-}
-
-std::string primitive_low_high_expr(std::string_view lowname, bool want_low) {
-  if (lowname == "char") {
-    return want_low ? "::rt::tp2cc_char_of(0)" : "::rt::tp2cc_char_of(255)";
-  }
-  if (lowname == "boolean" || lowname == "bytebool" ||
-      lowname == "wordbool" || lowname == "longbool") {
-    return want_low ? "false" : "true";
-  }
-  const PrimitiveInfo* info = primitive_info(lowname);
-  if (!info || info->int_kind == PrimitiveIntKind::None) return {};
-  if (want_low) {
-    if (info->int_kind == PrimitiveIntKind::Unsigned) return "0";
-    return "::std::numeric_limits<" + std::string(info->cxx) + ">::min()";
-  }
-  return "::std::numeric_limits<" + std::string(info->cxx) + ">::max()";
-}
-
-struct ConstIntExprInfo {
-  int64_t value = 0;
-  const PrimitiveInfo* type = nullptr;
-};
-
-struct ConvertedConstInt {
-  int64_t value = 0;
-  uint64_t bits = 0;
-  const PrimitiveInfo* type = nullptr;
-};
-
 // ---------------------------------------------------------------------------
 // Emitter state
 
-struct Emitter : ResolveNameProvider, ResolutionTypeOps {
+struct Emitter : ResolveNameProvider,
+                 ResolutionTypeOps,
+                 EmitTypeConstRender,
+                 EmitStorageExprOps {
   std::string header;
   std::string impl;
   // Current sink pointer.
@@ -570,6 +220,8 @@ struct Emitter : ResolveNameProvider, ResolutionTypeOps {
   const std::vector<std::string>* unit_init_order = nullptr;
   ScopeStateView scope_state_;
   EmitAnalysis analysis_;
+  EmitTypes types_;
+  EmitStorage storage_;
   EmitResolution resolution_;
 
   Emitter(const TypeRegistry* registry_in = nullptr,
@@ -603,6 +255,8 @@ struct Emitter : ResolveNameProvider, ResolutionTypeOps {
                      outer_result_slot_name,
                      outer_result_type},
         analysis_(registry, scope_state_, *this),
+        types_(registry, scope_state_, analysis_, *this),
+        storage_(registry, scope_state_, analysis_, types_, *this, *this),
         resolution_(registry, scope_state_, analysis_, *this) {}
 
   void set_header() { out = &header; }
@@ -617,6 +271,9 @@ struct Emitter : ResolveNameProvider, ResolutionTypeOps {
   void nl() { out->push_back('\n'); }
   void indent() { ++indent_level; }
   void dedent() { if (indent_level > 0) --indent_level; }
+  void report_error(Location where, const std::string& msg) override {
+    ::tp2cc::report_error(where, msg);
+  }
 
   // Top-level drivers.
   void emit_unit(const UnitNode& u);
@@ -627,61 +284,104 @@ struct Emitter : ResolveNameProvider, ResolutionTypeOps {
   void emit_proc_decl_signature(const ProcDecl& pd);
 
   // Types -> C++ type string.
-  std::string type_to_cxx(const TypeExpr& t) override;
-  std::string type_name_to_cxx(const TyName& n);
-  std::string type_name_text_to_cxx(std::string_view name);
-  std::string named_type_struct_cxx(std::string_view name);
-  std::string visible_type_prefix(std::string_view name);
-  bool registry_knows_type(std::string_view name);
-  std::string metaclass_struct_cxx(std::string_view class_name);
-  std::string metaclass_value_fn_cxx(std::string_view class_name);
+  std::string type_to_cxx(const TypeExpr& t) override {
+    return types_.type_to_cxx(t);
+  }
+  std::string type_name_to_cxx(const TyName& n) {
+    return types_.type_name_to_cxx(n);
+  }
+  std::string type_name_text_to_cxx(std::string_view name) {
+    return types_.type_name_text_to_cxx(name);
+  }
+  std::string named_type_struct_cxx(std::string_view name) {
+    return types_.named_type_struct_cxx(name);
+  }
+  std::string visible_type_prefix(std::string_view name) {
+    return types_.visible_type_prefix(name);
+  }
+  bool registry_knows_type(std::string_view name) {
+    return types_.registry_knows_type(name);
+  }
+  std::string metaclass_struct_cxx(std::string_view class_name) {
+    return types_.metaclass_struct_cxx(class_name);
+  }
+  std::string metaclass_value_fn_cxx(std::string_view class_name) {
+    return types_.metaclass_value_fn_cxx(class_name);
+  }
   std::vector<MetaclassCallable> collect_metaclass_callables(
       std::string_view class_name);
   std::optional<MetaclassCallableImpl> find_metaclass_callable_impl(
       std::string_view concrete_class, const MetaclassCallable& target);
-  std::string array_type_to_cxx(const TyArray& a);
-  const ast::TypeExpr* canonicalize_type(const ast::TypeExpr* t);
-  bool enum_has_explicit_values(const TyEnum& e);
+  std::string array_type_to_cxx(const TyArray& a) {
+    return types_.array_type_to_cxx(a);
+  }
+  const ast::TypeExpr* canonicalize_type(const ast::TypeExpr* t) {
+    return analysis_.canonicalize_type(t);
+  }
+  bool enum_has_explicit_values(const TyEnum& e) {
+    return types_.enum_has_explicit_values(e);
+  }
   std::optional<int64_t> enum_member_value_int64(const TyEnum& e,
-                                                 size_t index);
-  std::string enum_member_value_to_cxx(const TyEnum& e, size_t index);
-  std::string enum_underlying_type_to_cxx(const TyEnum& e);
+                                                 size_t index) {
+    return types_.enum_member_value_int64(e, index);
+  }
+  std::string enum_member_value_to_cxx(const TyEnum& e, size_t index) {
+    return types_.enum_member_value_to_cxx(e, index);
+  }
+  std::string enum_underlying_type_to_cxx(const TyEnum& e) {
+    return types_.enum_underlying_type_to_cxx(e);
+  }
   bool array_dim_bounds_to_cxx(const ast::TypeExpr& dim,
                                std::string* lo,
-                               std::string* size_expr);
-  std::string set_type_to_cxx(const TySet& s);
-  std::string enum_type_to_cxx(const TyEnum& e, const std::string& context);
-  std::string subrange_type_to_cxx(const TySubrange& r);
-  std::string string_type_to_cxx(const TyString& s);
+                               std::string* size_expr) {
+    return types_.array_dim_bounds_to_cxx(dim, lo, size_expr);
+  }
+  std::string set_type_to_cxx(const TySet& s) {
+    return types_.set_type_to_cxx(s);
+  }
+  std::string enum_type_to_cxx(const TyEnum& e, const std::string& context) {
+    return types_.enum_type_to_cxx(e, context);
+  }
+  std::string subrange_type_to_cxx(const TySubrange& r) {
+    return types_.subrange_type_to_cxx(r);
+  }
+  std::string string_type_to_cxx(const TyString& s) {
+    return types_.string_type_to_cxx(s);
+  }
   std::optional<std::string> shortstring_capacity_to_cxx(
-      const TypeExpr* t);
-  std::string pointer_type_to_cxx(const TyPointer& p);
-  std::string procedural_type_to_cxx(const TyProcedural& p);
-  std::string procedural_param_types_to_cxx(const std::vector<Param>& params);
+      const TypeExpr* t) {
+    return types_.shortstring_capacity_to_cxx(t);
+  }
+  std::string pointer_type_to_cxx(const TyPointer& p) {
+    return types_.pointer_type_to_cxx(p);
+  }
+  std::string procedural_type_to_cxx(const TyProcedural& p) {
+    return types_.procedural_type_to_cxx(p);
+  }
+  using RecordFieldDecl = EmitRecordFieldDecl;
+  using PackedRecordLayout = EmitPackedRecordLayout;
+  std::string procedural_param_types_to_cxx(const std::vector<Param>& params) {
+    return types_.procedural_param_types_to_cxx(params);
+  }
   // Per-field decl info used by both the inline and named record-emission
   // paths. `type_cxx` is the resolved C++ type spelling (kept separately
   // because the named path also needs it for `sizeof(...)` offset
   // tracking); `decl` is `type_cxx + " " + mangled_name`, the form a
   // C++ struct body wants for the field declaration.
-  struct RecordFieldDecl {
-    const ast::TypeExpr* type;     // raw field type, for offset/packed checks
-    std::string type_cxx;          // resolved C++ type spelling
-    std::string mangled_name;      // `p_<pascal_name>`
-    std::string decl;              // `<type_cxx> <mangled_name>`
-  };
-  std::vector<RecordFieldDecl> record_field_decls(
-      const std::vector<ast::RecordField>& fields);
+  std::vector<EmitRecordFieldDecl> record_field_decls(
+      const std::vector<ast::RecordField>& fields) {
+    return types_.record_field_decls(fields);
+  }
 
   // Layout description for a packed record: per-field offset expressions
   // (in declaration order, with mangled field names) plus the total size
   // expression. Used by both the named type-decl path (asserts via
   // `offsetof(<typename>, ...)`) and the variable-decl path (asserts via
   // `offsetof(decltype(<varname>), ...)` for inline anonymous records).
-  struct PackedRecordLayout {
-    std::vector<std::pair<std::string, std::string>> field_offsets;
-    std::string size_expr;
-  };
-  PackedRecordLayout compute_packed_record_layout(const ast::TyRecord& tr);
+  EmitPackedRecordLayout compute_packed_record_layout(
+      const ast::TyRecord& tr) {
+    return types_.compute_packed_record_layout(tr);
+  }
   // Emit the offsetof / sizeof static_asserts for a packed record. The
   // type expression `type_text` is whatever names the record at the emit
   // site -- a typedef name for the named-decl path, `decltype(varname)`
@@ -691,12 +391,20 @@ struct Emitter : ResolveNameProvider, ResolutionTypeOps {
                                   std::string_view label);
 
   std::string named_type_to_cxx(const TypeExpr* t, std::string_view name,
-                                std::string_view name_prefix = {});
-  std::string method_pointer_helper_name(const ast::ProcDecl& pd);
+                                std::string_view name_prefix = {}) {
+    return types_.named_type_to_cxx(t, name, name_prefix);
+  }
+  std::string method_pointer_helper_name(const ast::ProcDecl& pd) {
+    return types_.method_pointer_helper_name(pd);
+  }
   std::string low_high_expr_for_named_type(std::string_view name,
-                                           bool want_low);
+                                           bool want_low) {
+    return types_.low_high_expr_for_named_type(name, want_low);
+  }
   std::string low_high_expr_for_type(const ast::TypeExpr* t,
-                                     bool want_low);
+                                     bool want_low) {
+    return types_.low_high_expr_for_type(t, want_low);
+  }
 
   // Expressions -> C++ expression.
   std::string expr_to_cxx(const Expr& e);
@@ -721,15 +429,33 @@ struct Emitter : ResolveNameProvider, ResolutionTypeOps {
       const Expr& e, const TypeExpr* target);
 
   // Small helpers.
-  bool const_param_needs_mutable_ref(const ast::TypeExpr* t);
-  bool const_param_needs_const_ref(const ast::TypeExpr* t);
-  const ClassInfo* class_info_for_type_name(std::string_view name);
-  const ast::TypeExpr* lookup_named_type_expr(std::string_view name);
-  bool is_builtin_reference_class_name(std::string_view name) const;
-  std::string metaclass_target_name(const ast::TypeExpr* t);
-  std::string primitive_cast_lvalue_ref(const ast::Call& c);
-  std::string primitive_cast_untyped_storage_ptr(const ast::Call& c);
-  std::string primitive_cast_packed_field_ptr(const ast::Call& c);
+  bool const_param_needs_mutable_ref(const ast::TypeExpr* t) {
+    return analysis_.const_param_needs_mutable_ref(t);
+  }
+  bool const_param_needs_const_ref(const ast::TypeExpr* t) {
+    return analysis_.const_param_needs_const_ref(t);
+  }
+  const ClassInfo* class_info_for_type_name(std::string_view name) {
+    return analysis_.class_info_for_type_name(name);
+  }
+  const ast::TypeExpr* lookup_named_type_expr(std::string_view name) {
+    return analysis_.lookup_named_type_expr(name);
+  }
+  bool is_builtin_reference_class_name(std::string_view name) const {
+    return analysis_.is_builtin_reference_class_name(name);
+  }
+  std::string metaclass_target_name(const ast::TypeExpr* t) {
+    return analysis_.metaclass_target_name(t);
+  }
+  std::string primitive_cast_lvalue_ref(const ast::Call& c) {
+    return storage_.primitive_cast_lvalue_ref(c);
+  }
+  std::string primitive_cast_untyped_storage_ptr(const ast::Call& c) {
+    return storage_.primitive_cast_untyped_storage_ptr(c);
+  }
+  std::string primitive_cast_packed_field_ptr(const ast::Call& c) {
+    return storage_.primitive_cast_packed_field_ptr(c);
+  }
   // Carries the result of `packed_field_storage_ref`. `void_ptr_text` is
   // an `&(field_expr)` snippet -- safe to consume only via the memcpy-based
   // runtime helpers (`tp2cc_reinterpret_load` / `_store` / `_inc` / `_dec`).
@@ -737,18 +463,16 @@ struct Emitter : ResolveNameProvider, ResolutionTypeOps {
   // misaligned-`T*`-deref UB the existing `[[gnu::packed]]` emit deliberately
   // makes the compiler complain about. `elem_cxx` is the C++ type to use as
   // the load/store operand at the call site.
-  struct PackedFieldStorage {
-    std::string void_ptr_text;
-    std::string elem_cxx;
-  };
+  using PackedFieldStorage = EmitPackedFieldStorage;
   std::optional<PackedFieldStorage> packed_field_storage_ref(
-      const ast::Expr& e);
-  struct UntypedStorageIndexView {
-    std::string elem_cxx;
-    std::string ptr_cxx;
-  };
+      const ast::Expr& e) {
+    return storage_.packed_field_storage_ref(e);
+  }
+  using UntypedStorageIndexView = EmitUntypedStorageIndexView;
   std::optional<UntypedStorageIndexView> untyped_storage_index_view(
-      const ast::Index& i);
+      const ast::Index& i) {
+    return storage_.untyped_storage_index_view(i);
+  }
   std::string param_list_to_cxx(const std::vector<Param>& params);
   std::string proc_return_type_to_cxx(const ProcDecl& pd);
   void emit_method_pointer_thunk(const std::string& owner_name,
@@ -781,50 +505,80 @@ struct Emitter : ResolveNameProvider, ResolutionTypeOps {
   const ast::TypeExpr* lookup_record_field_type_in_with(
       const WithBind& wb, std::string_view field_name);
   bool with_bind_has_visible_member(const WithBind& wb, std::string_view name);
-  struct PackedAggregateFieldUse {
-    std::string record_name;
-    std::string field_name;
-  };
-  bool type_is_packed_record(const ast::TypeExpr* t);
-  bool type_is_direct_packed_aggregate(const ast::TypeExpr* t);
-  bool type_is_byte_aligned_packed_index_carrier(const ast::TypeExpr* t);
+  bool type_is_packed_record(const ast::TypeExpr* t) {
+    return storage_.type_is_packed_record(t);
+  }
+  bool type_is_direct_packed_aggregate(const ast::TypeExpr* t) {
+    return storage_.type_is_direct_packed_aggregate(t);
+  }
+  bool type_is_byte_aligned_packed_index_carrier(const ast::TypeExpr* t) {
+    return storage_.type_is_byte_aligned_packed_index_carrier(t);
+  }
+  using PackedAggregateFieldUse = EmitPackedAggregateFieldUse;
   std::optional<PackedAggregateFieldUse> direct_packed_aggregate_field_use(
-      const ast::Expr& e);
+      const ast::Expr& e) {
+    return storage_.direct_packed_aggregate_field_use(e);
+  }
   void report_packed_aggregate_subobject_use(
       Location where, std::string_view op,
-      const PackedAggregateFieldUse& use);
+      const PackedAggregateFieldUse& use) {
+    storage_.report_packed_aggregate_subobject_use(where, op, use);
+  }
 
   // Class/record alias name ("tfoo") of `e`, lowercased, if detectable.
   // Empty if the type can't be narrowed to a named object/record type.
   std::string deduce_class_alias(const ast::Expr& e);
-  const ast::Expr* peel_primitive_casts(const ast::Expr* e);
-  bool expr_is_storage_lvalue(const ast::Expr& e);
-  bool expr_is_untyped_storage_ref(const ast::Expr& e);
-  bool expr_is_charish(const ast::Expr& e);
-  bool type_is_pcharish(const ast::TypeExpr* t) override;
-  bool type_is_metaclass(const ast::TypeExpr* t);
-  bool type_is_reference_class(const ast::TypeExpr* t);
-  bool expr_is_reference_class(const ast::Expr& e);
-  std::string member_access_op(const ast::Expr& e);
-  bool type_is_stringish(const ast::TypeExpr* t);
-  bool type_is_pointerish(const ast::TypeExpr* t);
-  bool type_is_open_array(const ast::TypeExpr* t);
-  std::string open_array_type_to_cxx(const ast::TypeExpr& t);
+  const ast::Expr* peel_primitive_casts(const ast::Expr* e) {
+    return storage_.peel_primitive_casts(e);
+  }
+  bool expr_is_storage_lvalue(const ast::Expr& e) {
+    return storage_.expr_is_storage_lvalue(e);
+  }
+  bool expr_is_untyped_storage_ref(const ast::Expr& e) {
+    return storage_.expr_is_untyped_storage_ref(e);
+  }
+  bool expr_is_charish(const ast::Expr& e) {
+    return storage_.expr_is_charish(e);
+  }
+  bool type_is_pcharish(const ast::TypeExpr* t) override {
+    return storage_.type_is_pcharish(t);
+  }
+  bool type_is_metaclass(const ast::TypeExpr* t) {
+    return storage_.type_is_metaclass(t);
+  }
+  bool type_is_reference_class(const ast::TypeExpr* t) {
+    return storage_.type_is_reference_class(t);
+  }
+  bool expr_is_reference_class(const ast::Expr& e) {
+    return storage_.expr_is_reference_class(e);
+  }
+  std::string member_access_op(const ast::Expr& e) {
+    return storage_.member_access_op(e);
+  }
+  bool type_is_stringish(const ast::TypeExpr* t) {
+    return storage_.type_is_stringish(t);
+  }
+  bool type_is_pointerish(const ast::TypeExpr* t) {
+    return storage_.type_is_pointerish(t);
+  }
+  bool type_is_open_array(const ast::TypeExpr* t) {
+    return storage_.type_is_open_array(t);
+  }
+  std::string open_array_type_to_cxx(const ast::TypeExpr& t) {
+    return types_.open_array_type_to_cxx(t);
+  }
   std::string open_array_constructor_to_cxx(const SetLit& s,
                                             const TypeExpr& param_type);
   std::string reinterpret_ref_text(const std::string& ty_cxx,
                                    const std::string& source_cxx,
-                                   bool pointee_view);
-  const VarInfo* find_visible_unit_var(const std::string& name);
-  const ConstInfo* find_visible_unit_const(const std::string& name);
-  const EnumInfoReg* find_visible_enum_info_for_member(const std::string& name);
-  struct AbsoluteTargetInfo {
-    std::string cxx;
-    const ast::TypeExpr* type = nullptr;
-    bool is_pointerish = false;
-    bool is_const_storage = false;
-  };
-  std::optional<AbsoluteTargetInfo> resolve_absolute_target(const ast::VarDecl& vd);
+                                   bool pointee_view) {
+    return storage_.reinterpret_ref_text(ty_cxx, source_cxx, pointee_view);
+  }
+  using AbsoluteTargetInfo = EmitAbsoluteTargetInfo;
+  std::optional<AbsoluteTargetInfo> resolve_absolute_target(
+      const ast::VarDecl& vd) {
+    return storage_.resolve_absolute_target(vd);
+  }
   struct FlatCallParamInfo {
     const ast::TypeExpr* type = nullptr;
     bool untyped = false;
@@ -975,184 +729,6 @@ struct Emitter : ResolveNameProvider, ResolutionTypeOps {
   void emit_tpexcept_unit(const UnitNode& u);
 };
 
-// ---------------------------------------------------------------------------
-// Types
-
-std::string Emitter::type_name_to_cxx(const TyName& n) {
-  if (is_primitive_type(n.name)) return primitive_type_cxx(n.name);
-  // The runtime_named_type_map shortcut is a fallback for stub units
-  // (Pascal `uses X` where X is not on tp2cc's `-Fu` path -- e.g.
-  // `math` for the 2.2.4 bootstrap). It must NOT override a translated
-  // unit's own declaration of the same name -- under 2.0.2,
-  // `compiler/globals.pas` declares `TFPUException` locally and the
-  // user-side namespace is the truth; routing through `::rt::` there
-  // creates a parallel C++ type that does not match the body.
-  if (registry_knows_type(n.name)) {
-    // Fall through to the registry-aware named_type_struct_cxx path
-    // (which uses `visible_type_prefix` to qualify by translated
-    // unit). Reference-class wrapping is handled below.
-  } else if (std::string rt = runtime_named_type_cxx(n.name); !rt.empty()) {
-    return rt;
-  }
-  // Delphi/FPC `class` names denote references to heap objects, so
-  // plain uses of the type name lower to a pointer type. The raw struct
-  // spelling is kept separate in `named_type_struct_cxx()` for places
-  // like base-class lists and `TClass.Method`.
-  if (std::string cls = builtin_reference_class_struct_cxx(n.name);
-      !cls.empty()) {
-    return cls + "*";
-  }
-  if (registry) {
-    auto mark_if_class_ref = [&](std::string_view lookup_name,
-                                 std::string_view defining_unit) -> bool {
-      auto cit = registry->classes.find(std::string(lookup_name));
-      return cit != registry->classes.end() && cit->second.is_reference_type &&
-             (defining_unit.empty() || cit->second.defining_unit == defining_unit);
-    };
-    auto dot = n.name.find('.');
-    if (dot != std::string::npos) {
-      std::string_view unit = std::string_view(n.name).substr(0, dot);
-      std::string_view tail = std::string_view(n.name).substr(dot + 1);
-      if (mark_if_class_ref(tail, unit)) {
-        return named_type_struct_cxx(n.name) + "*";
-      }
-    } else if (mark_if_class_ref(n.name, {})) {
-      return named_type_struct_cxx(n.name) + "*";
-    }
-  }
-  return named_type_struct_cxx(n.name);
-}
-
-std::string Emitter::type_name_text_to_cxx(std::string_view name) {
-  TyName t;
-  t.name = std::string(name);
-  return type_name_to_cxx(t);
-}
-
-std::string Emitter::named_type_struct_cxx(std::string_view name) {
-  // Same registry-first / rt-fallback ordering as type_name_to_cxx; see
-  // the comment there.
-  if (!registry_knows_type(name)) {
-    if (std::string rt = runtime_named_type_cxx(ascii_lower(std::string(name)));
-        !rt.empty()) {
-      return rt;
-    }
-  }
-  if (std::string cls =
-          builtin_reference_class_struct_cxx(ascii_lower(std::string(name)));
-      !cls.empty()) {
-    return cls;
-  }
-  // Qualified name `unitname.Type` -> `p_unitname::p_type`
-  auto dot = name.find('.');
-  if (dot != std::string_view::npos) {
-    return unit_namespace_prefix(name.substr(0, dot)) +
-           mangle(name.substr(dot + 1));
-  }
-  return visible_type_prefix(name) + mangle(name);
-}
-
-std::string Emitter::visible_type_prefix(std::string_view name) {
-  if (!registry) return {};
-
-  std::string lower = ascii_lower(std::string(name));
-  if (local_type_aliases_scoped.count(lower) || local_enums.count(lower)) {
-    return {};
-  }
-
-  auto cur = registry->units.find(current_unit_name);
-  if (cur != registry->units.end()) {
-    if (cur->second.has_type(lower)) return {};
-    for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend(); ++it) {
-      auto uit = registry->units.find(*it);
-      if (uit == registry->units.end()) continue;
-      if (uit->second.has_export_type(lower)) {
-        return unit_namespace_prefix(*it);
-      }
-    }
-  }
-
-  auto class_it = registry->classes.find(lower);
-  if (class_it != registry->classes.end() &&
-      !class_it->second.defining_unit.empty() &&
-      class_it->second.defining_unit != current_unit_name) {
-    return unit_namespace_prefix(class_it->second.defining_unit);
-  }
-  auto record_it = registry->records.find(lower);
-  if (record_it != registry->records.end() &&
-      !record_it->second.defining_unit.empty() &&
-      record_it->second.defining_unit != current_unit_name) {
-    return unit_namespace_prefix(record_it->second.defining_unit);
-  }
-  auto enum_it = registry->enums.find(lower);
-  if (enum_it != registry->enums.end() &&
-      !enum_it->second.defining_unit.empty() &&
-      enum_it->second.defining_unit != current_unit_name) {
-    return unit_namespace_prefix(enum_it->second.defining_unit);
-  }
-  auto alias_it = registry->aliases.find(lower);
-  if (alias_it != registry->aliases.end() &&
-      !alias_it->second.defining_unit.empty() &&
-      alias_it->second.defining_unit != current_unit_name) {
-    return unit_namespace_prefix(alias_it->second.defining_unit);
-  }
-
-  return {};
-}
-
-// Did any translated unit (the current one, a uses-chain unit, or a
-// global registry table) declare this type? Drives "use translated
-// namespace" vs "fall through to runtime_named_type_map" in
-// `type_name_to_cxx` / `named_type_struct_cxx` -- a translated user
-// unit's declaration must win over an rt-side stub of the same name.
-bool Emitter::registry_knows_type(std::string_view name) {
-  if (!registry) return false;
-  std::string lower = ascii_lower(std::string(name));
-  if (local_type_aliases_scoped.count(lower) || local_enums.count(lower)) {
-    return true;
-  }
-  if (auto cur = registry->units.find(current_unit_name);
-      cur != registry->units.end()) {
-    if (cur->second.has_type(lower)) return true;
-    for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
-         ++it) {
-      auto uit = registry->units.find(*it);
-      if (uit == registry->units.end()) continue;
-      if (uit->second.has_export_type(lower)) return true;
-    }
-  }
-  return registry->classes.count(lower) || registry->records.count(lower) ||
-         registry->enums.count(lower) || registry->aliases.count(lower);
-}
-
-std::string Emitter::metaclass_struct_cxx(std::string_view class_name) {
-  auto dot = class_name.find('.');
-  std::string tail =
-      (dot == std::string_view::npos) ? std::string(class_name)
-                                      : std::string(class_name.substr(dot + 1));
-  std::string prefix;
-  if (const auto* ci = class_info_for_type_name(class_name);
-      ci && !ci->defining_unit.empty() &&
-      ci->defining_unit != current_unit_name) {
-    prefix = unit_namespace_prefix(ci->defining_unit);
-  }
-  return prefix + "tp2cc_metaclass_" + mangle(tail);
-}
-
-std::string Emitter::metaclass_value_fn_cxx(std::string_view class_name) {
-  auto dot = class_name.find('.');
-  std::string tail =
-      (dot == std::string_view::npos) ? std::string(class_name)
-                                      : std::string(class_name.substr(dot + 1));
-  std::string prefix;
-  if (const auto* ci = class_info_for_type_name(class_name);
-      ci && !ci->defining_unit.empty() &&
-      ci->defining_unit != current_unit_name) {
-    prefix = unit_namespace_prefix(ci->defining_unit);
-  }
-  return prefix + "tp2cc_metaclass_value_" + mangle(tail);
-}
-
 std::vector<Emitter::MetaclassCallable> Emitter::collect_metaclass_callables(
     std::string_view class_name) {
   std::vector<MetaclassCallable> out;
@@ -1257,543 +833,6 @@ Emitter::find_metaclass_callable_impl(std::string_view concrete_class,
   return std::nullopt;
 }
 
-const TypeExpr* Emitter::canonicalize_type(const TypeExpr* t) {
-  return analysis_.canonicalize_type(t);
-}
-
-bool Emitter::const_param_needs_mutable_ref(const TypeExpr* t) {
-  return analysis_.const_param_needs_mutable_ref(t);
-}
-
-bool Emitter::const_param_needs_const_ref(const TypeExpr* t) {
-  return analysis_.const_param_needs_const_ref(t);
-}
-
-const ClassInfo* Emitter::class_info_for_type_name(std::string_view name) {
-  return analysis_.class_info_for_type_name(name);
-}
-
-const TypeExpr* Emitter::lookup_named_type_expr(std::string_view name) {
-  return analysis_.lookup_named_type_expr(name);
-}
-
-bool Emitter::is_builtin_reference_class_name(std::string_view name) const {
-  return analysis_.is_builtin_reference_class_name(name);
-}
-
-std::string Emitter::metaclass_target_name(const TypeExpr* t) {
-  return analysis_.metaclass_target_name(t);
-}
-
-bool Emitter::enum_has_explicit_values(const TyEnum& e) {
-  for (const auto& member : e.members) {
-    if (member.value) return true;
-  }
-  return false;
-}
-
-std::optional<int64_t> Emitter::enum_member_value_int64(const TyEnum& e,
-                                                        size_t index) {
-  int64_t value = 0;
-  for (size_t i = 0; i <= index; ++i) {
-    if (e.members[i].value) {
-      auto info = eval_const_int_expr(*e.members[i].value);
-      if (!info) return std::nullopt;
-      value = info->value;
-    } else if (i != 0) {
-      if (value == INT64_MAX) return std::nullopt;
-      ++value;
-    }
-  }
-  return value;
-}
-
-std::string Emitter::enum_member_value_to_cxx(const TyEnum& e, size_t index) {
-  // Pascal/FPC enum ordinals are assigned left-to-right:
-  // the first implicit member is 0, each later implicit member is the
-  // previous ordinal plus 1, and any explicit assignment resets the
-  // running ordinal for following implicit members.
-  // Examples:
-  //   (a := 5, b, c)    => a=5,  b=6,  c=7
-  //   (a, b := 10, c)   => a=0,  b=10, c=11
-  std::string value = "0";
-  for (size_t i = 0; i <= index; ++i) {
-    if (e.members[i].value) {
-      value = const_value_to_cxx(*e.members[i].value);
-    } else if (i != 0) {
-      value = "((" + value + ") + 1)";
-    }
-  }
-  return value;
-}
-
-std::string Emitter::enum_underlying_type_to_cxx(const TyEnum& e) {
-  if (e.members.empty()) return "int32_t";
-
-  int64_t lo = 0;
-  int64_t hi = 0;
-  for (size_t i = 0; i < e.members.size(); ++i) {
-    auto value = enum_member_value_int64(e, i);
-    if (!value) return "int32_t";
-    if (i == 0) {
-      lo = *value;
-      hi = *value;
-    } else {
-      lo = std::min(lo, *value);
-      hi = std::max(hi, *value);
-    }
-  }
-
-  // The current bootstrap subset is compiled with {$PACKENUM 1}, so choose
-  // the smallest ordinal storage that can represent the enum's full range.
-  // That keeps packed-record overlays such as cgbase's TRegisterRec bit-exact
-  // without hardcoding compiler-specific enum names here. Full {$PACKENUM n}
-  // support can widen this selection later when directive state is tracked.
-  if (lo >= 0) {
-    uint64_t uhi = static_cast<uint64_t>(hi);
-    if (uhi <= UINT8_MAX) return "uint8_t";
-    if (uhi <= UINT16_MAX) return "uint16_t";
-    if (uhi <= UINT32_MAX) return "uint32_t";
-    return "uint64_t";
-  }
-  if (lo >= INT8_MIN && hi <= INT8_MAX) return "int8_t";
-  if (lo >= INT16_MIN && hi <= INT16_MAX) return "int16_t";
-  if (lo >= INT32_MIN && hi <= INT32_MAX) return "int32_t";
-  return "int64_t";
-}
-
-std::string Emitter::primitive_cast_lvalue_ref(const Call& c) {
-  if (c.args.size() != 1 || c.callee->kind != Kind::Ident) return {};
-  const auto& id = static_cast<const Ident&>(*c.callee);
-  if (!is_primitive_type(id.name)) return {};
-  const Expr* peeled = peel_primitive_casts(c.args[0].get());
-  if (!peeled || !expr_is_storage_lvalue(*c.args[0])) return {};
-  if (expr_is_untyped_storage_ref(*c.args[0])) return {};
-  if (peeled->kind == Kind::Ident) {
-    ResolveResult rr = resolve_name(static_cast<const Ident&>(*peeled).name);
-    if (rr.kind == ResolvedKind::UnitConst || rr.kind == ResolvedKind::EnumMember ||
-        rr.kind == ResolvedKind::UnitType || rr.is_callable) {
-      return {};
-    }
-  }
-  // Pascal `T(lv)` used as an lvalue aliases the same storage with a
-  // different type. Emit that reinterpretation directly.
-  return reinterpret_ref_text(primitive_type_cxx(id.name), expr_to_cxx(*peeled),
-                              false);
-}
-
-std::string Emitter::primitive_cast_untyped_storage_ptr(const Call& c) {
-  if (c.args.size() != 1 || c.callee->kind != Kind::Ident) return {};
-  const auto& id = static_cast<const Ident&>(*c.callee);
-  if (!is_primitive_type(id.name)) return {};
-  const Expr* peeled = peel_primitive_casts(c.args[0].get());
-  if (!peeled || !expr_is_storage_lvalue(*c.args[0]) ||
-      !expr_is_untyped_storage_ref(*c.args[0])) {
-    return {};
-  }
-  if (peeled->kind == Kind::Ident) {
-    ResolveResult rr = resolve_name(static_cast<const Ident&>(*peeled).name);
-    if (rr.kind == ResolvedKind::UnitConst || rr.kind == ResolvedKind::EnumMember ||
-        rr.kind == ResolvedKind::UnitType || rr.is_callable) {
-      return {};
-    }
-  }
-  return expr_to_cxx(*peeled);
-}
-
-// Returns `&(field_expr)` when `c` is a primitive type-cast over a scalar
-// field of a packed record (e.g. `longint(g.d1)` where `g` has type
-// `tguid = packed record d1: LongWord; ... end`). Empty otherwise.
-//
-// The returned text is a *void*-convertible address-of expression*. C++
-// permits taking the address of any object regardless of alignment, but
-// dereferencing the resulting pointer through a `T*` for which the
-// alignment isn't satisfied is UB ([expr.reinterpret.cast]/7,
-// [basic.lval]). Callers must therefore feed the text only into runtime
-// helpers that read/write through `memcpy` (`tp2cc_reinterpret_load`,
-// `tp2cc_reinterpret_store`, `tp2cc_reinterpret_inc`, `tp2cc_reinterpret_dec`).
-// Routing it through `*reinterpret_cast<T*>(p)` -- including via
-// `tp2cc_reinterpret_storage_ref<T>(void*)` -- would reintroduce the UB
-// the existing `[[gnu::packed]]` emit went out of its way to make the
-// compiler complain about.
-std::string Emitter::primitive_cast_packed_field_ptr(const Call& c) {
-  if (c.args.size() != 1 || c.callee->kind != Kind::Ident) return {};
-  const auto& id = static_cast<const Ident&>(*c.callee);
-  if (!is_primitive_type(id.name)) return {};
-  const Expr* peeled = peel_primitive_casts(c.args[0].get());
-  if (!peeled || peeled->kind != Kind::Member) return {};
-  const auto& m = static_cast<const Member&>(*peeled);
-  const TypeExpr* base_type = deduce_type(*m.base);
-  if (!type_is_packed_record(base_type)) return {};
-  return "&(" + expr_to_cxx(*peeled) + ")";
-}
-
-// Same shape as `primitive_cast_packed_field_ptr`, but for a *bare*
-// packed-record-field access -- no outer primitive type-cast wrapping it.
-// Used by call sites like `Inc(g.d1, n)` where the field's own declared
-// type is the operand type for the read-modify-write. Returns
-// `(void_ptr_text, elem_cxx)` so callers can feed both into the
-// memcpy-based runtime helpers; same UB caveat applies (the address-of
-// text MUST only be consumed via `tp2cc_reinterpret_load` / `_store` /
-// `_inc` / `_dec`, never via a `T*` deref).
-std::optional<Emitter::PackedFieldStorage>
-Emitter::packed_field_storage_ref(const Expr& e) {
-  if (e.kind != Kind::Member) return std::nullopt;
-  const auto& m = static_cast<const Member&>(e);
-  const TypeExpr* base_type = deduce_type(*m.base);
-  if (!type_is_packed_record(base_type)) return std::nullopt;
-  const TypeExpr* field_type =
-      lookup_record_field_type_in_type(base_type, m.name);
-  if (!field_type) return std::nullopt;
-  return PackedFieldStorage{"&(" + expr_to_cxx(e) + ")", type_to_cxx(*field_type)};
-}
-
-std::optional<Emitter::UntypedStorageIndexView>
-Emitter::untyped_storage_index_view(const Index& i) {
-  if (i.indices.size() != 1 || i.base->kind != Kind::Call) return std::nullopt;
-  const auto& cast = static_cast<const Call&>(*i.base);
-  if (cast.args.size() != 1 || cast.callee->kind != Kind::Ident ||
-      !expr_is_untyped_storage_ref(*cast.args[0])) {
-    return std::nullopt;
-  }
-  const TypeExpr* base_ty = deduce_type(*i.base);
-  if (!base_ty) return std::nullopt;
-  base_ty = canonicalize_type(base_ty);
-  if (!base_ty || base_ty->kind != Kind::TyArray) return std::nullopt;
-  const auto& arr = static_cast<const TyArray&>(*base_ty);
-  if (arr.array_kind != ArrayKind::Fixed || arr.dims.size() != 1 ||
-      !arr.element) {
-    return std::nullopt;
-  }
-  std::string lo;
-  std::string size_expr;
-  if (!array_dim_bounds_to_cxx(*arr.dims[0], &lo, &size_expr)) {
-    return std::nullopt;
-  }
-  UntypedStorageIndexView view;
-  view.elem_cxx = type_to_cxx(*arr.element);
-  const std::string index_cxx = expr_to_cxx(*i.indices[0]);
-  const std::string offset =
-      "((" + index_cxx + ") - (" + lo + ")) * sizeof(" + view.elem_cxx + ")";
-  view.ptr_cxx = "::rt::tp2cc_byte_offset(" + expr_to_cxx(*cast.args[0]) + ", " +
-                 offset + ")";
-  return view;
-}
-
-bool Emitter::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
-                                      std::string* lo,
-                                      std::string* size_expr) {
-  auto expr_is_char = [&](const Expr& e) -> bool {
-    const TypeExpr* t = deduce_type(e);
-    if (t) t = canonicalize_type(t);
-    return tyname_is(t, "char");
-  };
-  auto ordinal_bound = [&](const Expr& e) -> std::string {
-    std::string text = const_value_to_cxx(e);
-    return expr_is_char(e) ? "::rt::p_ord(" + text + ")" : text;
-  };
-  auto ordinal_text = [&](std::string text) -> std::string {
-    return "::rt::tp2cc_ordinal_value(" + text + ")";
-  };
-  const TypeExpr* dim = canonicalize_type(&dim_in);
-  if (!dim) return false;
-  if (dim->kind == Kind::TyDistinct) {
-    // `type TIndex = type word; array[TIndex] of ...` keeps TIndex distinct
-    // for assignment compatibility, but its ordinal range is still the same
-    // as the underlying type's range. Recurse through the underlying type
-    // here so fixed arrays do not silently degrade to pointer aliases.
-    return array_dim_bounds_to_cxx(
-        *static_cast<const TyDistinct&>(*dim).underlying, lo, size_expr);
-  }
-  *lo = "0";
-  size_expr->clear();
-  if (dim->kind == Kind::TySubrange) {
-    const auto& sr = static_cast<const TySubrange&>(*dim);
-    *lo = const_value_to_cxx(*sr.lo);
-    *size_expr = "((" + ordinal_bound(*sr.hi) + ") - (" + ordinal_bound(*sr.lo) +
-                 ") + 1)";
-    return true;
-  }
-  if (dim->kind == Kind::TyEnum) {
-    const auto& en = static_cast<const TyEnum&>(*dim);
-    if (!enum_has_explicit_values(en)) {
-      *size_expr = std::to_string(en.members.size());
-    } else if (!en.members.empty()) {
-      *lo = enum_member_value_to_cxx(en, 0);
-      std::string hi = enum_member_value_to_cxx(en, en.members.size() - 1);
-      *size_expr = "((" + ordinal_text(hi) + ") - (" +
-                   ordinal_text(*lo) + ") + 1)";
-    }
-    return true;
-  }
-  if (dim->kind != Kind::TyName) return false;
-  const auto& tn = static_cast<const TyName&>(*dim);
-  auto leit = local_enums.find(tn.name);
-  if (leit != local_enums.end()) {
-    if (!leit->second->members.empty() &&
-        enum_has_explicit_values(*leit->second)) {
-      *lo = mangle(leit->second->members.front().name);
-      *size_expr = "((" +
-                   ordinal_text(mangle(leit->second->members.back().name)) +
-                   ") - (" + ordinal_text(*lo) + ") + 1)";
-    } else {
-      *size_expr = std::to_string(leit->second->members.size());
-    }
-    return true;
-  }
-  if (registry) {
-    auto eit = registry->enums.find(tn.name);
-    if (eit != registry->enums.end()) {
-      if (!eit->second.members.empty()) {
-        std::string prefix;
-        if (eit->second.defining_unit != current_unit_name) {
-          prefix = mangle(eit->second.defining_unit) + "::";
-        }
-        auto first = prefix + mangle(eit->second.members.front());
-        auto last = prefix + mangle(eit->second.members.back());
-        *lo = first;
-        *size_expr = "((" + ordinal_text(last) + ") - (" +
-                     ordinal_text(*lo) + ") + 1)";
-      }
-      return true;
-    }
-  }
-  if (tn.name == "boolean" || tn.name == "bytebool") {
-    *size_expr = "2";
-    return true;
-  }
-  if (tn.name == "byte" || tn.name == "char" || tn.name == "shortint") {
-    *size_expr = "256";
-    return true;
-  }
-  if (tn.name == "word" || tn.name == "smallint" || tn.name == "wordbool") {
-    *size_expr = "65536";
-    return true;
-  }
-  return false;
-}
-
-std::string Emitter::subrange_type_to_cxx(const TySubrange& r) {
-  // If both bounds are enum members of the same enum, the subrange's
-  // base type IS that enum -- and we want to keep that typing so
-  // things like `tp2cc_Set of R_EAX..R_BL` get `tp2cc_Set<tregister>` rather
-  // than `tp2cc_Set<int32_t>`.
-  auto bound_enum = [&](const Expr* e) -> std::string {
-    if (!e || e->kind != Kind::Ident) return {};
-    const std::string member = static_cast<const Ident&>(*e).name;
-    for (const auto& [enum_name, en] : local_enums) {
-      for (const auto& em : en->members) {
-        if (em.name == member) return mangle(enum_name);
-      }
-    }
-    if (!registry) return {};
-    const auto* info = find_visible_enum_info_for_member(member);
-    if (!info) return {};
-    std::string prefix;
-    if (!info->defining_unit.empty() && info->defining_unit != current_unit_name) {
-      prefix = unit_namespace_prefix(info->defining_unit);
-    }
-    return prefix + mangle(info->name);
-  };
-  std::string le = bound_enum(r.lo.get());
-  std::string he = bound_enum(r.hi.get());
-  if (!le.empty() && le == he) return le;
-  // Without further info we can only represent subranges as their
-  // base type; pick int32_t as a safe default.
-  return "int32_t";
-}
-
-std::string Emitter::string_type_to_cxx(const TyString& s) {
-  if (s.max_length) {
-    // `string[N]`
-    return "::rt::tp2cc_ShortString<" + const_value_to_cxx(*s.max_length) + ">";
-  }
-  return "::rt::tp2cc_ShortString<>";
-}
-
-std::optional<std::string> Emitter::shortstring_capacity_to_cxx(
-    const TypeExpr* t) {
-  const TypeExpr* canon = canonicalize_type(t);
-  if (!(canon && canon->kind == Kind::TyString)) return std::nullopt;
-  const auto& s = static_cast<const TyString&>(*canon);
-  if (s.max_length) return const_value_to_cxx(*s.max_length);
-  return std::string("255");
-}
-
-std::string Emitter::pointer_type_to_cxx(const TyPointer& p) {
-  return type_to_cxx(*p.target) + "*";
-}
-
-std::string Emitter::set_type_to_cxx(const TySet& s) {
-  // For enum element types we can use the enum itself to parameterise the
-  // set; for primitives we'd use a bounded-integer tp2cc_Set. Keep it coarse for
-  // now: element type tagged into the template.
-  return "::rt::tp2cc_Set<" + type_to_cxx(*s.element) + ">";
-}
-
-std::string Emitter::enum_type_to_cxx(const TyEnum& e, const std::string&) {
-  // Inline anonymous enum used as a type-expression -- e.g. a class
-  // field declared as `libctype : (libc5, glibc2, glibc21, uclibc);`
-  // (fpc-2.2.4/compiler/systems/t_linux.pas). Emit an inline C++
-  // anonymous enum with the same underlying width so the member
-  // identifiers are accessible in the enclosing scope (member functions
-  // of the surrounding class for a class-field, or the surrounding
-  // function body for a local-typed var).
-  if (e.members.empty()) return "int32_t";
-  std::string out = "enum : ";
-  out += enum_underlying_type_to_cxx(e);
-  out += " { ";
-  for (size_t i = 0; i < e.members.size(); ++i) {
-    if (i) out += ", ";
-    out += mangle(e.members[i].name);
-    if (e.members[i].value) {
-      out += " = " + const_value_to_cxx(*e.members[i].value);
-    }
-  }
-  out += " }";
-  return out;
-}
-
-std::string Emitter::array_type_to_cxx(const TyArray& a) {
-  if (a.array_kind == ArrayKind::Open) {
-    return open_array_type_to_cxx(a);
-  }
-  if (a.array_kind == ArrayKind::Dynamic) {
-    return "::rt::tp2cc_DynArray<" + type_to_cxx(*a.element) + ">";
-  }
-  // `array[D1, D2, ...] of T` emits as nested ::rt::tp2cc_Array<T, Lo, N>`
-  // wrappers with the Pascal bounds preserved at the type level.
-  std::string ty = type_to_cxx(*a.element);
-  // Wrap from innermost to outermost.
-  for (auto it = a.dims.rbegin(); it != a.dims.rend(); ++it) {
-    std::string lo, size_expr;
-    if (!array_dim_bounds_to_cxx(**it, &lo, &size_expr)) {
-      // Can't compute dimension statically; fall back to pointer.
-      return type_to_cxx(*a.element) + "*";
-    }
-    ty = "::rt::tp2cc_Array<" + ty + ", " + lo + ", " + size_expr + ">";
-  }
-  return ty;
-}
-
-std::string Emitter::procedural_param_types_to_cxx(
-    const std::vector<Param>& params) {
-  std::string out;
-  bool first = true;
-  for (const auto& pp : params) {
-    std::string pt;
-    if (!pp.type) {
-      pt = "void*";
-    } else if (type_is_open_array(pp.type.get())) {
-      pt = open_array_type_to_cxx(*pp.type);
-    } else {
-      pt = type_to_cxx(*pp.type);
-    }
-    if (pp.type) {
-      if (pp.mode == Param::Var || pp.mode == Param::Out) pt += "&";
-      else if (pp.mode == Param::Const) {
-        if (const_param_needs_mutable_ref(pp.type.get())) pt += "&";
-        else if (const_param_needs_const_ref(pp.type.get()))
-          pt = "const " + pt + "&";
-      }
-    }
-    size_t repeats = pp.names.empty() ? 1 : pp.names.size();
-    for (size_t i = 0; i < repeats; ++i) {
-      if (!first) out += ", ";
-      first = false;
-      out += pt;
-    }
-  }
-  return out;
-}
-
-std::string Emitter::method_pointer_helper_name(const ProcDecl& pd) {
-  // Emit one thunk per Pascal signature. Overloaded methods therefore need
-  // distinct helper names, but the helper itself still has to be a valid
-  // ordinary C++ identifier with no reserved `__...` spelling.
-  std::string out = "tp2cc_methodptr_";
-  out += encode_helper_ident(pd.name);
-  out += "_";
-  out += encode_helper_params(pd.params);
-  out += "_ret_";
-  out += (pd.pkind == ProcKind::Function && pd.return_type)
-             ? encode_helper_type(*pd.return_type)
-             : std::string("void");
-  return out;
-}
-
-std::string Emitter::procedural_type_to_cxx(const TyProcedural& p) {
-  std::string ret = p.is_function ? type_to_cxx(*p.return_type) : std::string("void");
-  std::string params = procedural_param_types_to_cxx(p.params);
-  if (p.is_method) {
-    return "::rt::tp2cc_MethodPtr<" + ret + "(" + params + ")>";
-  }
-  return ret + " (*)(" + params + ")";
-}
-
-std::vector<Emitter::RecordFieldDecl>
-Emitter::record_field_decls(const std::vector<RecordField>& fields) {
-  std::vector<RecordFieldDecl> out;
-  for (const auto& f : fields) {
-    std::string type_cxx = f.type ? type_to_cxx(*f.type) : std::string("int32_t");
-    for (const auto& fn : f.names) {
-      RecordFieldDecl entry;
-      entry.type = f.type.get();
-      entry.type_cxx = type_cxx;
-      entry.mangled_name = mangle(fn);
-      entry.decl = named_type_to_cxx(f.type.get(), entry.mangled_name);
-      out.push_back(std::move(entry));
-    }
-  }
-  return out;
-}
-
-Emitter::PackedRecordLayout
-Emitter::compute_packed_record_layout(const TyRecord& tr) {
-  PackedRecordLayout out;
-  out.size_expr = "0";
-  auto append_run =
-      [&](const std::vector<RecordField>& fields, std::string& size_expr) {
-    for (const auto& field : record_field_decls(fields)) {
-      out.field_offsets.emplace_back(field.mangled_name, size_expr);
-      size_expr = "(" + size_expr + " + sizeof(" + field.type_cxx + "))";
-    }
-  };
-  append_run(tr.fields, out.size_expr);
-  if (tr.has_variant) {
-    if (!tr.variant_tag_name.empty() && tr.variant_tag_type) {
-      RecordField tag_field;
-      tag_field.names.push_back(tr.variant_tag_name);
-      tag_field.type = tr.variant_tag_type;
-      append_run({tag_field}, out.size_expr);
-    }
-    std::vector<std::string> case_sizes;
-    for (const auto& vc : tr.variant_cases) {
-      if (vc.fields.empty()) continue;
-      std::string case_size_expr = "0";
-      for (const auto& field : record_field_decls(vc.fields)) {
-        // Variant-case fields share the same outer offset; the per-case
-        // base is `(packed_size_expr + case_size_so_far)`.
-        const std::string field_offset =
-            "(" + out.size_expr + " + " + case_size_expr + ")";
-        out.field_offsets.emplace_back(field.mangled_name, field_offset);
-        case_size_expr =
-            "(" + case_size_expr + " + sizeof(" + field.type_cxx + "))";
-      }
-      case_sizes.push_back(case_size_expr);
-    }
-    if (!case_sizes.empty()) {
-      std::string max_case = case_sizes.front();
-      for (size_t i = 1; i < case_sizes.size(); ++i) {
-        max_case = "((" + max_case + ") < (" + case_sizes[i] + ") ? (" +
-                   case_sizes[i] + ") : (" + max_case + "))";
-      }
-      out.size_expr = "(" + out.size_expr + " + " + max_case + ")";
-    }
-  }
-  return out;
-}
-
 void Emitter::emit_packed_record_asserts(const std::string& type_text,
                                          const PackedRecordLayout& layout,
                                          std::string_view label) {
@@ -1807,171 +846,6 @@ void Emitter::emit_packed_record_asserts(const std::string& type_text,
   emitln("static_assert(sizeof(" + type_text + ") == " + layout.size_expr +
          ", \"packed record '" + std::string(label) +
          "' must have the exact packed Pascal size.\");");
-}
-
-std::string Emitter::named_type_to_cxx(const TypeExpr* t, std::string_view name,
-                                       std::string_view name_prefix) {
-  if (!t) {
-    if (name.empty()) {
-      return name_prefix.empty() ? std::string("int32_t")
-                                 : std::string("int32_t ") +
-                                       std::string(name_prefix);
-    }
-    return std::string("int32_t ") + std::string(name_prefix) + std::string(name);
-  }
-
-  // Direct procvar declarations need the identifier inside the `(*)`
-  // declarator. `void (*hook)(int)` is valid C++; `void (*)(int) hook`
-  // is not.
-  if (t->kind == Kind::TyProcedural) {
-    const auto& p = static_cast<const TyProcedural&>(*t);
-    if (!p.is_method) {
-      std::string ret =
-          p.is_function ? type_to_cxx(*p.return_type) : std::string("void");
-      std::string params = procedural_param_types_to_cxx(p.params);
-      if (name.empty()) {
-        return ret + " (*" + std::string(name_prefix) + ")(" + params + ")";
-      }
-      return ret + " (*" + std::string(name_prefix) + std::string(name) +
-             ")(" + params + ")";
-    }
-  }
-
-  std::string ty = type_to_cxx(*t);
-  return attach_named_cxx_type(ty, name, name_prefix);
-}
-
-std::string Emitter::type_to_cxx(const TypeExpr& t) {
-  switch (t.kind) {
-    case Kind::TyName:       return type_name_to_cxx(static_cast<const TyName&>(t));
-    case Kind::TyPointer:    return pointer_type_to_cxx(static_cast<const TyPointer&>(t));
-    case Kind::TySet:        return set_type_to_cxx(static_cast<const TySet&>(t));
-    case Kind::TyArray:      return array_type_to_cxx(static_cast<const TyArray&>(t));
-    case Kind::TySubrange:   return subrange_type_to_cxx(static_cast<const TySubrange&>(t));
-    case Kind::TyString:     return string_type_to_cxx(static_cast<const TyString&>(t));
-    case Kind::TyEnum:       return enum_type_to_cxx(static_cast<const TyEnum&>(t), "");
-    case Kind::TyDistinct:   return type_to_cxx(*static_cast<const TyDistinct&>(t).underlying);
-    case Kind::TyProcedural: return procedural_type_to_cxx(static_cast<const TyProcedural&>(t));
-    case Kind::TyMetaclass:
-      return "const " +
-             metaclass_struct_cxx(static_cast<const TyMetaclass&>(t).class_name) +
-             "*";
-    case Kind::TyFile: {
-      // Pascal `text`, `file`, `file of T`.
-      const auto& tf = static_cast<const TyFile&>(t);
-      if (tf.is_text || !tf.element) return "::rt::tp2cc_TextFile";
-      return "::rt::tp2cc_TypedFile<" + type_to_cxx(*tf.element) + ">";
-    }
-    case Kind::TyRecord: {
-      // Inline anonymous record used as a type-expression -- e.g. a local
-      // var declared as `r : packed record a, b : byte; end;`. Emit a C++
-      // anonymous struct so subsequent field accesses resolve correctly.
-      // Variant cases are deliberately not lowered here; if encountered,
-      // fall back to the stub so the bug is visible at C++ compile time
-      // rather than silently miscompiled.
-      const auto& tr = static_cast<const TyRecord&>(t);
-      if (tr.has_variant) return "/* inline-variant-record */ int32_t";
-      std::string out = "struct ";
-      if (tr.is_packed) out += "[[gnu::packed]] ";
-      out += "{ ";
-      for (const auto& field : record_field_decls(tr.fields)) {
-        out += field.decl + "; ";
-      }
-      out += "}";
-      return out;
-    }
-    case Kind::TyObject:
-      // Inline anonymous object: rare, and the C++ shape would need a
-      // base-class context the type-expression position can't carry.
-      // Stub so the call site fails loudly if it ever appears.
-      return "/* inline-object */ int32_t";
-    default:                 return "/* unsupported-type */ int32_t";
-  }
-}
-
-std::string Emitter::low_high_expr_for_named_type(std::string_view name,
-                                                  bool want_low) {
-  if (std::string primitive = primitive_low_high_expr(name, want_low);
-      !primitive.empty()) {
-    return primitive;
-  }
-
-  auto emit_enum_bound = [&](std::string_view enum_name,
-                             std::string_view defining_unit) -> std::string {
-    if (defining_unit.empty() || defining_unit == current_unit_name) {
-      return enum_bound_name(enum_name, want_low ? "low" : "high");
-    }
-    return mangle(defining_unit) + "::" +
-           enum_bound_name(enum_name, want_low ? "low" : "high");
-  };
-
-  auto dot = name.find('.');
-  if (dot != std::string_view::npos) {
-    std::string unit(name.substr(0, dot));
-    std::string tail(name.substr(dot + 1));
-    if (registry) {
-      auto eit = registry->enums.find(ascii_lower(tail));
-      if (eit != registry->enums.end() && eit->second.defining_unit == unit) {
-        return emit_enum_bound(tail, unit);
-      }
-      auto ait = registry->aliases.find(ascii_lower(tail));
-      if (ait != registry->aliases.end() && ait->second.defining_unit == unit &&
-          ait->second.target) {
-        return low_high_expr_for_type(ait->second.target.get(), want_low);
-      }
-    }
-    return {};
-  }
-
-  if (local_enums.count(std::string(name))) {
-    return enum_bound_name(name, want_low ? "low" : "high");
-  }
-  if (registry) {
-    auto eit = registry->enums.find(ascii_lower(std::string(name)));
-    if (eit != registry->enums.end()) {
-      return emit_enum_bound(name, eit->second.defining_unit);
-    }
-  }
-
-  auto lit = local_type_aliases_scoped.find(std::string(name));
-  if (lit != local_type_aliases_scoped.end() && lit->second) {
-    return low_high_expr_for_type(lit->second, want_low);
-  }
-  if (registry) {
-    auto ait = registry->aliases.find(ascii_lower(std::string(name)));
-    if (ait != registry->aliases.end() && ait->second.target) {
-      return low_high_expr_for_type(ait->second.target.get(), want_low);
-    }
-  }
-  return {};
-}
-
-std::string Emitter::low_high_expr_for_type(const TypeExpr* t,
-                                            bool want_low) {
-  if (!t) return {};
-  if (t->kind == Kind::TyName) {
-    return low_high_expr_for_named_type(static_cast<const TyName&>(*t).name,
-                                        want_low);
-  }
-  if (t->kind == Kind::TyDistinct) {
-    return low_high_expr_for_type(
-        static_cast<const TyDistinct&>(*t).underlying.get(), want_low);
-  }
-  if (t->kind == Kind::TySubrange) {
-    const auto& r = static_cast<const TySubrange&>(*t);
-    return const_value_to_cxx(want_low ? *r.lo : *r.hi);
-  }
-  if (t->kind == Kind::TyArray) {
-    // `low(arr)` / `high(arr)` on an array TYPE (not a value): the
-    // bounds come from the index type. Recurse on the first dimension.
-    // Open/dynamic arrays need a value to ask `p_length` of, which the
-    // type-only path doesn't have -- caller will fall back.
-    const auto& arr = static_cast<const TyArray&>(*t);
-    if (arr.array_kind != ArrayKind::Fixed) return {};
-    if (arr.dims.empty()) return {};
-    return low_high_expr_for_type(arr.dims[0].get(), want_low);
-  }
-  return {};
 }
 
 // ---------------------------------------------------------------------------
@@ -2024,410 +898,6 @@ const TypeExpr* Emitter::lookup_record_field_type_in_with(
 bool Emitter::with_bind_has_visible_member(const WithBind& wb,
                                            std::string_view name) {
   return analysis_.with_bind_has_visible_member(wb, name);
-}
-
-bool Emitter::type_is_packed_record(const TypeExpr* t) {
-  if (!registry || !t) return false;
-  if (t->kind == Kind::TyName) {
-    const auto& n = static_cast<const TyName&>(*t);
-    auto it = registry->records.find(ascii_lower(n.name));
-    if (it != registry->records.end()) return it->second.is_packed;
-  }
-  t = canonicalize_type(t);
-  return t && t->kind == Kind::TyRecord &&
-         static_cast<const TyRecord&>(*t).is_packed;
-}
-
-bool Emitter::type_is_direct_packed_aggregate(const TypeExpr* t) {
-  if (!t) return false;
-  if (t->kind == Kind::TyName) {
-    const std::string low = ascii_lower(static_cast<const TyName&>(*t).name);
-    if (!low.empty() && registry &&
-        (registry->records.count(low) || registry->classes.count(low))) {
-      return true;
-    }
-    static const std::unordered_set<std::string> runtime_aggregate_types = {
-        "datetime", "dirstr", "extstr", "namestr",
-        "pathstr",  "searchrec", "stat", "tmethod",
-    };
-    if (runtime_aggregate_types.count(low)) return true;
-  }
-  t = canonicalize_type(t);
-  if (!t) return false;
-  switch (t->kind) {
-    case Kind::TyArray:
-    case Kind::TyRecord:
-    case Kind::TyObject:
-    case Kind::TyProcedural:
-    case Kind::TySet:
-    case Kind::TyString:
-      return true;
-    default:
-      return false;
-  }
-}
-
-bool Emitter::type_is_byte_aligned_packed_index_carrier(const TypeExpr* t) {
-  if (!t) return false;
-  t = canonicalize_type(t);
-  if (!t) return false;
-  switch (t->kind) {
-    case Kind::TyString:
-    case Kind::TySet:
-      return true;
-    case Kind::TyArray: {
-      const auto& a = static_cast<const TyArray&>(*t);
-      return type_is_byte_aligned_packed_index_carrier(a.element.get());
-    }
-    case Kind::TyEnum: {
-      const std::string underlying =
-          enum_underlying_type_to_cxx(static_cast<const TyEnum&>(*t));
-      return underlying == "uint8_t" || underlying == "int8_t";
-    }
-    case Kind::TySubrange: {
-      const std::string lowered =
-          subrange_type_to_cxx(static_cast<const TySubrange&>(*t));
-      return lowered == "uint8_t" || lowered == "int8_t";
-    }
-    case Kind::TyName: {
-      const std::string low = ascii_lower(static_cast<const TyName&>(*t).name);
-      return low == "char" || low == "byte" || low == "shortint" ||
-             low == "boolean";
-    }
-    default:
-      return false;
-  }
-}
-
-std::optional<Emitter::PackedAggregateFieldUse>
-Emitter::direct_packed_aggregate_field_use(const Expr& e) {
-  if (!registry || e.kind != Kind::Member) return std::nullopt;
-  const auto& m = static_cast<const Member&>(e);
-  const TypeExpr* base_type = deduce_type(*m.base);
-  if (!type_is_packed_record(base_type)) return std::nullopt;
-  const TypeExpr* field_type = lookup_record_field_type_in_type(base_type, m.name);
-  if (!field_type || !type_is_direct_packed_aggregate(field_type)) {
-    return std::nullopt;
-  }
-  std::string record_name = registry->direct_type_name(base_type);
-  if (record_name.empty()) {
-    record_name = "packed record";
-  }
-  return PackedAggregateFieldUse{record_name, m.name};
-}
-
-void Emitter::report_packed_aggregate_subobject_use(
-    Location where, std::string_view op,
-    const PackedAggregateFieldUse& use) {
-  report_error(where, std::string(op) + " through packed aggregate field '" +
-                          use.field_name + "' of '" + use.record_name +
-                          "' is unsupported");
-}
-
-// Strip a chain of primitive casts like `pointer(longint(x))` down to the
-// underlying storage expression. Pascal uses these casts to satisfy type
-// checking before reinterpreting bytes, so emit-time lvalue analysis has to
-// look through them.
-const Expr* Emitter::peel_primitive_casts(const Expr* e) {
-  while (e && e->kind == Kind::Call) {
-    const auto& c = static_cast<const Call&>(*e);
-    if (c.args.size() != 1 || c.callee->kind != Kind::Ident) break;
-    if (!is_primitive_type(static_cast<const Ident&>(*c.callee).name)) break;
-    e = c.args[0].get();
-  }
-  return e;
-}
-
-// Decide whether an expression names mutable storage we can legally
-// reinterpret in-place. This is stricter than "AST looks like an lvalue":
-// parameterless methods auto-call in value context, and `inherited.name`
-// can also lower to a call, so those must not be treated as addressable
-// storage here.
-bool Emitter::expr_is_storage_lvalue(const Expr& e) {
-  const Expr* peeled = peel_primitive_casts(&e);
-  const Expr& root = peeled ? *peeled : e;
-  bool is_inherited_member = false;
-  if (root.kind == Kind::Member) {
-    const auto& m = static_cast<const Member&>(root);
-    if (m.base->kind == Kind::Ident &&
-        static_cast<const Ident&>(*m.base).name == "inherited") {
-      is_inherited_member = true;
-    }
-  }
-  bool is_lvalue_shape =
-      !is_inherited_member &&
-      (root.kind == Kind::Ident || root.kind == Kind::Member ||
-       root.kind == Kind::Index || root.kind == Kind::Deref);
-  if (root.kind == Kind::Ident &&
-      local_untyped_params.count(static_cast<const Ident&>(root).name)) {
-    is_lvalue_shape = true;
-  }
-  if (!is_lvalue_shape || !registry) return is_lvalue_shape;
-
-  if (root.kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(root);
-    ResolveResult rr = resolve_name(id.name);
-    if (rr.is_callable && rr.accepts_zero_args) return false;
-    if (rr.kind == ResolvedKind::WithProperty ||
-        rr.kind == ResolvedKind::ClassProperty) {
-      return false;
-    }
-  } else if (root.kind == Kind::Member) {
-    const auto& m = static_cast<const Member&>(root);
-    std::string cls = deduce_class_alias(*m.base);
-    if (!cls.empty()) {
-      if (registry->lookup_class_property(cls, m.name)) return false;
-      if (const auto* method = registry->lookup_class_method(cls, m.name)) {
-        if (method->accepts_zero_args) return false;
-      }
-    }
-  }
-  return true;
-}
-
-bool Emitter::expr_is_untyped_storage_ref(const Expr& e) {
-  const Expr* peeled = peel_primitive_casts(&e);
-  const Expr& root = peeled ? *peeled : e;
-  return root.kind == Kind::Ident &&
-         local_untyped_params.count(static_cast<const Ident&>(root).name);
-}
-
-bool Emitter::expr_is_charish(const Expr& e) {
-  const TypeExpr* t = deduce_type(e);
-  if (!t) return false;
-  t = canonicalize_type(t);
-  return tyname_is(t, "char");
-}
-
-bool Emitter::type_is_pcharish(const TypeExpr* t) {
-  if (!t) return false;
-  t = canonicalize_type(t);
-  if (!t) return false;
-  if (tyname_is(t, "pchar")) return true;
-  return t->kind == Kind::TyPointer &&
-         tyname_is(static_cast<const TyPointer&>(*t).target.get(), "char");
-}
-
-bool Emitter::type_is_metaclass(const TypeExpr* t) {
-  return !metaclass_target_name(t).empty();
-}
-
-bool Emitter::type_is_reference_class(const TypeExpr* t) {
-  if (!t) return false;
-  t = canonicalize_type(t);
-  if (!t) return false;
-  if (t->kind == Kind::TyObject) {
-    return static_cast<const TyObject&>(*t).is_reference_type;
-  }
-  if (t->kind != Kind::TyName) return false;
-  const auto& n = static_cast<const TyName&>(*t);
-  if (const auto* ci = class_info_for_type_name(n.name)) {
-    return ci->is_reference_type;
-  }
-  return is_builtin_reference_class_name(n.name);
-}
-
-bool Emitter::expr_is_reference_class(const Expr& e) {
-  if (e.kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(e);
-    if (id.name == "self" && !current_class_name.empty() && registry) {
-      auto it = registry->classes.find(current_class_name);
-      return it != registry->classes.end() && it->second.is_reference_type;
-    }
-  } else if (e.kind == Kind::Call && registry) {
-    const auto& c = static_cast<const Call&>(e);
-    if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
-      const auto& id = static_cast<const Ident&>(*c.callee);
-      if (is_builtin_reference_class_name(id.name)) return true;
-      auto it = registry->classes.find(id.name);
-      if (it != registry->classes.end() && it->second.is_reference_type) {
-        return true;
-      }
-    }
-  } else if (e.kind == Kind::Call) {
-    const auto& c = static_cast<const Call&>(e);
-    if (c.args.size() == 1 && c.callee->kind == Kind::Ident &&
-        is_builtin_reference_class_name(
-            static_cast<const Ident&>(*c.callee).name)) {
-      return true;
-    }
-  }
-  return type_is_reference_class(deduce_type(e));
-}
-
-std::string Emitter::member_access_op(const Expr& e) {
-  const TypeExpr* t = deduce_type(e);
-  // Pascal always spells member access as `base.member`, but after lowering
-  // the base may already be a pointer-typed C++ value: reference classes,
-  // metaclasses, explicit pointer/class casts, or fields/results whose
-  // Pascal type is pointer-ish. Once the base is such a value, every further
-  // hop has to stay on `->`.
-  if (expr_is_reference_class(e) || type_is_pointerish(t)) return "->";
-  if (t) {
-    std::string cxx = type_to_cxx(*t);
-    if (!cxx.empty() && cxx.back() == '*') return "->";
-  }
-  return ".";
-}
-
-bool Emitter::type_is_stringish(const TypeExpr* t) {
-  if (!t) return false;
-  t = canonicalize_type(t);
-  if (!t) return false;
-  if (t->kind == Kind::TyString) return true;
-  return tyname_is(t, "string") || tyname_is(t, "shortstring") ||
-         tyname_is(t, "ansistring") || tyname_is(t, "utf8string");
-}
-
-bool Emitter::type_is_pointerish(const TypeExpr* t) {
-  if (!t) return false;
-  t = canonicalize_type(t);
-  if (!t) return false;
-  if (type_is_metaclass(t)) return true;
-  if (type_is_reference_class(t)) return true;
-  if (t->kind == Kind::TyPointer) return true;
-  return tyname_is(t, "pointer") || tyname_is(t, "pchar") ||
-         tyname_is(t, "ppchar");
-}
-
-bool Emitter::type_is_open_array(const TypeExpr* t) {
-  if (!t) return false;
-  t = canonicalize_type(t);
-  return t && t->kind == Kind::TyArray &&
-         static_cast<const TyArray&>(*t).array_kind == ArrayKind::Open;
-}
-
-std::string Emitter::reinterpret_ref_text(const std::string& ty_cxx,
-                                          const std::string& source_cxx,
-                                          bool pointee_view) {
-  // Two distinct Pascal operations lower through this helper:
-  //   - "same storage, new type" (`absolute`, typed lvalue casts) =>
-  //     tp2cc_reinterpret_storage_ref<T>(x)
-  //   - "pointer points at T" (`absolute p` where p is pointer-ish) =>
-  //     tp2cc_reinterpret_ref<T>(p)
-  // They currently compile to the same cast sequence in the runtime, but
-  // the emitter must keep the intent separate so later runtime tightening
-  // does not blur "reinterpret the pointer slot" with "reinterpret pointee".
-  const char* helper = pointee_view ? "::rt::tp2cc_reinterpret_ref<"
-                                    : "::rt::tp2cc_reinterpret_storage_ref<";
-  return std::string(helper) + ty_cxx + ">(" + source_cxx + ")";
-}
-
-const VarInfo* Emitter::find_visible_unit_var(const std::string& name) {
-  if (!registry) return nullptr;
-  auto cur = registry->units.find(current_unit_name);
-  if (cur == registry->units.end()) return nullptr;
-  if (const auto* v = cur->second.find_var(name)) return v;
-  for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend(); ++it) {
-    auto uit = registry->units.find(*it);
-    if (uit == registry->units.end()) continue;
-    if (const auto* v = uit->second.find_export_var(name)) return v;
-  }
-  return nullptr;
-}
-
-const ConstInfo* Emitter::find_visible_unit_const(const std::string& name) {
-  if (!registry) return nullptr;
-  auto cur = registry->units.find(current_unit_name);
-  if (cur == registry->units.end()) return nullptr;
-  if (const auto* c = cur->second.find_const(name)) return c;
-  for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend(); ++it) {
-    auto uit = registry->units.find(*it);
-    if (uit == registry->units.end()) continue;
-    if (const auto* c = uit->second.find_export_const(name)) return c;
-  }
-  return nullptr;
-}
-
-const EnumInfoReg* Emitter::find_visible_enum_info_for_member(
-    const std::string& name) {
-  if (!registry) return nullptr;
-
-  auto find_in_unit = [&](const std::string& unit_name) -> const EnumInfoReg* {
-    for (const auto& [enum_name, info] : registry->enums) {
-      (void)enum_name;
-      if (info.defining_unit != unit_name) continue;
-      for (const auto& member : info.members) {
-        if (member == name) return &info;
-      }
-    }
-    return nullptr;
-  };
-
-  if (const auto* info = find_in_unit(current_unit_name)) return info;
-  auto cur = registry->units.find(current_unit_name);
-  if (cur == registry->units.end()) return nullptr;
-  for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend(); ++it) {
-    if (const auto* info = find_in_unit(*it)) return info;
-  }
-  return nullptr;
-}
-
-std::optional<Emitter::AbsoluteTargetInfo> Emitter::resolve_absolute_target(
-    const VarDecl& vd) {
-  AbsoluteTargetInfo info;
-  info.cxx = resolve_name(vd.absolute_target).cxx;
-
-  if (local_untyped_params.count(vd.absolute_target)) {
-    info.is_pointerish = true;
-    return info;
-  }
-
-  auto lit = local_consts.find(vd.absolute_target);
-  if (lit != local_consts.end()) {
-    if (!lit->second || !lit->second->type) {
-      report_error(vd.loc, "absolute target must be a variable or typed const");
-      return std::nullopt;
-    }
-    info.type = lit->second->type.get();
-    info.is_pointerish = type_is_pointerish(info.type);
-    return info;
-  }
-
-  auto tit = local_types.find(vd.absolute_target);
-  if (tit != local_types.end()) {
-    info.type = tit->second;
-    info.is_pointerish = type_is_pointerish(info.type);
-    info.is_const_storage = local_const_params.count(vd.absolute_target) > 0;
-    return info;
-  }
-
-  ResolveResult rr = resolve_name(vd.absolute_target);
-  if (rr.kind == ResolvedKind::ClassField && registry &&
-      !current_class_name.empty()) {
-    if (auto* f = registry->lookup_class_field(current_class_name,
-                                               vd.absolute_target)) {
-      info.type = f->type.get();
-      info.is_pointerish = type_is_pointerish(info.type);
-      return info;
-    }
-  }
-
-  if (const auto* v = find_visible_unit_var(vd.absolute_target)) {
-    info.type = v->type.get();
-    info.is_pointerish = type_is_pointerish(info.type);
-    return info;
-  }
-
-  if (const auto* c = find_visible_unit_const(vd.absolute_target)) {
-    if (!c->type) {
-      report_error(vd.loc, "absolute target must be a variable or typed const");
-      return std::nullopt;
-    }
-    info.type = c->type.get();
-    info.is_pointerish = type_is_pointerish(info.type);
-    return info;
-  }
-
-  report_error(vd.loc, "absolute target must be a variable or typed const");
-  return std::nullopt;
-}
-
-std::string Emitter::open_array_type_to_cxx(const TypeExpr& t) {
-  const TypeExpr* canon = canonicalize_type(&t);
-  const auto& a = static_cast<const TyArray&>(*canon);
-  return "::rt::tp2cc_OpenArray<" +
-         (a.element ? type_to_cxx(*a.element) : std::string("int32_t")) + ">";
 }
 
 std::string Emitter::open_array_constructor_to_cxx(const SetLit& s,

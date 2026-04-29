@@ -23,6 +23,22 @@ std::string ascii_lower(std::string_view text) {
   return s;
 }
 
+std::string attach_named_cxx_type(std::string_view ty, std::string_view name,
+                                  std::string_view name_prefix) {
+  if (name_prefix == "const &") {
+    std::string out = "const " + std::string(ty) + "&";
+    if (!name.empty()) out += " " + std::string(name);
+    return out;
+  }
+  if (name.empty()) {
+    return name_prefix.empty() ? std::string(ty)
+                               : std::string(ty) + " " +
+                                     std::string(name_prefix);
+  }
+  return std::string(ty) + " " + std::string(name_prefix) +
+         std::string(name);
+}
+
 const MethodSig* representative_method(const std::vector<MethodSig>& sigs) {
   return sigs.empty() ? nullptr : &sigs.front();
 }
@@ -78,9 +94,135 @@ bool is_pascal_result_ident(std::string_view name) {
   return ascii_lower(name) == "result";
 }
 
+std::string encode_helper_ident(std::string_view name) {
+  std::string out;
+  if (name.empty()) return "empty";
+  for (char ch : name) {
+    if (ch >= 'A' && ch <= 'Z') {
+      out.push_back(static_cast<char>(ch - 'A' + 'a'));
+    } else if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) {
+      out.push_back(ch);
+    } else if (ch == '_') {
+      out += "_u";
+    } else {
+      out += "x";
+      constexpr char kHex[] = "0123456789abcdef";
+      out.push_back(kHex[(static_cast<unsigned char>(ch) >> 4) & 0xF]);
+      out.push_back(kHex[static_cast<unsigned char>(ch) & 0xF]);
+    }
+  }
+  return out;
+}
+
+namespace {
+
+std::string encode_helper_param_mode(ast::Param::Mode mode) {
+  switch (mode) {
+    case ast::Param::Value: return "value";
+    case ast::Param::Var: return "var";
+    case ast::Param::Const: return "const";
+    case ast::Param::Out: return "out";
+  }
+  return "value";
+}
+
+}  // namespace
+
+std::string encode_helper_type(const ast::TypeExpr& t) {
+  switch (t.kind) {
+    case ast::Kind::TyName:
+      return "name_" +
+             encode_helper_ident(static_cast<const ast::TyName&>(t).name);
+    case ast::Kind::TyArray: {
+      const auto& a = static_cast<const ast::TyArray&>(t);
+      std::string out;
+      switch (a.array_kind) {
+        case ast::ArrayKind::Open:
+          out = "openarr";
+          break;
+        case ast::ArrayKind::Dynamic:
+          out = "dynarr";
+          break;
+        case ast::ArrayKind::Fixed:
+          out = "arr";
+          out += std::to_string(a.dims.size());
+          break;
+      }
+      out += "_";
+      out += a.element ? encode_helper_type(*a.element)
+                       : std::string("void");
+      return out;
+    }
+    case ast::Kind::TyRecord:
+      return "record";
+    case ast::Kind::TyObject: {
+      const auto& o = static_cast<const ast::TyObject&>(t);
+      return o.is_reference_type ? "class" : "object";
+    }
+    case ast::Kind::TySet:
+      return "set_" +
+             encode_helper_type(*static_cast<const ast::TySet&>(t).element);
+    case ast::Kind::TyFile: {
+      const auto& f = static_cast<const ast::TyFile&>(t);
+      if (f.is_text) return "text";
+      return f.element ? "file_" + encode_helper_type(*f.element)
+                       : std::string("file_untyped");
+    }
+    case ast::Kind::TyPointer: {
+      const auto& p = static_cast<const ast::TyPointer&>(t);
+      return p.target ? "ptr_" + encode_helper_type(*p.target)
+                      : std::string("ptr_void");
+    }
+    case ast::Kind::TyProcedural: {
+      const auto& p = static_cast<const ast::TyProcedural&>(t);
+      std::string out = p.is_method ? "method" : "proc";
+      out += p.is_function ? "_fn_" : "_proc_";
+      out += encode_helper_params(p.params);
+      out += "_ret_";
+      out += (p.is_function && p.return_type)
+                 ? encode_helper_type(*p.return_type)
+                 : std::string("void");
+      return out;
+    }
+    case ast::Kind::TyEnum:
+      return "enum";
+    case ast::Kind::TySubrange:
+      return "subrange";
+    case ast::Kind::TyString: {
+      const auto& s = static_cast<const ast::TyString&>(t);
+      return s.max_length ? "string_sized" : std::string("string");
+    }
+    case ast::Kind::TyMetaclass:
+      return "metaclass_" + encode_helper_ident(
+                                 static_cast<const ast::TyMetaclass&>(t).class_name);
+    case ast::Kind::TyDistinct:
+      return "distinct_" + encode_helper_type(
+                               *static_cast<const ast::TyDistinct&>(t).underlying);
+    default:
+      return "type";
+  }
+}
+
+std::string encode_helper_params(const std::vector<ast::Param>& params) {
+  if (params.empty()) return "noargs";
+  std::string out;
+  for (const auto& param : params) {
+    size_t repeats = param.names.empty() ? 1 : param.names.size();
+    std::string type_code =
+        param.type ? encode_helper_type(*param.type) : std::string("untyped");
+    for (size_t i = 0; i < repeats; ++i) {
+      if (!out.empty()) out += "_";
+      out += encode_helper_param_mode(param.mode);
+      out += "_";
+      out += type_code;
+    }
+  }
+  return out;
+}
+
 std::string enum_bound_name(std::string_view type_name, std::string_view which) {
   return "tp2cc_enum_" + std::string(which) + "_" +
-         ascii_lower(std::string(type_name));
+         encode_helper_ident(type_name);
 }
 
 const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
