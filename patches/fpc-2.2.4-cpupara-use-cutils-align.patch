@@ -1,0 +1,60 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-29
+Subject: Make non-x86 cpupara units use compiler-side cutils align helper
+License: expat
+
+Several `cpupara.pas` backend units call bare `align(...)` while not
+importing `cutils`.  Native FPC still accepts those calls via implicit
+`System.align`, but the compiler sources are trying to stay isolated
+from RTL-specific helpers.  Most of the compiler already gets integer
+`align` from the compiler-side `cutils` unit instead.
+
+Import `cutils` in the remaining stack-parameter manager units that use
+integer `align(...)`:
+
+  compiler/arm/cpupara.pas
+  compiler/m68k/cpupara.pas
+  compiler/powerpc/cpupara.pas
+  compiler/powerpc64/cpupara.pas
+
+--- a/compiler/arm/cpupara.pas
++++ b/compiler/arm/cpupara.pas
+@@ -53,6 +53,7 @@
+        verbose,systems,
+        rgobj,
+        defutil,symsym,
++       cutils,
+        cgutils;
+ 
+ 
+--- a/compiler/m68k/cpupara.pas
++++ b/compiler/m68k/cpupara.pas
+@@ -60,7 +60,7 @@
+        verbose,
+        globals,
+        systems,
+-       cpuinfo,cgutils,
++       cpuinfo,cutils,cgutils,
+        defutil;
+ 
+     procedure tm68kparamanager.getintparaloc(calloption : tproccalloption; nr : longint;var cgpara : TCGPara);
+--- a/compiler/powerpc/cpupara.pas
++++ b/compiler/powerpc/cpupara.pas
+@@ -53,6 +53,7 @@
+     uses
+        verbose,systems,
+        defutil,
++       cutils,
+        cgutils,
+        procinfo,cpupi;
+ 
+--- a/compiler/powerpc64/cpupara.pas
++++ b/compiler/powerpc64/cpupara.pas
+@@ -62,6 +62,7 @@
+ uses
+   verbose, systems,
+   defutil,
++  cutils,
+   cgutils,
+   procinfo, cpupi;
+ 
