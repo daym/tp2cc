@@ -1651,6 +1651,50 @@ void test_move_uses_storage_addresses_for_source_and_destination_slots() {
   CHECK(!contains(out.impl, "::rt::p_move(p_list[(p_index + 1)],"));
 }
 
+void test_indexword_nil_pointer_deref_uses_pointer_actual() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "type\n"
+      "  psuper = ^word;\n"
+      "var\n"
+      "  buf : psuper;\n"
+      "  len : longint;\n"
+      "  s : word;\n"
+      "begin\n"
+      "  if indexword(buf^, len, s) = -1 then ;\n"
+      "end;\n"
+      "end.\n");
+  // `indexword(buf^, len, s)` is a raw-memory helper call. Native FPC accepts
+  // `buf=nil, len=0`; lowering through `tp2cc_deref(buf)` would bind a null
+  // C++ reference before the helper can observe the zero count.
+  CHECK(contains(out.impl, "::rt::p_indexword(((const void*)(p_buf)), p_len, p_s)"));
+  CHECK(!contains(out.impl, "::rt::p_indexword(::rt::tp2cc_deref(p_buf),"));
+}
+
+void test_move_pointer_derefs_use_pointer_actuals() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run(count : longint);\n"
+      "implementation\n"
+      "procedure run(count : longint);\n"
+      "type\n"
+      "  pbyte = ^byte;\n"
+      "var\n"
+      "  src, dst : pbyte;\n"
+      "begin\n"
+      "  move(src^, dst^, count);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_move(((const void*)(p_src)), ((void*)(p_dst)), p_count)"));
+  CHECK(!contains(out.impl, "::rt::p_move(((void*)&(::rt::tp2cc_deref(p_src)))"));
+  CHECK(!contains(out.impl, "::rt::p_move(((void*)&(::rt::tp2cc_deref(p_dst)))"));
+}
+
 void test_byte_array_typecast_reinterprets_storage() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -3155,9 +3199,12 @@ void test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes() {
       "end.\n");
   // Untyped `const` receives the storage address of the actual argument. A
   // pointer variable and the bytes it points to are different storage
-  // locations, and byte-buffer writers rely on that distinction.
+  // locations, and byte-buffer writers rely on that distinction. The pointed
+  // bytes now lower as the raw pointer value rather than `&tp2cc_deref(p)`, so
+  // the zero-count/nil case stays out of C++ UB.
   CHECK(contains(out.impl, "p_sink(((void*)&(p_p)), 1);"));
-  CHECK(contains(out.impl, "p_sink(((void*)&(::rt::tp2cc_deref(p_p))), 1);"));
+  CHECK(contains(out.impl, "p_sink(((const void*)(p_p)), 1);"));
+  CHECK(!contains(out.impl, "p_sink(((void*)&(::rt::tp2cc_deref(p_p))), 1);"));
 }
 
 void test_untyped_const_temporary_uses_addressable_helper() {
@@ -5436,6 +5483,8 @@ int main() {
   RUN_TEST(test_untyped_method_call_on_variable_uses_storage_address);
   RUN_TEST(test_fillchar_uses_storage_address_for_pointer_slots);
   RUN_TEST(test_move_uses_storage_addresses_for_source_and_destination_slots);
+  RUN_TEST(test_indexword_nil_pointer_deref_uses_pointer_actual);
+  RUN_TEST(test_move_pointer_derefs_use_pointer_actuals);
   RUN_TEST(test_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_local_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_visible_pointer_alias_cast_uses_qualified_type_spelling);

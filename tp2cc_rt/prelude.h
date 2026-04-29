@@ -3930,6 +3930,16 @@ inline int32_t p_indexbyte(const T& data, int32_t count, Needle needle) {
                      static_cast<uint8_t>(needle));
 }
 
+template <typename Needle>
+inline int32_t p_indexword(const void* data, int32_t count, Needle needle) {
+  auto* p = static_cast<const uint16_t*>(data);
+  const uint16_t w = static_cast<uint16_t>(needle);
+  for (int32_t i = 0; i < count; ++i) {
+    if (p[i] == w) return i;
+  }
+  return -1;
+}
+
 template <typename Elem, typename Needle>
 inline int32_t p_indexword(const Elem* data, int32_t count, Needle needle) {
   for (int32_t i = 0; i < count; ++i) {

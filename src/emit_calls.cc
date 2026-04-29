@@ -44,13 +44,23 @@ void mark_builtin_memory_helper_param_info(
   // value of the first expression. Reuse the normal untyped-argument
   // lowering path here so calls like `FillChar(FList^[I], ...)` become
   // `&slot` in C++ instead of reinterpreting the pointer value stored there.
-  if (lower == "fillchar" || lower == "fillword") {
+  if (lower == "fillchar" || lower == "fillword" || lower == "filldword") {
     mark(0, UntypedArgKind::Mutable, /*is_mutable=*/true);
     return;
   }
   if (lower == "move") {
     mark(0, UntypedArgKind::Const, /*is_mutable=*/false);
     mark(1, UntypedArgKind::Mutable, /*is_mutable=*/true);
+    return;
+  }
+  if (lower == "indexbyte" || lower == "indexword") {
+    mark(0, UntypedArgKind::Const, /*is_mutable=*/false);
+    return;
+  }
+  if (lower == "comparebyte" || lower == "comparechar" ||
+      lower == "compareword") {
+    mark(0, UntypedArgKind::Const, /*is_mutable=*/false);
+    mark(1, UntypedArgKind::Const, /*is_mutable=*/false);
     return;
   }
   if (lower == "getmem" || lower == "freemem" || lower == "reallocmem" ||
@@ -291,6 +301,20 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
   if (arg.kind == Kind::Ident &&
       scope_.local_untyped_params.count(static_cast<const Ident&>(arg).name)) {
     return arg_text;
+  }
+  if (const Expr* peeled = storage_.peel_primitive_casts(&arg);
+      peeled && peeled->kind == Kind::Deref) {
+    if (auto storage = storage_.bytewise_storage_ref(arg)) {
+      // Raw-memory helpers treat `ptr^` as "the bytes starting at ptr", not as
+      // "form a C++ lvalue for *ptr and then take its address". Native FPC
+      // accepts `indexword(buf^, 0, ...)` with `buf=nil`; preserve that by
+      // forwarding the pointer value itself for deref-shaped actuals.
+      const char* ptr_cast =
+          (untyped_arg == UntypedArgKind::Const && !mutable_ref_arg)
+              ? "const void*"
+              : "void*";
+      return "((" + std::string(ptr_cast) + ")(" + storage->void_ptr_text + "))";
+    }
   }
   if (untyped_arg == UntypedArgKind::Const &&
       !mutable_ref_arg && !storage_.expr_is_storage_lvalue(arg)) {
