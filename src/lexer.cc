@@ -617,13 +617,17 @@ void Lexer::skip_ws_and_comments() {
       }
       // Brace comments can nest. Consume the opening `{` first so
       // `depth == 1` always means "inside the outermost comment".
+      // Inside the body, `{$...}` is NOT a directive -- FPC only
+      // recognizes a directive when `$` immediately follows the
+      // *outermost* `{`. So we just count braces; an inner
+      // `{$ifdef X}` is a balanced `{`/`}` pair (net zero depth).
       get();
       int depth = 1;
       while (depth > 0) {
         if (pop_input_if_eof()) continue;
         char cc = peek();
         if (cc == 0) break;
-        if (cc == '{' && peek(1) != '$') {
+        if (cc == '{') {
           ++depth;
           get();
           continue;
