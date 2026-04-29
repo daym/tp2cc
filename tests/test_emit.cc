@@ -254,6 +254,29 @@ void test_minenumsize_alias_uses_packenum_rules() {
   CHECK(contains(out.header, "enum p_tcolor : uint8_t"));
 }
 
+void test_mode_tp_switches_default_enum_size_to_byte() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "{$mode tp}\n"
+      "type TColor = (red, green, blue);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "enum p_tcolor : uint8_t"));
+}
+
+void test_mode_objfpc_restores_default_enum_size_to_longword() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "{$mode tp}\n"
+      "{$mode objfpc}\n"
+      "type TColor = (red, green, blue);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "enum p_tcolor : uint32_t"));
+}
+
 void test_subrange_type_uses_minimal_ordinal_storage() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -5043,6 +5066,8 @@ int main() {
   RUN_TEST(test_packed_record_uses_byte_sized_enum_fields);
   RUN_TEST(test_packenum_two_uses_word_sized_enum);
   RUN_TEST(test_minenumsize_alias_uses_packenum_rules);
+  RUN_TEST(test_mode_tp_switches_default_enum_size_to_byte);
+  RUN_TEST(test_mode_objfpc_restores_default_enum_size_to_longword);
   RUN_TEST(test_subrange_type_uses_minimal_ordinal_storage);
   RUN_TEST(test_subrange_type_accepts_constant_ordinal_intrinsics);
   RUN_TEST(test_char_subrange_preserves_char_storage);

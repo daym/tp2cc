@@ -224,6 +224,20 @@ std::optional<int> parse_packenum_value(std::string_view rest) {
   return std::nullopt;
 }
 
+std::optional<int> mode_default_packenum(std::string_view rest) {
+  std::string mode = trim(rest);
+  for (char& c : mode) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  if (mode == "tp" || mode == "tp7" || mode == "delphi" || mode == "macpas") {
+    return 1;
+  }
+  if (mode == "fpc" || mode == "objfpc") {
+    return 4;
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 // Tiny recursive-descent evaluator for `{$if EXPR}` bodies. The grammar:
@@ -512,6 +526,15 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     } else {
       report_error(where, std::string("illegal {$") + head + "} value: " +
                               trim(rest));
+    }
+    return;
+  }
+  // We still ignore most mode semantics, but enum layout must follow the mode
+  // default: old FPC uses packenum=1 in TP/TP7 and Delphi-compatible modes,
+  // and packenum=4 in FPC/ObjFPC mode.
+  if (head == "mode") {
+    if (std::optional<int> value = mode_default_packenum(rest)) {
+      packenum_ = *value;
     }
     return;
   }
