@@ -17,6 +17,7 @@
 #include "emit_context.h"
 #include "emit_decls.h"
 #include "emit_properties.h"
+#include "emit_procs.h"
 #include "emit_resolution.h"
 #include "emit_storage.h"
 #include "emit_types.h"
@@ -45,7 +46,8 @@ struct Emitter : ResolveNameProvider,
                  EmitCallExprOps,
                  EmitPropertyExprOps,
                  EmitValueExprOps,
-                 EmitDeclOps {
+                 EmitDeclOps,
+                 EmitProcOps {
   std::string header;
   std::string impl;
   // Current sink pointer.
@@ -151,6 +153,7 @@ struct Emitter : ResolveNameProvider,
   EmitProperties properties_;
   EmitValues values_;
   EmitDecls decls_;
+  EmitProcs procs_;
 
   Emitter(const TypeRegistry* registry_in = nullptr,
           const std::vector<std::string>* unit_init_order_in = nullptr)
@@ -191,6 +194,8 @@ struct Emitter : ResolveNameProvider,
         properties_(registry, analysis_, *this),
         values_(registry, scope_state_, analysis_, types_, storage_, *this),
         decls_(registry, scope_state_, analysis_, types_, storage_, values_,
+               *this),
+        procs_(scope_state_, block_depth, analysis_, types_, calls_, decls_,
                *this) {}
 
   void set_header() { out = &header; }
@@ -378,20 +383,19 @@ struct Emitter : ResolveNameProvider,
       const ast::Index& i) {
     return storage_.untyped_storage_index_view(i);
   }
-  std::string param_list_to_cxx(const std::vector<Param>& params);
-  std::string proc_return_type_to_cxx(const ProcDecl& pd);
   void emit_proc_body(const ProcDecl& pd);
   void emit_nested_proc_lambda(const ProcDecl& pd);
   void emit_raise_stmt(const ast::Raise& r);
   void emit_try_stmt(const ast::Try& t);
   void emit_stmt(const Stmt& s);
   void emit_stmt_line(const Stmt& s);  // prepends indent + trailing ';'
+  void emit_forward_struct_decls(
+      const std::vector<ast::DeclPtr>& decls) override;
 
   // Expression-type deduction. Returns the Pascal TypeExpr that the
   // expression has, or nullptr when unknown. Consults the TypeRegistry
   // for globals and the current scope tables for locals/self-class.
   const ast::TypeExpr* deduce_type(const ast::Expr& e);
-  const ast::TypeExpr* deduce_const_decl_type(const ast::ConstDecl& cd);
 
   // `with` targets can be anonymous local records, so name-based
   // registry lookup is not enough. These helpers walk the stacked
@@ -638,10 +642,6 @@ struct Emitter : ResolveNameProvider,
 // Expression-type deduction. Used by the Member / Ident emitters so
 // decisions like "is `obj.name` a method call or a field read?" come
 // from the actual type tree, not name-matching heuristics.
-
-const TypeExpr* Emitter::deduce_const_decl_type(const ConstDecl& cd) {
-  return analysis_.deduce_const_decl_type(cd);
-}
 
 const TypeExpr* Emitter::deduce_type(const Expr& e) {
   return analysis_.deduce_type(e);
@@ -2372,14 +2372,6 @@ std::optional<std::string> Emitter::maybe_convert_const_int_expr(
 // ---------------------------------------------------------------------------
 // Declarations
 
-std::string Emitter::param_list_to_cxx(const std::vector<Param>& params) {
-  return decls_.param_list_to_cxx(params);
-}
-
-std::string Emitter::proc_return_type_to_cxx(const ProcDecl& pd) {
-  return decls_.proc_return_type_to_cxx(pd);
-}
-
 void Emitter::emit_decl(const Decl& d, bool in_header) {
   decls_.emit_decl(d, in_header);
 }
@@ -3143,405 +3135,20 @@ void Emitter::emit_stmt(const Stmt& s) {
 // Forward decl so emit_proc_body / emit_nested_proc_lambda can call it
 // to forward-declare record/object types in local type-decls before
 // pointer aliases that reference them.
-static void emit_forward_struct_decls(Emitter& e,
-                                      const std::vector<ast::DeclPtr>& decls);
+static void emit_forward_struct_decls_impl(
+    Emitter& e, const std::vector<ast::DeclPtr>& decls);
 
 void Emitter::emit_proc_body(const ProcDecl& pd) {
-  // Header line: ret ClassName::Method(args) or ret Method(args).
-  std::string ret = proc_return_type_to_cxx(pd);
-  std::string qname = mangle(pd.name);
-  if (!pd.of_type.empty()) qname = mangle(pd.of_type) + "::" + qname;
-  emitln(ret + " " + qname + "(" + param_list_to_cxx(pd.params) + ") {");
-  indent();
-
-  if (pd.is_abstract && !pd.body) {
-    // Pascal's abstract methods are often placeholder hooks on classes that
-    // native FPC still instantiates. Emit a fail-fast body instead of a pure
-    // virtual so the translated class layout stays constructible while any
-    // accidental call still stops immediately.
-    emitln("::std::abort();");
-    dedent();
-    emitln("}");
-    return;
-  }
-
-  // Save outer state and set for this body.
-  std::string saved_name = current_fn_name;
-  bool saved_fn = current_fn_is_function;
-  bool saved_ctor = current_fn_is_ctor;
-  const ast::TypeExpr* saved_result_type = current_fn_result_type;
-  std::string saved_result_slot_name = current_result_slot_name;
-  std::string saved_bare_result_slot_name = bare_result_slot_name;
-  const ast::TypeExpr* saved_bare_result_type = bare_result_type;
-  std::string saved_outer_result_name = outer_result_name;
-  std::string saved_outer_result_slot_name = outer_result_slot_name;
-  const ast::TypeExpr* saved_outer_result_type = outer_result_type;
-  std::string saved_class = current_class_name;
-  auto saved_locals = local_scope;
-  current_fn_name = pd.name;
-  current_fn_is_function = (pd.pkind == ProcKind::Function);
-  current_fn_is_ctor = (pd.pkind == ProcKind::Constructor);
-  current_fn_result_type = pd.return_type.get();
-  std::string inherited_outer_result_name;
-  std::string inherited_outer_result_slot_name;
-  const ast::TypeExpr* inherited_outer_result_type = nullptr;
-  if (saved_fn && saved_result_type) {
-    inherited_outer_result_name = saved_name;
-    inherited_outer_result_slot_name = saved_result_slot_name;
-    inherited_outer_result_type = saved_result_type;
-  } else {
-    inherited_outer_result_name = saved_outer_result_name;
-    inherited_outer_result_slot_name = saved_outer_result_slot_name;
-    inherited_outer_result_type = saved_outer_result_type;
-  }
-  if (pd.pkind == ProcKind::Function && pd.return_type) {
-    current_result_slot_name =
-        inherited_outer_result_type ? nested_result_slot_name(pd.name)
-                                    : std::string(kPascalResultSlotName);
-    bare_result_slot_name = current_result_slot_name;
-    bare_result_type = pd.return_type.get();
-  } else {
-    current_result_slot_name.clear();
-    bare_result_slot_name = inherited_outer_result_slot_name;
-    bare_result_type = inherited_outer_result_type;
-  }
-  outer_result_name = inherited_outer_result_name;
-  outer_result_slot_name = inherited_outer_result_slot_name;
-  outer_result_type = inherited_outer_result_type;
-  current_class_name = pd.of_type;  // empty for free functions
-  ++block_depth;
-
-  // Populate local-scope set so the expression emitter won't auto-call
-  // identifiers that happen to name a parameterless method in another
-  // unit (e.g. a local `typename: string;` shadowing a method). Also
-  // record declared types so `.field` / `.method` access on those
-  // locals can be resolved from the type registry.
-  auto saved_types = local_types;
-  auto saved_consts = local_consts;
-  auto saved_nested = local_nested_fns;
-  auto saved_nested_forwards = local_nested_forwards;
-  auto saved_untyped = local_untyped_params;
-  auto saved_local_enums = local_enums;
-  auto saved_local_const_params = local_const_params;
-  auto saved_local_aliases = local_type_aliases_scoped;
-  auto insert_local_name = [&](Location where, const std::string& name) {
-    // Pascal functions already own an implicit `Result` variable, so any
-    // local/parameter/const nested in that body may not reuse the name.
-    if (bare_result_type && is_pascal_result_ident(name)) {
-      report_error(where, "duplicate identifier `Result`");
-      return false;
-    }
-    local_scope.insert(name);
-    return true;
-  };
-  for (const auto& p : pd.params) {
-    for (const auto& nm : p.names) {
-      if (!insert_local_name(pd.loc, nm)) continue;
-      if (p.type) {
-        local_types[nm] = p.type.get();
-        if (p.mode == Param::Const) local_const_params.insert(nm);
-      } else {
-        local_untyped_params.insert(nm);
-      }
-    }
-  }
-  for (const auto& l : pd.locals) {
-    if (l->kind == Kind::VarDecl) {
-      const auto& vd = static_cast<const VarDecl&>(*l);
-      for (const auto& nm : vd.names) {
-        if (!insert_local_name(vd.loc, nm)) continue;
-        if (vd.type) local_types[nm] = vd.type.get();
-      }
-      // Inline anonymous enum used as a var type (`var m : (a, b);`)
-      // bleeds its members into the enclosing scope -- same rule as
-      // class fields and unit-level vars (see typereg.cc:177).
-      if (vd.type && vd.type->kind == Kind::TyEnum && !vd.names.empty()) {
-        local_enums[vd.names.front()] =
-            static_cast<const ast::TyEnum*>(vd.type.get());
-      }
-    } else if (l->kind == Kind::ConstDecl) {
-      const auto& cd = static_cast<const ConstDecl&>(*l);
-      if (!insert_local_name(cd.loc, cd.name)) continue;
-      local_consts[cd.name] = &cd;
-      if (const TypeExpr* ct = deduce_const_decl_type(cd)) {
-        local_types[cd.name] = ct;
-      }
-      if (cd.type && cd.type->kind == Kind::TyEnum) {
-        local_enums[cd.name] =
-            static_cast<const ast::TyEnum*>(cd.type.get());
-      }
-    } else if (l->kind == Kind::TypeDecl) {
-      // Pascal's local `type` section is statically visible to the
-      // translator too -- record enums (for array-dim sizing and
-      // `low(T)`/`high(T)` rewrites) and aliases (for canonicalize).
-      const auto& td = static_cast<const TypeDecl&>(*l);
-      if (td.type) {
-        if (td.type->kind == Kind::TyEnum) {
-          local_enums[td.name] =
-              static_cast<const ast::TyEnum*>(td.type.get());
-        } else {
-          local_type_aliases_scoped[td.name] = td.type.get();
-        }
-      }
-    } else if (l->kind == Kind::ProcDecl) {
-      const auto& npd = static_cast<const ProcDecl&>(*l);
-      if (!insert_local_name(npd.loc, npd.name)) continue;
-      NestedFn nf;
-      for (const auto& p : npd.params) nf.param_count += p.names.size();
-      nf.accepts_zero_args = proc_accepts_zero_args(npd);
-      nf.is_function = (npd.pkind == ProcKind::Function);
-      nf.return_type = npd.return_type.get();
-      nf.decl = &npd;
-      local_nested_fns[npd.name] = nf;
-    }
-  }
-
-  // `Result` is a Pascal-visible implicit variable in functions, so it
-  // uses ordinary Pascal name mangling. Declare it before nested local
-  // procedures/functions: Pascal lets those inner routines read and write
-  // the enclosing function result, so the generated lambda must be able to
-  // capture an already-declared C++ local.
-  if (pd.pkind == ProcKind::Function && pd.return_type) {
-    emitln(ret + " " + current_result_slot_name + "{};");
-  } else if (pd.pkind == ProcKind::Constructor) {
-    emitln(std::string("bool ") + kCtorStatusSlotName + " = true;");
-  }
-  // Forward-declare any record/object types in locals so a pointer
-  // alias that textually precedes its target still compiles inside
-  // the function body.
-  emit_forward_struct_decls(*this, pd.locals);
-  for (const auto& l : pd.locals) emit_decl(*l, /*in_header=*/false);
-  if (pd.body) emit_stmt(*pd.body);
-  if (pd.pkind == ProcKind::Function ||
-      pd.pkind == ProcKind::Constructor) {
-    emitln(std::string("return ") +
-           (pd.pkind == ProcKind::Function ? current_result_slot_name
-                                           : kCtorStatusSlotName) +
-           ";");
-  }
-
-  current_fn_name = std::move(saved_name);
-  current_fn_is_function = saved_fn;
-  current_fn_is_ctor = saved_ctor;
-  current_fn_result_type = saved_result_type;
-  current_result_slot_name = std::move(saved_result_slot_name);
-  bare_result_slot_name = std::move(saved_bare_result_slot_name);
-  bare_result_type = saved_bare_result_type;
-  outer_result_name = std::move(saved_outer_result_name);
-  outer_result_slot_name = std::move(saved_outer_result_slot_name);
-  outer_result_type = saved_outer_result_type;
-  current_class_name = std::move(saved_class);
-  local_scope = std::move(saved_locals);
-  local_types = std::move(saved_types);
-  local_consts = std::move(saved_consts);
-  local_nested_fns = std::move(saved_nested);
-  local_nested_forwards = std::move(saved_nested_forwards);
-  local_untyped_params = std::move(saved_untyped);
-  local_enums = std::move(saved_local_enums);
-  local_const_params = std::move(saved_local_const_params);
-  local_type_aliases_scoped = std::move(saved_local_aliases);
-  --block_depth;
-
-  dedent();
-  emitln("}");
+  procs_.emit_proc_body(pd);
 }
 
 void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
-  std::string ret;
-  if (pd.pkind == ProcKind::Function && pd.return_type) {
-    ret = type_to_cxx(*pd.return_type);
-  } else {
-    ret = "void";
-  }
-  // Build the param-type list for the std::function signature.
-  std::string sig_params;
-  {
-    bool first = true;
-    for (const auto& p : pd.params) {
-      std::string pt;
-      if (!p.type) {
-        pt = "void*";
-      } else {
-        pt = type_to_cxx(*p.type);
-        if (p.mode == Param::Var || p.mode == Param::Out) pt += "&";
-        else if (p.mode == Param::Const &&
-                 const_param_needs_mutable_ref(p.type.get()))
-          pt += "&";
-        else if (p.mode == Param::Const &&
-                 const_param_needs_const_ref(p.type.get()))
-          pt = "const " + pt + "&";
-      }
-      for (const auto& n : p.names) {
-        (void)n;
-        if (!first) sig_params += ", ";
-        first = false;
-        sig_params += pt;
-      }
-      if (p.names.empty()) {
-        if (!first) sig_params += ", ";
-        first = false;
-        sig_params += pt;
-      }
-    }
-  }
+  procs_.emit_nested_proc_lambda(pd);
+}
 
-  const std::string lname = mangle(pd.name);
-  // Forward-declare the std::function so the lambda can recurse by name.
-  if (!local_nested_forwards.count(pd.name)) {
-    emitln("::std::function<" + ret + "(" + sig_params + ")> " + lname + ";");
-  }
-  emitln(lname + " = [&](" + param_list_to_cxx(pd.params) + ") -> " + ret +
-         " {");
-  indent();
-
-  std::string saved_name = current_fn_name;
-  bool saved_fn = current_fn_is_function;
-  bool saved_ctor = current_fn_is_ctor;
-  const ast::TypeExpr* saved_result_type = current_fn_result_type;
-  std::string saved_result_slot_name = current_result_slot_name;
-  std::string saved_bare_result_slot_name = bare_result_slot_name;
-  const ast::TypeExpr* saved_bare_result_type = bare_result_type;
-  std::string saved_outer_result_name = outer_result_name;
-  std::string saved_outer_result_slot_name = outer_result_slot_name;
-  const ast::TypeExpr* saved_outer_result_type = outer_result_type;
-  auto saved_locals = local_scope;
-  auto saved_types = local_types;
-  auto saved_consts = local_consts;
-  auto saved_nested = local_nested_fns;
-  auto saved_nested_forwards = local_nested_forwards;
-  auto saved_untyped = local_untyped_params;
-  auto saved_local_enums = local_enums;
-  auto saved_local_const_params = local_const_params;
-  auto saved_local_aliases = local_type_aliases_scoped;
-  auto insert_local_name = [&](Location where, const std::string& name) {
-    if (bare_result_type && is_pascal_result_ident(name)) {
-      report_error(where, "duplicate identifier `Result`");
-      return false;
-    }
-    local_scope.insert(name);
-    return true;
-  };
-  current_fn_name = pd.name;
-  current_fn_is_function = (pd.pkind == ProcKind::Function);
-  current_fn_is_ctor = false;
-  current_fn_result_type = pd.return_type.get();
-  std::string inherited_outer_result_name;
-  std::string inherited_outer_result_slot_name;
-  const ast::TypeExpr* inherited_outer_result_type = nullptr;
-  if (saved_fn && saved_result_type) {
-    inherited_outer_result_name = saved_name;
-    inherited_outer_result_slot_name = saved_result_slot_name;
-    inherited_outer_result_type = saved_result_type;
-  } else {
-    inherited_outer_result_name = saved_outer_result_name;
-    inherited_outer_result_slot_name = saved_outer_result_slot_name;
-    inherited_outer_result_type = saved_outer_result_type;
-  }
-  if (pd.pkind == ProcKind::Function && pd.return_type) {
-    current_result_slot_name =
-        inherited_outer_result_type ? nested_result_slot_name(pd.name)
-                                    : std::string(kPascalResultSlotName);
-    bare_result_slot_name = current_result_slot_name;
-    bare_result_type = pd.return_type.get();
-  } else {
-    current_result_slot_name.clear();
-    bare_result_slot_name = inherited_outer_result_slot_name;
-    bare_result_type = inherited_outer_result_type;
-  }
-  outer_result_name = inherited_outer_result_name;
-  outer_result_slot_name = inherited_outer_result_slot_name;
-  outer_result_type = inherited_outer_result_type;
-  ++block_depth;
-
-  for (const auto& p : pd.params) {
-    for (const auto& nm : p.names) {
-      if (!insert_local_name(pd.loc, nm)) continue;
-      if (p.type) {
-        local_types[nm] = p.type.get();
-        if (p.mode == Param::Const) local_const_params.insert(nm);
-      } else {
-        local_untyped_params.insert(nm);
-      }
-    }
-  }
-  for (const auto& l : pd.locals) {
-    if (l->kind == Kind::VarDecl) {
-      const auto& vd = static_cast<const VarDecl&>(*l);
-      for (const auto& nm : vd.names) {
-        if (!insert_local_name(vd.loc, nm)) continue;
-        if (vd.type) local_types[nm] = vd.type.get();
-      }
-      if (vd.type && vd.type->kind == Kind::TyEnum && !vd.names.empty()) {
-        local_enums[vd.names.front()] =
-            static_cast<const ast::TyEnum*>(vd.type.get());
-      }
-    } else if (l->kind == Kind::ConstDecl) {
-      const auto& cd = static_cast<const ConstDecl&>(*l);
-      if (!insert_local_name(cd.loc, cd.name)) continue;
-      local_consts[cd.name] = &cd;
-      if (const TypeExpr* ct = deduce_const_decl_type(cd)) {
-        local_types[cd.name] = ct;
-      }
-      if (cd.type && cd.type->kind == Kind::TyEnum) {
-        local_enums[cd.name] =
-            static_cast<const ast::TyEnum*>(cd.type.get());
-      }
-    } else if (l->kind == Kind::TypeDecl) {
-      const auto& td = static_cast<const TypeDecl&>(*l);
-      if (td.type) {
-        if (td.type->kind == Kind::TyEnum) {
-          local_enums[td.name] =
-              static_cast<const ast::TyEnum*>(td.type.get());
-        } else {
-          local_type_aliases_scoped[td.name] = td.type.get();
-        }
-      }
-    } else if (l->kind == Kind::ProcDecl) {
-      const auto& npd = static_cast<const ProcDecl&>(*l);
-      if (!insert_local_name(npd.loc, npd.name)) continue;
-      NestedFn nf;
-      for (const auto& p : npd.params) nf.param_count += p.names.size();
-      nf.accepts_zero_args = proc_accepts_zero_args(npd);
-      nf.is_function = (npd.pkind == ProcKind::Function);
-      nf.return_type = npd.return_type.get();
-      nf.decl = &npd;
-      local_nested_fns[npd.name] = nf;
-    }
-  }
-
-  if (pd.pkind == ProcKind::Function && pd.return_type) {
-    emitln(ret + " " + current_result_slot_name + "{};");
-  }
-  emit_forward_struct_decls(*this, pd.locals);
-  for (const auto& l : pd.locals) emit_decl(*l, /*in_header=*/false);
-  if (pd.body) emit_stmt(*pd.body);
-  if (pd.pkind == ProcKind::Function) {
-    emitln(std::string("return ") + current_result_slot_name + ";");
-  }
-
-  current_fn_name = std::move(saved_name);
-  current_fn_is_function = saved_fn;
-  current_fn_is_ctor = saved_ctor;
-  current_fn_result_type = saved_result_type;
-  current_result_slot_name = std::move(saved_result_slot_name);
-  bare_result_slot_name = std::move(saved_bare_result_slot_name);
-  bare_result_type = saved_bare_result_type;
-  outer_result_name = std::move(saved_outer_result_name);
-  outer_result_slot_name = std::move(saved_outer_result_slot_name);
-  outer_result_type = saved_outer_result_type;
-  local_scope = std::move(saved_locals);
-  local_types = std::move(saved_types);
-  local_consts = std::move(saved_consts);
-  local_nested_fns = std::move(saved_nested);
-  local_nested_forwards = std::move(saved_nested_forwards);
-  local_untyped_params = std::move(saved_untyped);
-  local_enums = std::move(saved_local_enums);
-  local_const_params = std::move(saved_local_const_params);
-  local_type_aliases_scoped = std::move(saved_local_aliases);
-  --block_depth;
-
-  dedent();
-  emitln("};");
+void Emitter::emit_forward_struct_decls(
+    const std::vector<ast::DeclPtr>& decls) {
+  emit_forward_struct_decls_impl(*this, decls);
 }
 
 // ---------------------------------------------------------------------------
@@ -3549,8 +3156,8 @@ void Emitter::emit_nested_proc_lambda(const ProcDecl& pd) {
 
 // Scan the decl list and emit forward declarations for every record/object
 // type, so a pointer type that textually precedes its target still compiles.
-static void emit_forward_struct_decls(Emitter& e,
-                                      const std::vector<DeclPtr>& decls) {
+static void emit_forward_struct_decls_impl(Emitter& e,
+                                           const std::vector<DeclPtr>& decls) {
   for (const auto& d : decls) {
     if (d->kind != Kind::TypeDecl) continue;
     const auto& td = static_cast<const TypeDecl&>(*d);
@@ -3756,7 +3363,7 @@ void Emitter::emit_unit(const UnitNode& u) {
   nl();
   emitln("namespace " + ns + " {");
   nl();
-  emit_forward_struct_decls(*this, u.interface_decls);
+  emit_forward_struct_decls_impl(*this, u.interface_decls);
   // Walk source order. Types are reordered topologically only within a
   // single contiguous run (a Pascal `type` section); any intervening
   // const/var/proc breaks the run. This respects Pascal's rule that
@@ -3809,7 +3416,7 @@ void Emitter::emit_unit(const UnitNode& u) {
   nl();
   emitln("namespace " + ns + " {");
   nl();
-  emit_forward_struct_decls(*this, u.impl_decls);
+  emit_forward_struct_decls_impl(*this, u.impl_decls);
   // Emit definitions (not just extern declarations) for interface
   // vars in the .cc so external references resolve at link time.
   for (const auto& d : u.interface_decls) {

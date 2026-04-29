@@ -44,6 +44,7 @@ class EmitDecls {
   void emit_const_decl(const ast::ConstDecl& cd, bool in_header);
   void emit_type_decl(const ast::TypeDecl& td, bool in_header);
   void emit_var_decl(const ast::VarDecl& vd, bool in_header);
+  std::string param_type_list_to_cxx(const std::vector<ast::Param>& params);
   std::string param_list_to_cxx(const std::vector<ast::Param>& params);
   std::string proc_return_type_to_cxx(const ast::ProcDecl& pd);
   void emit_proc_decl_signature(const ast::ProcDecl& pd);

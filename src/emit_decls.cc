@@ -723,6 +723,40 @@ std::string EmitDecls::param_list_to_cxx(const std::vector<Param>& params) {
   return out;
 }
 
+std::string EmitDecls::param_type_list_to_cxx(
+    const std::vector<Param>& params) {
+  std::string out;
+  bool first = true;
+  for (const auto& p : params) {
+    std::string pt;
+    if (!p.type) {
+      pt = "void*";
+    } else {
+      if (storage_.type_is_open_array(p.type.get())) {
+        pt = types_.open_array_type_to_cxx(*p.type);
+      } else {
+        pt = types_.type_to_cxx(*p.type);
+      }
+      if (p.mode == Param::Var || p.mode == Param::Out) {
+        pt += "&";
+      } else if (p.mode == Param::Const &&
+                 analysis_.const_param_needs_mutable_ref(p.type.get())) {
+        pt += "&";
+      } else if (p.mode == Param::Const &&
+                 analysis_.const_param_needs_const_ref(p.type.get())) {
+        pt = "const " + pt + "&";
+      }
+    }
+    size_t count = p.names.empty() ? 1 : p.names.size();
+    for (size_t i = 0; i < count; ++i) {
+      if (!first) out += ", ";
+      first = false;
+      out += pt;
+    }
+  }
+  return out;
+}
+
 std::string EmitDecls::proc_return_type_to_cxx(const ProcDecl& pd) {
   if (pd.pkind == ProcKind::Function && pd.return_type) {
     return types_.type_to_cxx(*pd.return_type);
