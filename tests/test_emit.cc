@@ -4435,6 +4435,23 @@ void test_overload_picks_empty_set_literal_against_typed_set_param() {
         contains(out.impl, "static_cast<bool>(true)"));
 }
 
+void test_membership_in_empty_set_uses_shared_set_api() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function keep(code : byte) : boolean;\n"
+      "implementation\n"
+      "function keep(code : byte) : boolean;\n"
+      "begin\n"
+      "  keep := not(code in []);\n"
+      "end;\n"
+      "end.\n");
+  // Keep the generic `set.contains(elem)` lowering here; the runtime's
+  // EmptySet sentinel must satisfy that same API instead of requiring a
+  // dedicated emitter branch for `x in []`.
+  CHECK(contains(out.impl, "(::rt::EmptySet{}).contains(p_code)"));
+}
+
 void test_overload_picks_set_difference_arg_against_typed_set_param() {
   // Pascal's `set - set` (set difference) returns the same set type as
   // its operands. Without typing the binary expression here, the
@@ -5823,6 +5840,7 @@ int main() {
   RUN_TEST(test_overload_resolves_through_with_block_bare_ident_call);
   RUN_TEST(test_overload_picks_string_concat_arg_against_string_param);
   RUN_TEST(test_overload_picks_empty_set_literal_against_typed_set_param);
+  RUN_TEST(test_membership_in_empty_set_uses_shared_set_api);
   RUN_TEST(test_overload_picks_set_difference_arg_against_typed_set_param);
   RUN_TEST(test_property_read_lowers_to_getter_call);
   RUN_TEST(test_property_write_lowers_to_setter_call);

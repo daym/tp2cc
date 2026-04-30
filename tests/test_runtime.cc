@@ -854,6 +854,12 @@ void test_set_superset_operator_matches_pascal() {
   CHECK(!(smaller >= bigger));
 }
 
+void test_empty_set_membership_is_always_false() {
+  CHECK(!EmptySet{}.contains(static_cast<int32_t>(1)));
+  CHECK(!EmptySet{}.contains(tp2cc_char_of('x')));
+  CHECK(!EmptySet{}.contains(true));
+}
+
 void test_explicit_set_cast_copies_bits() {
   auto src = set_of<int32_t>({1, 7});
   auto dst = tp2cc_set_cast<tp2cc_Set<uint8_t>>(src);
@@ -1213,6 +1219,7 @@ int main() {
   RUN_TEST(test_dos_pack_unpack_time_matches_bit_layout);
   RUN_TEST(test_getfattr_reports_directory_bit);
   RUN_TEST(test_set_superset_operator_matches_pascal);
+  RUN_TEST(test_empty_set_membership_is_always_false);
   RUN_TEST(test_explicit_set_cast_copies_bits);
   RUN_TEST(test_method_ptr_calls_bound_thunk);
   RUN_TEST(test_method_ptr_storage_matches_two_pointer_slots);

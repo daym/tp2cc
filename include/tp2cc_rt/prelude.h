@@ -2514,10 +2514,15 @@ inline auto set_of(T first, Rest... rest) {
 
 // Empty set-literal sentinel. Pascal `[]` has no element type on its own
 // (the type is inferred from use context). We emit it as `EmptySet{}`
-// which implicitly converts to any tp2cc_Set<T>.
+// which implicitly converts to any tp2cc_Set<T>. Membership against `[]`
+// is still well-formed mathematics (`x in []`), so the sentinel
+// must also satisfy the same `.contains(...)` API the emitter uses for
+// ordinary sets.
 struct EmptySet {
   template <typename T>
   constexpr operator tp2cc_Set<T>() const { return {}; }
+  template <typename T>
+  constexpr bool contains(const T&) const { return false; }
 };
 inline tp2cc_Set<int> set_of(std::initializer_list<EmptySet>) { return {}; }
 inline EmptySet set_of() { return {}; }
