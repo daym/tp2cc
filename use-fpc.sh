@@ -7,7 +7,11 @@ ROOT="$SCRIPT_DIR"
 OUT_DIR="$ROOT/build/emitted"
 PP="${PP:-$OUT_DIR/pp}"
 CFG_DIR="${PPC_CONFIG_PATH:-$OUT_DIR}"
-CFG="$CFG_DIR/ppc386.cfg"
+if [ -f "$CFG_DIR/fpc.cfg" ]; then
+  CFG="$CFG_DIR/fpc.cfg"
+else
+  CFG="$CFG_DIR/ppc386.cfg"
+fi
 FPCDIR_DEFAULT="$ROOT/../rpm/"
 AS="${AS:-as}"
 LD="${LD:-ld}"
@@ -15,12 +19,12 @@ STARTUP_AS="${STARTUP_AS:-$ROOT/../rpm/rtl/linux/i386/prt0.as}"
 KEEP_WORK="${KEEP_TP2CC_WORK:-0}"
 
 if [ ! -x "$PP" ]; then
-  echo "error: $PP not found; run ./build-fpc.sh first" >&2
+  echo "error: $PP not found; run the relevant bootstrap script first" >&2
   exit 1
 fi
 
 if [ ! -f "$CFG" ]; then
-  echo "error: $CFG not found; run ./build-fpc.sh first" >&2
+  echo "error: neither $CFG_DIR/fpc.cfg nor $CFG_DIR/ppc386.cfg was found; run the relevant bootstrap script first" >&2
   exit 1
 fi
 
