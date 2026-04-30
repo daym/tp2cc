@@ -123,7 +123,7 @@ echo "== [2/6] emit C++ from Pascal =="
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 "$HOST_BUILD/bin/tp2cc" emit-all \
-  -dFPC -dI386 -dLINUX -dUNIX \
+  -dFPC -dI386 -dCPU86 -dLINUX -dUNIX -dEXTERN_MSG \
   -dNOTARGETGO32V1 -dNOTARGETGO32V2 -dNOTARGETOS2 \
   -dNOTARGETPALMOS -dNOTARGETWIN32 \
   -Fu"$RPM_DIR/compiler" \

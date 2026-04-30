@@ -396,16 +396,6 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
                  const std::string& outdir) {
   UnitGraph g;
   configure_graph(g, opts);
-  // version.pas guards `source_cpu_string` on CPU86, which is implied by
-  // I386. Keep it hardcoded so callers don't have to know this internal
-  // detail.
-  g.define("CPU86");
-  // Skip compiling the huge msgtxt.inc message-text table into the
-  // binary. Under EXTERN_MSG the compiler loads `errore.msg` from disk
-  // at startup instead. Avoids the awkward-to-translate `@msgtxt` on an
-  // `array[N] of string[240]` in verbose.pas:488. Build-model decision,
-  // not a caller-tunable.
-  g.define("EXTERN_MSG");
   fs::path input = input_path;
   if (!fs::is_regular_file(input)) {
     std::fprintf(stderr, "emit-all: not a regular file: %s\n",
