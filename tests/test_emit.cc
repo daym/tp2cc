@@ -3237,6 +3237,29 @@ void test_qword_const_cast_produces_64bit_literal_for_shifts() {
   CHECK(!contains(out.impl, " (1 << "));
 }
 
+void test_shift_ops_lower_through_pascal_helpers() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function rotl(d : dword; b : byte) : dword;\n"
+      "function widen(v : shortint; n : byte) : longint;\n"
+      "implementation\n"
+      "function rotl(d : dword; b : byte) : dword;\n"
+      "begin\n"
+      "  rotl := (d shr (32-b)) or (d shl b);\n"
+      "end;\n"
+      "function widen(v : shortint; n : byte) : longint;\n"
+      "begin\n"
+      "  widen := v shl n;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_shr<uint32_t>(p_d, (32 - p_b))"));
+  CHECK(contains(out.impl, "::rt::p_shl<uint32_t>(p_d, p_b)"));
+  CHECK(contains(out.impl, "::rt::p_shl<int32_t>(p_v, p_n)"));
+  CHECK(!contains(out.impl, ">> (32 - p_b)"));
+  CHECK(!contains(out.impl, "<< p_b"));
+}
+
 void test_addr_of_pointer_deref_field_uses_offsetof_arithmetic() {
   // `ptrint(@p^.field) - ptrint(p)` computes a field offset even when `p`
   // is nil. Lowering through `&deref(p).field` would bind a C++ reference
@@ -5841,6 +5864,7 @@ int main() {
   RUN_TEST(test_q_minus_routes_signed_negate_through_wrap_helper);
   RUN_TEST(test_q_plus_routes_integer_arith_through_checked_helpers);
   RUN_TEST(test_qword_const_cast_produces_64bit_literal_for_shifts);
+  RUN_TEST(test_shift_ops_lower_through_pascal_helpers);
   RUN_TEST(test_addr_of_pointer_deref_field_uses_offsetof_arithmetic);
   RUN_TEST(test_addr_of_array_value_uses_context_selecting_proxy);
   RUN_TEST(test_addr_of_pointer_deref_array_field_uses_offsetof_proxy);

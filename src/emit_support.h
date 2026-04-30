@@ -80,6 +80,7 @@ std::string primitive_low_high_expr(std::string_view lowname, bool want_low);
 const ast::TyName* builtin_integer_type(std::string_view lowname);
 const PrimitiveInfo* primitive_info_for_value(int64_t value);
 const ast::TyName* builtin_integer_type(const PrimitiveInfo* info);
+const PrimitiveInfo* shift_carrier_primitive(const PrimitiveInfo* info);
 
 // Checked Pascal integer arithmetic helpers. These are about Pascal overflow
 // semantics, not generic C++ math convenience.
@@ -91,6 +92,10 @@ bool checked_mod_int64(int64_t a, int64_t b, int64_t* out);
 bool checked_shift_count(int64_t shift);
 bool checked_shl_int64(int64_t a, int64_t shift, int64_t* out);
 bool checked_shr_int64(int64_t a, int64_t shift, int64_t* out);
+bool checked_pascal_shl_int64(int64_t a, const PrimitiveInfo* carrier,
+                              int64_t shift, int64_t* out);
+bool checked_pascal_shr_int64(int64_t a, const PrimitiveInfo* carrier,
+                              int64_t shift, int64_t* out);
 bool tyname_is(const ast::TypeExpr* t, std::string_view expected);
 
 }  // namespace tp2cc

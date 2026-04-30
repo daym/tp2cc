@@ -666,11 +666,15 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
           if (!checked_mod_int64(lhs->value, rhs->value, &value)) return std::nullopt;
           break;
         case BinOp::Shl:
-          if (!checked_shl_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
+          if (!checked_pascal_shl_int64(lhs->value, lhs->type, rhs->value, &value)) {
+            return std::nullopt;
+          }
+          return ConstIntExprInfo{value, shift_carrier_primitive(lhs->type)};
         case BinOp::Shr:
-          if (!checked_shr_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
+          if (!checked_pascal_shr_int64(lhs->value, lhs->type, rhs->value, &value)) {
+            return std::nullopt;
+          }
+          return ConstIntExprInfo{value, shift_carrier_primitive(lhs->type)};
         case BinOp::And:
           value = static_cast<int64_t>(static_cast<uint64_t>(lhs->value) &
                                        static_cast<uint64_t>(rhs->value));
@@ -776,14 +780,33 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
   };
   switch (e.kind) {
     case Kind::IntLit:
+      if (auto info = eval_const_int_expr(e); info && info->type) {
+        return builtin_integer_type(info->type);
+      }
+      return nullptr;
     case Kind::Unary:
-    case Kind::Binary:
+      if (auto info = eval_const_int_expr(e); info && info->type) {
+        return builtin_integer_type(info->type);
+      }
+      return nullptr;
+    case Kind::Binary: {
+      const auto& b = static_cast<const Binary&>(e);
+      if (b.op == BinOp::Shl || b.op == BinOp::Shr) {
+        const TypeExpr* lt = deduce_type(*b.lhs);
+        if (lt) lt = canonicalize_type(lt);
+        if (lt && lt->kind == Kind::TyName) {
+          const auto& tn = static_cast<const TyName&>(*lt);
+          if (const PrimitiveInfo* pi = primitive_info(ascii_lower(tn.name));
+              pi && shift_carrier_primitive(pi)) {
+            return builtin_integer_type(shift_carrier_primitive(pi));
+          }
+        }
+      }
       if (auto info = eval_const_int_expr(e); info && info->type) {
         return builtin_integer_type(info->type);
       }
       if (e.kind != Kind::Binary) return nullptr;
       {
-        const auto& b = static_cast<const Binary&>(e);
         if (b.op == BinOp::Is) return builtin_boolean_type();
         if (b.op == BinOp::As) {
           if (b.rhs->kind == Kind::Ident) {
@@ -841,6 +864,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         }
       }
       break;
+    }
     case Kind::Ident: {
       const auto& id = static_cast<const Ident&>(e);
       // Local variables and parameters shadow everything.

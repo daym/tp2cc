@@ -117,6 +117,15 @@ void test_bootstrap_pointer_sized_aliases_are_32bit() {
   CHECK_EQ(p_maxint, std::numeric_limits<int32_t>::max());
 }
 
+void test_pascal_shift_helpers_mask_count_and_shr_logically() {
+  CHECK_EQ(p_shl<int32_t>(1, 33), 2);
+  CHECK_EQ(p_shr<int32_t>(0xFFFF, 33), 32767);
+  CHECK_EQ(p_shr<int32_t>(-1, 15), 131071);
+  CHECK_EQ(p_shl<int64_t>(int64_t{1}, 65), int64_t{2});
+  CHECK_EQ(p_shr<int64_t>(int64_t{0xFFFF}, 65), int64_t{32767});
+  CHECK_EQ(p_shl<uint32_t>(static_cast<uint8_t>(255), 8), 65280u);
+}
+
 void test_runtime_path_helpers_match_compiler_expectations() {
   const auto path = tp2cc_ansistring_of("/tmp/archive.tar.gz");
 
@@ -1169,6 +1178,7 @@ int main() {
   RUN_TEST(test_val_handles_bootstrap_integer_forms);
   RUN_TEST(test_val_keeps_leading_zero_decimals_decimal);
   RUN_TEST(test_bootstrap_pointer_sized_aliases_are_32bit);
+  RUN_TEST(test_pascal_shift_helpers_mask_count_and_shr_logically);
   RUN_TEST(test_runtime_path_helpers_match_compiler_expectations);
   RUN_TEST(test_runtime_tdatetime_decodes_current_and_dos_times);
   RUN_TEST(test_runtime_file_helpers_expose_real_sysutils_surface);

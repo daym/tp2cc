@@ -948,6 +948,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return pi && (pi->int_kind == PrimitiveIntKind::Signed ||
                       pi->int_kind == PrimitiveIntKind::Unsigned);
       };
+      auto shift_carrier = [&](const Expr& x) -> const PrimitiveInfo* {
+        const TypeExpr* t = deduce_type(x);
+        if (!t) return nullptr;
+        t = canonicalize_type(t);
+        if (!t || t->kind != Kind::TyName) return nullptr;
+        const PrimitiveInfo* pi = primitive_info(
+            ascii_lower(static_cast<const TyName&>(*t).name));
+        return shift_carrier_primitive(pi);
+      };
       if (n.q_check &&
           (n.op == BinOp::Add || n.op == BinOp::Sub || n.op == BinOp::Mul) &&
           operand_is_integer(*n.lhs) && operand_is_integer(*n.rhs)) {
@@ -956,6 +965,28 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                                               : "tp2cc_mul_checked";
         return std::string("::rt::") + fn + "(" + emit_operand(*n.lhs, *n.rhs) +
                ", " + emit_operand(*n.rhs, *n.lhs) + ")";
+      }
+      // Keep the shift/rotate vocabulary precise here:
+      // - shl: shift left, zeros come in on the right, high bits are discarded
+      // - shr: logical shift right, zeros come in on the left, low bits are discarded
+      // - rol: rotate left, high bits that fall off the left wrap around into the low end
+      // - ror: rotate right, low bits that fall off the right wrap around into the high end
+      //
+      // ARM backend code like
+      //   rotl(d, b) = (d shr (32-b)) or (d shl b)
+      // is implementing `rol` by combining `shr` and `shl`; it is not
+      // confusing shift and rotate. Lower Pascal `shl`/`shr` through runtime
+      // helpers instead of raw C++ `<<`/`>>`, because FPC masks the shift
+      // count to the carrier width and `shr` stays logical even for signed
+      // integers.
+      if ((n.op == BinOp::Shl || n.op == BinOp::Shr) &&
+          operand_is_integer(*n.lhs)) {
+        if (const PrimitiveInfo* carrier = shift_carrier(*n.lhs)) {
+          const char* fn = (n.op == BinOp::Shl) ? "p_shl" : "p_shr";
+          return std::string("::rt::") + fn + "<" + carrier->cxx + ">(" +
+                 emit_operand(*n.lhs, *n.rhs) + ", " +
+                 emit_operand(*n.rhs, *n.lhs) + ")";
+        }
       }
       const char* op = "?";
       switch (n.op) {

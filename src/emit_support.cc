@@ -470,6 +470,14 @@ const ast::TyName* builtin_integer_type(const PrimitiveInfo* info) {
   return nullptr;
 }
 
+const PrimitiveInfo* shift_carrier_primitive(const PrimitiveInfo* info) {
+  if (!info || info->int_kind == PrimitiveIntKind::None) return nullptr;
+  if (info->bits >= 64) return info;
+  return (info->int_kind == PrimitiveIntKind::Unsigned)
+             ? primitive_info("cardinal")
+             : primitive_info("longint");
+}
+
 bool checked_add_int64(int64_t a, int64_t b, int64_t* out) {
   if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b)) {
     return false;
@@ -551,6 +559,54 @@ bool checked_shr_int64(int64_t a, int64_t shift, int64_t* out) {
   bits >>= static_cast<unsigned>(shift);
   *out = static_cast<int64_t>(bits);
   return true;
+}
+
+namespace {
+
+bool checked_pascal_shift_int64_impl(int64_t a, const PrimitiveInfo* carrier,
+                                     int64_t shift, bool shift_left,
+                                     int64_t* out) {
+  carrier = shift_carrier_primitive(carrier);
+  if (!carrier || carrier->int_kind == PrimitiveIntKind::None ||
+      carrier->bits == 0 || carrier->bits > 64) {
+    return false;
+  }
+
+  const uint8_t bits = carrier->bits;
+  const uint64_t amount =
+      static_cast<uint64_t>(shift) & static_cast<uint64_t>(bits - 1);
+  uint64_t value_bits = low_bits(static_cast<uint64_t>(a), bits);
+  uint64_t shifted = 0;
+  if (shift_left) {
+    shifted = low_bits(value_bits << static_cast<unsigned>(amount), bits);
+  } else {
+    shifted = value_bits >> static_cast<unsigned>(amount);
+  }
+
+  if (carrier->int_kind == PrimitiveIntKind::Unsigned || bits == 64) {
+    *out = static_cast<int64_t>(shifted);
+    return true;
+  }
+
+  const uint64_t sign_bit = uint64_t{1} << (bits - 1);
+  if ((shifted & sign_bit) == 0) {
+    *out = static_cast<int64_t>(shifted);
+  } else {
+    *out = static_cast<int64_t>(shifted | ~low_bits(UINT64_MAX, bits));
+  }
+  return true;
+}
+
+}  // namespace
+
+bool checked_pascal_shl_int64(int64_t a, const PrimitiveInfo* carrier,
+                              int64_t shift, int64_t* out) {
+  return checked_pascal_shift_int64_impl(a, carrier, shift, true, out);
+}
+
+bool checked_pascal_shr_int64(int64_t a, const PrimitiveInfo* carrier,
+                              int64_t shift, int64_t* out) {
+  return checked_pascal_shift_int64_impl(a, carrier, shift, false, out);
 }
 
 bool tyname_is(const ast::TypeExpr* t, std::string_view expected) {

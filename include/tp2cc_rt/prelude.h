@@ -1250,6 +1250,44 @@ constexpr T tp2cc_wrap_negate(T x) {
   }
 }
 
+// Pascal `shl` / `shr` are not raw C++ shifts. FPC masks the shift count to
+// the carrier width (32-bit for ordinals narrower than 64 bits, 64-bit for
+// int64/qword) and `shr` is logical even for signed integers.
+template <typename Carrier, typename T, typename Shift>
+constexpr Carrier p_shl(T value, Shift shift) {
+  static_assert(std::is_integral_v<Carrier> && !std::is_same_v<Carrier, bool>);
+  static_assert(std::is_integral_v<T> && std::is_integral_v<Shift>);
+  using U = std::make_unsigned_t<Carrier>;
+  constexpr unsigned kBits = sizeof(U) * CHAR_BIT;
+  const unsigned amount =
+      static_cast<unsigned>(static_cast<uint64_t>(shift) &
+                            static_cast<uint64_t>(kBits - 1));
+  const uint64_t bits = static_cast<uint64_t>(static_cast<U>(value));
+  if constexpr (kBits == 64) {
+    return static_cast<Carrier>(
+        static_cast<U>(static_cast<uint64_t>(bits << amount)));
+  } else {
+    const uint64_t shifted =
+        static_cast<uint64_t>(
+            static_cast<uint32_t>(static_cast<uint32_t>(bits) << amount)) &
+        ((uint64_t{1} << kBits) - 1);
+    return static_cast<Carrier>(static_cast<U>(shifted));
+  }
+}
+
+template <typename Carrier, typename T, typename Shift>
+constexpr Carrier p_shr(T value, Shift shift) {
+  static_assert(std::is_integral_v<Carrier> && !std::is_same_v<Carrier, bool>);
+  static_assert(std::is_integral_v<T> && std::is_integral_v<Shift>);
+  using U = std::make_unsigned_t<Carrier>;
+  constexpr unsigned kBits = sizeof(U) * CHAR_BIT;
+  const unsigned amount =
+      static_cast<unsigned>(static_cast<uint64_t>(shift) &
+                            static_cast<uint64_t>(kBits - 1));
+  const U bits = static_cast<U>(value);
+  return static_cast<Carrier>(static_cast<U>(bits >> amount));
+}
+
 inline tp2cc_AnsiString tp2cc_ansistring_of(std::nullptr_t) {
   return tp2cc_AnsiString{};
 }
