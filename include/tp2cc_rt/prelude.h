@@ -374,6 +374,11 @@ struct tp2cc_ShortStringCharValue {
 struct tp2cc_ShortStringCharRef {
   uint8_t* byte = nullptr;
 
+  constexpr tp2cc_ShortStringCharRef() = default;
+  constexpr explicit tp2cc_ShortStringCharRef(uint8_t* byte_) : byte(byte_) {}
+  constexpr tp2cc_ShortStringCharRef(
+      const tp2cc_ShortStringCharRef&) = default;
+
   constexpr explicit operator uint8_t() const { return *byte; }
   constexpr operator p_char() const { return tp2cc_char_of(*byte); }
 
@@ -862,6 +867,11 @@ struct tp2cc_AnsiStringCharValue {
 struct tp2cc_AnsiStringCharRef {
   tp2cc_AnsiString* owner = nullptr;
   int index = 0;  // zero-based byte index within the payload
+
+  constexpr tp2cc_AnsiStringCharRef() = default;
+  constexpr tp2cc_AnsiStringCharRef(tp2cc_AnsiString* owner_, int index_)
+      : owner(owner_), index(index_) {}
+  constexpr tp2cc_AnsiStringCharRef(const tp2cc_AnsiStringCharRef&) = default;
 
   operator p_char() const;
   // Mirror tp2cc_ShortStringCharRef: Pascal `byte(s[i])` lowers as
