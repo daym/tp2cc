@@ -1,0 +1,31 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-30
+Subject: Guard arm aasmcpu next-instruction narrowing cast
+License: expat
+
+`compiler/arm/aasmcpu.pas` checks whether `curtai.next` starts a case-jump
+table with:
+
+  taicpu(curtai.next).typ=ait_instruction
+
+That narrows the base `tai` node to `taicpu` before proving it is actually
+an instruction node.  Under native FPC this old-style cast slips by, but the
+translated C++ stage1 compiler turns it into a concrete downcast.  During the
+armhf bootstrap, `curtai.next` can be a `tai_function_name`, and UBSan then
+correctly reports the bad cast before `data2inc` finishes compiling.
+
+Fix this the same way as the other bootstrap-source type guards: check the
+base `tai.typ` first, then narrow to `taicpu` only after short-circuiting has
+proved the node is an instruction.
+
+--- a/compiler/arm/aasmcpu.pas
++++ b/compiler/arm/aasmcpu.pas
+@@ -715,7 +715,7 @@
+ 
+             { special case for case jump tables }
+             if assigned(curtai.next) and
+-              (taicpu(curtai.next).typ=ait_instruction) and
++              (tai(curtai.next).typ=ait_instruction) and
+               (taicpu(curtai.next).opcode=A_LDR) and
+               (taicpu(curtai.next).oper[0]^.typ=top_reg) and
+               (taicpu(curtai.next).oper[0]^.reg=NR_PC) then
