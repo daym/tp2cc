@@ -311,6 +311,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"fillbyte",   3, false, false, ""},
       {"fillword",   3, false, false, ""},
       {"move",       3, false, false, ""},
+      {"prefetch",   1, false, false, ""},
       {"getmem",     2, false, false, ""},
       {"freemem",    1, false, false, ""},
       {"freemem",    2, false, false, ""},

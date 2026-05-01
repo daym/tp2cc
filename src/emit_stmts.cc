@@ -454,9 +454,18 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
     call_expr = &static_cast<const Call&>(*es.expr);
     if (call_expr->callee->kind == Kind::Ident) {
       name = static_cast<const Ident&>(*call_expr->callee).name;
+    } else if (call_expr->callee->kind == Kind::Member) {
+      const auto& mem = static_cast<const Member&>(*call_expr->callee);
+      if (mem.base->kind == Kind::Ident &&
+          ascii_lower(static_cast<const Ident&>(*mem.base).name) == "system") {
+        name = mem.name;
+      }
     }
   }
 
+  if (call_expr && ascii_lower(name) == "prefetch") {
+    return;
+  }
   if (name == "break") {
     // Pascal break exits the enclosing loop even from inside a case.
     // Emit as goto so switch nesting can't swallow it.

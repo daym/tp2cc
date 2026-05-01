@@ -3208,6 +3208,27 @@ void test_runtime_string_and_memory_helpers_resolve_explicitly() {
   CHECK(contains(out.impl, "::rt::p_strrscan("));
 }
 
+void test_prefetch_intrinsic_statement_is_noop() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var x : longint; p : ^longint;\n"
+      "begin\n"
+      "  prefetch(x);\n"
+      "  system.prefetch(p^);\n"
+      "  x := 1;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "p_x = 1;"));
+  CHECK(!contains(out.impl, "prefetch("));
+  CHECK(!contains(out.impl, "p_prefetch("));
+}
+
 void test_and_with_not_of_xor_short_circuits() {
   // Three chained Pascal `and`s where the third's RHS is `not(bool xor
   // bool)`. Without recognising xor-of-bools as bool, the last `and`
@@ -6059,6 +6080,7 @@ int main() {
   RUN_TEST(test_parameterless_procvar_stmt_autocalls);
   RUN_TEST(test_direct_procvar_var_decl_uses_named_function_pointer_syntax);
   RUN_TEST(test_runtime_builtin_stmt_autocalls);
+  RUN_TEST(test_prefetch_intrinsic_statement_is_noop);
   RUN_TEST(test_bool_procvar_call_uses_logical_and);
   RUN_TEST(test_open_array_method_signature_keeps_wrapper_type);
   RUN_TEST(test_open_array_procvar_signature_keeps_wrapper_type);
