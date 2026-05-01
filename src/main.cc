@@ -137,7 +137,11 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
     static constexpr const char* kSysutilsTypeAliases[] = {
         "p_tdatetime",
         "p_tsystemtime",
+        "p_hresult",
         "p_pansistring",
+        "p_pdword",
+        "p_pqword",
+        "p_pshortstring",
     };
     for (const char* name : kSysutilsTypeAliases) {
       h << "using " << name << " = ::rt::" << name << ";\n";
@@ -155,6 +159,7 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
         "p_date",
         "p_fileexists",
         "p_directoryexists",
+        "p_trim",
         "p_renamefile",
         "p_filegetdate",
         "p_filesetdate",

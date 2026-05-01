@@ -44,8 +44,13 @@ void mark_builtin_memory_helper_param_info(
   // value of the first expression. Reuse the normal untyped-argument
   // lowering path here so calls like `FillChar(FList^[I], ...)` become
   // `&slot` in C++ instead of reinterpreting the pointer value stored there.
-  if (lower == "fillchar" || lower == "fillword" || lower == "filldword") {
+  if (lower == "fillchar" || lower == "fillbyte" ||
+      lower == "fillword" || lower == "filldword") {
     mark(0, UntypedArgKind::Mutable, /*is_mutable=*/true);
+    return;
+  }
+  if (lower == "initialize") {
+    mark(0, UntypedArgKind::None, /*is_mutable=*/true);
     return;
   }
   if (lower == "move") {

@@ -308,6 +308,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"dec",        1, false, false, ""},
       {"dec",        2, false, false, ""},
       {"fillchar",   3, false, false, ""},
+      {"fillbyte",   3, false, false, ""},
       {"fillword",   3, false, false, ""},
       {"move",       3, false, false, ""},
       {"getmem",     2, false, false, ""},
@@ -324,6 +325,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"stringofchar", 2, true, false, "ansistring"},
       {"strlen",     1, true,  false, "longint"},
       {"strpcopy",   2, true,  false, "pchar"},
+      {"strrscan",   2, true,  false, "pchar"},
       {"assert",     1, false, false, ""},
       {"assert",     2, false, false, ""},
       {"assign",     2, false, false, ""},
@@ -341,6 +343,8 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"delete",     3, false, false, ""},
       {"insert",     3, false, false, ""},
       {"pos",        2, true,  false, "longint"},
+      {"trim",       1, true,  false, "ansistring"},
+      {"initialize", 1, false, false, ""},
       {"swap",       1, true,  false, "longint"},
       {"swapendian", 1, true,  false, ""},
       {"beton",      1, true,  false, ""},
@@ -362,6 +366,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"rmdir",      1, false, false, ""},
       {"getdir",     2, false, false, ""},
       {"deletefile", 1, true,  false, "boolean"},
+      {"directoryexists", 1, true, false, "boolean"},
       {"fsearch",    2, true,  false, "shortstring"},
       {"fsplit",     4, false, false, ""},
       {"fexpand",    1, true,  false, "shortstring"},
@@ -620,10 +625,14 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   }));
   add_rt_alias("tdatetime", make_typename("double"));
   add_rt_alias("tfpuexceptionmask", make_set(make_typename("tfpuexception")));
+  add_rt_alias("hresult", make_typename("longint"));
   add_rt_alias("pcardinal", make_pointer(make_typename("cardinal")));
   add_rt_alias("pcurrency", make_pointer(make_typename("currency")));
+  add_rt_alias("pdword", make_pointer(make_typename("dword")));
   add_rt_alias("pint64", make_pointer(make_typename("int64")));
   add_rt_alias("ppointer", make_pointer(make_typename("pointer")));
+  add_rt_alias("pqword", make_pointer(make_typename("qword")));
+  add_rt_alias("pshortstring", make_pointer(make_typename("shortstring")));
   add_rt_var("allowdirectoryseparators", make_set(make_typename("char")));
   auto make_method = [&](const std::string& name, ast::ProcKind pkind,
                          std::vector<ast::Param> params) {

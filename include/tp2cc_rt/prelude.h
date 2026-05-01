@@ -1774,11 +1774,15 @@ using p_thandle   = int32_t;
 using p_tfiletime = int64_t;
 using p_tdatetime = double;
 using p_currency  = int64_t;
+using p_hresult   = int32_t;
 using p_pansistring = tp2cc_AnsiString*;
 
 using p_pcardinal = uint32_t*;
 using p_pcurrency = p_currency*;
+using p_pdword    = uint32_t*;
 using p_pint64    = int64_t*;
+using p_pqword    = uint64_t*;
+using p_pshortstring = tp2cc_ShortString<>*;
 
 // Only `vtAnsiString` is needed: ncgld.pas locally redeclares all the
 // other vt* tags in a procedure-scoped `const` block, so the bare name
@@ -3458,6 +3462,16 @@ inline bool p_directoryexists(const Str& name) {
   return ::stat(tp2cc_to_std_string(name).c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 }
 
+template <typename Str>
+inline tp2cc_AnsiString p_trim(const Str& input) {
+  std::string s = tp2cc_to_std_string(input);
+  auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
+  auto first = std::find_if_not(s.begin(), s.end(), is_space);
+  auto last = std::find_if_not(s.rbegin(), s.rend(), is_space).base();
+  if (first >= last) return tp2cc_ansistring_of("");
+  return tp2cc_ansistring_of(std::string(first, last).c_str());
+}
+
 template <typename OldName, typename NewName>
 inline bool p_renamefile(const OldName& old_name, const NewName& new_name) {
   return std::rename(tp2cc_to_std_string(old_name).c_str(),
@@ -4096,6 +4110,14 @@ inline int p_strlen(const p_char* s) {
   return n;
 }
 inline int p_strlen(const tp2cc_AnsiString& s) { return s.length(); }
+inline p_char* p_strrscan(p_char* s, p_char c) {
+  if (!s) return nullptr;
+  return reinterpret_cast<p_char*>(std::strrchr(tp2cc_c_str(s), tp2cc_char_to_c(c)));
+}
+inline const p_char* p_strrscan(const p_char* s, p_char c) {
+  if (!s) return nullptr;
+  return reinterpret_cast<const p_char*>(std::strrchr(tp2cc_c_str(s), tp2cc_char_to_c(c)));
+}
 inline tp2cc_ShortString<> p_strpas(const char* s) { return tp2cc_shortstring_of<>(s); }
 inline tp2cc_ShortString<> p_strpas(const p_char* s) { return tp2cc_shortstring_of<>(s); }
 template <int N>
@@ -4253,17 +4275,26 @@ inline void p_fillchar(void* dest, int count, int value) {
 inline void p_fillchar(void* dest, int count, p_char value) {
   p_fillchar(dest, count, p_ord(value));
 }
+inline void p_fillbyte(void* dest, int count, uint8_t value) {
+  std::memset(dest, value, static_cast<size_t>(count));
+}
 inline void p_fillchar(tp2cc_ShortStringCharRef dest, int count, int value) {
   std::memset(dest.byte, value & 0xff, static_cast<size_t>(count));
 }
 inline void p_fillchar(tp2cc_ShortStringCharRef dest, int count, p_char value) {
   p_fillchar(dest, count, p_ord(value));
 }
+inline void p_fillbyte(tp2cc_ShortStringCharRef dest, int count, uint8_t value) {
+  std::memset(dest.byte, value, static_cast<size_t>(count));
+}
 inline void p_fillchar(tp2cc_AnsiStringCharRef dest, int count, int value) {
   std::memset(&dest, value & 0xff, static_cast<size_t>(count));
 }
 inline void p_fillchar(tp2cc_AnsiStringCharRef dest, int count, p_char value) {
   p_fillchar(dest, count, p_ord(value));
+}
+inline void p_fillbyte(tp2cc_AnsiStringCharRef dest, int count, uint8_t value) {
+  std::memset(&dest, value, static_cast<size_t>(count));
 }
 template <typename T>
 requires (!std::is_pointer_v<T>)
@@ -4274,6 +4305,15 @@ template <typename T>
 requires (!std::is_pointer_v<T>)
 inline void p_fillchar(T& dest, int count, p_char value) {
   p_fillchar(dest, count, p_ord(value));
+}
+template <typename T>
+requires (!std::is_pointer_v<T>)
+inline void p_fillbyte(T& dest, int count, uint8_t value) {
+  std::memset(&dest, value, static_cast<size_t>(count));
+}
+template <typename T>
+inline void p_initialize(T& value) {
+  value = T{};
 }
 inline void p_move(const void* src, void* dest, int count) {
   std::memmove(dest, src, static_cast<size_t>(count));

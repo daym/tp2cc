@@ -2004,14 +2004,22 @@ void test_runtime_aliases_cover_currency_systemtime_and_pansistring() {
       "procedure demo;\n"
       "var\n"
       "  c : currency;\n"
+      "  hr : hresult;\n"
+      "  pd : pdword;\n"
       "  st : tsystemtime;\n"
       "  ps : pansistring;\n"
+      "  pq : pqword;\n"
+      "  pss : pshortstring;\n"
       "begin\n"
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "::rt::p_currency p_c{};"));
+  CHECK(contains(out.impl, "::rt::p_hresult p_hr{};"));
+  CHECK(contains(out.impl, "::rt::p_pdword p_pd{};"));
   CHECK(contains(out.impl, "::rt::p_tsystemtime p_st{};"));
   CHECK(contains(out.impl, "::rt::p_pansistring p_ps{};"));
+  CHECK(contains(out.impl, "::rt::p_pqword p_pq{};"));
+  CHECK(contains(out.impl, "::rt::p_pshortstring p_pss{};"));
 }
 
 void test_tmethod_type_name_is_explicitly_qualified() {
@@ -3173,6 +3181,31 @@ void test_runtime_endian_helpers_resolve_explicitly() {
   CHECK(contains(out.impl, "::rt::p_beton("));
   CHECK(contains(out.impl, "::rt::p_ntole("));
   CHECK(contains(out.impl, "::rt::p_leton("));
+}
+
+void test_runtime_string_and_memory_helpers_resolve_explicitly() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var s : string; p : pchar; c : char; b : boolean; x : longint;\n"
+      "begin\n"
+      "  fillbyte(s, sizeof(s), 0);\n"
+      "  initialize(x);\n"
+      "  b := directoryexists(s);\n"
+      "  s := trim(s);\n"
+      "  p := strrscan(p, c);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "::rt::p_fillbyte("));
+  CHECK(contains(out.impl, "::rt::p_initialize("));
+  CHECK(contains(out.impl, "::rt::p_directoryexists("));
+  CHECK(contains(out.impl, "::rt::p_trim("));
+  CHECK(contains(out.impl, "::rt::p_strrscan("));
 }
 
 void test_and_with_not_of_xor_short_circuits() {
@@ -6047,6 +6080,7 @@ int main() {
   RUN_TEST(test_unresolved_free_identifier_reports_error_without_rt_fallback);
   RUN_TEST(test_runtime_math_surface_resolves_explicitly);
   RUN_TEST(test_runtime_endian_helpers_resolve_explicitly);
+  RUN_TEST(test_runtime_string_and_memory_helpers_resolve_explicitly);
   RUN_TEST(test_and_with_not_of_xor_short_circuits);
   RUN_TEST(test_r_plus_routes_narrowing_assignment_through_range_check);
   RUN_TEST(test_q_minus_routes_signed_negate_through_wrap_helper);

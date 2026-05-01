@@ -1035,6 +1035,26 @@ void test_fillword_and_compareword_operate_on_word_counts() {
   CHECK(p_compareword(words[0], different[0], 4) < 0);
 }
 
+void test_fillbyte_initialize_trim_and_strrscan_helpers() {
+  uint8_t bytes[4] = {0, 0, 0, 0};
+  p_fillbyte(bytes[0], 4, 0x5a);
+  CHECK_EQ(bytes[0], static_cast<uint8_t>(0x5a));
+  CHECK_EQ(bytes[3], static_cast<uint8_t>(0x5a));
+
+  int32_t value = 17;
+  p_initialize(value);
+  CHECK_EQ(value, 0);
+
+  auto trimmed = p_trim(tp2cc_shortstring_of<>(" \tabc \n"));
+  CHECK_EQ(tp2cc_to_std_string(trimmed), std::string("abc"));
+
+  p_char text[] = {
+      tp2cc_char_of('a'), tp2cc_char_of('b'), tp2cc_char_of('a'),
+      tp2cc_char_of('\0')};
+  CHECK(p_strrscan(text, tp2cc_char_of('a')) == &text[2]);
+  CHECK(p_strrscan(text, tp2cc_char_of('z')) == nullptr);
+}
+
 void test_indexword_searches_prefix_only() {
   tp2cc_Array<uint16_t, 0, 5> words{};
   words[0] = 0x10;
@@ -1253,6 +1273,7 @@ int main() {
   RUN_TEST(test_exception_metaclass_accepts_concrete_root_create_thunk);
   RUN_TEST(test_hi_lo_split_ordinal_halves);
   RUN_TEST(test_fillword_and_compareword_operate_on_word_counts);
+  RUN_TEST(test_fillbyte_initialize_trim_and_strrscan_helpers);
   RUN_TEST(test_indexword_searches_prefix_only);
   RUN_TEST(test_comparebyte_operates_on_byte_counts);
   RUN_TEST(test_blockread_writes_to_void_buffer);
