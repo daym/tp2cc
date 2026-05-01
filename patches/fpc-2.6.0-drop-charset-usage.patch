@@ -1,0 +1,147 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-01
+Subject: Drop the charset/codepage path from the bootstrap compiler
+License: expat
+
+The 2.6.0 compiler reaches `charset` and the per-codepage unit tables
+(cp437.pas, cp8859_1.pas, ...) for one purpose: convert non-UTF-8
+source bytes into wide chars during lexing of widestring literals.  The
+bootstrap target (compiling fpc itself) does not need that path at
+runtime, but keeping it in the unit graph drags the charset tables into
+the translated compiler.
+
+Drop the dependency entirely:
+- `widestr.pas`: remove the charset/cp* unit imports; collapse
+  `asciichar2unicode`, `ascii2unicode`, and `cpavailable` to a
+  byte-to-widechar pass-through so the surface stays callable for
+  `scandir.pas`'s `{$CodePage X}` directive handling.
+- `options.pas`: remove `uses charset`; drop the `-Fm <name>`
+  `loadunicodemapping` handler since there is no longer a charset
+  registry to populate.
+
+Source files using non-UTF-8 widestring literals will silently widen each
+byte to its codepoint (identity for ASCII, lossy for non-ASCII).  That is
+acceptable for this tp2cc bootstrap source set; it is not intended as a
+general-purpose compiler behavior change.
+
+--- a/compiler/widestr.pas
++++ b/compiler/widestr.pas
+@@ -28,7 +28,7 @@
+   interface
+ 
+     uses
+-       {$ifdef VER2_2}ccharset{$else VER2_2}charset{$endif VER2_2},globtype;
++       globtype;
+ 
+ 
+     type
+@@ -61,9 +61,6 @@
+   implementation
+ 
+     uses
+-      cp8859_1,cp850,cp437,
+-      { cyrillic code pages }
+-      cp1251,cp866,cp8859_5,
+       globals,cutils;
+ 
+ 
+@@ -160,16 +157,9 @@
+       end;
+ 
+     function asciichar2unicode(c : char) : tcompilerwidechar;
+-      var
+-         m : punicodemap;
+       begin
+-         if (current_settings.sourcecodepage <> 'utf8') then
+-           begin
+-             m:=getmap(current_settings.sourcecodepage);
+-             asciichar2unicode:=getunicode(c,m);
+-           end
+-         else
+-           result:=tcompilerwidechar(c);
++         { bootstrap stub: byte-to-widechar pass-through. }
++         asciichar2unicode:=tcompilerwidechar(c);
+       end;
+ 
+     function unicode2asciichar(c : tcompilerwidechar) : char;
+@@ -185,30 +175,17 @@
+          source : pchar;
+          dest   : tcompilerwidecharptr;
+          i      : SizeInt;
+-         m      : punicodemap;
+       begin
+-         m:=getmap(current_settings.sourcecodepage);
++         { bootstrap stub: byte-to-widechar pass-through. }
+          setlengthwidestring(r,l);
+          source:=p;
+          dest:=tcompilerwidecharptr(r^.data);
+-         if (current_settings.sourcecodepage <> 'utf8') then
+-           begin
+-             for i:=1 to l do
+-                begin
+-                  dest^:=getunicode(source^,m);
+-                  inc(dest);
+-                  inc(source);
+-                end;
+-           end
+-         else
+-           begin
+-             for i:=1 to l do
+-                begin
+-                  dest^:=tcompilerwidechar(source^);
+-                  inc(dest);
+-                  inc(source);
+-                end;
+-           end;
++         for i:=1 to l do
++            begin
++              dest^:=tcompilerwidechar(source^);
++              inc(dest);
++              inc(source);
++            end;
+       end;
+ 
+     procedure unicode2ascii(r : pcompilerwidestring;p:pchar);
+@@ -268,7 +245,8 @@
+ 
+     function cpavailable(const s : string) : boolean;
+       begin
+-          cpavailable:=mappingavailable(lower(s));
++          { bootstrap stub: accept any codepage name; pass-through is identity. }
++          cpavailable:=true;
+       end;
+ 
+ end.
+--- a/compiler/options.pas
++++ b/compiler/options.pas
+@@ -78,7 +78,6 @@
+ 
+ uses
+   widestr,
+-  {$ifdef VER2_2}ccharset{$else VER2_2}charset{$endif VER2_2},
+   SysUtils,
+   version,
+   cutils,cmsgs,
+@@ -500,7 +499,6 @@
+   error : integer;
+   j,l   : longint;
+   d,s   : TCmdStr;
+-  unicodemapping : punicodemap;
+ begin
+   if opt='' then
+    exit;
+@@ -901,14 +899,6 @@
+                      else
+                        includesearchpath.AddPath(More,true);
+                    end;
+-                 'm' :
+-                   begin
+-                     unicodemapping:=loadunicodemapping(More,More+'.txt');
+-                     if assigned(unicodemapping) then
+-                       registermapping(unicodemapping)
+-                     else
+-                       IllegalPara(opt);
+-                   end;
+                  'g' :
+                    Message2(option_obsolete_switch_use_new,'-Fg','-Fl');
+                  'l' :
