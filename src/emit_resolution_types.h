@@ -64,16 +64,17 @@ class ResolveNameProvider {
 //   -----+-------------------------+----------------------------------------
 //    1   | Exact                   | tidstring -> tidstring (same canonical)
 //    2   | Equal                   | TSubrangeInt -> Integer (same underlying)
-//    3   | ClassHierarchy          | TButton -> TControl
-//    4   | IntWideningSameSign     | byte -> word -> longint
-//    5   | RealWidening            | single -> double -> extended
-//    6   | StringSameTagWiden      | ShortString<N> -> ShortString<M>, M >= N
-//    7   | StringToShortString     | Char/PChar/AnsiString -> ShortString
-//    8   | StringToAnsiString      | Char/PChar/ShortString -> AnsiString;
+//    3   | SetCompatible           | set of 0..7 -> set of byte
+//    4   | ClassHierarchy          | TButton -> TControl
+//    5   | IntWideningSameSign     | byte -> word -> longint
+//    6   | RealWidening            | single -> double -> extended
+//    7   | StringSameTagWiden      | ShortString<N> -> ShortString<M>, M >= N
+//    8   | StringToShortString     | Char/PChar/AnsiString -> ShortString
+//    9   | StringToAnsiString      | Char/PChar/ShortString -> AnsiString;
 //        |                         | ShortString/AnsiString -> PChar
-//    9   | OrdinalSignChange       | longint -> longword (or back)
-//   10   | IntNarrowing            | longint -> shortint, etc.
-//   11   | Variant                 | anything <-> variant
+//   10   | OrdinalSignChange       | longint -> longword (or back)
+//   11   | IntNarrowing            | longint -> shortint, etc.
+//   12   | Variant                 | anything <-> variant
 //    -   | NotViable               | no implicit conversion exists
 //
 // Ranks 7 vs 8 stay split because the bootstrap compiler runs under `{$H-}`
@@ -83,15 +84,16 @@ class ResolveNameProvider {
 enum class ConvRank : uint8_t {
   Exact = 1,
   Equal = 2,
-  ClassHierarchy = 3,
-  IntWideningSameSign = 4,
-  RealWidening = 5,
-  StringSameTagWiden = 6,
-  StringToShortString = 7,
-  StringToAnsiString = 8,
-  OrdinalSignChange = 9,
-  IntNarrowing = 10,
-  Variant = 11,
+  SetCompatible = 3,
+  ClassHierarchy = 4,
+  IntWideningSameSign = 5,
+  RealWidening = 6,
+  StringSameTagWiden = 7,
+  StringToShortString = 8,
+  StringToAnsiString = 9,
+  OrdinalSignChange = 10,
+  IntNarrowing = 11,
+  Variant = 12,
   NotViable = 255,
 };
 

@@ -167,6 +167,17 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
     return t ? type_ops_.type_to_cxx(*t) : std::string{};
   };
 
+  if (a->kind == Kind::TySet || p->kind == Kind::TySet) {
+    switch (analysis_.classify_set_conversion(a, p)) {
+      case SetConversionKind::Exact:
+        return {ConvRank::Exact, 0};
+      case SetConversionKind::Compatible:
+        return var_param ? ConvScore{} : ConvScore{ConvRank::SetCompatible, 0};
+      case SetConversionKind::Incompatible:
+        return {};
+    }
+  }
+
   std::string a_cxx = type_text(a);
   std::string p_cxx = type_text(p);
   // 1. Exact identity after canonicalization.
@@ -383,11 +394,12 @@ PickResult EmitResolution::pick_overload(
     for (size_t i = 0; i < args.size(); ++i) {
       const TypeExpr* canon_param =
           flat[i].type ? analysis_.canonicalize_type(flat[i].type) : nullptr;
-      // Pascal set literals are context-typed; once the parameter is known to
-      // be a set, even `[]` is an exact fit and should not be filtered out as
-      // "untyped".
+      // Pascal's empty set literal is context-typed: once the parameter is
+      // known to be a set, bare `[]` is an exact fit even though it has no
+      // standalone element type.
       if (args[i]->kind == Kind::SetLit && canon_param &&
-          canon_param->kind == Kind::TySet) {
+          canon_param->kind == Kind::TySet &&
+          static_cast<const SetLit&>(*args[i]).elements.empty()) {
         s.scores.push_back({ConvRank::Exact, 0});
         continue;
       }

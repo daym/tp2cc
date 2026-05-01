@@ -45,6 +45,12 @@ struct ImplicitPropertyLookup {
   bool from_with = false;
 };
 
+enum class SetConversionKind : uint8_t {
+  Incompatible,
+  Exact,
+  Compatible,
+};
+
 class EmitAnalysis {
  public:
   EmitAnalysis(const TypeRegistry* registry, ScopeStateView& scope,
@@ -79,6 +85,10 @@ class EmitAnalysis {
   std::optional<ConstIntExprInfo> eval_const_int_expr(
       const ast::Expr& e,
       std::unordered_set<std::string>* visiting_const_names = nullptr);
+  const ast::TypeExpr* deduce_set_literal_type(
+      const ast::SetLit& s, const ast::TypeExpr* target = nullptr);
+  SetConversionKind classify_set_conversion(const ast::TypeExpr* source,
+                                            const ast::TypeExpr* target);
 
   // Expression/type/name analysis used by emit-time semantic decisions such as
   // member access, overload picking, and `with` lowering.
@@ -104,7 +114,32 @@ class EmitAnalysis {
       std::string_view name);
 
  private:
+  enum class OrdinalFamily : uint8_t {
+    Invalid,
+    Integer,
+    Boolean,
+    Char,
+    WideChar,
+    Enum,
+  };
+
+  struct OrdinalDomain {
+    OrdinalFamily family = OrdinalFamily::Invalid;
+    int64_t low = 0;
+    int64_t high = 0;
+    std::string enum_key;
+  };
+
   std::string implicit_self_cxx();
+  const ast::TySet* synthesize_set_type(
+      const ast::TypeExpr* element,
+      std::optional<std::pair<int64_t, int64_t>> explicit_bounds);
+  bool same_type_ast(const ast::TypeExpr* a, const ast::TypeExpr* b);
+  std::optional<OrdinalDomain> ordinal_domain_for_type(const ast::TypeExpr* t);
+  std::optional<OrdinalDomain> ordinal_domain_for_set_type(
+      const ast::TypeExpr* t);
+  bool try_eval_ordinal_expr(const ast::Expr& e, int64_t* value,
+                             OrdinalFamily* family, std::string* enum_key);
 
  const TypeRegistry* registry_;
   ScopeStateView& scope_;

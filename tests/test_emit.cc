@@ -2986,6 +2986,55 @@ void test_explicit_set_cast_uses_runtime_helper() {
   CHECK(contains(out.impl, "::rt::tp2cc_set_cast<::rt::tp2cc_Set<uint8_t>>(p_small)"));
 }
 
+void test_named_set_const_assigns_to_compatible_set_via_runtime_helper() {
+  auto out = compile_snippet_with_registry(
+      "unit cpupara;\n"
+      "interface\n"
+      "type\n"
+      "  tsmall = 0..15;\n"
+      "  tsmallset = set of tsmall;\n"
+      "  tbyteset = set of byte;\n"
+      "const\n"
+      "  rs_r0 = 0;\n"
+      "  rs_r3 = 3;\n"
+      "  rs_r12 = 12;\n"
+      "  rs_r15 = 15;\n"
+      "  volatile_intregisters = [rs_r0..rs_r3, rs_r12..rs_r15];\n"
+      "function take : tbyteset;\n"
+      "implementation\n"
+      "function take : tbyteset;\n"
+      "begin\n"
+      "  take := volatile_intregisters;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "::rt::tp2cc_Set<int32_t> tp2cc_set{};"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_set_cast<p_tbyteset>(p_volatile_intregisters)"));
+}
+
+void test_compatible_set_actual_stays_viable_in_overload_resolution() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsmall = set of 0..7;\n"
+      "  tbytes = set of byte;\n"
+      "procedure take(xs : tbytes); overload;\n"
+      "procedure take(n : longint); overload;\n"
+      "procedure run(s : tsmall);\n"
+      "implementation\n"
+      "procedure take(xs : tbytes); begin end;\n"
+      "procedure take(n : longint); begin end;\n"
+      "procedure run(s : tsmall);\n"
+      "begin\n"
+      "  take(s);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.impl, "p_u::p_take(static_cast<p_tbytes>(p_s))"));
+}
+
 void test_set_range_literal_uses_integer_ordinal_loop() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -5781,6 +5830,8 @@ int main() {
   RUN_TEST(test_runtime_enum_members_resolve_explicitly);
   RUN_TEST(test_ansicomparefilename_resolves_explicitly);
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
+  RUN_TEST(test_named_set_const_assigns_to_compatible_set_via_runtime_helper);
+  RUN_TEST(test_compatible_set_actual_stays_viable_in_overload_resolution);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
   RUN_TEST(test_local_var_inline_anon_enum_resolves_members);
   RUN_TEST(test_unresolved_free_identifier_reports_error_without_rt_fallback);

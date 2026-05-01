@@ -25,6 +25,7 @@ EmitValues::EmitValues(const TypeRegistry* registry, ScopeStateView& scope,
 
 std::string EmitValues::set_literal_to_cxx(const SetLit& s,
                                            const TypeExpr* target) {
+  if (!target) target = analysis_.deduce_set_literal_type(s);
   const TypeExpr* elem_type = nullptr;
   if (target) {
     const TypeExpr* canon = analysis_.canonicalize_type(target);
@@ -247,11 +248,19 @@ std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target
   std::string out = expr_ops_.expr_to_cxx(e);
   const TypeExpr* source_type = analysis_.deduce_type(e);
   if (source_type) source_type = analysis_.canonicalize_type(source_type);
+  const TypeExpr* canon_target = analysis_.canonicalize_type(target);
+  if (source_type && canon_target && source_type->kind == Kind::TySet &&
+      canon_target->kind == Kind::TySet &&
+      analysis_.classify_set_conversion(source_type, canon_target) !=
+          SetConversionKind::Incompatible &&
+      types_.type_to_cxx(*source_type) != types_.type_to_cxx(*canon_target)) {
+    out = "::rt::tp2cc_set_cast<" + types_.type_to_cxx(*target) + ">(" + out +
+          ")";
+  }
   if (auto cap = types_.shortstring_capacity_to_cxx(target);
       cap && !(source_type && storage_.type_is_stringish(source_type))) {
     out = "::rt::tp2cc_shortstring_of<" + *cap + ">(" + out + ")";
   }
-  const TypeExpr* canon_target = analysis_.canonicalize_type(target);
   if (canon_target &&
       (tyname_is(canon_target, "ansistring") ||
        tyname_is(canon_target, "utf8string"))) {

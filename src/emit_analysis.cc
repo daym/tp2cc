@@ -1,5 +1,6 @@
 #include "emit_analysis.h"
 
+#include <limits>
 #include <stdexcept>
 
 #include "diag.h"
@@ -186,16 +187,371 @@ bool EmitAnalysis::const_param_needs_const_ref(const TypeExpr* t) {
 const TypeExpr* EmitAnalysis::deduce_const_decl_type(const ConstDecl& cd) {
   if (cd.type) return cd.type.get();
   auto info = eval_const_int_expr(*cd.value);
-  if (!info || !info->type) return nullptr;
-  return builtin_integer_type(info->type);
+  if (info && info->type) return builtin_integer_type(info->type);
+  if (cd.value->kind == Kind::SetLit) {
+    return deduce_set_literal_type(static_cast<const SetLit&>(*cd.value));
+  }
+  return nullptr;
 }
 
 const TypeExpr* EmitAnalysis::deduce_const_info_type(const ConstInfo& c) {
   if (c.type) return c.type.get();
   if (!c.value) return nullptr;
   auto info = eval_const_int_expr(*c.value);
-  if (!info || !info->type) return nullptr;
-  return builtin_integer_type(info->type);
+  if (info && info->type) return builtin_integer_type(info->type);
+  if (c.value->kind == Kind::SetLit) {
+    return deduce_set_literal_type(static_cast<const SetLit&>(*c.value));
+  }
+  return nullptr;
+}
+
+const TySet* EmitAnalysis::synthesize_set_type(
+    const TypeExpr* element,
+    std::optional<std::pair<int64_t, int64_t>> explicit_bounds) {
+  if (!element) return nullptr;
+  auto tp = std::make_shared<TySet>();
+  // The synthesized set view borrows the existing element type; it is only an
+  // emit-time compatibility/type-inference artifact and does not own or mutate
+  // the underlying type node.
+  tp->element = std::shared_ptr<TypeExpr>(const_cast<TypeExpr*>(element),
+                                          [](TypeExpr*) {});
+  if (explicit_bounds) {
+    tp->has_explicit_bounds = true;
+    tp->explicit_low = explicit_bounds->first;
+    tp->explicit_high = explicit_bounds->second;
+  }
+  synthesized_types_.push_back(tp);
+  return tp.get();
+}
+
+bool EmitAnalysis::same_type_ast(const TypeExpr* a, const TypeExpr* b) {
+  a = canonicalize_type(a);
+  b = canonicalize_type(b);
+  if (!a || !b) return false;
+  if (a == b) return true;
+  if (a->kind != b->kind) return false;
+  switch (a->kind) {
+    case Kind::TyName:
+      return ascii_lower(static_cast<const TyName&>(*a).name) ==
+             ascii_lower(static_cast<const TyName&>(*b).name);
+    case Kind::TyDistinct:
+      return same_type_ast(static_cast<const TyDistinct&>(*a).underlying.get(),
+                             static_cast<const TyDistinct&>(*b).underlying.get());
+    case Kind::TySubrange: {
+      const auto& as = static_cast<const TySubrange&>(*a);
+      const auto& bs = static_cast<const TySubrange&>(*b);
+      int64_t alo = 0, ahi = 0, blo = 0, bhi = 0;
+      OrdinalFamily af = OrdinalFamily::Invalid;
+      OrdinalFamily bf = OrdinalFamily::Invalid;
+      std::string akey;
+      std::string bkey;
+      return try_eval_ordinal_expr(*as.lo, &alo, &af, &akey) &&
+             try_eval_ordinal_expr(*as.hi, &ahi, &af, &akey) &&
+             try_eval_ordinal_expr(*bs.lo, &blo, &bf, &bkey) &&
+             try_eval_ordinal_expr(*bs.hi, &bhi, &bf, &bkey) && af == bf &&
+             akey == bkey && alo == blo && ahi == bhi;
+    }
+    case Kind::TyEnum:
+      return false;
+    default:
+      return false;
+  }
+}
+
+bool EmitAnalysis::try_eval_ordinal_expr(const Expr& e, int64_t* value,
+                                         OrdinalFamily* family,
+                                         std::string* enum_key) {
+  if (!value || !family || !enum_key) return false;
+  if (e.kind == Kind::StringLit) {
+    const auto& sl = static_cast<const StringLit&>(e);
+    if (sl.value.size() == 1) {
+      *value = static_cast<unsigned char>(sl.value[0]);
+      *family = OrdinalFamily::Char;
+      enum_key->clear();
+      return true;
+    }
+  }
+  if (e.kind == Kind::Ident) {
+    const std::string low = ascii_lower(static_cast<const Ident&>(e).name);
+    if (low == "false" || low == "true") {
+      *value = (low == "true") ? 1 : 0;
+      *family = OrdinalFamily::Boolean;
+      enum_key->clear();
+      return true;
+    }
+    if (const auto* info = find_visible_enum_info_for_member(low)) {
+      for (size_t i = 0; i < info->members.size(); ++i) {
+        if (info->members[i] == low) {
+          *value = static_cast<int64_t>(i);
+          *family = OrdinalFamily::Enum;
+          *enum_key = info->defining_unit.empty()
+                          ? info->name
+                          : info->defining_unit + "." + info->name;
+          return true;
+        }
+      }
+    }
+  }
+  if (e.kind == Kind::Member) {
+    const auto& mem = static_cast<const Member&>(e);
+    if (mem.base->kind == Kind::Ident && registry_) {
+      const std::string unit =
+          ascii_lower(static_cast<const Ident&>(*mem.base).name);
+      const std::string member = ascii_lower(mem.name);
+      for (const auto& [enum_name, info] : registry_->enums) {
+        if (info.defining_unit != unit) continue;
+        for (size_t i = 0; i < info.members.size(); ++i) {
+          if (info.members[i] == member) {
+            *value = static_cast<int64_t>(i);
+            *family = OrdinalFamily::Enum;
+            *enum_key = info.defining_unit.empty()
+                            ? info.name
+                            : info.defining_unit + "." + info.name;
+            return true;
+          }
+        }
+      }
+    }
+  }
+  if (auto info = eval_const_int_expr(e)) {
+    *value = info->value;
+    *family = OrdinalFamily::Integer;
+    enum_key->clear();
+    return true;
+  }
+  return false;
+}
+
+std::optional<EmitAnalysis::OrdinalDomain> EmitAnalysis::ordinal_domain_for_type(
+    const TypeExpr* t) {
+  t = canonicalize_type(t);
+  if (!t) return std::nullopt;
+  if (t->kind == Kind::TyDistinct) {
+    return ordinal_domain_for_type(
+        static_cast<const TyDistinct&>(*t).underlying.get());
+  }
+  if (t->kind == Kind::TySubrange) {
+    const auto& sr = static_cast<const TySubrange&>(*t);
+    int64_t lo = 0;
+    int64_t hi = 0;
+    OrdinalFamily lo_family = OrdinalFamily::Invalid;
+    OrdinalFamily hi_family = OrdinalFamily::Invalid;
+    std::string lo_key;
+    std::string hi_key;
+    if (!try_eval_ordinal_expr(*sr.lo, &lo, &lo_family, &lo_key) ||
+        !try_eval_ordinal_expr(*sr.hi, &hi, &hi_family, &hi_key) ||
+        lo_family != hi_family || lo_key != hi_key) {
+      return std::nullopt;
+    }
+    OrdinalDomain dom;
+    dom.family = lo_family;
+    dom.low = std::min(lo, hi);
+    dom.high = std::max(lo, hi);
+    dom.enum_key = lo_key;
+    return dom;
+  }
+  if (t->kind == Kind::TyEnum) {
+    const auto& en = static_cast<const TyEnum&>(*t);
+    OrdinalDomain dom;
+    dom.family = OrdinalFamily::Enum;
+    dom.low = 0;
+    dom.high =
+        en.members.empty() ? 0 : static_cast<int64_t>(en.members.size() - 1);
+    dom.enum_key = "enum@" +
+                   std::to_string(reinterpret_cast<uintptr_t>(&en));
+    return dom;
+  }
+  if (t->kind != Kind::TyName) return std::nullopt;
+
+  const std::string low = ascii_lower(static_cast<const TyName&>(*t).name);
+  if (low == "boolean") {
+    return OrdinalDomain{OrdinalFamily::Boolean, 0, 1, {}};
+  }
+  if (low == "char") {
+    return OrdinalDomain{OrdinalFamily::Char, 0, 255, {}};
+  }
+  if (low == "widechar") {
+    return OrdinalDomain{OrdinalFamily::WideChar, 0, 65535, {}};
+  }
+  if (const auto* info = primitive_info(low);
+      info && info->int_kind != PrimitiveIntKind::None) {
+    OrdinalDomain dom;
+    dom.family = OrdinalFamily::Integer;
+    dom.low = 0;
+    dom.high = 0;
+    if (info->int_kind == PrimitiveIntKind::Unsigned) {
+      dom.low = 0;
+      if (info->bits >= 63) {
+        dom.high = std::numeric_limits<int64_t>::max();
+      } else {
+        dom.high = (int64_t{1} << info->bits) - 1;
+      }
+    } else if (info->bits >= 64) {
+      dom.low = std::numeric_limits<int64_t>::min();
+      dom.high = std::numeric_limits<int64_t>::max();
+    } else {
+      dom.low = -(int64_t{1} << (info->bits - 1));
+      dom.high = (int64_t{1} << (info->bits - 1)) - 1;
+    }
+    return dom;
+  }
+  if (!registry_) return std::nullopt;
+  std::string unit;
+  std::string tail = low;
+  if (auto dot = low.find('.'); dot != std::string::npos) {
+    unit = low.substr(0, dot);
+    tail = low.substr(dot + 1);
+  }
+  auto eit = registry_->enums.find(tail);
+  if (eit == registry_->enums.end()) return std::nullopt;
+  if (!unit.empty() && eit->second.defining_unit != unit) return std::nullopt;
+  OrdinalDomain dom;
+  dom.family = OrdinalFamily::Enum;
+  dom.low = 0;
+  dom.high =
+      eit->second.members.empty()
+          ? 0
+          : static_cast<int64_t>(eit->second.members.size() - 1);
+  dom.enum_key = eit->second.defining_unit.empty()
+                     ? eit->second.name
+                     : eit->second.defining_unit + "." + eit->second.name;
+  return dom;
+}
+
+std::optional<EmitAnalysis::OrdinalDomain>
+EmitAnalysis::ordinal_domain_for_set_type(const TypeExpr* t) {
+  t = canonicalize_type(t);
+  if (!t || t->kind != Kind::TySet) return std::nullopt;
+  const auto& s = static_cast<const TySet&>(*t);
+  auto dom = ordinal_domain_for_type(s.element.get());
+  if (!dom) return std::nullopt;
+  if (s.has_explicit_bounds) {
+    dom->low = s.explicit_low;
+    dom->high = s.explicit_high;
+  }
+  return dom;
+}
+
+const TypeExpr* EmitAnalysis::deduce_set_literal_type(const SetLit& s,
+                                                      const TypeExpr* target) {
+  const TypeExpr* canon_target = canonicalize_type(target);
+  if (canon_target && canon_target->kind == Kind::TySet) return canon_target;
+  if (s.elements.empty()) return nullptr;
+
+  OrdinalFamily family = OrdinalFamily::Invalid;
+  std::string enum_key;
+  const TypeExpr* enum_type = nullptr;
+  int64_t low = 0;
+  int64_t high = 0;
+  bool have_bounds = false;
+
+  auto absorb = [&](const Expr& e) -> bool {
+    int64_t value = 0;
+    OrdinalFamily expr_family = OrdinalFamily::Invalid;
+    std::string expr_key;
+    if (!try_eval_ordinal_expr(e, &value, &expr_family, &expr_key)) return false;
+    if (family == OrdinalFamily::Invalid) {
+      family = expr_family;
+      enum_key = expr_key;
+      if (expr_family == OrdinalFamily::Enum && !enum_type) {
+        enum_type = deduce_type(e);
+      }
+    } else if (family != expr_family || enum_key != expr_key) {
+      return false;
+    }
+    if (!have_bounds) {
+      low = high = value;
+      have_bounds = true;
+    } else {
+      low = std::min(low, value);
+      high = std::max(high, value);
+    }
+    return true;
+  };
+
+  for (const auto& el : s.elements) {
+    if (el->kind == Kind::Range) {
+      const auto& r = static_cast<const Range&>(*el);
+      if (!absorb(*r.lo) || !absorb(*r.hi)) return nullptr;
+    } else if (!absorb(*el)) {
+      return nullptr;
+    }
+  }
+
+  const TypeExpr* element_type = nullptr;
+  switch (family) {
+    case OrdinalFamily::Integer:
+      // Untyped integer set literals should not inherit the accidental
+      // narrow C++ type of their first constant/member. Keep the Pascal
+      // type broad (`longint`) and preserve the actual range separately.
+      element_type = builtin_integer_type("longint");
+      break;
+    case OrdinalFamily::Boolean:
+      element_type = builtin_boolean_type();
+      break;
+    case OrdinalFamily::Char:
+      element_type = builtin_char_type();
+      break;
+    case OrdinalFamily::WideChar:
+      element_type = named_pascal_type("widechar");
+      break;
+    case OrdinalFamily::Enum:
+      element_type = enum_type;
+      break;
+    case OrdinalFamily::Invalid:
+      return nullptr;
+  }
+  if (!element_type) return nullptr;
+  return synthesize_set_type(element_type, std::make_pair(low, high));
+}
+
+SetConversionKind EmitAnalysis::classify_set_conversion(
+    const TypeExpr* source, const TypeExpr* target) {
+  source = canonicalize_type(source);
+  target = canonicalize_type(target);
+  if (!(source && target && source->kind == Kind::TySet &&
+        target->kind == Kind::TySet)) {
+    return SetConversionKind::Incompatible;
+  }
+
+  auto src_dom = ordinal_domain_for_set_type(source);
+  auto dst_dom = ordinal_domain_for_set_type(target);
+  if (!src_dom || !dst_dom) return SetConversionKind::Incompatible;
+
+  bool family_compatible = false;
+  switch (dst_dom->family) {
+    case OrdinalFamily::Integer:
+      family_compatible = src_dom->family == OrdinalFamily::Integer;
+      break;
+    case OrdinalFamily::Boolean:
+      family_compatible = src_dom->family == OrdinalFamily::Boolean;
+      break;
+    case OrdinalFamily::Char:
+      family_compatible = src_dom->family == OrdinalFamily::Char;
+      break;
+    case OrdinalFamily::WideChar:
+      family_compatible = src_dom->family == OrdinalFamily::WideChar;
+      break;
+    case OrdinalFamily::Enum:
+      family_compatible = src_dom->family == OrdinalFamily::Enum &&
+                          src_dom->enum_key == dst_dom->enum_key;
+      break;
+    case OrdinalFamily::Invalid:
+      break;
+  }
+  if (!family_compatible) return SetConversionKind::Incompatible;
+  if (src_dom->low < dst_dom->low || src_dom->high > dst_dom->high) {
+    return SetConversionKind::Incompatible;
+  }
+
+  const auto& src_set = static_cast<const TySet&>(*source);
+  const auto& dst_set = static_cast<const TySet&>(*target);
+  const bool same_bounds =
+      src_dom->low == dst_dom->low && src_dom->high == dst_dom->high;
+  if (same_bounds && same_type_ast(src_set.element.get(), dst_set.element.get())) {
+    return SetConversionKind::Exact;
+  }
+  return SetConversionKind::Compatible;
 }
 
 std::optional<ConvertedConstInt> EmitAnalysis::convert_const_int_value(
@@ -805,6 +1161,8 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       return sl.value.size() == 1 ? builtin_char_type()
                                   : builtin_string_type();
     }
+    case Kind::SetLit:
+      return deduce_set_literal_type(static_cast<const SetLit&>(e));
     case Kind::AddrOf:
       // Keep `@array` intentionally untyped: the emitter still needs to pick
       // between pointer-to-array and pointer-to-first-element at the use site.
