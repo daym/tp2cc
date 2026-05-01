@@ -1291,6 +1291,21 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
           }
         }
+        if (registry && m.base) {
+          const std::string metaclass =
+              metaclass_target_name(deduce_type(*m.base));
+          if (!metaclass.empty()) {
+            if (const auto* method =
+                    registry->lookup_class_method(metaclass, m.name);
+                method && (method->kind == SymKind::ClassMethod ||
+                           method->kind == SymKind::Constructor)) {
+              report_error(a.loc,
+                           "cannot take address of class method through "
+                           "metaclass value");
+              return "nullptr";
+            }
+          }
+        }
       }
       // `@X` where X is a Pascal untyped-var parameter: X is already
       // `void*` holding the caller's storage address, so the

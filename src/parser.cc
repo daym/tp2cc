@@ -478,42 +478,29 @@ void Parser::parse_label_section(std::vector<DeclPtr>& out) {
 void Parser::parse_proc_modifiers(ProcDecl& pd) {
   // Pascal "directives" -- position-dependent modifiers that follow a
   // routine header, separated by `;`.
-  // Class methods currently lower only to the non-virtual/static subset.
-  // Reject modifiers that would require metaclass dispatch instead of
-  // silently pretending they mean the same thing in C++.
-  auto reject_class_modifier = [&](const char* name) {
-    report_error(cur_.loc,
-                 std::string("class methods with `") + name +
-                     "` are unsupported");
-  };
   for (;;) {
     if (is_directive("virtual")) {
-      if (pd.is_class_method) reject_class_modifier("virtual");
-      else pd.is_virtual = true;
+      pd.is_virtual = true;
       advance();
     }
     else if (is_directive("abstract")) {
-      if (pd.is_class_method) reject_class_modifier("abstract");
-      else pd.is_abstract = true;
+      pd.is_abstract = true;
       advance();
     }
     else if (is_directive("override")) {
-      if (pd.is_class_method) reject_class_modifier("override");
-      else pd.is_override = true;
+      pd.is_override = true;
       advance();
     }
     else if (is_directive("dynamic")) {
-      if (pd.is_class_method) reject_class_modifier("dynamic");
-      else pd.is_virtual = true;
+      pd.is_virtual = true;
       advance();
     }
     else if (is_directive("message")) {
-      if (pd.is_class_method) reject_class_modifier("message");
       advance();
       // integer constant or identifier for the message number/name.
       if (cur_.kind == Tok::IntLit || cur_.kind == Tok::Ident
           || cur_.kind == Tok::StringLit) advance();
-      if (!pd.is_class_method) pd.is_virtual = true;
+      pd.is_virtual = true;
     }
     else if (is_directive("forward")) { pd.is_forward = true; advance(); }
     else if (is_directive("inline")) { pd.is_inline = true; advance(); }

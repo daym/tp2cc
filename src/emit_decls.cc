@@ -437,6 +437,15 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         return lhs.sig->kind == rhs.sig->kind &&
                callable_param_types(lhs) == callable_param_types(rhs);
       };
+      auto is_virtual_class_callable = [](const MetaclassCallable& callable) {
+        if (callable.implicit_root_create || !callable.sig ||
+            !callable.sig->decl) {
+          return false;
+        }
+        const auto& pd = *callable.sig->decl;
+        return callable.sig->kind == SymKind::ClassMethod &&
+               (pd.is_virtual || pd.is_abstract || pd.is_override);
+      };
       std::unordered_map<std::string, MetaclassCallable> parent_surface;
       for (const auto& callable : parent_callables) {
         parent_surface.emplace(callable.name, callable);
@@ -447,7 +456,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         const bool same_as_parent =
             pit != parent_surface.end() &&
             same_callable_surface(callable, pit->second);
-        if (!same_as_parent) {
+        if (!same_as_parent || is_virtual_class_callable(callable)) {
           own_callables.push_back(callable);
           continue;
         }
@@ -507,6 +516,27 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
       auto callable_ctor_init = [&](const MetaclassCallable& callable) {
         return mangle(callable.name) + "(tp2cc_" + mangle(callable.name) + ")";
       };
+      auto emit_virtual_class_callable = [&](std::string_view owner_class,
+                                             const MetaclassCallable& callable,
+                                             bool has_same_parent_slot) {
+        const auto& pd = *callable.sig->decl;
+        const std::string ret = callable_return_type(owner_class, callable);
+        std::string decl = "virtual " + ret + " " + mangle(callable.name) +
+                           "(" + callable_param_list(callable) + ") const";
+        if (has_same_parent_slot) decl += " override";
+        decl += " { ";
+        if (pd.is_abstract && !pd.body) {
+          decl += "::std::abort();";
+          if (ret != "void") decl += " return {};";
+        } else {
+          if (ret != "void") decl += "return ";
+          decl += types_.named_type_struct_cxx(owner_class) + "::" +
+                  mangle(callable.name) + "(" + callable_arg_list(callable) +
+                  ");";
+        }
+        decl += " }";
+        emit_ops_.emitln(decl);
+      };
 
       std::string meta_decl = "struct " + meta_name;
       meta_decl += " : public " + base_meta;
@@ -514,9 +544,17 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
       emit_ops_.emitln(meta_decl);
       emit_ops_.indent();
       for (const auto& callable : own_callables) {
-        emit_ops_.emitln(callable_return_type(td.name, callable) + " (*" +
-                         mangle(callable.name) + ")(" +
-                         callable_param_types(callable) + ");");
+        if (is_virtual_class_callable(callable)) {
+          auto pit = parent_surface.find(callable.name);
+          const bool same_as_parent =
+              pit != parent_surface.end() &&
+              same_callable_surface(callable, pit->second);
+          emit_virtual_class_callable(td.name, callable, same_as_parent);
+        } else {
+          emit_ops_.emitln(callable_return_type(td.name, callable) + " (*" +
+                           mangle(callable.name) + ")(" +
+                           callable_param_types(callable) + ");");
+        }
       }
       const std::string direct_parent_meta =
           has_parent_meta ? (types_.metaclass_value_fn_cxx(to.parent) + "()")
@@ -534,6 +572,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
           first = false;
         }
         for (const auto& callable : own_callables) {
+          if (is_virtual_class_callable(callable)) continue;
           if (!first) ctor_params += ", ";
           ctor_params += callable_ctor_param(td.name, callable);
           first = false;
@@ -543,6 +582,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
           init_list = " : " + parent_meta + "(tp2cc_parent)";
         }
         for (const auto& callable : own_callables) {
+          if (is_virtual_class_callable(callable)) continue;
           init_list += (init_list.empty() ? " : " : ", ") +
                        callable_ctor_init(callable);
         }
@@ -591,6 +631,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
           first = false;
         }
         for (const auto& callable : target_callables) {
+          if (is_virtual_class_callable(callable)) continue;
           auto pit = parent_surface.find(callable.name);
           if (pit != parent_surface.end() &&
               same_callable_surface(callable, pit->second)) {

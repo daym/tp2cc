@@ -3807,6 +3807,94 @@ void test_metaclass_alias_and_concrete_class_value_lowering() {
   CHECK(contains(out.impl, "if (::rt::p_assigned(p_cls))"));
 }
 
+void test_metaclass_virtual_class_method_dispatch() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    class function kind : integer; virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    class function kind : integer; override;\n"
+      "  end;\n"
+      "  tbaseclass = class of tbase;\n"
+      "procedure demo(cls : tbaseclass; var i : integer);\n"
+      "implementation\n"
+      "class function tbase.kind : integer;\n"
+      "begin\n"
+      "  kind := 1;\n"
+      "end;\n"
+      "class function tchild.kind : integer;\n"
+      "begin\n"
+      "  kind := inherited kind + 1;\n"
+      "end;\n"
+      "procedure demo(cls : tbaseclass; var i : integer);\n"
+      "begin\n"
+      "  i := cls.kind;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "virtual int32_t p_kind() const { return p_tbase::p_kind(); }"));
+  CHECK(contains(out.header,
+                 "virtual int32_t p_kind() const override { return p_tchild::p_kind(); }"));
+  CHECK(contains(out.impl, "inherited::p_kind()"));
+  CHECK(contains(out.impl, "p_i = p_cls->p_kind();"));
+}
+
+void test_static_class_method_address_keeps_plain_function_pointer() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tproc = function : integer;\n"
+      "  tbase = class\n"
+      "    class function kind : integer; virtual;\n"
+      "  end;\n"
+      "procedure bind(var p : tproc);\n"
+      "implementation\n"
+      "class function tbase.kind : integer;\n"
+      "begin\n"
+      "  kind := 1;\n"
+      "end;\n"
+      "procedure bind(var p : tproc);\n"
+      "begin\n"
+      "  p := @tbase.kind;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_p = (&p_tbase::p_kind);"));
+  CHECK(!contains(out.impl, "tp2cc_method_code"));
+}
+
+void test_metaclass_class_method_proc_value_reports_error() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tproc = function : integer;\n"
+      "  tbase = class\n"
+      "    class function kind : integer; virtual;\n"
+      "  end;\n"
+      "  tbaseclass = class of tbase;\n"
+      "procedure bind(cls : tbaseclass; var p : tproc; var q : pointer);\n"
+      "implementation\n"
+      "class function tbase.kind : integer;\n"
+      "begin\n"
+      "  kind := 1;\n"
+      "end;\n"
+      "procedure bind(cls : tbaseclass; var p : tproc; var q : pointer);\n"
+      "begin\n"
+      "  p := @cls.kind;\n"
+      "  p := cls.kind;\n"
+      "  q := @cls.kind;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() >= before + 3);
+  CHECK(!contains(out.impl, "(&p_cls->p_kind)"));
+  CHECK(!contains(out.impl, "p_p = p_cls->p_kind;"));
+}
+
 void test_metaclass_cast_keeps_concrete_descriptor() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -5923,6 +6011,9 @@ int main() {
   RUN_TEST(test_inherited_destroy_autocalls_through_non_overriding_parent);
   RUN_TEST(test_class_self_and_free_use_pointer_semantics);
   RUN_TEST(test_metaclass_alias_and_concrete_class_value_lowering);
+  RUN_TEST(test_metaclass_virtual_class_method_dispatch);
+  RUN_TEST(test_static_class_method_address_keeps_plain_function_pointer);
+  RUN_TEST(test_metaclass_class_method_proc_value_reports_error);
   RUN_TEST(test_metaclass_cast_keeps_concrete_descriptor);
   RUN_TEST(test_class_identifier_value_lowers_to_metaclass_descriptor);
   RUN_TEST(test_inline_anonymous_enum_class_field_resolves_members);

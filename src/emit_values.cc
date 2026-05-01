@@ -4,6 +4,7 @@
 #include <string>
 
 #include "emit_analysis.h"
+#include "diag.h"
 #include "emit_storage.h"
 #include "emit_support.h"
 #include "emit_types.h"
@@ -304,6 +305,32 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
   }
 
   if (!proc.is_method) {
+    auto reject_metaclass_member = [&](const Expr& value) -> bool {
+      const Expr* candidate = &value;
+      if (candidate->kind == Kind::AddrOf) {
+        const auto& addr = static_cast<const AddrOf&>(*candidate);
+        if (!addr.operand) return false;
+        candidate = addr.operand.get();
+      }
+      if (candidate->kind != Kind::Member) return false;
+      const auto& mem = static_cast<const Member&>(*candidate);
+      if (!registry_ || !mem.base) return false;
+      const std::string metaclass =
+          analysis_.metaclass_target_name(analysis_.deduce_type(*mem.base));
+      if (metaclass.empty()) return false;
+      const auto* method = registry_->lookup_class_method(metaclass, mem.name);
+      if (!(method && (method->kind == SymKind::ClassMethod ||
+                       method->kind == SymKind::Constructor))) {
+        return false;
+      }
+      report_error(value.loc,
+                   "cannot use class method through metaclass value as a "
+                   "plain procedural value");
+      return true;
+    };
+
+    if (reject_metaclass_member(e)) return "nullptr";
+
     switch (e.kind) {
       case Kind::Ident:
       case Kind::Member:

@@ -486,19 +486,35 @@ void test_class_method_impl_decl() {
   }
 }
 
-void test_virtual_class_method_is_rejected() {
+void test_virtual_class_method_modifiers_are_recorded() {
   int before = error_count();
   auto u = parse_snippet(
       "unit u;\n"
       "interface\n"
       "type\n"
       "  tfoo = class\n"
-      "    class procedure classy; virtual;\n"
+      "    class procedure basehook; virtual; abstract;\n"
+      "    class procedure classy; override;\n"
       "  end;\n"
       "implementation\n"
       "end.\n");
   CHECK(u != nullptr);
-  CHECK(error_count() - before > 0);
+  CHECK_EQ(error_count() - before, 0);
+  if (u && !u->interface_decls.empty()) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    CHECK(td);
+    auto* to = td ? dynamic_cast<TyObject*>(td->type.get()) : nullptr;
+    CHECK(to);
+    if (to && to->members.size() >= 2) {
+      auto* base = to->members[0].method.get();
+      auto* classy = to->members[1].method.get();
+      CHECK(base && base->is_class_method);
+      CHECK(base && base->is_virtual);
+      CHECK(base && base->is_abstract);
+      CHECK(classy && classy->is_class_method);
+      CHECK(classy && classy->is_override);
+    }
+  }
 }
 
 // Delphi-style `class' reuses the object-member parser, then records
@@ -1311,7 +1327,7 @@ int main() {
   RUN_TEST(test_write_only_property);
   RUN_TEST(test_class_directives);
   RUN_TEST(test_class_method_impl_decl);
-  RUN_TEST(test_virtual_class_method_is_rejected);
+  RUN_TEST(test_virtual_class_method_modifiers_are_recorded);
   RUN_TEST(test_metaclass_type);
   RUN_TEST(test_try_except_finally_raise);
   RUN_TEST(test_distinct_type);
