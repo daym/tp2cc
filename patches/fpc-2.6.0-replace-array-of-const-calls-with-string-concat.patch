@@ -1,0 +1,141 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-01
+Subject: Replace SysUtils.Format and Exception.CreateFmt calls with string concat
+License: expat
+
+The bootstrap reaches `array of const` parameters through the
+FPC_FULLVERSION `Format` call in options.pas, two
+`EListError.CreateFmt(Msg, [Data])` calls in cclasses.pas, the
+ia64 register-template generator, and fpcsubst's diagnostic strings.
+Avoid adding `array of const` lowering plus rt Format/CreateFmt
+helpers -- just rewrite these shapes as string concatenation or
+multi-argument Writeln calls.
+
+The FPC_FULLVERSION result is byte-identical for single-digit version
+components (zero-pad helper). CreateFmt loses `%d` substitution and
+appends the value as a trailing `(N)`; the helpers are only reached
+on bad list indices. The utility diagnostics keep the same English
+messages.
+
+--- a/compiler/options.pas
++++ b/compiler/options.pas
+@@ -98,6 +98,15 @@
+   ppccfg,
+   param_file    : string;   { file to compile specified on the commandline }
+ 
++{ Two-digit zero-padded `tostr` -- the bootstrap path replaces a single
++  SysUtils.Format('%d%.02d%.02d', ...) call with string concatenation so
++  the rt subset does not need `Format` plus full `array of const`. }
++function tp2cc_pad2(v : longint) : string;
++begin
++  if v < 10 then tp2cc_pad2 := '0' + tostr(v)
++  else tp2cc_pad2 := tostr(v);
++end;
++
+ 
+ {****************************************************************************
+                      Options not supported on all platforms
+@@ -2890,7 +2899,10 @@
+   set_system_macro('FPC_VERSION',version_nr);
+   set_system_macro('FPC_RELEASE',release_nr);
+   set_system_macro('FPC_PATCH',patch_nr);
+-  set_system_macro('FPC_FULLVERSION',Format('%d%.02d%.02d',[StrToInt(version_nr),StrToInt(release_nr),StrToInt(patch_nr)]));
++  set_system_macro('FPC_FULLVERSION',
++                   tostr(StrToInt(version_nr)) +
++                   tp2cc_pad2(StrToInt(release_nr)) +
++                   tp2cc_pad2(StrToInt(patch_nr)));
+ 
+   if not(target_info.system in systems_windows) then
+     def_system_macro('FPC_WIDESTRING_EQUAL_UNICODESTRING');
+--- a/compiler/cclasses.pas
++++ b/compiler/cclasses.pas
+@@ -681,7 +681,7 @@
+ 
+ class procedure TFPList.Error(const Msg: string; Data: PtrInt);
+ begin
+-  Raise EListError.CreateFmt(Msg,[Data]) at get_caller_addr(get_frame);
++  Raise EListError.Create(Msg + ' (' + tostr(Data) + ')') at get_caller_addr(get_frame);
+ end;
+ 
+ procedure TFPList.Exchange(Index1, Index2: Integer);
+@@ -1347,7 +1347,7 @@
+ 
+ class procedure TFPHashList.Error(const Msg: string; Data: PtrInt);
+ begin
+-  Raise EListError.CreateFmt(Msg,[Data]) at get_caller_addr(get_frame);
++  Raise EListError.Create(Msg + ' (' + tostr(Data) + ')') at get_caller_addr(get_frame);
+ end;
+ 
+ function TFPHashList.Expand: TFPHashList;
+--- a/compiler/utils/gia64reg.pp
++++ b/compiler/utils/gia64reg.pp
+@@ -7,8 +7,8 @@
+ begin
+   { generate int registers }
+   for i:=0 to 127 do
+-    writeln(format('R%d,$01,%d,r%d,r%d',[i,i,i,i]));
++    writeln('R',i,',$01,',i,',r',i,',r',i);
+   { generate fp registers }
+   for i:=0 to 127 do
+-    writeln(format('F%d,$02,%d,r%d,r%d',[i,i,i,i]));
++    writeln('F',i,',$02,',i,',r',i,',r',i);
+ end.
+--- a/compiler/utils/fpcsubst.pp
++++ b/compiler/utils/fpcsubst.pp
+@@ -63,7 +63,7 @@
+ Procedure Usage;
+ 
+ begin
+-  Writeln(Format(SUsage00,[ExtractFileName(Paramstr(0))]));
++  Writeln('Usage: ',ExtractFileName(Paramstr(0)),' [options]');
+   Writeln(SUsage10);
+   Writeln(SUsage20);
+   Writeln(SUsage30);
+@@ -135,7 +135,7 @@
+   begin
+     If I=ParamCount then
+       begin
+-      Writeln(StdErr,Format(SErrArgExpected,[S]));
++      Writeln(StdErr,'Error: Option "',S,'" requires an argument.');
+       Halt(1);
+       end;
+     inc(I);
+@@ -183,7 +183,7 @@
+ begin
+   If (InputFileName<>'') and not FileExists(InputFIleName) then
+     begin
+-    Writeln(StdErr,Format(SErrNoSuchFile,[InputFileName]));
++    Writeln(StdErr,'Error: File "',InputFileName,'" does not exist.');
+     Halt(1)
+     end;
+   If (OutputFileName<>'')
+@@ -193,12 +193,12 @@
+     BFN:=ChangeFileExt(OutputFileName,'.bak');
+     If FileExists(BFN) and not DeleteFile(BFN) then
+       begin
+-      Writeln(StdErr,Format(SErrDelBackupFailed,[BFN]));
++      Writeln(StdErr,'Error: Delete of old backup file "',BFN,'" failed.');
+       Halt(1);
+       end;
+     If not RenameFile(OutputFileName,BFN) then
+       begin
+-      Writeln(StdErr,Format(SErrBackupFailed,[OutputFileName,BFN]));
++      Writeln(StdErr,'Error: Backup of file "',OutputFileName,'" to "',BFN,'" failed.');
+       Halt(1);
+       end;
+     end;
+@@ -216,12 +216,12 @@
+         ReadLn(Fin,S);
+         N:=DoSubstitutions(List,S);
+         If Verbose and (N>0) then
+-          Writeln(StdErr,Format(SSubstInLine,[N,LCount]));
++          Writeln(StdErr,'Replaced ',N,' placeholders in line ',LCount,'.');
+         Inc(RCount,N);
+         Writeln(Fout,S);
+         end;
+      If Verbose then
+-       Writeln(StdErr,Format(SStats,[RCount,LCount]));
++       Writeln(StdErr,'Replaced ',RCount,' placeholders in ',LCount,' lines.');
+     Finally
+       Close(Fout);
+     end;
