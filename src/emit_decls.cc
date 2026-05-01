@@ -562,6 +562,9 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
       emit_ops_.emitln("::rt::p_tclass tp2cc_parentclass() const override { "
                        "return " +
                        direct_parent_meta + "; }");
+      emit_ops_.emitln("::rt::tp2cc_ShortString<> p_classname() const override { "
+                       "return ::rt::tp2cc_shortstring_of<>(\"" +
+                       td.name + "\"); }");
       if (visible_callables.empty()) {
         emit_ops_.emitln(meta_name + "() = default;");
       } else {

@@ -987,6 +987,18 @@ void test_exception_metaclass_exists_and_constructs_exception_instance() {
   p_tobject::p_free(instance);
 }
 
+void test_classname_comes_from_metaclass_descriptor() {
+  p_tobject root;
+  p_exception exc;
+
+  CHECK(tp2cc_metaclass_value_p_tobject()->p_classname() ==
+        tp2cc_shortstring_of<>("tobject"));
+  CHECK(root.p_classname() == tp2cc_shortstring_of<>("tobject"));
+  CHECK(tp2cc_metaclass_value_p_exception()->p_classname() ==
+        tp2cc_shortstring_of<>("exception"));
+  CHECK(exc.p_classname() == tp2cc_shortstring_of<>("exception"));
+}
+
 void test_exception_create_stores_message_for_pascal_message_property() {
   // Pascal `Exception.Message` stores the string passed to `Create`.
   // Catch sites read `e.message` (e.g. comprsrc.pas:394
@@ -1269,6 +1281,7 @@ int main() {
   RUN_TEST(test_class_free_dispatches_virtual_freeinstance);
   RUN_TEST(test_tobject_metaclass_exists_and_constructs_root_instance);
   RUN_TEST(test_exception_metaclass_exists_and_constructs_exception_instance);
+  RUN_TEST(test_classname_comes_from_metaclass_descriptor);
   RUN_TEST(test_exception_create_stores_message_for_pascal_message_property);
   RUN_TEST(test_exception_metaclass_accepts_concrete_root_create_thunk);
   RUN_TEST(test_hi_lo_split_ordinal_halves);

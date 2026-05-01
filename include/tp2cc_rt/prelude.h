@@ -187,7 +187,7 @@ inline void* tp2cc_method_code() {
   return tp2cc_funptr_bits(Fn);
 }
 
-template <int N> struct tp2cc_ShortString;
+template <int N = 255> struct tp2cc_ShortString;
 template <int N> struct tp2cc_ShortStringPtrValue;
 template <int N> struct tp2cc_ShortStringPtrRef;
 class tp2cc_AnsiString;
@@ -217,6 +217,7 @@ struct tp2cc_metaclass_p_tobject {
   // Each generated metaclass descriptor overrides this hook with the exact
   // singleton for its Pascal parent class.
   virtual p_tclass tp2cc_parentclass() const { return nullptr; }
+  virtual tp2cc_ShortString<> p_classname() const;
 };
 
 inline const tp2cc_metaclass_p_tobject* tp2cc_metaclass_value_p_tobject();
@@ -241,6 +242,7 @@ struct tp2cc_metaclass_p_exception : public tp2cc_metaclass_p_tobject {
   }
 
   p_tclass tp2cc_parentclass() const override;
+  tp2cc_ShortString<> p_classname() const override;
 };
 
 inline const tp2cc_metaclass_p_exception* tp2cc_metaclass_value_p_exception();
@@ -258,6 +260,7 @@ struct p_tobject {
   // translated classes override these with concrete answers.
   virtual p_tclass p_classtype() const { return tp2cc_metaclass_value_p_tobject(); }
   virtual int32_t p_instancesize() const { return static_cast<int32_t>(sizeof(*this)); }
+  virtual tp2cc_ShortString<> p_classname() const;
   virtual void p_destroy() {}
   // `FreeInstance` is the raw storage-release hook underneath `Free`.
   // Old compiler code overrides it directly (for refcounted symbol-table
@@ -409,7 +412,7 @@ struct tp2cc_ShortStringCharRef {
 // Pascal-compatible short-string layout: 1 length byte followed by N content
 // bytes. Fixed size. Default capacity is 255 (classic `string`).
 
-template <int N = 255>
+template <int N>
 struct tp2cc_ShortString {
   static_assert(N >= 1 && N <= 255, "tp2cc_ShortString capacity must be 1..255");
 
@@ -691,6 +694,14 @@ constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(const tp2cc_ShortString<M>& 
   out.length = static_cast<uint8_t>(n);
   for (int i = 0; i < n; ++i) out.data[i] = o.data[i];
   return out;
+}
+
+inline tp2cc_ShortString<> tp2cc_metaclass_p_tobject::p_classname() const {
+  return tp2cc_shortstring_of<>("tobject");
+}
+
+inline tp2cc_ShortString<> p_tobject::p_classname() const {
+  return p_classtype()->p_classname();
 }
 
 // Pascal `const X = 'c';` declares a constant that is BOTH a char
@@ -1062,6 +1073,10 @@ inline const tp2cc_metaclass_p_exception* tp2cc_metaclass_value_p_exception() {
 
 inline p_tclass tp2cc_metaclass_p_exception::tp2cc_parentclass() const {
   return tp2cc_metaclass_value_p_tobject();
+}
+
+inline tp2cc_ShortString<> tp2cc_metaclass_p_exception::p_classname() const {
+  return tp2cc_shortstring_of<>("exception");
 }
 
 inline p_tclass p_exception::p_classtype() const {

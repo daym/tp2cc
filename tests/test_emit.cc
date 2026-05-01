@@ -2536,6 +2536,45 @@ void test_tobject_runtime_helpers_lower_in_method_body() {
   CHECK(contains(out.impl, "p_result = p_instancesize();"));
 }
 
+void test_classname_uses_metaclass_descriptor_slot() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class\n"
+      "  end;\n"
+      "  titemclass = class of titem;\n"
+      "function inst_name(x : titem) : shortstring;\n"
+      "function meta_name(c : titemclass) : shortstring;\n"
+      "function direct_name : shortstring;\n"
+      "implementation\n"
+      "function inst_name(x : titem) : shortstring;\n"
+      "begin\n"
+      "  inst_name := x.classname;\n"
+      "end;\n"
+      "function meta_name(c : titemclass) : shortstring;\n"
+      "begin\n"
+      "  meta_name := c.classname;\n"
+      "end;\n"
+      "function direct_name : shortstring;\n"
+      "begin\n"
+      "  direct_name := titem.classname;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "::rt::tp2cc_ShortString<> p_classname() const override { "
+                 "return ::rt::tp2cc_shortstring_of<>(\"titem\"); }"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_shortstring_assign(p_result, "
+                 "p_x->p_classname());"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_shortstring_assign(p_result, "
+                 "p_c->p_classname());"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_shortstring_assign(p_result, "
+                 "tp2cc_metaclass_value_p_titem()->p_classname());"));
+}
+
 void test_tobject_cast_preserves_pointer_semantics_for_free() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -6069,6 +6108,7 @@ int main() {
   RUN_TEST(test_default_indexed_procvar_property_stmt_autocalls);
   RUN_TEST(test_class_method_static_emission_and_calls);
   RUN_TEST(test_tobject_runtime_helpers_lower_in_method_body);
+  RUN_TEST(test_classname_uses_metaclass_descriptor_slot);
   RUN_TEST(test_tobject_cast_preserves_pointer_semantics_for_free);
   RUN_TEST(test_parameterless_proc_assignment_keeps_designator);
   RUN_TEST(test_method_pointer_type_and_bound_assignment_emit);

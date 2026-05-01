@@ -636,14 +636,18 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   add_rt_alias("pshortstring", make_pointer(make_typename("shortstring")));
   add_rt_var("allowdirectoryseparators", make_set(make_typename("char")));
   auto make_method = [&](const std::string& name, ast::ProcKind pkind,
-                         std::vector<ast::Param> params) {
-    auto pd = std::make_shared<ast::ProcDecl>(/*class_method=*/false);
+                         std::vector<ast::Param> params,
+                         ast::TypePtr return_type = nullptr,
+                         bool class_method = false) {
+    auto pd = std::make_shared<ast::ProcDecl>(class_method);
     pd->pkind = pkind;
     pd->name = name;
     pd->params = std::move(params);
+    pd->return_type = std::move(return_type);
     MethodSig ms;
     ms.kind = (pkind == ast::ProcKind::Constructor) ? SymKind::Constructor
               : (pkind == ast::ProcKind::Destructor) ? SymKind::Destructor
+              : class_method ? SymKind::ClassMethod
                                                      : SymKind::Method;
     size_t pc = 0;
     for (const auto& p : pd->params) pc += p.names.empty() ? 1 : p.names.size();
@@ -669,7 +673,10 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   add_rt_class("tobject", "",
                {make_method("create",  ast::ProcKind::Constructor, {}),
                 make_method("destroy", ast::ProcKind::Destructor,  {}),
-                make_method("free",    ast::ProcKind::Procedure,   {})});
+                make_method("free",    ast::ProcKind::Procedure,   {}),
+                make_method("classname", ast::ProcKind::Function, {},
+                            make_typename("shortstring"),
+                            /*class_method=*/true)});
 
   // sysutils' Exception ancestor. `Create(const Msg: string)`; the
   // array-of-const `CreateFmt` cousin is not registered (its only
@@ -806,15 +813,19 @@ const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
   };
   while (!class_name.empty() && !seen.count(class_name)) {
     seen.insert(class_name);
-    auto [hit, parent] = step(classes);
-    if (hit) return hit;
-    if (parent.empty()) {
-      auto [rt_hit, rt_parent] = step(rt_classes);
-      if (rt_hit) return rt_hit;
-      class_name = rt_parent;
+    if (auto cit = classes.find(class_name); cit != classes.end()) {
+      auto mit = cit->second.methods.find(key);
+      if (mit != cit->second.methods.end()) return &mit->second;
+      if (cit->second.parent.empty() && cit->second.is_reference_type) {
+        class_name = "tobject";
+      } else {
+        class_name = cit->second.parent;
+      }
       continue;
     }
-    class_name = parent;
+    auto [rt_hit, rt_parent] = step(rt_classes);
+    if (rt_hit) return rt_hit;
+    class_name = rt_parent;
   }
   return nullptr;
 }

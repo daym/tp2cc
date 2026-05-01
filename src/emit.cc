@@ -1172,6 +1172,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
             ResolveResult rr =
                 resolve_name(m.name, QualifierKind::Class, base_name);
+            if (ascii_lower(m.name) == "classname") {
+              std::string text = metaclass_value_fn_cxx(base_name) +
+                                 "()->" + mangle(m.name);
+              bool want_call = !is_callee_context_ &&
+                               rr.is_callable && rr.accepts_zero_args;
+              return want_call ? lower_implicit_zero_arg_call(text, rr.proc)
+                               : text;
+            }
             std::string text = mangle(base_name) + "::" + mangle(m.name);
             bool want_call = !is_callee_context_ &&
                              rr.is_callable && rr.accepts_zero_args;
