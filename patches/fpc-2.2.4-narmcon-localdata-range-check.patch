@@ -1,0 +1,57 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-04-30
+Subject: Guard arm narmcon real-constant narrowing casts
+License: expat
+
+`compiler/arm/narmcon.pas` emits ARM real constants into
+`current_procinfo.aktlocaldata`, but its overflow/range checks then read back
+`current_asmdata.asmlists[al_typedconsts].last` and narrow that base `tai`
+node to `tai_real_*bit`.
+
+Under native FPC this old-style cast can slip by unnoticed.  In the translated
+C++ stage1 compiler the narrowing cast becomes concrete, and during the
+armhf-linux bootstrap `al_typedconsts.last` can still point at an unrelated
+`tai_const`.  UBSan then correctly reports the bad downcast while compiling
+`rtl/inc/variants.pp`.
+
+Check the node we actually just appended to `aktlocaldata` instead.  That keeps
+the range-check logic unchanged while removing the stale-list narrowing cast.
+
+--- a/compiler/arm/narmcon.pas
++++ b/compiler/arm/narmcon.pas
+@@ -81,7 +81,7 @@
+                   { range checking? }
+                   if ((cs_check_range in current_settings.localswitches) or
+                     (cs_check_overflow in current_settings.localswitches)) and
+-                    (tai_real_32bit(current_asmdata.asmlists[al_typedconsts].last).value=MathInf.Value) then
++                    (tai_real_32bit(current_procinfo.aktlocaldata.last).value=MathInf.Value) then
+                     Message(parser_e_range_check_error);
+                 end;
+ 
+@@ -95,7 +95,7 @@
+                   { range checking? }
+                   if ((cs_check_range in current_settings.localswitches) or
+                     (cs_check_overflow in current_settings.localswitches)) and
+-                    (tai_real_64bit(current_asmdata.asmlists[al_typedconsts].last).value=MathInf.Value) then
++                    (tai_real_64bit(current_procinfo.aktlocaldata.last).value=MathInf.Value) then
+                     Message(parser_e_range_check_error);
+                end;
+ 
+@@ -106,7 +106,7 @@
+                   { range checking? }
+                   if ((cs_check_range in current_settings.localswitches) or
+                     (cs_check_overflow in current_settings.localswitches)) and
+-                    (tai_real_80bit(current_asmdata.asmlists[al_typedconsts].last).value=MathInf.Value) then
++                    (tai_real_80bit(current_procinfo.aktlocaldata.last).value=MathInf.Value) then
+                     Message(parser_e_range_check_error);
+                 end;
+ {$ifdef cpufloat128}
+@@ -117,7 +117,7 @@
+                   { range checking? }
+                   if ((cs_check_range in current_settings.localswitches) or
+                     (cs_check_overflow in current_settings.localswitches)) and
+-                    (tai_real_128bit(current_asmdata.asmlists[al_typedconsts].last).value=MathInf.Value) then
++                    (tai_real_128bit(current_procinfo.aktlocaldata.last).value=MathInf.Value) then
+                     Message(parser_e_range_check_error);
+                 end;
+ {$endif cpufloat128}
