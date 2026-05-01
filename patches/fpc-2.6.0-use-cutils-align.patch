@@ -1,0 +1,103 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-01
+Subject: Make compiler units use compiler-side cutils align helper
+License: expat
+
+Several compiler/backend units call bare integer `align(...)` while not
+importing `cutils`.  Native FPC still accepts those calls via implicit
+`System.align`, but the compiler sources are trying to stay isolated from
+RTL-specific helpers.  Most of the compiler already gets integer `align`
+from the compiler-side `cutils` unit instead.
+
+Import `cutils` at the remaining call sites that use integer
+`align(...)`:
+
+  compiler/avr/cpupara.pas
+  compiler/m68k/cpupara.pas
+  compiler/machoutils.pas
+  compiler/ogmacho.pas
+  compiler/powerpc/cpupara.pas
+  compiler/powerpc64/cpupara.pas
+
+The `compiler/owar.pas` `align` occurrences are method calls on archive
+buffer objects, not calls to the integer helper, and are intentionally
+left alone.
+
+--- a/compiler/avr/cpupara.pas
++++ b/compiler/avr/cpupara.pas
+@@ -54,7 +54,8 @@
+     uses
+        verbose,systems,
+        rgobj,
+-       defutil,symsym;
++       defutil,symsym,
++       cutils;
+ 
+ 
+     function tavrparamanager.get_volatile_registers_int(calloption : tproccalloption):tcpuregisterset;
+--- a/compiler/m68k/cpupara.pas
++++ b/compiler/m68k/cpupara.pas
+@@ -61,7 +61,7 @@
+        verbose,
+        globals,
+        systems,
+-       cpuinfo,cgutils,
++       cpuinfo,cutils,cgutils,
+        defutil;
+ 
+     procedure tm68kparamanager.getintparaloc(calloption : tproccalloption; nr : longint;var cgpara : TCGPara);
+--- a/compiler/machoutils.pas
++++ b/compiler/machoutils.pas
+@@ -28,6 +28,7 @@
+ {$mode objfpc}{$h+}
+ 
+ uses
++  cutils,
+   macho;
+ 
+   type
+@@ -1463,4 +1464,3 @@
+     end;
+ 
+ end.
+-
+--- a/compiler/ogmacho.pas
++++ b/compiler/ogmacho.pas
+@@ -27,6 +27,7 @@
+ 
+ uses
+   cclasses,
++  cutils,
+   globals, globtype, verbose,
+   owbase, ogbase,
+   aasmbase, assemble,
+@@ -1220,4 +1221,3 @@
+   RegisterAssembler(as_i386_darwin_info,TMachoAssembler);
+ 
+ end.
+-
+--- a/compiler/powerpc/cpupara.pas
++++ b/compiler/powerpc/cpupara.pas
+@@ -54,6 +54,7 @@
+     uses
+        verbose,systems,
+        defutil,symtable,
++       cutils,
+        procinfo,cpupi;
+ 
+ 
+--- a/compiler/powerpc64/cpupara.pas
++++ b/compiler/powerpc64/cpupara.pas
+@@ -63,6 +63,7 @@
+ uses
+   verbose, systems,
+   defutil,
++  cutils,
+   procinfo, cpupi;
+ 
+ function tppcparamanager.get_volatile_registers_int(calloption:
+@@ -523,4 +524,3 @@
+ begin
+   paramanager := tppcparamanager.create;
+ end.
+-
