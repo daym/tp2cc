@@ -1,0 +1,650 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-01
+Subject: Avoid packed aggregate access hazards in the translated bootstrap
+License: expat
+
+tp2cc intentionally rejects or guards references that would bind C++
+references through packed subobjects.  FPC 2.6.0 has two different cases:
+
+- packed records that are real serialized/on-disk formats and must stay
+  packed (`tsettings` in PPUs and PE/COFF headers);
+- packed records that are only in-memory compiler tables and can be
+  depacked for the bootstrap.
+
+For serialized packed records, preserve the layout and route the access
+through safe carriers:
+- copy the nested `current_settings.alignment` / `init_settings.alignment`
+  subrecord before reading or updating its fields;
+- use an explicit typed pointer carrier for PE optional-header
+  `DataDirectory` indexing.
+
+For in-memory-only metadata, remove unnecessary packing:
+- `compiler/i386/daopt386.pas`: depack optimizer `TContent`;
+- `compiler/x86/aasmcpu.pas`: depack `TInsProp` and `tinsentry`.
+
+This does not change PPU or object-file formats.  It only avoids forming
+misaligned references in the C++ bootstrap for places where the Pascal
+source used nested or indexed access through packed aggregate fields.
+
+--- a/compiler/globals.pas
++++ b/compiler/globals.pas
+@@ -1359,8 +1359,14 @@
+ 
+ 
+     function var_align(want_align: longint): shortint;
++      var
++        alignment : talignmentinfo;
+       begin
+-        var_align := used_align(want_align,current_settings.alignment.varalignmin,current_settings.alignment.varalignmax);
++        { tsettings is packed because it is serialized into PPUs; copy the
++          subrecord before accessing its members so the bootstrap translator
++          does not have to form nested references into a packed aggregate. }
++        alignment := current_settings.alignment;
++        var_align := used_align(want_align,alignment.varalignmin,alignment.varalignmax);
+       end;
+ 
+ 
+@@ -1372,8 +1378,13 @@
+ 
+ 
+     function const_align(want_align: longint): shortint;
++      var
++        alignment : talignmentinfo;
+       begin
+-        const_align := used_align(want_align,current_settings.alignment.constalignmin,current_settings.alignment.constalignmax);
++        { Keep tsettings packed for PPU serialization; avoid chained access
++          through the packed alignment field. }
++        alignment := current_settings.alignment;
++        const_align := used_align(want_align,alignment.constalignmin,alignment.constalignmax);
+       end;
+ 
+ 
+--- a/compiler/i386/cpupi.pas
++++ b/compiler/i386/cpupi.pas
+@@ -69,11 +69,16 @@
+ 
+ 
+     function ti386procinfo.calc_stackframe_size:longint;
++      var
++        alignment : talignmentinfo;
+       begin
+         { align to 4 bytes at least
+           otherwise all those subl $2,%esp are meaningless PM }
+         if not(target_info.system in [system_i386_darwin,system_i386_iphonesim]) then
+-          result:=Align(tg.direction*tg.lasttemp,min(current_settings.alignment.localalignmin,4))
++          begin
++            alignment:=current_settings.alignment;
++            result:=Align(tg.direction*tg.lasttemp,min(alignment.localalignmin,4));
++          end
+         else
+           result:=tg.direction*tg.lasttemp+maxpushedparasize;
+       end;
+--- a/compiler/i386/daopt386.pas
++++ b/compiler/i386/daopt386.pas
+@@ -81,7 +81,13 @@
+ {the possible states of a flag}
+   TFlagContents = (F_Unknown, F_notSet, F_Set);
+ 
+-  TContent = Packed Record
++  { was `packed record` -- depacked for the tp2cc C++ bootstrap. This is
++    in-memory optimizer state, not an on-disk format, and several later
++    optimizer passes dereference `MemWrite` / `StartMod` through these
++    per-register slots. Keeping it packed turns those ordinary nested
++    accesses into packed-subobject misalignment hazards for the translated
++    bootstrap. }
++  TContent = Record
+       {start and end of block instructions that defines the
+        content of this register.}
+                StartMod: tai;
+--- a/compiler/ncal.pas
++++ b/compiler/ncal.pas
+@@ -2159,6 +2159,7 @@
+       var
+         realassignmenttarget: tnode;
+         alignment: longint;
++        alignmentinfo: talignmentinfo;
+       begin
+         result:=false;
+ 
+@@ -2236,9 +2237,10 @@
+               will result also in a change of the parameter value }
+             result:=not foreachnodestatic(left,@check_funcret_used_as_para,tloadnode(realassignmenttarget).symtableentry);
+             { ensure that it is aligned using the default alignment }
++            alignmentinfo:=current_settings.alignment;
+             alignment:=tabstractvarsym(tloadnode(realassignmenttarget).symtableentry).vardef.alignment;
+             if (used_align(alignment,target_info.alignment.localalignmin,target_info.alignment.localalignmax)<>
+-                used_align(alignment,current_settings.alignment.localalignmin,current_settings.alignment.localalignmax)) then
++                used_align(alignment,alignmentinfo.localalignmin,alignmentinfo.localalignmax)) then
+               result:=false;
+             exit;
+           end;
+--- a/compiler/ncgflw.pas
++++ b/compiler/ncgflw.pas
+@@ -139,6 +139,7 @@
+          otlabel,oflabel : tasmlabel;
+          oldflowcontrol : tflowcontrol;
+          oldexecutionweight : longint;
++         alignment : talignmentinfo;
+       begin
+          location_reset(location,LOC_VOID,OS_NO);
+ 
+@@ -147,6 +148,7 @@
+          current_asmdata.getjumplabel(lbreak);
+          { arrange continue and breaklabels: }
+          oldflowcontrol:=flowcontrol;
++         alignment:=current_settings.alignment;
+          oldclabel:=current_procinfo.CurrContinueLabel;
+          oldblabel:=current_procinfo.CurrBreakLabel;
+          include(flowcontrol,fc_inflowcontrol);
+@@ -162,7 +164,7 @@
+ 
+          if not(cs_opt_size in current_settings.optimizerswitches) then
+             { align loop target }
+-            current_asmdata.CurrAsmList.concat(Tai_align.Create(current_settings.alignment.loopalign));
++            current_asmdata.CurrAsmList.concat(Tai_align.Create(alignment.loopalign));
+ 
+          cg.a_label(current_asmdata.CurrAsmList,lloop);
+ 
+@@ -435,10 +437,12 @@
+          oldflowcontrol : tflowcontrol;
+          oldexecutionweight : longint;
+          isjump: boolean;
++         alignment : talignmentinfo;
+       begin
+          location_reset(location,LOC_VOID,OS_NO);
+          oldclabel:=current_procinfo.CurrContinueLabel;
+          oldblabel:=current_procinfo.CurrBreakLabel;
++         alignment:=current_settings.alignment;
+          current_asmdata.getjumplabel(current_procinfo.CurrContinueLabel);
+          current_asmdata.getjumplabel(current_procinfo.CurrBreakLabel);
+          current_asmdata.getjumplabel(l3);
+@@ -573,7 +577,7 @@
+ 
+          { align loop target }
+          if not(cs_opt_size in current_settings.optimizerswitches) then
+-            current_asmdata.CurrAsmList.concat(Tai_align.Create(current_settings.alignment.loopalign));
++            current_asmdata.CurrAsmList.concat(Tai_align.Create(alignment.loopalign));
+          cg.a_label(current_asmdata.CurrAsmList,l3);
+ 
+          {If the loopvar doesn't mind on exit, we avoid the loopvar inc/dec
+--- a/compiler/ncgset.pas
++++ b/compiler/ncgset.pas
+@@ -683,6 +683,7 @@
+          max_dist,
+          dist : aword;
+          oldexecutionweight : longint;
++         alignment : talignmentinfo;
+       begin
+          location_reset(location,LOC_VOID,OS_NO);
+ 
+@@ -837,9 +838,10 @@
+            cg.executionweight:=1;
+ 
+          { generate the instruction blocks }
++         alignment:=current_settings.alignment;
+          for i:=0 to blocks.count-1 do
+            begin
+-              current_asmdata.CurrAsmList.concat(cai_align.create(current_settings.alignment.jumpalign));
++              current_asmdata.CurrAsmList.concat(cai_align.create(alignment.jumpalign));
+               cg.a_label(current_asmdata.CurrAsmList,pcaseblock(blocks[i])^.blocklabel);
+               secondpass(pcaseblock(blocks[i])^.statement);
+               { don't come back to case line }
+@@ -849,7 +851,7 @@
+ {$endif OLDREGVARS}
+               cg.a_jmp_always(current_asmdata.CurrAsmList,endlabel);
+            end;
+-         current_asmdata.CurrAsmList.concat(cai_align.create(current_settings.alignment.jumpalign));
++         current_asmdata.CurrAsmList.concat(cai_align.create(alignment.jumpalign));
+          { ...and the else block }
+          cg.a_label(current_asmdata.CurrAsmList,elselabel);
+          if assigned(elseblock) then
+@@ -862,7 +864,7 @@
+ 
+          cg.executionweight:=oldexecutionweight;
+ 
+-         current_asmdata.CurrAsmList.concat(cai_align.create(current_settings.alignment.jumpalign));
++         current_asmdata.CurrAsmList.concat(cai_align.create(alignment.jumpalign));
+          cg.a_label(current_asmdata.CurrAsmList,endlabel);
+ 
+          { Reset labels }
+--- a/compiler/ncgutil.pas
++++ b/compiler/ncgutil.pas
+@@ -1584,6 +1584,7 @@
+         eldef : tdef;
+         tmpreg : tregister;
+         list : TAsmList;
++        alignment : talignmentinfo;
+         needs_inittable,
+         do_trashing       : boolean;
+       begin
+@@ -1665,8 +1666,9 @@
+                        directly as hidden function result must/cannot be performed
+                        (see tcallnode.funcret_can_be_reused)
+                      }
++                     alignment:=current_settings.alignment;
+                      reference_reset_base(href,tmpreg,0,
+-                       used_align(tparavarsym(p).vardef.alignment,current_settings.alignment.localalignmin,current_settings.alignment.localalignmax));
++                       used_align(tparavarsym(p).vardef.alignment,alignment.localalignmin,alignment.localalignmax));
+                      { may be an open string, even if is_open_string() returns }
+                      { false (for some helpers in the system unit)             }
+                      if not is_shortstring(tparavarsym(p).vardef) then
+@@ -2481,12 +2483,15 @@
+ ****************************************************************************}
+ 
+     procedure gen_external_stub(list:TAsmList;pd:tprocdef;const externalname:string);
++      var
++        alignment : talignmentinfo;
+       begin
+         create_codegen;
+         { add the procedure to the al_procedures }
+         maybe_new_object_file(list);
+-        new_section(list,sec_code,lower(pd.mangledname),current_settings.alignment.procalign);
+-        list.concat(Tai_align.create(current_settings.alignment.procalign));
++        alignment:=current_settings.alignment;
++        new_section(list,sec_code,lower(pd.mangledname),alignment.procalign);
++        list.concat(Tai_align.create(alignment.procalign));
+         if (po_global in pd.procoptions) then
+           list.concat(Tai_symbol.createname_global(pd.mangledname,AT_FUNCTION,0))
+         else
+@@ -3104,12 +3109,17 @@
+ 
+ 
+     function getprocalign : shortint;
++      var
++        alignment : talignmentinfo;
+       begin
+         { gprof uses 16 byte granularity }
+         if (cs_profile in current_settings.moduleswitches) then
+           result:=16
+         else
+-         result:=current_settings.alignment.procalign;
++         begin
++           alignment:=current_settings.alignment;
++           result:=alignment.procalign;
++         end;
+       end;
+ 
+ 
+--- a/compiler/ogcoff.pas
++++ b/compiler/ogcoff.pas
+@@ -44,6 +44,8 @@
+          vaddr : longword;
+          size  : longword;
+        end;
++       tcoffpedatadirarray = array[0..PE_DATADIR_ENTRIES-1] of tcoffpedatadir;
++       ptcoffpedatadirarray = ^tcoffpedatadirarray;
+        tcoffheader = packed record
+          mach   : word;
+          nsects : word;
+@@ -2254,12 +2256,14 @@
+         procedure UpdateDataDir(const secname:string;idx:longint);
+         var
+           exesec : TExeSection;
++          datadirs : ptcoffpedatadirarray;
+         begin
+           exesec:=FindExeSection(secname);
+           if assigned(exesec) then
+             begin
+-              peoptheader.DataDirectory[idx].vaddr:=exesec.mempos;
+-              peoptheader.DataDirectory[idx].size:=exesec.Size;
++              datadirs:=ptcoffpedatadirarray(@peoptheader.DataDirectory);
++              datadirs^[idx].vaddr:=exesec.mempos;
++              datadirs^[idx].size:=exesec.Size;
+            end;
+         end;
+ 
+@@ -2268,6 +2272,7 @@
+           exesec: TExeSection;
+           objsec, iat_start, iat_end, ilt_start: TObjSection;
+           i: longint;
++          datadirs : ptcoffpedatadirarray;
+         begin
+           exesec:=FindExeSection('.idata');
+           if exesec=nil then
+@@ -2293,16 +2298,17 @@
+                   end;
+             end;
+ 
+-          peoptheader.DataDirectory[PE_DATADIR_IDATA].vaddr:=exesec.mempos;
++          datadirs:=ptcoffpedatadirarray(@peoptheader.DataDirectory);
++          datadirs^[PE_DATADIR_IDATA].vaddr:=exesec.mempos;
+           if Assigned(ilt_start) then
+-            peoptheader.DataDirectory[PE_DATADIR_IDATA].size:=ilt_start.mempos-exesec.mempos
++            datadirs^[PE_DATADIR_IDATA].size:=ilt_start.mempos-exesec.mempos
+           else  { should not happen }
+-            peoptheader.DataDirectory[PE_DATADIR_IDATA].size:=exesec.Size;
++            datadirs^[PE_DATADIR_IDATA].size:=exesec.Size;
+ 
+           if Assigned(iat_start) and Assigned(iat_end) then
+             begin
+-              peoptheader.DataDirectory[PE_DATADIR_IMPORTADDRESSTABLE].vaddr:=iat_start.mempos;
+-              peoptheader.DataDirectory[PE_DATADIR_IMPORTADDRESSTABLE].size:=iat_end.mempos-iat_start.mempos;
++              datadirs^[PE_DATADIR_IMPORTADDRESSTABLE].vaddr:=iat_start.mempos;
++              datadirs^[PE_DATADIR_IMPORTADDRESSTABLE].size:=iat_end.mempos-iat_start.mempos;
+             end;
+         end;
+ 
+@@ -2313,6 +2319,7 @@
+           tlssymbol: TObjSymbol;
+           callbackexesymbol: TExeSymbol;
+           callbacksymbol: TObjSymbol;
++          datadirs : ptcoffpedatadirarray;
+         begin
+           { according to GNU ld,
+             the callback routines should be placed into .CRT$XL*
+@@ -2328,9 +2335,10 @@
+           if assigned(tlsexesymbol) then
+             begin
+               tlssymbol:=tlsexesymbol.ObjSymbol;
+-              peoptheader.DataDirectory[PE_DATADIR_TLS].vaddr:=tlssymbol.address;
++              datadirs:=ptcoffpedatadirarray(@peoptheader.DataDirectory);
++              datadirs^[PE_DATADIR_TLS].vaddr:=tlssymbol.address;
+               { sizeof(TlsDirectory) is different on host and target when cross-compiling }
+-              peoptheader.DataDirectory[PE_DATADIR_TLS].size:=TLSDIR_SIZE;
++              datadirs^[PE_DATADIR_TLS].size:=TLSDIR_SIZE;
+               if IsSharedLibrary then
+                 begin
+                   { Here we should reset __FPC_tls_callbacks value to nil }
+@@ -2654,6 +2662,7 @@
+           secname,
+           num : string;
+           absordnr: word;
++          alignment : talignmentinfo;
+ 
+           procedure WriteTableEntry;
+           var
+@@ -2698,7 +2707,8 @@
+           with internalobjdata do
+             begin
+               secname:=basedllname+'_i_'+amangledname;
+-              textobjsection:=createsection(sectionname(sec_code,secname,secorder_default),current_settings.alignment.procalign,sectiontype2options(sec_code) - [oso_keep]);
++              alignment:=current_settings.alignment;
++              textobjsection:=createsection(sectionname(sec_code,secname,secorder_default),alignment.procalign,sectiontype2options(sec_code) - [oso_keep]);
+               idata4objsection:=createsection(sec_idata4, secname);
+               idata5objsection:=createsection(sec_idata5, secname);
+               idata6objsection:=createsection(sec_idata6, secname);
+@@ -2943,6 +2953,7 @@
+         i         : longint;
+         found     : boolean;
+         sechdr    : tCoffSecHdr;
++        datadirs  : ptcoffpedatadirarray;
+ {$ifdef win32}
+         p : pointer;
+ {$endif win32}
+@@ -2980,9 +2991,10 @@
+           begin
+             Comment(V_Error,'Invalid DLL '+dllname+', invalid header size');
+             exit;
+-          end;
++        end;
+         { Read optheader }
+         DLLreader.Read(peheader,sizeof(tcoffpeoptheader));
++        datadirs:=ptcoffpedatadirarray(@peheader.DataDirectory);
+         { Section headers }
+         found:=false;
+         for i:=1 to header.nsects do
+@@ -2992,8 +3004,8 @@
+                 Comment(V_Error,'Error reading coff file '+DLLName);
+                 exit;
+               end;
+-            if (sechdr.rvaofs<=peheader.DataDirectory[PE_DATADIR_EDATA].vaddr) and
+-               (peheader.DataDirectory[PE_DATADIR_EDATA].vaddr<sechdr.rvaofs+sechdr.vsize) then
++            if (sechdr.rvaofs<=datadirs^[PE_DATADIR_EDATA].vaddr) and
++               (datadirs^[PE_DATADIR_EDATA].vaddr<sechdr.rvaofs+sechdr.vsize) then
+               begin
+                 found:=true;
+                 break;
+@@ -3005,7 +3017,7 @@
+             exit;
+           end;
+         { Process edata }
+-        DLLReader.Seek(sechdr.datapos+peheader.DataDirectory[PE_DATADIR_EDATA].vaddr-sechdr.rvaofs);
++        DLLReader.Seek(sechdr.datapos+datadirs^[PE_DATADIR_EDATA].vaddr-sechdr.rvaofs);
+         DLLReader.Read(expdir,sizeof(expdir));
+         for i:=0 to expdir.NumNames-1 do
+           begin
+--- a/compiler/pdecvar.pas
++++ b/compiler/pdecvar.pas
+@@ -1499,6 +1499,7 @@
+          uniondef : trecorddef;
+          hintsymoptions : tsymoptions;
+          deprecatedmsg : pshortstring;
++         alignment : talignmentinfo;
+          semicoloneaten,
+          removeclassoption: boolean;
+ {$if defined(powerpc) or defined(powerpc64)}
+@@ -1808,12 +1809,13 @@
+                 recst.padalignment:=maxpadalign;
+ {$endif powerpc or powerpc64}
+               { Align the offset where the union symtable is added }
++              alignment:=current_settings.alignment;
+               case recst.usefieldalignment of
+                 { allow the unionsymtable to be aligned however it wants }
+                 { (within the global min/max limits)                     }
+                 0, { default }
+                 C_alignment:
+-                  usedalign:=used_align(unionsymtable.recordalignment,current_settings.alignment.recordalignmin,current_settings.alignment.maxCrecordalign);
++                  usedalign:=used_align(unionsymtable.recordalignment,alignment.recordalignmin,alignment.maxCrecordalign);
+                 { 1 byte alignment if we are bitpacked }
+                 bit_alignment:
+                   usedalign:=1;
+@@ -1822,7 +1824,7 @@
+                 { otherwise alignment at the packrecords alignment of the }
+                 { current record                                          }
+                 else
+-                  usedalign:=used_align(recst.fieldalignment,current_settings.alignment.recordalignmin,current_settings.alignment.recordalignmax);
++                  usedalign:=used_align(recst.fieldalignment,alignment.recordalignmin,alignment.recordalignmax);
+               end;
+               offset:=align(recst.datasize,usedalign);
+               recst.datasize:=offset+unionsymtable.datasize;
+--- a/compiler/procinfo.pas
++++ b/compiler/procinfo.pas
+@@ -248,8 +248,11 @@
+ 
+ 
+     function tprocinfo.calc_stackframe_size:longint;
++      var
++        alignment : talignmentinfo;
+       begin
+-        result:=Align(tg.direction*tg.lasttemp,current_settings.alignment.localalignmin);
++        alignment:=current_settings.alignment;
++        result:=Align(tg.direction*tg.lasttemp,alignment.localalignmin);
+       end;
+ 
+ 
+--- a/compiler/symtable.pas
++++ b/compiler/symtable.pas
+@@ -896,10 +896,12 @@
+     procedure tabstractrecordsymtable.alignrecord(fieldoffset:asizeint;varalign:shortint);
+       var
+         varalignrecord: shortint;
++        alignment : talignmentinfo;
+       begin
++        alignment:=current_settings.alignment;
+         case usefieldalignment of
+           C_alignment:
+-            varalignrecord:=used_align(varalign,current_settings.alignment.recordalignmin,current_settings.alignment.maxCrecordalign);
++            varalignrecord:=used_align(varalign,alignment.recordalignmin,alignment.maxCrecordalign);
+           mac68k_alignment:
+             varalignrecord:=2;
+           else
+@@ -914,6 +916,7 @@
+         varalignfield,
+         varalign : shortint;
+         vardef : tdef;
++        alignment : talignmentinfo;
+       begin
+         if (sym.owner<>self) then
+           internalerror(200602031);
+@@ -927,6 +930,7 @@
+         l:=sym.getsize;
+         vardef:=sym.vardef;
+         varalign:=vardef.alignment;
++        alignment:=current_settings.alignment;
+ 
+         case usefieldalignment of
+           bit_alignment:
+@@ -975,7 +979,7 @@
+                 Message1(sym_w_wrong_C_pack,vardef.typename);
+               if varalign=0 then
+                 varalign:=l;
+-              if (fieldalignment<current_settings.alignment.maxCrecordalign) then
++          if (fieldalignment<alignment.maxCrecordalign) then
+                 begin
+                   if (varalign>16) and (fieldalignment<32) then
+                     fieldalignment:=32
+@@ -991,7 +995,7 @@
+                   else if (varalign>1) and (fieldalignment<2) then
+                     fieldalignment:=2;
+                 end;
+-              fieldalignment:=min(fieldalignment,current_settings.alignment.maxCrecordalign);
++              fieldalignment:=min(fieldalignment,alignment.maxCrecordalign);
+             end;
+           mac68k_alignment:
+             begin
+@@ -1009,7 +1013,7 @@
+         end;
+         if varalign=0 then
+           varalign:=size_2_align(l);
+-        varalignfield:=used_align(varalign,current_settings.alignment.recordalignmin,fieldalignment);
++        varalignfield:=used_align(varalign,alignment.recordalignmin,fieldalignment);
+ 
+         sym.fieldoffset:=align(_datasize,varalignfield);
+         if l>high(asizeint)-sym.fieldoffset then
+--- a/compiler/tgobj.pas
++++ b/compiler/tgobj.pas
+@@ -217,6 +217,7 @@
+          bestslot,bestprev,
+          hprev,hp : ptemprecord;
+          freetype : ttemptype;
++         aligninfo : talignmentinfo;
+          bestatend,
+          fitatbegin,
+          fitatend : boolean;
+@@ -239,6 +240,7 @@
+          if freetype=tt_none then
+            internalerror(200208201);
+          size:=align(size,alignment);
++         aligninfo:=current_settings.alignment;
+          { First check the tmpfreelist, but not when
+            we don't want to reuse an already allocated block }
+          if assigned(tempfreelist) and
+@@ -287,18 +289,18 @@
+                          fitatend:=fitatend and
+                            ((not bestatend and
+                              (direction=-1)) or
+-                            (bestatend and
+-                             isbetteralignedthan(abs(bestslot^.pos+hp^.size-size),abs(hp^.pos+hp^.size-size),current_settings.alignment.localalignmax)));
++                           (bestatend and
++                             isbetteralignedthan(abs(bestslot^.pos+hp^.size-size),abs(hp^.pos+hp^.size-size),aligninfo.localalignmax)));
+                          fitatbegin:=fitatbegin and
+                            (not bestatend or
+                             (direction=1)) and
+-                           isbetteralignedthan(abs(hp^.pos+size),abs(bestslot^.pos+size),current_settings.alignment.localalignmax);
++                           isbetteralignedthan(abs(hp^.pos+size),abs(bestslot^.pos+size),aligninfo.localalignmax);
+                        end;
+                      if fitatend and
+                         fitatbegin then
+-                       if isbetteralignedthan(abs(hp^.pos+hp^.size-size),abs(hp^.pos+size),current_settings.alignment.localalignmax) then
++                       if isbetteralignedthan(abs(hp^.pos+hp^.size-size),abs(hp^.pos+size),aligninfo.localalignmax) then
+                          fitatbegin:=false
+-                       else if isbetteralignedthan(abs(hp^.pos+size),abs(hp^.pos+hp^.size-size),current_settings.alignment.localalignmax) then
++                       else if isbetteralignedthan(abs(hp^.pos+size),abs(hp^.pos+hp^.size-size),aligninfo.localalignmax) then
+                          fitatend:=false
+                        else if (direction=1) then
+                          fitatend:=false
+@@ -494,8 +496,10 @@
+     procedure ttgobj.gettemp(list: TAsmList; size, alignment : longint;temptype:ttemptype;out ref : treference);
+       var
+         varalign : shortint;
++        aligninfo : talignmentinfo;
+       begin
+-        varalign:=used_align(alignment,current_settings.alignment.localalignmin,current_settings.alignment.localalignmax);
++        aligninfo:=current_settings.alignment;
++        varalign:=used_align(alignment,aligninfo.localalignmin,aligninfo.localalignmax);
+         { can't use reference_reset_base, because that will let tgobj depend
+           on cgobj (PFV) }
+         fillchar(ref,sizeof(ref),0);
+@@ -508,9 +512,11 @@
+     procedure ttgobj.gettemptyped(list: TAsmList; def:tdef;temptype:ttemptype;out ref : treference);
+       var
+         varalign : shortint;
++        aligninfo : talignmentinfo;
+       begin
++        aligninfo:=current_settings.alignment;
+         varalign:=def.alignment;
+-        varalign:=used_align(varalign,current_settings.alignment.localalignmin,current_settings.alignment.localalignmax);
++        varalign:=used_align(varalign,aligninfo.localalignmin,aligninfo.localalignmax);
+         { can't use reference_reset_base, because that will let tgobj depend
+           on cgobj (PFV) }
+         fillchar(ref,sizeof(ref),0);
+@@ -644,8 +650,11 @@
+ 
+ 
+     procedure ttgobj.getlocal(list: TAsmList; size : longint; alignment : shortint; def:tdef;var ref : treference);
++      var
++        aligninfo : talignmentinfo;
+       begin
+-        alignment:=used_align(alignment,current_settings.alignment.localalignmin,current_settings.alignment.localalignmax);
++        aligninfo:=current_settings.alignment;
++        alignment:=used_align(alignment,aligninfo.localalignmin,aligninfo.localalignmax);
+         { can't use reference_reset_base, because that will let tgobj depend
+           on cgobj (PFV) }
+         fillchar(ref,sizeof(ref),0);
+--- a/compiler/x86/aasmcpu.pas
++++ b/compiler/x86/aasmcpu.pas
+@@ -204,7 +204,11 @@
+         Ch_MRAX, Ch_MRCX, Ch_MRDX, Ch_MRBX, Ch_MRSP, Ch_MRBP, Ch_MRSI, Ch_MRDI
+       );
+ 
+-      TInsProp = packed record
++      { was `packed record` -- depacked for the tp2cc C++ bootstrap. This is
++        optimizer metadata, not an on-disk format, and its change-array is
++        only consulted in memory. Keeping it packed forces aggregate indexed
++        access through a packed subobject for no file-format benefit. }
++      TInsProp = record
+         Ch : Array[1..MaxInsChanges] of TInsChange;
+       end;
+ 
+@@ -219,7 +223,13 @@
+     type
+       TOperandOrder = (op_intel,op_att);
+ 
+-      tinsentry=packed record
++      { was `packed record` -- depacked for the tp2cc C++ bootstrap. This
++        instruction-table entry is in-memory-only, and packing it misaligns
++        the `longint` operand-type array. tp2cc lowers that array to a C++
++        aggregate carrier whose indexed element access binds references to
++        the underlying elements; keeping this record packed therefore turns
++        normal operand-table lookups into misaligned-reference UB. }
++      tinsentry=record
+         opcode  : tasmop;
+         ops     : byte;
+         optypes : array[0..2] of longint;
+--- a/compiler/options.pas
++++ b/compiler/options.pas
+@@ -2418,6 +2408,7 @@
+   env: ansistring;
+   i : tfeature;
+   abi : tabi;
++  alignment : talignmentinfo;
+ begin
+   option:=coption.create;
+   disable_configfile:=false;
+@@ -2885,9 +2876,13 @@
+   UpdateAlignment(init_settings.alignment,target_info.alignment);
+   if (cs_opt_size in current_settings.optimizerswitches) then
+    begin
+-     init_settings.alignment.procalign:=1;
+-     init_settings.alignment.jumpalign:=1;
+-     init_settings.alignment.loopalign:=1;
++     { tsettings is packed for PPU token recording; copy the nested
++       alignment record before updating its fields for the tp2cc bootstrap. }
++     alignment:=init_settings.alignment;
++     alignment.procalign:=1;
++     alignment.jumpalign:=1;
++     alignment.loopalign:=1;
++     init_settings.alignment:=alignment;
+    end;
+ 
+   UpdateAlignment(init_settings.alignment,option.paraalignment);
