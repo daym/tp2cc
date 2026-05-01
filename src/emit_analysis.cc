@@ -1142,7 +1142,10 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         }
         if (id.name == "pchar" && c.args.size() == 1) return builtin_pchar_type();
         if ((id.name == "succ" || id.name == "pred" || id.name == "upcase" ||
-             id.name == "abs" || id.name == "sqr") &&
+             id.name == "abs" || id.name == "sqr" ||
+             id.name == "swapendian" || id.name == "beton" ||
+             id.name == "leton" || id.name == "ntobe" ||
+             id.name == "ntole") &&
             c.args.size() == 1) {
           return deduce_type(*c.args[0]);
         }

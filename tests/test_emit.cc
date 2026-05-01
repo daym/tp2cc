@@ -3111,6 +3111,27 @@ void test_runtime_math_surface_resolves_explicitly() {
   CHECK(contains(out.impl, "::rt::p_trunc(::rt::p_arctan("));
 }
 
+void test_runtime_endian_helpers_resolve_explicitly() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var l : longint; w : word;\n"
+      "begin\n"
+      "  l := NtoBE(l) + BEtoN(l) + NtoLE(l) + LEtoN(l);\n"
+      "  w := NtoBE(w);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "::rt::p_ntobe("));
+  CHECK(contains(out.impl, "::rt::p_beton("));
+  CHECK(contains(out.impl, "::rt::p_ntole("));
+  CHECK(contains(out.impl, "::rt::p_leton("));
+}
+
 void test_and_with_not_of_xor_short_circuits() {
   // Three chained Pascal `and`s where the third's RHS is `not(bool xor
   // bool)`. Without recognising xor-of-bools as bool, the last `and`
@@ -5981,6 +6002,7 @@ int main() {
   RUN_TEST(test_local_var_inline_anon_enum_resolves_members);
   RUN_TEST(test_unresolved_free_identifier_reports_error_without_rt_fallback);
   RUN_TEST(test_runtime_math_surface_resolves_explicitly);
+  RUN_TEST(test_runtime_endian_helpers_resolve_explicitly);
   RUN_TEST(test_and_with_not_of_xor_short_circuits);
   RUN_TEST(test_r_plus_routes_narrowing_assignment_through_range_check);
   RUN_TEST(test_q_minus_routes_signed_negate_through_wrap_helper);

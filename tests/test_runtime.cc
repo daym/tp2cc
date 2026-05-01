@@ -220,6 +220,15 @@ void test_runtime_file_helpers_expose_real_sysutils_surface() {
 void test_runtime_swap_fill_and_compare_helpers() {
   CHECK_EQ(p_swapendian<uint16_t>(0x1234u), 0x3412u);
   CHECK_EQ(p_swapendian<uint32_t>(0x12345678u), 0x78563412u);
+  CHECK_EQ(p_ntobe<uint32_t>(0x12345678u), p_beton<uint32_t>(0x12345678u));
+  CHECK_EQ(p_ntole<uint32_t>(0x12345678u), p_leton<uint32_t>(0x12345678u));
+  if constexpr (std::endian::native == std::endian::little) {
+    CHECK_EQ(p_leton<uint32_t>(0x12345678u), 0x12345678u);
+    CHECK_EQ(p_ntobe<uint32_t>(0x12345678u), 0x78563412u);
+  } else {
+    CHECK_EQ(p_beton<uint32_t>(0x12345678u), 0x12345678u);
+    CHECK_EQ(p_ntole<uint32_t>(0x12345678u), 0x78563412u);
+  }
 
   uint32_t words[4]{};
   p_filldword(words, 4, 0xaabbccddu);

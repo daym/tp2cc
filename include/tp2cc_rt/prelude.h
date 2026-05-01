@@ -1858,6 +1858,34 @@ inline T p_swapendian(T value) {
 }
 
 template <typename T>
+inline T p_beton(T value) {
+  if constexpr (std::endian::native == std::endian::big) {
+    return value;
+  } else {
+    return p_swapendian(value);
+  }
+}
+
+template <typename T>
+inline T p_leton(T value) {
+  if constexpr (std::endian::native == std::endian::little) {
+    return value;
+  } else {
+    return p_swapendian(value);
+  }
+}
+
+template <typename T>
+inline T p_ntobe(T value) {
+  return p_beton(value);
+}
+
+template <typename T>
+inline T p_ntole(T value) {
+  return p_leton(value);
+}
+
+template <typename T>
 inline constexpr int tp2cc_ordinal_value(T x) {
   if constexpr (std::is_convertible_v<T, p_char>)
     return static_cast<int>(tp2cc_char_byte(static_cast<p_char>(x)));
