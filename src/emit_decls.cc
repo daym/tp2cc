@@ -857,6 +857,19 @@ std::string EmitDecls::proc_return_type_to_cxx(const ProcDecl& pd) {
   return "void";
 }
 
+namespace {
+
+std::string operator_decl_name_to_cxx(const ProcDecl& pd) {
+  if (!pd.is_operator) return mangle(pd.name);
+  if (pd.operator_token == ":=") {
+    return pascal_assignment_operator_helper_name(pd);
+  }
+  std::string op = pascal_operator_cxx_token(pd.operator_token);
+  return op.empty() ? mangle(pd.name) : "operator" + op;
+}
+
+}  // namespace
+
 void EmitDecls::emit_method_pointer_thunk(const std::string& owner_name,
                                           const ProcDecl& pd,
                                           const std::string& ret) {
@@ -927,7 +940,8 @@ void EmitDecls::emit_proc_decl_signature(const ProcDecl& pd) {
     ret = "void";
   }
   std::string params = param_list_to_cxx(pd.params);
-  emit_ops_.emitln(ret + " " + mangle(pd.name) + "(" + params + ");");
+  emit_ops_.emitln(ret + " " + operator_decl_name_to_cxx(pd) + "(" +
+                   params + ");");
 }
 
 void EmitDecls::emit_decl(const Decl& d, bool in_header) {

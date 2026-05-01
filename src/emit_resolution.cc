@@ -84,6 +84,32 @@ void EmitResolution::gather_callable_in_pascal_scope(
   }
 }
 
+void EmitResolution::gather_operator_in_pascal_scope(
+    const std::string& op, std::vector<AnyCand>& cands) {
+  if (!registry_) return;
+  auto cur = registry_->units.find(scope_.current_unit_name);
+  if (cur == registry_->units.end()) return;
+  if (auto* local = cur->second.find_operators(op); local && !local->empty()) {
+    for (const auto& pi : *local) {
+      cands.push_back(
+          {pi.decl.get(), pi.param_count, pi.accepts_zero_args,
+           scope_.current_unit_name});
+    }
+    return;
+  }
+  for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
+       ++it) {
+    auto uit = registry_->units.find(*it);
+    if (uit == registry_->units.end()) continue;
+    auto* ops = uit->second.find_export_operators(op);
+    if (!ops) continue;
+    for (const auto& pi : *ops) {
+      cands.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args,
+                       *it});
+    }
+  }
+}
+
 const ProcDecl* EmitResolution::resolve_call_decl(const Expr& callee) {
   if (callee.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(callee);
@@ -610,6 +636,71 @@ ResolvedCall EmitResolution::resolve_call(
 
   out.decl = resolve_call_decl(callee);
   return out;
+}
+
+AssignmentOperatorResult EmitResolution::find_assignment_operator(
+    const TypeExpr* source, const TypeExpr* target) {
+  if (!registry_ || !source || !target) return {};
+  const TypeExpr* canon_target = analysis_.canonicalize_type(target);
+  if (!canon_target) return {};
+  std::string target_cxx = type_ops_.type_to_cxx(*canon_target);
+  if (target_cxx.empty()) return {};
+
+  std::vector<AnyCand> cands;
+  gather_operator_in_pascal_scope(":=", cands);
+  std::vector<const ProcDecl*> viable;
+  for (const auto& c : cands) {
+    const ProcDecl* pd = c.decl;
+    if (!pd || pd->params.size() != 1 || !pd->return_type) continue;
+    const TypeExpr* ret = analysis_.canonicalize_type(pd->return_type.get());
+    if (!ret || type_ops_.type_to_cxx(*ret) != target_cxx) continue;
+    std::vector<FlatCallParamInfo> flat;
+    flatten_call_param_info(pd, flat);
+    if (flat.size() != 1) continue;
+    if (rank_conversion(source, flat[0].type, flat[0].mutable_ref).viable()) {
+      viable.push_back(pd);
+    }
+  }
+  if (viable.empty()) return {};
+  if (viable.size() == 1) {
+    for (const auto& c : cands) {
+      if (c.decl == viable.front()) return {viable.front(), c.unit};
+    }
+    return {viable.front(), {}};
+  }
+
+  // Reuse the normal picker by synthesizing the source type as an expression
+  // is not possible here, so choose only exact/equal-ranked matches. This is
+  // enough for the FPC compiler's explicit one-parameter conversion operators
+  // and avoids guessing among lossy numeric conversions.
+  const ProcDecl* best = nullptr;
+  std::string best_unit;
+  ConvScore best_score{};
+  bool have_best = false;
+  bool ambiguous = false;
+  for (const ProcDecl* pd : viable) {
+    std::vector<FlatCallParamInfo> flat;
+    flatten_call_param_info(pd, flat);
+    ConvScore score = rank_conversion(source, flat[0].type, flat[0].mutable_ref);
+    if (!score.viable()) continue;
+    if (!have_best || score.rank < best_score.rank ||
+        (score.rank == best_score.rank && score.distance < best_score.distance)) {
+      best = pd;
+      for (const auto& c : cands) {
+        if (c.decl == pd) {
+          best_unit = c.unit;
+          break;
+        }
+      }
+      best_score = score;
+      have_best = true;
+      ambiguous = false;
+    } else if (score.rank == best_score.rank &&
+               score.distance == best_score.distance) {
+      ambiguous = true;
+    }
+  }
+  return ambiguous ? AssignmentOperatorResult{} : AssignmentOperatorResult{best, best_unit};
 }
 
 }  // namespace tp2cc

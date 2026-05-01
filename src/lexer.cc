@@ -53,6 +53,7 @@ const std::pair<const char*, Tok> kKeywordTable[] = {
     {"not", Tok::KwNot},
     {"object", Tok::KwObject},
     {"of", Tok::KwOf},
+    {"operator", Tok::KwOperator},
     {"or", Tok::KwOr},
     {"otherwise", Tok::KwOtherwise},
     {"packed", Tok::KwPacked},

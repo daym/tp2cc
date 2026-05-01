@@ -356,6 +356,17 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
   scope_.lhs_outer_result_rewrite.clear();
   scope_.lhs_outer_result_rewrite_slot.clear();
   const TypeExpr* target_ty = analysis_.deduce_type(*a.target);
+  const TypeExpr* value_ty = analysis_.deduce_type(*a.value);
+  if (auto conv = resolution_.find_assignment_operator(value_ty, target_ty);
+      conv.decl) {
+    std::string fn = pascal_assignment_operator_helper_name(*conv.decl);
+    if (!conv.defining_unit.empty()) {
+      fn = unit_namespace_prefix(conv.defining_unit) + fn;
+    }
+    stmt_ops_.emitln(target_cxx + " = " + fn + "(" +
+                     stmt_ops_.expr_to_cxx(*a.value) + ");");
+    return;
+  }
   std::string rhs_cxx = stmt_ops_.const_value_to_cxx(*a.value, target_ty);
   if (target_ty && types_.shortstring_capacity_to_cxx(target_ty)) {
     stmt_ops_.emitln("::rt::tp2cc_shortstring_assign(" + target_cxx + ", " +

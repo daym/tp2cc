@@ -1610,6 +1610,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           TyName target;
           target.name = n;
+          if (auto conv = resolution_.find_assignment_operator(
+                  deduce_type(*c.args[0]), &target);
+              conv.decl) {
+            std::string fn = pascal_assignment_operator_helper_name(*conv.decl);
+            if (!conv.defining_unit.empty()) {
+              fn = unit_namespace_prefix(conv.defining_unit) + fn;
+            }
+            return fn + "(" + arg0() + ")";
+          }
           if (auto lit =
                   maybe_convert_const_int_expr(*c.args[0], &target, true)) {
             return *lit;
@@ -1667,6 +1676,20 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (cast_ty && cast_ty->kind == Kind::TySet) {
             return "::rt::tp2cc_set_cast<" + type_to_cxx(*cast_ty) + ">(" +
                    arg0() + ")";
+          }
+          {
+            TyName target;
+            target.name = n;
+            if (auto conv = resolution_.find_assignment_operator(
+                    deduce_type(*c.args[0]), &target);
+                conv.decl) {
+              std::string fn =
+                  pascal_assignment_operator_helper_name(*conv.decl);
+              if (!conv.defining_unit.empty()) {
+                fn = unit_namespace_prefix(conv.defining_unit) + fn;
+              }
+              return fn + "(" + arg0() + ")";
+            }
           }
           if (cast_ty && type_is_reference_class(cast_ty)) {
             // `TClass(expr)` is a class-pointer cast in Pascal, not a C++

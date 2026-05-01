@@ -152,11 +152,13 @@ struct UnitInfo {
   // name (`overload`); the registry keeps the full set so the emitter can
   // do Pascal-style overload resolution at call sites.
   std::unordered_map<std::string, std::vector<ProcInfo>> iface_procs;
+  std::unordered_map<std::string, std::vector<ProcInfo>> iface_operators;
   std::unordered_set<std::string> iface_types;
   std::unordered_set<std::string> iface_enum_members;
   std::unordered_map<std::string, VarInfo> impl_vars;
   std::unordered_map<std::string, ConstInfo> impl_consts;
   std::unordered_map<std::string, std::vector<ProcInfo>> impl_procs;
+  std::unordered_map<std::string, std::vector<ProcInfo>> impl_operators;
   std::unordered_set<std::string> impl_types;
   std::unordered_set<std::string> impl_enum_members;
 
@@ -195,6 +197,9 @@ struct UnitInfo {
   const std::vector<ProcInfo>* find_procs(const std::string& n) const {
     return find(iface_procs, impl_procs, n);
   }
+  const std::vector<ProcInfo>* find_operators(const std::string& n) const {
+    return find(iface_operators, impl_operators, n);
+  }
   bool has_type(const std::string& n) const {
     return iface_types.count(n) || impl_types.count(n);
   }
@@ -225,6 +230,11 @@ struct UnitInfo {
   const std::vector<ProcInfo>* find_export_procs(const std::string& n) const {
     auto it = iface_procs.find(n);
     return it == iface_procs.end() ? nullptr : &it->second;
+  }
+  const std::vector<ProcInfo>* find_export_operators(
+      const std::string& n) const {
+    auto it = iface_operators.find(n);
+    return it == iface_operators.end() ? nullptr : &it->second;
   }
   bool has_export_type(const std::string& n) const {
     return iface_types.count(n) > 0;

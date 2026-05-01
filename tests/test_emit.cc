@@ -1505,6 +1505,49 @@ void test_overloaded_string_and_bool_call_keeps_boolean_argument_raw() {
   CHECK(!contains(out.impl, "::rt::tp2cc_shortstring_of<255>(false)"));
 }
 
+void test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers() {
+  auto out = compile_snippet_with_registry(
+      "unit ops;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = record\n"
+      "    v : longint;\n"
+      "  end;\n"
+      "operator + (const a,b : tbox) : tbox;\n"
+      "operator := (const n : longint) : tbox;\n"
+      "operator := (const b : tbox) : longint;\n"
+      "procedure test;\n"
+      "implementation\n"
+      "operator + (const a,b : tbox) : tbox;\n"
+      "begin\n"
+      "  result.v := a.v + b.v;\n"
+      "end;\n"
+      "operator := (const n : longint) : tbox;\n"
+      "begin\n"
+      "  result.v := n;\n"
+      "end;\n"
+      "operator := (const b : tbox) : longint;\n"
+      "begin\n"
+      "  result := b.v;\n"
+      "end;\n"
+      "procedure test;\n"
+      "var a,b : tbox; i : longint;\n"
+      "begin\n"
+      "  a := 1;\n"
+      "  b := a + a;\n"
+      "  i := longint(b);\n"
+      "end;\n"
+      "end.\n");
+
+  CHECK(contains(out.header, "p_tbox operator+(p_tbox p_a, p_tbox p_b);"));
+  CHECK(contains(out.header, "p_tbox tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(int32_t p_n);"));
+  CHECK(contains(out.header, "int32_t tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(p_tbox p_b);"));
+  CHECK(contains(out.impl, "p_tbox operator+(p_tbox p_a, p_tbox p_b) {"));
+  CHECK(contains(out.impl, "p_a = p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1);"));
+  CHECK(contains(out.impl, "p_b = (p_a + p_a);"));
+  CHECK(contains(out.impl, "p_i = p_ops::tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(p_b);"));
+}
+
 void test_pchar_cast_argument_converts_to_string_value() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -5932,6 +5975,7 @@ int main() {
   RUN_TEST(test_var_shortstring_call_keeps_lvalue_storage);
   RUN_TEST(test_var_ansistring_call_keeps_lvalue_storage);
   RUN_TEST(test_overloaded_string_and_bool_call_keeps_boolean_argument_raw);
+  RUN_TEST(test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers);
   RUN_TEST(test_pchar_cast_argument_converts_to_string_value);
   RUN_TEST(test_integer_and_or_stays_bitwise);
   RUN_TEST(test_nested_boolean_function_and_short_circuits);

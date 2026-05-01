@@ -7,6 +7,7 @@
 #include <vector>
 
 namespace tp2cc::ast {
+struct ProcDecl;
 struct Param;
 struct TypeExpr;
 struct TyName;
@@ -47,6 +48,8 @@ bool is_pascal_result_ident(std::string_view name);
 std::string encode_helper_ident(std::string_view name);
 std::string encode_helper_type(const ast::TypeExpr& t);
 std::string encode_helper_params(const std::vector<ast::Param>& params);
+std::string pascal_operator_cxx_token(std::string_view op);
+std::string pascal_assignment_operator_helper_name(const ast::ProcDecl& pd);
 size_t procedural_param_count(const ast::TyProcedural& p);
 std::string enum_bound_name(std::string_view type_name, std::string_view which);
 

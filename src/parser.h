@@ -49,6 +49,7 @@ class Parser {
   std::shared_ptr<ast::ProcDecl> parse_proc_decl(ast::ProcKind pk,
                                                  bool in_interface,
                                                  bool is_class_method);
+  std::shared_ptr<ast::ProcDecl> parse_operator_decl(bool in_interface);
   void parse_proc_modifiers(ast::ProcDecl& pd);
 
   // Pascal "directives" are position-dependent keywords spelled as ordinary

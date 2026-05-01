@@ -17,6 +17,15 @@ namespace {
 constexpr const char* kPascalResultSlotName = "p_result";
 constexpr const char* kCtorStatusSlotName = "tp2cc_ctor_ok";
 
+std::string operator_decl_name_to_cxx(const ProcDecl& pd) {
+  if (!pd.is_operator) return mangle(pd.name);
+  if (pd.operator_token == ":=") {
+    return pascal_assignment_operator_helper_name(pd);
+  }
+  std::string op = pascal_operator_cxx_token(pd.operator_token);
+  return op.empty() ? mangle(pd.name) : "operator" + op;
+}
+
 }  // namespace
 
 EmitProcs::EmitProcs(ScopeStateView& scope, int& block_depth,
@@ -207,7 +216,7 @@ std::string EmitProcs::nested_proc_signature_types(const ProcDecl& pd) {
 void EmitProcs::emit_proc_body(const ProcDecl& pd) {
   // Header line: ret ClassName::Method(args) or ret Method(args).
   std::string ret = decls_.proc_return_type_to_cxx(pd);
-  std::string qname = mangle(pd.name);
+  std::string qname = operator_decl_name_to_cxx(pd);
   if (!pd.of_type.empty()) qname = mangle(pd.of_type) + "::" + qname;
   emit_ops_.emitln(ret + " " + qname + "(" + decls_.param_list_to_cxx(pd.params) +
                    ") {");

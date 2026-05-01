@@ -293,6 +293,11 @@ void Parser::parse_decl_block(std::vector<DeclPtr>& out, bool in_interface) {
         if (d) out.push_back(std::move(d));
         break;
       }
+      case Tok::KwOperator: {
+        auto d = parse_operator_decl(in_interface);
+        if (d) out.push_back(std::move(d));
+        break;
+      }
       case Tok::KwClass: {
         Tok next = peek().kind;
         if (next != Tok::KwProcedure && next != Tok::KwFunction) return;
@@ -611,6 +616,68 @@ std::shared_ptr<ProcDecl> Parser::parse_proc_decl(
   } else if (check(Tok::KwAsm)) {
     pd->body = parse_asm();
     expect(Tok::Semi, "routine body");
+  }
+  return pd;
+}
+
+std::shared_ptr<ProcDecl> Parser::parse_operator_decl(bool in_interface) {
+  auto pd = std::make_shared<ProcDecl>(/*class_method=*/false);
+  pd->loc = cur_.loc;
+  pd->pkind = ProcKind::Function;
+  pd->is_operator = true;
+  advance();  // consume operator
+
+  auto op_text = [&]() -> std::string {
+    switch (cur_.kind) {
+      case Tok::Assign: return ":=";
+      case Tok::Plus: return "+";
+      case Tok::Minus: return "-";
+      case Tok::Star: return "*";
+      case Tok::Slash: return "/";
+      case Tok::Eq: return "=";
+      case Tok::Lt: return "<";
+      case Tok::Gt: return ">";
+      case Tok::LtEq: return "<=";
+      case Tok::GtEq: return ">=";
+      case Tok::NotEq: return "<>";
+      case Tok::KwDiv: return "div";
+      case Tok::KwMod: return "mod";
+      case Tok::KwAnd: return "and";
+      case Tok::KwOr: return "or";
+      case Tok::KwXor: return "xor";
+      case Tok::KwShl: return "shl";
+      case Tok::KwShr: return "shr";
+      default: return {};
+    }
+  }();
+  if (op_text.empty()) {
+    report_error(cur_.loc, "expected operator token after 'operator'");
+  } else {
+    pd->operator_token = op_text;
+    advance();
+  }
+  pd->name = "operator_" + pd->operator_token;
+
+  if (accept(Tok::LParen)) {
+    pd->params = parse_formal_param_list();
+    expect(Tok::RParen, "operator parameter list");
+  }
+  expect(Tok::Colon, "operator return type");
+  pd->return_type = parse_type();
+  expect(Tok::Semi, "operator header");
+  parse_proc_modifiers(*pd);
+
+  if (in_interface || pd->is_forward || pd->is_external ||
+      pd->is_abstract) {
+    return pd;
+  }
+  parse_decl_block(pd->locals, /*in_interface=*/false);
+  if (check(Tok::KwBegin)) {
+    pd->body = parse_compound_statement();
+    expect(Tok::Semi, "operator body");
+  } else if (check(Tok::KwAsm)) {
+    pd->body = parse_asm();
+    expect(Tok::Semi, "operator body");
   }
   return pd;
 }

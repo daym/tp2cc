@@ -243,6 +243,36 @@ std::string encode_helper_params(const std::vector<ast::Param>& params) {
   return out;
 }
 
+std::string pascal_operator_cxx_token(std::string_view op) {
+  if (op == "+") return "+";
+  if (op == "-") return "-";
+  if (op == "*") return "*";
+  if (op == "/" || op == "div") return "/";
+  if (op == "mod") return "%";
+  if (op == "=") return "==";
+  if (op == "<>") return "!=";
+  if (op == "<") return "<";
+  if (op == ">") return ">";
+  if (op == "<=") return "<=";
+  if (op == ">=") return ">=";
+  if (op == "and") return "&";
+  if (op == "or") return "|";
+  if (op == "xor") return "^";
+  if (op == "shl") return "<<";
+  if (op == "shr") return ">>";
+  return {};
+}
+
+std::string pascal_assignment_operator_helper_name(const ast::ProcDecl& pd) {
+  std::string out = "tp2cc_operator_assign";
+  out += "_params_";
+  out += encode_helper_params(pd.params);
+  out += "_ret_";
+  out += pd.return_type ? encode_helper_type(*pd.return_type)
+                        : std::string("void");
+  return out;
+}
+
 size_t procedural_param_count(const ast::TyProcedural& p) {
   size_t count = 0;
   for (const auto& pp : p.params) {

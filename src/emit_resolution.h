@@ -13,6 +13,11 @@ namespace tp2cc {
 struct ProcInfo;
 struct TypeRegistry;
 
+struct AssignmentOperatorResult {
+  const ast::ProcDecl* decl = nullptr;
+  std::string defining_unit;
+};
+
 class EmitResolution {
  public:
   EmitResolution(const TypeRegistry* registry, ScopeStateView& scope,
@@ -48,6 +53,12 @@ class EmitResolution {
   ResolvedCall resolve_call(
       const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
 
+  // Pascal `operator :=' is a conversion operator. C++ has no namespace-scope
+  // assignment operator, so emit sites that know a source and destination type
+  // ask for the matching helper ProcDecl explicitly.
+  AssignmentOperatorResult find_assignment_operator(
+      const ast::TypeExpr* source, const ast::TypeExpr* target);
+
  private:
   // One row in a callable-name lookup result. `decl` is null only for
   // metadata-only runtime builtins; arity filtering still uses
@@ -80,6 +91,8 @@ class EmitResolution {
                                      const std::string& name,
                                      std::vector<AnyCand>& cands);
   void gather_callable_in_pascal_scope(const std::string& name,
+                                       std::vector<AnyCand>& cands);
+  void gather_operator_in_pascal_scope(const std::string& op,
                                        std::vector<AnyCand>& cands);
   void flatten_call_param_info(const ast::ProcDecl* decl,
                                std::vector<FlatCallParamInfo>& flat_params);

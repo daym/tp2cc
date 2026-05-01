@@ -407,6 +407,11 @@ enum class ProcKind : uint8_t { Procedure, Function, Constructor, Destructor };
 struct ProcDecl : Decl {
   ProcKind pkind = ProcKind::Procedure;
   std::string name;
+  bool is_operator = false;
+  // Pascal operator token text, e.g. "+", "div", ":=".  Operator
+  // declarations are represented as function-like ProcDecls so they can
+  // reuse the existing parameter/body/result lowering.
+  std::string operator_token;
   // For methods: the object/record type this belongs to, if parsed as
   // `procedure TFoo.Bar(...)`. Empty otherwise.
   std::string of_type;

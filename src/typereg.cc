@@ -25,6 +25,22 @@ bool proc_accepts_zero_args(const ProcDecl& pd) {
   return true;
 }
 
+ProcInfo make_proc_info(const std::string& unit,
+                        std::shared_ptr<const ProcDecl> pd_sp) {
+  const auto& pd = *pd_sp;
+  ProcInfo p;
+  p.defining_unit = unit;
+  p.decl = pd_sp;
+  p.is_function = (pd.pkind == ProcKind::Function);
+  size_t pc = 0;
+  for (const auto& par : pd.params) {
+    pc += par.names.empty() ? 1 : par.names.size();
+  }
+  p.param_count = pc;
+  p.accepts_zero_args = proc_accepts_zero_args(pd);
+  return p;
+}
+
 void add_record_fields(RecordInfo& ri, const TyRecord& tr) {
   for (const auto& f : tr.fields) {
     FieldInfo fi;
@@ -172,20 +188,22 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         auto pd_sp = std::static_pointer_cast<const ProcDecl>(d);
         const auto& pd = *pd_sp;
         if (!pd.of_type.empty()) continue;  // method body -- class handles it
+        if (pd.is_operator) {
+          if (pd.is_forward) break;
+          if (ui) {
+            auto& ops = is_interface ? ui->iface_operators
+                                     : ui->impl_operators;
+            ops[pd.operator_token].push_back(make_proc_info(unit, pd_sp));
+          }
+          break;
+        }
         // Forward decls are bound to a real implementation later in the
         // same unit; registering both as separate ProcInfos would make
         // overload resolution see two identically-typed candidates and
         // (correctly) flag the call ambiguous. Skip the forward stub --
         // the implementation pass will register the real one.
         if (pd.is_forward) break;
-        ProcInfo p;
-        p.defining_unit = unit;
-        p.decl = pd_sp;
-        p.is_function = (pd.pkind == ProcKind::Function);
-        size_t pc = 0;
-        for (const auto& par : pd.params) pc += par.names.size();
-        p.param_count = pc;
-        p.accepts_zero_args = proc_accepts_zero_args(pd);
+        ProcInfo p = make_proc_info(unit, pd_sp);
         if (ui) (is_interface ? ui->iface_procs : ui->impl_procs)[lc(pd.name)]
                     .push_back(p);
         break;
