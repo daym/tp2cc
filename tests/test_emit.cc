@@ -3605,6 +3605,40 @@ void test_tclass_alias_lowers_through_rt() {
   CHECK(contains(out.header, "bool p_sameclass(::rt::p_tclass p_c);"));
 }
 
+void test_corba_interface_emits_pure_virtual_base_and_pointer_calls() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "{$interfaces corba}\n"
+      "type\n"
+      "  ireader = interface ['{11111111-1111-1111-1111-111111111111}']\n"
+      "    function next(out s : string) : boolean;\n"
+      "  end;\n"
+      "  treader = class(tobject, ireader)\n"
+      "    function next(out s : string) : boolean;\n"
+      "  end;\n"
+      "procedure use(reader : ireader);\n"
+      "implementation\n"
+      "function treader.next(out s : string) : boolean;\n"
+      "begin\n"
+      "  next := false;\n"
+      "end;\n"
+      "procedure use(reader : ireader);\n"
+      "var s : string;\n"
+      "begin\n"
+      "  reader.next(s);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "struct p_ireader {"));
+  CHECK(contains(out.header, "virtual ~p_ireader() = default;"));
+  CHECK(contains(out.header, "virtual bool p_next("));
+  CHECK(contains(out.header, ") = 0;"));
+  CHECK(contains(out.header,
+                 "struct p_treader : public ::rt::p_tobject, public p_ireader {"));
+  CHECK(contains(out.header, "void p_use(p_ireader* p_reader);"));
+  CHECK(contains(out.impl, "p_reader->p_next(p_s);"));
+}
+
 void test_class_constructor_call_allocates_instance() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -5881,6 +5915,7 @@ int main() {
   RUN_TEST(test_abstract_method_emits_fail_fast_virtual_body);
   RUN_TEST(test_pointer_sized_integer_aliases_lower_through_rt);
   RUN_TEST(test_tclass_alias_lowers_through_rt);
+  RUN_TEST(test_corba_interface_emits_pure_virtual_base_and_pointer_calls);
   RUN_TEST(test_class_constructor_call_allocates_instance);
   RUN_TEST(test_class_constructor_trailing_default_argument_is_lowered);
   RUN_TEST(test_object_constructor_call_uses_base_method_on_self);

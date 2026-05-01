@@ -735,6 +735,8 @@ TypePtr Parser::parse_type() {
     case Tok::KwRecord: return parse_record_type(packed);
     case Tok::KwObject:
       return parse_object_type();
+    case Tok::KwInterface:
+      return parse_interface_type();
     case Tok::KwClass: {
       // `class' at type position can start either a class declaration
       // (`class[(parent)] ... end') or a metaclass reference
@@ -977,6 +979,9 @@ TypePtr Parser::parse_object_type() {
   to->loc = loc;
   if (accept(Tok::LParen)) {
     to->parent = consume_ident("parent class");
+    while (accept(Tok::Comma)) {
+      to->interfaces.push_back(consume_ident("implemented interface"));
+    }
     expect(Tok::RParen, "parent class");
   }
   // Delphi forward class declaration: `T = class;' (body follows in a
@@ -1087,6 +1092,52 @@ TypePtr Parser::parse_object_type() {
   }
   expect(Tok::KwEnd, "object");
   return to;
+}
+
+TypePtr Parser::parse_interface_type() {
+  Location loc = cur_.loc;
+  expect(Tok::KwInterface, "interface");
+  auto ti = std::make_shared<TyInterface>();
+  ti->loc = loc;
+
+  // Bare FPC interfaces default to COM/IUnknown semantics, which means
+  // refcounting and QueryInterface support. p2cc only lowers the non-
+  // refcounted CORBA subset, so require an explicit `{$interfaces corba}`.
+  if (lex_.interface_mode_active() != InterfaceMode::Corba) {
+    report_error(loc,
+                 "COM/refcounted interfaces are unsupported; use "
+                 "{$interfaces corba}");
+  }
+
+  // The optional bracketed interface string is metadata only for p2cc's C++
+  // lowering:
+  //   IFoo = interface ['{...}'] ... end;
+  if (accept(Tok::LBrack)) {
+    if (cur_.kind == Tok::StringLit) {
+      ti->metadata_string = cur_.text;
+      advance();
+    } else {
+      report_error(cur_.loc, "expected interface metadata string");
+    }
+    expect(Tok::RBrack, "interface metadata");
+  }
+
+  while (!at_end() && !check(Tok::KwEnd)) {
+    if (check(Tok::KwProcedure) || check(Tok::KwFunction)) {
+      ProcKind pk = check(Tok::KwFunction) ? ProcKind::Function
+                                           : ProcKind::Procedure;
+      ObjectMember m;
+      m.kind = ObjectMemberKind::Method;
+      m.method = parse_proc_decl(pk, /*in_interface=*/true,
+                                 /*is_class_method=*/false);
+      ti->members.push_back(std::move(m));
+      continue;
+    }
+    report_error(cur_.loc, "expected interface method declaration");
+    break;
+  }
+  expect(Tok::KwEnd, "interface");
+  return ti;
 }
 
 TypePtr Parser::parse_set_type() {

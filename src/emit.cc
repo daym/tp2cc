@@ -2197,7 +2197,7 @@ void Emitter::emit_forward_struct_decls(
 // ---------------------------------------------------------------------------
 // Unit
 
-// Scan the decl list and emit forward declarations for every record/object
+// Scan the decl list and emit forward declarations for every record/object/interface
 // type, so a pointer type that textually precedes its target still compiles.
 static void emit_forward_struct_decls_impl(Emitter& e,
                                            const std::vector<DeclPtr>& decls) {
@@ -2205,7 +2205,8 @@ static void emit_forward_struct_decls_impl(Emitter& e,
     if (d->kind != Kind::TypeDecl) continue;
     const auto& td = static_cast<const TypeDecl&>(*d);
     if (!td.type) continue;
-    if (td.type->kind == Kind::TyRecord || td.type->kind == Kind::TyObject) {
+    if (td.type->kind == Kind::TyRecord || td.type->kind == Kind::TyObject ||
+        td.type->kind == Kind::TyInterface) {
       e.emitln("struct " + std::string("p_") + td.name + ";");
       if (td.type->kind == Kind::TyObject &&
           static_cast<const TyObject&>(*td.type).is_reference_type) {

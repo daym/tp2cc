@@ -40,9 +40,12 @@ std::string EmitTypes::type_name_to_cxx(const TyName& n) {
     auto lookup_name = ascii_lower(n.name);
     if (registry_) {
       auto cit = registry_->classes.find(std::string(lookup_name));
-      return cit != registry_->classes.end() && cit->second.is_reference_type
-                 ? named_type_struct_cxx(n.name) + "*"
-                 : named_type_struct_cxx(n.name);
+      if (cit != registry_->classes.end() && cit->second.is_reference_type) {
+        return named_type_struct_cxx(n.name) + "*";
+      }
+      if (registry_->interfaces.count(std::string(lookup_name))) {
+        return named_type_struct_cxx(n.name) + "*";
+      }
     }
     return named_type_struct_cxx(n.name);
   }
@@ -103,6 +106,11 @@ std::string EmitTypes::visible_type_prefix(std::string_view name) {
       class_it->second.defining_unit != scope_.current_unit_name) {
     return unit_namespace_prefix(class_it->second.defining_unit);
   }
+  auto interface_it = registry_->interfaces.find(lower);
+  if (interface_it != registry_->interfaces.end() &&
+      interface_it->second.defining_unit != scope_.current_unit_name) {
+    return unit_namespace_prefix(interface_it->second.defining_unit);
+  }
   auto record_it = registry_->records.find(lower);
   if (record_it != registry_->records.end() &&
       record_it->second.defining_unit != scope_.current_unit_name) {
@@ -139,7 +147,8 @@ bool EmitTypes::registry_knows_type(std::string_view name) {
     }
   }
   return registry_->classes.count(lower) || registry_->records.count(lower) ||
-         registry_->enums.count(lower) || registry_->aliases.count(lower);
+         registry_->interfaces.count(lower) || registry_->enums.count(lower) ||
+         registry_->aliases.count(lower);
 }
 
 std::string EmitTypes::metaclass_struct_cxx(std::string_view class_name) {
@@ -749,6 +758,9 @@ std::string EmitTypes::type_to_cxx(const TypeExpr& t) {
       // Inline anonymous objects need base-class context the type-expression
       // position cannot currently carry.
       return "/* inline-object */ int32_t";
+    case Kind::TyInterface:
+      // Named interface declarations are emitted as pure virtual structs.
+      return "/* inline-interface */ void*";
     default:
       return "/* unsupported-type */ int32_t";
   }

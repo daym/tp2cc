@@ -571,6 +571,103 @@ void test_empty_inherited_class_decl() {
   }
 }
 
+void test_corba_interface_decl_and_class_implementation() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "{$interfaces corba}\n"
+      "type\n"
+      "  ireader = interface ['{11111111-1111-1111-1111-111111111111}']\n"
+      "    function next(out s : string) : boolean;\n"
+      "  end;\n"
+      "  twriter = interface\n"
+      "    procedure putline(const s : string);\n"
+      "  end;\n"
+      "  treader = class(tobject, ireader, twriter)\n"
+      "    function next(out s : string) : boolean;\n"
+      "    procedure putline(const s : string);\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && u->interface_decls.size() >= 3) {
+    auto* ireader_td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    auto* treader_td = dynamic_cast<TypeDecl*>(u->interface_decls[2].get());
+    CHECK(ireader_td && treader_td);
+    if (ireader_td) {
+      auto* ti = dynamic_cast<TyInterface*>(ireader_td->type.get());
+      CHECK(ti != nullptr);
+      if (ti) {
+        CHECK_EQ(ti->metadata_string,
+                 std::string("{11111111-1111-1111-1111-111111111111}"));
+        CHECK_EQ(ti->members.size(), size_t{1});
+        CHECK_EQ(ti->members[0].method->name, std::string("next"));
+      }
+    }
+    if (treader_td) {
+      auto* to = dynamic_cast<TyObject*>(treader_td->type.get());
+      CHECK(to != nullptr);
+      if (to) {
+        CHECK(to->is_reference_type);
+        CHECK_EQ(to->parent, std::string("tobject"));
+        CHECK_EQ(to->interfaces.size(), size_t{2});
+        CHECK_EQ(to->interfaces[0], std::string("ireader"));
+        CHECK_EQ(to->interfaces[1], std::string("twriter"));
+      }
+    }
+  }
+}
+
+void test_com_interface_is_rejected() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  irefcounted = interface\n"
+      "    procedure addref;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(u != nullptr);
+  CHECK(error_count() - before > 0);
+}
+
+void test_explicit_com_interface_is_rejected() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "{$interfaces com}\n"
+      "type\n"
+      "  irefcounted = interface\n"
+      "    procedure addref;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(u != nullptr);
+  CHECK(error_count() - before > 0);
+}
+
+void test_interfaces_default_restores_com_rejection() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "{$interfaces corba}\n"
+      "{$interfaces default}\n"
+      "type\n"
+      "  irefcounted = interface\n"
+      "    procedure addref;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(u != nullptr);
+  CHECK(error_count() - before > 0);
+}
+
 void test_class_properties() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1206,6 +1303,10 @@ int main() {
   RUN_TEST(test_error_recovery_basic);
   RUN_TEST(test_class_declaration);
   RUN_TEST(test_empty_inherited_class_decl);
+  RUN_TEST(test_corba_interface_decl_and_class_implementation);
+  RUN_TEST(test_com_interface_is_rejected);
+  RUN_TEST(test_explicit_com_interface_is_rejected);
+  RUN_TEST(test_interfaces_default_restores_com_rejection);
   RUN_TEST(test_class_properties);
   RUN_TEST(test_write_only_property);
   RUN_TEST(test_class_directives);

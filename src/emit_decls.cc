@@ -317,16 +317,44 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
     return;
   }
 
+  if (td.type && td.type->kind == Kind::TyInterface) {
+    const auto& ti = static_cast<const TyInterface&>(*td.type);
+    emit_ops_.emitln("struct " + name + " {");
+    emit_ops_.indent();
+    emit_ops_.emitln("virtual ~" + name + "() = default;");
+    for (const auto& m : ti.members) {
+      if (m.kind != ObjectMemberKind::Method || !m.method) continue;
+      const auto& pd = *m.method;
+      emit_ops_.emitln("virtual " + proc_return_type_to_cxx(pd) + " " +
+                       mangle(pd.name) + "(" + param_list_to_cxx(pd.params) +
+                       ") = 0;");
+    }
+    emit_ops_.dedent();
+    emit_ops_.emitln("};");
+    return;
+  }
+
   if (td.type && td.type->kind == Kind::TyObject) {
     const auto& to = static_cast<const TyObject&>(*td.type);
     if (to.is_forward) {
       return;
     }
     std::string line = "struct " + name;
+    std::vector<std::string> bases;
     if (!to.parent.empty()) {
-      line += " : public " + types_.named_type_struct_cxx(to.parent);
+      bases.push_back(types_.named_type_struct_cxx(to.parent));
     } else if (to.is_reference_type) {
-      line += " : public ::rt::p_tobject";
+      bases.push_back("::rt::p_tobject");
+    }
+    for (const auto& iface : to.interfaces) {
+      bases.push_back(types_.named_type_struct_cxx(iface));
+    }
+    if (!bases.empty()) {
+      line += " : ";
+      for (size_t i = 0; i < bases.size(); ++i) {
+        if (i) line += ", ";
+        line += "public " + bases[i];
+      }
     }
     line += " {";
     emit_ops_.emitln(line);

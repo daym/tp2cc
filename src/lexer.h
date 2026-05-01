@@ -13,6 +13,11 @@
 
 namespace tp2cc {
 
+enum class InterfaceMode {
+  Com,
+  Corba,
+};
+
 // A Lexer that owns a stack of input sources (so {$include FOO} can push a new
 // file) and a conditional-compilation state (IfdefStack).
 class Lexer {
@@ -43,6 +48,7 @@ class Lexer {
   // Index nodes that the emitter then routes through checked helpers.
   bool range_check_active() const;
   int packenum_active() const;
+  InterfaceMode interface_mode_active() const;
 
   // Initial `{$Q+}` / `{$R+}` state supplied by `-Co` / `-Cr` command-line
   // flags. Source-level `{$Q+/-}` / `{$R+/-}` directives still override
@@ -120,6 +126,11 @@ class Lexer {
   // `{$MINENUMSIZE ...}`, and `{$Z1/$Z2/$Z4}` switches at the point where an
   // enum type is parsed.
   int packenum_ = 4;
+
+  // FPC's default is COM interfaces. That implies IUnknown-style
+  // refcounting; p2cc currently only lowers explicit CORBA interfaces.
+  InterfaceMode default_interface_mode_ = InterfaceMode::Com;
+  InterfaceMode interface_mode_ = InterfaceMode::Com;
 
   // For peek() we keep the current input on the back of stack_.
 };

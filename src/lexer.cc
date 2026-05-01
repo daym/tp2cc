@@ -529,6 +529,19 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     }
     return;
   }
+  if (head == "interfaces") {
+    std::string mode = lower(trim(rest));
+    if (mode == "corba") {
+      interface_mode_ = InterfaceMode::Corba;
+    } else if (mode == "com") {
+      interface_mode_ = InterfaceMode::Com;
+    } else if (mode == "default") {
+      interface_mode_ = default_interface_mode_;
+    } else {
+      report_error(where, "illegal {$interfaces} value: " + trim(rest));
+    }
+    return;
+  }
   // We still ignore most mode semantics, but enum layout must follow the mode
   // default: old FPC uses packenum=1 in TP/TP7 and Delphi-compatible modes,
   // and packenum=4 in FPC/ObjFPC mode.
@@ -552,6 +565,8 @@ bool Lexer::range_check_active() const {
 }
 
 int Lexer::packenum_active() const { return packenum_; }
+
+InterfaceMode Lexer::interface_mode_active() const { return interface_mode_; }
 
 void Lexer::set_overflow_check_default(bool on) { q_check_ = on; }
 void Lexer::set_range_check_default(bool on) { r_check_ = on; }

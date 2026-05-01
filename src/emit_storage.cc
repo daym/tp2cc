@@ -440,6 +440,7 @@ bool EmitStorage::type_is_pointerish(const TypeExpr* t) {
   if (!t) return false;
   if (type_is_metaclass(t)) return true;
   if (type_is_reference_class(t)) return true;
+  if (analysis_.type_is_interface(t)) return true;
   if (t->kind == Kind::TyPointer) return true;
   return tyname_is(t, "pointer") || tyname_is(t, "pchar") ||
          tyname_is(t, "ppchar");

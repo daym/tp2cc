@@ -89,6 +89,13 @@ struct ClassInfo {
   std::string default_property_name;
 };
 
+struct InterfaceInfo {
+  std::string name;
+  std::string defining_unit;
+  std::string metadata_string;
+  std::unordered_map<std::string, std::vector<MethodSig>> methods;
+};
+
 struct RecordInfo {
   std::string name;
   std::string defining_unit;
@@ -242,6 +249,7 @@ struct TypeRegistry {
   // Exception still resolves to the synthesized constructor signature.
   // Code-gen never touches this table.
   std::unordered_map<std::string, ClassInfo> rt_classes;
+  std::unordered_map<std::string, InterfaceInfo> interfaces;
   std::unordered_map<std::string, RecordInfo> records;
   std::unordered_map<std::string, EnumInfoReg> enums;
   std::unordered_map<std::string, AliasInfo> aliases;   // includes pointer aliases

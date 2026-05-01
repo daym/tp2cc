@@ -152,6 +152,16 @@ bool EmitAnalysis::type_is_reference_class(const TypeExpr* t) {
   return is_builtin_reference_class_name(n.name);
 }
 
+bool EmitAnalysis::type_is_interface(const TypeExpr* t) {
+  if (!registry_ || !t) return false;
+  t = canonicalize_type(t);
+  if (!t) return false;
+  if (t->kind == Kind::TyInterface) return true;
+  if (t->kind != Kind::TyName) return false;
+  const auto& n = static_cast<const TyName&>(*t);
+  return registry_->interfaces.count(ascii_lower(n.name)) > 0;
+}
+
 bool EmitAnalysis::type_is_value_object(const TypeExpr* t) {
   t = canonicalize_type(t);
   if (!t) return false;

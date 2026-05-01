@@ -55,6 +55,7 @@ void collect_type_refs(const TypeExpr& t, std::unordered_set<std::string>& out) 
     case Kind::TyObject: {
       const auto& o = static_cast<const TyObject&>(t);
       if (!o.parent.empty()) out.insert(o.parent);
+      for (const auto& iface : o.interfaces) out.insert(iface);
       for (const auto& m : o.members) {
         if (m.kind == ObjectMemberKind::Field && m.field_type) {
           collect_type_refs(*m.field_type, out);
@@ -68,6 +69,17 @@ void collect_type_refs(const TypeExpr& t, std::unordered_set<std::string>& out) 
           for (const auto& p : m.property.params) {
             if (p.type) collect_type_refs(*p.type, out);
           }
+        }
+      }
+      return;
+    }
+    case Kind::TyInterface: {
+      const auto& i = static_cast<const TyInterface&>(t);
+      for (const auto& m : i.members) {
+        if (m.kind != ObjectMemberKind::Method || !m.method) continue;
+        if (m.method->return_type) collect_type_refs(*m.method->return_type, out);
+        for (const auto& p : m.method->params) {
+          if (p.type) collect_type_refs(*p.type, out);
         }
       }
       return;
@@ -125,7 +137,8 @@ std::vector<const Decl*> ordered_type_decls(const std::vector<const Decl*>& in) 
       // (emitted by emit_forward_struct_decls). This break lets cycles
       // like `Pfoo = ^Tfoo; Tfoo = record next: Pfoo; end;` remain a DAG.
       if (rd.type && (rd.type->kind == Kind::TyRecord ||
-                      rd.type->kind == Kind::TyObject) &&
+                      rd.type->kind == Kind::TyObject ||
+                      rd.type->kind == Kind::TyInterface) &&
           td.type->kind == Kind::TyPointer) {
         continue;
       }
@@ -184,7 +197,8 @@ void EmitUnits::seed_unit_type_scope(const std::vector<DeclPtr>& decls) {
     if (td.type->kind == Kind::TyEnum) {
       scope_.local_enums[td.name] = static_cast<const TyEnum*>(td.type.get());
     } else if (td.type->kind != Kind::TyRecord &&
-               td.type->kind != Kind::TyObject) {
+               td.type->kind != Kind::TyObject &&
+               td.type->kind != Kind::TyInterface) {
       scope_.local_type_aliases_scoped[td.name] = td.type.get();
     }
   }

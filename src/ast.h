@@ -77,6 +77,7 @@ enum class Kind : uint16_t {
   TyArray,
   TyRecord,
   TyObject,
+  TyInterface,
   TySet,
   TyFile,
   TyPointer,
@@ -510,6 +511,7 @@ struct ObjectMember {
 
 struct TyObject : TypeExpr {
   std::string parent;              // base object type name; empty if none
+  std::vector<std::string> interfaces;
   std::vector<ObjectMember> members;
   // `false`: TP-style `object` -- value type, stack-OK, `new(p, init)` to
   // heap-allocate, destructor via `dispose(p, done)`.
@@ -523,6 +525,12 @@ struct TyObject : TypeExpr {
   // complete empty class declaration instead, not a forward.
   bool is_forward = false;
   TyObject() : TypeExpr(Kind::TyObject) {}
+};
+
+struct TyInterface : TypeExpr {
+  std::string metadata_string;
+  std::vector<ObjectMember> members;
+  TyInterface() : TypeExpr(Kind::TyInterface) {}
 };
 
 struct TySet : TypeExpr {

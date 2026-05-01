@@ -180,6 +180,8 @@ std::string encode_helper_type(const ast::TypeExpr& t) {
       const auto& o = static_cast<const ast::TyObject&>(t);
       return o.is_reference_type ? "class" : "object";
     }
+    case ast::Kind::TyInterface:
+      return "interface";
     case ast::Kind::TySet:
       return "set_" +
              encode_helper_type(*static_cast<const ast::TySet&>(t).element);

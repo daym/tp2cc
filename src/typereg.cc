@@ -90,6 +90,22 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
   }
 }
 
+void add_interface_members(InterfaceInfo& ii, const TyInterface& ti) {
+  for (const auto& m : ti.members) {
+    if (m.kind != ObjectMemberKind::Method || !m.method) continue;
+    const auto& pd = *m.method;
+    MethodSig ms;
+    ms.decl = m.method;
+    ms.is_function = (pd.pkind == ProcKind::Function);
+    ms.kind = SymKind::Method;
+    size_t pc = 0;
+    for (const auto& p : pd.params) pc += p.names.size();
+    ms.param_count = pc;
+    ms.accepts_zero_args = proc_accepts_zero_args(pd);
+    ii.methods[lc(pd.name)].push_back(ms);
+  }
+}
+
 void register_decl_list(TypeRegistry& r, const std::string& unit,
                         const std::vector<DeclPtr>& decls,
                         bool is_interface) {
@@ -115,6 +131,14 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
           ci.is_reference_type = to.is_reference_type;
           add_class_members(ci, to);
           r.classes[nm] = std::move(ci);
+        } else if (td.type->kind == Kind::TyInterface) {
+          InterfaceInfo ii;
+          ii.name = nm;
+          ii.defining_unit = unit;
+          const auto& ti = static_cast<const TyInterface&>(*td.type);
+          ii.metadata_string = ti.metadata_string;
+          add_interface_members(ii, ti);
+          r.interfaces[nm] = std::move(ii);
         } else if (td.type->kind == Kind::TyRecord) {
           RecordInfo ri;
           ri.name = nm;
@@ -732,6 +756,11 @@ const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
   // stores; code-gen iterates only `classes`.
   std::string class_name = lc(class_name_in);
   std::string key = lc(member);
+  auto iit = interfaces.find(class_name);
+  if (iit != interfaces.end()) {
+    auto mit = iit->second.methods.find(key);
+    return mit == iit->second.methods.end() ? nullptr : &mit->second;
+  }
   std::unordered_set<std::string> seen;
   auto step = [&](const std::unordered_map<std::string, ClassInfo>& store)
       -> std::pair<const std::vector<MethodSig>*, std::string> {

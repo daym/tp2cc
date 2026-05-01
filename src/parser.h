@@ -63,6 +63,7 @@ class Parser {
   ast::TypePtr parse_simple_type();  // enum, subrange, name, string[N]
   ast::TypePtr parse_record_type(bool is_packed);
   ast::TypePtr parse_object_type();
+  ast::TypePtr parse_interface_type();
   ast::TypePtr parse_array_type(bool is_packed);
   ast::TypePtr parse_set_type();
   ast::TypePtr parse_file_type();

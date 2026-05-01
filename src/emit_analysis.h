@@ -69,6 +69,7 @@ class EmitAnalysis {
   bool is_builtin_reference_class_name(std::string_view name) const;
   std::string metaclass_target_name(const ast::TypeExpr* t);
   bool type_is_reference_class(const ast::TypeExpr* t);
+  bool type_is_interface(const ast::TypeExpr* t);
   bool type_is_value_object(const ast::TypeExpr* t);
 
   // Constant folding for Pascal integer expressions. These routines answer in
