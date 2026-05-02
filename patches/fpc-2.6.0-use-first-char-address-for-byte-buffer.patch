@@ -1,0 +1,25 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-02
+Subject: Use first char address for ptconst byte buffer
+License: expat
+
+`compiler/ptconst.pas` uses a local `array[0..1] of char` as scratch
+storage for a one-character typed constant, then reads that scratch storage
+through a `pbyte` cursor.
+
+The original `ca := @ch` relies on assigning the address of the whole array
+to a byte pointer.  Point at the first character explicitly instead; this
+keeps the same byte-buffer semantics while avoiding a whole-array pointer
+conversion in the translated bootstrap.
+
+--- a/compiler/ptconst.pas
++++ b/compiler/ptconst.pas
+@@ -916,7 +916,7 @@ implementation
+                       else
+                         internalerror(2010033002);
+                     end;
+-                    ca:=@ch;
++                    ca:=pbyte(@ch[0]);
+                     len:=1;
+                   end
+                else
