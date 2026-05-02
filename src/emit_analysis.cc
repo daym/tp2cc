@@ -702,9 +702,20 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
       }
       return ConstIntExprInfo{value, primitive_info_for_value(value)};
     }
-    case Kind::Call:
-      return eval_const_int_cast(static_cast<const Call&>(e),
-                                 visiting_const_names);
+    case Kind::Call: {
+      const auto& c = static_cast<const Call&>(e);
+      if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
+        const auto& callee = static_cast<const Ident&>(*c.callee);
+        if (callee.name == "length" && c.args[0]->kind == Kind::StringLit) {
+          const auto& s = static_cast<const StringLit&>(*c.args[0]);
+          if (s.value.size() <= static_cast<size_t>(INT64_MAX)) {
+            int64_t value = static_cast<int64_t>(s.value.size());
+            return ConstIntExprInfo{value, primitive_info_for_value(value)};
+          }
+        }
+      }
+      return eval_const_int_cast(c, visiting_const_names);
+    }
     case Kind::Ident: {
       const auto& id = static_cast<const Ident&>(e);
       if (!visiting_const_names) {

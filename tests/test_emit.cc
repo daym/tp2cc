@@ -1427,14 +1427,29 @@ void test_typed_const_shortstring_literals_use_target_capacity() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "::rt::tp2cc_ShortString<p_tokenlenmax> p_emptytok = "
-                 "::rt::tp2cc_shortstring_literal<p_tokenlenmax>();"));
+                 "::rt::tp2cc_ShortString<14> p_emptytok = "
+                 "::rt::tp2cc_shortstring_literal<14>();"));
   CHECK(contains(out.header,
-                 "::rt::tp2cc_ShortString<p_tokenlenmax> p_plustok = "
-                 "::rt::tp2cc_shortstring_of<p_tokenlenmax>(::rt::tp2cc_char_of('+'));"));
+                 "::rt::tp2cc_ShortString<14> p_plustok = "
+                 "::rt::tp2cc_shortstring_of<14>(::rt::tp2cc_char_of('+'));"));
   CHECK(!contains(out.header,
-                  "::rt::tp2cc_ShortString<p_tokenlenmax> p_plustok = "
+                  "::rt::tp2cc_ShortString<14> p_plustok = "
                   "::rt::tp2cc_char_of('+');"));
+}
+
+void test_shortstring_length_literal_capacity_is_constant_folded() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type tsection = (sec_code, sec_data);\n"
+      "const secnames : array[tsection] of "
+      "string[length('__DATA, __datacoal_nt,coalesced')] = "
+      "('__TEXT', '__DATA, __datacoal_nt,coalesced');\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "::rt::tp2cc_Array<::rt::tp2cc_ShortString<31>"));
+  CHECK(!contains(out.header, "::rt::p_length("));
 }
 
 void test_var_shortstring_call_keeps_lvalue_storage() {
@@ -6119,6 +6134,7 @@ int main() {
   RUN_TEST(test_char_array_assignment_uses_explicit_array_literal_helper);
   RUN_TEST(test_nested_array_typed_const_braces_each_array_wrapper);
   RUN_TEST(test_typed_const_shortstring_literals_use_target_capacity);
+  RUN_TEST(test_shortstring_length_literal_capacity_is_constant_folded);
   RUN_TEST(test_named_type_alias);
   RUN_TEST(test_ansistring_builtin_maps_to_runtime_type);
   RUN_TEST(test_widechar_builtin_maps_to_16bit_ordinal);

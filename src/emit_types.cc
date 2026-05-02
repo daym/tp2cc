@@ -482,6 +482,9 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
 
 std::string EmitTypes::string_type_to_cxx(const TyString& s) {
   if (s.max_length) {
+    if (auto value = analysis_.eval_const_int_expr(*s.max_length)) {
+      return "::rt::tp2cc_ShortString<" + std::to_string(value->value) + ">";
+    }
     return "::rt::tp2cc_ShortString<" +
            const_render_.const_value_to_cxx(*s.max_length) + ">";
   }
@@ -493,7 +496,12 @@ std::optional<std::string> EmitTypes::shortstring_capacity_to_cxx(
   const TypeExpr* canon = analysis_.canonicalize_type(t);
   if (!(canon && canon->kind == Kind::TyString)) return std::nullopt;
   const auto& s = static_cast<const TyString&>(*canon);
-  if (s.max_length) return const_render_.const_value_to_cxx(*s.max_length);
+  if (s.max_length) {
+    if (auto value = analysis_.eval_const_int_expr(*s.max_length)) {
+      return std::to_string(value->value);
+    }
+    return const_render_.const_value_to_cxx(*s.max_length);
+  }
   return std::string("255");
 }
 
