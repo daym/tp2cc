@@ -304,6 +304,17 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
       return expr_ops_.expr_to_cxx(arg);
     }
   }
+  if (param_type && arg_type && !mutable_ref_arg &&
+      untyped_arg == UntypedArgKind::None) {
+    if (auto conv = resolution_.find_assignment_operator(arg_type, param_type);
+        conv.decl) {
+      std::string fn = pascal_assignment_operator_helper_name(*conv.decl);
+      if (!conv.defining_unit.empty()) {
+        fn = unit_namespace_prefix(conv.defining_unit) + fn;
+      }
+      return fn + "(" + expr_ops_.const_value_to_cxx(arg, arg_type, false) + ")";
+    }
+  }
   std::string arg_text = expr_ops_.const_value_to_cxx(arg, param_type, false);
   if (storage_.type_is_open_array(param_type)) {
     const TypeExpr* at = arg_type;

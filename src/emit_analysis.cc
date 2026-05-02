@@ -201,7 +201,7 @@ const TypeExpr* EmitAnalysis::deduce_const_decl_type(const ConstDecl& cd) {
   if (cd.value->kind == Kind::SetLit) {
     return deduce_set_literal_type(static_cast<const SetLit&>(*cd.value));
   }
-  return nullptr;
+  return cd.value ? deduce_type(*cd.value) : nullptr;
 }
 
 const TypeExpr* EmitAnalysis::deduce_const_info_type(const ConstInfo& c) {
@@ -212,7 +212,7 @@ const TypeExpr* EmitAnalysis::deduce_const_info_type(const ConstInfo& c) {
   if (c.value->kind == Kind::SetLit) {
     return deduce_set_literal_type(static_cast<const SetLit&>(*c.value));
   }
-  return nullptr;
+  return deduce_type(*c.value);
 }
 
 const TySet* EmitAnalysis::synthesize_set_type(
@@ -798,7 +798,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       if (auto info = eval_const_int_expr(e); info && info->type) {
         return builtin_integer_type(info->type);
       }
-      return nullptr;
+      return deduce_type(*static_cast<const Unary&>(e).operand);
     case Kind::Binary: {
       const auto& b = static_cast<const Binary&>(e);
       if (b.op == BinOp::Shl || b.op == BinOp::Shr) {
@@ -843,6 +843,63 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         };
         const TypeExpr* lt = deduce_type(*b.lhs);
         const TypeExpr* rt = deduce_type(*b.rhs);
+        auto prim_of = [&](const TypeExpr* t) -> const PrimitiveInfo* {
+          t = canonicalize_type(t);
+          if (!t || t->kind != Kind::TyName) return nullptr;
+          return primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
+        };
+        auto is_numeric_primitive = [&](const TypeExpr* t) {
+          t = canonicalize_type(t);
+          if (!t || t->kind != Kind::TyName) return false;
+          const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
+          const PrimitiveInfo* pi = primitive_info(name);
+          return pi && (pi->int_kind != PrimitiveIntKind::None ||
+                        name == "single" || name == "double" ||
+                        name == "real" || name == "extended" ||
+                        name == "comp");
+        };
+        auto is_overloadable_value_type = [&](const TypeExpr* t) {
+          t = canonicalize_type(t);
+          if (!t) return false;
+          if (t->kind == Kind::TyName) {
+            const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
+            return !primitive_info(name) && !registry_->enums.count(name);
+          }
+          return t->kind == Kind::TyRecord || t->kind == Kind::TyObject ||
+                 t->kind == Kind::TyInterface || t->kind == Kind::TyPointer ||
+                 t->kind == Kind::TyArray || t->kind == Kind::TyMetaclass;
+        };
+        auto is_comparison = [&] {
+          return b.op == BinOp::Eq || b.op == BinOp::NotEq ||
+                 b.op == BinOp::Lt || b.op == BinOp::Gt ||
+                 b.op == BinOp::LtEq || b.op == BinOp::GtEq;
+        };
+        if (is_comparison()) return builtin_boolean_type();
+        auto is_arithmetic_like = [&] {
+          return b.op == BinOp::Add || b.op == BinOp::Sub ||
+                 b.op == BinOp::Mul || b.op == BinOp::IntDiv ||
+                 b.op == BinOp::Mod || b.op == BinOp::Shl ||
+                 b.op == BinOp::Shr || b.op == BinOp::And ||
+                 b.op == BinOp::Or || b.op == BinOp::Xor;
+        };
+        if (is_arithmetic_like()) {
+          if (same_type_ast(lt, rt)) return lt ? lt : rt;
+          if (is_overloadable_value_type(lt) && is_numeric_primitive(rt)) {
+            return lt;
+          }
+          if (is_numeric_primitive(lt) && is_overloadable_value_type(rt)) {
+            return rt;
+          }
+          if (is_numeric_primitive(lt) && is_numeric_primitive(rt)) {
+            const PrimitiveInfo* lp = prim_of(lt);
+            const PrimitiveInfo* rp = prim_of(rt);
+            if (lp && rp && lp->int_kind != PrimitiveIntKind::None &&
+                rp->int_kind != PrimitiveIntKind::None) {
+              return (lp->bits >= rp->bits) ? lt : rt;
+            }
+            return lt ? lt : rt;
+          }
+        }
         // String / set binary ops. Pascal's `+`/`-`/`*` are overloaded on
         // string concatenation and set operations. Typing them here keeps
         // overload ranking and later emit-time lowering anchored to Pascal
@@ -1137,6 +1194,31 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         if ((id.name == "char" || id.name == "chr") && c.args.size() == 1) {
           return builtin_char_type();
         }
+        if (c.args.size() == 1) {
+          if (const TyName* int_ty = builtin_integer_type(id.name)) {
+            return int_ty;
+          }
+          if (is_builtin_reference_class_name(id.name) ||
+              registry_->classes.count(id.name) ||
+              registry_->records.count(id.name)) {
+            return named_pascal_type(id.name);
+          }
+        }
+        if ((id.name == "low" || id.name == "high") && c.args.size() == 1) {
+          if (c.args[0]->kind == Kind::Ident) {
+            const auto& arg_id = static_cast<const Ident&>(*c.args[0]);
+            if (const TypeExpr* named = lookup_named_type_expr(arg_id.name)) {
+              return named;
+            }
+            if (const TyName* int_ty = builtin_integer_type(arg_id.name)) {
+              return int_ty;
+            }
+          }
+          return deduce_type(*c.args[0]);
+        }
+        if (id.name == "sizeof" && c.args.size() == 1) {
+          return builtin_integer_type("longint");
+        }
         if (id.name == "pointer" && c.args.size() == 1) {
           return named_pascal_type("pointer");
         }
@@ -1171,6 +1253,19 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         }
       } else if (c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
+        if (mem.base->kind == Kind::Ident) {
+          const auto& id = static_cast<const Ident&>(*mem.base);
+          if (registry_->units.count(id.name)) {
+            ResolveResult rr = resolve_name_provider_.resolve_name(
+                mem.name, QualifierKind::Unit, id.name);
+            if (rr.proc && rr.proc->return_type) {
+              return rr.proc->return_type.get();
+            }
+            if (!rr.return_type_name.empty()) {
+              return named_pascal_type(rr.return_type_name);
+            }
+          }
+        }
         std::string cls;
         if (mem.base->kind == Kind::Ident) {
           const auto& id = static_cast<const Ident&>(*mem.base);

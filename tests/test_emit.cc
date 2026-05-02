@@ -1500,7 +1500,6 @@ void test_overloaded_string_and_bool_call_keeps_boolean_argument_raw() {
       "  p.addpath(s, false);\n"
       "end;\n"
       "end.\n");
-  std::fprintf(stderr, "DEBUG addpath impl:\n%s\n", out.impl.c_str());
   CHECK(contains(out.impl, "p_p->p_addpath(p_s, false);"));
   CHECK(!contains(out.impl, "::rt::tp2cc_shortstring_of<255>(false)"));
 }
@@ -1514,15 +1513,33 @@ void test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers
       "    v : longint;\n"
       "  end;\n"
       "operator + (const a,b : tbox) : tbox;\n"
+      "operator - (const a,b : tbox) : tbox;\n"
+      "operator = (const a,b : tbox) : boolean;\n"
       "operator div (const a,b : tbox) : tbox;\n"
       "operator / (const a,b : tbox) : real;\n"
       "operator := (const n : longint) : tbox;\n"
+      "operator := (const n : qword) : tbox;\n"
       "operator := (const b : tbox) : longint;\n"
+      "operator := (const b : tbox) : int64;\n"
+      "type tarr = array[0..(high(qword) div 4)-1] of longint;\n"
+      "type tbase = class\n"
+      "end;\n"
+      "type tnode = class(tbase)\n"
+      "  value : tbox;\n"
+      "end;\n"
       "procedure test;\n"
       "implementation\n"
       "operator + (const a,b : tbox) : tbox;\n"
       "begin\n"
       "  result.v := a.v + b.v;\n"
+      "end;\n"
+      "operator - (const a,b : tbox) : tbox;\n"
+      "begin\n"
+      "  result.v := a.v - b.v;\n"
+      "end;\n"
+      "operator = (const a,b : tbox) : boolean;\n"
+      "begin\n"
+      "  result := a.v = b.v;\n"
       "end;\n"
       "operator div (const a,b : tbox) : tbox;\n"
       "begin\n"
@@ -1536,33 +1553,65 @@ void test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers
       "begin\n"
       "  result.v := n;\n"
       "end;\n"
+      "operator := (const n : qword) : tbox;\n"
+      "begin\n"
+      "  result.v := longint(n);\n"
+      "end;\n"
       "operator := (const b : tbox) : longint;\n"
       "begin\n"
       "  result := b.v;\n"
       "end;\n"
+      "operator := (const b : tbox) : int64;\n"
+      "begin\n"
+      "  result := b.v;\n"
+      "end;\n"
       "procedure test;\n"
-      "var a,b,c : tbox; r : real; i : longint;\n"
+      "const limit = high(longint);\n"
+      "var a,b,c : tbox; r : real; i : longint; base : tbase;\n"
       "begin\n"
       "  a := 1;\n"
       "  b := a + a;\n"
       "  c := a div b;\n"
+      "  c := 1 div b;\n"
+      "  c := a div sizeof(tbox);\n"
+      "  c := high(qword) div b;\n"
+      "  c := limit div b;\n"
+      "  c := tnode(base).value div 0;\n"
       "  r := a / b;\n"
+      "  r := 1 / b;\n"
+      "  if a <> 0 then i := 1;\n"
+      "  if tnode(base).value <> 0 then i := 2;\n"
       "  i := longint(b);\n"
       "end;\n"
       "end.\n");
 
   CHECK(contains(out.header, "p_tbox operator+(p_tbox p_a, p_tbox p_b);"));
+  CHECK(contains(out.header, "p_tbox operator-(p_tbox p_a, p_tbox p_b);"));
+  CHECK(contains(out.header, "bool operator==(p_tbox p_a, p_tbox p_b);"));
   CHECK(contains(out.header, "p_tbox tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_tbox p_a, p_tbox p_b);"));
   CHECK(contains(out.header, "double operator/(p_tbox p_a, p_tbox p_b);"));
   CHECK(contains(out.header, "p_tbox tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(int32_t p_n);"));
+  CHECK(contains(out.header, "p_tbox tp2cc_operator_assign_params_const_name_qword_ret_name_tbox(uint64_t p_n);"));
   CHECK(contains(out.header, "int32_t tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(p_tbox p_b);"));
+  CHECK(contains(out.header, "int64_t tp2cc_operator_assign_params_const_name_tbox_ret_name_int64(p_tbox p_b);"));
+  CHECK(!contains(out.header, "tp2cc_operator_assign_params_const_name_tbox_ret_name_int64((p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox"));
   CHECK(contains(out.impl, "p_tbox operator+(p_tbox p_a, p_tbox p_b) {"));
+  CHECK(contains(out.impl, "p_tbox operator-(p_tbox p_a, p_tbox p_b) {"));
+  CHECK(contains(out.impl, "bool operator==(p_tbox p_a, p_tbox p_b) {"));
   CHECK(contains(out.impl, "p_tbox tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_tbox p_a, p_tbox p_b) {"));
   CHECK(contains(out.impl, "double operator/(p_tbox p_a, p_tbox p_b) {"));
   CHECK(contains(out.impl, "p_a = p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1);"));
   CHECK(contains(out.impl, "p_b = (p_a + p_a);"));
   CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_a, p_b);"));
+  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1), p_b);"));
+  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_a, p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(static_cast<int32_t>(sizeof(p_tbox))));"));
+  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_ops::tp2cc_operator_assign_params_const_name_qword_ret_name_tbox(::std::numeric_limits<uint64_t>::max()), p_b);"));
+  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(p_limit), p_b);"));
+  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(static_cast<p_tnode*>(p_base)->p_value, p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0));"));
   CHECK(contains(out.impl, "p_r = (p_a / p_b);"));
+  CHECK(contains(out.impl, "p_r = (p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1) / p_b);"));
+  CHECK(contains(out.impl, "if (::rt::p_not((p_a == p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0))))"));
+  CHECK(contains(out.impl, "if (::rt::p_not((static_cast<p_tnode*>(p_base)->p_value == p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0))))"));
   CHECK(contains(out.impl, "p_i = p_ops::tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(p_b);"));
 }
 

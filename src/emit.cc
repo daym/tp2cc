@@ -225,7 +225,8 @@ struct Emitter : ResolveNameProvider,
                resolution_, *this),
         properties_(registry, analysis_, *this),
         lookup_(registry, scope_state_, analysis_, properties_),
-        values_(registry, scope_state_, analysis_, types_, storage_, *this),
+        values_(registry, scope_state_, analysis_, types_, storage_,
+                resolution_, *this),
         decls_(registry, scope_state_, analysis_, types_, storage_, values_,
                *this),
         procs_(scope_state_, block_depth, analysis_, types_, calls_, decls_,
@@ -984,22 +985,42 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           !pas_op.empty()) {
         BinaryOperatorResult resolved =
             resolution_.find_binary_operator(pas_op, *n.lhs, *n.rhs);
+        bool negate_resolved_operator = false;
+        if (!resolved.decl && !resolved.ambiguous && n.op == BinOp::NotEq) {
+          resolved = resolution_.find_binary_operator("=", *n.lhs, *n.rhs);
+          negate_resolved_operator = resolved.decl != nullptr;
+        }
         if (resolved.ambiguous) {
           report_error(n.loc, "ambiguous overloaded operator " + pas_op);
           return "/* ambiguous overloaded operator */";
         }
         if (resolved.decl) {
-          std::string lhs = emit_operand(*n.lhs, *n.rhs);
-          std::string rhs = emit_operand(*n.rhs, *n.lhs);
+          std::vector<UntypedArgKind> untyped_arg(2, UntypedArgKind::None);
+          std::vector<bool> mutable_ref_arg(2, false);
+          std::vector<const TypeExpr*> param_types(2, nullptr);
+          mark_call_param_info(resolved.decl, untyped_arg, mutable_ref_arg,
+                               param_types);
+          std::string lhs =
+              lower_call_arg(*n.lhs, param_types[0], untyped_arg[0],
+                             mutable_ref_arg[0]);
+          std::string rhs =
+              lower_call_arg(*n.rhs, param_types[1], untyped_arg[1],
+                             mutable_ref_arg[1]);
           if (pascal_operator_decl_uses_named_helper(*resolved.decl)) {
             std::string fn = pascal_operator_decl_name_to_cxx(*resolved.decl);
             if (!resolved.defining_unit.empty()) {
               fn = unit_namespace_prefix(resolved.defining_unit) + fn;
             }
-            return fn + "(" + lhs + ", " + rhs + ")";
+            std::string out = fn + "(" + lhs + ", " + rhs + ")";
+            return negate_resolved_operator ? "::rt::p_not(" + out + ")"
+                                             : out;
           }
           std::string op = pascal_operator_cxx_token(resolved.decl->operator_token);
-          if (!op.empty()) return "(" + lhs + " " + op + " " + rhs + ")";
+          if (!op.empty()) {
+            std::string out = "(" + lhs + " " + op + " " + rhs + ")";
+            return negate_resolved_operator ? "::rt::p_not(" + out + ")"
+                                             : out;
+          }
         }
       }
       if (n.q_check &&

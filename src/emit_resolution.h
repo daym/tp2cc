@@ -50,7 +50,8 @@ class EmitResolution {
   // incomparable, so the caller must diagnose a Pascal-level ambiguity.
   PickResult pick_overload(
       const std::vector<const ast::ProcDecl*>& candidates,
-      const std::vector<const ast::Expr*>& args);
+      const std::vector<const ast::Expr*>& args,
+      bool allow_assignment_operator_conversions = false);
 
   // Resolve a Pascal call expression all the way to the chosen declaration
   // plus the spelling policy the emitter should use for the callee. This is
@@ -108,6 +109,13 @@ class EmitResolution {
                                        std::vector<AnyCand>& cands);
   void flatten_call_param_info(const ast::ProcDecl* decl,
                                std::vector<FlatCallParamInfo>& flat_params);
+  ConvScore score_conversion(const ast::TypeExpr* arg,
+                             const ast::TypeExpr* param,
+                             bool var_param,
+                             bool allow_assignment_operator_conversions);
+  ConvScore score_argument_conversion(
+      const ast::Expr& arg, const FlatCallParamInfo& param,
+      bool allow_assignment_operator_conversions);
 
   const TypeRegistry* registry_;
   ScopeStateView& scope_;

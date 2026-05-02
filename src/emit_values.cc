@@ -5,6 +5,7 @@
 
 #include "emit_analysis.h"
 #include "diag.h"
+#include "emit_resolution.h"
 #include "emit_storage.h"
 #include "emit_support.h"
 #include "emit_types.h"
@@ -16,12 +17,14 @@ using namespace ast;
 
 EmitValues::EmitValues(const TypeRegistry* registry, ScopeStateView& scope,
                        EmitAnalysis& analysis, EmitTypes& types,
-                       EmitStorage& storage, EmitValueExprOps& expr_ops)
+                       EmitStorage& storage, EmitResolution& resolution,
+                       EmitValueExprOps& expr_ops)
     : registry_(registry),
       scope_(scope),
       analysis_(analysis),
       types_(types),
       storage_(storage),
+      resolution_(resolution),
       expr_ops_(expr_ops) {}
 
 std::string EmitValues::set_literal_to_cxx(const SetLit& s,
@@ -250,6 +253,16 @@ std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target
   const TypeExpr* source_type = analysis_.deduce_type(e);
   if (source_type) source_type = analysis_.canonicalize_type(source_type);
   const TypeExpr* canon_target = analysis_.canonicalize_type(target);
+  if (source_type && canon_target) {
+    if (auto conv = resolution_.find_assignment_operator(source_type, target);
+        conv.decl) {
+      std::string fn = pascal_assignment_operator_helper_name(*conv.decl);
+      if (!conv.defining_unit.empty()) {
+        fn = unit_namespace_prefix(conv.defining_unit) + fn;
+      }
+      return fn + "(" + out + ")";
+    }
+  }
   if (source_type && canon_target && source_type->kind == Kind::TySet &&
       canon_target->kind == Kind::TySet &&
       analysis_.classify_set_conversion(source_type, canon_target) !=

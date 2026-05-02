@@ -389,11 +389,41 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
   return {};
 }
 
+ConvScore EmitResolution::score_conversion(
+    const TypeExpr* arg, const TypeExpr* param, bool var_param,
+    bool allow_assignment_operator_conversions) {
+  ConvScore score = rank_conversion(arg, param, var_param);
+  if (score.viable()) return score;
+  if (!allow_assignment_operator_conversions || var_param) return {};
+  if (find_assignment_operator(arg, param).decl) {
+    return {ConvRank::Operator, 0};
+  }
+  return {};
+}
+
+ConvScore EmitResolution::score_argument_conversion(
+    const Expr& arg, const FlatCallParamInfo& param,
+    bool allow_assignment_operator_conversions) {
+  const TypeExpr* canon_param =
+      param.type ? analysis_.canonicalize_type(param.type) : nullptr;
+  // Pascal's empty set literal is context-typed: once the parameter is known
+  // to be a set, bare `[]` is an exact fit even though it has no standalone
+  // element type.
+  if (arg.kind == Kind::SetLit && canon_param &&
+      canon_param->kind == Kind::TySet &&
+      static_cast<const SetLit&>(arg).elements.empty()) {
+    return {ConvRank::Exact, 0};
+  }
+  return score_conversion(analysis_.deduce_type(arg), param.type,
+                          param.mutable_ref,
+                          allow_assignment_operator_conversions);
+}
+
 PickResult EmitResolution::pick_overload(
     const std::vector<const ProcDecl*>& candidates,
-    const std::vector<const Expr*>& args) {
+    const std::vector<const Expr*>& args,
+    bool allow_assignment_operator_conversions) {
   if (candidates.empty()) return {};
-  if (candidates.size() == 1) return {candidates[0], false};
 
   struct Scored {
     const ProcDecl* decl;
@@ -418,19 +448,8 @@ PickResult EmitResolution::pick_overload(
     Scored s{decl, {}};
     s.scores.reserve(args.size());
     for (size_t i = 0; i < args.size(); ++i) {
-      const TypeExpr* canon_param =
-          flat[i].type ? analysis_.canonicalize_type(flat[i].type) : nullptr;
-      // Pascal's empty set literal is context-typed: once the parameter is
-      // known to be a set, bare `[]` is an exact fit even though it has no
-      // standalone element type.
-      if (args[i]->kind == Kind::SetLit && canon_param &&
-          canon_param->kind == Kind::TySet &&
-          static_cast<const SetLit&>(*args[i]).elements.empty()) {
-        s.scores.push_back({ConvRank::Exact, 0});
-        continue;
-      }
-      const TypeExpr* arg_t = analysis_.deduce_type(*args[i]);
-      ConvScore r = rank_conversion(arg_t, flat[i].type, flat[i].mutable_ref);
+      ConvScore r = score_argument_conversion(
+          *args[i], flat[i], allow_assignment_operator_conversions);
       if (!r.viable()) {
         ok = false;
         break;
@@ -610,7 +629,8 @@ ResolvedCall EmitResolution::resolve_call(
       out.decl = resolve_call_decl(callee);
       return out;
     }
-    PickResult pr = pick_overload(with_decl, args);
+    PickResult pr = pick_overload(
+        with_decl, args, /*allow_assignment_operator_conversions=*/true);
     if (pr.ambiguous) {
       out.decl = nullptr;
       out.ambiguous = true;
@@ -641,6 +661,28 @@ ResolvedCall EmitResolution::resolve_call(
 BinaryOperatorResult EmitResolution::find_binary_operator(
     const std::string& op, const Expr& lhs, const Expr& rhs) {
   if (!registry_) return {};
+  auto operand_allows_operator_lookup = [&](const TypeExpr* t) {
+    t = analysis_.canonicalize_type(t);
+    if (!t) return false;
+    if (t->kind == Kind::TyName) {
+      const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
+      if (primitive_info(name)) return false;
+      if (registry_->enums.count(name)) return false;
+      return registry_->records.count(name) || registry_->classes.count(name) ||
+             registry_->aliases.count(name);
+    }
+    return t->kind == Kind::TyRecord || t->kind == Kind::TyObject ||
+           t->kind == Kind::TyInterface || t->kind == Kind::TyPointer ||
+           t->kind == Kind::TyArray || t->kind == Kind::TyMetaclass;
+  };
+
+  const TypeExpr* lhs_type = analysis_.deduce_type(lhs);
+  const TypeExpr* rhs_type = analysis_.deduce_type(rhs);
+  const bool overloadable_context =
+      operand_allows_operator_lookup(lhs_type) ||
+      operand_allows_operator_lookup(rhs_type);
+  if (!overloadable_context) return {};
+
   std::vector<AnyCand> cands;
   gather_operator_in_pascal_scope(op, cands);
   if (cands.empty()) return {};
@@ -655,7 +697,8 @@ BinaryOperatorResult EmitResolution::find_binary_operator(
   if (arity_ok.empty()) return {};
 
   std::vector<const Expr*> args{&lhs, &rhs};
-  PickResult pr = pick_overload(arity_ok, args);
+  PickResult pr = pick_overload(
+      arity_ok, args, /*allow_assignment_operator_conversions=*/true);
   if (pr.ambiguous) return {nullptr, {}, true};
   if (!pr.decl) return {};
   for (const auto& c : cands) {

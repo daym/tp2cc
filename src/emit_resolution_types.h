@@ -74,7 +74,8 @@ class ResolveNameProvider {
 //        |                         | ShortString/AnsiString -> PChar
 //   10   | OrdinalSignChange       | longint -> longword (or back)
 //   11   | IntNarrowing            | longint -> shortint, etc.
-//   12   | Variant                 | anything <-> variant
+//   12   | Operator                | FPC operator := conversion
+//   13   | Variant                 | anything <-> variant
 //    -   | NotViable               | no implicit conversion exists
 //
 // Ranks 7 vs 8 stay split because the bootstrap compiler runs under `{$H-}`
@@ -93,7 +94,8 @@ enum class ConvRank : uint8_t {
   StringToAnsiString = 9,
   OrdinalSignChange = 10,
   IntNarrowing = 11,
-  Variant = 12,
+  Operator = 12,
+  Variant = 13,
   NotViable = 255,
 };
 
