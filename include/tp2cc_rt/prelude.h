@@ -592,6 +592,11 @@ struct tp2cc_ShortStringPtrRef {
   constexpr tp2cc_ShortStringCharRef operator[](int i) const {
     return tp2cc_ShortStringCharRef{storage + i};
   }
+  template <typename Src>
+  tp2cc_ShortStringPtrRef& operator=(const Src& src) {
+    tp2cc_shortstring_assign(*this, src);
+    return *this;
+  }
 };
 
 template <typename T>

@@ -278,7 +278,7 @@ void test_shortstring_pointer_deref_uses_live_prefix_storage() {
   CHECK_EQ(p_length(tp2cc_deref(p)), 5);
   CHECK(tp2cc_deref(p) == hello);
 
-  tp2cc_shortstring_assign(tp2cc_deref(p), one);
+  tp2cc_deref(p) = one;
   CHECK_EQ(p_length(tp2cc_deref(p)), 1);
   CHECK(static_cast<p_char>(tp2cc_deref(p)[1]) == tp2cc_char_of('A'));
 
