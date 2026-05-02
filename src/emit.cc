@@ -1562,6 +1562,49 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           return false;
         };
+        auto unit_qualified_type_name =
+            [&](const Expr& expr) -> std::optional<std::string> {
+          if (!registry || expr.kind != Kind::Member) return std::nullopt;
+          const auto& mem = static_cast<const Member&>(expr);
+          if (mem.base->kind != Kind::Ident) return std::nullopt;
+          const std::string& base_name =
+              static_cast<const Ident&>(*mem.base).name;
+          bool shadowed = local_scope.count(base_name) > 0;
+          if (!shadowed && !current_class_name.empty() &&
+              (registry->lookup_class_method(current_class_name, base_name) ||
+               registry->lookup_class_field(current_class_name, base_name) ||
+               registry->lookup_class_property(current_class_name,
+                                               base_name))) {
+            shadowed = true;
+          }
+          if (!shadowed) {
+            for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
+              if (with_bind_has_visible_member(*it, base_name)) {
+                shadowed = true;
+                break;
+              }
+            }
+          }
+          if (shadowed) return std::nullopt;
+
+          bool is_unit = registry->units.count(base_name) > 0;
+          if (!is_unit) {
+            auto uit = registry->units.find(current_unit_name);
+            if (uit != registry->units.end()) {
+              for (const auto& nm : uit->second.uses) {
+                if (nm == base_name) {
+                  is_unit = true;
+                  break;
+                }
+              }
+            }
+          }
+          if (!is_unit) return std::nullopt;
+          ResolveResult rr =
+              resolve_name(mem.name, QualifierKind::Unit, base_name);
+          if (rr.kind != ResolvedKind::UnitType) return std::nullopt;
+          return base_name + "." + mem.name;
+        };
 
         // Pascal `low` / `high` are type-driven:
         //   `high(longint)`   -> max value of the type
@@ -1610,6 +1653,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             const auto& tn = static_cast<const Ident&>(*c.args[0]);
             if (is_visible_type_name(tn.name)) {
               inner = "sizeof(" + type_name_text_to_cxx(tn.name) + ")";
+            }
+          }
+          if (inner.empty()) {
+            if (auto qualified = unit_qualified_type_name(*c.args[0])) {
+              inner = "sizeof(" + type_name_text_to_cxx(*qualified) + ")";
             }
           }
           if (inner.empty()) inner = "sizeof(" + expr_to_cxx(*c.args[0]) + ")";

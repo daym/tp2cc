@@ -2239,6 +2239,35 @@ void test_sizeof_visible_type_uses_type_spelling_not_identifier_lookup() {
   CHECK(!contains(out.impl, "sizeof(::rt::p_aint)"));
 }
 
+void test_sizeof_qualified_type_uses_type_spelling_not_value_namespace() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses macho;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  writeln(sizeof(macho.section));\n"
+      "  writeln(sizeof(macho.counter));\n"
+      "end;\n"
+      "end.\n",
+      {{"macho.pas",
+        "unit macho;\n"
+        "interface\n"
+        "type\n"
+        "  section = record\n"
+        "    x : longint;\n"
+        "  end;\n"
+        "var\n"
+        "  counter : longint;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.impl, "sizeof(p_macho::t_section)"));
+  CHECK(!contains(out.impl, "sizeof(p_macho::p_section)"));
+  CHECK(contains(out.impl, "sizeof(p_macho::p_counter)"));
+}
+
 void test_primitive_cast_assign_reinterprets_storage() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -6430,6 +6459,7 @@ int main() {
   RUN_TEST(test_tmethod_type_name_is_explicitly_qualified);
   RUN_TEST(test_local_enum_members_do_not_fall_back_to_runtime);
   RUN_TEST(test_sizeof_visible_type_uses_type_spelling_not_identifier_lookup);
+  RUN_TEST(test_sizeof_qualified_type_uses_type_spelling_not_value_namespace);
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
   RUN_TEST(test_primitive_cast_read_reinterprets_storage);
   RUN_TEST(test_inc_untyped_primitive_cast_reinterprets_storage_by_byte_copy);
