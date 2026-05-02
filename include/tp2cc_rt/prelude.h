@@ -4461,9 +4461,8 @@ inline void p_getmem(void*& p, int size) {
 inline void* p_allocmem(int size) {
   return std::calloc(1, static_cast<size_t>(size));
 }
-inline void p_freemem(void*& p, int = 0) {
+inline void p_freemem(void* p, int = 0) {
   std::free(p);
-  p = nullptr;
 }
 inline void p_reallocmem(void*& p, int size) {
   if (size <= 0) {
@@ -4483,9 +4482,8 @@ inline void p_getmem(P*& p, int size) {
   p = static_cast<P*>(std::malloc(static_cast<size_t>(size)));
 }
 template <typename P>
-inline void p_freemem(P*& p, int = 0) {
+inline void p_freemem(P* p, int = 0) {
   std::free(p);
-  p = nullptr;
 }
 template <typename P>
 inline void p_reallocmem(P*& p, int size) {

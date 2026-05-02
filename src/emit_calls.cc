@@ -68,7 +68,7 @@ void mark_builtin_memory_helper_param_info(
     mark(1, UntypedArgKind::Const, /*is_mutable=*/false);
     return;
   }
-  if (lower == "getmem" || lower == "freemem" || lower == "reallocmem" ||
+  if (lower == "getmem" || lower == "reallocmem" ||
       lower == "dispose" || lower == "strdispose") {
     mark(0, UntypedArgKind::None, /*is_mutable=*/true);
   }

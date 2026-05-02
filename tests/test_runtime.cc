@@ -263,7 +263,7 @@ void test_getmem_typed_pointer_keeps_requested_prefix_size() {
 
   CHECK(p != nullptr);
   p_freemem(p);
-  CHECK(p == nullptr);
+  CHECK(p != nullptr);
 }
 
 void test_shortstring_pointer_deref_uses_live_prefix_storage() {
@@ -286,7 +286,7 @@ void test_shortstring_pointer_deref_uses_live_prefix_storage() {
   CHECK(static_cast<p_char>(tp2cc_deref(p)[1]) == tp2cc_char_of('Z'));
 
   p_freemem(p, p_length(tp2cc_deref(p)) + 1);
-  CHECK(p == nullptr);
+  CHECK(p != nullptr);
 }
 
 void test_shortstring_pointer_deref_interoperates_with_string_ops() {
@@ -318,8 +318,8 @@ void test_shortstring_pointer_deref_interoperates_with_string_ops() {
 
   p_freemem(lhs, p_length(tp2cc_deref(lhs)) + 1);
   p_freemem(rhs, p_length(tp2cc_deref(rhs)) + 1);
-  CHECK(lhs == nullptr);
-  CHECK(rhs == nullptr);
+  CHECK(lhs != nullptr);
+  CHECK(rhs != nullptr);
 }
 
 void test_exception_mask_roundtrips() {

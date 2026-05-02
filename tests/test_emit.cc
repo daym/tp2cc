@@ -3046,7 +3046,7 @@ void test_memory_helpers_reinterpret_typecast_pointer_slots() {
   CHECK(contains(out.impl,
                  "::rt::p_getmem(::rt::tp2cc_reinterpret_storage_ref<p_pdata>(p_raw), 4);"));
   CHECK(contains(out.impl,
-                 "::rt::p_freemem(::rt::tp2cc_reinterpret_storage_ref<p_pdata>(p_raw), 4);"));
+                 "::rt::p_freemem(static_cast<p_pdata>(p_raw), 4);"));
   CHECK(contains(out.impl,
                  "::rt::p_dispose(::rt::tp2cc_reinterpret_storage_ref<p_pdata>(p_raw));"));
 }
