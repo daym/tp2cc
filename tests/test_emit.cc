@@ -5898,6 +5898,27 @@ void test_inheritsfrom_uses_runtime_tclass_and_method_call() {
   CHECK(contains(out.impl, "p_result = p_x->p_inheritsfrom(p_c);"));
 }
 
+void test_inheritsfrom_is_boolean_for_short_circuit_and() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "  end;\n"
+      "function isbase(x : tbase; c : tclass) : boolean;\n"
+      "implementation\n"
+      "function isbase(x : tbase; c : tclass) : boolean;\n"
+      "begin\n"
+      "  if x.inheritsfrom(c) and assigned(x) then\n"
+      "    isbase := true\n"
+      "  else\n"
+      "    isbase := false;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "if ((p_x->p_inheritsfrom(p_c) && ::rt::p_assigned(p_x)))"));
+  CHECK(!contains(out.impl, "p_x->p_inheritsfrom(p_c) & ::rt::p_assigned(p_x)"));
+}
+
 void test_indexed_property_result_classtype_autocalls() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -6763,6 +6784,7 @@ int main() {
   RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);
   RUN_TEST(test_metaclass_same_signature_constructor_keeps_derived_return_type);
   RUN_TEST(test_inheritsfrom_uses_runtime_tclass_and_method_call);
+  RUN_TEST(test_inheritsfrom_is_boolean_for_short_circuit_and);
   RUN_TEST(test_indexed_property_result_classtype_autocalls);
   RUN_TEST(test_implicit_indexed_property_result_classtype_autocalls);
   RUN_TEST(test_indexed_implicit_property_in_method_body);

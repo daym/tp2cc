@@ -142,6 +142,8 @@ class EmitAnalysis {
       const ast::TypeExpr* t);
   bool try_eval_ordinal_expr(const ast::Expr& e, int64_t* value,
                              OrdinalFamily* family, std::string* enum_key);
+  const ast::TypeExpr* builtin_reference_class_member_type(
+      std::string_view class_name, std::string_view member_name);
 
  const TypeRegistry* registry_;
   ScopeStateView& scope_;

@@ -132,6 +132,17 @@ bool EmitAnalysis::is_builtin_reference_class_name(std::string_view name) const 
   return !builtin_reference_class_struct_cxx(ascii_lower(name)).empty();
 }
 
+const TypeExpr* EmitAnalysis::builtin_reference_class_member_type(
+    std::string_view class_name, std::string_view member_name) {
+  const auto* ci = class_info_for_type_name(class_name);
+  if (!ci || !ci->is_reference_type) return nullptr;
+  std::string member = ascii_lower(member_name);
+  if (member == "instancesize") return builtin_integer_type("longint");
+  if (member == "classtype") return named_pascal_type("tclass");
+  if (member == "inheritsfrom") return builtin_boolean_type();
+  return nullptr;
+}
+
 std::string EmitAnalysis::metaclass_target_name(const TypeExpr* t) {
   t = canonicalize_type(t);
   if (!t || t->kind != Kind::TyMetaclass) return {};
@@ -986,11 +997,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       }
       // Class member lookup inside a known method body.
       if (!scope_.current_class_name.empty()) {
-        if (const auto* ci = class_info_for_type_name(scope_.current_class_name);
-            ci && ci->is_reference_type) {
-          if (id.name == "instancesize") return builtin_integer_type("longint");
-          if (id.name == "classtype") return named_pascal_type("tclass");
-          if (id.name == "inheritsfrom") return builtin_boolean_type();
+        if (const TypeExpr* bt = builtin_reference_class_member_type(
+                scope_.current_class_name, id.name)) {
+          return bt;
         }
         if (auto* f = registry_->lookup_class_field(scope_.current_class_name, id.name)) {
           return f->type.get();
@@ -1008,11 +1017,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       for (auto it = scope_.with_stack.rbegin(); it != scope_.with_stack.rend();
            ++it) {
         const std::string& ac = it->class_name;
-        if (const auto* ci = class_info_for_type_name(ac);
-            ci && ci->is_reference_type) {
-          if (id.name == "instancesize") return builtin_integer_type("longint");
-          if (id.name == "classtype") return named_pascal_type("tclass");
-          if (id.name == "inheritsfrom") return builtin_boolean_type();
+        if (const TypeExpr* bt =
+                builtin_reference_class_member_type(ac, id.name)) {
+          return bt;
         }
         if (!ac.empty()) {
           if (auto* f = registry_->lookup_class_field(ac, id.name)) {
@@ -1115,11 +1122,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         }
         return nullptr;
       }
-      if (const auto* ci = class_info_for_type_name(cls);
-          ci && ci->is_reference_type) {
-        if (m.name == "instancesize") return builtin_integer_type("longint");
-        if (m.name == "classtype") return named_pascal_type("tclass");
-        if (m.name == "inheritsfrom") return builtin_boolean_type();
+      if (const TypeExpr* bt =
+              builtin_reference_class_member_type(cls, m.name)) {
+        return bt;
       }
       if (auto* pm = registry_->lookup_class_method(cls, m.name)) {
         if (pm->decl.get() && pm->decl.get()->return_type) {
@@ -1291,6 +1296,10 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         }
         if (cls.empty()) cls = deduce_class_alias(*mem.base);
         if (!cls.empty()) {
+          if (const TypeExpr* bt =
+                  builtin_reference_class_member_type(cls, mem.name)) {
+            return bt;
+          }
           if (auto* cm = registry_->lookup_class_method(cls, mem.name)) {
             if (cm->decl.get() && cm->decl.get()->return_type) {
               return cm->decl.get()->return_type.get();
