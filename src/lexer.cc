@@ -241,18 +241,28 @@ std::optional<int> mode_default_packenum(std::string_view rest) {
 
 }  // namespace
 
-// Tiny recursive-descent evaluator for `{$if EXPR}` bodies. The grammar:
-//   expr   = or_expr
-//   or_expr  = and_expr ('or' and_expr)*
-//   and_expr = unary ('and' unary)*
-//   unary    = 'not' unary | primary
-//   primary  = '(' expr ')' | 'defined' '(' IDENT ')' | TRUE | FALSE
+// Tiny recursive-descent evaluator for `{$if EXPR}` bodies. Comparisons are
+// parsed after boolean OR/AND, so `or` binds tighter than `=` here:
+//   expr        = simple_expr (relop simple_expr)?
+//   simple_expr = and_expr ('or' and_expr)*
+//   and_expr    = unary ('and' unary)*
+//   unary       = 'not' unary | primary
+//   primary     = '(' expr ')' | 'defined' '(' IDENT ')' | TRUE | FALSE | INT
 //
 // Unsupported syntax is a hard parser failure. The directive handler reports
 // that as a diagnostic rather than silently treating it as false.
 namespace {
 
 struct IfExprParser {
+  struct Value {
+    enum class Kind { Bool, Int } kind = Kind::Bool;
+    bool b = false;
+    int64_t i = 0;
+
+    static Value bool_value(bool v) { return Value{Kind::Bool, v, 0}; }
+    static Value int_value(int64_t v) { return Value{Kind::Int, false, v}; }
+  };
+
   std::string_view src;
   size_t pos = 0;
   bool ok = true;
@@ -286,6 +296,27 @@ struct IfExprParser {
     pos = end;
     return true;
   }
+  std::optional<int64_t> read_int() {
+    skip_ws();
+    size_t start = pos;
+    int sign = 1;
+    if (pos < src.size() && (src[pos] == '+' || src[pos] == '-')) {
+      if (src[pos] == '-') sign = -1;
+      ++pos;
+    }
+    size_t digits = pos;
+    int64_t value = 0;
+    while (pos < src.size() &&
+           std::isdigit(static_cast<unsigned char>(src[pos]))) {
+      value = value * 10 + (src[pos] - '0');
+      ++pos;
+    }
+    if (digits == pos) {
+      pos = start;
+      return std::nullopt;
+    }
+    return sign < 0 ? -value : value;
+  }
   std::string read_ident() {
     skip_ws();
     size_t start = pos;
@@ -303,46 +334,112 @@ struct IfExprParser {
     }
     return out;
   }
-  bool parse_primary() {
+  Value parse_primary() {
     skip_ws();
     if (match_char('(')) {
-      bool v = parse_expr();
+      Value v = parse_expr();
       if (!match_char(')')) ok = false;
       return v;
     }
     // `defined(SYM)`
     size_t saved = pos;
     if (match_word("defined")) {
-      if (!match_char('(')) { ok = false; return false; }
+      if (!match_char('(')) { ok = false; return Value::bool_value(false); }
       std::string sym = read_ident();
-      if (!match_char(')')) { ok = false; return false; }
-      return defines && defines->count(sym) > 0;
+      if (!match_char(')')) { ok = false; return Value::bool_value(false); }
+      return Value::bool_value(defines && defines->count(sym) > 0);
     }
     pos = saved;
-    if (match_word("true")) return true;
-    if (match_word("false")) return false;
+    if (match_word("true")) return Value::bool_value(true);
+    if (match_word("false")) return Value::bool_value(false);
+    if (auto v = read_int()) return Value::int_value(*v);
     ok = false;
-    return false;
+    return Value::bool_value(false);
   }
-  bool parse_unary() {
-    if (match_word("not")) return !parse_unary();
+  Value parse_unary() {
+    if (match_word("not")) {
+      Value v = parse_unary();
+      if (v.kind != Value::Kind::Bool) ok = false;
+      return Value::bool_value(!v.b);
+    }
     return parse_primary();
   }
-  bool parse_and() {
-    bool v = parse_unary();
+  Value parse_and() {
+    Value v = parse_unary();
     while (match_word("and")) {
-      bool r = parse_unary();
-      v = v && r;
+      Value r = parse_unary();
+      if (v.kind != Value::Kind::Bool || r.kind != Value::Kind::Bool) {
+        ok = false;
+        return Value::bool_value(false);
+      }
+      v = Value::bool_value(v.b && r.b);
     }
     return v;
   }
-  bool parse_expr() {
-    bool v = parse_and();
+  Value parse_simple_expr() {
+    Value v = parse_and();
     while (match_word("or")) {
-      bool r = parse_and();
-      v = v || r;
+      Value r = parse_and();
+      if (v.kind != Value::Kind::Bool || r.kind != Value::Kind::Bool) {
+        ok = false;
+        return Value::bool_value(false);
+      }
+      v = Value::bool_value(v.b || r.b);
     }
     return v;
+  }
+  std::optional<std::string_view> match_relop() {
+    skip_ws();
+    if (pos >= src.size()) return std::nullopt;
+    if (src[pos] == '=') {
+      ++pos;
+      return std::string_view("=");
+    }
+    if (src[pos] == '<') {
+      if (pos + 1 < src.size() && src[pos + 1] == '>') {
+        pos += 2;
+        return std::string_view("<>");
+      }
+      if (pos + 1 < src.size() && src[pos + 1] == '=') {
+        pos += 2;
+        return std::string_view("<=");
+      }
+      ++pos;
+      return std::string_view("<");
+    }
+    if (src[pos] == '>') {
+      if (pos + 1 < src.size() && src[pos + 1] == '=') {
+        pos += 2;
+        return std::string_view(">=");
+      }
+      ++pos;
+      return std::string_view(">");
+    }
+    return std::nullopt;
+  }
+  Value parse_expr() {
+    Value lhs = parse_simple_expr();
+    auto op = match_relop();
+    if (!op) return lhs;
+    Value rhs = parse_simple_expr();
+    if (lhs.kind != rhs.kind) {
+      ok = false;
+      return Value::bool_value(false);
+    }
+    if (lhs.kind == Value::Kind::Bool) {
+      if (*op == "=") return Value::bool_value(lhs.b == rhs.b);
+      if (*op == "<>") return Value::bool_value(lhs.b != rhs.b);
+      ok = false;
+      return Value::bool_value(false);
+    }
+    if (*op == "=") return Value::bool_value(lhs.i == rhs.i);
+    if (*op == "<>") return Value::bool_value(lhs.i != rhs.i);
+    if (*op == "<") return Value::bool_value(lhs.i < rhs.i);
+    if (*op == ">") return Value::bool_value(lhs.i > rhs.i);
+    if (*op == "<=") return Value::bool_value(lhs.i <= rhs.i);
+    if (*op == ">=") return Value::bool_value(lhs.i >= rhs.i);
+    ok = false;
+    return Value::bool_value(false);
   }
 };
 
@@ -350,10 +447,11 @@ struct IfExprParser {
 
 std::optional<bool> Lexer::eval_if_expr(std::string_view expr) {
   IfExprParser p{expr, 0, true, &defines_};
-  bool v = p.parse_expr();
+  IfExprParser::Value v = p.parse_expr();
   if (!p.ok) return std::nullopt;
   if (!p.eof()) return std::nullopt;
-  return v;
+  if (v.kind != IfExprParser::Value::Kind::Bool) return std::nullopt;
+  return v.b;
 }
 
 void Lexer::handle_directive(std::string_view body, Location where) {

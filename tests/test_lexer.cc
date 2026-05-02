@@ -303,6 +303,38 @@ void test_directive_if_elseif_falls_through_to_match() {
   CHECK_EQ(ts[0].text, std::string("win_branch"));
 }
 
+void test_directive_if_numeric_comparison() {
+  auto ts = lex_all(
+      "{$if 1 = 1}\n"
+      "same\n"
+      "{$else}\n"
+      "different\n"
+      "{$endif}\n"
+      "{$if 2 > 3}\n"
+      "bad\n"
+      "{$elseif 4 <= 4}\n"
+      "ordered\n"
+      "{$endif}\n");
+  CHECK_EQ(ts.size(), size_t{2});
+  CHECK_EQ(ts[0].text, std::string("same"));
+  CHECK_EQ(ts[1].text, std::string("ordered"));
+}
+
+void test_directive_if_comparison_has_fpc_precedence() {
+  // Conditional expressions parse comparisons after the boolean OR/AND levels:
+  // read_expr := read_simple_expr (relop read_simple_expr)?
+  auto ts = lex_all(
+      "{$if (1 = 1) or false}\n"
+      "paren_ok\n"
+      "{$endif}\n"
+      "{$if 1 = 1}\n"
+      "plain_ok\n"
+      "{$endif}\n");
+  CHECK_EQ(ts.size(), size_t{2});
+  CHECK_EQ(ts[0].text, std::string("paren_ok"));
+  CHECK_EQ(ts[1].text, std::string("plain_ok"));
+}
+
 void test_directive_if_unknown_predicate_reports_error() {
   int errs_before = tp2cc::error_count();
   auto ts = lex_all(
@@ -501,6 +533,8 @@ int main() {
   RUN_TEST(test_directive_nested_ifdef);
   RUN_TEST(test_directive_if_defined_picks_correct_branch);
   RUN_TEST(test_directive_if_elseif_falls_through_to_match);
+  RUN_TEST(test_directive_if_numeric_comparison);
+  RUN_TEST(test_directive_if_comparison_has_fpc_precedence);
   RUN_TEST(test_directive_if_unknown_predicate_reports_error);
   RUN_TEST(test_directive_define_undef);
   RUN_TEST(test_inactive_ifdef_skips_full_string_literals);
