@@ -84,6 +84,7 @@ class EmitTypes {
       const std::vector<ast::Param>& params);
   std::string method_pointer_helper_name(const ast::ProcDecl& pd);
   std::string procedural_type_to_cxx(const ast::TyProcedural& p);
+  std::string inline_record_type_to_cxx(const ast::TyRecord& tr);
   std::vector<EmitRecordFieldDecl> record_field_decls(
       const std::vector<ast::RecordField>& fields);
   EmitPackedRecordLayout compute_packed_record_layout(const ast::TyRecord& tr);

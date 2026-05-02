@@ -4452,6 +4452,30 @@ void test_inline_anonymous_packed_record_var_lowers_to_struct() {
                  "static_assert(sizeof(decltype(p_rec)) =="));
 }
 
+void test_inline_anonymous_variant_record_lowers_to_union() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var\n"
+      "  n : record\n"
+      "    n_un : record\n"
+      "      case longint of\n"
+      "        0 : (n_name : pchar);\n"
+      "        1 : (n_strx : longint);\n"
+      "    end;\n"
+      "  end;\n"
+      "begin\n"
+      "  n.n_un.n_strx := 7;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "union { struct { ::rt::p_char* p_n_name; }; struct { int32_t p_n_strx; }; };"));
+  CHECK(contains(out.impl, "p_n.p_n_un.p_n_strx = 7;"));
+  CHECK(!contains(out.impl, "/* inline-variant-record */ int32_t"));
+}
+
 void test_packed_field_typed_cast_assignment_uses_memcpy_store() {
   // `longint(p.d1) := X` where `d1` is in a `packed record`. Forming a
   // `T&` to a packed field is UB; the emitter routes the assignment
@@ -6502,6 +6526,7 @@ int main() {
   RUN_TEST(test_class_identifier_value_lowers_to_metaclass_descriptor);
   RUN_TEST(test_inline_anonymous_enum_class_field_resolves_members);
   RUN_TEST(test_inline_anonymous_packed_record_var_lowers_to_struct);
+  RUN_TEST(test_inline_anonymous_variant_record_lowers_to_union);
   RUN_TEST(test_packed_field_typed_cast_assignment_uses_memcpy_store);
   RUN_TEST(test_inc_packed_field_routes_through_memcpy_inc);
   RUN_TEST(test_inc_local_packed_pointee_field_routes_through_memcpy_inc);

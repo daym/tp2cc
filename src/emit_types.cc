@@ -725,6 +725,41 @@ std::string EmitTypes::procedural_type_to_cxx(const TyProcedural& p) {
   return ret + " (*)(" + params + ")";
 }
 
+std::string EmitTypes::inline_record_type_to_cxx(const TyRecord& tr) {
+  std::string out = "struct ";
+  if (tr.is_packed) out += "[[gnu::packed]] ";
+  out += "{ ";
+  auto append_fields = [&](const std::vector<RecordField>& fields) {
+    for (const auto& field : record_field_decls(fields)) {
+      out += field.decl + "; ";
+    }
+  };
+
+  append_fields(tr.fields);
+  if (tr.has_variant) {
+    if (!tr.variant_tag_name.empty() && tr.variant_tag_type) {
+      RecordField tag_field;
+      tag_field.names.push_back(tr.variant_tag_name);
+      tag_field.type = tr.variant_tag_type;
+      append_fields({tag_field});
+    }
+    out += "union { ";
+    for (const auto& vc : tr.variant_cases) {
+      if (vc.fields.empty()) continue;
+      // GNU C++ anonymous structs inside anonymous unions match Pascal's
+      // anonymous variant fields: `r.v.f` works without naming a case arm.
+      out += "struct ";
+      if (tr.is_packed) out += "[[gnu::packed]] ";
+      out += "{ ";
+      append_fields(vc.fields);
+      out += "}; ";
+    }
+    out += "}; ";
+  }
+  out += "}";
+  return out;
+}
+
 std::vector<EmitRecordFieldDecl> EmitTypes::record_field_decls(
     const std::vector<RecordField>& fields) {
   std::vector<EmitRecordFieldDecl> out;
@@ -852,17 +887,7 @@ std::string EmitTypes::type_to_cxx(const TypeExpr& t) {
     }
     case Kind::TyRecord: {
       // Inline anonymous records are emitted as inline C++ anonymous structs.
-      // Variant cases stay a loud stub until inline-variant lowering is real.
-      const auto& tr = static_cast<const TyRecord&>(t);
-      if (tr.has_variant) return "/* inline-variant-record */ int32_t";
-      std::string out = "struct ";
-      if (tr.is_packed) out += "[[gnu::packed]] ";
-      out += "{ ";
-      for (const auto& field : record_field_decls(tr.fields)) {
-        out += field.decl + "; ";
-      }
-      out += "}";
-      return out;
+      return inline_record_type_to_cxx(static_cast<const TyRecord&>(t));
     }
     case Kind::TyObject:
       // Inline anonymous objects need base-class context the type-expression
