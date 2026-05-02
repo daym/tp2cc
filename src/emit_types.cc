@@ -607,6 +607,18 @@ std::optional<std::string> EmitTypes::shortstring_capacity_to_cxx(
   return std::string("255");
 }
 
+bool EmitTypes::param_uses_shortstring_ref(const TypeExpr* t,
+                                           Param::Mode mode) {
+  return (mode == Param::Var || mode == Param::Out) &&
+         shortstring_capacity_to_cxx(t).has_value();
+}
+
+std::string EmitTypes::shortstring_ref_type_to_cxx(const TypeExpr* t) {
+  std::string cap = shortstring_capacity_to_cxx(t).value_or("255");
+  if (cap == "255") return "::rt::tp2cc_ShortStringPtrRef<>";
+  return "::rt::tp2cc_ShortStringPtrRef<" + cap + ">";
+}
+
 std::string EmitTypes::pointer_type_to_cxx(const TyPointer& p) {
   if (!p.target) return "void*";
   return type_to_cxx(*p.target) + "*";
@@ -680,11 +692,16 @@ std::string EmitTypes::procedural_param_types_to_cxx(
                static_cast<const TyArray&>(*canon).array_kind ==
                    ArrayKind::Open) {
       pt = open_array_type_to_cxx(*pp.type);
+    } else if (param_uses_shortstring_ref(pp.type.get(), pp.mode)) {
+      pt = shortstring_ref_type_to_cxx(pp.type.get());
     } else {
       pt = type_to_cxx(*pp.type);
     }
     if (pp.type) {
-      if (pp.mode == Param::Var || pp.mode == Param::Out) pt += "&";
+      if (param_uses_shortstring_ref(pp.type.get(), pp.mode)) {
+        // Mutable shortstrings are storage proxies, not C++ references; this
+        // keeps virtual/interface method signatures capacity-agnostic.
+      } else if (pp.mode == Param::Var || pp.mode == Param::Out) pt += "&";
       else if (pp.mode == Param::Const) {
         if (analysis_.const_param_needs_mutable_ref(pp.type.get())) pt += "&";
         else if (analysis_.const_param_needs_const_ref(pp.type.get()))

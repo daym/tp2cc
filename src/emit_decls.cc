@@ -789,10 +789,14 @@ std::string EmitDecls::param_list_to_cxx(const std::vector<Param>& params) {
     } else {
       if (storage_.type_is_open_array(p.type.get())) {
         pt = types_.open_array_type_to_cxx(*p.type);
+      } else if (types_.param_uses_shortstring_ref(p.type.get(), p.mode)) {
+        pt = types_.shortstring_ref_type_to_cxx(p.type.get());
       } else {
         pt = types_.type_to_cxx(*p.type);
       }
-      if (p.mode == Param::Var || p.mode == Param::Out) {
+      if (types_.param_uses_shortstring_ref(p.type.get(), p.mode)) {
+        name_prefix.clear();
+      } else if (p.mode == Param::Var || p.mode == Param::Out) {
         name_prefix = "&";
       } else if (p.mode == Param::Const &&
                  analysis_.const_param_needs_mutable_ref(p.type.get())) {
@@ -829,10 +833,14 @@ std::string EmitDecls::param_type_list_to_cxx(
     } else {
       if (storage_.type_is_open_array(p.type.get())) {
         pt = types_.open_array_type_to_cxx(*p.type);
+      } else if (types_.param_uses_shortstring_ref(p.type.get(), p.mode)) {
+        pt = types_.shortstring_ref_type_to_cxx(p.type.get());
       } else {
         pt = types_.type_to_cxx(*p.type);
       }
-      if (p.mode == Param::Var || p.mode == Param::Out) {
+      if (types_.param_uses_shortstring_ref(p.type.get(), p.mode)) {
+        // Already a mutable storage proxy value.
+      } else if (p.mode == Param::Var || p.mode == Param::Out) {
         pt += "&";
       } else if (p.mode == Param::Const &&
                  analysis_.const_param_needs_mutable_ref(p.type.get())) {
@@ -887,11 +895,15 @@ void EmitDecls::emit_method_pointer_thunk(const std::string& owner_name,
       pt = (par.mode == Param::Const) ? "const void*" : "void*";
     } else if (storage_.type_is_open_array(par.type.get())) {
       pt = types_.open_array_type_to_cxx(*par.type);
+    } else if (types_.param_uses_shortstring_ref(par.type.get(), par.mode)) {
+      pt = types_.shortstring_ref_type_to_cxx(par.type.get());
     } else {
       pt = types_.type_to_cxx(*par.type);
     }
     if (par.type) {
-      if (par.mode == Param::Var || par.mode == Param::Out) pt += "&";
+      if (types_.param_uses_shortstring_ref(par.type.get(), par.mode)) {
+        // Already a mutable storage proxy value.
+      } else if (par.mode == Param::Var || par.mode == Param::Out) pt += "&";
       else if (par.mode == Param::Const &&
                analysis_.const_param_needs_mutable_ref(par.type.get()))
         pt += "&";
@@ -965,6 +977,8 @@ void EmitDecls::emit_decl(const Decl& d, bool in_header) {
             std::string pt;
             if (!p.type) {
               pt = "void*";
+            } else if (types_.param_uses_shortstring_ref(p.type.get(), p.mode)) {
+              pt = types_.shortstring_ref_type_to_cxx(p.type.get());
             } else {
               pt = types_.type_to_cxx(*p.type);
               if (p.mode == Param::Var || p.mode == Param::Out) pt += "&";

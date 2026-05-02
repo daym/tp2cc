@@ -601,6 +601,18 @@ struct tp2cc_ShortStringPtrRef {
   }
 };
 
+template <int RefN = 255, int ActualN>
+inline tp2cc_ShortStringPtrRef<RefN> tp2cc_shortstring_ref(
+    tp2cc_ShortString<ActualN>& s) {
+  return {reinterpret_cast<uint8_t*>(&s)};
+}
+
+template <int RefN = 255, int ActualN>
+inline tp2cc_ShortStringPtrRef<RefN> tp2cc_shortstring_ref(
+    tp2cc_ShortStringPtrRef<ActualN> s) {
+  return {s.storage};
+}
+
 template <typename T>
 struct tp2cc_shortstring_capacity;
 
@@ -2887,6 +2899,17 @@ inline void p_setlength(tp2cc_ShortString<N>& s, int new_len) {
   s.length = static_cast<uint8_t>(new_len);
 }
 
+template <int N>
+inline void p_setlength(tp2cc_ShortStringPtrRef<N> s, int new_len) {
+  if (new_len < 0) new_len = 0;
+  if (new_len > N) new_len = N;
+  const int old_len = s.size();
+  for (int i = old_len; i < new_len; ++i) {
+    s.bytes()[i] = tp2cc_char_of('\0');
+  }
+  *s.storage = static_cast<uint8_t>(new_len);
+}
+
 inline void p_setlength(tp2cc_AnsiString& s, int new_len) {
   s.set_length(new_len);
 }
@@ -4225,6 +4248,18 @@ inline void p_readln(tp2cc_TextFile& f, tp2cc_ShortString<N>& s) {
     if (s.length < N) { s.data[s.length] = tp2cc_char_of(static_cast<char>(c)); ++s.length; }
   }
 }
+template <int N>
+inline void p_readln(tp2cc_TextFile& f, tp2cc_ShortStringPtrRef<N> s) {
+  *s.storage = 0;
+  if (!f.f) return;
+  int c;
+  while ((c = std::fgetc(f.f)) != EOF && c != '\n') {
+    if (s.size() < N) {
+      s.bytes()[s.size()] = tp2cc_char_of(static_cast<char>(c));
+      *s.storage = static_cast<uint8_t>(s.size() + 1);
+    }
+  }
+}
 inline void p_readln(tp2cc_TextFile& f, tp2cc_AnsiString& s) {
   if (!f.f) {
     s.clear();
@@ -4936,6 +4971,13 @@ inline void p_delete(tp2cc_ShortString<N>& s, int start, int count) {
   s.length = static_cast<uint8_t>(s.length - count);
 }
 
+template <int N>
+inline void p_delete(tp2cc_ShortStringPtrRef<N> s, int start, int count) {
+  tp2cc_ShortString<N> tmp = static_cast<tp2cc_ShortString<N>>(s);
+  p_delete(tmp, start, count);
+  tp2cc_shortstring_assign(s, tmp);
+}
+
 inline void p_delete(tp2cc_AnsiString& s, int start, int count) {
   int32_t len = s.length();
   if (start < 1 || start > len || count <= 0) return;
@@ -4956,6 +4998,13 @@ inline void p_insert(const char* src, tp2cc_ShortString<N>& s, int pos) {
 template <int N>
 inline void p_insert(const tp2cc_AnsiString& src, tp2cc_ShortString<N>& s, int pos) {
   p_insert(static_cast<tp2cc_ShortString<N>>(src), s, pos);
+}
+
+template <typename Src, int N>
+inline void p_insert(const Src& src, tp2cc_ShortStringPtrRef<N> s, int pos) {
+  tp2cc_ShortString<N> tmp = static_cast<tp2cc_ShortString<N>>(s);
+  p_insert(src, tmp, pos);
+  tp2cc_shortstring_assign(s, tmp);
 }
 
 template <typename Int>
@@ -5349,6 +5398,13 @@ inline void p_str(long double v, tp2cc_AnsiString& out) {
   char buf[96];
   std::snprintf(buf, sizeof(buf), "% .21Lg", v);
   out = buf;
+}
+
+template <typename Value, int N>
+inline void p_str(Value v, tp2cc_ShortStringPtrRef<N> out) {
+  tp2cc_ShortString<N> tmp{};
+  p_str(v, tmp);
+  tp2cc_shortstring_assign(out, tmp);
 }
 
 // Pascal `HexStr(val, cnt)` -- uppercase, zero-padded to `cnt` digits, no

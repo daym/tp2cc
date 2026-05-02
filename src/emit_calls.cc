@@ -275,6 +275,15 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
     if (coerced != arg_cxx) return coerced;
   }
   if (canon_param_type && storage_.type_is_stringish(canon_param_type)) {
+    if (mutable_ref_arg && arg_type &&
+        types_.shortstring_capacity_to_cxx(param_type) &&
+        types_.shortstring_capacity_to_cxx(arg_type) &&
+        storage_.expr_is_storage_lvalue(arg)) {
+      const std::string cap =
+          types_.shortstring_capacity_to_cxx(param_type).value_or("255");
+      return "::rt::tp2cc_shortstring_ref<" + cap + ">(" +
+             expr_ops_.expr_to_cxx(arg) + ")";
+    }
     if (mutable_ref_arg && storage_.expr_is_storage_lvalue(arg)) {
       return expr_ops_.expr_to_cxx(arg);
     }

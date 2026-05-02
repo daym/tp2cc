@@ -1526,9 +1526,34 @@ void test_var_shortstring_call_keeps_lvalue_storage() {
       "  replace(s);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_replace(p_s);"));
+  CHECK(contains(out.impl,
+                 "p_replace(::rt::tp2cc_shortstring_ref<255>(p_s));"));
   CHECK(!contains(out.impl, "p_replace(::rt::tp2cc_shortstring_of"));
   CHECK(!contains(out.impl, "p_replace(::rt::tp2cc_ansistring_of"));
+}
+
+void test_var_shortstring_capacity_mismatch_uses_storage_ref() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure replace(out s : string);\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure replace(out s : string);\n"
+      "begin\n"
+      "  s := 'x';\n"
+      "end;\n"
+      "procedure demo;\n"
+      "var small : string[7];\n"
+      "begin\n"
+      "  replace(small);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "void p_replace(::rt::tp2cc_ShortStringPtrRef<> p_s);"));
+  CHECK(contains(out.impl,
+                 "p_replace(::rt::tp2cc_shortstring_ref<255>(p_small));"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_ShortString<> tp2cc_"));
 }
 
 void test_var_ansistring_call_keeps_lvalue_storage() {
@@ -4084,7 +4109,8 @@ void test_corba_interface_emits_pure_virtual_base_and_pointer_calls() {
   CHECK(contains(out.header,
                  "struct t_treader : public ::rt::t_tobject, public t_ireader {"));
   CHECK(contains(out.header, "void p_use(t_ireader* p_reader);"));
-  CHECK(contains(out.impl, "p_reader->p_next(p_s);"));
+  CHECK(contains(out.impl,
+                 "p_reader->p_next(::rt::tp2cc_shortstring_ref<255>(p_s));"));
 }
 
 void test_class_constructor_call_allocates_instance() {
@@ -6504,6 +6530,7 @@ int main() {
   RUN_TEST(test_embedded_nul_string_literal_uses_explicit_length_builder);
   RUN_TEST(test_shortstring_assignment_uses_pascal_string_helper);
   RUN_TEST(test_var_shortstring_call_keeps_lvalue_storage);
+  RUN_TEST(test_var_shortstring_capacity_mismatch_uses_storage_ref);
   RUN_TEST(test_var_ansistring_call_keeps_lvalue_storage);
   RUN_TEST(test_overloaded_string_and_bool_call_keeps_boolean_argument_raw);
   RUN_TEST(test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers);

@@ -72,6 +72,9 @@ class EmitTypes {
   std::string string_type_to_cxx(const ast::TyString& s);
   std::optional<std::string> shortstring_capacity_to_cxx(
       const ast::TypeExpr* t);
+  bool param_uses_shortstring_ref(const ast::TypeExpr* t,
+                                  ast::Param::Mode mode);
+  std::string shortstring_ref_type_to_cxx(const ast::TypeExpr* t);
   std::string pointer_type_to_cxx(const ast::TyPointer& p);
   std::string set_type_to_cxx(const ast::TySet& s);
   std::string enum_type_to_cxx(const ast::TyEnum& e,

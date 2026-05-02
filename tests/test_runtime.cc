@@ -516,6 +516,26 @@ void test_shortstring_implicitly_converts_between_capacities() {
   CHECK_EQ(tp2cc_to_std_string(narrow), std::string("ab"));
 }
 
+void test_shortstring_ref_mutating_helpers_write_through_storage() {
+  tp2cc_ShortString<8> s = tp2cc_shortstring_of<8>("abc");
+  auto ref = tp2cc_shortstring_ref<8>(s);
+
+  p_setlength(ref, 5);
+  CHECK_EQ(p_length(s), 5);
+  CHECK_EQ(tp2cc_char_byte(s.data[3]), 0);
+  CHECK_EQ(tp2cc_char_byte(s.data[4]), 0);
+
+  s = tp2cc_shortstring_of<8>("abc");
+  p_insert(tp2cc_shortstring_of<>("XY"), ref, 2);
+  CHECK_EQ(tp2cc_to_std_string(s), std::string("aXYbc"));
+
+  p_delete(ref, 2, 2);
+  CHECK_EQ(tp2cc_to_std_string(s), std::string("abc"));
+
+  p_str(int32_t{42}, ref);
+  CHECK_EQ(tp2cc_to_std_string(s), std::string("42"));
+}
+
 void test_shortstring_implicitly_converts_to_ansistring() {
   tp2cc_ShortString<> shorty = tp2cc_shortstring_of<>("abc");
   tp2cc_AnsiString text = shorty;
@@ -1339,6 +1359,7 @@ int main() {
   RUN_TEST(test_shortstring_nul_char_concat_preserves_embedded_zero);
   RUN_TEST(test_shortstring_literal_helper_preserves_embedded_nuls);
   RUN_TEST(test_shortstring_implicitly_converts_between_capacities);
+  RUN_TEST(test_shortstring_ref_mutating_helpers_write_through_storage);
   RUN_TEST(test_shortstring_implicitly_converts_to_ansistring);
   RUN_TEST(test_shortstring_assign_from_char_creates_one_character_string);
   RUN_TEST(test_strpas_returns_shortstring_up_to_first_nul);
