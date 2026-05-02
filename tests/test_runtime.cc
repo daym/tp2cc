@@ -126,6 +126,47 @@ void test_pascal_shift_helpers_mask_count_and_shr_logically() {
   CHECK_EQ(p_shl<uint32_t>(static_cast<uint8_t>(255), 8), 65280u);
 }
 
+void test_signed_wrap_helpers_avoid_ub() {
+  CHECK_EQ(tp2cc_wrap_negate(std::numeric_limits<int64_t>::min()),
+           std::numeric_limits<int64_t>::min());
+  CHECK_EQ(tp2cc_wrap_add(std::numeric_limits<int32_t>::max(), int32_t{1}),
+           std::numeric_limits<int32_t>::min());
+  CHECK_EQ(tp2cc_wrap_sub(std::numeric_limits<int32_t>::min(), int32_t{1}),
+           std::numeric_limits<int32_t>::max());
+  CHECK_EQ(tp2cc_wrap_mul(int32_t{1} << 30, int32_t{4}), int32_t{0});
+  CHECK_EQ(p_abs(std::numeric_limits<int64_t>::min()),
+           std::numeric_limits<int64_t>::min());
+  CHECK_EQ(p_sqr(int32_t{1} << 30), int32_t{0});
+  CHECK_EQ(p_succ(std::numeric_limits<int32_t>::max()),
+           std::numeric_limits<int32_t>::min());
+  CHECK_EQ(p_pred(std::numeric_limits<int32_t>::min()),
+           std::numeric_limits<int32_t>::max());
+  int32_t inc_v = std::numeric_limits<int32_t>::max();
+  p_inc(inc_v);
+  CHECK_EQ(inc_v, std::numeric_limits<int32_t>::min());
+  int32_t dec_v = std::numeric_limits<int32_t>::min();
+  p_dec(dec_v);
+  CHECK_EQ(dec_v, std::numeric_limits<int32_t>::max());
+  CHECK_EQ(tp2cc_int_mod(std::numeric_limits<int32_t>::min(), int32_t{-1}),
+           int32_t{0});
+  bool saw_div_zero = false;
+  try {
+    (void)tp2cc_int_div(int32_t{1}, int32_t{0});
+  } catch (t_tobject* e) {
+    saw_div_zero = dynamic_cast<t_edivbyzero*>(e) != nullptr;
+    delete e;
+  }
+  CHECK(saw_div_zero);
+  bool saw_div_overflow = false;
+  try {
+    (void)tp2cc_int_div(std::numeric_limits<int32_t>::min(), int32_t{-1});
+  } catch (t_tobject* e) {
+    saw_div_overflow = dynamic_cast<t_eintoverflow*>(e) != nullptr;
+    delete e;
+  }
+  CHECK(saw_div_overflow);
+}
+
 void test_runtime_path_helpers_match_compiler_expectations() {
   const auto path = tp2cc_ansistring_of("/tmp/archive.tar.gz");
 
@@ -1336,6 +1377,7 @@ int main() {
   RUN_TEST(test_val_keeps_leading_zero_decimals_decimal);
   RUN_TEST(test_bootstrap_pointer_sized_aliases_are_32bit);
   RUN_TEST(test_pascal_shift_helpers_mask_count_and_shr_logically);
+  RUN_TEST(test_signed_wrap_helpers_avoid_ub);
   RUN_TEST(test_runtime_path_helpers_match_compiler_expectations);
   RUN_TEST(test_runtime_tdatetime_decodes_current_and_dos_times);
   RUN_TEST(test_runtime_file_helpers_expose_real_sysutils_surface);

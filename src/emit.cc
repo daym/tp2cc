@@ -982,6 +982,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return pi && (pi->int_kind == PrimitiveIntKind::Signed ||
                       pi->int_kind == PrimitiveIntKind::Unsigned);
       };
+      auto operand_is_signed_integer = [&](const Expr& x) {
+        const TypeExpr* t = deduce_type(x);
+        if (!t) return false;
+        t = canonicalize_type(t);
+        if (!t || t->kind != Kind::TyName) return false;
+        const PrimitiveInfo* pi = primitive_info(
+            ascii_lower(static_cast<const TyName&>(*t).name));
+        return pi && pi->int_kind == PrimitiveIntKind::Signed;
+      };
       auto shift_carrier = [&](const Expr& x) -> const PrimitiveInfo* {
         const TypeExpr* t = deduce_type(x);
         if (!t) return nullptr;
@@ -1042,6 +1051,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return std::string("::rt::") + fn + "(" + emit_operand(*n.lhs, *n.rhs) +
                ", " + emit_operand(*n.rhs, *n.lhs) + ")";
       }
+      if (!n.q_check &&
+          (n.op == BinOp::Add || n.op == BinOp::Sub || n.op == BinOp::Mul) &&
+          operand_is_integer(*n.lhs) && operand_is_integer(*n.rhs) &&
+          (operand_is_signed_integer(*n.lhs) ||
+           operand_is_signed_integer(*n.rhs))) {
+        const char* fn = (n.op == BinOp::Add) ? "tp2cc_wrap_add"
+                       : (n.op == BinOp::Sub) ? "tp2cc_wrap_sub"
+                                              : "tp2cc_wrap_mul";
+        return std::string("::rt::") + fn + "(" + emit_operand(*n.lhs, *n.rhs) +
+               ", " + emit_operand(*n.rhs, *n.lhs) + ")";
+      }
       // Keep the shift/rotate vocabulary precise here:
       // - shl: shift left, zeros come in on the right, high bits are discarded
       // - shr: logical shift right, zeros come in on the left, low bits are discarded
@@ -1063,6 +1083,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                  emit_operand(*n.lhs, *n.rhs) + ", " +
                  emit_operand(*n.rhs, *n.lhs) + ")";
         }
+      }
+      if ((n.op == BinOp::IntDiv || n.op == BinOp::Mod) &&
+          operand_is_integer(*n.lhs) && operand_is_integer(*n.rhs)) {
+        const char* fn = (n.op == BinOp::IntDiv) ? "tp2cc_int_div"
+                                                 : "tp2cc_int_mod";
+        return std::string("::rt::") + fn + "(" + emit_operand(*n.lhs, *n.rhs) +
+               ", " + emit_operand(*n.rhs, *n.lhs) + ")";
       }
       const char* op = "?";
       switch (n.op) {

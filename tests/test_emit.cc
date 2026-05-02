@@ -1266,7 +1266,8 @@ void test_typed_const_read_is_not_folded_through_initializer() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.header, "int32_t p_nextlabelnr = 1;"));
-  CHECK(contains(out.impl, "p_nextlabelnr = (p_nextlabelnr + 1);"));
+  CHECK(contains(out.impl,
+                 "p_nextlabelnr = ::rt::tp2cc_wrap_add(p_nextlabelnr, 1);"));
   CHECK(!contains(out.impl, "p_nextlabelnr = 2;"));
 }
 
@@ -1865,7 +1866,8 @@ void test_move_uses_storage_addresses_for_source_and_destination_slots() {
       "              (count - index) * sizeof(pointer));\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "::rt::p_move(((void*)&(p_list[(p_index + 1)]))"));
+  CHECK(contains(out.impl,
+                 "::rt::p_move(((void*)&(p_list[::rt::tp2cc_wrap_add(p_index, 1)]))"));
   CHECK(contains(out.impl, "((void*)&(p_list[p_index]))"));
   CHECK(!contains(out.impl, "::rt::p_move(p_list[(p_index + 1)],"));
 }
@@ -2677,7 +2679,8 @@ void test_implicit_property_lookup_in_method_body() {
       "  if name <> '' then begin end;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "this->p_fcount = (this->p_fcount + 1);"));
+  CHECK(contains(out.impl,
+                 "this->p_fcount = ::rt::tp2cc_wrap_add(this->p_fcount, 1);"));
   CHECK(contains(out.impl, "if ((this->p_getname() != ::rt::tp2cc_shortstring_literal<255>()))"));
   CHECK(!contains(out.impl, "p_count ="));
   CHECK(!contains(out.impl, "p_name !="));
@@ -3640,10 +3643,9 @@ void test_q_minus_routes_signed_negate_through_wrap_helper() {
 
 void test_q_plus_routes_integer_arith_through_checked_helpers() {
   // `{$Q+}` enables Pascal's runtime overflow check on integer
-  // arithmetic. fpc-source uses it as compile-error flow (nadd.pas
-  // catches EIntOverflow from `lv+rv`). Translated code under Q+
-  // must route through helpers that raise `p_eintoverflow`; a
-  // sibling function under Q- stays on plain `+`.
+  // arithmetic. Translated code under Q+ must route through helpers that
+  // raise `p_eintoverflow`; Q- routes through wrapping helpers to avoid C++
+  // signed-overflow UB.
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -3662,7 +3664,23 @@ void test_q_plus_routes_integer_arith_through_checked_helpers() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "::rt::tp2cc_add_checked(p_a, p_b)"));
-  CHECK(contains(out.impl, "(p_a + p_b)"));
+  CHECK(contains(out.impl, "::rt::tp2cc_wrap_add(p_a, p_b)"));
+}
+
+void test_q_minus_routes_signed_binary_arith_through_wrap_helpers() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function hash_step(result : longword; ch : byte) : longword;\n"
+      "implementation\n"
+      "{$Q-}\n"
+      "function hash_step(result : longword; ch : byte) : longword;\n"
+      "begin\n"
+      "  hash_step := longword(longint(result shl 5) - longint(result)) xor ch;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_wrap_sub("));
+  CHECK(!contains(out.impl, ") - ((int32_t)(p_result))"));
 }
 
 void test_qword_const_cast_produces_64bit_literal_for_shifts() {
@@ -3700,11 +3718,30 @@ void test_shift_ops_lower_through_pascal_helpers() {
       "  widen := v shl n;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "::rt::p_shr<uint32_t>(p_d, (32 - p_b))"));
+  CHECK(contains(out.impl,
+                 "::rt::p_shr<uint32_t>(p_d, ::rt::tp2cc_wrap_sub(32, p_b))"));
   CHECK(contains(out.impl, "::rt::p_shl<uint32_t>(p_d, p_b)"));
   CHECK(contains(out.impl, "::rt::p_shl<int32_t>(p_v, p_n)"));
   CHECK(!contains(out.impl, ">> (32 - p_b)"));
   CHECK(!contains(out.impl, "<< p_b"));
+}
+
+void test_integer_div_mod_lower_through_pascal_helpers() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo(a, b : longint; var q, r : longint);\n"
+      "implementation\n"
+      "procedure demo(a, b : longint; var q, r : longint);\n"
+      "begin\n"
+      "  q := a div b;\n"
+      "  r := a mod b;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_q = ::rt::tp2cc_int_div(p_a, p_b);"));
+  CHECK(contains(out.impl, "p_r = ::rt::tp2cc_int_mod(p_a, p_b);"));
+  CHECK(!contains(out.impl, "p_q = (p_a / p_b);"));
+  CHECK(!contains(out.impl, "p_r = (p_a % p_b);"));
 }
 
 void test_addr_of_pointer_deref_field_uses_offsetof_arithmetic() {
@@ -6617,8 +6654,10 @@ int main() {
   RUN_TEST(test_r_plus_routes_narrowing_assignment_through_range_check);
   RUN_TEST(test_q_minus_routes_signed_negate_through_wrap_helper);
   RUN_TEST(test_q_plus_routes_integer_arith_through_checked_helpers);
+  RUN_TEST(test_q_minus_routes_signed_binary_arith_through_wrap_helpers);
   RUN_TEST(test_qword_const_cast_produces_64bit_literal_for_shifts);
   RUN_TEST(test_shift_ops_lower_through_pascal_helpers);
+  RUN_TEST(test_integer_div_mod_lower_through_pascal_helpers);
   RUN_TEST(test_addr_of_pointer_deref_field_uses_offsetof_arithmetic);
   RUN_TEST(test_addr_of_array_value_uses_context_selecting_proxy);
   RUN_TEST(test_addr_of_pointer_deref_array_field_uses_offsetof_proxy);

@@ -1137,6 +1137,12 @@ struct t_edivbyzero : t_einterror {
   throw static_cast<t_tobject*>(e);
 }
 
+[[noreturn]] inline void tp2cc_throw_div_by_zero() {
+  auto* e = new t_edivbyzero{};
+  e->p_create();
+  throw static_cast<t_tobject*>(e);
+}
+
 [[noreturn]] inline void tp2cc_throw_range_error() {
   auto* e = new t_erangeerror{};
   e->p_create();
@@ -1282,6 +1288,95 @@ constexpr T tp2cc_wrap_negate(T x) {
   } else {
     return static_cast<T>(-x);
   }
+}
+
+template <typename A, typename B>
+constexpr std::common_type_t<A, B> tp2cc_wrap_add(A a, B b) {
+  using R = std::common_type_t<A, B>;
+  if constexpr (std::is_signed_v<R> && std::is_integral_v<R>) {
+    using U = std::make_unsigned_t<R>;
+    return static_cast<R>(static_cast<U>(static_cast<R>(a)) +
+                          static_cast<U>(static_cast<R>(b)));
+  } else {
+    return static_cast<R>(static_cast<R>(a) + static_cast<R>(b));
+  }
+}
+
+template <typename A, typename B>
+constexpr std::common_type_t<A, B> tp2cc_wrap_sub(A a, B b) {
+  using R = std::common_type_t<A, B>;
+  if constexpr (std::is_signed_v<R> && std::is_integral_v<R>) {
+    using U = std::make_unsigned_t<R>;
+    return static_cast<R>(static_cast<U>(static_cast<R>(a)) -
+                          static_cast<U>(static_cast<R>(b)));
+  } else {
+    return static_cast<R>(static_cast<R>(a) - static_cast<R>(b));
+  }
+}
+
+template <typename A, typename B>
+constexpr std::common_type_t<A, B> tp2cc_wrap_mul(A a, B b) {
+  using R = std::common_type_t<A, B>;
+  if constexpr (std::is_signed_v<R> && std::is_integral_v<R>) {
+    using U = std::make_unsigned_t<R>;
+    return static_cast<R>(static_cast<U>(static_cast<R>(a)) *
+                          static_cast<U>(static_cast<R>(b)));
+  } else {
+    return static_cast<R>(static_cast<R>(a) * static_cast<R>(b));
+  }
+}
+
+template <typename T, bool IsEnum = std::is_enum_v<T>>
+struct tp2cc_ordinal_arith_type {
+  using type = T;
+};
+
+template <typename T>
+struct tp2cc_ordinal_arith_type<T, true> {
+  using type = std::underlying_type_t<T>;
+};
+
+template <typename T>
+using tp2cc_ordinal_arith_type_t = typename tp2cc_ordinal_arith_type<T>::type;
+
+template <typename T, typename N>
+constexpr T tp2cc_ord_wrap_add(T x, N n) {
+  using A = tp2cc_ordinal_arith_type_t<T>;
+  return static_cast<T>(tp2cc_wrap_add(static_cast<A>(x), n));
+}
+
+template <typename T, typename N>
+constexpr T tp2cc_ord_wrap_sub(T x, N n) {
+  using A = tp2cc_ordinal_arith_type_t<T>;
+  return static_cast<T>(tp2cc_wrap_sub(static_cast<A>(x), n));
+}
+
+template <typename A, typename B>
+constexpr std::common_type_t<A, B> tp2cc_int_div(A a, B b) {
+  using R = std::common_type_t<A, B>;
+  R ax = static_cast<R>(a);
+  R bx = static_cast<R>(b);
+  if (bx == 0) tp2cc_throw_div_by_zero();
+  if constexpr (std::is_signed_v<R> && std::is_integral_v<R>) {
+    if (ax == std::numeric_limits<R>::min() && bx == static_cast<R>(-1)) {
+      tp2cc_throw_int_overflow();
+    }
+  }
+  return static_cast<R>(ax / bx);
+}
+
+template <typename A, typename B>
+constexpr std::common_type_t<A, B> tp2cc_int_mod(A a, B b) {
+  using R = std::common_type_t<A, B>;
+  R ax = static_cast<R>(a);
+  R bx = static_cast<R>(b);
+  if (bx == 0) tp2cc_throw_div_by_zero();
+  if constexpr (std::is_signed_v<R> && std::is_integral_v<R>) {
+    if (ax == std::numeric_limits<R>::min() && bx == static_cast<R>(-1)) {
+      return static_cast<R>(0);
+    }
+  }
+  return static_cast<R>(ax % bx);
 }
 
 // Pascal `shl` / `shr` are not raw C++ shifts. FPC masks the shift count to
@@ -3020,8 +3115,20 @@ inline constexpr T p_not(T x) {
   else return static_cast<T>(~static_cast<int64_t>(x));
 }
 
-template <typename T> inline T p_abs(T x) { return x < 0 ? -x : x; }
-template <typename T> inline T p_sqr(T x) { return x * x; }
+template <typename T> inline T p_abs(T x) {
+  if constexpr (std::is_signed_v<T> && std::is_integral_v<T>) {
+    return x < 0 ? tp2cc_wrap_negate(x) : x;
+  } else {
+    return x < 0 ? -x : x;
+  }
+}
+template <typename T> inline T p_sqr(T x) {
+  if constexpr (std::is_signed_v<T> && std::is_integral_v<T>) {
+    return tp2cc_wrap_mul(x, x);
+  } else {
+    return x * x;
+  }
+}
 // Pascal `sqrt` coerces integer args via the float overload; express
 // that with a generic template so `sqrt(int)` resolves without
 // ambiguity between `double` and `long double` overloads.
@@ -3038,36 +3145,35 @@ inline int32_t     p_round(double x)        { return static_cast<int32_t>(std::l
 inline double      p_int(double x)          { return std::trunc(x); }
 inline double      p_frac(double x)         { return x - std::trunc(x); }
 
-template <typename T> inline T p_succ(T x) { return static_cast<T>(static_cast<int64_t>(x) + 1); }
-template <typename T> inline T p_pred(T x) { return static_cast<T>(static_cast<int64_t>(x) - 1); }
+template <typename T> inline T p_succ(T x) { return tp2cc_ord_wrap_add(x, 1); }
+template <typename T> inline T p_pred(T x) { return tp2cc_ord_wrap_sub(x, 1); }
 
 // Pascal `inc`/`dec` work on ordinal types, including enums, and on
 // typed pointers (pointer arithmetic in units of `sizeof(*ptr)`).
-// Integers use builtin ++/--, enums go through int64_t so unscoped
-// enum operands work, pointers stay in pointer arithmetic.
+// For ordinal arithmetic, avoid raw signed C++ overflow: fpc's default Q-
+// semantics wrap, while UBSan treats signed overflow in `++`/`--`/`+`/`-`
+// as undefined. Pointers stay in C++ pointer arithmetic.
 template <typename T> inline void p_inc(T& x) {
-  if constexpr (std::is_enum_v<T>)
-    x = static_cast<T>(static_cast<int64_t>(x) + 1);
-  else ++x;
+  if constexpr (std::is_pointer_v<T>) ++x;
+  else x = p_succ(x);
 }
 inline void p_inc(tp2cc_ShortStringCharRef x) { ++(*x.byte); }
 template <typename T, typename N> inline void p_inc(T& x, N n) {
   if constexpr (std::is_pointer_v<T>) x += n;
-  else x = static_cast<T>(static_cast<int64_t>(x) + n);
+  else x = tp2cc_ord_wrap_add(x, n);
 }
 template <typename N>
 inline void p_inc(tp2cc_ShortStringCharRef x, N n) {
   *x.byte = static_cast<uint8_t>(static_cast<int64_t>(*x.byte) + n);
 }
 template <typename T> inline void p_dec(T& x) {
-  if constexpr (std::is_enum_v<T>)
-    x = static_cast<T>(static_cast<int64_t>(x) - 1);
-  else --x;
+  if constexpr (std::is_pointer_v<T>) --x;
+  else x = p_pred(x);
 }
 inline void p_dec(tp2cc_ShortStringCharRef x) { --(*x.byte); }
 template <typename T, typename N> inline void p_dec(T& x, N n) {
   if constexpr (std::is_pointer_v<T>) x -= n;
-  else x = static_cast<T>(static_cast<int64_t>(x) - n);
+  else x = tp2cc_ord_wrap_sub(x, n);
 }
 template <typename N>
 inline void p_dec(tp2cc_ShortStringCharRef x, N n) {
