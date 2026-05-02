@@ -193,8 +193,35 @@ void EmitCalls::collect_call_param_info(
     std::vector<const TypeExpr*>& param_types) {
   collect_builtin_helper_param_info(callee, untyped_arg, mutable_ref_arg,
                                     param_types);
-  mark_call_param_info(resolution_.resolve_call_decl(callee), untyped_arg,
-                       mutable_ref_arg, param_types);
+  const ProcDecl* decl = resolution_.resolve_call_decl(callee);
+  mark_call_param_info(decl, untyped_arg, mutable_ref_arg, param_types);
+  if (decl) return;
+
+  const TypeExpr* callee_type = analysis_.deduce_type(callee);
+  if (callee_type) callee_type = analysis_.canonicalize_type(callee_type);
+  if (!callee_type || callee_type->kind != Kind::TyProcedural) return;
+
+  const auto& proc = static_cast<const TyProcedural&>(*callee_type);
+  size_t ai = 0;
+  for (const auto& p : proc.params) {
+    const size_t count = p.names.empty() ? 1 : p.names.size();
+    for (size_t k = 0; k < count; ++k) {
+      if (ai < untyped_arg.size() && !p.type) {
+        untyped_arg[ai] =
+            (p.mode == Param::Var || p.mode == Param::Out)
+                ? UntypedArgKind::Mutable
+                : UntypedArgKind::Const;
+      }
+      if (ai < mutable_ref_arg.size()) {
+        mutable_ref_arg[ai] =
+            p.mode == Param::Var || p.mode == Param::Out ||
+            (p.mode == Param::Const &&
+             analysis_.const_param_needs_mutable_ref(p.type.get()));
+      }
+      if (ai < param_types.size()) param_types[ai] = p.type.get();
+      ++ai;
+    }
+  }
 }
 
 std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_type,

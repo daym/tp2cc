@@ -1557,6 +1557,25 @@ void test_var_shortstring_capacity_mismatch_uses_storage_ref() {
   CHECK(!contains(out.impl, "::rt::tp2cc_ShortString<> tp2cc_"));
 }
 
+void test_procvar_var_shortstring_call_uses_storage_ref() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tpred = function(var s : string) : boolean;\n"
+      "procedure demo(p : tpred);\n"
+      "implementation\n"
+      "procedure demo(p : tpred);\n"
+      "var value : string; b : boolean;\n"
+      "begin\n"
+      "  b := p(value);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "using t_tpred = bool (*)(::rt::tp2cc_ShortStringPtrRef<>);"));
+  CHECK(contains(out.impl,
+                 "p_b = p_p(::rt::tp2cc_shortstring_ref<255>(p_value));"));
+}
+
 void test_var_ansistring_call_keeps_lvalue_storage() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -6568,6 +6587,7 @@ int main() {
   RUN_TEST(test_shortstring_assignment_uses_pascal_string_helper);
   RUN_TEST(test_var_shortstring_call_keeps_lvalue_storage);
   RUN_TEST(test_var_shortstring_capacity_mismatch_uses_storage_ref);
+  RUN_TEST(test_procvar_var_shortstring_call_uses_storage_ref);
   RUN_TEST(test_var_ansistring_call_keeps_lvalue_storage);
   RUN_TEST(test_overloaded_string_and_bool_call_keeps_boolean_argument_raw);
   RUN_TEST(test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers);

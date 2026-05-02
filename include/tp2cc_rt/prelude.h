@@ -189,7 +189,7 @@ inline void* tp2cc_method_code() {
 
 template <int N = 255> struct tp2cc_ShortString;
 template <int N> struct tp2cc_ShortStringPtrValue;
-template <int N> struct tp2cc_ShortStringPtrRef;
+template <int N = 255> struct tp2cc_ShortStringPtrRef;
 template <typename T, auto Lo, std::size_t N> struct tp2cc_Array;
 class tp2cc_AnsiString;
 template <int N = 255> constexpr tp2cc_ShortString<N> tp2cc_shortstring_of();
