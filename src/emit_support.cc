@@ -15,6 +15,12 @@ std::string mangle(std::string_view name) {
   return s;
 }
 
+std::string type_mangle(std::string_view name) {
+  std::string s("t_");
+  s.append(name);
+  return s;
+}
+
 std::string ascii_lower(std::string_view text) {
   std::string s(text);
   for (char& ch : s) {
@@ -343,11 +349,11 @@ const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
       {"int64", {"int64_t", PrimitiveIntKind::Signed, 64}},
       {"qword", {"uint64_t", PrimitiveIntKind::Unsigned, 64}},
       {"dword", {"uint32_t", PrimitiveIntKind::Unsigned, 32}},
-      {"currency", {"::rt::p_currency", PrimitiveIntKind::Signed, 64}},
-      {"ptrint", {"::rt::p_ptrint", PrimitiveIntKind::Signed, 32}},
-      {"ptruint", {"::rt::p_ptruint", PrimitiveIntKind::Unsigned, 32}},
-      {"sizeint", {"::rt::p_sizeint", PrimitiveIntKind::Signed, 32}},
-      {"sizeuint", {"::rt::p_sizeuint", PrimitiveIntKind::Unsigned, 32}},
+      {"currency", {"::rt::t_currency", PrimitiveIntKind::Signed, 64}},
+      {"ptrint", {"::rt::t_ptrint", PrimitiveIntKind::Signed, 32}},
+      {"ptruint", {"::rt::t_ptruint", PrimitiveIntKind::Unsigned, 32}},
+      {"sizeint", {"::rt::t_sizeint", PrimitiveIntKind::Signed, 32}},
+      {"sizeuint", {"::rt::t_sizeuint", PrimitiveIntKind::Unsigned, 32}},
       {"string", {"::rt::tp2cc_ShortString<>", PrimitiveIntKind::None, 0}},
       {"shortstring", {"::rt::tp2cc_ShortString<>", PrimitiveIntKind::None, 0}},
       {"ansistring", {"::rt::tp2cc_AnsiString", PrimitiveIntKind::None, 0}},
@@ -358,35 +364,35 @@ const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
 
 const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
   static const std::unordered_map<std::string, const char*> m = {
-      {"currency", "::rt::p_currency"},
-      {"datetime", "::rt::p_datetime"},
-      {"hresult", "::rt::p_hresult"},
-      {"tdatetime", "::rt::p_tdatetime"},
-      {"dirstr", "::rt::p_dirstr"},
-      {"namestr", "::rt::p_namestr"},
-      {"extstr", "::rt::p_extstr"},
-      {"pansistring", "::rt::p_pansistring"},
-      {"pcardinal", "::rt::p_pcardinal"},
-      {"pcurrency", "::rt::p_pcurrency"},
-      {"pdword", "::rt::p_pdword"},
-      {"pint64", "::rt::p_pint64"},
-      {"pathstr", "::rt::p_pathstr"},
-      {"ppointer", "::rt::p_ppointer"},
-      {"pqword", "::rt::p_pqword"},
-      {"pshortstring", "::rt::p_pshortstring"},
-      {"ptrint", "::rt::p_ptrint"},
-      {"ptruint", "::rt::p_ptruint"},
-      {"searchrec", "::rt::p_searchrec"},
-      {"signalhandler", "::rt::p_signalhandler"},
-      {"sizeint", "::rt::p_sizeint"},
-      {"sizeuint", "::rt::p_sizeuint"},
-      {"stat", "::rt::p_stat"},
-      {"tclass", "::rt::p_tclass"},
-      {"tfpuexception", "::rt::p_tfpuexception"},
-      {"tfpuexceptionmask", "::rt::p_tfpuexceptionmask"},
-      {"tsearchrec", "::rt::p_tsearchrec"},
-      {"tsystemtime", "::rt::p_tsystemtime"},
-      {"tmethod", "::rt::p_tmethod"},
+      {"currency", "::rt::t_currency"},
+      {"datetime", "::rt::t_datetime"},
+      {"hresult", "::rt::t_hresult"},
+      {"tdatetime", "::rt::t_tdatetime"},
+      {"dirstr", "::rt::t_dirstr"},
+      {"namestr", "::rt::t_namestr"},
+      {"extstr", "::rt::t_extstr"},
+      {"pansistring", "::rt::t_pansistring"},
+      {"pcardinal", "::rt::t_pcardinal"},
+      {"pcurrency", "::rt::t_pcurrency"},
+      {"pdword", "::rt::t_pdword"},
+      {"pint64", "::rt::t_pint64"},
+      {"pathstr", "::rt::t_pathstr"},
+      {"ppointer", "::rt::t_ppointer"},
+      {"pqword", "::rt::t_pqword"},
+      {"pshortstring", "::rt::t_pshortstring"},
+      {"ptrint", "::rt::t_ptrint"},
+      {"ptruint", "::rt::t_ptruint"},
+      {"searchrec", "::rt::t_searchrec"},
+      {"signalhandler", "::rt::t_signalhandler"},
+      {"sizeint", "::rt::t_sizeint"},
+      {"sizeuint", "::rt::t_sizeuint"},
+      {"stat", "::rt::t_stat"},
+      {"tclass", "::rt::t_tclass"},
+      {"tfpuexception", "::rt::t_tfpuexception"},
+      {"tfpuexceptionmask", "::rt::t_tfpuexceptionmask"},
+      {"tsearchrec", "::rt::t_tsearchrec"},
+      {"tsystemtime", "::rt::t_tsystemtime"},
+      {"tmethod", "::rt::t_tmethod"},
   };
   return m;
 }
@@ -406,13 +412,13 @@ struct BuiltinReferenceClassInfo {
 const std::unordered_map<std::string, BuiltinReferenceClassInfo>&
 builtin_reference_class_map() {
   static const std::unordered_map<std::string, BuiltinReferenceClassInfo> m = {
-      {"tobject", {"::rt::p_tobject", "", "__rt__"}},
-      {"exception", {"::rt::p_exception", "tobject", "sysutils"}},
-      {"eexternal", {"p_sysutils::p_eexternal", "exception", "sysutils"}},
-      {"einterror", {"p_sysutils::p_einterror", "eexternal", "sysutils"}},
+      {"tobject", {"::rt::t_tobject", "", "__rt__"}},
+      {"exception", {"::rt::t_exception", "tobject", "sysutils"}},
+      {"eexternal", {"p_sysutils::t_eexternal", "exception", "sysutils"}},
+      {"einterror", {"p_sysutils::t_einterror", "eexternal", "sysutils"}},
       {"eintoverflow",
-       {"p_sysutils::p_eintoverflow", "einterror", "sysutils"}},
-      {"eoserror", {"p_sysutils::p_eoserror", "exception", "sysutils"}},
+       {"p_sysutils::t_eintoverflow", "einterror", "sysutils"}},
+      {"eoserror", {"p_sysutils::t_eoserror", "exception", "sysutils"}},
   };
   return m;
 }

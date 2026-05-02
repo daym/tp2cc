@@ -33,11 +33,10 @@ std::string EmitTypes::type_name_to_cxx(const TyName& n) {
   if (n.name == "string" || n.name == "shortstring") {
     return "::rt::tp2cc_ShortString<>";
   }
-  // The runtime_named_type_map shortcut is only a fallback for stub units. A
-  // translated user unit's own declaration must win over an rt-side stub of
-  // the same name, so we ask the translated registry first and only fall back
-  // to `::rt::...` when no translated declaration exists.
-  if (registry_knows_type(n.name)) {
+  // Runtime aliases are also registered for analysis, but their emitted names
+  // are fixed by the runtime. Only non-runtime translated declarations use
+  // generated `t_*` type spelling.
+  if (registry_knows_translated_type(n.name)) {
     auto lookup_name = ascii_lower(n.name);
     if (registry_) {
       auto cit = registry_->classes.find(std::string(lookup_name));
@@ -68,7 +67,7 @@ std::string EmitTypes::type_name_text_to_cxx(std::string_view name) {
 
 std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
   // Same registry-first / rt-fallback ordering as type_name_to_cxx.
-  if (!registry_knows_type(name)) {
+  if (!registry_knows_translated_type(name)) {
     if (std::string rt = runtime_named_type_cxx(name); !rt.empty()) {
       return rt;
     }
@@ -80,9 +79,9 @@ std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
   auto dot = name.find('.');
   if (dot != std::string_view::npos) {
     return unit_namespace_prefix(name.substr(0, dot)) +
-           mangle(name.substr(dot + 1));
+           type_mangle(name.substr(dot + 1));
   }
-  return visible_type_prefix(name) + mangle(name);
+  return visible_type_prefix(name) + type_mangle(name);
 }
 
 std::string EmitTypes::visible_type_prefix(std::string_view name) {
@@ -97,6 +96,7 @@ std::string EmitTypes::visible_type_prefix(std::string_view name) {
     if (cur->second.has_type(lower)) return {};
     for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
          ++it) {
+      if (*it == "__rt__") continue;
       auto uit = registry_->units.find(*it);
       if (uit == registry_->units.end()) continue;
       if (uit->second.has_export_type(lower)) return unit_namespace_prefix(*it);
@@ -130,7 +130,7 @@ std::string EmitTypes::visible_type_prefix(std::string_view name) {
   return {};
 }
 
-bool EmitTypes::registry_knows_type(std::string_view name) {
+bool EmitTypes::registry_knows_translated_type(std::string_view name) {
   if (!registry_) return false;
   std::string lower = ascii_lower(std::string(name));
   if (scope_.local_type_aliases_scoped.count(lower) ||
@@ -142,14 +142,33 @@ bool EmitTypes::registry_knows_type(std::string_view name) {
     if (cur->second.has_type(lower)) return true;
     for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
          ++it) {
+      if (*it == "__rt__") continue;
       auto uit = registry_->units.find(*it);
       if (uit == registry_->units.end()) continue;
       if (uit->second.has_export_type(lower)) return true;
     }
   }
-  return registry_->classes.count(lower) || registry_->records.count(lower) ||
-         registry_->interfaces.count(lower) || registry_->enums.count(lower) ||
-         registry_->aliases.count(lower);
+  if (auto it = registry_->classes.find(lower);
+      it != registry_->classes.end() && it->second.defining_unit != "__rt__") {
+    return true;
+  }
+  if (auto it = registry_->records.find(lower);
+      it != registry_->records.end() && it->second.defining_unit != "__rt__") {
+    return true;
+  }
+  if (auto it = registry_->interfaces.find(lower);
+      it != registry_->interfaces.end() && it->second.defining_unit != "__rt__") {
+    return true;
+  }
+  if (auto it = registry_->enums.find(lower);
+      it != registry_->enums.end() && it->second.defining_unit != "__rt__") {
+    return true;
+  }
+  if (auto it = registry_->aliases.find(lower);
+      it != registry_->aliases.end() && it->second.defining_unit != "__rt__") {
+    return true;
+  }
+  return false;
 }
 
 std::string EmitTypes::metaclass_struct_cxx(std::string_view class_name) {
@@ -163,7 +182,7 @@ std::string EmitTypes::metaclass_struct_cxx(std::string_view class_name) {
       ci->defining_unit != scope_.current_unit_name) {
     prefix = unit_namespace_prefix(ci->defining_unit);
   }
-  return prefix + "tp2cc_metaclass_" + mangle(tail);
+  return prefix + "tp2cc_metaclass_" + type_mangle(tail);
 }
 
 std::string EmitTypes::metaclass_value_fn_cxx(std::string_view class_name) {
@@ -177,7 +196,7 @@ std::string EmitTypes::metaclass_value_fn_cxx(std::string_view class_name) {
       ci->defining_unit != scope_.current_unit_name) {
     prefix = unit_namespace_prefix(ci->defining_unit);
   }
-  return prefix + "tp2cc_metaclass_value_" + mangle(tail);
+  return prefix + "tp2cc_metaclass_value_" + type_mangle(tail);
 }
 
 bool EmitTypes::enum_has_explicit_values(const TyEnum& e) {
@@ -418,7 +437,7 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
     const std::string member = ascii_lower(name);
     for (const auto& [enum_name, en] : scope_.local_enums) {
       for (const auto& em : en->members) {
-        if (ascii_lower(em.name) == member) return mangle(enum_name);
+        if (ascii_lower(em.name) == member) return type_mangle(enum_name);
       }
     }
     if (!registry_) return {};
@@ -429,7 +448,7 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
         info->defining_unit != scope_.current_unit_name) {
       prefix = unit_namespace_prefix(info->defining_unit);
     }
-    return prefix + mangle(info->name);
+    return prefix + type_mangle(info->name);
   };
 
   auto enum_type_for_type_name = [&](std::string_view name) -> std::string {
@@ -483,7 +502,7 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
             if (info.defining_unit != unit) continue;
             if (std::find(info.members.begin(), info.members.end(), member) !=
                 info.members.end()) {
-              return unit_namespace_prefix(unit) + mangle(info.name);
+              return unit_namespace_prefix(unit) + type_mangle(info.name);
             }
           }
         }
@@ -716,7 +735,8 @@ std::vector<EmitRecordFieldDecl> EmitTypes::record_field_decls(
       EmitRecordFieldDecl entry;
       entry.type = f.type.get();
       entry.type_cxx = type_cxx;
-      entry.mangled_name = mangle(fn);
+      entry.mangled_name =
+          registry_ ? registry_->field_cxx_name(fn) : mangle(fn);
       entry.decl = named_type_to_cxx(f.type.get(), entry.mangled_name);
       out.push_back(std::move(entry));
     }

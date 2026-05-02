@@ -18,9 +18,11 @@ namespace tp2cc {
 
 struct MethodSig;
 
-// Pascal identifiers always lower to `p_<name>` in generated C++. Keeping that
-// policy in one support module avoids ad hoc spelling rules elsewhere.
+// Pascal value identifiers lower to `p_<name>` and named Pascal types lower to
+// `t_<name>`. Keeping that split central avoids C++ scope collisions while the
+// resolver still follows Pascal's context-sensitive type/value lookup.
 std::string mangle(std::string_view name);
+std::string type_mangle(std::string_view name);
 std::string ascii_lower(std::string_view text);
 std::string char_literal_body_to_cxx(char c);
 std::string attach_named_cxx_type(std::string_view ty, std::string_view name,

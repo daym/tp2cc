@@ -373,7 +373,7 @@ std::optional<std::string> EmitCalls::maybe_lower_class_free_member(
   if (member_name != "free" || !storage_.expr_is_reference_class(base)) {
     return std::nullopt;
   }
-  return "::rt::p_tobject::p_free(" + expr_ops_.expr_to_cxx(base) + ")";
+  return "::rt::t_tobject::p_free(" + expr_ops_.expr_to_cxx(base) + ")";
 }
 
 std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(

@@ -59,10 +59,6 @@ class EmitTypes {
   std::string type_name_text_to_cxx(std::string_view name);
   std::string named_type_struct_cxx(std::string_view name);
   std::string visible_type_prefix(std::string_view name);
-  // Did any translated unit declare this type? This decides whether a named
-  // type lowers through translated namespaces or may fall back to an rt-side
-  // stub of the same name.
-  bool registry_knows_type(std::string_view name);
   std::string metaclass_struct_cxx(std::string_view class_name);
   std::string metaclass_value_fn_cxx(std::string_view class_name);
   bool enum_has_explicit_values(const ast::TyEnum& e);
@@ -106,6 +102,11 @@ class EmitTypes {
   EmitAnalysis& analysis_;
   EmitTypeConstRender& const_render_;
   EmitTypeDiagOps& diag_ops_;
+
+  // Did any non-runtime translated unit declare this type? Runtime aliases are
+  // present in the registry for analysis/member lookup, but their C++ spelling
+  // remains the explicit ::rt::t_* names from runtime_named_type_cxx().
+  bool registry_knows_translated_type(std::string_view name);
 };
 
 }  // namespace tp2cc

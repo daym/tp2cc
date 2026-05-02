@@ -74,7 +74,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       }
       if (registry_->lookup_class_field(qualifier, name)) {
         r.kind = ResolvedKind::ClassField;
-        r.cxx = mangle(name);  // caller emits the `base.` prefix
+        r.cxx = registry_->field_cxx_name(name);
         return r;
       }
     }
@@ -128,7 +128,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       // rather than an entry in `registry->classes`.
       if (const auto* ci = analysis_.class_info_for_type_name(cls);
           ci && ci->is_reference_type && name == "free") {
-        r.cxx = "::rt::p_tobject::p_free(" + it->cxx_text + ")";
+        r.cxx = "::rt::t_tobject::p_free(" + it->cxx_text + ")";
         r.kind = ResolvedKind::WithMethod;
         // The expression is already a complete call; no implicit-zero-arg
         // wrap is wanted at the use site.
@@ -146,13 +146,13 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
           return r;
         }
         if (registry_->lookup_class_field(cls, name)) {
-          r.cxx = it->cxx_text + access + mangle(name);
+          r.cxx = it->cxx_text + access + registry_->field_cxx_name(name);
           r.kind = ResolvedKind::WithField;
           return r;
         }
       }
       if (analysis_.lookup_record_field_type_in_with(*it, name)) {
-        r.cxx = it->cxx_text + access + mangle(name);
+        r.cxx = it->cxx_text + access + registry_->field_cxx_name(name);
         r.kind = ResolvedKind::WithField;
         return r;
       }
@@ -223,7 +223,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       return r;
     }
     if (registry_->lookup_class_field(scope_.current_class_name, name)) {
-      r.cxx = mangle(name);
+      r.cxx = registry_->field_cxx_name(name);
       r.kind = ResolvedKind::ClassField;
       return r;
     }

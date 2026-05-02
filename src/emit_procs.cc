@@ -214,7 +214,7 @@ void EmitProcs::emit_proc_body(const ProcDecl& pd) {
   // Header line: ret ClassName::Method(args) or ret Method(args).
   std::string ret = decls_.proc_return_type_to_cxx(pd);
   std::string qname = pascal_operator_decl_name_to_cxx(pd);
-  if (!pd.of_type.empty()) qname = mangle(pd.of_type) + "::" + qname;
+  if (!pd.of_type.empty()) qname = types_.named_type_struct_cxx(pd.of_type) + "::" + qname;
   emit_ops_.emitln(ret + " " + qname + "(" + decls_.param_list_to_cxx(pd.params) +
                    ") {");
   emit_ops_.indent();

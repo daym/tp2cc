@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <stdexcept>
 
+#include "emit_support.h"
+
 namespace tp2cc {
 
 using namespace ast;
@@ -753,6 +755,10 @@ std::string TypeRegistry::direct_type_name(const TypeExpr* te) const {
   if (!te) return {};
   if (te->kind == Kind::TyName) return lc(static_cast<const TyName&>(*te).name);
   return {};
+}
+
+std::string TypeRegistry::field_cxx_name(std::string_view name) const {
+  return mangle(name);
 }
 
 const FieldInfo* TypeRegistry::lookup_class_field(

@@ -13,6 +13,7 @@
 // their signatures/types. Expression resolution lives on top of this.
 
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -277,6 +278,11 @@ struct TypeRegistry {
 
   // If `te` canonicalizes to a class/record, return its type-alias name.
   std::string direct_type_name(const ast::TypeExpr* te) const;
+
+  // Pascal resolves type names and value names in different contexts. C++
+  // class/struct scopes do not, so all field declarations and references go
+  // through value spelling, while named Pascal types use type spelling.
+  std::string field_cxx_name(std::string_view name) const;
 
   const FieldInfo* lookup_class_field(
       const std::string& class_name, const std::string& member) const;

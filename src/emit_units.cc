@@ -133,7 +133,7 @@ std::vector<const Decl*> ordered_type_decls(const std::vector<const Decl*>& in) 
       if (j == i) continue;
       const auto& rd = *static_cast<const TypeDecl*>(type_decls[j]);
       // Pointer-to-record aliases don't need the record body before them:
-      // `using p_pfoo = p_tfoo*;` only needs the struct forward declaration
+      // `using t_pfoo = t_tfoo*;` only needs the struct forward declaration
       // (emitted by emit_forward_struct_decls). This break lets cycles
       // like `Pfoo = ^Tfoo; Tfoo = record next: Pfoo; end;` remain a DAG.
       if (rd.type && (rd.type->kind == Kind::TyRecord ||
@@ -373,7 +373,7 @@ void EmitUnits::emit_tpexcept_unit(const UnitNode& u) {
   ops_.nl();
   ops_.emitln("namespace p_tpexcept {");
   ops_.nl();
-  ops_.emitln("struct p_jmp_buf {");
+  ops_.emitln("struct t_jmp_buf {");
   ops_.indent();
   ops_.emitln("int32_t p_eax;");
   ops_.emitln("int32_t p_ebx;");
@@ -393,7 +393,7 @@ void EmitUnits::emit_tpexcept_unit(const UnitNode& u) {
   ops_.emitln("uint16_t p_ss;");
   ops_.dedent();
   ops_.emitln("};");
-  ops_.emitln("using p_pjmp_buf = p_jmp_buf*;");
+  ops_.emitln("using t_pjmp_buf = t_jmp_buf*;");
   ops_.nl();
   ops_.emitln("namespace p_detail {");
   ops_.indent();
@@ -402,14 +402,14 @@ void EmitUnits::emit_tpexcept_unit(const UnitNode& u) {
   ops_.emitln("::jmp_buf p_env;");
   ops_.dedent();
   ops_.emitln("};");
-  ops_.emitln("p_jump_state& p_state_for(p_jmp_buf* p_rec);");
+  ops_.emitln("p_jump_state& p_state_for(t_jmp_buf* p_rec);");
   ops_.dedent();
   ops_.emitln("}  // namespace p_detail");
   ops_.nl();
-  ops_.emitln("int32_t p_setjmp(p_jmp_buf& p_rec) = delete;");
+  ops_.emitln("int32_t p_setjmp(t_jmp_buf& p_rec) = delete;");
   ops_.emitln(
-      "[[noreturn]] void p_longjmp(const p_jmp_buf& p_rec, int32_t p_return_value);");
-  ops_.emitln("inline p_pjmp_buf p_recoverpospointer = nullptr;");
+      "[[noreturn]] void p_longjmp(const t_jmp_buf& p_rec, int32_t p_return_value);");
+  ops_.emitln("inline t_pjmp_buf p_recoverpospointer = nullptr;");
   ops_.emitln("inline bool p_longjump_used = false;");
   ops_.nl();
   ops_.emitln("void " + unit_init_name_ + "();");
@@ -425,7 +425,7 @@ void EmitUnits::emit_tpexcept_unit(const UnitNode& u) {
   ops_.nl();
   ops_.emitln("namespace {");
   ops_.indent();
-  ops_.emitln("std::unordered_map<const p_tpexcept::p_jmp_buf*,");
+  ops_.emitln("std::unordered_map<const p_tpexcept::t_jmp_buf*,");
   ops_.emitln("                   p_tpexcept::p_detail::p_jump_state> p_jump_states;");
   ops_.dedent();
   ops_.emitln("}  // namespace");
@@ -434,7 +434,7 @@ void EmitUnits::emit_tpexcept_unit(const UnitNode& u) {
   ops_.nl();
   ops_.emitln("namespace p_detail {");
   ops_.indent();
-  ops_.emitln("p_jump_state& p_state_for(p_jmp_buf* p_rec) {");
+  ops_.emitln("p_jump_state& p_state_for(t_jmp_buf* p_rec) {");
   ops_.indent();
   ops_.emitln("return ::p_jump_states[p_rec];");
   ops_.dedent();
@@ -443,7 +443,7 @@ void EmitUnits::emit_tpexcept_unit(const UnitNode& u) {
   ops_.emitln("}  // namespace p_detail");
   ops_.nl();
   ops_.emitln(
-      "[[noreturn]] void p_longjmp(const p_jmp_buf& p_rec, int32_t p_return_value) {");
+      "[[noreturn]] void p_longjmp(const t_jmp_buf& p_rec, int32_t p_return_value) {");
   ops_.indent();
   ops_.emitln("auto it = ::p_jump_states.find(&p_rec);");
   ops_.emitln("if (it == ::p_jump_states.end()) std::abort();");

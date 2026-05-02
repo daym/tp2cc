@@ -123,25 +123,25 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
 
   if (unit_name == "sysutils") {
     h << "namespace p_sysutils {\n";
-    h << "using p_exception = ::rt::p_exception;\n";
-    h << "using tp2cc_metaclass_p_exception = "
-         "::rt::tp2cc_metaclass_p_exception;\n";
-    h << "inline tp2cc_metaclass_p_exception* "
-         "tp2cc_metaclass_value_p_exception() {\n";
-    h << "  return ::rt::tp2cc_metaclass_value_p_exception();\n";
+    h << "using t_exception = ::rt::t_exception;\n";
+    h << "using tp2cc_metaclass_t_exception = "
+         "::rt::tp2cc_metaclass_t_exception;\n";
+    h << "inline tp2cc_metaclass_t_exception* "
+         "tp2cc_metaclass_value_t_exception() {\n";
+    h << "  return ::rt::tp2cc_metaclass_value_t_exception();\n";
     h << "}\n";
     h << "\n";
     h << "// Re-export the Pascal-visible SysUtils surface that the compiler\n";
     h << "// reaches through qualified unit names when SysUtils itself stays an\n";
     h << "// external RTL stub.\n";
     static constexpr const char* kSysutilsTypeAliases[] = {
-        "p_tdatetime",
-        "p_tsystemtime",
-        "p_hresult",
-        "p_pansistring",
-        "p_pdword",
-        "p_pqword",
-        "p_pshortstring",
+        "t_tdatetime",
+        "t_tsystemtime",
+        "t_hresult",
+        "t_pansistring",
+        "t_pdword",
+        "t_pqword",
+        "t_pshortstring",
     };
     for (const char* name : kSysutilsTypeAliases) {
       h << "using " << name << " = ::rt::" << name << ";\n";
@@ -180,19 +180,19 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
     h << "// code that says `on E: SysUtils.EIntOverflow do` resolves to\n";
     h << "// the same C++ class the runtime throws.\n";
     static constexpr const char* kRtAliasedExceptionClasses[] = {
-        "p_eexternal",
-        "p_einterror",
-        "p_eintoverflow",
-        "p_erangeerror",
-        "p_edivbyzero",
+        "t_eexternal",
+        "t_einterror",
+        "t_eintoverflow",
+        "t_erangeerror",
+        "t_edivbyzero",
     };
     for (const char* name : kRtAliasedExceptionClasses) {
       h << "using " << name << " = ::rt::" << name << ";\n";
     }
     // EOSError carries an `errorcode` field that the rt-side base class
     // does not provide; keep it as a stub redeclaration here.
-    h << "struct p_eoserror : public p_exception {\n";
-    h << "  using inherited = p_exception;\n";
+    h << "struct t_eoserror : public t_exception {\n";
+    h << "  using inherited = t_exception;\n";
     h << "  using inherited::p_create;\n";
     h << "  int32_t p_errorcode = 0;\n";
     h << "};\n";

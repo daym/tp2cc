@@ -272,7 +272,10 @@ std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target
       if (i) out += ", ";
       const TypeExpr* field_type =
           analysis_.lookup_record_field_type_in_type(target, rc.fields[i].first);
-      out += "." + mangle(rc.fields[i].first) + " = " +
+      const std::string field_name =
+          registry_ ? registry_->field_cxx_name(rc.fields[i].first)
+                    : mangle(rc.fields[i].first);
+      out += "." + field_name + " = " +
              const_value_to_cxx(*rc.fields[i].second, field_type,
                                 explicit_conversion);
     }
@@ -401,7 +404,7 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
 
   auto method_code_text = [&](const std::string& cls,
                               const ProcDecl& pd) -> std::string {
-    return "::rt::tp2cc_method_code<&" + mangle(cls) + "::" +
+    return "::rt::tp2cc_method_code<&" + types_.named_type_struct_cxx(cls) + "::" +
            types_.method_pointer_helper_name(pd) + ">()";
   };
 

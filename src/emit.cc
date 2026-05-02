@@ -276,9 +276,6 @@ struct Emitter : ResolveNameProvider,
   std::string visible_type_prefix(std::string_view name) {
     return types_.visible_type_prefix(name);
   }
-  bool registry_knows_type(std::string_view name) {
-    return types_.registry_knows_type(name);
-  }
   std::string metaclass_struct_cxx(std::string_view class_name) {
     return types_.metaclass_struct_cxx(class_name);
   }
@@ -1259,7 +1256,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               return want_call ? lower_implicit_zero_arg_call(text, rr.proc)
                                : text;
             }
-            std::string text = mangle(base_name) + "::" + mangle(m.name);
+            std::string text =
+                named_type_struct_cxx(base_name) + "::" + mangle(m.name);
             bool want_call = !is_callee_context_ &&
                              rr.is_callable && rr.accepts_zero_args;
             return want_call ? lower_implicit_zero_arg_call(text, rr.proc) : text;
@@ -1341,7 +1339,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
         }
       }
-      std::string text = base_cxx + member_access_op(*m.base) + mangle(m.name);
+      std::string member_cxx = mangle(m.name);
+      if (registry && !bcls.empty() &&
+          (registry->lookup_class_field(bcls, m.name) ||
+           registry->lookup_record_field(bcls, m.name))) {
+        member_cxx = registry->field_cxx_name(m.name);
+      }
+      std::string text = base_cxx + member_access_op(*m.base) + member_cxx;
       if (is_callee_context_ || !registry) return text;
       if (bcls.empty()) return text;
       if (const auto* method = registry->lookup_class_method(bcls, m.name)) {
@@ -1373,7 +1377,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                            registry->records.count(id.name))) {
             if (auto* method = registry->lookup_class_method(id.name, m.name);
                 method && method->decl && !method->decl->is_class_method) {
-              return "::rt::tp2cc_method_code<&" + mangle(id.name) + "::" +
+              return "::rt::tp2cc_method_code<&" +
+                     named_type_struct_cxx(id.name) + "::" +
                      method_pointer_helper_name(*method->decl) + ">()";
             }
           }
@@ -1430,7 +1435,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               if (registry->records.count(rec_lc)) {
                 if (const auto* fi = registry->lookup_record_field(rec_lc, m.name)) {
                   std::string struct_cxx = named_type_struct_cxx(rec_lc);
-                  std::string field_cxx = mangle(m.name);
+                  std::string field_cxx = registry->field_cxx_name(m.name);
                   std::string field_type_cxx =
                       fi->type ? type_to_cxx(*fi->type) : std::string("void");
                   std::string field_addr =
@@ -1752,16 +1757,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
             }
           }
-          const TypeExpr* cast_ty = nullptr;
-          auto lit = local_type_aliases_scoped.find(n);
-          if (lit != local_type_aliases_scoped.end()) {
-            cast_ty = canonicalize_type(lit->second);
-          } else if (registry) {
-            auto ait = registry->aliases.find(n);
-            if (ait != registry->aliases.end() && ait->second.target.get()) {
-              cast_ty = canonicalize_type(ait->second.target.get());
-            }
-          }
+          const TypeExpr* cast_ty = lookup_named_type_expr(n);
+          if (cast_ty) cast_ty = canonicalize_type(cast_ty);
           if (cast_ty && cast_ty->kind == Kind::TyMetaclass) {
             std::string source = const_value_to_cxx(*c.args[0], cast_ty,
                                                     /*explicit_conversion=*/true);
@@ -1769,6 +1766,20 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                 type_name_text_to_cxx(n), cast_ty, deduce_type(*c.args[0]),
                 source,
                 /*explicit_pascal_cast=*/true);
+            if (coerced != source) return coerced;
+            return "((" + type_name_text_to_cxx(n) + ")(" + source + "))";
+          }
+          if (cast_ty && cast_ty->kind == Kind::TyPointer) {
+            const Expr* peeled = peel_primitive_casts(c.args[0].get());
+            std::string source =
+                (peeled && expr_is_storage_lvalue(*c.args[0]))
+                    ? expr_to_cxx(*peeled)
+                    : arg0();
+            std::string coerced = coerce_pointer_like_text(
+                type_name_text_to_cxx(n), cast_ty, deduce_type(*c.args[0]),
+                source,
+                /*explicit_pascal_cast=*/true,
+                arg_is_const_untyped_storage(*c.args[0]));
             if (coerced != source) return coerced;
             return "((" + type_name_text_to_cxx(n) + ")(" + source + "))";
           }
@@ -1828,6 +1839,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                      type_name_text_to_cxx(n) + ">(" + arg0() + ")";
             }
           }
+          if (cast_ty) {
+            return "((" + type_name_text_to_cxx(n) + ")(" + arg0() + "))";
+          }
         } else if ((n == "inc" || n == "dec") &&
                    (c.args.size() == 1 || c.args.size() == 2) &&
                    c.args[0]->kind == Kind::Call) {
@@ -1886,9 +1900,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // Fall through to generic emission for non-packed scalar args.
         } else if (n == "new" && !c.args.empty()) {
           // Expression-form `new(T)` or `new(T, Ctor(args))`. The first
-          // arg is the *pointer-type name* (an Ident), which we already
-          // emit as `p_T` -- the underlying struct is
-          // `std::remove_pointer_t<p_T>`.
+          // argument is a pointer type name, not a value expression; lowering
+          // it through type spelling keeps Pascal's type/value namespaces
+          // separate in generated C++.
           // STUB: if the type is one of our stub target-back-end
           // aliases (t_win32 / t_os2 / t_go32v* classes that got
           // skipped), emit `nullptr` -- the call site is inside an
@@ -1910,7 +1924,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             };
             if (stub_targets.count(tname)) return "nullptr";
           }
-          std::string t = expr_to_cxx(*c.args[0]);
+          std::string t = (c.args[0]->kind == Kind::Ident)
+                              ? type_name_text_to_cxx(
+                                    static_cast<const Ident&>(*c.args[0]).name)
+                              : expr_to_cxx(*c.args[0]);
           std::string make =
               "([&]{ auto tp2cc_ptr = static_cast<::std::remove_pointer_t<" +
               t + ">*>(nullptr); ::rt::p_new(tp2cc_ptr); return tp2cc_ptr; }())";
@@ -2067,6 +2084,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                   return "((" + type_name_text_to_cxx(qualified) + ")(" +
                          expr_to_cxx(*peeled) + "))";
                 }
+                return "((" + type_name_text_to_cxx(qualified) + ")(" +
+                       source + "))";
+              }
+              if (cast_ty) {
+                return "((" + type_name_text_to_cxx(qualified) + ")(" +
+                       expr_to_cxx(*c.args[0]) + "))";
               }
             }
           }
@@ -2260,7 +2283,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       std::string out = "{";
       for (size_t i = 0; i < r.fields.size(); ++i) {
         if (i) out += ", ";
-        out += "." + mangle(r.fields[i].first) + " = " +
+        const std::string field_name =
+            registry ? registry->field_cxx_name(r.fields[i].first)
+                     : mangle(r.fields[i].first);
+        out += "." + field_name + " = " +
                expr_to_cxx(*r.fields[i].second);
       }
       out += "}";
@@ -2332,10 +2358,10 @@ static void emit_forward_struct_decls_impl(Emitter& e,
     if (!td.type) continue;
     if (td.type->kind == Kind::TyRecord || td.type->kind == Kind::TyObject ||
         td.type->kind == Kind::TyInterface) {
-      e.emitln("struct " + std::string("p_") + td.name + ";");
+      e.emitln("struct " + type_mangle(td.name) + ";");
       if (td.type->kind == Kind::TyObject &&
           static_cast<const TyObject&>(*td.type).is_reference_type) {
-        e.emitln("struct tp2cc_metaclass_" + std::string("p_") + td.name + ";");
+        e.emitln("struct tp2cc_metaclass_" + type_mangle(td.name) + ";");
       }
     }
   }

@@ -235,7 +235,7 @@ generic_emit:;
 
 void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
   (void)in_header;
-  const std::string name = mangle(td.name);
+  const std::string name = type_mangle(td.name);
 
   // Pascal enums are unscoped: members leak into the enclosing namespace
   // and are referenced directly. We emit a plain `enum` (not `enum class`)
@@ -344,7 +344,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
     if (!to.parent.empty()) {
       bases.push_back(types_.named_type_struct_cxx(to.parent));
     } else if (to.is_reference_type) {
-      bases.push_back("::rt::p_tobject");
+      bases.push_back("::rt::t_tobject");
     }
     for (const auto& iface : to.interfaces) {
       bases.push_back(types_.named_type_struct_cxx(iface));
@@ -363,18 +363,20 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
       emit_ops_.emitln("using inherited = " +
                        types_.named_type_struct_cxx(to.parent) + ";");
     } else if (to.is_reference_type) {
-      emit_ops_.emitln("using inherited = ::rt::p_tobject;");
+      emit_ops_.emitln("using inherited = ::rt::t_tobject;");
     }
     if (to.is_reference_type) {
-      emit_ops_.emitln("virtual ::rt::p_tclass p_classtype() const override;");
+      emit_ops_.emitln("virtual ::rt::t_tclass p_classtype() const override;");
       emit_ops_.emitln("virtual int32_t p_instancesize() const override;");
     }
     bool has_virtual = false;
     for (const auto& m : to.members) {
       if (m.kind == ObjectMemberKind::Field) {
         for (const auto& fn : m.field_names) {
+          const std::string field_name =
+              registry_ ? registry_->field_cxx_name(fn) : mangle(fn);
           emit_ops_.emitln(
-              types_.named_type_to_cxx(m.field_type.get(), mangle(fn)) + ";");
+              types_.named_type_to_cxx(m.field_type.get(), field_name) + ";");
         }
       } else if (m.kind == ObjectMemberKind::Method) {
         const auto& pd = *m.method;
@@ -418,7 +420,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
                           : std::string{};
       const std::string base_meta =
           has_parent_meta ? parent_meta
-                          : std::string("::rt::tp2cc_metaclass_p_tobject");
+                          : std::string("::rt::tp2cc_metaclass_t_tobject");
       const auto visible_callables = collect_metaclass_callables(td.name);
       const auto parent_callables =
           has_parent_meta ? collect_metaclass_callables(to.parent)
@@ -558,8 +560,8 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
       }
       const std::string direct_parent_meta =
           has_parent_meta ? (types_.metaclass_value_fn_cxx(to.parent) + "()")
-                          : std::string("::rt::tp2cc_metaclass_value_p_tobject()");
-      emit_ops_.emitln("::rt::p_tclass tp2cc_parentclass() const override { "
+                          : std::string("::rt::tp2cc_metaclass_value_t_tobject()");
+      emit_ops_.emitln("::rt::t_tclass tp2cc_parentclass() const override { "
                        "return " +
                        direct_parent_meta + "; }");
       emit_ops_.emitln("::rt::tp2cc_ShortString<> p_classname() const override { "
@@ -703,7 +705,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
       emit_ops_.emitln("return &value;");
       emit_ops_.dedent();
       emit_ops_.emitln("}");
-      emit_ops_.emitln("inline ::rt::p_tclass " + name +
+      emit_ops_.emitln("inline ::rt::t_tclass " + name +
                        "::p_classtype() const {");
       emit_ops_.indent();
       emit_ops_.emitln("return " + value_fn + "();");

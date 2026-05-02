@@ -30,7 +30,8 @@ std::optional<std::string> EmitProperties::maybe_property_read_text(
   if (const auto* field =
           registry_->lookup_class_field(class_name, prop.read_name)) {
     (void)field;
-    std::string text = base_cxx + access + mangle(prop.read_name);
+    std::string text =
+        base_cxx + access + registry_->field_cxx_name(prop.read_name);
     for (const auto* idx : indices) {
       text += "[" + expr_ops_.expr_to_cxx(*idx) + "]";
     }
@@ -79,7 +80,8 @@ std::optional<std::string> EmitProperties::maybe_property_write_text(
   if (const auto* field =
           registry_->lookup_class_field(class_name, prop.write_name)) {
     (void)field;
-    std::string text = base_cxx + access + mangle(prop.write_name);
+    std::string text =
+        base_cxx + access + registry_->field_cxx_name(prop.write_name);
     for (const auto* idx : indices) {
       text += "[" + expr_ops_.expr_to_cxx(*idx) + "]";
     }

@@ -269,7 +269,7 @@ void test_enum_type() {
       "end.\n");
   // Pascal enums are unscoped -- emit plain `enum` so members are visible
   // at namespace scope, matching Pascal's name lookup.
-  CHECK(contains(out.header, "enum p_tcolor : uint32_t"));
+  CHECK(contains(out.header, "enum t_tcolor : uint32_t"));
   CHECK(contains(out.header, "p_red"));
   CHECK(contains(out.header, "p_green"));
   CHECK(contains(out.header, "p_blue"));
@@ -283,7 +283,7 @@ void test_enum_type_with_explicit_values() {
       "  treg = (lo := low(longint), hi := high(longint));\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "enum p_treg : int32_t {"));
+  CHECK(contains(out.header, "enum t_treg : int32_t {"));
   CHECK(contains(out.header,
                  "p_lo = ::std::numeric_limits<int32_t>::min(),"));
   CHECK(contains(out.header,
@@ -304,10 +304,10 @@ void test_packed_record_uses_byte_sized_enum_fields() {
       "  end;\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "enum p_tsmall : uint8_t {"));
-  CHECK(contains(out.header, "struct [[gnu::packed]] p_trec {"));
-  CHECK(contains(out.header, "p_tsmall p_lo;"));
-  CHECK(contains(out.header, "p_tsmall p_kind;"));
+  CHECK(contains(out.header, "enum t_tsmall : uint8_t {"));
+  CHECK(contains(out.header, "struct [[gnu::packed]] t_trec {"));
+  CHECK(contains(out.header, "t_tsmall p_lo;"));
+  CHECK(contains(out.header, "t_tsmall p_kind;"));
 }
 
 void test_packenum_two_uses_word_sized_enum() {
@@ -318,7 +318,7 @@ void test_packenum_two_uses_word_sized_enum() {
       "type TColor = (red, green, blue);\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "enum p_tcolor : uint16_t"));
+  CHECK(contains(out.header, "enum t_tcolor : uint16_t"));
 }
 
 void test_minenumsize_alias_uses_packenum_rules() {
@@ -329,7 +329,7 @@ void test_minenumsize_alias_uses_packenum_rules() {
       "type TColor = (red, green, blue);\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "enum p_tcolor : uint8_t"));
+  CHECK(contains(out.header, "enum t_tcolor : uint8_t"));
 }
 
 void test_mode_tp_switches_default_enum_size_to_byte() {
@@ -340,7 +340,7 @@ void test_mode_tp_switches_default_enum_size_to_byte() {
       "type TColor = (red, green, blue);\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "enum p_tcolor : uint8_t"));
+  CHECK(contains(out.header, "enum t_tcolor : uint8_t"));
 }
 
 void test_mode_objfpc_restores_default_enum_size_to_longword() {
@@ -352,7 +352,7 @@ void test_mode_objfpc_restores_default_enum_size_to_longword() {
       "type TColor = (red, green, blue);\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "enum p_tcolor : uint32_t"));
+  CHECK(contains(out.header, "enum t_tcolor : uint32_t"));
 }
 
 void test_subrange_type_uses_minimal_ordinal_storage() {
@@ -366,10 +366,10 @@ void test_subrange_type_uses_minimal_ordinal_storage() {
       "  tword = 0..65535;\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "using p_tbyte = uint8_t;"));
-  CHECK(contains(out.header, "using p_tsigned = int8_t;"));
-  CHECK(contains(out.header, "using p_tsmall = uint8_t;"));
-  CHECK(contains(out.header, "using p_tword = uint16_t;"));
+  CHECK(contains(out.header, "using t_tbyte = uint8_t;"));
+  CHECK(contains(out.header, "using t_tsigned = int8_t;"));
+  CHECK(contains(out.header, "using t_tsmall = uint8_t;"));
+  CHECK(contains(out.header, "using t_tword = uint16_t;"));
 }
 
 void test_subrange_type_accepts_constant_ordinal_intrinsics() {
@@ -389,8 +389,8 @@ void test_subrange_type_accepts_constant_ordinal_intrinsics() {
       "  l.loc := lt;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "enum p_tcgloc"));
-  CHECK(contains(out.header, "using p_tcgnonrefloc = p_tcgloc;"));
+  CHECK(contains(out.header, "enum t_tcgloc"));
+  CHECK(contains(out.header, "using t_tcgnonrefloc = t_tcgloc;"));
   CHECK(contains(out.impl, "p_l.p_loc = p_lt;"));
 }
 
@@ -402,7 +402,7 @@ void test_char_subrange_preserves_char_storage() {
       "  tletter = 'a'..'z';\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "using p_tletter = ::rt::p_char;"));
+  CHECK(contains(out.header, "using t_tletter = ::rt::p_char;"));
 }
 
 void test_packed_record_shortstring_field_emits_exact_layout_asserts() {
@@ -416,9 +416,9 @@ void test_packed_record_shortstring_field_emits_exact_layout_asserts() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header, "::rt::tp2cc_ShortString<30> p_name;"));
-  CHECK(contains(out.header, "static_assert(offsetof(p_trec, p_name) == 0"));
+  CHECK(contains(out.header, "static_assert(offsetof(t_trec, p_name) == 0"));
   CHECK(contains(out.header,
-                 "static_assert(sizeof(p_trec) == (0 + sizeof(::rt::tp2cc_ShortString<30>))"));
+                 "static_assert(sizeof(t_trec) == (0 + sizeof(::rt::tp2cc_ShortString<30>))"));
 }
 
 void test_packed_record_array_field_keeps_array_wrapper_with_exact_layout_asserts() {
@@ -432,9 +432,9 @@ void test_packed_record_array_field_keeps_array_wrapper_with_exact_layout_assert
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header, "::rt::tp2cc_Array<int32_t, 0, ((2) - (0) + 1)> p_future;"));
-  CHECK(contains(out.header, "static_assert(offsetof(p_trec, p_future) == 0"));
+  CHECK(contains(out.header, "static_assert(offsetof(t_trec, p_future) == 0"));
   CHECK(contains(out.header,
-                 "static_assert(sizeof(p_trec) == (0 + sizeof(::rt::tp2cc_Array<int32_t, 0, ((2) - (0) + 1)>))"));
+                 "static_assert(sizeof(t_trec) == (0 + sizeof(::rt::tp2cc_Array<int32_t, 0, ((2) - (0) + 1)>))"));
 }
 
 void test_packed_variant_record_emits_packed_case_layout_asserts() {
@@ -451,13 +451,13 @@ void test_packed_variant_record_emits_packed_case_layout_asserts() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header, "struct [[gnu::packed]] {"));
-  CHECK(contains(out.header, "static_assert(offsetof(p_trec, p_tag) == 0"));
+  CHECK(contains(out.header, "static_assert(offsetof(t_trec, p_tag) == 0"));
   CHECK(contains(out.header,
-                 "static_assert(offsetof(p_trec, p_a) == ((0 + sizeof(uint8_t)) + 0)"));
+                 "static_assert(offsetof(t_trec, p_a) == ((0 + sizeof(uint8_t)) + 0)"));
   CHECK(contains(out.header,
-                 "static_assert(offsetof(p_trec, p_b) == ((0 + sizeof(uint8_t)) + (0 + sizeof(uint16_t)))"));
+                 "static_assert(offsetof(t_trec, p_b) == ((0 + sizeof(uint8_t)) + (0 + sizeof(uint16_t)))"));
   CHECK(contains(out.header,
-                 "static_assert(sizeof(p_trec) == ((0 + sizeof(uint8_t)) + ((((0 + sizeof(uint16_t)) + sizeof(int32_t))) < ((0 + sizeof(int32_t))) ? ((0 + sizeof(int32_t))) : (((0 + sizeof(uint16_t)) + sizeof(int32_t)))))"));
+                 "static_assert(sizeof(t_trec) == ((0 + sizeof(uint8_t)) + ((((0 + sizeof(uint16_t)) + sizeof(int32_t))) < ((0 + sizeof(int32_t))) ? ((0 + sizeof(int32_t))) : (((0 + sizeof(uint16_t)) + sizeof(int32_t)))))"));
 }
 
 void test_packed_record_array_index_reports_error() {
@@ -595,7 +595,7 @@ void test_explicit_enum_array_bounds_use_ordinal_range() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "using p_tmap = ::rt::tp2cc_Array<uint8_t, p_lo, ((::rt::tp2cc_ordinal_value(p_hi)) - (::rt::tp2cc_ordinal_value(p_lo)) + 1)>;"));
+                 "using t_tmap = ::rt::tp2cc_Array<uint8_t, p_lo, ((::rt::tp2cc_ordinal_value(p_hi)) - (::rt::tp2cc_ordinal_value(p_lo)) + 1)>;"));
 }
 
 void test_distinct_ordinal_array_bounds_use_underlying_range() {
@@ -608,7 +608,7 @@ void test_distinct_ordinal_array_bounds_use_underlying_range() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "using p_tmap = ::rt::tp2cc_Array<uint8_t, 0, 65536>;"));
+                 "using t_tmap = ::rt::tp2cc_Array<uint8_t, 0, 65536>;"));
 }
 
 void test_boolean_family_array_bounds_use_boolean_domain() {
@@ -621,7 +621,7 @@ void test_boolean_family_array_bounds_use_boolean_domain() {
       "end.\n");
   CHECK(contains(
       out.header,
-      "using p_tkind = ::rt::tp2cc_Array<::rt::p_char*, false, 2>;"));
+      "using t_tkind = ::rt::tp2cc_Array<::rt::p_char*, false, 2>;"));
 }
 
 void test_signed_ordinal_array_bounds_preserve_negative_low() {
@@ -634,7 +634,7 @@ void test_signed_ordinal_array_bounds_preserve_negative_low() {
       "end.\n");
   CHECK(contains(
       out.header,
-      "using p_tmap = ::rt::tp2cc_Array<uint8_t, ::std::numeric_limits<int16_t>::min(), 65536>;"));
+      "using t_tmap = ::rt::tp2cc_Array<uint8_t, ::std::numeric_limits<int16_t>::min(), 65536>;"));
 }
 
 void test_unsupported_fixed_array_index_reports_error_and_stays_array_typed() {
@@ -648,8 +648,8 @@ void test_unsupported_fixed_array_index_reports_error_and_stays_array_typed() {
       "end.\n");
   CHECK(error_count() > before);
   CHECK(contains(out.header,
-                 "using p_tmap = ::rt::tp2cc_Array<uint8_t, 0, 1>;"));
-  CHECK(!contains(out.header, "using p_tmap = uint8_t*;"));
+                 "using t_tmap = ::rt::tp2cc_Array<uint8_t, 0, 1>;"));
+  CHECK(!contains(out.header, "using t_tmap = uint8_t*;"));
 }
 
 void test_low_high_use_resolved_pascal_type() {
@@ -669,7 +669,7 @@ void test_low_high_use_resolved_pascal_type() {
       "  while low(arr) <= high(arr) do break;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "using p_tindex = uint16_t;"));
+  CHECK(contains(out.header, "using t_tindex = uint16_t;"));
   CHECK(contains(out.header,
                  "const auto p_maxindex = ::std::numeric_limits<uint16_t>::max();"));
   CHECK(contains(out.impl,
@@ -737,7 +737,7 @@ void test_char_array_typed_const_uses_explicit_array_literal_helper() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "inline p_tbuf p_magic = ::rt::tp2cc_array_literal<::rt::p_char, 1, ((4) - (1) + 1)>(::rt::tp2cc_shortstring_literal<255>("));
+                 "inline t_tbuf p_magic = ::rt::tp2cc_array_literal<::rt::p_char, 1, ((4) - (1) + 1)>(::rt::tp2cc_shortstring_literal<255>("));
 }
 
 void test_char_array_assignment_uses_explicit_array_literal_helper() {
@@ -785,9 +785,9 @@ void test_named_type_alias() {
       "  MyStr = string[32];\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "using p_myint = int32_t;"));
-  CHECK(contains(out.header, "using p_pint = int32_t*;"));
-  CHECK(contains(out.header, "using p_mystr = ::rt::tp2cc_ShortString<32>;"));
+  CHECK(contains(out.header, "using t_myint = int32_t;"));
+  CHECK(contains(out.header, "using t_pint = int32_t*;"));
+  CHECK(contains(out.header, "using t_mystr = ::rt::tp2cc_ShortString<32>;"));
 }
 
 void test_ansistring_builtin_maps_to_runtime_type() {
@@ -799,7 +799,7 @@ void test_ansistring_builtin_maps_to_runtime_type() {
       "procedure take(x : ansistring);\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "using p_tname = ::rt::tp2cc_AnsiString;"));
+  CHECK(contains(out.header, "using t_tname = ::rt::tp2cc_AnsiString;"));
   CHECK(contains(out.header, "extern ::rt::tp2cc_AnsiString p_s;"));
   CHECK(contains(out.header, "void p_take(::rt::tp2cc_AnsiString p_x);"));
   CHECK(!contains(out.header, "p_ansistring"));
@@ -814,7 +814,7 @@ void test_widechar_builtin_maps_to_16bit_ordinal() {
       "procedure take(x : widechar);\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "using p_twide = uint16_t;"));
+  CHECK(contains(out.header, "using t_twide = uint16_t;"));
   CHECK(contains(out.header, "extern uint16_t p_w;"));
   CHECK(contains(out.header, "void p_take(uint16_t p_x);"));
   CHECK(!contains(out.header, "p_widechar"));
@@ -829,7 +829,7 @@ void test_set_type_alias() {
       "  tcolors = set of tcolor;\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "using p_tcolors = ::rt::tp2cc_Set<p_tcolor>;"));
+  CHECK(contains(out.header, "using t_tcolors = ::rt::tp2cc_Set<t_tcolor>;"));
 }
 
 void test_var_extern_in_header_and_def_in_impl() {
@@ -906,8 +906,8 @@ void test_const_fixed_array_parameter_stays_value_abi() {
       "  if a[0] <> 0 then ;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "void p_take(p_tarr p_a);"));
-  CHECK(contains(out.impl, "void p_take(p_tarr p_a) {"));
+  CHECK(contains(out.header, "void p_take(t_tarr p_a);"));
+  CHECK(contains(out.impl, "void p_take(t_tarr p_a) {"));
   CHECK(contains(out.impl, "p_p = ::rt::tp2cc_array_addr(p_a);"));
   CHECK(contains(out.impl, "if ((p_a[0] != 0))"));
 }
@@ -932,7 +932,7 @@ void test_const_fixed_record_array_parameter_stays_value_abi() {
       "  if a[0].x <> 0 then ;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "void p_take(p_tarr p_a);"));
+  CHECK(contains(out.header, "void p_take(t_tarr p_a);"));
   CHECK(contains(out.impl, "p_p = ::rt::tp2cc_array_addr(p_a);"));
   CHECK(contains(out.impl, "if ((p_a[0].p_x != 0))"));
 }
@@ -955,7 +955,7 @@ void test_const_fixed_classref_array_parameter_stays_value_abi() {
       "  if a[0] <> nil then ;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "void p_take(p_tarr p_a);"));
+  CHECK(contains(out.header, "void p_take(t_tarr p_a);"));
   CHECK(contains(out.impl, "p_p = ::rt::tp2cc_array_addr(p_a);"));
   CHECK(contains(out.impl, "if ((p_a[0] != nullptr))"));
 }
@@ -1070,7 +1070,7 @@ void test_method_pointer_trailing_default_nil_is_lowered_as_empty_value() {
       "  note;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_note(p_tqueue{});"));
+  CHECK(contains(out.impl, "p_note(t_tqueue{});"));
 }
 
 void test_singleton_typed_array_const() {
@@ -1105,7 +1105,7 @@ void test_named_subrange_array_type() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "using p_arr = ::rt::tp2cc_Array<int32_t, 1, ((10) - (1) + 1)>;"));
+                 "using t_arr = ::rt::tp2cc_Array<int32_t, 1, ((10) - (1) + 1)>;"));
 }
 
 void test_packed_record_keeps_packed_layout() {
@@ -1119,7 +1119,7 @@ void test_packed_record_keeps_packed_layout() {
       "  end;\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "struct [[gnu::packed]] p_hdr {"));
+  CHECK(contains(out.header, "struct [[gnu::packed]] t_hdr {"));
 }
 
 void test_parenthesized_record_const() {
@@ -1132,7 +1132,7 @@ void test_parenthesized_record_const() {
       "  x : r = ((a : 1));\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "inline p_r p_x = {.p_a = 1};"));
+  CHECK(contains(out.header, "inline t_r p_x = {.p_a = 1};"));
 }
 
 void test_call_arg_literal_is_lowered_to_parameter_value() {
@@ -1385,10 +1385,10 @@ void test_try_except_raises_and_matches_exception_class() {
       "  end;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "throw ([&]{ auto tp2cc_ptr = new p_efoo{};"));
-  CHECK(contains(out.impl, "} catch (::rt::p_exception* tp2cc_exc_1) {"));
+  CHECK(contains(out.impl, "throw ([&]{ auto tp2cc_ptr = new t_efoo{};"));
+  CHECK(contains(out.impl, "} catch (::rt::t_exception* tp2cc_exc_1) {"));
   CHECK(contains(out.impl,
-                 "dynamic_cast<p_efoo*>(tp2cc_exc_1); tp2cc_match_1_0) {"));
+                 "dynamic_cast<t_efoo*>(tp2cc_exc_1); tp2cc_match_1_0) {"));
   CHECK(contains(out.impl, "auto p_e = tp2cc_match_1_0;"));
 }
 
@@ -1415,8 +1415,8 @@ void test_try_except_multiple_handlers_start_with_if_and_base_pointer_cast() {
       "  end;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "if (auto tp2cc_match_1_0 = dynamic_cast<p_efoo*>(tp2cc_exc_1); tp2cc_match_1_0) {"));
-  CHECK(contains(out.impl, "else if (auto tp2cc_match_1_1 = dynamic_cast<::rt::p_exception*>(tp2cc_exc_1); tp2cc_match_1_1) {"));
+  CHECK(contains(out.impl, "if (auto tp2cc_match_1_0 = dynamic_cast<t_efoo*>(tp2cc_exc_1); tp2cc_match_1_0) {"));
+  CHECK(contains(out.impl, "else if (auto tp2cc_match_1_1 = dynamic_cast<::rt::t_exception*>(tp2cc_exc_1); tp2cc_match_1_1) {"));
   CHECK(!contains(out.impl, "bool tp2cc_handled_1 = false;\n      else if"));
 }
 
@@ -1658,33 +1658,33 @@ void test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers
       "end;\n"
       "end.\n");
 
-  CHECK(contains(out.header, "p_tbox operator+(p_tbox p_a, p_tbox p_b);"));
-  CHECK(contains(out.header, "p_tbox operator-(p_tbox p_a, p_tbox p_b);"));
-  CHECK(contains(out.header, "bool operator==(p_tbox p_a, p_tbox p_b);"));
-  CHECK(contains(out.header, "p_tbox tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_tbox p_a, p_tbox p_b);"));
-  CHECK(contains(out.header, "double operator/(p_tbox p_a, p_tbox p_b);"));
-  CHECK(contains(out.header, "p_tbox tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(int32_t p_n);"));
-  CHECK(contains(out.header, "p_tbox tp2cc_operator_assign_params_const_name_qword_ret_name_tbox(uint64_t p_n);"));
-  CHECK(contains(out.header, "int32_t tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(p_tbox p_b);"));
-  CHECK(contains(out.header, "int64_t tp2cc_operator_assign_params_const_name_tbox_ret_name_int64(p_tbox p_b);"));
+  CHECK(contains(out.header, "t_tbox operator+(t_tbox p_a, t_tbox p_b);"));
+  CHECK(contains(out.header, "t_tbox operator-(t_tbox p_a, t_tbox p_b);"));
+  CHECK(contains(out.header, "bool operator==(t_tbox p_a, t_tbox p_b);"));
+  CHECK(contains(out.header, "t_tbox tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(t_tbox p_a, t_tbox p_b);"));
+  CHECK(contains(out.header, "double operator/(t_tbox p_a, t_tbox p_b);"));
+  CHECK(contains(out.header, "t_tbox tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(int32_t p_n);"));
+  CHECK(contains(out.header, "t_tbox tp2cc_operator_assign_params_const_name_qword_ret_name_tbox(uint64_t p_n);"));
+  CHECK(contains(out.header, "int32_t tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(t_tbox p_b);"));
+  CHECK(contains(out.header, "int64_t tp2cc_operator_assign_params_const_name_tbox_ret_name_int64(t_tbox p_b);"));
   CHECK(!contains(out.header, "tp2cc_operator_assign_params_const_name_tbox_ret_name_int64((p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox"));
-  CHECK(contains(out.impl, "p_tbox operator+(p_tbox p_a, p_tbox p_b) {"));
-  CHECK(contains(out.impl, "p_tbox operator-(p_tbox p_a, p_tbox p_b) {"));
-  CHECK(contains(out.impl, "bool operator==(p_tbox p_a, p_tbox p_b) {"));
-  CHECK(contains(out.impl, "p_tbox tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_tbox p_a, p_tbox p_b) {"));
-  CHECK(contains(out.impl, "double operator/(p_tbox p_a, p_tbox p_b) {"));
+  CHECK(contains(out.impl, "t_tbox operator+(t_tbox p_a, t_tbox p_b) {"));
+  CHECK(contains(out.impl, "t_tbox operator-(t_tbox p_a, t_tbox p_b) {"));
+  CHECK(contains(out.impl, "bool operator==(t_tbox p_a, t_tbox p_b) {"));
+  CHECK(contains(out.impl, "t_tbox tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(t_tbox p_a, t_tbox p_b) {"));
+  CHECK(contains(out.impl, "double operator/(t_tbox p_a, t_tbox p_b) {"));
   CHECK(contains(out.impl, "p_a = p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1);"));
   CHECK(contains(out.impl, "p_b = (p_a + p_a);"));
   CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_a, p_b);"));
   CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1), p_b);"));
-  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_a, p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(static_cast<int32_t>(sizeof(p_tbox))));"));
+  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_a, p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(static_cast<int32_t>(sizeof(t_tbox))));"));
   CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_ops::tp2cc_operator_assign_params_const_name_qword_ret_name_tbox(::std::numeric_limits<uint64_t>::max()), p_b);"));
   CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(p_limit), p_b);"));
-  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(static_cast<p_tnode*>(p_base)->p_value, p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0));"));
+  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(static_cast<t_tnode*>(p_base)->p_value, p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0));"));
   CHECK(contains(out.impl, "p_r = (p_a / p_b);"));
   CHECK(contains(out.impl, "p_r = (p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1) / p_b);"));
   CHECK(contains(out.impl, "if (::rt::p_not((p_a == p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0))))"));
-  CHECK(contains(out.impl, "if (::rt::p_not((static_cast<p_tnode*>(p_base)->p_value == p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0))))"));
+  CHECK(contains(out.impl, "if (::rt::p_not((static_cast<t_tnode*>(p_base)->p_value == p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0))))"));
   CHECK(contains(out.impl, "p_i = p_ops::tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(p_b);"));
 }
 
@@ -1903,8 +1903,8 @@ void test_byte_array_typecast_reinterprets_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<p_t80bitarray>(p_e)[p_i]"));
-  CHECK(!contains(out.impl, "p_t80bitarray(p_e)[p_i]"));
+                 "::rt::tp2cc_reinterpret_storage_ref<t_t80bitarray>(p_e)[p_i]"));
+  CHECK(!contains(out.impl, "t_t80bitarray(p_e)[p_i]"));
 }
 
 void test_local_byte_array_typecast_reinterprets_storage() {
@@ -1921,8 +1921,8 @@ void test_local_byte_array_typecast_reinterprets_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<p_t80bitarray>(p_e)[p_i]"));
-  CHECK(!contains(out.impl, "p_t80bitarray(p_e)[p_i]"));
+                 "::rt::tp2cc_reinterpret_storage_ref<t_t80bitarray>(p_e)[p_i]"));
+  CHECK(!contains(out.impl, "t_t80bitarray(p_e)[p_i]"));
 }
 
 void test_text_typecast_over_pointer_deref_keeps_file_lvalue() {
@@ -1970,7 +1970,7 @@ void test_visible_pointer_alias_cast_uses_qualified_type_spelling() {
         "end;\n"
         "end.\n"}});
   CHECK(contains(out.impl,
-                 "static_cast<p_widestr::p_pcompilerwidestring>(p_raw)"));
+                 "static_cast<p_widestr::t_pcompilerwidestring>(p_raw)"));
   CHECK(!contains(out.impl,
                   "((p_pcompilerwidestring)(p_raw))"));
 }
@@ -1990,8 +1990,8 @@ void test_local_pointer_alias_cast_uses_local_type_spelling() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_deref(static_cast<p_psetbytes>(p_raw))[0]"));
-  CHECK(!contains(out.impl, "::rt::tp2cc_deref(::rt::tp2cc_reinterpret_storage_ref<p_psetbytes>(p_raw))[0]"));
+                 "::rt::tp2cc_deref(static_cast<t_psetbytes>(p_raw))[0]"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_deref(::rt::tp2cc_reinterpret_storage_ref<t_psetbytes>(p_raw))[0]"));
 }
 
 void test_implicit_pointer_call_argument_gets_explicit_cast() {
@@ -2011,7 +2011,7 @@ void test_implicit_pointer_call_argument_gets_explicit_cast() {
       "  take(raw);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_take(static_cast<p_pint>(p_raw));"));
+  CHECK(contains(out.impl, "p_take(static_cast<t_pint>(p_raw));"));
 }
 
 void test_pointer_assignment_from_pointer_result_gets_explicit_cast() {
@@ -2130,9 +2130,9 @@ void test_runtime_alias_type_names_are_explicitly_qualified() {
       "begin\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "extern ::rt::p_dirstr p_d;"));
+  CHECK(contains(out.header, "extern ::rt::t_dirstr p_d;"));
   CHECK(!contains(out.header, "extern p_dirstr p_d;"));
-  CHECK(contains(out.impl, "::rt::p_datetime p_dt{};"));
+  CHECK(contains(out.impl, "::rt::t_datetime p_dt{};"));
 }
 
 void test_tdatetime_and_runtime_date_time_lower_through_rt() {
@@ -2149,7 +2149,7 @@ void test_tdatetime_and_runtime_date_time_lower_through_rt() {
       "  dt := date;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "::rt::p_tdatetime p_dt{};"));
+  CHECK(contains(out.impl, "::rt::t_tdatetime p_dt{};"));
   CHECK(contains(out.impl, "p_dt = ::rt::p_time();"));
   CHECK(contains(out.impl, "p_dt = ::rt::p_date();"));
 }
@@ -2172,13 +2172,13 @@ void test_runtime_aliases_cover_currency_systemtime_and_pansistring() {
       "begin\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "::rt::p_currency p_c{};"));
-  CHECK(contains(out.impl, "::rt::p_hresult p_hr{};"));
-  CHECK(contains(out.impl, "::rt::p_pdword p_pd{};"));
-  CHECK(contains(out.impl, "::rt::p_tsystemtime p_st{};"));
-  CHECK(contains(out.impl, "::rt::p_pansistring p_ps{};"));
-  CHECK(contains(out.impl, "::rt::p_pqword p_pq{};"));
-  CHECK(contains(out.impl, "::rt::p_pshortstring p_pss{};"));
+  CHECK(contains(out.impl, "::rt::t_currency p_c{};"));
+  CHECK(contains(out.impl, "::rt::t_hresult p_hr{};"));
+  CHECK(contains(out.impl, "::rt::t_pdword p_pd{};"));
+  CHECK(contains(out.impl, "::rt::t_tsystemtime p_st{};"));
+  CHECK(contains(out.impl, "::rt::t_pansistring p_ps{};"));
+  CHECK(contains(out.impl, "::rt::t_pqword p_pq{};"));
+  CHECK(contains(out.impl, "::rt::t_pshortstring p_pss{};"));
 }
 
 void test_tmethod_type_name_is_explicitly_qualified() {
@@ -2193,8 +2193,8 @@ void test_tmethod_type_name_is_explicitly_qualified() {
       "begin\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "::rt::p_tmethod p_m{};"));
-  CHECK(!contains(out.impl, "\n  p_tmethod p_m{};"));
+  CHECK(contains(out.impl, "::rt::t_tmethod p_m{};"));
+  CHECK(!contains(out.impl, "\n  t_tmethod p_m{};"));
 }
 
 void test_local_enum_members_do_not_fall_back_to_runtime() {
@@ -2235,7 +2235,7 @@ void test_sizeof_visible_type_uses_type_spelling_not_identifier_lookup() {
       "  writeln(sizeof(aint));\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "sizeof(p_aint)"));
+  CHECK(contains(out.impl, "sizeof(t_aint)"));
   CHECK(!contains(out.impl, "sizeof(::rt::p_aint)"));
 }
 
@@ -2361,7 +2361,7 @@ void test_absolute_pointer_target_reinterprets_pointee_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_titem &p_item = ::rt::tp2cc_reinterpret_ref<p_titem>(p_raw);"));
+                 "t_titem &p_item = ::rt::tp2cc_reinterpret_ref<t_titem>(p_raw);"));
 }
 
 void test_absolute_pointer_alias_reinterprets_pointer_storage() {
@@ -2380,7 +2380,7 @@ void test_absolute_pointer_alias_reinterprets_pointer_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_pint &p_value = ::rt::tp2cc_reinterpret_storage_ref<p_pint>(p_raw);"));
+                 "t_pint &p_value = ::rt::tp2cc_reinterpret_storage_ref<t_pint>(p_raw);"));
 }
 
 void test_pointer_alias_cast_on_pointer_expression_uses_plain_cast() {
@@ -2400,8 +2400,8 @@ void test_pointer_alias_cast_on_pointer_expression_uses_plain_cast() {
       "  l := plongint(@raw[i*4])^;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "reinterpret_cast<p_plongint>("));
-  CHECK(!contains(out.impl, "::rt::p_plongint("));
+  CHECK(contains(out.impl, "reinterpret_cast<t_plongint>("));
+  CHECK(!contains(out.impl, "::rt::t_plongint("));
 }
 
 void test_absolute_typed_const_alias_reinterprets_same_storage() {
@@ -2422,7 +2422,7 @@ void test_absolute_typed_const_alias_reinterprets_same_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_parr &p_view = ::rt::tp2cc_reinterpret_storage_ref<p_parr>(p_raw);"));
+                 "t_parr &p_view = ::rt::tp2cc_reinterpret_storage_ref<t_parr>(p_raw);"));
 }
 
 void test_absolute_const_param_alias_stays_const_reference() {
@@ -2662,10 +2662,10 @@ void test_class_method_static_emission_and_calls() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.header, "static int32_t p_bar();"));
-  CHECK(contains(out.impl, "int32_t p_tx::p_bar() {"));
+  CHECK(contains(out.impl, "int32_t t_tx::p_bar() {"));
   CHECK(contains(out.impl, "p_result = p_bar();"));
   CHECK(contains(out.impl, "p_x->p_bar();"));
-  CHECK(contains(out.impl, "p_tx::p_bar();"));
+  CHECK(contains(out.impl, "t_tx::p_bar();"));
 }
 
 void test_tobject_runtime_helpers_lower_in_method_body() {
@@ -2687,10 +2687,10 @@ void test_tobject_runtime_helpers_lower_in_method_body() {
       "  bytes := instancesize;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "virtual ::rt::p_tclass p_classtype() const override;"));
+  CHECK(contains(out.header, "virtual ::rt::t_tclass p_classtype() const override;"));
   CHECK(contains(out.header, "virtual int32_t p_instancesize() const override;"));
-  CHECK(contains(out.header, "inline ::rt::p_tclass p_titem::p_classtype() const {"));
-  CHECK(contains(out.header, "inline int32_t p_titem::p_instancesize() const {"));
+  CHECK(contains(out.header, "inline ::rt::t_tclass t_titem::p_classtype() const {"));
+  CHECK(contains(out.header, "inline int32_t t_titem::p_instancesize() const {"));
   CHECK(contains(out.impl, "p_result = p_classtype();"));
   CHECK(contains(out.impl, "p_result = p_instancesize();"));
 }
@@ -2731,7 +2731,7 @@ void test_classname_uses_metaclass_descriptor_slot() {
                  "p_c->p_classname());"));
   CHECK(contains(out.impl,
                  "::rt::tp2cc_shortstring_assign(p_result, "
-                 "tp2cc_metaclass_value_p_titem()->p_classname());"));
+                 "tp2cc_metaclass_value_t_titem()->p_classname());"));
 }
 
 void test_tobject_cast_preserves_pointer_semantics_for_free() {
@@ -2752,8 +2752,8 @@ void test_tobject_cast_preserves_pointer_semantics_for_free() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_tobject::p_free(static_cast<::rt::p_tobject*>(p_p));"));
-  CHECK(!contains(out.impl, "::rt::p_tobject(p_p)"));
+                 "::rt::t_tobject::p_free(static_cast<::rt::t_tobject*>(p_p));"));
+  CHECK(!contains(out.impl, "::rt::t_tobject(p_p)"));
 }
 
 void test_parameterless_proc_assignment_keeps_designator() {
@@ -2799,12 +2799,12 @@ void test_method_pointer_type_and_bound_assignment_emit() {
       "  cb := fire;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "using p_tcb = ::rt::tp2cc_MethodPtr<void(int32_t)>;"));
+  CHECK(contains(out.header, "using t_tcb = ::rt::tp2cc_MethodPtr<void(int32_t)>;"));
   CHECK(contains(out.header,
                  "static void tp2cc_methodptr_fire_value_name_integer_ret_void"));
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_method_code<&p_tobj::tp2cc_methodptr_fire_value_name_integer_ret_void"));
-  CHECK(contains(out.impl, "p_cb = p_tcb("));
+                 "::rt::tp2cc_method_code<&t_tobj::tp2cc_methodptr_fire_value_name_integer_ret_void"));
+  CHECK(contains(out.impl, "p_cb = t_tcb("));
 }
 
 void test_method_pointer_record_cast_reinterprets_same_storage() {
@@ -2826,9 +2826,9 @@ void test_method_pointer_record_cast_reinterprets_same_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<p_trec>(p_p).p_procpointer = p_addr;"));
+                 "::rt::tp2cc_reinterpret_storage_ref<t_trec>(p_p).p_procpointer = p_addr;"));
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<p_trec>(p_p).p_s = p_selfp;"));
+                 "::rt::tp2cc_reinterpret_storage_ref<t_trec>(p_p).p_s = p_selfp;"));
 }
 
 void test_unbound_method_address_uses_thunk_code() {
@@ -2847,7 +2847,7 @@ void test_unbound_method_address_uses_thunk_code() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "p_addr = ::rt::tp2cc_method_code<&p_tobj::tp2cc_methodptr_fire_value_name_integer_ret_void"));
+                 "p_addr = ::rt::tp2cc_method_code<&t_tobj::tp2cc_methodptr_fire_value_name_integer_ret_void"));
 }
 
 void test_internal_helpers_avoid_double_underscores() {
@@ -2919,8 +2919,8 @@ void test_const_object_param_uses_mutable_ref() {
       "begin\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "void p_take(p_tobj &p_x);"));
-  CHECK(!contains(out.header, "void p_take(p_tobj const &p_x);"));
+  CHECK(contains(out.header, "void p_take(t_tobj &p_x);"));
+  CHECK(!contains(out.header, "void p_take(t_tobj const &p_x);"));
 }
 
 void test_parameterless_procvar_stmt_autocalls() {
@@ -3016,7 +3016,7 @@ void test_open_array_procvar_signature_keeps_wrapper_type() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "using p_tcb = void (*)(::rt::tp2cc_OpenArray<::rt::tp2cc_ShortString<>>);"));
+                 "using t_tcb = void (*)(::rt::tp2cc_OpenArray<::rt::tp2cc_ShortString<>>);"));
 }
 
 void test_open_array_call_uses_owning_temporary_wrapper() {
@@ -3067,9 +3067,9 @@ void test_dynamic_array_type_uses_runtime_carrier() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "using p_tints = ::rt::tp2cc_DynArray<int32_t>;"));
+                 "using t_tints = ::rt::tp2cc_DynArray<int32_t>;"));
   CHECK(contains(out.header,
-                 "void p_demo(::rt::tp2cc_OpenArray<int32_t> p_xs, p_tints p_ys);"));
+                 "void p_demo(::rt::tp2cc_OpenArray<int32_t> p_xs, t_tints p_ys);"));
 }
 
 void test_dynamic_array_actual_converts_to_open_array_view() {
@@ -3112,11 +3112,11 @@ void test_memory_helpers_reinterpret_typecast_pointer_slots() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_getmem(::rt::tp2cc_reinterpret_storage_ref<p_pdata>(p_raw), 4);"));
+                 "::rt::p_getmem(::rt::tp2cc_reinterpret_storage_ref<t_pdata>(p_raw), 4);"));
   CHECK(contains(out.impl,
-                 "::rt::p_freemem(static_cast<p_pdata>(p_raw), 4);"));
+                 "::rt::p_freemem(static_cast<t_pdata>(p_raw), 4);"));
   CHECK(contains(out.impl,
-                 "::rt::p_dispose(::rt::tp2cc_reinterpret_storage_ref<p_pdata>(p_raw));"));
+                 "::rt::p_dispose(::rt::tp2cc_reinterpret_storage_ref<t_pdata>(p_raw));"));
 }
 
 void test_unit_local_enum_array_bounds_win_over_unrelated_same_name_types() {
@@ -3181,9 +3181,9 @@ void test_cross_unit_enum_set_literal_keeps_exported_enum_type() {
         "implementation\n"
         "end.\n"}});
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_Set<p_globals::p_tfpuexception>::from_list"));
+                 "::rt::tp2cc_Set<p_globals::t_tfpuexception>::from_list"));
   CHECK(!contains(out.impl,
-                  "::rt::tp2cc_Set<::rt::p_tfpuexception>::from_list"));
+                  "::rt::tp2cc_Set<::rt::t_tfpuexception>::from_list"));
 }
 
 void test_runtime_enum_members_resolve_explicitly() {
@@ -3258,7 +3258,7 @@ void test_named_set_const_assigns_to_compatible_set_via_runtime_helper() {
       "end.\n");
   CHECK(contains(out.header, "::rt::tp2cc_Set<int32_t> tp2cc_set{};"));
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_set_cast<p_tbyteset>(p_volatile_intregisters)"));
+                 "::rt::tp2cc_set_cast<t_tbyteset>(p_volatile_intregisters)"));
 }
 
 void test_compatible_set_actual_stays_viable_in_overload_resolution() {
@@ -3281,7 +3281,7 @@ void test_compatible_set_actual_stays_viable_in_overload_resolution() {
       "end;\n"
       "end.\n");
   CHECK_EQ(error_count() - before, 0);
-  CHECK(contains(out.impl, "p_u::p_take(static_cast<p_tbytes>(p_s))"));
+  CHECK(contains(out.impl, "p_u::p_take(static_cast<t_tbytes>(p_s))"));
 }
 
 void test_set_range_literal_uses_integer_ordinal_loop() {
@@ -3680,7 +3680,7 @@ void test_addr_of_pointer_deref_array_field_uses_offsetof_proxy() {
   // it also has to stay usable as both `pchar` and `^tcode`. The runtime
   // proxy keeps that address ambiguity until the use site converts it.
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_array_addr(reinterpret_cast<p_tcode*>(reinterpret_cast<uintptr_t>(p_p) + offsetof("));
+                 "::rt::tp2cc_array_addr(reinterpret_cast<t_tcode*>(reinterpret_cast<uintptr_t>(p_p) + offsetof("));
   CHECK(!contains(out.impl, "&::rt::tp2cc_deref(p_p).p_code"));
   CHECK(!contains(out.impl, "((::rt::p_char*)("));
 }
@@ -3706,9 +3706,9 @@ void test_addr_of_dynamic_array_targets_array_handle_not_data_proxy() {
       "end.\n");
   CHECK(contains(out.impl, "p_pa = (&p_a);"));
   CHECK(contains(out.impl,
-                 "p_pr = reinterpret_cast<p_tbytes*>(reinterpret_cast<uintptr_t>(p_r) + offsetof("));
+                 "p_pr = reinterpret_cast<t_tbytes*>(reinterpret_cast<uintptr_t>(p_r) + offsetof("));
   CHECK(!contains(out.impl, "tp2cc_array_addr(p_a)"));
-  CHECK(!contains(out.impl, "tp2cc_array_addr(reinterpret_cast<p_tbytes*"));
+  CHECK(!contains(out.impl, "tp2cc_array_addr(reinterpret_cast<t_tbytes*"));
 }
 
 void test_set_to_int_cast_uses_endian_safe_helper() {
@@ -3883,10 +3883,10 @@ void test_class_types_lower_to_pointers_and_implicit_tobject() {
       "  head : tnode;\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "struct p_tnode : public ::rt::p_tobject {"));
-  CHECK(contains(out.header, "using inherited = ::rt::p_tobject;"));
-  CHECK(contains(out.header, "p_tnode* p_next;"));
-  CHECK(contains(out.header, "extern p_tnode* p_head;"));
+  CHECK(contains(out.header, "struct t_tnode : public ::rt::t_tobject {"));
+  CHECK(contains(out.header, "using inherited = ::rt::t_tobject;"));
+  CHECK(contains(out.header, "t_tnode* p_next;"));
+  CHECK(contains(out.header, "extern t_tnode* p_head;"));
 }
 
 void test_forward_class_decl_only_emits_one_struct_body() {
@@ -3902,9 +3902,9 @@ void test_forward_class_decl_only_emits_one_struct_body() {
       "  end;\n"
       "implementation\n"
       "end.\n");
-  CHECK_EQ(count_substring(out.header, "struct p_tnode : public ::rt::p_tobject {"),
+  CHECK_EQ(count_substring(out.header, "struct t_tnode : public ::rt::t_tobject {"),
            1u);
-  CHECK(contains(out.header, "p_tnode* p_next;"));
+  CHECK(contains(out.header, "t_tnode* p_next;"));
 }
 
 void test_empty_inherited_class_decl_emits_real_struct() {
@@ -3919,9 +3919,9 @@ void test_empty_inherited_class_decl_emits_real_struct() {
       "  child : echild;\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "struct p_echild : public p_ebase {"));
-  CHECK(contains(out.header, "using inherited = p_ebase;"));
-  CHECK(contains(out.header, "extern p_echild* p_child;"));
+  CHECK(contains(out.header, "struct t_echild : public t_ebase {"));
+  CHECK(contains(out.header, "using inherited = t_ebase;"));
+  CHECK(contains(out.header, "extern t_echild* p_child;"));
 }
 
 void test_abstract_method_emits_fail_fast_virtual_body() {
@@ -3956,8 +3956,8 @@ void test_pointer_sized_integer_aliases_lower_through_rt() {
       "  b : ptruint;\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "extern ::rt::p_ptrint p_a;"));
-  CHECK(contains(out.header, "extern ::rt::p_ptruint p_b;"));
+  CHECK(contains(out.header, "extern ::rt::t_ptrint p_a;"));
+  CHECK(contains(out.header, "extern ::rt::t_ptruint p_b;"));
 }
 
 void test_tclass_alias_lowers_through_rt() {
@@ -3971,7 +3971,7 @@ void test_tclass_alias_lowers_through_rt() {
       "  sameclass := c = nil;\n"
       "end.\n"
       "end.\n");
-  CHECK(contains(out.header, "bool p_sameclass(::rt::p_tclass p_c);"));
+  CHECK(contains(out.header, "bool p_sameclass(::rt::t_tclass p_c);"));
 }
 
 void test_corba_interface_emits_pure_virtual_base_and_pointer_calls() {
@@ -3998,13 +3998,13 @@ void test_corba_interface_emits_pure_virtual_base_and_pointer_calls() {
       "  reader.next(s);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.header, "struct p_ireader {"));
-  CHECK(contains(out.header, "virtual ~p_ireader() = default;"));
+  CHECK(contains(out.header, "struct t_ireader {"));
+  CHECK(contains(out.header, "virtual ~t_ireader() = default;"));
   CHECK(contains(out.header, "virtual bool p_next("));
   CHECK(contains(out.header, ") = 0;"));
   CHECK(contains(out.header,
-                 "struct p_treader : public ::rt::p_tobject, public p_ireader {"));
-  CHECK(contains(out.header, "void p_use(p_ireader* p_reader);"));
+                 "struct t_treader : public ::rt::t_tobject, public t_ireader {"));
+  CHECK(contains(out.header, "void p_use(t_ireader* p_reader);"));
   CHECK(contains(out.impl, "p_reader->p_next(p_s);"));
 }
 
@@ -4026,7 +4026,7 @@ void test_class_constructor_call_allocates_instance() {
       "  build := tnode.create;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "auto tp2cc_ptr = new p_tnode{};"));
+  CHECK(contains(out.impl, "auto tp2cc_ptr = new t_tnode{};"));
   CHECK(contains(out.impl, "tp2cc_ptr->p_create();"));
 }
 
@@ -4071,8 +4071,8 @@ void test_object_constructor_call_uses_base_method_on_self() {
       "  tbase.init(n);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_tbase::p_init(p_n);"));
-  CHECK(!contains(out.impl, "new p_tbase{};"));
+  CHECK(contains(out.impl, "t_tbase::p_init(p_n);"));
+  CHECK(!contains(out.impl, "new t_tbase{};"));
 }
 
 void test_implicit_tobject_inherited_constructor_autocalls() {
@@ -4132,7 +4132,7 @@ void test_class_self_and_free_use_pointer_semantics() {
       "  self.next.free;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "::rt::p_tobject::p_free(this->p_next);"));
+  CHECK(contains(out.impl, "::rt::t_tobject::p_free(this->p_next);"));
   CHECK(!contains(out.impl, "this->p_next->p_free()"));
 }
 
@@ -4166,12 +4166,12 @@ void test_metaclass_alias_and_concrete_class_value_lowering() {
       "    inst := cls.create(2);\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "using p_tbaseclass = tp2cc_metaclass_p_tbase*;"));
+                 "using t_tbaseclass = tp2cc_metaclass_t_tbase*;"));
   CHECK(contains(out.header,
-                 "struct tp2cc_metaclass_p_tchild : public tp2cc_metaclass_p_tbase {"));
+                 "struct tp2cc_metaclass_t_tchild : public tp2cc_metaclass_t_tbase {"));
   CHECK(contains(out.header,
-                 "inline tp2cc_metaclass_p_tchild* tp2cc_metaclass_value_p_tchild() {"));
-  CHECK(contains(out.impl, "p_cls = tp2cc_metaclass_value_p_tchild();"));
+                 "inline tp2cc_metaclass_t_tchild* tp2cc_metaclass_value_t_tchild() {"));
+  CHECK(contains(out.impl, "p_cls = tp2cc_metaclass_value_t_tchild();"));
   CHECK(contains(out.impl, "p_inst = p_cls->p_create(1);"));
   CHECK(contains(out.impl, "if (::rt::p_assigned(p_cls))"));
 }
@@ -4204,9 +4204,9 @@ void test_metaclass_virtual_class_method_dispatch() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "virtual int32_t p_kind() const { return p_tbase::p_kind(); }"));
+                 "virtual int32_t p_kind() const { return t_tbase::p_kind(); }"));
   CHECK(contains(out.header,
-                 "virtual int32_t p_kind() const override { return p_tchild::p_kind(); }"));
+                 "virtual int32_t p_kind() const override { return t_tchild::p_kind(); }"));
   CHECK(contains(out.impl, "inherited::p_kind()"));
   CHECK(contains(out.impl, "p_i = p_cls->p_kind();"));
 }
@@ -4283,7 +4283,7 @@ void test_static_class_method_address_keeps_plain_function_pointer() {
       "  p := @tbase.kind;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_p = (&p_tbase::p_kind);"));
+  CHECK(contains(out.impl, "p_p = (&t_tbase::p_kind);"));
   CHECK(!contains(out.impl, "tp2cc_method_code"));
 }
 
@@ -4339,9 +4339,9 @@ void test_metaclass_cast_keeps_concrete_descriptor() {
       "  basecls := tchild;\n"
       "  childcls := tchildclass(basecls);\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_basecls = tp2cc_metaclass_value_p_tchild();"));
+  CHECK(contains(out.impl, "p_basecls = tp2cc_metaclass_value_t_tchild();"));
   CHECK(contains(out.impl,
-                 "p_childcls = reinterpret_cast<p_tchildclass>(p_basecls);"));
+                 "p_childcls = reinterpret_cast<t_tchildclass>(p_basecls);"));
 }
 
 void test_metaclass_value_can_flow_through_pointer_storage() {
@@ -4382,7 +4382,7 @@ void test_class_identifier_value_lowers_to_metaclass_descriptor() {
       "  ischild := x.classtype = tchild;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_result = (p_x->p_classtype() == tp2cc_metaclass_value_p_tchild());"));
+                 "p_result = (p_x->p_classtype() == tp2cc_metaclass_value_t_tchild());"));
 }
 
 void test_inline_anonymous_enum_class_field_resolves_members() {
@@ -4660,7 +4660,7 @@ void test_sizeof_lowers_to_int32_to_match_pascal_longint_semantics() {
       "  note := sizeof(myrec);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "static_cast<int32_t>(sizeof(p_myrec))"));
+  CHECK(contains(out.impl, "static_cast<int32_t>(sizeof(t_myrec))"));
 }
 
 void test_overload_picks_unsigned_widening_over_sign_change() {
@@ -4824,6 +4824,33 @@ void test_class_field_shadows_unit_name_in_member_call() {
   CHECK(contains(out.impl, "p_symtable->p_foreach"));
   CHECK(contains(out.impl, "tp2cc_method_code"));
   CHECK(!contains(out.impl, "p_symtable::p_foreach"));
+}
+
+void test_record_field_named_like_type_keeps_pascal_type_lookup() {
+  // Pascal resolves the RHS of `fvmlib: fvmlib` in type context and the LHS
+  // as a field/value symbol. C++ gets separate spellings: `t_` for the type,
+  // `p_` for the field.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  fvmlib = record\n"
+      "    x : longint;\n"
+      "  end;\n"
+      "  tcmd = record\n"
+      "    fvmlib : fvmlib;\n"
+      "  end;\n"
+      "procedure run(var c : tcmd);\n"
+      "implementation\n"
+      "procedure run(var c : tcmd);\n"
+      "begin\n"
+      "  c.fvmlib.x := 7;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "struct t_fvmlib"));
+  CHECK(contains(out.header, "t_fvmlib p_fvmlib;"));
+  CHECK(!contains(out.header, "p_fvmlib p_fvmlib;"));
+  CHECK(contains(out.impl, "p_c.p_fvmlib.p_x = 7"));
 }
 
 void test_forward_decl_does_not_create_duplicate_overload_candidate() {
@@ -5064,8 +5091,8 @@ void test_overload_picks_empty_set_literal_against_typed_set_param() {
   // Picker chose the (string, shortint, topts, bool=default) overload.
   // The empty `[]` lowered as a typed `tp2cc_Set<topt>{}`, and the
   // boolean default was filled in.
-  CHECK(contains(out.impl, "tp2cc_Set<p_topt>{}") ||
-        contains(out.impl, "p_topts>{}"));
+  CHECK(contains(out.impl, "tp2cc_Set<t_topt>{}") ||
+        contains(out.impl, "t_topts>{}"));
   // Default-fill produced the trailing `true` arg (raw or cast-wrapped
   // depending on whether type-rank picking ran).
   CHECK(contains(out.impl, ", true)") ||
@@ -5436,7 +5463,7 @@ void test_inherited_exception_create_lowers_as_constructor_call() {
       "end.\n");
   // Constructor lowering: allocate, then call p_create on the new
   // instance.
-  CHECK(contains(out.impl, "new p_efoo"));
+  CHECK(contains(out.impl, "new t_efoo"));
   CHECK(contains(out.impl, "tp2cc_ptr->p_create("));
   // Must NOT be a static-style call.
   CHECK(!contains(out.impl, "p_efoo::p_create("));
@@ -5471,7 +5498,7 @@ void test_recursive_call_var_param_gets_param_info_for_reinterpret_ref() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<p_tnode*>"));
+                 "::rt::tp2cc_reinterpret_storage_ref<t_tnode*>"));
 }
 
 void test_with_block_bare_free_lowers_through_static_helper() {
@@ -5497,7 +5524,7 @@ void test_with_block_bare_free_lowers_through_static_helper() {
   // The `with` binding is materialised as a `tp2cc_with_<N>` reference;
   // what matters is that the bare `Free` lowered through the static
   // helper anchored on that binding rather than the rt-fallback.
-  CHECK(contains(out.impl, "::rt::p_tobject::p_free(tp2cc_with_0);"));
+  CHECK(contains(out.impl, "::rt::t_tobject::p_free(tp2cc_with_0);"));
   CHECK(!contains(out.impl, "::rt::p_free"));
 }
 
@@ -5550,7 +5577,7 @@ void test_class_alias_in_value_position_lowers_to_underlying_metaclass() {
       "  registerit(texportalias);\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_registerit(tp2cc_metaclass_value_p_texportbase());"));
+                 "p_registerit(tp2cc_metaclass_value_t_texportbase());"));
 }
 
 void test_metaclass_derived_constructor_surface_stays_visible() {
@@ -5575,11 +5602,11 @@ void test_metaclass_derived_constructor_surface_stays_visible() {
       "  inst := cls.create(7);\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "struct tp2cc_metaclass_p_tchild : public tp2cc_metaclass_p_tbase {"));
+                 "struct tp2cc_metaclass_t_tchild : public tp2cc_metaclass_t_tbase {"));
   CHECK(contains(out.header,
-                 "p_tchild* (*p_create)(int32_t);"));
+                 "t_tchild* (*p_create)(int32_t);"));
   CHECK(contains(out.header,
-                 "tp2cc_metaclass_p_tchild(tp2cc_metaclass_p_tbase tp2cc_parent, p_tchild* (*tp2cc_p_create)(int32_t))"));
+                 "tp2cc_metaclass_t_tchild(tp2cc_metaclass_t_tbase tp2cc_parent, t_tchild* (*tp2cc_p_create)(int32_t))"));
   CHECK(contains(out.impl, "p_inst = p_cls->p_create(7);"));
 }
 
@@ -5610,7 +5637,7 @@ void test_metaclass_base_constructor_slot_survives_hidden_child_create() {
       "  inst := cls.create;\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "static_cast<p_tbase*>(tp2cc_ptr)->p_create();"));
+                 "static_cast<t_tbase*>(tp2cc_ptr)->p_create();"));
   CHECK(contains(out.impl, "p_inst = p_cls->p_create();"));
 }
 
@@ -5640,11 +5667,11 @@ void test_metaclass_same_signature_constructor_keeps_derived_return_type() {
       "  inst := cls.create;\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "struct tp2cc_metaclass_p_tchild : public tp2cc_metaclass_p_tbase {"));
-  CHECK(contains(out.header, "p_tchild* (*p_create)();"));
+                 "struct tp2cc_metaclass_t_tchild : public tp2cc_metaclass_t_tbase {"));
+  CHECK(contains(out.header, "t_tchild* (*p_create)();"));
   CHECK(contains(out.header,
-                 "static tp2cc_metaclass_p_tchild value = "
-                 "tp2cc_metaclass_p_tchild(tp2cc_metaclass_p_tbase("));
+                 "static tp2cc_metaclass_t_tchild value = "
+                 "tp2cc_metaclass_t_tchild(tp2cc_metaclass_t_tbase("));
   CHECK(contains(out.impl, "p_inst = p_cls->p_create();"));
 }
 
@@ -5663,7 +5690,7 @@ void test_inheritsfrom_uses_runtime_tclass_and_method_call() {
       "begin\n"
       "  isbase := x.inheritsfrom(c);\n"
       "end.\n");
-  CHECK(contains(out.header, "bool p_isbase(p_tbase* p_x, ::rt::p_tclass p_c);"));
+  CHECK(contains(out.header, "bool p_isbase(t_tbase* p_x, ::rt::t_tclass p_c);"));
   CHECK(contains(out.impl, "p_result = p_x->p_inheritsfrom(p_c);"));
 }
 
@@ -5841,8 +5868,8 @@ void test_with_cast_binds_pointer_rvalue_by_value() {
       "    next := nil;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "auto tp2cc_with_0 = static_cast<p_tnode*>(p_p);"));
-  CHECK(!contains(out.impl, "auto& tp2cc_with_0 = static_cast<p_tnode*>(p_p);"));
+  CHECK(contains(out.impl, "auto tp2cc_with_0 = static_cast<t_tnode*>(p_p);"));
+  CHECK(!contains(out.impl, "auto& tp2cc_with_0 = static_cast<t_tnode*>(p_p);"));
   CHECK(contains(out.impl, "tp2cc_with_0->p_next = nullptr;"));
 }
 
@@ -5909,7 +5936,7 @@ void test_var_arg_class_cast_reinterprets_storage_slot() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_take(::rt::tp2cc_reinterpret_storage_ref<p_tsym*>(p_l));"));
+                 "p_take(::rt::tp2cc_reinterpret_storage_ref<t_tsym*>(p_l));"));
 }
 
 void test_var_arg_derived_pointer_slot_reinterprets_storage() {
@@ -5933,7 +5960,7 @@ void test_var_arg_derived_pointer_slot_reinterprets_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_take(::rt::tp2cc_reinterpret_storage_ref<p_tbase*>(p_c));"));
+                 "p_take(::rt::tp2cc_reinterpret_storage_ref<t_tbase*>(p_c));"));
 }
 
 void test_nested_proc_var_arg_keeps_storage_semantics() {
@@ -5956,7 +5983,7 @@ void test_nested_proc_var_arg_keeps_storage_semantics() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_touch(::rt::tp2cc_reinterpret_storage_ref<p_tsym*>(p_l));"));
+                 "p_touch(::rt::tp2cc_reinterpret_storage_ref<t_tsym*>(p_l));"));
 }
 
 void test_parameterless_method_result_keeps_arrow_member_access() {
@@ -6088,7 +6115,7 @@ void test_as_cast_member_chain_keeps_arrow_access() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_result = dynamic_cast<p_tprocdef*>(p_pd)->p_inlininginfo->p_flags;"));
+                 "p_result = dynamic_cast<t_tprocdef*>(p_pd)->p_inlininginfo->p_flags;"));
 }
 
 void test_with_local_record_pointer_uses_bound_storage_for_fields() {
@@ -6165,7 +6192,7 @@ void test_expression_new_uses_runtime_storage_helper() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "::rt::p_new(tp2cc_ptr);"));
-  CHECK(!contains(out.impl, "new ::std::remove_pointer_t<p_pbox>{}"));
+  CHECK(!contains(out.impl, "new ::std::remove_pointer_t<t_pbox>{}"));
 }
 
 void test_type_order_sees_method_signature_dependencies() {
@@ -6183,8 +6210,8 @@ void test_type_order_sees_method_signature_dependencies() {
       "implementation\n"
       "end.\n");
   size_t alias_pos = out.header.find(
-      "using p_titems = ::rt::tp2cc_Array<p_titem, 0, 65536>;");
-  size_t class_pos = out.header.find("struct p_tbox : public ::rt::p_tobject");
+      "using t_titems = ::rt::tp2cc_Array<t_titem, 0, 65536>;");
+  size_t class_pos = out.header.find("struct t_tbox : public ::rt::t_tobject");
   CHECK(alias_pos != std::string::npos);
   CHECK(class_pos != std::string::npos);
   CHECK(alias_pos < class_pos);
@@ -6204,7 +6231,7 @@ void test_reference_class_typecast_is_pointer_cast() {
       "  cast_child := tchild(p);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_result = static_cast<p_tchild*>(p_p);"));
+  CHECK(contains(out.impl, "p_result = static_cast<t_tchild*>(p_p);"));
 }
 
 void test_reference_class_cast_keeps_pointer_member_access() {
@@ -6223,7 +6250,7 @@ void test_reference_class_cast_keeps_pointer_member_access() {
       "  fetch_next := tchild(p).next;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_result = static_cast<p_tchild*>(p_p)->p_next;"));
+  CHECK(contains(out.impl, "p_result = static_cast<t_tchild*>(p_p)->p_next;"));
 }
 
 void test_is_as_use_pointer_target_types() {
@@ -6245,8 +6272,8 @@ void test_is_as_use_pointer_target_types() {
       "  as_child := p as tchild;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "dynamic_cast<p_tchild*>(p_p) != nullptr"));
-  CHECK(contains(out.impl, "p_result = dynamic_cast<p_tchild*>(p_p);"));
+  CHECK(contains(out.impl, "dynamic_cast<t_tchild*>(p_p) != nullptr"));
+  CHECK(contains(out.impl, "p_result = dynamic_cast<t_tchild*>(p_p);"));
 }
 
 // Pascal identifiers that happen to be C++ reserved words (but are NOT
@@ -6490,6 +6517,7 @@ int main() {
   RUN_TEST(test_overload_ambiguous_two_default_arg_overloads_reports_error);
   RUN_TEST(test_overload_default_arg_extends_arity_disambiguates_cleanly);
   RUN_TEST(test_class_field_shadows_unit_name_in_member_call);
+  RUN_TEST(test_record_field_named_like_type_keeps_pascal_type_lookup);
   RUN_TEST(test_forward_decl_does_not_create_duplicate_overload_candidate);
   RUN_TEST(test_overload_local_unit_shadows_uses_chain_overloads);
   RUN_TEST(test_overload_exact_match_dominates_widening_alternatives);

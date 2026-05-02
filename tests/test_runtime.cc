@@ -21,7 +21,7 @@ struct MethodPtrCounter {
   int value = 0;
 };
 
-struct DestroyProbe : p_tobject {
+struct DestroyProbe : t_tobject {
   int* destroys = nullptr;
 
   explicit DestroyProbe(int* count) : destroys(count) {}
@@ -31,7 +31,7 @@ struct DestroyProbe : p_tobject {
   }
 };
 
-struct FreeInstanceProbe : p_tobject {
+struct FreeInstanceProbe : t_tobject {
   int* destroys = nullptr;
   int* frees = nullptr;
 
@@ -109,10 +109,10 @@ void test_val_keeps_leading_zero_decimals_decimal() {
 }
 
 void test_bootstrap_pointer_sized_aliases_are_32bit() {
-  static_assert(std::is_same_v<p_sizeint, int32_t>);
-  static_assert(std::is_same_v<p_sizeuint, uint32_t>);
-  static_assert(std::is_same_v<p_ptrint, int32_t>);
-  static_assert(std::is_same_v<p_ptruint, uint32_t>);
+  static_assert(std::is_same_v<t_sizeint, int32_t>);
+  static_assert(std::is_same_v<t_sizeuint, uint32_t>);
+  static_assert(std::is_same_v<t_ptrint, int32_t>);
+  static_assert(std::is_same_v<t_ptruint, uint32_t>);
 
   CHECK_EQ(p_maxint, std::numeric_limits<int32_t>::max());
 }
@@ -154,9 +154,9 @@ void test_runtime_path_helpers_match_compiler_expectations() {
 }
 
 void test_runtime_tdatetime_decodes_current_and_dos_times() {
-  const p_tdatetime midnight =
+  const t_tdatetime midnight =
       tp2cc_make_tdatetime(2024, 2, 3, 0, 0, 0, 0);
-  const p_tdatetime stamped =
+  const t_tdatetime stamped =
       tp2cc_make_tdatetime(2024, 2, 3, 4, 5, 6, 0);
 
   uint16_t year = 0, month = 0, day = 0;
@@ -172,7 +172,7 @@ void test_runtime_tdatetime_decodes_current_and_dos_times() {
   CHECK_EQ(second, 6);
   CHECK_EQ(msec, 0);
 
-  DateTime dos{};
+  t_datetime dos{};
   dos.p_year = 2024;
   dos.p_month = 2;
   dos.p_day = 3;
@@ -181,7 +181,7 @@ void test_runtime_tdatetime_decodes_current_and_dos_times() {
   dos.p_sec = 6;
   int32_t filedate = 0;
   p_packtime(dos, filedate);
-  const p_tdatetime converted = p_filedatetodatetime(filedate);
+  const t_tdatetime converted = p_filedatetodatetime(filedate);
   p_decodedate(converted, year, month, day);
   p_decodetime(converted, hour, minute, second, msec);
   CHECK_EQ(year, 2024);
@@ -329,7 +329,7 @@ void test_shortstring_pointer_deref_interoperates_with_string_ops() {
 void test_exception_mask_roundtrips() {
 #if defined(__linux__)
   const auto original = p_getexceptionmask();
-  const auto masked = p_tfpuexceptionmask::from_list(
+  const auto masked = t_tfpuexceptionmask::from_list(
       {p_exinvalidop, p_exdenormalized, p_exzerodivide,
        p_exoverflow, p_exunderflow, p_exprecision});
 
@@ -838,15 +838,15 @@ void test_array_addr_proxy_supports_explicit_pointer_and_integer_casts() {
                                    tp2cc_char_of('c'), tp2cc_char_of('\0')}};
 
   auto addr = tp2cc_array_addr(bytes);
-  p_longint* plong = (p_longint*)addr;
-  p_ptrint raw = (p_ptrint)addr;
+  t_longint* plong = (t_longint*)addr;
+  t_ptrint raw = (t_ptrint)addr;
 
-  CHECK(plong == reinterpret_cast<p_longint*>(&bytes));
-  CHECK(raw == static_cast<p_ptrint>(reinterpret_cast<uintptr_t>(&bytes)));
+  CHECK(plong == reinterpret_cast<t_longint*>(&bytes));
+  CHECK(raw == static_cast<t_ptrint>(reinterpret_cast<uintptr_t>(&bytes)));
 }
 
 void test_dos_pack_unpack_time_matches_bit_layout() {
-  DateTime in{};
+  t_datetime in{};
   in.p_year = 2004;
   in.p_month = 5;
   in.p_day = 6;
@@ -860,7 +860,7 @@ void test_dos_pack_unpack_time_matches_bit_layout() {
            (((2004 - 1980) << 25) | (5 << 21) | (6 << 16) |
             (7 << 11) | (8 << 5) | (10 / 2)));
 
-  DateTime out{};
+  t_datetime out{};
   p_unpacktime(packed, out);
   CHECK_EQ(out.p_year, in.p_year);
   CHECK_EQ(out.p_month, in.p_month);
@@ -950,7 +950,7 @@ void test_method_ptr_storage_matches_two_pointer_slots() {
 void test_tmethod_storage_matches_two_pointer_slots() {
   MethodPtrCounter counter;
   tp2cc_MethodPtr<void(int32_t)> cb{};
-  auto& raw = tp2cc_reinterpret_storage_ref<p_tmethod>(cb);
+  auto& raw = tp2cc_reinterpret_storage_ref<t_tmethod>(cb);
 
   raw.p_code = tp2cc_method_code<&method_ptr_add>();
   raw.p_data = &counter;
@@ -964,14 +964,14 @@ void test_ppointer_alias_updates_pointer_slot() {
   void* slot = nullptr;
   int value = 0;
 
-  tp2cc_deref(p_ppointer(&slot)) = &value;
+  tp2cc_deref(t_ppointer(&slot)) = &value;
   CHECK(slot == static_cast<void*>(&value));
 }
 
 void test_class_free_accepts_null_pointer() {
   DestroyProbe* p = nullptr;
 
-  p_tobject::p_free(p);
+  t_tobject::p_free(p);
   CHECK(p == nullptr);
 }
 
@@ -979,7 +979,7 @@ void test_class_free_dispatches_virtual_destroy() {
   int destroys = 0;
   auto* p = new DestroyProbe(&destroys);
 
-  p_tobject::p_free(p);
+  t_tobject::p_free(p);
   CHECK_EQ(destroys, 1);
 }
 
@@ -988,46 +988,46 @@ void test_class_free_dispatches_virtual_freeinstance() {
   int frees = 0;
   auto* p = new FreeInstanceProbe(&destroys, &frees);
 
-  p_tobject::p_free(p);
+  t_tobject::p_free(p);
   CHECK_EQ(destroys, 1);
   CHECK_EQ(frees, 1);
 }
 
 void test_tobject_metaclass_exists_and_constructs_root_instance() {
-  const auto* meta = tp2cc_metaclass_value_p_tobject();
+  const auto* meta = tp2cc_metaclass_value_t_tobject();
 
   CHECK(meta != nullptr);
   CHECK(meta->p_create != nullptr);
 
-  p_tobject* instance = meta->p_create();
+  t_tobject* instance = meta->p_create();
   CHECK(instance != nullptr);
   CHECK(instance->p_classtype() == meta);
 
-  p_tobject::p_free(instance);
+  t_tobject::p_free(instance);
 }
 
 void test_exception_metaclass_exists_and_constructs_exception_instance() {
-  const auto* meta = tp2cc_metaclass_value_p_exception();
+  const auto* meta = tp2cc_metaclass_value_t_exception();
 
   CHECK(meta != nullptr);
   CHECK(meta->p_create != nullptr);
 
-  p_tobject* instance = meta->p_create();
+  t_tobject* instance = meta->p_create();
   CHECK(instance != nullptr);
   CHECK(instance->p_classtype() == meta);
-  CHECK(dynamic_cast<p_exception*>(instance) != nullptr);
+  CHECK(dynamic_cast<t_exception*>(instance) != nullptr);
 
-  p_tobject::p_free(instance);
+  t_tobject::p_free(instance);
 }
 
 void test_classname_comes_from_metaclass_descriptor() {
-  p_tobject root;
-  p_exception exc;
+  t_tobject root;
+  t_exception exc;
 
-  CHECK(tp2cc_metaclass_value_p_tobject()->p_classname() ==
+  CHECK(tp2cc_metaclass_value_t_tobject()->p_classname() ==
         tp2cc_shortstring_of<>("tobject"));
   CHECK(root.p_classname() == tp2cc_shortstring_of<>("tobject"));
-  CHECK(tp2cc_metaclass_value_p_exception()->p_classname() ==
+  CHECK(tp2cc_metaclass_value_t_exception()->p_classname() ==
         tp2cc_shortstring_of<>("exception"));
   CHECK(exc.p_classname() == tp2cc_shortstring_of<>("exception"));
 }
@@ -1037,7 +1037,7 @@ void test_exception_create_stores_message_for_pascal_message_property() {
   // Catch sites read `e.message` (e.g. comprsrc.pas:394
   // `'Error processing resource file: ' + ... + E.Message`), so the
   // runtime stub has to actually retain the constructor argument.
-  p_exception e;
+  t_exception e;
   e.p_create(tp2cc_shortstring_of<>("disk full"));
   CHECK_EQ(tp2cc_to_std_string(e.p_message), std::string("disk full"));
 
@@ -1046,20 +1046,20 @@ void test_exception_create_stores_message_for_pascal_message_property() {
 }
 
 void test_exception_metaclass_accepts_concrete_root_create_thunk() {
-  tp2cc_metaclass_p_exception meta(tp2cc_metaclass_p_tobject(+[]() -> p_tobject* {
-    auto* instance = new p_exception{};
+  tp2cc_metaclass_t_exception meta(tp2cc_metaclass_t_tobject(+[]() -> t_tobject* {
+    auto* instance = new t_exception{};
     instance->p_create();
     return instance;
   }));
 
   CHECK(meta.p_create != nullptr);
-  CHECK(meta.tp2cc_parentclass() == tp2cc_metaclass_value_p_tobject());
+  CHECK(meta.tp2cc_parentclass() == tp2cc_metaclass_value_t_tobject());
 
-  p_tobject* instance = meta.p_create();
+  t_tobject* instance = meta.p_create();
   CHECK(instance != nullptr);
-  CHECK(dynamic_cast<p_exception*>(instance) != nullptr);
+  CHECK(dynamic_cast<t_exception*>(instance) != nullptr);
 
-  p_tobject::p_free(instance);
+  t_tobject::p_free(instance);
 }
 
 void test_hi_lo_split_ordinal_halves() {

@@ -125,7 +125,7 @@ void EmitStmts::emit_try_stmt(const Try& t) {
   stmt_ops_.indent();
   for (const auto& sub : t.body) emit_stmt(*sub);
   stmt_ops_.dedent();
-  stmt_ops_.emitln("} catch (::rt::p_exception* " + exc_name + ") {");
+  stmt_ops_.emitln("} catch (::rt::t_exception* " + exc_name + ") {");
   stmt_ops_.indent();
   stmt_ops_.emitln("bool " + handled_name + " = false;");
   for (size_t i = 0; i < t.handlers.size(); ++i) {
@@ -234,6 +234,13 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
       if (std::string ref = storage_.primitive_cast_lvalue_ref(c);
           !ref.empty()) {
         stmt_ops_.emitln(ref + " = " + stmt_ops_.expr_to_cxx(*a.value) + ";");
+        return;
+      }
+      if (auto view = storage_.typecast_storage_view(c)) {
+        stmt_ops_.emitln(storage_.reinterpret_ref_text(
+                             view->target_cxx, view->source_cxx,
+                             view->pointee_view) +
+                         " = " + stmt_ops_.expr_to_cxx(*a.value) + ";");
         return;
       }
       const TypeExpr* tgt = nullptr;
@@ -596,7 +603,16 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
       std::string text = stmt_ops_.expr_to_cxx(*es.expr);
       bool stmt_autocalls_member = false;
       if (registry_) {
-        std::string cls = analysis_.deduce_class_alias(*mem.base);
+        std::string cls;
+        if (mem.base && mem.base->kind == Kind::Ident) {
+          const std::string base =
+              ascii_lower(static_cast<const Ident&>(*mem.base).name);
+          if (!registry_->classes.count(base) && !registry_->records.count(base)) {
+            cls = analysis_.deduce_class_alias(*mem.base);
+          }
+        } else {
+          cls = analysis_.deduce_class_alias(*mem.base);
+        }
         if (!cls.empty()) {
           if (const auto* method = registry_->lookup_class_method(cls, mem.name)) {
             stmt_autocalls_member = method->accepts_zero_args;

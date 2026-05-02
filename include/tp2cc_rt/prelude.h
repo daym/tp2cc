@@ -123,7 +123,7 @@ struct tp2cc_MethodPtr;
 
 // Raw `{Code,Data}` storage used by Pascal code that reinterprets method
 // pointers as plain records instead of invoking them through `... of object`.
-struct p_tmethod {
+struct t_tmethod {
   void* p_code = nullptr;
   void* p_data = nullptr;
 };
@@ -202,55 +202,55 @@ template <int N, typename Src>
 inline void tp2cc_shortstring_assign(tp2cc_ShortString<N>& dest, const Src& src);
 template <int N, typename Src>
 inline void tp2cc_shortstring_assign(tp2cc_ShortStringPtrRef<N> dest, const Src& src);
-struct p_tobject;
-struct p_exception;
-struct tp2cc_metaclass_p_tobject;
-using p_tclass = tp2cc_metaclass_p_tobject*;
+struct t_tobject;
+struct t_exception;
+struct tp2cc_metaclass_t_tobject;
+using t_tclass = tp2cc_metaclass_t_tobject*;
 
-struct tp2cc_metaclass_p_tobject {
-  p_tobject* (*p_create)() = nullptr;
+struct tp2cc_metaclass_t_tobject {
+  t_tobject* (*p_create)() = nullptr;
 
-  tp2cc_metaclass_p_tobject(p_tobject* (*tp2cc_p_create)() = nullptr)
+  tp2cc_metaclass_t_tobject(t_tobject* (*tp2cc_p_create)() = nullptr)
       : p_create(tp2cc_p_create) {}
 
   // `TClass` / `InheritsFrom` only need the direct class parent, not full RTTI.
   // Each generated metaclass descriptor overrides this hook with the exact
   // singleton for its Pascal parent class.
-  virtual p_tclass tp2cc_parentclass() const { return nullptr; }
+  virtual t_tclass tp2cc_parentclass() const { return nullptr; }
   virtual tp2cc_ShortString<> p_classname() const;
 };
 
-inline tp2cc_metaclass_p_tobject* tp2cc_metaclass_value_p_tobject();
+inline tp2cc_metaclass_t_tobject* tp2cc_metaclass_value_t_tobject();
 
-struct tp2cc_metaclass_p_exception : public tp2cc_metaclass_p_tobject {
-  using tp2cc_metaclass_p_tobject::tp2cc_metaclass_p_tobject;
+struct tp2cc_metaclass_t_exception : public tp2cc_metaclass_t_tobject {
+  using tp2cc_metaclass_t_tobject::tp2cc_metaclass_t_tobject;
 
   // Generated subclasses of `Exception` reuse the root metaclass thunk but
-  // still need a concrete `tp2cc_metaclass_p_exception` object so their
+  // still need a concrete `tp2cc_metaclass_t_exception` object so their
   // `ClassType` value stays convertible to `TClass` and keeps the exception
   // parent hook.
-  tp2cc_metaclass_p_exception(tp2cc_metaclass_p_tobject tp2cc_parent)
-      : tp2cc_metaclass_p_tobject(tp2cc_parent) {}
+  tp2cc_metaclass_t_exception(tp2cc_metaclass_t_tobject tp2cc_parent)
+      : tp2cc_metaclass_t_tobject(tp2cc_parent) {}
 
   // Generated exception subclasses keep a typed `Exception.Create` slot in
   // their metaclass descriptors. Accept that narrower thunk directly and
   // forward it through the root `TObject` metaclass storage.
-  tp2cc_metaclass_p_exception(tp2cc_metaclass_p_tobject tp2cc_parent,
-                              p_exception* (*tp2cc_p_create)())
-      : tp2cc_metaclass_p_tobject(tp2cc_parent) {
-    p_create = reinterpret_cast<p_tobject* (*)()>(tp2cc_p_create);
+  tp2cc_metaclass_t_exception(tp2cc_metaclass_t_tobject tp2cc_parent,
+                              t_exception* (*tp2cc_p_create)())
+      : tp2cc_metaclass_t_tobject(tp2cc_parent) {
+    p_create = reinterpret_cast<t_tobject* (*)()>(tp2cc_p_create);
   }
 
-  p_tclass tp2cc_parentclass() const override;
+  t_tclass tp2cc_parentclass() const override;
   tp2cc_ShortString<> p_classname() const override;
 };
 
-inline tp2cc_metaclass_p_exception* tp2cc_metaclass_value_p_exception();
+inline tp2cc_metaclass_t_exception* tp2cc_metaclass_value_t_exception();
 
 // Delphi/FPC `class` types are references to heap objects whose base
 // contract is `TObject`. Keep the runtime base explicit rather than
 // letting each translated unit invent its own ad-hoc root.
-struct p_tobject {
+struct t_tobject {
   // Pascal class construction starts at TObject.Create. The default root
   // implementation just succeeds; translated derived constructors chain to
   // it via `inherited Create`.
@@ -258,7 +258,7 @@ struct p_tobject {
   // Old Delphi/FPC object code queries the dynamic class descriptor and
   // instance byte size via TObject.ClassType / InstanceSize. Derived
   // translated classes override these with concrete answers.
-  virtual p_tclass p_classtype() const { return tp2cc_metaclass_value_p_tobject(); }
+  virtual t_tclass p_classtype() const { return tp2cc_metaclass_value_t_tobject(); }
   virtual int32_t p_instancesize() const { return static_cast<int32_t>(sizeof(*this)); }
   virtual tp2cc_ShortString<> p_classname() const;
   virtual void p_destroy() {}
@@ -266,7 +266,7 @@ struct p_tobject {
   // Old compiler code overrides it directly (for refcounted symbol-table
   // nodes, for example), so keep it virtual and separate from `p_destroy`.
   virtual void p_freeinstance() { delete this; }
-  virtual ~p_tobject() = default;
+  virtual ~t_tobject() = default;
   // Pascal `obj.Free` is null-safe. That cannot be a normal C++ member
   // call on a pointer, because `obj->p_free()` is already UB when `obj`
   // is null. The emitter therefore lowers Pascal `Free` to this static
@@ -274,8 +274,8 @@ struct p_tobject {
   // virtual Pascal destruction sequence.
   template <typename T>
   static void p_free(T* p) {
-    static_assert(std::is_base_of_v<p_tobject, T>,
-                  "p_tobject::p_free expects a translated Pascal class type");
+    static_assert(std::is_base_of_v<t_tobject, T>,
+                  "t_tobject::p_free expects a translated Pascal class type");
     if (!p) return;
     p->p_destroy();
     p->p_freeinstance();
@@ -284,9 +284,9 @@ struct p_tobject {
   // `obj.InheritsFrom(TClassVar)` is the object-side subset of Delphi/FPC
   // metaclass RTTI that the bootstrap compiler actually uses. Walk the direct
   // metaclass parent hooks instead of requiring a larger reflection surface.
-  bool p_inheritsfrom(p_tclass p_aclass) const {
+  bool p_inheritsfrom(t_tclass p_aclass) const {
     if (!p_aclass) return false;
-    for (p_tclass p_meta = p_classtype(); p_meta;
+    for (t_tclass p_meta = p_classtype(); p_meta;
          p_meta = p_meta->tp2cc_parentclass()) {
       if (p_meta == p_aclass) return true;
     }
@@ -318,20 +318,18 @@ extern "C" void tp2cc_set_8087_control_word(uint16_t cw);
 inline uint16_t p_get8087cw() { return tp2cc_get_8087_control_word(); }
 inline void p_set8087cw(uint16_t cw) { tp2cc_set_8087_control_word(cw); }
 
-using p_ppointer = void**;
-
 // The translated `sysutils` stub aliases into `rt::`, and compiler units
 // declare exception subclasses against that alias. Keep a minimal base
 // available here so those classes compile before a full SysUtils exists.
-// `p_exception`'s definition lives lower down -- the `p_message` field is
+// `t_exception`'s definition lives lower down -- the `p_message` field is
 // `tp2cc_AnsiString`, whose full type isn't yet visible here. The forward
 // declaration earlier in this header is enough for the metaclass
-// machinery; subclasses and `new p_exception` users land below
+// machinery; subclasses and `new t_exception` users land below
 // `tp2cc_AnsiString` so the field has a complete type.
 
-inline tp2cc_metaclass_p_tobject* tp2cc_metaclass_value_p_tobject() {
-  static tp2cc_metaclass_p_tobject value{+[]() -> p_tobject* {
-    auto* tp2cc_ptr = new p_tobject{};
+inline tp2cc_metaclass_t_tobject* tp2cc_metaclass_value_t_tobject() {
+  static tp2cc_metaclass_t_tobject value{+[]() -> t_tobject* {
+    auto* tp2cc_ptr = new t_tobject{};
     tp2cc_ptr->p_create();
     return tp2cc_ptr;
   }};
@@ -701,11 +699,11 @@ constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(const tp2cc_ShortString<M>& 
   return out;
 }
 
-inline tp2cc_ShortString<> tp2cc_metaclass_p_tobject::p_classname() const {
+inline tp2cc_ShortString<> tp2cc_metaclass_t_tobject::p_classname() const {
   return tp2cc_shortstring_of<>("tobject");
 }
 
-inline tp2cc_ShortString<> p_tobject::p_classname() const {
+inline tp2cc_ShortString<> t_tobject::p_classname() const {
   return p_classtype()->p_classname();
 }
 
@@ -1040,12 +1038,12 @@ class tp2cc_AnsiString {
   }
 };
 
-// `p_exception`'s field `p_message` needs `tp2cc_AnsiString` to be a
+// `t_exception`'s field `p_message` needs `tp2cc_AnsiString` to be a
 // complete type, so the struct lives here rather than next to
-// `p_tobject`. Forward declarations earlier in the header let the
+// `t_tobject`. Forward declarations earlier in the header let the
 // metaclass machinery refer to it ahead of this point.
-struct p_exception : p_tobject {
-  using inherited = p_tobject;
+struct t_exception : t_tobject {
+  using inherited = t_tobject;
   using inherited::p_create;
 
   // Pascal `Exception.Message` -- sysutils declares this as `string`
@@ -1053,7 +1051,7 @@ struct p_exception : p_tobject {
   // derived exception (`EOSError`, `EIntError`, ...) has it for free.
   tp2cc_AnsiString p_message;
 
-  p_tclass p_classtype() const override;
+  t_tclass p_classtype() const override;
   int32_t p_instancesize() const override;
 
   bool p_create(const tp2cc_ShortString<255>& msg) {
@@ -1066,29 +1064,29 @@ struct p_exception : p_tobject {
   }
 };
 
-inline tp2cc_metaclass_p_exception* tp2cc_metaclass_value_p_exception() {
-  static tp2cc_metaclass_p_exception value{
-      +[]() -> p_tobject* {
-        auto* tp2cc_ptr = new p_exception{};
+inline tp2cc_metaclass_t_exception* tp2cc_metaclass_value_t_exception() {
+  static tp2cc_metaclass_t_exception value{
+      +[]() -> t_tobject* {
+        auto* tp2cc_ptr = new t_exception{};
         tp2cc_ptr->p_create();
         return tp2cc_ptr;
       }};
   return &value;
 }
 
-inline p_tclass tp2cc_metaclass_p_exception::tp2cc_parentclass() const {
-  return tp2cc_metaclass_value_p_tobject();
+inline t_tclass tp2cc_metaclass_t_exception::tp2cc_parentclass() const {
+  return tp2cc_metaclass_value_t_tobject();
 }
 
-inline tp2cc_ShortString<> tp2cc_metaclass_p_exception::p_classname() const {
+inline tp2cc_ShortString<> tp2cc_metaclass_t_exception::p_classname() const {
   return tp2cc_shortstring_of<>("exception");
 }
 
-inline p_tclass p_exception::p_classtype() const {
-  return tp2cc_metaclass_value_p_exception();
+inline t_tclass t_exception::p_classtype() const {
+  return tp2cc_metaclass_value_t_exception();
 }
 
-inline int32_t p_exception::p_instancesize() const {
+inline int32_t t_exception::p_instancesize() const {
   return static_cast<int32_t>(sizeof(*this));
 }
 
@@ -1096,37 +1094,37 @@ inline int32_t p_exception::p_instancesize() const {
 // `try ... except on E:EIntOverflow do ...`. The sysutils-stub
 // generator (src/main.cc) aliases these names into `p_sysutils` so
 // translated code in either configuration sees the same C++ classes.
-struct p_eexternal : p_exception {
-  using inherited = p_exception;
+struct t_eexternal : t_exception {
+  using inherited = t_exception;
   using inherited::p_create;
 };
-struct p_einterror : p_eexternal {
-  using inherited = p_eexternal;
+struct t_einterror : t_eexternal {
+  using inherited = t_eexternal;
   using inherited::p_create;
 };
-struct p_eintoverflow : p_einterror {
-  using inherited = p_einterror;
+struct t_eintoverflow : t_einterror {
+  using inherited = t_einterror;
   using inherited::p_create;
 };
-struct p_erangeerror : p_einterror {
-  using inherited = p_einterror;
+struct t_erangeerror : t_einterror {
+  using inherited = t_einterror;
   using inherited::p_create;
 };
-struct p_edivbyzero : p_einterror {
-  using inherited = p_einterror;
+struct t_edivbyzero : t_einterror {
+  using inherited = t_einterror;
   using inherited::p_create;
 };
 
 [[noreturn]] inline void tp2cc_throw_int_overflow() {
-  auto* e = new p_eintoverflow{};
+  auto* e = new t_eintoverflow{};
   e->p_create();
-  throw static_cast<p_tobject*>(e);
+  throw static_cast<t_tobject*>(e);
 }
 
 [[noreturn]] inline void tp2cc_throw_range_error() {
-  auto* e = new p_erangeerror{};
+  auto* e = new t_erangeerror{};
   e->p_create();
-  throw static_cast<p_tobject*>(e);
+  throw static_cast<t_tobject*>(e);
 }
 
 // `{$R+}` range-checking on narrowing assignments. Pascal raises
@@ -1770,39 +1768,40 @@ inline bool operator>=(p_char a, const tp2cc_ShortString<N>& b) {
 // `using namespace ::rt;`.
 
 // dos unit
-using p_dirstr  = tp2cc_ShortString<255>;
-using p_namestr = tp2cc_ShortString<255>;
-using p_extstr  = tp2cc_ShortString<255>;
-using p_pathstr = tp2cc_ShortString<255>;
-using p_comstr  = tp2cc_ShortString<255>;
+using t_dirstr  = tp2cc_ShortString<255>;
+using t_namestr = tp2cc_ShortString<255>;
+using t_extstr  = tp2cc_ShortString<255>;
+using t_pathstr = tp2cc_ShortString<255>;
+using t_comstr  = tp2cc_ShortString<255>;
 // The current tp2cc bootstrap runtime targets 32-bit hosts only. Match
 // FPC's CPU32 aliases here so translated compiler code sees pointer-sized
 // integers as `longint`/`dword` equivalents.
-using p_longint  = int32_t;
-using p_dword    = uint32_t;
-using p_sizeint  = p_longint;
-using p_sizeuint = p_dword;
-using p_ptrint   = p_longint;
-using p_ptruint  = p_dword;
+using t_longint  = int32_t;
+using t_dword    = uint32_t;
+using t_sizeint  = t_longint;
+using t_sizeuint = t_dword;
+using t_ptrint   = t_longint;
+using t_ptruint  = t_dword;
 
 // objects unit
-using p_sw_integer = int32_t;
-using p_sw_word    = uint32_t;
+using t_sw_integer = int32_t;
+using t_sw_word    = uint32_t;
 
 // linux / file descriptors
-using p_thandle   = int32_t;
-using p_tfiletime = int64_t;
-using p_tdatetime = double;
-using p_currency  = int64_t;
-using p_hresult   = int32_t;
-using p_pansistring = tp2cc_AnsiString*;
+using t_thandle   = int32_t;
+using t_tfiletime = int64_t;
+using t_tdatetime = double;
+using t_currency  = int64_t;
+using t_hresult   = int32_t;
+using t_pansistring = tp2cc_AnsiString*;
 
-using p_pcardinal = uint32_t*;
-using p_pcurrency = p_currency*;
-using p_pdword    = uint32_t*;
-using p_pint64    = int64_t*;
-using p_pqword    = uint64_t*;
-using p_pshortstring = tp2cc_ShortString<>*;
+using t_pcardinal = uint32_t*;
+using t_pcurrency = t_currency*;
+using t_pdword    = uint32_t*;
+using t_pint64    = int64_t*;
+using t_ppointer  = void**;
+using t_pqword    = uint64_t*;
+using t_pshortstring = tp2cc_ShortString<>*;
 
 // Only `vtAnsiString` is needed: ncgld.pas locally redeclares all the
 // other vt* tags in a procedure-scoped `const` block, so the bare name
@@ -1820,7 +1819,7 @@ inline constexpr int32_t p_fmsharedenynone = 0x40;
 // so ncal.pas's `translate_disp_call` body translates cleanly.
 inline constexpr int32_t p_varstrarg = 0x48;
 
-struct p_tsystemtime {
+struct t_tsystemtime {
   uint16_t p_year = 0;
   uint16_t p_month = 0;
   uint16_t p_dayofweek = 0;
@@ -1832,7 +1831,7 @@ struct p_tsystemtime {
 };
 
 // signal handler (syslinux) + POSIX signal numbers used by catch.pas.
-using p_signalhandler = void (*)(int32_t);
+using t_signalhandler = void (*)(int32_t);
 inline constexpr int32_t p_sighup  = 1;
 inline constexpr int32_t p_sigint  = 2;
 inline constexpr int32_t p_sigquit = 3;
@@ -2594,7 +2593,7 @@ tp2cc_Set<Elem> set_of(std::initializer_list<Elem> xs) {
 // folding does not raise stray FP traps. The actual mask read/write
 // happens via tp2cc_get/set_exception_mask_bits below; the enum/set here
 // just gives the source-level names that compiler.pas references.
-enum p_tfpuexception : uint8_t {
+enum t_tfpuexception : uint8_t {
   p_exinvalidop,
   p_exdenormalized,
   p_exzerodivide,
@@ -2602,20 +2601,20 @@ enum p_tfpuexception : uint8_t {
   p_exunderflow,
   p_exprecision,
 };
-using p_tfpuexceptionmask = tp2cc_Set<p_tfpuexception>;
+using t_tfpuexceptionmask = tp2cc_Set<t_tfpuexception>;
 
 // Pascal `Math.GetExceptionMask` / `SetExceptionMask` use the same six-bit
 // exception-mask layout across targets. Keep that API in the runtime so the
 // translated compiler does not need the full `Math` unit just to mask FP
 // traps before constant folding.
-inline p_tfpuexceptionmask p_getexceptionmask() {
-  p_tfpuexceptionmask mask{};
+inline t_tfpuexceptionmask p_getexceptionmask() {
+  t_tfpuexceptionmask mask{};
   mask.bits[0] = static_cast<unsigned char>(tp2cc_get_exception_mask_bits() & 0x3Fu);
   return mask;
 }
 
-inline p_tfpuexceptionmask p_setexceptionmask(p_tfpuexceptionmask mask) {
-  p_tfpuexceptionmask previous{};
+inline t_tfpuexceptionmask p_setexceptionmask(t_tfpuexceptionmask mask) {
+  t_tfpuexceptionmask previous{};
   previous.bits[0] = static_cast<unsigned char>(
       tp2cc_set_exception_mask_bits(static_cast<uint8_t>(mask.bits[0] & 0x3Fu)));
   return previous;
@@ -3296,17 +3295,16 @@ inline void tp2cc_spawn_process(const std::vector<std::string>& args) {
 }
 
 // Dos/file procedures -- stubbed; real behaviour added as needed.
-struct SearchRec { int32_t p_time = 0; int32_t p_size = 0;
-                   uint8_t p_attr = 0; tp2cc_ShortString<> p_name{};
-                   std::vector<std::string> tp2cc_matches;
-                   std::size_t tp2cc_index = 0; };
-using p_searchrec = SearchRec;
-using p_tsearchrec = SearchRec;
+struct t_searchrec { int32_t p_time = 0; int32_t p_size = 0;
+                     uint8_t p_attr = 0; tp2cc_ShortString<> p_name{};
+                     std::vector<std::string> tp2cc_matches;
+                     std::size_t tp2cc_index = 0; };
+using t_tsearchrec = t_searchrec;
 inline constexpr int32_t p_fareadonly = 0x01;
 inline constexpr int32_t p_fahidden = 0x02;
 inline constexpr int32_t p_fadirectory = 0x10;
 inline constexpr int32_t p_faarchive = 0x20;
-inline void tp2cc_searchrec_fill(SearchRec& rec, const std::string& path) {
+inline void tp2cc_searchrec_fill(t_searchrec& rec, const std::string& path) {
   struct stat st{};
   if (::stat(path.c_str(), &st) != 0) return;
   rec.p_time = static_cast<int32_t>(st.st_mtime);
@@ -3316,7 +3314,7 @@ inline void tp2cc_searchrec_fill(SearchRec& rec, const std::string& path) {
   std::size_t sep = path.find_last_of("/\\");
   rec.p_name = tp2cc_shortstring_of<>((sep == std::string::npos ? path : path.substr(sep + 1)).c_str());
 }
-inline int32_t p_findfirst(const tp2cc_ShortString<>& pattern, int attrs, SearchRec& rec) {
+inline int32_t p_findfirst(const tp2cc_ShortString<>& pattern, int attrs, t_searchrec& rec) {
   rec.tp2cc_matches.clear();
   rec.tp2cc_index = 0;
   rec.p_attr = 0;
@@ -3344,7 +3342,7 @@ inline int32_t p_findfirst(const tp2cc_ShortString<>& pattern, int attrs, Search
   p_doserror = 0;
   return 0;
 }
-inline int32_t p_findnext(SearchRec& rec) {
+inline int32_t p_findnext(t_searchrec& rec) {
   if (rec.tp2cc_index + 1 >= rec.tp2cc_matches.size()) {
     p_doserror = 18;
     return p_doserror;
@@ -3354,7 +3352,7 @@ inline int32_t p_findnext(SearchRec& rec) {
   p_doserror = 0;
   return 0;
 }
-inline void p_findclose(SearchRec& rec) {
+inline void p_findclose(t_searchrec& rec) {
   rec.tp2cc_matches.clear();
   rec.tp2cc_index = 0;
 }
@@ -3678,7 +3676,7 @@ inline void tp2cc_civil_from_days(int64_t days, int32_t& year, uint32_t& month,
   year += month <= 2;
 }
 
-inline p_tdatetime tp2cc_make_tdatetime(int32_t year, uint32_t month,
+inline t_tdatetime tp2cc_make_tdatetime(int32_t year, uint32_t month,
                                         uint32_t day, uint32_t hour = 0,
                                         uint32_t minute = 0,
                                         uint32_t second = 0,
@@ -3687,11 +3685,11 @@ inline p_tdatetime tp2cc_make_tdatetime(int32_t year, uint32_t month,
       tp2cc_days_from_civil(year, month, day) + tp2cc_tdatetime_unix_epoch_days;
   const uint64_t msec =
       ((static_cast<uint64_t>(hour) * 60 + minute) * 60 + second) * 1000 + millisecond;
-  return static_cast<p_tdatetime>(days) +
-         static_cast<p_tdatetime>(msec) / 86400000.0;
+  return static_cast<t_tdatetime>(days) +
+         static_cast<t_tdatetime>(msec) / 86400000.0;
 }
 
-inline void tp2cc_decode_tdatetime(p_tdatetime value, int32_t& year,
+inline void tp2cc_decode_tdatetime(t_tdatetime value, int32_t& year,
                                    uint32_t& month, uint32_t& day,
                                    uint32_t& hour, uint32_t& minute,
                                    uint32_t& second, uint32_t& millisecond) {
@@ -3717,7 +3715,7 @@ inline void tp2cc_decode_tdatetime(p_tdatetime value, int32_t& year,
   millisecond = static_cast<uint32_t>(total_msec % 1000ull);
 }
 
-inline p_tdatetime p_filedatetodatetime(int32_t filedate) {
+inline t_tdatetime p_filedatetodatetime(int32_t filedate) {
   const uint32_t sec2 = static_cast<uint32_t>(filedate & 31u);
   const uint32_t minute = static_cast<uint32_t>((filedate >> 5) & 63u);
   const uint32_t hour = static_cast<uint32_t>((filedate >> 11) & 31u);
@@ -3728,7 +3726,7 @@ inline p_tdatetime p_filedatetodatetime(int32_t filedate) {
                               minute, sec2 * 2u, 0);
 }
 
-inline void p_decodedate(p_tdatetime value, uint16_t& year, uint16_t& month,
+inline void p_decodedate(t_tdatetime value, uint16_t& year, uint16_t& month,
                          uint16_t& day) {
   int32_t y = 0;
   uint32_t m = 0, d = 0, hh = 0, mm = 0, ss = 0, ms = 0;
@@ -3738,7 +3736,7 @@ inline void p_decodedate(p_tdatetime value, uint16_t& year, uint16_t& month,
   day = static_cast<uint16_t>(d);
 }
 
-inline void p_decodetime(p_tdatetime value, uint16_t& hour, uint16_t& minute,
+inline void p_decodetime(t_tdatetime value, uint16_t& hour, uint16_t& minute,
                          uint16_t& second, uint16_t& msec) {
   int32_t y = 0;
   uint32_t m = 0, d = 0, hh = 0, mm = 0, ss = 0, ms = 0;
@@ -3749,25 +3747,25 @@ inline void p_decodetime(p_tdatetime value, uint16_t& hour, uint16_t& minute,
   msec = static_cast<uint16_t>(ms);
 }
 
-inline p_tdatetime p_date() {
+inline t_tdatetime p_date() {
   std::time_t now = std::time(nullptr);
   std::tm lt{};
   ::localtime_r(&now, &lt);
   return tp2cc_make_tdatetime(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
 }
 
-inline p_tdatetime p_time() {
+inline t_tdatetime p_time() {
   struct timeval tv{};
   ::gettimeofday(&tv, nullptr);
   std::tm lt{};
   std::time_t now = static_cast<std::time_t>(tv.tv_sec);
   ::localtime_r(&now, &lt);
-  return static_cast<p_tdatetime>(
+  return static_cast<t_tdatetime>(
       ((lt.tm_hour * 60 + lt.tm_min) * 60 + lt.tm_sec) * 1000 + tv.tv_usec / 1000) /
          86400000.0;
 }
 
-inline void p_getlocaltime(p_tsystemtime& out) {
+inline void p_getlocaltime(t_tsystemtime& out) {
   struct timeval tv{};
   ::gettimeofday(&tv, nullptr);
   std::time_t now = static_cast<std::time_t>(tv.tv_sec);
@@ -3799,12 +3797,12 @@ inline int32_t tp2cc_stat_to_filedatetime(const struct stat& st) {
   return packed;
 }
 
-inline int32_t p_filegetdate(p_thandle handle) {
+inline int32_t p_filegetdate(t_thandle handle) {
   struct stat st{};
   return ::fstat(handle, &st) == 0 ? tp2cc_stat_to_filedatetime(st) : -1;
 }
 
-inline int32_t p_filesetdate(p_thandle handle, int32_t age) {
+inline int32_t p_filesetdate(t_thandle handle, int32_t age) {
   std::tm tmv{};
   tmv.tm_year = static_cast<int>(((age >> 25) & 127) + 80);
   tmv.tm_mon = static_cast<int>(((age >> 21) & 15) - 1);
@@ -3828,12 +3826,12 @@ inline int32_t p_fileage(const Str& name) {
              : -1;
 }
 
-inline p_thandle p_getfilehandle(tp2cc_TextFile& f) {
+inline t_thandle p_getfilehandle(tp2cc_TextFile& f) {
   return f.f ? ::fileno(f.f) : -1;
 }
 
 template <typename T>
-inline p_thandle p_getfilehandle(tp2cc_TypedFile<T>& f) {
+inline t_thandle p_getfilehandle(tp2cc_TypedFile<T>& f) {
   return f.f ? ::fileno(f.f) : -1;
 }
 
@@ -3860,7 +3858,7 @@ inline int32_t p_executeprocess(const tp2cc_AnsiString& path,
   return tp2cc_last_dosexitcode;
 }
 
-inline tp2cc_AnsiString p_stringofchar(p_char c, p_sizeint count) {
+inline tp2cc_AnsiString p_stringofchar(p_char c, t_sizeint count) {
   tp2cc_AnsiString out{};
   if (count <= 0) return out;
   out.set_length(count);
@@ -4556,11 +4554,11 @@ inline void p_dispose(P* p) {
 
 // POSIX `signal(sig, handler)` -- fpc's catch unit installs signal
 // handlers for SIGSEGV/SIGBUS/SIGILL to turn them into RunErrors.
-inline p_signalhandler p_signal(int32_t sig, p_signalhandler h) {
-  return reinterpret_cast<p_signalhandler>(
+inline t_signalhandler p_signal(int32_t sig, t_signalhandler h) {
+  return reinterpret_cast<t_signalhandler>(
       std::signal(sig, reinterpret_cast<void (*)(int)>(h)));
 }
-inline p_signalhandler p_fpsignal(int32_t sig, p_signalhandler h) {
+inline t_signalhandler p_fpsignal(int32_t sig, t_signalhandler h) {
   return p_signal(sig, h);
 }
 
@@ -5350,7 +5348,7 @@ template <typename T>
 inline void p_freeandnil(T*& obj) {
   T* tmp = obj;
   obj = nullptr;
-  p_tobject::p_free(tmp);
+  t_tobject::p_free(tmp);
 }
 
 // --- high / low intrinsics --------------------------------------------------
@@ -5369,7 +5367,7 @@ constexpr std::size_t low(const std::array<T, N>&)  { return 0; }
 
 // Pascal numeric constants.
 inline constexpr int32_t p_maxlongint = 2147483647;
-inline constexpr p_sizeint p_maxint = p_maxlongint;
+inline constexpr t_sizeint p_maxint = p_maxlongint;
 inline constexpr double  p_pi         = 3.141592653589793;
 
 // Pascal `typeof(T)` returns a pointer to T's virtual method table. We
@@ -5459,7 +5457,7 @@ inline void p_getdate(uint16_t& year, uint16_t& month, uint16_t& mday,
 }
 // FPC's DOS unit uses a packed DOS timestamp record here, not Unix epoch
 // seconds. Compiler units decode those bitfields directly via UnpackTime.
-struct DateTime {
+struct t_datetime {
   uint16_t p_year = 0;
   uint16_t p_month = 0;
   uint16_t p_day = 0;
@@ -5467,8 +5465,7 @@ struct DateTime {
   uint16_t p_min = 0;
   uint16_t p_sec = 0;
 };
-using p_datetime = DateTime;
-inline void p_unpacktime(int32_t p, DateTime& t) {
+inline void p_unpacktime(int32_t p, t_datetime& t) {
   t.p_sec = static_cast<uint16_t>((p & 31) * 2);
   p >>= 5;
   t.p_min = static_cast<uint16_t>(p & 63);
@@ -5481,7 +5478,7 @@ inline void p_unpacktime(int32_t p, DateTime& t) {
   p >>= 4;
   t.p_year = static_cast<uint16_t>(p + 1980);
 }
-inline void p_packtime(DateTime& t, int32_t& p) {
+inline void p_packtime(t_datetime& t, int32_t& p) {
   int32_t zs = t.p_hour;
   p = ((static_cast<int32_t>(t.p_year) - 1980) & 127);
   p = (p << 4) + t.p_month;
@@ -5601,9 +5598,9 @@ struct LinuxStat {
   int32_t p_size = 0;
   int32_t p_st_size = 0;
 };
-using p_stat = LinuxStat;
+using t_stat = LinuxStat;
 template <int N>
-inline bool p_fstat(const tp2cc_ShortString<N>& path, p_stat& info) {
+inline bool p_fstat(const tp2cc_ShortString<N>& path, t_stat& info) {
   struct stat st{};
   if (::stat(tp2cc_to_std_string(path).c_str(), &st) != 0) return false;
   info.p_mtime = static_cast<int32_t>(st.st_mtime);
@@ -5615,7 +5612,7 @@ inline bool p_fstat(const tp2cc_ShortString<N>& path, p_stat& info) {
   return true;
 }
 template <typename File>
-inline bool p_fstat(const File& f, p_stat& info) {
+inline bool p_fstat(const File& f, t_stat& info) {
   if (!f.f) return false;
   struct stat st{};
   if (::fstat(::fileno(f.f), &st) != 0) return false;
@@ -5627,7 +5624,7 @@ inline bool p_fstat(const File& f, p_stat& info) {
   info.p_st_size = info.p_size;
   return true;
 }
-inline int32_t p_fpfstat(p_thandle handle, p_stat& info) {
+inline int32_t p_fpfstat(t_thandle handle, t_stat& info) {
   struct stat st{};
   if (::fstat(handle, &st) != 0) return -1;
   info.p_mtime = static_cast<int32_t>(st.st_mtime);
@@ -5639,7 +5636,7 @@ inline int32_t p_fpfstat(p_thandle handle, p_stat& info) {
   return 0;
 }
 template <typename File>
-inline int32_t p_fpfstat(const File& f, p_stat& info) {
+inline int32_t p_fpfstat(const File& f, t_stat& info) {
   return p_fstat(f, info) ? 0 : -1;
 }
 
