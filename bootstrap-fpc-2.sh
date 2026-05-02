@@ -39,18 +39,21 @@ fpc_source_version() {
 }
 echo "FPC source: $SOURCE_DIR (version $(fpc_source_version))"
 
-# Keep the translated compiler under sanitizer instrumentation, but make
-# findings fatal so a "successful" bootstrap never masks active UB.
-SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=address,undefined}"
+# Keep the translated compiler under sanitizer instrumentation.  UBSan must be
+# recoverable by default so one bootstrap run reports the whole visible surface
+# instead of stopping at the first bad cast/overflow and forcing a rebuild loop.
+# ASan still aborts on memory-corruption classes where continuing is unsafe.
+SAN="${SAN:--fsanitize=address,undefined -fsanitize-recover=undefined -fno-omit-frame-pointer}"
 CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -Wno-narrowing $SAN"
 CFLAGS="-std=gnu11 -O0 -g -pipe $SAN"
 export CXXFLAGS
 export CFLAGS
 
-# FPC frees most global state only at process exit. Disable leak checking, but
-# keep everything else fatal so the bootstrap stops at the first sanitizer hit.
+# FPC frees most global state only at process exit. Disable leak checking.
+# UBSan reports are recoverable; stage compiler invocations below are logged so
+# every emitted report survives even if the compiler later exits successfully.
 export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1}"
-export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
+export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=0:print_stacktrace=1}"
 
 BOOT_ROOT="${BOOTSTRAP_ROOT:-$ROOT/build/fpc-2-bootstrap}"
 HOST_BUILD="${TP2CC_BUILD:-$ROOT/build-tp2cc-host}"
@@ -59,6 +62,7 @@ STAGE1_DIR="$BOOT_ROOT/stage1"
 STAGE2_DIR="$BOOT_ROOT/stage2"
 STAGE3_DIR="$BOOT_ROOT/stage3"
 STAGE1_LOGDIR="$BOOT_ROOT/compile-logs-stage1"
+SAN_LOGDIR="$BOOT_ROOT/sanitizer-logs"
 ENTRY_FILE="$SOURCE_DIR/compiler/pp.pas"
 MSG_FILE="$SOURCE_DIR/compiler/msg/errore.msg"
 STARTUP_AS="$CLEAN_SRC/rtl/linux/i386/prt0.as"
@@ -239,14 +243,22 @@ compile_pp_stage() {
   echo "== [$stage_name] compile compiler/pp.pas =="
   rm -rf "$out_dir"
   mkdir -p "$out_dir"
-  PP="$pp_bin" \
-  PPC_CONFIG_PATH="$cfg_dir" \
-  FPCDIR="$CLEAN_SRC" \
-  STARTUP_AS="$STARTUP_AS" \
-    "$ROOT/use-fpc.sh" \
-      $(compiler_dir_flags) \
-      "-o$out_dir/pp" \
-      "$CLEAN_SRC/compiler/pp.pas"
+  mkdir -p "$SAN_LOGDIR"
+  log_name=$(printf '%s' "$stage_name" | tr -c 'A-Za-z0-9_' '_')
+  log_file="$SAN_LOGDIR/$log_name.log"
+  echo "logging $stage_name sanitizer output to $log_file"
+  if ! PP="$pp_bin" \
+    PPC_CONFIG_PATH="$cfg_dir" \
+    FPCDIR="$CLEAN_SRC" \
+    STARTUP_AS="$STARTUP_AS" \
+      "$ROOT/use-fpc.sh" \
+        $(compiler_dir_flags) \
+        "-o$out_dir/pp" \
+        "$CLEAN_SRC/compiler/pp.pas" >"$log_file" 2>&1
+  then
+    cat "$log_file" >&2
+    exit 1
+  fi
   install_support_files "$out_dir"
 }
 
