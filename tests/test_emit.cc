@@ -197,6 +197,55 @@ void test_typed_scalar_const() {
   CHECK(contains(out.header, "int32_t p_n = 42"));
 }
 
+void test_string_literal_pchar_context_uses_static_c_literal_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnames = array[0..1] of pchar;\n"
+      "const\n"
+      "  Names : tnames = ('tc_none', '');\n"
+      "function miss : pchar;\n"
+      "implementation\n"
+      "function miss : pchar;\n"
+      "begin\n"
+      "  miss := '';\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "const_cast<::rt::p_char*>(reinterpret_cast<const ::rt::p_char*>(\"tc_none\"))"));
+  CHECK(contains(out.header,
+                 "const_cast<::rt::p_char*>(reinterpret_cast<const ::rt::p_char*>(\"\"))"));
+  CHECK(contains(out.impl,
+                 "p_result = const_cast<::rt::p_char*>(reinterpret_cast<const ::rt::p_char*>(\"\"));"));
+  CHECK(!contains(out.header, "tp2cc_shortstring_literal"));
+  CHECK(!contains(out.impl, "tp2cc_shortstring_literal"));
+}
+
+void test_string_literal_pchar_assignment_and_call_contexts() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure take(p: pchar);\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure take(p: pchar);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "var p: pchar;\n"
+      "begin\n"
+      "  p := 'abc';\n"
+      "  take('def');\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_p = const_cast<::rt::p_char*>(reinterpret_cast<const ::rt::p_char*>(\"abc\"));"));
+  CHECK(contains(out.impl,
+                 "p_take(const_cast<::rt::p_char*>(reinterpret_cast<const ::rt::p_char*>(\"def\")));"));
+  CHECK(!contains(out.impl, "tp2cc_shortstring_literal"));
+}
+
 void test_typed_scalar_const_wraps_to_destination_value() {
   int before = error_count();
   auto out = compile_snippet(
@@ -6183,6 +6232,8 @@ int main() {
   RUN_TEST(test_uses_become_includes_without_open_namespaces);
   RUN_TEST(test_scalar_const);
   RUN_TEST(test_typed_scalar_const);
+  RUN_TEST(test_string_literal_pchar_context_uses_static_c_literal_storage);
+  RUN_TEST(test_string_literal_pchar_assignment_and_call_contexts);
   RUN_TEST(test_typed_scalar_const_wraps_to_destination_value);
   RUN_TEST(test_enum_type);
   RUN_TEST(test_enum_type_with_explicit_values);

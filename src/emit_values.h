@@ -50,6 +50,7 @@ class EmitValues {
       const ast::Expr& e, const ast::TypeExpr* target);
   std::optional<std::string> maybe_lower_metaclass_value(
       const ast::Expr& e, const ast::TypeExpr* target);
+  std::string pchar_string_literal_to_cxx(const ast::StringLit& lit);
 
   const TypeRegistry* registry_;
   ScopeStateView& scope_;

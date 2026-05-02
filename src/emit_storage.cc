@@ -411,6 +411,7 @@ bool EmitStorage::expr_is_charish(const Expr& e) {
 
 bool EmitStorage::type_is_pcharish(const TypeExpr* t) {
   if (!t) return false;
+  if (tyname_is(t, "pchar")) return true;
   t = analysis_.canonicalize_type(t);
   if (!t) return false;
   if (tyname_is(t, "pchar")) return true;

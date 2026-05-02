@@ -15,6 +15,30 @@ namespace tp2cc {
 
 using namespace ast;
 
+namespace {
+
+std::string string_literal_body_char_to_cxx(char c) {
+  switch (c) {
+    case '\\': return "\\\\";
+    case '"': return "\\\"";
+    case '\n': return "\\n";
+    case '\r': return "\\r";
+    case '\t': return "\\t";
+    default: break;
+  }
+  unsigned char b = static_cast<unsigned char>(c);
+  if (b < 0x20 || b >= 0x7f) {
+    std::string out = "\\";
+    out.push_back(static_cast<char>('0' + ((b >> 6) & 7)));
+    out.push_back(static_cast<char>('0' + ((b >> 3) & 7)));
+    out.push_back(static_cast<char>('0' + (b & 7)));
+    return out;
+  }
+  return std::string(1, c);
+}
+
+}  // namespace
+
 EmitValues::EmitValues(const TypeRegistry* registry, ScopeStateView& scope,
                        EmitAnalysis& analysis, EmitTypes& types,
                        EmitStorage& storage, EmitResolution& resolution,
@@ -155,12 +179,30 @@ std::string EmitValues::set_literal_to_cxx(const SetLit& s,
   return std::string("(") + cap + "{ " + body + " }())";
 }
 
+std::string EmitValues::pchar_string_literal_to_cxx(const StringLit& lit) {
+  // Pascal string literals normally lower as ShortString values. This is a
+  // local target-type-directed conversion at the use site: when an assignment,
+  // return, typed initializer, array element, or call argument expects PChar,
+  // FPC accepts the literal as a NUL-terminated character pointer. Use C++
+  // string literal static storage, with no heap allocation or shared scratch
+  // buffer. The resulting pointer is not safe to write through, just like a C
+  // string literal cast to char*.
+  std::string out =
+      "const_cast<::rt::p_char*>(reinterpret_cast<const ::rt::p_char*>(\"";
+  for (char c : lit.value) out += string_literal_body_char_to_cxx(c);
+  out += "\"))";
+  return out;
+}
+
 std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target,
                                            bool explicit_conversion) {
   if (!target) return expr_ops_.expr_to_cxx(e);
   if (e.kind == Kind::StringLit) {
     const auto& lit = static_cast<const StringLit&>(e);
     const TypeExpr* canon = analysis_.canonicalize_type(target);
+    if (storage_.type_is_pcharish(target)) {
+      return pchar_string_literal_to_cxx(lit);
+    }
     if (canon && canon->kind == Kind::TyArray) {
       const auto& arr = static_cast<const TyArray&>(*canon);
       const TypeExpr* elem =
