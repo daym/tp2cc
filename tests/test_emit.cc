@@ -4140,11 +4140,11 @@ void test_metaclass_alias_and_concrete_class_value_lowering() {
       "    inst := cls.create(2);\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "using p_tbaseclass = const tp2cc_metaclass_p_tbase*;"));
+                 "using p_tbaseclass = tp2cc_metaclass_p_tbase*;"));
   CHECK(contains(out.header,
                  "struct tp2cc_metaclass_p_tchild : public tp2cc_metaclass_p_tbase {"));
   CHECK(contains(out.header,
-                 "inline const tp2cc_metaclass_p_tchild* tp2cc_metaclass_value_p_tchild() {"));
+                 "inline tp2cc_metaclass_p_tchild* tp2cc_metaclass_value_p_tchild() {"));
   CHECK(contains(out.impl, "p_cls = tp2cc_metaclass_value_p_tchild();"));
   CHECK(contains(out.impl, "p_inst = p_cls->p_create(1);"));
   CHECK(contains(out.impl, "if (::rt::p_assigned(p_cls))"));
@@ -4316,6 +4316,28 @@ void test_metaclass_cast_keeps_concrete_descriptor() {
   CHECK(contains(out.impl, "p_basecls = tp2cc_metaclass_value_p_tchild();"));
   CHECK(contains(out.impl,
                  "p_childcls = reinterpret_cast<p_tchildclass>(p_basecls);"));
+}
+
+void test_metaclass_value_can_flow_through_pointer_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "  end;\n"
+      "  tbaseclass = class of tbase;\n"
+      "procedure put(p : pointer);\n"
+      "procedure demo(cls : tbaseclass);\n"
+      "implementation\n"
+      "procedure put(p : pointer);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo(cls : tbaseclass);\n"
+      "begin\n"
+      "  put(cls);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_put(static_cast<void*>(p_cls));"));
 }
 
 void test_class_identifier_value_lowers_to_metaclass_descriptor() {
@@ -5595,7 +5617,7 @@ void test_metaclass_same_signature_constructor_keeps_derived_return_type() {
                  "struct tp2cc_metaclass_p_tchild : public tp2cc_metaclass_p_tbase {"));
   CHECK(contains(out.header, "p_tchild* (*p_create)();"));
   CHECK(contains(out.header,
-                 "static const tp2cc_metaclass_p_tchild value = "
+                 "static tp2cc_metaclass_p_tchild value = "
                  "tp2cc_metaclass_p_tchild(tp2cc_metaclass_p_tbase("));
   CHECK(contains(out.impl, "p_inst = p_cls->p_create();"));
 }
@@ -6422,6 +6444,7 @@ int main() {
   RUN_TEST(test_static_class_method_address_keeps_plain_function_pointer);
   RUN_TEST(test_metaclass_class_method_proc_value_reports_error);
   RUN_TEST(test_metaclass_cast_keeps_concrete_descriptor);
+  RUN_TEST(test_metaclass_value_can_flow_through_pointer_storage);
   RUN_TEST(test_class_identifier_value_lowers_to_metaclass_descriptor);
   RUN_TEST(test_inline_anonymous_enum_class_field_resolves_members);
   RUN_TEST(test_inline_anonymous_packed_record_var_lowers_to_struct);

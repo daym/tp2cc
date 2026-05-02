@@ -823,8 +823,7 @@ std::string EmitTypes::type_to_cxx(const TypeExpr& t) {
     case Kind::TyProcedural:
       return procedural_type_to_cxx(static_cast<const TyProcedural&>(t));
     case Kind::TyMetaclass:
-      return "const " +
-             metaclass_struct_cxx(static_cast<const TyMetaclass&>(t).class_name) +
+      return metaclass_struct_cxx(static_cast<const TyMetaclass&>(t).class_name) +
              "*";
     case Kind::TyFile: {
       const auto& tf = static_cast<const TyFile&>(t);

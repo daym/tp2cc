@@ -205,7 +205,7 @@ inline void tp2cc_shortstring_assign(tp2cc_ShortStringPtrRef<N> dest, const Src&
 struct p_tobject;
 struct p_exception;
 struct tp2cc_metaclass_p_tobject;
-using p_tclass = const tp2cc_metaclass_p_tobject*;
+using p_tclass = tp2cc_metaclass_p_tobject*;
 
 struct tp2cc_metaclass_p_tobject {
   p_tobject* (*p_create)() = nullptr;
@@ -220,7 +220,7 @@ struct tp2cc_metaclass_p_tobject {
   virtual tp2cc_ShortString<> p_classname() const;
 };
 
-inline const tp2cc_metaclass_p_tobject* tp2cc_metaclass_value_p_tobject();
+inline tp2cc_metaclass_p_tobject* tp2cc_metaclass_value_p_tobject();
 
 struct tp2cc_metaclass_p_exception : public tp2cc_metaclass_p_tobject {
   using tp2cc_metaclass_p_tobject::tp2cc_metaclass_p_tobject;
@@ -245,7 +245,7 @@ struct tp2cc_metaclass_p_exception : public tp2cc_metaclass_p_tobject {
   tp2cc_ShortString<> p_classname() const override;
 };
 
-inline const tp2cc_metaclass_p_exception* tp2cc_metaclass_value_p_exception();
+inline tp2cc_metaclass_p_exception* tp2cc_metaclass_value_p_exception();
 
 // Delphi/FPC `class` types are references to heap objects whose base
 // contract is `TObject`. Keep the runtime base explicit rather than
@@ -329,8 +329,8 @@ using p_ppointer = void**;
 // machinery; subclasses and `new p_exception` users land below
 // `tp2cc_AnsiString` so the field has a complete type.
 
-inline const tp2cc_metaclass_p_tobject* tp2cc_metaclass_value_p_tobject() {
-  static const tp2cc_metaclass_p_tobject value{+[]() -> p_tobject* {
+inline tp2cc_metaclass_p_tobject* tp2cc_metaclass_value_p_tobject() {
+  static tp2cc_metaclass_p_tobject value{+[]() -> p_tobject* {
     auto* tp2cc_ptr = new p_tobject{};
     tp2cc_ptr->p_create();
     return tp2cc_ptr;
@@ -1066,8 +1066,8 @@ struct p_exception : p_tobject {
   }
 };
 
-inline const tp2cc_metaclass_p_exception* tp2cc_metaclass_value_p_exception() {
-  static const tp2cc_metaclass_p_exception value{
+inline tp2cc_metaclass_p_exception* tp2cc_metaclass_value_p_exception() {
+  static tp2cc_metaclass_p_exception value{
       +[]() -> p_tobject* {
         auto* tp2cc_ptr = new p_exception{};
         tp2cc_ptr->p_create();

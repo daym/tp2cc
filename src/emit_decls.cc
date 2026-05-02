@@ -692,12 +692,12 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         return out;
       };
 
-      emit_ops_.emitln("inline const " + meta_name + "* " + value_fn + "() {");
+      emit_ops_.emitln("inline " + meta_name + "* " + value_fn + "() {");
       emit_ops_.indent();
       if (visible_callables.empty()) {
-        emit_ops_.emitln("static const " + meta_name + " value{};");
+        emit_ops_.emitln("static " + meta_name + " value{};");
       } else {
-        emit_ops_.emitln("static const " + meta_name + " value = " +
+        emit_ops_.emitln("static " + meta_name + " value = " +
                          build_metaclass_ctor_expr(td.name, td.name) + ";");
       }
       emit_ops_.emitln("return &value;");
