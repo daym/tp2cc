@@ -1,0 +1,23 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-01
+Subject: Use System.ParamStr while reading bootstrap compiler options
+License: expat
+
+FPC 2.6.0 reads command-line options through `objpas.ParamStr`, which
+returns an AnsiString and normally comes from the RTL ObjPas unit.  The
+bootstrap compiler does not need the ObjPas unit for option scanning, and
+FPC 2.4.0 used `System.ParamStr` at the same call site.
+
+Use `System.ParamStr` so the translated bootstrap compiler does not need
+to resolve the ObjPas RTL unit just to read its command-line arguments.
+
+--- a/compiler/options.pas
++++ b/compiler/options.pas
+@@ -2081,7 +2081,7 @@ begin
+    begin
+      inc(paramindex);
+-     opts:=objpas.paramstr(paramindex);
++     opts:=system.paramstr(paramindex);
+      case opts[1] of
+        '@' :
+          if not firstpass then
