@@ -4108,6 +4108,58 @@ void test_metaclass_virtual_class_method_dispatch() {
   CHECK(contains(out.impl, "p_i = p_cls->p_kind();"));
 }
 
+void test_bare_inherited_in_function_value_context_calls_current_parent_method() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    function getit : pointer; virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    function getit : pointer; override;\n"
+      "  end;\n"
+      "implementation\n"
+      "function tbase.getit : pointer;\n"
+      "begin\n"
+      "  getit := nil;\n"
+      "end;\n"
+      "function tchild.getit : pointer;\n"
+      "begin\n"
+      "  result := inherited;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = inherited::p_getit();"));
+  CHECK(!contains(out.impl, "p_result = inherited{};"));
+}
+
+void test_bare_inherited_statement_forwards_current_method_params() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    procedure touch(const name: string); virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    procedure touch(const name: string); override;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tbase.touch(const name: string);\n"
+      "begin\n"
+      "end;\n"
+      "procedure tchild.touch(const name: string);\n"
+      "var\n"
+      "  local: string;\n"
+      "begin\n"
+      "  local := name;\n"
+      "  inherited;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "inherited::p_touch(p_name);"));
+  CHECK(!contains(out.impl, "inherited::p_touch();"));
+}
+
 void test_static_class_method_address_keeps_plain_function_pointer() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -6285,6 +6337,8 @@ int main() {
   RUN_TEST(test_class_self_and_free_use_pointer_semantics);
   RUN_TEST(test_metaclass_alias_and_concrete_class_value_lowering);
   RUN_TEST(test_metaclass_virtual_class_method_dispatch);
+  RUN_TEST(test_bare_inherited_in_function_value_context_calls_current_parent_method);
+  RUN_TEST(test_bare_inherited_statement_forwards_current_method_params);
   RUN_TEST(test_static_class_method_address_keeps_plain_function_pointer);
   RUN_TEST(test_metaclass_class_method_proc_value_reports_error);
   RUN_TEST(test_metaclass_cast_keeps_concrete_descriptor);

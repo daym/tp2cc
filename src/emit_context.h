@@ -63,6 +63,7 @@ struct ScopeStateView {
   // Current-function / result-slot state. `Result` semantics differ between
   // nested procedures and nested functions, so this has to stay explicit.
   std::string& current_fn_name;
+  std::vector<std::string>& current_fn_param_names;
   bool& current_fn_is_function;
   bool& current_fn_is_ctor;
   const ast::TypeExpr*& current_fn_result_type;

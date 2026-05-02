@@ -45,6 +45,7 @@ class EmitProcs {
  private:
   struct SavedProcState {
     std::string current_fn_name;
+    std::vector<std::string> current_fn_param_names;
     bool current_fn_is_function = false;
     bool current_fn_is_ctor = false;
     const ast::TypeExpr* current_fn_result_type = nullptr;

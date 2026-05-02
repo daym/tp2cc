@@ -142,6 +142,7 @@ struct Emitter : ResolveNameProvider,
   using NestedFn = ScopeStateView::NestedFn;
   std::unordered_map<std::string, NestedFn> local_nested_fns;
   std::unordered_set<std::string> local_nested_forwards;
+  std::vector<std::string> current_fn_param_names;
 
   // Function-local enum types: name -> the TyEnum AST node. Pascal
   // lets a `type T = (a, b, c)` and `const X : array[T] of ... = ...`
@@ -208,6 +209,7 @@ struct Emitter : ResolveNameProvider,
                      local_type_aliases_scoped,
                      with_stack,
                      current_fn_name,
+                     current_fn_param_names,
                      current_fn_is_function,
                      current_fn_is_ctor,
                      current_fn_result_type,
@@ -770,7 +772,18 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Ident: {
       const auto& n = static_cast<const Ident&>(e);
-      if (n.name == "inherited") return "inherited{}";
+      if (n.name == "inherited") {
+        if (!is_callee_context_ && !current_fn_name.empty() &&
+            !current_class_name.empty()) {
+          std::string args;
+          for (const auto& arg : current_fn_param_names) {
+            if (!args.empty()) args += ", ";
+            args += arg;
+          }
+          return "inherited::" + mangle(current_fn_name) + "(" + args + ")";
+        }
+        return "inherited{}";
+      }
       if (n.name == "self") {
         return expr_is_reference_class(e) ? "this" : "(*this)";
       }

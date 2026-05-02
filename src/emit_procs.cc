@@ -33,6 +33,7 @@ EmitProcs::EmitProcs(ScopeStateView& scope, int& block_depth,
 EmitProcs::SavedProcState EmitProcs::save_proc_state() const {
   SavedProcState saved;
   saved.current_fn_name = scope_.current_fn_name;
+  saved.current_fn_param_names = scope_.current_fn_param_names;
   saved.current_fn_is_function = scope_.current_fn_is_function;
   saved.current_fn_is_ctor = scope_.current_fn_is_ctor;
   saved.current_fn_result_type = scope_.current_fn_result_type;
@@ -58,6 +59,7 @@ EmitProcs::SavedProcState EmitProcs::save_proc_state() const {
 
 void EmitProcs::restore_proc_state(SavedProcState&& saved) {
   scope_.current_fn_name = std::move(saved.current_fn_name);
+  scope_.current_fn_param_names = std::move(saved.current_fn_param_names);
   scope_.current_fn_is_function = saved.current_fn_is_function;
   scope_.current_fn_is_ctor = saved.current_fn_is_ctor;
   scope_.current_fn_result_type = saved.current_fn_result_type;
@@ -97,6 +99,10 @@ void EmitProcs::setup_proc_frame(const ProcDecl& pd, bool nested_lambda) {
   }
 
   scope_.current_fn_name = pd.name;
+  scope_.current_fn_param_names.clear();
+  for (const auto& p : pd.params) {
+    for (const auto& nm : p.names) scope_.current_fn_param_names.push_back(mangle(nm));
+  }
   scope_.current_fn_is_function = (pd.pkind == ProcKind::Function);
   scope_.current_fn_is_ctor =
       !nested_lambda && (pd.pkind == ProcKind::Constructor);
