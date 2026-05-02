@@ -303,16 +303,16 @@ void test_directive_if_elseif_falls_through_to_match() {
   CHECK_EQ(ts[0].text, std::string("win_branch"));
 }
 
-void test_directive_if_unknown_predicate_falls_to_else() {
-  // Anything outside the supported subset (defined / not / and / or /
-  // parens) evaluates to false, and an `{$else}` branch wins. This
-  // keeps unknown predicates from being silently accepted.
+void test_directive_if_unknown_predicate_reports_error() {
+  int errs_before = tp2cc::error_count();
   auto ts = lex_all(
       "{$if FPC_FULLVERSION >= 20100}\n"
       "modern\n"
       "{$else}\n"
       "legacy\n"
       "{$endif}\n");
+  int errs = tp2cc::error_count() - errs_before;
+  CHECK_EQ(errs, 1);
   CHECK_EQ(ts.size(), size_t{1});
   CHECK_EQ(ts[0].text, std::string("legacy"));
 }
@@ -501,7 +501,7 @@ int main() {
   RUN_TEST(test_directive_nested_ifdef);
   RUN_TEST(test_directive_if_defined_picks_correct_branch);
   RUN_TEST(test_directive_if_elseif_falls_through_to_match);
-  RUN_TEST(test_directive_if_unknown_predicate_falls_to_else);
+  RUN_TEST(test_directive_if_unknown_predicate_reports_error);
   RUN_TEST(test_directive_define_undef);
   RUN_TEST(test_inactive_ifdef_skips_full_string_literals);
   RUN_TEST(test_directive_builtin_macro_expands_deterministically);

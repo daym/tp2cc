@@ -247,10 +247,9 @@ std::optional<int> mode_default_packenum(std::string_view rest) {
 //   and_expr = unary ('and' unary)*
 //   unary    = 'not' unary | primary
 //   primary  = '(' expr ')' | 'defined' '(' IDENT ')' | TRUE | FALSE
-// Anything that doesn't parse as one of those (e.g. integer-comparison
-// predicates like `FPC_FULLVERSION >= 20100`) makes the WHOLE
-// expression evaluate to false; the bootstrap doesn't use those forms
-// so the safe-skip default is fine.
+//
+// Unsupported syntax is a hard parser failure. The directive handler reports
+// that as a diagnostic rather than silently treating it as false.
 namespace {
 
 struct IfExprParser {
@@ -304,7 +303,6 @@ struct IfExprParser {
     }
     return out;
   }
-
   bool parse_primary() {
     skip_ws();
     if (match_char('(')) {
@@ -323,7 +321,6 @@ struct IfExprParser {
     pos = saved;
     if (match_word("true")) return true;
     if (match_word("false")) return false;
-    // Anything else (ident, integer, comparison) -> bail out as false.
     ok = false;
     return false;
   }
@@ -351,12 +348,11 @@ struct IfExprParser {
 
 }  // namespace
 
-bool Lexer::eval_if_expr(std::string_view expr) {
+std::optional<bool> Lexer::eval_if_expr(std::string_view expr) {
   IfExprParser p{expr, 0, true, &defines_};
   bool v = p.parse_expr();
-  if (!p.ok) return false;
-  // Trailing junk -> false (match unknown-predicate behavior).
-  if (!p.eof()) return false;
+  if (!p.ok) return std::nullopt;
+  if (!p.eof()) return std::nullopt;
   return v;
 }
 
@@ -378,11 +374,15 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     return;
   }
   if (head == "if") {
-    // Evaluate the boolean expression -- enough subset for the Pascal
-    // bootstrap (defined(SYM), not/and/or, parens). Anything else
-    // evaluates to false, matching the previous conservative default.
     bool parent_ok = accepting();
-    bool cond = eval_if_expr(rest);
+    bool cond = false;
+    if (parent_ok) {
+      if (std::optional<bool> v = eval_if_expr(rest)) {
+        cond = *v;
+      } else {
+        report_error(where, "unsupported {$if} expression: " + trim(rest));
+      }
+    }
     IfdefFrame f;
     f.accepting = parent_ok && cond;
     f.any_taken = f.accepting;
@@ -423,7 +423,14 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     for (size_t i = 0; i + 1 < ifdef_stack_.size(); ++i) {
       if (!ifdef_stack_[i].accepting) { parent_ok = false; break; }
     }
-    bool cond = eval_if_expr(rest);
+    bool cond = false;
+    if (parent_ok && !f.any_taken) {
+      if (std::optional<bool> v = eval_if_expr(rest)) {
+        cond = *v;
+      } else {
+        report_error(where, "unsupported {$elseif} expression: " + trim(rest));
+      }
+    }
     f.accepting = parent_ok && !f.any_taken && cond;
     if (f.accepting) f.any_taken = true;
     return;
