@@ -242,6 +242,19 @@ void test_runtime_swap_fill_and_compare_helpers() {
   CHECK_EQ(p_ansicomparefilename("/tmp/a", "/tmp/a"), 0);
 }
 
+void test_runtime_rotate_helpers_mask_distance() {
+  CHECK_EQ(p_rorbyte(static_cast<uint8_t>(0x81u)), static_cast<uint8_t>(0xc0u));
+  CHECK_EQ(p_rolbyte(static_cast<uint8_t>(0x81u)), static_cast<uint8_t>(0x03u));
+  CHECK_EQ(p_rorword(static_cast<uint16_t>(0x8001u), 4), static_cast<uint16_t>(0x1800u));
+  CHECK_EQ(p_rolword(static_cast<uint16_t>(0x8001u), 4), static_cast<uint16_t>(0x0018u));
+  CHECK_EQ(p_rordword(0x80000001u, 8), 0x01800000u);
+  CHECK_EQ(p_roldword(0x80000001u, 8), 0x00000180u);
+  CHECK_EQ(p_rorqword(0x8000000000000001ull, 16), 0x0001800000000000ull);
+  CHECK_EQ(p_rolqword(0x8000000000000001ull, 16), 0x0000000000018000ull);
+  CHECK_EQ(p_rordword(0x12345678u, 32), 0x12345678u);
+  CHECK_EQ(p_roldword(0x12345678u, 32), 0x12345678u);
+}
+
 void test_getmem_typed_pointer_keeps_requested_prefix_size() {
   using HugeSymIndex = tp2cc_Array<void*, 0, 536870911>;
 
@@ -1224,6 +1237,7 @@ int main() {
   RUN_TEST(test_runtime_tdatetime_decodes_current_and_dos_times);
   RUN_TEST(test_runtime_file_helpers_expose_real_sysutils_surface);
   RUN_TEST(test_runtime_swap_fill_and_compare_helpers);
+  RUN_TEST(test_runtime_rotate_helpers_mask_distance);
   RUN_TEST(test_getmem_typed_pointer_keeps_requested_prefix_size);
   RUN_TEST(test_shortstring_pointer_deref_uses_live_prefix_storage);
   RUN_TEST(test_shortstring_pointer_deref_interoperates_with_string_ops);

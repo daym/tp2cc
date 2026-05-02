@@ -3222,6 +3222,33 @@ void test_runtime_endian_helpers_resolve_explicitly() {
   CHECK(contains(out.impl, "::rt::p_leton("));
 }
 
+void test_runtime_rotate_helpers_resolve_explicitly() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var b : byte; w : word; d : dword; q : qword;\n"
+      "begin\n"
+      "  b := RorByte(b) + RolByte(b, 3);\n"
+      "  w := RorWord(w) + RolWord(w, 3);\n"
+      "  d := RorDWord(d) + RolDWord(d, 3);\n"
+      "  q := RorQWord(q) + RolQWord(q, 3);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "::rt::p_rorbyte("));
+  CHECK(contains(out.impl, "::rt::p_rolbyte("));
+  CHECK(contains(out.impl, "::rt::p_rorword("));
+  CHECK(contains(out.impl, "::rt::p_rolword("));
+  CHECK(contains(out.impl, "::rt::p_rordword("));
+  CHECK(contains(out.impl, "::rt::p_roldword("));
+  CHECK(contains(out.impl, "::rt::p_rorqword("));
+  CHECK(contains(out.impl, "::rt::p_rolqword("));
+}
+
 void test_runtime_string_and_memory_helpers_resolve_explicitly() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -6142,6 +6169,7 @@ int main() {
   RUN_TEST(test_unresolved_free_identifier_reports_error_without_rt_fallback);
   RUN_TEST(test_runtime_math_surface_resolves_explicitly);
   RUN_TEST(test_runtime_endian_helpers_resolve_explicitly);
+  RUN_TEST(test_runtime_rotate_helpers_resolve_explicitly);
   RUN_TEST(test_runtime_string_and_memory_helpers_resolve_explicitly);
   RUN_TEST(test_and_with_not_of_xor_short_circuits);
   RUN_TEST(test_r_plus_routes_narrowing_assignment_through_range_check);

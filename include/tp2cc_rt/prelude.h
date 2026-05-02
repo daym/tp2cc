@@ -1904,6 +1904,76 @@ inline T p_ntole(T value) {
   return p_leton(value);
 }
 
+template <typename T, unsigned Bits>
+inline T tp2cc_ror(T value, unsigned dist) {
+  using U = std::make_unsigned_t<T>;
+  constexpr unsigned mask = Bits - 1;
+  const unsigned shift = dist & mask;
+  const U bits = static_cast<U>(value);
+  if (shift == 0) return value;
+  return static_cast<T>((bits >> shift) | (bits << (Bits - shift)));
+}
+
+template <typename T, unsigned Bits>
+inline T tp2cc_rol(T value, unsigned dist) {
+  using U = std::make_unsigned_t<T>;
+  constexpr unsigned mask = Bits - 1;
+  const unsigned shift = dist & mask;
+  const U bits = static_cast<U>(value);
+  if (shift == 0) return value;
+  return static_cast<T>((bits << shift) | (bits >> (Bits - shift)));
+}
+
+inline uint8_t p_rorbyte(uint8_t value) {
+  return tp2cc_ror<uint8_t, 8>(value, 1);
+}
+inline uint8_t p_rorbyte(uint8_t value, uint8_t dist) {
+  return tp2cc_ror<uint8_t, 8>(value, dist);
+}
+inline uint16_t p_rorword(uint16_t value) {
+  return tp2cc_ror<uint16_t, 16>(value, 1);
+}
+inline uint16_t p_rorword(uint16_t value, uint8_t dist) {
+  return tp2cc_ror<uint16_t, 16>(value, dist);
+}
+inline uint32_t p_rordword(uint32_t value) {
+  return tp2cc_ror<uint32_t, 32>(value, 1);
+}
+inline uint32_t p_rordword(uint32_t value, uint8_t dist) {
+  return tp2cc_ror<uint32_t, 32>(value, dist);
+}
+inline uint64_t p_rorqword(uint64_t value) {
+  return tp2cc_ror<uint64_t, 64>(value, 1);
+}
+inline uint64_t p_rorqword(uint64_t value, uint8_t dist) {
+  return tp2cc_ror<uint64_t, 64>(value, dist);
+}
+
+inline uint8_t p_rolbyte(uint8_t value) {
+  return tp2cc_rol<uint8_t, 8>(value, 1);
+}
+inline uint8_t p_rolbyte(uint8_t value, uint8_t dist) {
+  return tp2cc_rol<uint8_t, 8>(value, dist);
+}
+inline uint16_t p_rolword(uint16_t value) {
+  return tp2cc_rol<uint16_t, 16>(value, 1);
+}
+inline uint16_t p_rolword(uint16_t value, uint8_t dist) {
+  return tp2cc_rol<uint16_t, 16>(value, dist);
+}
+inline uint32_t p_roldword(uint32_t value) {
+  return tp2cc_rol<uint32_t, 32>(value, 1);
+}
+inline uint32_t p_roldword(uint32_t value, uint8_t dist) {
+  return tp2cc_rol<uint32_t, 32>(value, dist);
+}
+inline uint64_t p_rolqword(uint64_t value) {
+  return tp2cc_rol<uint64_t, 64>(value, 1);
+}
+inline uint64_t p_rolqword(uint64_t value, uint8_t dist) {
+  return tp2cc_rol<uint64_t, 64>(value, dist);
+}
+
 template <typename T>
 inline constexpr int tp2cc_ordinal_value(T x) {
   if constexpr (std::is_convertible_v<T, p_char>)
