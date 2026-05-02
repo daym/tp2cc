@@ -3685,6 +3685,32 @@ void test_addr_of_pointer_deref_array_field_uses_offsetof_proxy() {
   CHECK(!contains(out.impl, "((::rt::p_char*)("));
 }
 
+void test_addr_of_dynamic_array_targets_array_handle_not_data_proxy() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbytes = array of byte;\n"
+      "  pbytes = ^tbytes;\n"
+      "  trec = record\n"
+      "    use : tbytes;\n"
+      "  end;\n"
+      "  prec = ^trec;\n"
+      "procedure demo(var a : tbytes; r : prec; var pa, pr : pbytes);\n"
+      "implementation\n"
+      "procedure demo(var a : tbytes; r : prec; var pa, pr : pbytes);\n"
+      "begin\n"
+      "  pa := @a;\n"
+      "  pr := @r^.use;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_pa = (&p_a);"));
+  CHECK(contains(out.impl,
+                 "p_pr = reinterpret_cast<p_tbytes*>(reinterpret_cast<uintptr_t>(p_r) + offsetof("));
+  CHECK(!contains(out.impl, "tp2cc_array_addr(p_a)"));
+  CHECK(!contains(out.impl, "tp2cc_array_addr(reinterpret_cast<p_tbytes*"));
+}
+
 void test_set_to_int_cast_uses_endian_safe_helper() {
   // ncgrtti.pas computes interface-flag words as `longint([flagA, flagB])`.
   // A plain C-style cast would invoke a non-existent
@@ -6417,6 +6443,7 @@ int main() {
   RUN_TEST(test_addr_of_pointer_deref_field_uses_offsetof_arithmetic);
   RUN_TEST(test_addr_of_array_value_uses_context_selecting_proxy);
   RUN_TEST(test_addr_of_pointer_deref_array_field_uses_offsetof_proxy);
+  RUN_TEST(test_addr_of_dynamic_array_targets_array_handle_not_data_proxy);
   RUN_TEST(test_set_to_int_cast_uses_endian_safe_helper);
   RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);
   RUN_TEST(test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes);

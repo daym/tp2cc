@@ -1441,7 +1441,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                   const TypeExpr* field_ty =
                       fi->type ? canonicalize_type(fi->type.get()) : nullptr;
                   if (!a.double_addr && field_ty &&
-                      field_ty->kind == Kind::TyArray) {
+                      field_ty->kind == Kind::TyArray &&
+                      static_cast<const TyArray&>(*field_ty).array_kind ==
+                          ArrayKind::Fixed) {
                     return "::rt::tp2cc_array_addr(" + field_addr + ")";
                   }
                   return field_addr;
@@ -1458,7 +1460,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (!a.double_addr && registry) {
         const TypeExpr* ot = deduce_type(*a.operand);
         if (ot) ot = registry->canonicalize(ot);
-        if (ot && ot->kind == Kind::TyArray) {
+        if (ot && ot->kind == Kind::TyArray &&
+            static_cast<const TyArray&>(*ot).array_kind == ArrayKind::Fixed) {
           // Keep raw `@arr` as an address proxy that can convert to both
           // `^array` and `^element` forms. Native FPC accepts both
           // assignments and reports ambiguity when both overloads are

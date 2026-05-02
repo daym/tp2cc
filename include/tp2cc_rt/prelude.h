@@ -4875,6 +4875,17 @@ inline tp2cc_AnsiString p_copy(const tp2cc_AnsiString& s, int start, int count) 
   return r;
 }
 
+template <typename T>
+inline tp2cc_DynArray<T> p_copy(const tp2cc_DynArray<T>& a) {
+  tp2cc_DynArray<T> r{};
+  if (a.count <= 0 || !a.data) return r;
+  p_setlength(r, a.count);
+  for (int32_t i = 0; i < a.count; ++i) {
+    r.data[static_cast<size_t>(i)] = a.data[static_cast<size_t>(i)];
+  }
+  return r;
+}
+
 template <int N>
 inline void p_delete(tp2cc_ShortString<N>& s, int start, int count) {
   if (start < 1 || start > s.length) return;

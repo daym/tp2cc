@@ -755,6 +755,22 @@ void test_dynamic_array_setlength_detaches_and_zeroes_tail() {
   CHECK(values == nullptr);
 }
 
+void test_dynamic_array_copy_makes_independent_storage() {
+  tp2cc_DynArray<int32_t> values;
+  p_setlength(values, 2);
+  values[0] = 7;
+  values[1] = 9;
+
+  tp2cc_DynArray<int32_t> copy = p_copy(values);
+  CHECK_EQ(p_length(copy), 2);
+  CHECK_EQ(copy[0], 7);
+  CHECK_EQ(copy[1], 9);
+  CHECK(copy.ptr() != values.ptr());
+
+  values[0] = 11;
+  CHECK_EQ(copy[0], 7);
+}
+
 void test_open_array_view_uses_dynamic_array_storage() {
   tp2cc_DynArray<int32_t> values;
   p_setlength(values, 3);
@@ -1280,6 +1296,7 @@ int main() {
   RUN_TEST(test_reinterpret_ref_views_pointee_bytes_of_pointer_value);
   RUN_TEST(test_open_array_helper_owns_temporary_storage);
   RUN_TEST(test_dynamic_array_setlength_detaches_and_zeroes_tail);
+  RUN_TEST(test_dynamic_array_copy_makes_independent_storage);
   RUN_TEST(test_open_array_view_uses_dynamic_array_storage);
   RUN_TEST(test_array_addr_proxy_converts_to_array_and_element_pointers);
   RUN_TEST(test_array_addr_proxy_preserves_constness);
