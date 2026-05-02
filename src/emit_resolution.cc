@@ -638,6 +638,32 @@ ResolvedCall EmitResolution::resolve_call(
   return out;
 }
 
+BinaryOperatorResult EmitResolution::find_binary_operator(
+    const std::string& op, const Expr& lhs, const Expr& rhs) {
+  if (!registry_) return {};
+  std::vector<AnyCand> cands;
+  gather_operator_in_pascal_scope(op, cands);
+  if (cands.empty()) return {};
+
+  std::vector<const ProcDecl*> arity_ok;
+  for (const auto& c : cands) {
+    if (!c.decl) continue;
+    std::vector<FlatCallParamInfo> flat;
+    flatten_call_param_info(c.decl, flat);
+    if (flat.size() == 2) arity_ok.push_back(c.decl);
+  }
+  if (arity_ok.empty()) return {};
+
+  std::vector<const Expr*> args{&lhs, &rhs};
+  PickResult pr = pick_overload(arity_ok, args);
+  if (pr.ambiguous) return {nullptr, {}, true};
+  if (!pr.decl) return {};
+  for (const auto& c : cands) {
+    if (c.decl == pr.decl) return {pr.decl, c.unit, false};
+  }
+  return {pr.decl, {}, false};
+}
+
 AssignmentOperatorResult EmitResolution::find_assignment_operator(
     const TypeExpr* source, const TypeExpr* target) {
   if (!registry_ || !source || !target) return {};

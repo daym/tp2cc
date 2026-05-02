@@ -1514,6 +1514,8 @@ void test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers
       "    v : longint;\n"
       "  end;\n"
       "operator + (const a,b : tbox) : tbox;\n"
+      "operator div (const a,b : tbox) : tbox;\n"
+      "operator / (const a,b : tbox) : real;\n"
       "operator := (const n : longint) : tbox;\n"
       "operator := (const b : tbox) : longint;\n"
       "procedure test;\n"
@@ -1521,6 +1523,14 @@ void test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers
       "operator + (const a,b : tbox) : tbox;\n"
       "begin\n"
       "  result.v := a.v + b.v;\n"
+      "end;\n"
+      "operator div (const a,b : tbox) : tbox;\n"
+      "begin\n"
+      "  result.v := a.v div b.v;\n"
+      "end;\n"
+      "operator / (const a,b : tbox) : real;\n"
+      "begin\n"
+      "  result := a.v / b.v;\n"
       "end;\n"
       "operator := (const n : longint) : tbox;\n"
       "begin\n"
@@ -1531,20 +1541,28 @@ void test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers
       "  result := b.v;\n"
       "end;\n"
       "procedure test;\n"
-      "var a,b : tbox; i : longint;\n"
+      "var a,b,c : tbox; r : real; i : longint;\n"
       "begin\n"
       "  a := 1;\n"
       "  b := a + a;\n"
+      "  c := a div b;\n"
+      "  r := a / b;\n"
       "  i := longint(b);\n"
       "end;\n"
       "end.\n");
 
   CHECK(contains(out.header, "p_tbox operator+(p_tbox p_a, p_tbox p_b);"));
+  CHECK(contains(out.header, "p_tbox tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_tbox p_a, p_tbox p_b);"));
+  CHECK(contains(out.header, "double operator/(p_tbox p_a, p_tbox p_b);"));
   CHECK(contains(out.header, "p_tbox tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(int32_t p_n);"));
   CHECK(contains(out.header, "int32_t tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(p_tbox p_b);"));
   CHECK(contains(out.impl, "p_tbox operator+(p_tbox p_a, p_tbox p_b) {"));
+  CHECK(contains(out.impl, "p_tbox tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_tbox p_a, p_tbox p_b) {"));
+  CHECK(contains(out.impl, "double operator/(p_tbox p_a, p_tbox p_b) {"));
   CHECK(contains(out.impl, "p_a = p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1);"));
   CHECK(contains(out.impl, "p_b = (p_a + p_a);"));
+  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_a, p_b);"));
+  CHECK(contains(out.impl, "p_r = (p_a / p_b);"));
   CHECK(contains(out.impl, "p_i = p_ops::tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(p_b);"));
 }
 

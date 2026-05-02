@@ -18,6 +18,12 @@ struct AssignmentOperatorResult {
   std::string defining_unit;
 };
 
+struct BinaryOperatorResult {
+  const ast::ProcDecl* decl = nullptr;
+  std::string defining_unit;
+  bool ambiguous = false;
+};
+
 class EmitResolution {
  public:
   EmitResolution(const TypeRegistry* registry, ScopeStateView& scope,
@@ -52,6 +58,12 @@ class EmitResolution {
   // redo any of this logic ad hoc.
   ResolvedCall resolve_call(
       const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
+
+  // Resolve a Pascal binary operator overload by Pascal operator token and
+  // operand expressions. The caller decides whether the chosen declaration is
+  // spelled as C++ infix operator syntax or as a named helper.
+  BinaryOperatorResult find_binary_operator(
+      const std::string& op, const ast::Expr& lhs, const ast::Expr& rhs);
 
   // Pascal `operator :=' is a conversion operator. C++ has no namespace-scope
   // assignment operator, so emit sites that know a source and destination type

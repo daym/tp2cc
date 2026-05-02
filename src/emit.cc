@@ -39,6 +39,29 @@ constexpr const char* kUnitFiniName = "tp2cc_unit_fini";
 constexpr const char* kPascalResultSlotName = "p_result";
 constexpr const char* kCtorStatusSlotName = "tp2cc_ctor_ok";
 
+std::string binary_pascal_operator_token(BinOp op) {
+  switch (op) {
+    case BinOp::Add: return "+";
+    case BinOp::Sub: return "-";
+    case BinOp::Mul: return "*";
+    case BinOp::RealDiv: return "/";
+    case BinOp::IntDiv: return "div";
+    case BinOp::Mod: return "mod";
+    case BinOp::Shl: return "shl";
+    case BinOp::Shr: return "shr";
+    case BinOp::And: return "and";
+    case BinOp::Or: return "or";
+    case BinOp::Xor: return "xor";
+    case BinOp::Eq: return "=";
+    case BinOp::NotEq: return "<>";
+    case BinOp::Lt: return "<";
+    case BinOp::Gt: return ">";
+    case BinOp::LtEq: return "<=";
+    case BinOp::GtEq: return ">=";
+    default: return {};
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Emitter state
 
@@ -957,6 +980,28 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             ascii_lower(static_cast<const TyName&>(*t).name));
         return shift_carrier_primitive(pi);
       };
+      if (std::string pas_op = binary_pascal_operator_token(n.op);
+          !pas_op.empty()) {
+        BinaryOperatorResult resolved =
+            resolution_.find_binary_operator(pas_op, *n.lhs, *n.rhs);
+        if (resolved.ambiguous) {
+          report_error(n.loc, "ambiguous overloaded operator " + pas_op);
+          return "/* ambiguous overloaded operator */";
+        }
+        if (resolved.decl) {
+          std::string lhs = emit_operand(*n.lhs, *n.rhs);
+          std::string rhs = emit_operand(*n.rhs, *n.lhs);
+          if (pascal_operator_decl_uses_named_helper(*resolved.decl)) {
+            std::string fn = pascal_operator_decl_name_to_cxx(*resolved.decl);
+            if (!resolved.defining_unit.empty()) {
+              fn = unit_namespace_prefix(resolved.defining_unit) + fn;
+            }
+            return fn + "(" + lhs + ", " + rhs + ")";
+          }
+          std::string op = pascal_operator_cxx_token(resolved.decl->operator_token);
+          if (!op.empty()) return "(" + lhs + " " + op + " " + rhs + ")";
+        }
+      }
       if (n.q_check &&
           (n.op == BinOp::Add || n.op == BinOp::Sub || n.op == BinOp::Mul) &&
           operand_is_integer(*n.lhs) && operand_is_integer(*n.rhs)) {

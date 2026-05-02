@@ -247,7 +247,7 @@ std::string pascal_operator_cxx_token(std::string_view op) {
   if (op == "+") return "+";
   if (op == "-") return "-";
   if (op == "*") return "*";
-  if (op == "/" || op == "div") return "/";
+  if (op == "/") return "/";
   if (op == "mod") return "%";
   if (op == "=") return "==";
   if (op == "<>") return "!=";
@@ -263,6 +263,23 @@ std::string pascal_operator_cxx_token(std::string_view op) {
   return {};
 }
 
+bool pascal_operator_decl_uses_named_helper(const ast::ProcDecl& pd) {
+  if (!pd.is_operator) return false;
+  return pd.operator_token == ":=" ||
+         pascal_operator_cxx_token(pd.operator_token).empty();
+}
+
+std::string pascal_operator_named_helper_name(const ast::ProcDecl& pd) {
+  std::string out = "tp2cc_operator_";
+  out += encode_helper_ident(pd.operator_token);
+  out += "_params_";
+  out += encode_helper_params(pd.params);
+  out += "_ret_";
+  out += pd.return_type ? encode_helper_type(*pd.return_type)
+                        : std::string("void");
+  return out;
+}
+
 std::string pascal_assignment_operator_helper_name(const ast::ProcDecl& pd) {
   std::string out = "tp2cc_operator_assign";
   out += "_params_";
@@ -271,6 +288,18 @@ std::string pascal_assignment_operator_helper_name(const ast::ProcDecl& pd) {
   out += pd.return_type ? encode_helper_type(*pd.return_type)
                         : std::string("void");
   return out;
+}
+
+std::string pascal_operator_decl_name_to_cxx(const ast::ProcDecl& pd) {
+  if (!pd.is_operator) return mangle(pd.name);
+  if (pd.operator_token == ":=") {
+    return pascal_assignment_operator_helper_name(pd);
+  }
+  if (pascal_operator_decl_uses_named_helper(pd)) {
+    return pascal_operator_named_helper_name(pd);
+  }
+  std::string op = pascal_operator_cxx_token(pd.operator_token);
+  return op.empty() ? mangle(pd.name) : "operator" + op;
 }
 
 size_t procedural_param_count(const ast::TyProcedural& p) {
