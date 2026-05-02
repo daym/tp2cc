@@ -3884,6 +3884,24 @@ inline int32_t p_ansicomparefilename(const A& lhs, const B& rhs) {
   return 0;
 }
 
+template <typename A, typename B>
+inline int32_t p_comparetext(const A& lhs, const B& rhs) {
+  std::string a = tp2cc_to_std_string(lhs);
+  std::string b = tp2cc_to_std_string(rhs);
+  const std::size_t limit = std::min(a.size(), b.size());
+  for (std::size_t i = 0; i < limit; ++i) {
+    unsigned char av = static_cast<unsigned char>(a[i]);
+    unsigned char bv = static_cast<unsigned char>(b[i]);
+    av = static_cast<unsigned char>(std::tolower(av));
+    bv = static_cast<unsigned char>(std::tolower(bv));
+    if (av < bv) return -1;
+    if (av > bv) return 1;
+  }
+  if (a.size() < b.size()) return -1;
+  if (a.size() > b.size()) return 1;
+  return 0;
+}
+
 // `EpochToLocal(epoch, var year,month,day,hour,minute,second)`
 // breaks a Unix epoch second-count into local-time calendar fields.
 // Out-of-range epochs (libc returning nullptr) zero every field

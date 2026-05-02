@@ -166,6 +166,7 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
         "p_fileage",
         "p_getfilehandle",
         "p_stringofchar",
+        "p_comparetext",
         "p_ansicomparefilename",
     };
     for (const char* name : kSysutilsValueAliases) {

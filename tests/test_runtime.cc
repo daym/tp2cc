@@ -239,6 +239,10 @@ void test_runtime_swap_fill_and_compare_helpers() {
   CHECK(p_comparechar(s1[1], s2[1], 2) < 0);
   CHECK_EQ(p_indexbyte("abc\0", 4, static_cast<uint8_t>('c')), 2);
   CHECK_EQ(tp2cc_to_std_string(p_stringofchar(tp2cc_char_of('x'), 3)), std::string("xxx"));
+  CHECK_EQ(p_comparetext(tp2cc_ansistring_of("Alpha"), tp2cc_ansistring_of("alpha")), 0);
+  CHECK(p_comparetext(tp2cc_ansistring_of("alpha"), tp2cc_ansistring_of("beta")) < 0);
+  CHECK(p_comparetext(tp2cc_ansistring_of("beta"), tp2cc_ansistring_of("alpha")) > 0);
+  CHECK(p_comparetext(tp2cc_ansistring_of("alpha"), tp2cc_ansistring_of("alphabet")) < 0);
   CHECK_EQ(p_ansicomparefilename("/tmp/a", "/tmp/a"), 0);
 }
 
