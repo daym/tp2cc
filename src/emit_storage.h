@@ -50,6 +50,16 @@ struct EmitAbsoluteTargetInfo {
   bool is_const_storage = false;
 };
 
+struct EmitTypecastStorageView {
+  const ast::Expr* source = nullptr;
+  std::string source_cxx;
+  std::string target_cxx;
+  const ast::TypeExpr* target_type = nullptr;
+  bool target_is_primitive = false;
+  bool source_is_untyped_storage = false;
+  bool pointee_view = false;
+};
+
 // Storage / aliasing lowering. This module owns the dangerous questions about
 // "same bytes, new type" and "does this expression denote mutable storage?".
 //
@@ -69,6 +79,8 @@ class EmitStorage {
   std::string primitive_cast_lvalue_ref(const ast::Call& c);
   std::string primitive_cast_untyped_storage_ptr(const ast::Call& c);
   std::string primitive_cast_packed_field_ptr(const ast::Call& c);
+  std::optional<EmitTypecastStorageView> typecast_storage_view(
+      const ast::Expr& e);
 
   std::optional<EmitBytewiseStorage> bytewise_storage_ref(const ast::Expr& e);
   std::optional<EmitBytewiseStorage> packed_field_storage_ref(

@@ -43,44 +43,21 @@ EmitStorage::EmitStorage(const TypeRegistry* registry, ScopeStateView& scope,
       expr_ops_(expr_ops) {}
 
 std::string EmitStorage::primitive_cast_lvalue_ref(const Call& c) {
-  if (c.args.size() != 1 || c.callee->kind != Kind::Ident) return {};
-  const auto& id = static_cast<const Ident&>(*c.callee);
-  if (!is_primitive_type(id.name)) return {};
-  const Expr* peeled = peel_primitive_casts(c.args[0].get());
-  if (!peeled || !expr_is_storage_lvalue(*c.args[0])) return {};
-  if (expr_is_untyped_storage_ref(*c.args[0])) return {};
-  if (peeled->kind == Kind::Ident) {
-    ResolveResult rr =
-        resolve_name_provider_.resolve_name(static_cast<const Ident&>(*peeled).name);
-    if (rr.kind == ResolvedKind::UnitConst || rr.kind == ResolvedKind::EnumMember ||
-        rr.kind == ResolvedKind::UnitType || rr.is_callable) {
-      return {};
-    }
+  auto view = typecast_storage_view(c);
+  if (!view || !view->target_is_primitive || view->source_is_untyped_storage) {
+    return {};
   }
   // Pascal `T(lv)` used as an lvalue aliases the same storage with a different
   // type. Emit that reinterpretation directly.
-  return reinterpret_ref_text(primitive_type_cxx(id.name),
-                              expr_ops_.expr_to_cxx(*peeled), false);
+  return reinterpret_ref_text(view->target_cxx, view->source_cxx, false);
 }
 
 std::string EmitStorage::primitive_cast_untyped_storage_ptr(const Call& c) {
-  if (c.args.size() != 1 || c.callee->kind != Kind::Ident) return {};
-  const auto& id = static_cast<const Ident&>(*c.callee);
-  if (!is_primitive_type(id.name)) return {};
-  const Expr* peeled = peel_primitive_casts(c.args[0].get());
-  if (!peeled || !expr_is_storage_lvalue(*c.args[0]) ||
-      !expr_is_untyped_storage_ref(*c.args[0])) {
+  auto view = typecast_storage_view(c);
+  if (!view || !view->target_is_primitive || !view->source_is_untyped_storage) {
     return {};
   }
-  if (peeled->kind == Kind::Ident) {
-    ResolveResult rr =
-        resolve_name_provider_.resolve_name(static_cast<const Ident&>(*peeled).name);
-    if (rr.kind == ResolvedKind::UnitConst || rr.kind == ResolvedKind::EnumMember ||
-        rr.kind == ResolvedKind::UnitType || rr.is_callable) {
-      return {};
-    }
-  }
-  return expr_ops_.expr_to_cxx(*peeled);
+  return view->source_cxx;
 }
 
 // Returns `&(field_expr)` when `c` is a primitive type-cast over a scalar
@@ -97,6 +74,79 @@ std::string EmitStorage::primitive_cast_packed_field_ptr(const Call& c) {
   if (!type_is_packed_record(base_type)) return {};
   if (auto storage = bytewise_storage_ref(*peeled)) return storage->void_ptr_text;
   return {};
+}
+
+std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
+    const Expr& e) {
+  if (e.kind != Kind::Call) return std::nullopt;
+  const auto& outer = static_cast<const Call&>(e);
+  if (outer.args.size() != 1 || outer.callee->kind != Kind::Ident) {
+    return std::nullopt;
+  }
+
+  auto typecast_target = [&](const Ident& id, const TypeExpr** target_type,
+                             bool* target_is_primitive) -> std::string {
+    const std::string lower = ascii_lower(id.name);
+    *target_type = nullptr;
+    *target_is_primitive = false;
+    if (is_primitive_type(lower)) {
+      *target_is_primitive = true;
+      return primitive_type_cxx(lower);
+    }
+    if (const TypeExpr* named = analysis_.lookup_named_type_expr(lower)) {
+      *target_type = named;
+      return types_.type_name_text_to_cxx(id.name);
+    }
+    if (registry_ &&
+        (registry_->records.count(lower) || registry_->classes.count(lower))) {
+      return types_.type_name_text_to_cxx(id.name);
+    }
+    return {};
+  };
+
+  const auto& target_id = static_cast<const Ident&>(*outer.callee);
+  const TypeExpr* target_type = nullptr;
+  bool target_is_primitive = false;
+  std::string target_cxx =
+      typecast_target(target_id, &target_type, &target_is_primitive);
+  if (target_cxx.empty()) return std::nullopt;
+
+  const Expr* source = outer.args[0].get();
+  while (source && source->kind == Kind::Call) {
+    const auto& nested = static_cast<const Call&>(*source);
+    if (nested.args.size() != 1 || nested.callee->kind != Kind::Ident) break;
+    const auto& nested_id = static_cast<const Ident&>(*nested.callee);
+    const TypeExpr* ignored_type = nullptr;
+    bool ignored_primitive = false;
+    if (typecast_target(nested_id, &ignored_type, &ignored_primitive).empty()) {
+      break;
+    }
+    source = nested.args[0].get();
+  }
+  if (!source || !expr_is_storage_lvalue(*source)) return std::nullopt;
+
+  if (source->kind == Kind::Ident) {
+    ResolveResult rr = resolve_name_provider_.resolve_name(
+        static_cast<const Ident&>(*source).name);
+    if (rr.kind == ResolvedKind::UnitConst ||
+        rr.kind == ResolvedKind::EnumMember ||
+        rr.kind == ResolvedKind::UnitType || rr.is_callable) {
+      return std::nullopt;
+    }
+  }
+
+  const TypeExpr* source_ty = analysis_.canonicalize_type(
+      analysis_.deduce_type(*source));
+  const bool untyped_storage = expr_is_untyped_storage_ref(*source);
+  EmitTypecastStorageView view;
+  view.source = source;
+  view.source_cxx = expr_ops_.expr_to_cxx(*source);
+  view.target_cxx = target_cxx;
+  view.target_type = target_type;
+  view.target_is_primitive = target_is_primitive;
+  view.source_is_untyped_storage = untyped_storage;
+  view.pointee_view = untyped_storage || type_is_pointerish(source_ty);
+  return view;
 }
 
 std::optional<EmitBytewiseStorage> EmitStorage::bytewise_storage_ref(

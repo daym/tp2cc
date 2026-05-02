@@ -236,27 +236,11 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
   const TypeExpr* arg_type = analysis_.deduce_type(arg);
   if (arg_type) arg_type = analysis_.canonicalize_type(arg_type);
   const TypeExpr* canon_param_type = analysis_.canonicalize_type(param_type);
-  if (mutable_ref_arg && arg.kind == Kind::Call &&
-      static_cast<const Call&>(arg).args.size() == 1 &&
-      static_cast<const Call&>(arg).callee->kind == Kind::Ident &&
-      (canon_param_type || untyped_arg == UntypedArgKind::None)) {
-    const auto& cast = static_cast<const Call&>(arg);
-    const auto& id = static_cast<const Ident&>(*cast.callee);
-    bool is_type_cast = is_primitive_type(id.name);
-    if (!is_type_cast && analysis_.lookup_named_type_expr(id.name)) {
-      is_type_cast = true;
-    }
-    if (is_type_cast && storage_.expr_is_storage_lvalue(*cast.args[0])) {
-      std::string ref_type_cxx;
-      if (param_type) {
-        ref_type_cxx = types_.type_to_cxx(*param_type);
-      } else if (is_primitive_type(id.name)) {
-        ref_type_cxx = primitive_type_cxx(id.name);
-      } else {
-        ref_type_cxx = types_.type_name_text_to_cxx(id.name);
-      }
-      return storage_.reinterpret_ref_text(ref_type_cxx,
-                                           expr_ops_.expr_to_cxx(*cast.args[0]),
+  if (mutable_ref_arg && (canon_param_type || untyped_arg == UntypedArgKind::None)) {
+    if (auto view = storage_.typecast_storage_view(arg)) {
+      const std::string ref_type_cxx =
+          param_type ? types_.type_to_cxx(*param_type) : view->target_cxx;
+      return storage_.reinterpret_ref_text(ref_type_cxx, view->source_cxx,
                                            false);
     }
   }

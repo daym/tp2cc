@@ -1876,6 +1876,25 @@ void test_local_byte_array_typecast_reinterprets_storage() {
   CHECK(!contains(out.impl, "p_t80bitarray(p_e)[p_i]"));
 }
 
+void test_text_typecast_over_pointer_deref_keeps_file_lvalue() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure dump(arg : pointer);\n"
+      "implementation\n"
+      "procedure dump(arg : pointer);\n"
+      "begin\n"
+      "  write(text(arg^), 'x');\n"
+      "  writeln(text(arg^));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::p_write(::rt::tp2cc_reinterpret_storage_ref<::rt::tp2cc_TextFile>(::rt::tp2cc_deref(p_arg))"));
+  CHECK(contains(out.impl,
+                 "::rt::p_writeln(::rt::tp2cc_reinterpret_storage_ref<::rt::tp2cc_TextFile>(::rt::tp2cc_deref(p_arg)))"));
+  CHECK(!contains(out.impl, "((::rt::tp2cc_TextFile)(::rt::tp2cc_deref(p_arg)))"));
+}
+
 void test_visible_pointer_alias_cast_uses_qualified_type_spelling() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -6252,6 +6271,7 @@ int main() {
   RUN_TEST(test_move_pointer_derefs_use_pointer_actuals);
   RUN_TEST(test_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_local_byte_array_typecast_reinterprets_storage);
+  RUN_TEST(test_text_typecast_over_pointer_deref_keeps_file_lvalue);
   RUN_TEST(test_visible_pointer_alias_cast_uses_qualified_type_spelling);
   RUN_TEST(test_local_pointer_alias_cast_uses_local_type_spelling);
   RUN_TEST(test_runtime_alias_type_names_are_explicitly_qualified);

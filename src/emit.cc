@@ -1636,6 +1636,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (n == "ansistring" || n == "utf8string") {
             return "::rt::tp2cc_ansistring_of(" + arg0() + ")";
           }
+          if (n == "text") {
+            if (auto view = storage_.typecast_storage_view(c)) {
+              // `text(p^)` is a typed view of file storage, commonly used
+              // before `write`/`writeln`. Keep it as an lvalue so the file
+              // overload receives the original TextFile, not a temporary copy.
+              return reinterpret_ref_text(view->target_cxx, view->source_cxx,
+                                          view->pointee_view);
+            }
+          }
           const Expr* peeled = peel_primitive_casts(c.args[0].get());
           if (peeled && expr_is_untyped_storage_ref(*c.args[0])) {
             return "::rt::tp2cc_reinterpret_load<" + primitive_type_cxx(n) +
@@ -1792,31 +1801,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (coerced != arg0()) return coerced;
             return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
           }
-          const Expr* peeled = peel_primitive_casts(c.args[0].get());
-          bool named_storage_view_type =
-              registry && (registry->records.count(n) || registry->classes.count(n));
-          if (cast_ty && peeled && expr_is_storage_lvalue(*c.args[0]) &&
-              (cast_ty->kind == Kind::TyArray ||
-               cast_ty->kind == Kind::TyRecord ||
-               cast_ty->kind == Kind::TyObject ||
-               cast_ty->kind == Kind::TyProcedural)) {
-            const TypeExpr* source_ty = deduce_type(*peeled);
-            bool pointee_view =
-                expr_is_untyped_storage_ref(*c.args[0]) ||
-                type_is_pointerish(source_ty);
-            return reinterpret_ref_text(type_name_text_to_cxx(n),
-                                        expr_to_cxx(*peeled),
-                                        pointee_view);
-          }
-          if (named_storage_view_type && peeled &&
-              expr_is_storage_lvalue(*c.args[0])) {
-            const TypeExpr* source_ty = deduce_type(*peeled);
-            bool pointee_view =
-                expr_is_untyped_storage_ref(*c.args[0]) ||
-                type_is_pointerish(source_ty);
-            return reinterpret_ref_text(type_name_text_to_cxx(n),
-                                        expr_to_cxx(*peeled),
-                                        pointee_view);
+          if (auto view = storage_.typecast_storage_view(c)) {
+            bool named_storage_view_type =
+                registry &&
+                (registry->records.count(n) || registry->classes.count(n));
+            bool aggregate_alias =
+                cast_ty && (cast_ty->kind == Kind::TyArray ||
+                            cast_ty->kind == Kind::TyRecord ||
+                            cast_ty->kind == Kind::TyObject ||
+                            cast_ty->kind == Kind::TyProcedural);
+            if (aggregate_alias || named_storage_view_type) {
+              return reinterpret_ref_text(view->target_cxx, view->source_cxx,
+                                          view->pointee_view);
+            }
           }
           if (cast_ty && cast_ty->kind == Kind::TyArray) {
             const auto& arr = static_cast<const TyArray&>(*cast_ty);
