@@ -534,12 +534,6 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     e->value = static_cast<uint64_t>(value);
     return e;
   };
-  auto make_neg_int_lit = [&](int64_t magnitude) {
-    auto e = std::make_shared<ast::Unary>();
-    e->op = ast::UnOp::Neg;
-    e->operand = make_int_lit(magnitude);
-    return e;
-  };
   auto add_rt_var = [&](const std::string& name,
                         std::shared_ptr<const ast::TypeExpr> type) {
     VarInfo v;
