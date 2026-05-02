@@ -2,6 +2,7 @@
 
 #include <limits>
 #include <stdexcept>
+#include <unordered_set>
 
 #include "diag.h"
 #include "typereg.h"
@@ -1361,6 +1362,55 @@ std::string EmitAnalysis::deduce_class_alias(const Expr& e) {
   if (auto cls = metaclass_target_name(t); !cls.empty()) return cls;
   if (auto cls = registry_->direct_type_name(t); !cls.empty()) return cls;
   return registry_->direct_type_name(registry_->canonicalize(t));
+}
+
+std::string EmitAnalysis::canonical_method_owner_type_name(
+    std::string_view owner) {
+  std::string current = ascii_lower(owner);
+  if (!registry_ || current.empty()) return current;
+
+  std::string explicit_unit;
+  if (auto dot = current.find('.'); dot != std::string::npos) {
+    explicit_unit = current.substr(0, dot);
+    current = current.substr(dot + 1);
+  }
+
+  std::unordered_set<std::string> seen;
+  for (int hops = 0; hops < kMaxAliasChainHops; ++hops) {
+    if (!seen.insert(current).second) break;
+    auto ait = registry_->aliases.find(current);
+    if (ait == registry_->aliases.end() || !ait->second.target) break;
+    if (!explicit_unit.empty()) {
+      if (ait->second.defining_unit != explicit_unit) break;
+    } else if (!scope_.current_unit_name.empty() &&
+               ait->second.defining_unit != scope_.current_unit_name) {
+      break;
+    }
+
+    const TypeExpr* target = ait->second.target.get();
+    if (!target || target->kind != Kind::TyName) break;
+
+    // Pascal permits method implementations to name a class type alias:
+    // `TAlias = TReal; procedure TAlias.M;`.  C++ cannot define methods on
+    // a `using`/typedef alias, so canonicalize only the owner spelling of
+    // out-of-class method definitions to the underlying Pascal class.
+    std::string next = ascii_lower(static_cast<const TyName&>(*target).name);
+    if (auto dot = next.find('.'); dot != std::string::npos) {
+      explicit_unit = next.substr(0, dot);
+      next = next.substr(dot + 1);
+    }
+    current = std::move(next);
+  }
+
+  if (!explicit_unit.empty()) {
+    if (const auto* ci = class_info_for_type_name(explicit_unit + "." + current);
+        ci) {
+      return explicit_unit + "." + current;
+    }
+  } else if (class_info_for_type_name(current)) {
+    return current;
+  }
+  return ascii_lower(owner);
 }
 
 const TypeExpr* EmitAnalysis::lookup_record_field_type_in_type(

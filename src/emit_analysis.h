@@ -95,6 +95,7 @@ class EmitAnalysis {
   // member access, overload picking, and `with` lowering.
   const ast::TypeExpr* deduce_type(const ast::Expr& e);
   std::string deduce_class_alias(const ast::Expr& e);
+  std::string canonical_method_owner_type_name(std::string_view owner);
   const ast::TypeExpr* lookup_record_field_type_in_type(
       const ast::TypeExpr* type, std::string_view field_name);
   const ast::TypeExpr* lookup_record_field_type_in_with(

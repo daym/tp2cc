@@ -122,7 +122,12 @@ void EmitProcs::setup_proc_frame(const ProcDecl& pd, bool nested_lambda) {
   scope_.outer_result_name = inherited_outer_result_name;
   scope_.outer_result_slot_name = inherited_outer_result_slot_name;
   scope_.outer_result_type = inherited_outer_result_type;
-  if (!nested_lambda) scope_.current_class_name = pd.of_type;
+  if (!nested_lambda) {
+    scope_.current_class_name = pd.of_type.empty()
+                                    ? std::string{}
+                                    : analysis_.canonical_method_owner_type_name(
+                                          pd.of_type);
+  }
   ++block_depth_;
 }
 
@@ -214,7 +219,11 @@ void EmitProcs::emit_proc_body(const ProcDecl& pd) {
   // Header line: ret ClassName::Method(args) or ret Method(args).
   std::string ret = decls_.proc_return_type_to_cxx(pd);
   std::string qname = pascal_operator_decl_name_to_cxx(pd);
-  if (!pd.of_type.empty()) qname = types_.named_type_struct_cxx(pd.of_type) + "::" + qname;
+  if (!pd.of_type.empty()) {
+    qname = types_.named_type_struct_cxx(
+                analysis_.canonical_method_owner_type_name(pd.of_type)) +
+            "::" + qname;
+  }
   emit_ops_.emitln(ret + " " + qname + "(" + decls_.param_list_to_cxx(pd.params) +
                    ") {");
   emit_ops_.indent();

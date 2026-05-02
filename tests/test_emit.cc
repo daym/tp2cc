@@ -5683,6 +5683,25 @@ void test_class_alias_in_value_position_lowers_to_underlying_metaclass() {
                  "p_registerit(tp2cc_metaclass_value_t_texportbase());"));
 }
 
+void test_method_definition_on_class_alias_uses_canonical_owner() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  treal = class\n"
+      "    procedure ping;\n"
+      "  end;\n"
+      "  talias = treal;\n"
+      "implementation\n"
+      "procedure talias.ping;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "using t_talias = t_treal*;"));
+  CHECK(contains(out.impl, "void t_treal::p_ping()"));
+  CHECK(!contains(out.impl, "t_talias::p_ping"));
+}
+
 void test_metaclass_derived_constructor_surface_stays_visible() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -6653,6 +6672,7 @@ int main() {
   RUN_TEST(test_with_block_bare_free_lowers_through_static_helper);
   RUN_TEST(test_metaclass_member_base_emits_with_implicit_zero_arg_call);
   RUN_TEST(test_class_alias_in_value_position_lowers_to_underlying_metaclass);
+  RUN_TEST(test_method_definition_on_class_alias_uses_canonical_owner);
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
   RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);
   RUN_TEST(test_metaclass_same_signature_constructor_keeps_derived_return_type);
