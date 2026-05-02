@@ -608,6 +608,69 @@ void test_char_array_compares_equal_to_shortstring_by_live_prefix() {
   CHECK(tp2cc_shortstring_of<>("hi") == text);
 }
 
+void test_char_array_assignment_from_shortstring_matches_fpc() {
+  tp2cc_Array<p_char, 0, 4> short_dest{};
+  short_dest = tp2cc_shortstring_of<8>("ab");
+  CHECK_EQ(tp2cc_char_to_c(short_dest.data[0]), 'a');
+  CHECK_EQ(tp2cc_char_to_c(short_dest.data[1]), 'b');
+  CHECK_EQ(tp2cc_char_to_c(short_dest.data[2]), '\0');
+  CHECK_EQ(tp2cc_char_to_c(short_dest.data[3]), '\0');
+
+  tp2cc_Array<p_char, 0, 4> exact_dest{};
+  exact_dest = tp2cc_shortstring_of<8>("abcd");
+  CHECK_EQ(tp2cc_char_to_c(exact_dest.data[0]), 'a');
+  CHECK_EQ(tp2cc_char_to_c(exact_dest.data[1]), 'b');
+  CHECK_EQ(tp2cc_char_to_c(exact_dest.data[2]), 'c');
+  CHECK_EQ(tp2cc_char_to_c(exact_dest.data[3]), 'd');
+
+  tp2cc_Array<p_char, 0, 4> long_dest{};
+  long_dest = tp2cc_shortstring_of<8>("abcdef");
+  CHECK_EQ(tp2cc_char_to_c(long_dest.data[0]), 'a');
+  CHECK_EQ(tp2cc_char_to_c(long_dest.data[1]), 'b');
+  CHECK_EQ(tp2cc_char_to_c(long_dest.data[2]), 'c');
+  CHECK_EQ(tp2cc_char_to_c(long_dest.data[3]), 'd');
+}
+
+void test_shortstring_assignment_from_char_array_matches_fpc() {
+  tp2cc_Array<p_char, 0, 5> zero_based{};
+  zero_based.data[0] = tp2cc_char_of('a');
+  zero_based.data[1] = tp2cc_char_of('b');
+  zero_based.data[2] = tp2cc_char_of('\0');
+  zero_based.data[3] = tp2cc_char_of('c');
+  zero_based.data[4] = tp2cc_char_of('d');
+
+  tp2cc_ShortString<5> stop_at_nul{};
+  stop_at_nul = zero_based;
+  CHECK_EQ(stop_at_nul.length, 2);
+  CHECK_EQ(tp2cc_to_std_string(stop_at_nul), std::string("ab"));
+
+  tp2cc_Array<p_char, 0, 5> no_nul{};
+  no_nul.data[0] = tp2cc_char_of('a');
+  no_nul.data[1] = tp2cc_char_of('b');
+  no_nul.data[2] = tp2cc_char_of('c');
+  no_nul.data[3] = tp2cc_char_of('d');
+  no_nul.data[4] = tp2cc_char_of('e');
+
+  tp2cc_ShortString<3> truncated{};
+  truncated = no_nul;
+  CHECK_EQ(truncated.length, 3);
+  CHECK_EQ(tp2cc_to_std_string(truncated), std::string("abc"));
+
+  tp2cc_Array<p_char, 1, 4> one_based{};
+  one_based.data[0] = tp2cc_char_of('x');
+  one_based.data[1] = tp2cc_char_of('\0');
+  one_based.data[2] = tp2cc_char_of('y');
+  one_based.data[3] = tp2cc_char_of('z');
+
+  tp2cc_ShortString<4> keep_embedded_nul{};
+  keep_embedded_nul = one_based;
+  CHECK_EQ(keep_embedded_nul.length, 4);
+  CHECK_EQ(tp2cc_char_to_c(keep_embedded_nul.data[0]), 'x');
+  CHECK_EQ(tp2cc_char_to_c(keep_embedded_nul.data[1]), '\0');
+  CHECK_EQ(tp2cc_char_to_c(keep_embedded_nul.data[2]), 'y');
+  CHECK_EQ(tp2cc_char_to_c(keep_embedded_nul.data[3]), 'z');
+}
+
 void test_str_formats_real_values() {
   tp2cc_ShortString<> s;
 
@@ -1286,6 +1349,8 @@ int main() {
   RUN_TEST(test_shortstring_compares_equal_to_pchar_buffer);
   RUN_TEST(test_insert_accepts_shortstring_pointer_proxy_source);
   RUN_TEST(test_char_array_compares_equal_to_shortstring_by_live_prefix);
+  RUN_TEST(test_char_array_assignment_from_shortstring_matches_fpc);
+  RUN_TEST(test_shortstring_assignment_from_char_array_matches_fpc);
   RUN_TEST(test_str_formats_real_values);
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
   RUN_TEST(test_reinterpret_copy_preserves_scalar_bit_pattern);

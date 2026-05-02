@@ -190,6 +190,7 @@ inline void* tp2cc_method_code() {
 template <int N = 255> struct tp2cc_ShortString;
 template <int N> struct tp2cc_ShortStringPtrValue;
 template <int N> struct tp2cc_ShortStringPtrRef;
+template <typename T, auto Lo, std::size_t N> struct tp2cc_Array;
 class tp2cc_AnsiString;
 template <int N = 255> constexpr tp2cc_ShortString<N> tp2cc_shortstring_of();
 template <int N = 255> constexpr tp2cc_ShortString<N> tp2cc_shortstring_of(const char* s);
@@ -442,6 +443,9 @@ struct tp2cc_ShortString {
   constexpr tp2cc_ShortString& operator=(char c) {
     return (*this = tp2cc_char_of(c));
   }
+
+  template <auto Lo, std::size_t M>
+  constexpr tp2cc_ShortString& operator=(const tp2cc_Array<p_char, Lo, M>& arr);
 
   // Cross-capacity equality -- declared as a friend template so
   // `s<255> == s<10>` is unambiguous.
@@ -2021,6 +2025,22 @@ struct tp2cc_Array {
     return data[tp2cc_ordinal_value(i) - tp2cc_ordinal_value(Lo)];
   }
 
+  template <int M, typename U = T,
+            typename = std::enable_if_t<std::is_same_v<U, p_char>>>
+  constexpr tp2cc_Array& operator=(const tp2cc_ShortString<M>& s) {
+    // Copy at most the array payload size and zero-fill only the remaining
+    // slots. Exact-fit strings are not NUL-terminated because there is
+    // no spare element.
+    const std::size_t n =
+        static_cast<std::size_t>(s.length) < N ? static_cast<std::size_t>(s.length)
+                                               : N;
+    for (std::size_t i = 0; i < n; ++i)
+      data[i] = tp2cc_char_of(static_cast<uint8_t>(s.data[i]));
+    for (std::size_t i = n; i < N; ++i)
+      data[i] = tp2cc_char_of('\0');
+    return *this;
+  }
+
   constexpr T* begin()             { return data; }
   constexpr T* end()               { return data + N; }
   constexpr const T* begin() const { return data; }
@@ -2044,6 +2064,29 @@ struct tp2cc_Array {
     return static_cast<decltype(Lo)>(tp2cc_ordinal_value(Lo) + N - 1);
   }
 };
+
+template <int N>
+template <auto Lo, std::size_t M>
+constexpr tp2cc_ShortString<N>& tp2cc_ShortString<N>::operator=(
+    const tp2cc_Array<p_char, Lo, M>& arr) {
+  // Mirrors FPC's fpc_chararray_to_shortstr(out res, arr, zerobased).
+  // Zero-based char arrays are treated as C-ish buffers and stop at the
+  // first NUL within the destination capacity; non-zero-based arrays copy
+  // the capped full array payload.
+  std::size_t len =
+      (M < static_cast<std::size_t>(N)) ? M : static_cast<std::size_t>(N);
+  if constexpr (tp2cc_ordinal_value(Lo) == 0) {
+    for (std::size_t i = 0; i < len; ++i) {
+      if (tp2cc_char_to_c(arr.data[i]) == '\0') {
+        len = i;
+        break;
+      }
+    }
+  }
+  for (std::size_t i = 0; i < len; ++i) data[i] = arr.data[i];
+  length = static_cast<uint8_t>(len);
+  return *this;
+}
 
 template <typename T>
 struct tp2cc_is_array : std::false_type {};
