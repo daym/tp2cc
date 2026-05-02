@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <stdexcept>
 
+#include "diag.h"
 #include "emit_support.h"
 
 namespace tp2cc {
@@ -253,6 +254,34 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
       }
       default:
         break;
+    }
+  }
+}
+
+void report_type_value_collisions(const UnitInfo& ui) {
+  std::unordered_set<std::string> type_names;
+  type_names.insert(ui.iface_types.begin(), ui.iface_types.end());
+  type_names.insert(ui.impl_types.begin(), ui.impl_types.end());
+
+  std::unordered_set<std::string> value_names;
+  auto add_keys = [&](const auto& map) {
+    for (const auto& [name, _] : map) {
+      (void)_;
+      value_names.insert(name);
+    }
+  };
+  add_keys(ui.iface_vars);
+  add_keys(ui.impl_vars);
+  add_keys(ui.iface_consts);
+  add_keys(ui.impl_consts);
+  add_keys(ui.iface_procs);
+  add_keys(ui.impl_procs);
+  value_names.insert(ui.iface_enum_members.begin(), ui.iface_enum_members.end());
+  value_names.insert(ui.impl_enum_members.begin(), ui.impl_enum_members.end());
+
+  for (const auto& name : type_names) {
+    if (value_names.count(name)) {
+      report_error({}, "duplicate identifier `" + name + "`");
     }
   }
 }
@@ -718,6 +747,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
                        /*is_interface=*/true);
     register_decl_list(*this, lc(u->name), u->impl_decls,
                        /*is_interface=*/false);
+    report_type_value_collisions(units[lc(u->name)]);
   }
 }
 

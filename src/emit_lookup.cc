@@ -28,7 +28,10 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       auto uit = registry_->units.find(qualifier);
       if (uit != registry_->units.end()) {
         const UnitInfo& u = uit->second;
-        if (auto* pi = u.find_export_proc(name)) {
+        const bool own_unit = qualifier == scope_.current_unit_name;
+        const ProcInfo* pi =
+            own_unit ? u.find_proc(name) : u.find_export_proc(name);
+        if (pi) {
           r.kind = ResolvedKind::UnitProc;
           r.proc = pi->decl.get();
           r.is_callable = true;
@@ -37,19 +40,19 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
           r.return_type_name = pi->return_type_name;
           return r;
         }
-        if (u.find_export_var(name)) {
+        if (own_unit ? u.find_var(name) : u.find_export_var(name)) {
           r.kind = ResolvedKind::UnitVar;
           return r;
         }
-        if (u.find_export_const(name)) {
+        if (own_unit ? u.find_const(name) : u.find_export_const(name)) {
           r.kind = ResolvedKind::UnitConst;
           return r;
         }
-        if (u.has_export_enum_member(name)) {
+        if (own_unit ? u.has_enum_member(name) : u.has_export_enum_member(name)) {
           r.kind = ResolvedKind::EnumMember;
           return r;
         }
-        if (u.has_export_type(name)) {
+        if (own_unit ? u.has_type(name) : u.has_export_type(name)) {
           r.kind = ResolvedKind::UnitType;
           return r;
         }

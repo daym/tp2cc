@@ -34,7 +34,9 @@ void EmitResolution::append_unit_export_proc_cands(
   if (!registry_) return;
   auto it = registry_->units.find(unit);
   if (it == registry_->units.end()) return;
-  auto* v = it->second.find_export_procs(name);
+  auto* v = (unit == scope_.current_unit_name)
+                ? it->second.find_procs(name)
+                : it->second.find_export_procs(name);
   if (!v) return;
   for (const auto& pi : *v) {
     cands.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args, unit});
@@ -131,7 +133,11 @@ const ProcDecl* EmitResolution::resolve_call_decl(const Expr& callee) {
       // the printer spells the final C++ call.
       auto uit = registry_->units.find(id.name);
       if (uit != registry_->units.end()) {
-        if (auto* pi = uit->second.find_export_proc(mem.name)) {
+        const ProcInfo* pi =
+            (id.name == scope_.current_unit_name)
+                ? uit->second.find_proc(mem.name)
+                : uit->second.find_export_proc(mem.name);
+        if (pi) {
           return pi->decl.get();
         }
       }

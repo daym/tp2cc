@@ -2268,6 +2268,56 @@ void test_sizeof_qualified_type_uses_type_spelling_not_value_namespace() {
   CHECK(contains(out.impl, "sizeof(p_macho::p_counter)"));
 }
 
+void test_unit_type_value_duplicates_across_sections_report_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  foo = longint;\n"
+      "implementation\n"
+      "var\n"
+      "  foo : byte;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+
+  before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "var\n"
+      "  foo : byte;\n"
+      "implementation\n"
+      "type\n"
+      "  foo = longint;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_sizeof_own_implementation_private_qualified_names() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "type\n"
+      "  foo = record\n"
+      "    a : longint;\n"
+      "    b : longint;\n"
+      "    c : longint;\n"
+      "  end;\n"
+      "var\n"
+      "  bar : word;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  writeln(sizeof(u.foo));\n"
+      "  writeln(sizeof(u.bar));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "sizeof(p_u::t_foo)"));
+  CHECK(contains(out.impl, "sizeof(p_u::p_bar)"));
+}
+
 void test_primitive_cast_assign_reinterprets_storage() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -6460,6 +6510,8 @@ int main() {
   RUN_TEST(test_local_enum_members_do_not_fall_back_to_runtime);
   RUN_TEST(test_sizeof_visible_type_uses_type_spelling_not_identifier_lookup);
   RUN_TEST(test_sizeof_qualified_type_uses_type_spelling_not_value_namespace);
+  RUN_TEST(test_unit_type_value_duplicates_across_sections_report_error);
+  RUN_TEST(test_sizeof_own_implementation_private_qualified_names);
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
   RUN_TEST(test_primitive_cast_read_reinterprets_storage);
   RUN_TEST(test_inc_untyped_primitive_cast_reinterprets_storage_by_byte_copy);
