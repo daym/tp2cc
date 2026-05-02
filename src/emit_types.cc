@@ -1,6 +1,7 @@
 #include "emit_types.h"
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <string>
 #include <unordered_set>
@@ -413,14 +414,11 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
     return e && e->kind == Kind::StringLit &&
            static_cast<const StringLit&>(*e).value.size() == 1;
   };
-  // If both bounds are enum members of the same enum, preserve that enum type
-  // so set/array element typing stays faithful instead of collapsing to int.
-  auto bound_enum = [&](const Expr* e) -> std::string {
-    if (!e || e->kind != Kind::Ident) return {};
-    const std::string member = static_cast<const Ident&>(*e).name;
+  auto visible_enum_type_for_member = [&](std::string_view name) -> std::string {
+    const std::string member = ascii_lower(name);
     for (const auto& [enum_name, en] : scope_.local_enums) {
       for (const auto& em : en->members) {
-        if (em.name == member) return mangle(enum_name);
+        if (ascii_lower(em.name) == member) return mangle(enum_name);
       }
     }
     if (!registry_) return {};
@@ -432,6 +430,91 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
       prefix = unit_namespace_prefix(info->defining_unit);
     }
     return prefix + mangle(info->name);
+  };
+
+  auto enum_type_for_type_name = [&](std::string_view name) -> std::string {
+    const std::string low = ascii_lower(name);
+    if (scope_.local_enums.count(low)) return type_name_text_to_cxx(low);
+    if (!registry_) return {};
+    auto dot = low.find('.');
+    if (dot != std::string::npos) {
+      const std::string unit = low.substr(0, dot);
+      const std::string tail = low.substr(dot + 1);
+      auto eit = registry_->enums.find(tail);
+      if (eit != registry_->enums.end() && eit->second.defining_unit == unit) {
+        return type_name_text_to_cxx(low);
+      }
+      return {};
+    }
+    auto eit = registry_->enums.find(low);
+    if (eit == registry_->enums.end()) return {};
+    if (!eit->second.defining_unit.empty() &&
+        eit->second.defining_unit != scope_.current_unit_name) {
+      auto cur = registry_->units.find(scope_.current_unit_name);
+      if (cur == registry_->units.end()) return {};
+      bool visible = false;
+      for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend(); ++it) {
+        if (*it == eit->second.defining_unit) {
+          visible = true;
+          break;
+        }
+      }
+      if (!visible) return {};
+    }
+    return type_name_text_to_cxx(low);
+  };
+
+  // If both bounds denote values from the same enum, preserve that enum carrier
+  // so scalar subranges remain assignment-compatible with the parent enum.
+  std::function<std::string(const Expr*)> bound_enum;
+  bound_enum = [&](const Expr* e) -> std::string {
+    if (!e) return {};
+    if (e->kind == Kind::Ident) {
+      return visible_enum_type_for_member(static_cast<const Ident&>(*e).name);
+    }
+    if (e->kind == Kind::Member) {
+      const auto& mem = static_cast<const Member&>(*e);
+      if (mem.base && mem.base->kind == Kind::Ident) {
+        const std::string unit =
+            ascii_lower(static_cast<const Ident&>(*mem.base).name);
+        if (registry_) {
+          const std::string member = ascii_lower(mem.name);
+          for (const auto& [_, info] : registry_->enums) {
+            if (info.defining_unit != unit) continue;
+            if (std::find(info.members.begin(), info.members.end(), member) !=
+                info.members.end()) {
+              return unit_namespace_prefix(unit) + mangle(info.name);
+            }
+          }
+        }
+      }
+      return {};
+    }
+    if (e->kind == Kind::Call) {
+      const auto& call = static_cast<const Call&>(*e);
+      if (!call.callee || call.callee->kind != Kind::Ident ||
+          call.args.size() != 1 || !call.args[0]) {
+        return {};
+      }
+      const std::string callee =
+          ascii_lower(static_cast<const Ident&>(*call.callee).name);
+      if (callee == "low" || callee == "high") {
+        if (call.args[0]->kind == Kind::Ident) {
+          return enum_type_for_type_name(
+              static_cast<const Ident&>(*call.args[0]).name);
+        }
+        if (call.args[0]->kind == Kind::Member) {
+          const auto& mem = static_cast<const Member&>(*call.args[0]);
+          if (mem.base && mem.base->kind == Kind::Ident) {
+            return enum_type_for_type_name(
+                static_cast<const Ident&>(*mem.base).name + "." + mem.name);
+          }
+        }
+        return {};
+      }
+      if (callee == "pred" || callee == "succ") return bound_enum(call.args[0].get());
+    }
+    return {};
   };
   std::string le = bound_enum(r.lo.get());
   std::string he = bound_enum(r.hi.get());

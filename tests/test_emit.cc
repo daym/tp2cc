@@ -330,10 +330,19 @@ void test_subrange_type_accepts_constant_ordinal_intrinsics() {
       "type\n"
       "  tcgloc = (loc_invalid, loc_void, loc_creference, loc_reference);\n"
       "  tcgnonrefloc = low(tcgloc)..pred(loc_creference);\n"
+      "  tlocation = record\n"
+      "    loc: tcgloc;\n"
+      "  end;\n"
+      "procedure reset(var l: tlocation; lt: tcgnonrefloc);\n"
       "implementation\n"
+      "procedure reset(var l: tlocation; lt: tcgnonrefloc);\n"
+      "begin\n"
+      "  l.loc := lt;\n"
+      "end;\n"
       "end.\n");
   CHECK(contains(out.header, "enum p_tcgloc"));
-  CHECK(contains(out.header, "using p_tcgnonrefloc = int32_t;"));
+  CHECK(contains(out.header, "using p_tcgnonrefloc = p_tcgloc;"));
+  CHECK(contains(out.impl, "p_l.p_loc = p_lt;"));
 }
 
 void test_char_subrange_preserves_char_storage() {
