@@ -1,0 +1,38 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-02
+Subject: Route parser local-verbosity cleanup through a pointer carrier
+License: expat
+
+`compiler/parser.pas` passes `current_settings.pmessage` as a `var`
+parameter to `FreeLocalVerbosity`.  `current_settings` is a packed record
+because it is serialized into PPUs, so the translated C++ bootstrap cannot
+bind a non-const reference directly to that field.
+
+Keep the packed `tsettings` layout unchanged, but copy the pointer field to
+a local variable, let `FreeLocalVerbosity` update that local, then store the
+result back into `current_settings.pmessage`.
+
+--- a/compiler/parser.pas
++++ b/compiler/parser.pas
+@@ -288,6 +288,7 @@
+       var
+          olddata : polddata;
+          hp,hp2 : tmodule;
++         localpmessage : pmessagestaterecord;
+        begin
+          { parsing a procedure or declaration should be finished }
+          if assigned(current_procinfo) then
+@@ -521,7 +522,12 @@
+            dec(compile_level);
+            set_current_module(olddata^.old_current_module);
+ 
+-           FreeLocalVerbosity(current_settings.pmessage);
++           { current_settings is a packed record.  Route the var parameter
++             through a local so the translated bootstrap does not have to
++             bind a reference directly to the packed field. }
++           localpmessage:=current_settings.pmessage;
++           FreeLocalVerbosity(localpmessage);
++           current_settings.pmessage:=localpmessage;
+ 
+            dispose(olddata);
+          end;
