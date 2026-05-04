@@ -135,8 +135,6 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
     }
   }
 
-  const TypeExpr* source_ty = analysis_.canonicalize_type(
-      analysis_.deduce_type(*source));
   const bool untyped_storage = expr_is_untyped_storage_ref(*source);
   EmitTypecastStorageView view;
   view.source = source;
@@ -145,7 +143,11 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
   view.target_type = target_type;
   view.target_is_primitive = target_is_primitive;
   view.source_is_untyped_storage = untyped_storage;
-  view.pointee_view = untyped_storage || type_is_pointerish(source_ty);
+  // Pointee-view applies only to untyped-param storage (`procedure foo(var x)`
+  // with `T(x) := y` meaning "write T at *x"). A typed pointer lvalue cast
+  // like `ptaiprop(field) := y` is a storage alias of the slot itself;
+  // emitting pointee-view there dereferences the slot's (often null) value.
+  view.pointee_view = untyped_storage;
   return view;
 }
 
