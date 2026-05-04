@@ -711,12 +711,30 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     rt_classes[name] = std::move(ci);
   };
 
+  ast::Param inh_aclass;
+  inh_aclass.names = {"aclass"};
+  inh_aclass.type = make_typename("tclass");
   add_rt_class("tobject", "",
                {make_method("create",  ast::ProcKind::Constructor, {}),
                 make_method("destroy", ast::ProcKind::Destructor,  {}),
                 make_method("free",    ast::ProcKind::Procedure,   {}),
                 make_method("classname", ast::ProcKind::Function, {},
                             make_typename("shortstring"),
+                            /*class_method=*/true),
+                // Pascal RTL declares these as `class function`. They live in
+                // the runtime header (t_tobject::p_inheritsfrom etc.); register
+                // them so the resolver/deduce path treats them like any other
+                // method instead of needing a separate
+                // `builtin_reference_class_member_type` shim.
+                make_method("classtype", ast::ProcKind::Function, {},
+                            make_typename("tclass"),
+                            /*class_method=*/true),
+                make_method("instancesize", ast::ProcKind::Function, {},
+                            make_typename("longint"),
+                            /*class_method=*/true),
+                make_method("inheritsfrom", ast::ProcKind::Function,
+                            {inh_aclass},
+                            make_typename("boolean"),
                             /*class_method=*/true)});
 
   // sysutils' Exception ancestor. `Create(const Msg: string)`; the
