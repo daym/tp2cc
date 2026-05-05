@@ -357,7 +357,12 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
       scope_.current_fn_is_function ? scope_.current_result_slot_name : "";
   scope_.lhs_outer_result_rewrite = scope_.outer_result_name;
   scope_.lhs_outer_result_rewrite_slot = scope_.outer_result_slot_name;
+  bool saved_suppress_packed_scalar_value_load =
+      scope_.suppress_packed_scalar_value_load;
+  scope_.suppress_packed_scalar_value_load = true;
   std::string target_cxx = stmt_ops_.expr_to_cxx(*a.target);
+  scope_.suppress_packed_scalar_value_load =
+      saved_suppress_packed_scalar_value_load;
   scope_.lhs_fn_rewrite.clear();
   scope_.lhs_fn_rewrite_slot.clear();
   scope_.lhs_outer_result_rewrite.clear();

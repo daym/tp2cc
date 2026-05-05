@@ -46,6 +46,10 @@ struct ScopeStateView {
   std::string& lhs_fn_rewrite_slot;
   std::string& lhs_outer_result_rewrite;
   std::string& lhs_outer_result_rewrite_slot;
+  // Value reads from scalar fields nested inside packed aggregate fields can
+  // be lowered safely via byte offsets. Lvalue/address contexts must suppress
+  // that path so the existing packed-aggregate guard still rejects references.
+  bool& suppress_packed_scalar_value_load;
 
   // Current lexical scope.
   std::unordered_set<std::string>& local_scope;

@@ -1,6 +1,8 @@
 #include "emit_storage.h"
 
+#include <algorithm>
 #include <unordered_set>
+#include <vector>
 
 #include "emit_analysis.h"
 #include "emit_support.h"
@@ -316,6 +318,80 @@ bool EmitStorage::type_is_byte_aligned_packed_index_carrier(const TypeExpr* t) {
     default:
       return false;
   }
+}
+
+std::optional<EmitPackedScalarValueLoad> EmitStorage::packed_scalar_value_load(
+    const Expr& e) {
+  // This is deliberately not implemented in terms of `bytewise_storage_ref`.
+  // That helper is for storage contexts and its fallback takes `&(expr)`.
+  // For `packed_record.aggregate.scalar`, `&(expr)` would already have formed
+  // the forbidden intermediate aggregate lvalue. Here we instead build
+  // `offsetof` sums over the member chain and byte-load from the base object.
+  // A packed aggregate subfield can be read safely as bytes, but binding a
+  // C++ reference to the intermediate packed aggregate would not be safe.
+  if (!registry_ || e.kind != Kind::Member) return std::nullopt;
+
+  std::vector<const Member*> chain;
+  const Expr* root = &e;
+  while (root && root->kind == Kind::Member) {
+    const auto& m = static_cast<const Member&>(*root);
+    chain.push_back(&m);
+    root = m.base.get();
+  }
+  if (!root || chain.empty()) return std::nullopt;
+  std::reverse(chain.begin(), chain.end());
+
+  const TypeExpr* current_type = analysis_.deduce_type(*root);
+  if (!current_type) return std::nullopt;
+
+  bool crossed_packed_aggregate = false;
+  std::vector<std::string> offsets;
+  for (const Member* m : chain) {
+    const TypeExpr* base_type = current_type;
+    const TypeExpr* field_type =
+        analysis_.lookup_record_field_type_in_type(base_type, m->name);
+    if (!field_type) return std::nullopt;
+
+    const std::string base_cxx = types_.type_to_cxx(*base_type);
+    if (base_cxx.empty() || base_cxx.find(' ') != std::string::npos) {
+      return std::nullopt;
+    }
+    offsets.push_back("offsetof(" + base_cxx + ", " +
+                      registry_->field_cxx_name(m->name) + ")");
+
+    if (type_is_packed_record(base_type) &&
+        type_is_direct_packed_aggregate(field_type)) {
+      crossed_packed_aggregate = true;
+    }
+    current_type = field_type;
+  }
+  if (!crossed_packed_aggregate) return std::nullopt;
+
+  const TypeExpr* scalar_type = analysis_.canonicalize_type(current_type);
+  if (!scalar_type || type_is_direct_packed_aggregate(scalar_type)) {
+    return std::nullopt;
+  }
+  const std::string scalar_cxx = types_.type_to_cxx(*current_type);
+  if (scalar_cxx.empty()) return std::nullopt;
+
+  std::string base_ptr;
+  if (root->kind == Kind::Deref) {
+    const auto& d = static_cast<const Deref&>(*root);
+    base_ptr =
+        "static_cast<const void*>(" + expr_ops_.expr_to_cxx(*d.operand) + ")";
+  } else {
+    base_ptr =
+        "static_cast<const void*>(&(" + expr_ops_.expr_to_cxx(*root) + "))";
+  }
+
+  std::string offset = offsets.front();
+  for (size_t i = 1; i < offsets.size(); ++i) {
+    offset += " + " + offsets[i];
+  }
+
+  return EmitPackedScalarValueLoad{
+      "::rt::tp2cc_unaligned_load<" + scalar_cxx +
+      ">(::rt::tp2cc_byte_offset(" + base_ptr + ", " + offset + "))"};
 }
 
 std::optional<EmitPackedAggregateFieldUse>

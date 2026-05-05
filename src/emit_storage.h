@@ -43,6 +43,10 @@ struct EmitPackedAggregateFieldUse {
   std::string field_name;
 };
 
+struct EmitPackedScalarValueLoad {
+  std::string text;
+};
+
 struct EmitAbsoluteTargetInfo {
   std::string cxx;
   const ast::TypeExpr* type = nullptr;
@@ -93,6 +97,17 @@ class EmitStorage {
   bool type_is_packed_record(const ast::TypeExpr* t);
   bool type_is_direct_packed_aggregate(const ast::TypeExpr* t);
   bool type_is_byte_aligned_packed_index_carrier(const ast::TypeExpr* t);
+  // Safe value-only lowering for `packed.outer.inner_scalar`.
+  //
+  // Normal `&(outer.inner)` lowering is not acceptable here: C++ must form the
+  // intermediate packed aggregate lvalue before taking the address. This helper
+  // is the single place that may cross a packed aggregate field for an ordinary
+  // scalar value read. It computes byte offsets from the aligned base object and
+  // emits a memcpy-based unaligned load. Address-taking, var/out params,
+  // assignment targets, method calls, and aggregate values still use the
+  // rejecting paths below.
+  std::optional<EmitPackedScalarValueLoad> packed_scalar_value_load(
+      const ast::Expr& e);
   std::optional<EmitPackedAggregateFieldUse> direct_packed_aggregate_field_use(
       const ast::Expr& e);
   void report_packed_aggregate_subobject_use(

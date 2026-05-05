@@ -483,9 +483,9 @@ void test_packed_record_array_index_reports_error() {
   CHECK(error_count() > before);
 }
 
-void test_packed_record_nested_member_reports_error() {
+void test_packed_record_nested_scalar_value_uses_unaligned_load() {
   int before = error_count();
-  (void)compile_snippet_with_registry(
+  auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
       "type\n"
@@ -504,6 +504,64 @@ void test_packed_record_nested_member_reports_error() {
       "procedure run;\n"
       "begin\n"
       "  i := r.sub.x;\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_unaligned_load<int32_t>(::rt::tp2cc_byte_offset("
+                 "static_cast<const void*>(&(p_r)), "
+                 "offsetof(t_trec, p_sub) + offsetof(t_tsub, p_x)))"));
+  CHECK(!contains(out.impl, "p_r.p_sub.p_x"));
+}
+
+void test_packed_record_nested_scalar_assignment_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsub = record\n"
+      "    x : longint;\n"
+      "  end;\n"
+      "  trec = packed record\n"
+      "    tag : byte;\n"
+      "    sub : tsub;\n"
+      "  end;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "var\n"
+      "  r : trec;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  r.sub.x := 1;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_packed_record_nested_scalar_var_arg_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsub = record\n"
+      "    x : longint;\n"
+      "  end;\n"
+      "  trec = packed record\n"
+      "    tag : byte;\n"
+      "    sub : tsub;\n"
+      "  end;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "var\n"
+      "  r : trec;\n"
+      "procedure take(var x : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  take(r.sub.x);\n"
       "end;\n"
       "end.\n");
   CHECK(error_count() > before);
@@ -6596,7 +6654,9 @@ int main() {
   RUN_TEST(test_packed_record_array_field_keeps_array_wrapper_with_exact_layout_asserts);
   RUN_TEST(test_packed_variant_record_emits_packed_case_layout_asserts);
   RUN_TEST(test_packed_record_array_index_reports_error);
-  RUN_TEST(test_packed_record_nested_member_reports_error);
+  RUN_TEST(test_packed_record_nested_scalar_value_uses_unaligned_load);
+  RUN_TEST(test_packed_record_nested_scalar_assignment_reports_error);
+  RUN_TEST(test_packed_record_nested_scalar_var_arg_reports_error);
   RUN_TEST(test_packed_record_method_call_reports_error);
   RUN_TEST(test_packed_record_char_array_index_is_allowed);
   RUN_TEST(test_packed_record_shortstring_array_index_is_allowed);

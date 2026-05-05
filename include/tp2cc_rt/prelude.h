@@ -2588,12 +2588,16 @@ inline void tp2cc_unaligned_store(void* p, const T& value) {
   tp2cc_reinterpret_store<T>(p, value);
 }
 
+// Offset inside an object's byte representation. C++ only gives special
+// aliasing/object-representation privileges to char, unsigned char, and
+// std::byte; do not use uint8_t here even when it is typedefed that way on a
+// given target.
 inline void* tp2cc_byte_offset(void* p, std::ptrdiff_t n) {
-  return static_cast<void*>(static_cast<uint8_t*>(p) + n);
+  return static_cast<void*>(static_cast<unsigned char*>(p) + n);
 }
 
 inline const void* tp2cc_byte_offset(const void* p, std::ptrdiff_t n) {
-  return static_cast<const void*>(static_cast<const uint8_t*>(p) + n);
+  return static_cast<const void*>(static_cast<const unsigned char*>(p) + n);
 }
 
 // View the bytes of the source object itself as a different type.

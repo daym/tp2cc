@@ -24,6 +24,22 @@ struct FlatCallParamInfo {
   const ast::Expr* default_value = nullptr;
 };
 
+struct PackedScalarValueLoadSuppressor {
+  // Var/out/untyped formals need caller storage, not the value stored there.
+  // Suppress packed scalar value loads while their actuals are being lowered
+  // so `r.sub.x` still reaches the packed-aggregate rejection path instead of
+  // becoming an address of a temporary load expression.
+  bool& flag;
+  bool saved;
+
+  PackedScalarValueLoadSuppressor(bool& flag_in, bool enable)
+      : flag(flag_in), saved(flag_in) {
+    if (enable) flag = true;
+  }
+
+  ~PackedScalarValueLoadSuppressor() { flag = saved; }
+};
+
 void mark_builtin_memory_helper_param_info(
     std::string_view name, std::vector<UntypedArgKind>& untyped_arg,
     std::vector<bool>& mutable_ref_arg,
@@ -268,6 +284,9 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
     out += ")";
     return out;
   }
+  PackedScalarValueLoadSuppressor suppress_packed_scalar_value_load(
+      scope_.suppress_packed_scalar_value_load,
+      mutable_ref_arg || untyped_arg != UntypedArgKind::None);
   const TypeExpr* arg_type = analysis_.deduce_type(arg);
   if (arg_type) arg_type = analysis_.canonicalize_type(arg_type);
   const TypeExpr* canon_param_type = analysis_.canonicalize_type(param_type);

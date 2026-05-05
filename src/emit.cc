@@ -110,6 +110,7 @@ struct Emitter : ResolveNameProvider,
   std::string lhs_fn_rewrite_slot;
   std::string lhs_outer_result_rewrite;
   std::string lhs_outer_result_rewrite_slot;
+  bool suppress_packed_scalar_value_load = false;
 
   // Names bound in the current function's scope (parameters + locals).
   // `obj` resolved bare at block scope that hits this set must be a
@@ -198,6 +199,7 @@ struct Emitter : ResolveNameProvider,
                      lhs_fn_rewrite_slot,
                      lhs_outer_result_rewrite,
                      lhs_outer_result_rewrite_slot,
+                     suppress_packed_scalar_value_load,
                      local_scope,
                      local_types,
                      local_consts,
@@ -431,6 +433,11 @@ struct Emitter : ResolveNameProvider,
   }
   bool type_is_byte_aligned_packed_index_carrier(const ast::TypeExpr* t) {
     return storage_.type_is_byte_aligned_packed_index_carrier(t);
+  }
+  using PackedScalarValueLoad = EmitPackedScalarValueLoad;
+  std::optional<PackedScalarValueLoad> packed_scalar_value_load(
+      const ast::Expr& e) {
+    return storage_.packed_scalar_value_load(e);
   }
   using PackedAggregateFieldUse = EmitPackedAggregateFieldUse;
   std::optional<PackedAggregateFieldUse> direct_packed_aggregate_field_use(
@@ -1154,6 +1161,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Member: {
       const auto& m = static_cast<const Member&>(e);
+      if (!suppress_packed_scalar_value_load) {
+        if (auto load = packed_scalar_value_load(e)) {
+          return load->text;
+        }
+      }
       if (auto use = direct_packed_aggregate_field_use(*m.base)) {
         report_packed_aggregate_subobject_use(
             m.loc, "nested member access", *use);
@@ -1487,7 +1499,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       bool saved = is_callee_context_;
       is_callee_context_ = true;
+      bool saved_suppress = suppress_packed_scalar_value_load;
+      suppress_packed_scalar_value_load = true;
       std::string inner = expr_to_cxx(*a.operand);
+      suppress_packed_scalar_value_load = saved_suppress;
       is_callee_context_ = saved;
       if (!a.double_addr && registry) {
         const TypeExpr* ot = deduce_type(*a.operand);
