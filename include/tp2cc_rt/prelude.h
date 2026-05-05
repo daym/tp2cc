@@ -4198,19 +4198,6 @@ inline void p_blockwrite(File& f, const void* value, int32_t count,
   tp2cc_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
 }
 
-template <typename File, typename T, typename Count>
-inline void p_blockwrite(File& f, const T& value, int32_t count,
-                         Count& transferred) {
-  if (!f.f) {
-    transferred = static_cast<Count>(0);
-    tp2cc_set_ioresult(f, 103);
-    return;
-  }
-  transferred = static_cast<Count>(
-      std::fwrite(static_cast<const void*>(std::addressof(value)), 1, count,
-                  f.f));
-  tp2cc_set_ioresult(f, std::ferror(f.f) ? 101 : 0);
-}
 template <typename File, typename Count>
 inline void p_blockwrite(File& f, tp2cc_ShortStringCharRef value, int32_t count,
                          Count& transferred) {
@@ -4239,12 +4226,6 @@ inline void p_blockwrite(File& f, const void* value, int32_t count) {
   int32_t transferred = 0;
   p_blockwrite(f, value, count, transferred);
 }
-template <typename File, typename T>
-inline void p_blockwrite(File& f, const T& value, int32_t count) {
-  int32_t transferred = 0;
-  p_blockwrite(f, value, count, transferred);
-}
-
 inline void p_fillword(void* dest, int32_t count, uint16_t value) {
   auto* p = static_cast<uint16_t*>(dest);
   for (int32_t i = 0; i < count; ++i) p[i] = value;

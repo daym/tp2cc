@@ -405,7 +405,11 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
       !mutable_ref_arg && !storage_.expr_is_storage_lvalue(arg)) {
     return "::rt::tp2cc_const_untyped_ptr(" + arg_text + ")";
   }
-  return "((void*)&(" + arg_text + "))";
+  const char* ptr_cast =
+      (untyped_arg == UntypedArgKind::Const && !mutable_ref_arg)
+          ? "const void*"
+          : "void*";
+  return "((" + std::string(ptr_cast) + ")&(" + arg_text + "))";
 }
 
 std::string EmitCalls::lower_implicit_zero_arg_call(

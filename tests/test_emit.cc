@@ -1944,7 +1944,7 @@ void test_move_uses_storage_addresses_for_source_and_destination_slots() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_move(((void*)&(p_list[::rt::tp2cc_wrap_add(p_index, 1)]))"));
+                 "::rt::p_move(((const void*)&(p_list[::rt::tp2cc_wrap_add(p_index, 1)]))"));
   CHECK(contains(out.impl, "((void*)&(p_list[p_index]))"));
   CHECK(!contains(out.impl, "::rt::p_move(p_list[(p_index + 1)],"));
 }
@@ -2010,8 +2010,8 @@ void test_string_index_buffer_helpers_use_storage_addresses() {
   // Untyped buffer helpers receive the address of the Pascal storage denoted
   // by s[i], not the C++ proxy object used to model string indexing.
   CHECK(contains(out.impl,
-                 "::rt::p_comparechar(((void*)&(p_s1[p_i])), ((void*)&(p_s2[p_i])), p_count)"));
-  CHECK(contains(out.impl, "::rt::p_indexbyte(((void*)&(p_s1[p_i])), p_count,"));
+                 "::rt::p_comparechar(((const void*)&(p_s1[p_i])), ((const void*)&(p_s2[p_i])), p_count)"));
+  CHECK(contains(out.impl, "::rt::p_indexbyte(((const void*)&(p_s1[p_i])), p_count,"));
   CHECK(!contains(out.impl, "::rt::p_comparechar(p_s1[p_i],"));
   CHECK(!contains(out.impl, "::rt::p_indexbyte(p_s1[p_i],"));
 }
@@ -2033,11 +2033,30 @@ void test_block_io_string_index_uses_storage_addresses() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_blockwrite(p_f, ((void*)&(p_s[p_i])), p_count, p_transferred)"));
+                 "::rt::p_blockwrite(p_f, ((const void*)&(p_s[p_i])), p_count, p_transferred)"));
   CHECK(contains(out.impl,
                  "::rt::p_blockread(p_f, ((void*)&(p_s[p_i])), p_count, p_transferred)"));
   CHECK(!contains(out.impl, "::rt::p_blockwrite(p_f, p_s[p_i],"));
   CHECK(!contains(out.impl, "::rt::p_blockread(p_f, p_s[p_i],"));
+}
+
+void test_blockwrite_fixed_array_uses_const_storage_address() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run(count : longint);\n"
+      "implementation\n"
+      "procedure run(count : longint);\n"
+      "var\n"
+      "  f : file;\n"
+      "  buf : array[0..15] of char;\n"
+      "begin\n"
+      "  blockwrite(f, buf, count);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::p_blockwrite(p_f, ((const void*)&(p_buf)), p_count)"));
+  CHECK(!contains(out.impl, "::rt::p_blockwrite(p_f, p_buf, p_count)"));
 }
 
 void test_byte_array_typecast_reinterprets_storage() {
@@ -4044,7 +4063,7 @@ void test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes() {
   // locations, and byte-buffer writers rely on that distinction. The pointed
   // bytes now lower as the raw pointer value rather than `&tp2cc_deref(p)`, so
   // the zero-count/nil case stays out of C++ UB.
-  CHECK(contains(out.impl, "p_sink(((void*)&(p_p)), 1);"));
+  CHECK(contains(out.impl, "p_sink(((const void*)&(p_p)), 1);"));
   CHECK(contains(out.impl, "p_sink(((const void*)(p_p)), 1);"));
   CHECK(!contains(out.impl, "p_sink(((void*)&(::rt::tp2cc_deref(p_p))), 1);"));
 }
@@ -6731,6 +6750,7 @@ int main() {
   RUN_TEST(test_move_pointer_derefs_use_pointer_actuals);
   RUN_TEST(test_string_index_buffer_helpers_use_storage_addresses);
   RUN_TEST(test_block_io_string_index_uses_storage_addresses);
+  RUN_TEST(test_blockwrite_fixed_array_uses_const_storage_address);
   RUN_TEST(test_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_local_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_text_typecast_over_pointer_deref_keeps_file_lvalue);
