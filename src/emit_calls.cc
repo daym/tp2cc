@@ -58,6 +58,14 @@ void mark_builtin_memory_helper_param_info(
     mark(1, UntypedArgKind::Mutable, /*is_mutable=*/true);
     return;
   }
+  if (lower == "blockread") {
+    mark(1, UntypedArgKind::Mutable, /*is_mutable=*/true);
+    return;
+  }
+  if (lower == "blockwrite") {
+    mark(1, UntypedArgKind::Const, /*is_mutable=*/false);
+    return;
+  }
   if (lower == "indexbyte" || lower == "indexword") {
     mark(0, UntypedArgKind::Const, /*is_mutable=*/false);
     return;

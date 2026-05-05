@@ -1288,7 +1288,7 @@ void test_blockwrite_uses_underlying_shortstring_char_storage() {
   f.f = std::tmpfile();
   CHECK(f.f != nullptr);
 
-  p_blockwrite(f, text[1], p_length(text), transferred);
+  p_blockwrite(f, static_cast<const void*>(text.data), p_length(text), transferred);
   CHECK_EQ(transferred, 5);
   std::rewind(f.f);
   CHECK_EQ(std::fread(got, 1, 5, f.f), static_cast<std::size_t>(5));
@@ -1296,7 +1296,8 @@ void test_blockwrite_uses_underlying_shortstring_char_storage() {
 
   const tp2cc_ShortString<> const_text = tp2cc_shortstring_of<>("ok");
   p_seek(f, 0);
-  p_blockwrite(f, const_text[1], p_length(const_text), transferred);
+  p_blockwrite(f, static_cast<const void*>(const_text.data), p_length(const_text),
+               transferred);
   CHECK_EQ(transferred, 2);
   std::rewind(f.f);
   CHECK_EQ(std::fread(got, 1, 2, f.f), static_cast<std::size_t>(2));
@@ -1317,7 +1318,7 @@ void test_blockread_uses_underlying_shortstring_char_storage() {
   std::fwrite(src, 1, 3, f.f);
   std::rewind(f.f);
 
-  p_blockread(f, text[1], 3, transferred);
+  p_blockread(f, static_cast<void*>(text.data), 3, transferred);
   CHECK_EQ(transferred, 3);
   text.length = 3;
   CHECK_EQ(tp2cc_to_std_string(text), std::string("abc"));

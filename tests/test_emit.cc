@@ -1958,6 +1958,30 @@ void test_string_index_buffer_helpers_use_storage_addresses() {
   CHECK(!contains(out.impl, "::rt::p_indexbyte(p_s1[p_i],"));
 }
 
+void test_block_io_string_index_uses_storage_addresses() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run(i, count : longint);\n"
+      "implementation\n"
+      "procedure run(i, count : longint);\n"
+      "var\n"
+      "  f : file;\n"
+      "  s : string;\n"
+      "  transferred : longint;\n"
+      "begin\n"
+      "  blockwrite(f, s[i], count, transferred);\n"
+      "  blockread(f, s[i], count, transferred);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::p_blockwrite(p_f, ((void*)&(p_s[p_i])), p_count, p_transferred)"));
+  CHECK(contains(out.impl,
+                 "::rt::p_blockread(p_f, ((void*)&(p_s[p_i])), p_count, p_transferred)"));
+  CHECK(!contains(out.impl, "::rt::p_blockwrite(p_f, p_s[p_i],"));
+  CHECK(!contains(out.impl, "::rt::p_blockread(p_f, p_s[p_i],"));
+}
+
 void test_byte_array_typecast_reinterprets_storage() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -6646,6 +6670,7 @@ int main() {
   RUN_TEST(test_indexword_nil_pointer_deref_uses_pointer_actual);
   RUN_TEST(test_move_pointer_derefs_use_pointer_actuals);
   RUN_TEST(test_string_index_buffer_helpers_use_storage_addresses);
+  RUN_TEST(test_block_io_string_index_uses_storage_addresses);
   RUN_TEST(test_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_local_byte_array_typecast_reinterprets_storage);
   RUN_TEST(test_text_typecast_over_pointer_deref_keeps_file_lvalue);
