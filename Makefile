@@ -11,6 +11,8 @@ CXXFLAGS ?= -std=c++20 -O0 -g -Wall -Wextra -Wpedantic -Wno-unused-parameter \
             -fsanitize=address,undefined -fno-omit-frame-pointer
 CFLAGS   ?= -std=gnu11 -O0 -g -Wall -Wextra -Wpedantic \
             -fsanitize=address,undefined -fno-omit-frame-pointer
+LDFLAGS  =
+LDLIBS   =
 ifeq ($(origin CC), default)
 CC = gcc
 endif
@@ -55,27 +57,27 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 
 $(BINDIR)/tp2cc: $(LIB_OBJS) $(OBJDIR)/main.o
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $^ -o $@
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 $(BINDIR)/test_lexer: $(LIB_OBJS) $(OBJDIR)/tests/test_lexer.o
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $^ -o $@
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 $(BINDIR)/test_parser: $(LIB_OBJS) $(OBJDIR)/tests/test_parser.o
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $^ -o $@
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 $(BINDIR)/test_units: $(LIB_OBJS) $(OBJDIR)/tests/test_units.o
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $^ -o $@
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 $(BINDIR)/test_emit: $(LIB_OBJS) $(OBJDIR)/tests/test_emit.o
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $^ -o $@
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 $(BINDIR)/test_runtime: $(OBJDIR)/tests/test_runtime.o $(RUNTIME_OBJS)
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $^ -lm -o $@
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LDLIBS) -lm -o $@
 
 check: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do \
