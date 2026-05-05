@@ -643,7 +643,8 @@ void test_move_reads_from_const_shortstring_storage() {
   const tp2cc_ShortString<> text = tp2cc_shortstring_of<>("hello");
   tp2cc_Array<p_char, 0, 8> buf;
 
-  p_move(text[1], buf[0], p_length(text));
+  p_move(static_cast<const void*>(text.data), static_cast<void*>(buf.data),
+         p_length(text));
   buf[p_length(text)] = tp2cc_char_of('\0');
 
   CHECK_EQ(tp2cc_to_std_string(static_cast<p_char*>(buf)), std::string("hello"));
@@ -1208,15 +1209,17 @@ void test_fillword_and_compareword_operate_on_word_counts() {
   uint16_t same[4] = {0x1234, 0x1234, 0x1234, 0x1234};
   uint16_t different[4] = {0x1234, 0x1234, 0x1235, 0x1234};
 
-  p_fillword(words[0], 4, 0x1234);
+  p_fillword(static_cast<void*>(words), 4, 0x1234);
   CHECK_EQ(std::memcmp(words, same, sizeof(words)), 0);
-  CHECK_EQ(p_compareword(words[0], same[0], 4), 0);
-  CHECK(p_compareword(words[0], different[0], 4) < 0);
+  CHECK_EQ(p_compareword(static_cast<const void*>(words),
+                         static_cast<const void*>(same), 4), 0);
+  CHECK(p_compareword(static_cast<const void*>(words),
+                      static_cast<const void*>(different), 4) < 0);
 }
 
 void test_fillbyte_initialize_trim_and_strrscan_helpers() {
   uint8_t bytes[4] = {0, 0, 0, 0};
-  p_fillbyte(bytes[0], 4, 0x5a);
+  p_fillbyte(static_cast<void*>(bytes), 4, 0x5a);
   CHECK_EQ(bytes[0], static_cast<uint8_t>(0x5a));
   CHECK_EQ(bytes[3], static_cast<uint8_t>(0x5a));
 
@@ -1251,8 +1254,10 @@ void test_comparebyte_operates_on_byte_counts() {
   uint8_t b[4] = {1, 2, 3, 4};
   uint8_t c[4] = {1, 2, 4, 4};
 
-  CHECK_EQ(p_comparebyte(a[0], b[0], 4), 0);
-  CHECK(p_comparebyte(a[0], c[0], 4) < 0);
+  CHECK_EQ(p_comparebyte(static_cast<const void*>(a),
+                         static_cast<const void*>(b), 4), 0);
+  CHECK(p_comparebyte(static_cast<const void*>(a),
+                      static_cast<const void*>(c), 4) < 0);
 }
 
 void test_blockread_writes_to_void_buffer() {
