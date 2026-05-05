@@ -277,8 +277,18 @@ void test_runtime_swap_fill_and_compare_helpers() {
 
   const auto s1 = tp2cc_shortstring_of<>("abc");
   const auto s2 = tp2cc_shortstring_of<>("abd");
-  CHECK(p_comparechar(s1[1], s2[1], 2) < 0);
+  const p_char bc[] = {tp2cc_char_of('b'), tp2cc_char_of('c')};
+  CHECK_EQ(p_comparechar(static_cast<const void*>(s1.data),
+                         static_cast<const void*>(s2.data), 2), 0);
+  CHECK(p_comparechar(static_cast<const void*>(s1.data + 1),
+                      static_cast<const void*>(s2.data + 1), 2) < 0);
+  CHECK_EQ(p_comparechar(static_cast<const void*>(s1.data + 1),
+                         static_cast<const void*>(bc), 2), 0);
+  auto a1 = tp2cc_ansistring_of("abc");
+  CHECK_EQ(p_comparechar(static_cast<const void*>(a1.bytes() + 1),
+                         static_cast<const void*>(bc), 2), 0);
   CHECK_EQ(p_indexbyte("abc\0", 4, static_cast<uint8_t>('c')), 2);
+  CHECK_EQ(p_indexbyte(static_cast<const void*>(s1.data), 3, static_cast<uint8_t>('c')), 2);
   CHECK_EQ(tp2cc_to_std_string(p_stringofchar(tp2cc_char_of('x'), 3)), std::string("xxx"));
   CHECK_EQ(p_comparetext(tp2cc_ansistring_of("Alpha"), tp2cc_ansistring_of("alpha")), 0);
   CHECK(p_comparetext(tp2cc_ansistring_of("alpha"), tp2cc_ansistring_of("beta")) < 0);
