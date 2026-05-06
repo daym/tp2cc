@@ -1615,6 +1615,27 @@ void test_var_shortstring_capacity_mismatch_uses_storage_ref() {
   CHECK(!contains(out.impl, "::rt::tp2cc_ShortString<> tp2cc_"));
 }
 
+void test_var_runtime_shortstring_alias_uses_storage_ref() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses dos;\n"
+      "procedure replace(var s : string);\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure replace(var s : string);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "var d : dirstr;\n"
+      "begin\n"
+      "  replace(d);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_replace(::rt::tp2cc_shortstring_ref<255>(p_d));"));
+}
+
 void test_procvar_var_shortstring_call_uses_storage_ref() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -6734,6 +6755,7 @@ int main() {
   RUN_TEST(test_shortstring_assignment_uses_pascal_string_helper);
   RUN_TEST(test_var_shortstring_call_keeps_lvalue_storage);
   RUN_TEST(test_var_shortstring_capacity_mismatch_uses_storage_ref);
+  RUN_TEST(test_var_runtime_shortstring_alias_uses_storage_ref);
   RUN_TEST(test_procvar_var_shortstring_call_uses_storage_ref);
   RUN_TEST(test_var_ansistring_call_keeps_lvalue_storage);
   RUN_TEST(test_overloaded_string_and_bool_call_keeps_boolean_argument_raw);

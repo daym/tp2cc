@@ -596,6 +596,9 @@ std::string EmitTypes::string_type_to_cxx(const TyString& s) {
 std::optional<std::string> EmitTypes::shortstring_capacity_to_cxx(
     const TypeExpr* t) {
   const TypeExpr* canon = analysis_.canonicalize_type(t);
+  if (tyname_is(canon, "string") || tyname_is(canon, "shortstring")) {
+    return std::string("255");
+  }
   if (!(canon && canon->kind == Kind::TyString)) return std::nullopt;
   const auto& s = static_cast<const TyString&>(*canon);
   if (s.max_length) {

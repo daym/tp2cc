@@ -666,6 +666,11 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       make_field("sec", make_typename("word")),
   }));
   add_rt_alias("tdatetime", make_typename("double"));
+  add_rt_alias("dirstr", make_typename("shortstring"));
+  add_rt_alias("namestr", make_typename("shortstring"));
+  add_rt_alias("extstr", make_typename("shortstring"));
+  add_rt_alias("pathstr", make_typename("shortstring"));
+  add_rt_alias("comstr", make_typename("shortstring"));
   add_rt_alias("tfpuexceptionmask", make_set(make_typename("tfpuexception")));
   add_rt_alias("hresult", make_typename("longint"));
   add_rt_alias("pcardinal", make_pointer(make_typename("cardinal")));
