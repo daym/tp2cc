@@ -3,9 +3,13 @@ Date: 2026-05-02
 Subject: Use local AllFilesMask constant
 License: expat
 
-FPC 2.6.0 uses version-number {$if ...} expressions in cfileutl.pas only to decide whether AllFilesMask is supplied by the RTL.  The bootstrap translator does not need that RTL dependency here.
+FPC 2.6.0 uses version-number {$if ...} expressions in cfileutl.pas to
+choose between an RTL-provided AllFilesMask and a local fallback.  The
+bootstrap translator does not need the RTL-provided constant here.
 
-Keep the local AllFilesMask constant path and remove the version-number conditional expressions so the bootstrap translator does not need to evaluate them.
+Always define AllFilesMask locally, and remove the version-number
+conditionals so the bootstrap translator does not need to evaluate
+FPC_VERSION/FPC_RELEASE/FPC_PATCH in {$if} expressions.
 
 --- a/compiler/cfileutl.pas
 +++ b/compiler/cfileutl.pas

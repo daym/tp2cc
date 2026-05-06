@@ -9,7 +9,7 @@ because it is serialized into PPUs, so the translated C++ bootstrap cannot
 bind a non-const reference directly to that field.
 
 Keep the packed `tsettings` layout unchanged, but copy the pointer field to
-a local variable, let `FreeLocalVerbosity` update that local, then store the
+a local variable, pass that local to `FreeLocalVerbosity`, then store the
 result back into `current_settings.pmessage`.
 
 --- a/compiler/parser.pas

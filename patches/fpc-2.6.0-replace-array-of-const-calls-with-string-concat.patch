@@ -3,19 +3,14 @@ Date: 2026-05-01
 Subject: Replace SysUtils.Format and Exception.CreateFmt calls with string concat
 License: expat
 
-The bootstrap reaches `array of const` parameters through the
-FPC_FULLVERSION `Format` call in options.pas, two
-`EListError.CreateFmt(Msg, [Data])` calls in cclasses.pas, the
-ia64 register-template generator, and fpcsubst's diagnostic strings.
-Avoid adding `array of const` lowering plus rt Format/CreateFmt
-helpers -- just rewrite these shapes as string concatenation or
-multi-argument Writeln calls.
+`array of const` is not supported in tp2cc.
+
+Rewrite these uses as string concatenation or multi-argument Writeln calls.
 
 The FPC_FULLVERSION result is byte-identical for single-digit version
 components (zero-pad helper). CreateFmt loses `%d` substitution and
 appends the value as a trailing `(N)`; the helpers are only reached
-on bad list indices. The utility diagnostics keep the same English
-messages.
+on bad list indices.
 
 --- a/compiler/options.pas
 +++ b/compiler/options.pas

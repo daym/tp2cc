@@ -10,19 +10,17 @@ bootstrap target (compiling fpc itself) does not need that path at
 runtime, but keeping it in the unit graph drags the charset tables into
 the translated compiler.
 
-Drop the dependency entirely:
-- `widestr.pas`: remove the charset/cp* unit imports; collapse
-  `asciichar2unicode`, `ascii2unicode`, and `cpavailable` to a
-  byte-to-widechar pass-through so the surface stays callable for
-  `scandir.pas`'s `{$CodePage X}` directive handling.
-- `options.pas`: remove `uses charset`; drop the `-Fm <name>`
-  `loadunicodemapping` handler since there is no longer a charset
-  registry to populate.
+Drop the dependency entirely.  In `widestr.pas`, remove the charset/cp*
+unit imports and keep `asciichar2unicode`, `ascii2unicode`, and
+`cpavailable` as byte-to-widechar bootstrap stubs so the surface stays
+callable for `scandir.pas`'s `{$CodePage X}` directive handling.
+
+In `options.pas`, remove `uses charset` and drop the `-Fm <name>`
+`loadunicodemapping` handler since there is no longer a charset registry
+to populate.
 
 Source files using non-UTF-8 widestring literals will silently widen each
-byte to its codepoint (identity for ASCII, lossy for non-ASCII).  That is
-acceptable for this tp2cc bootstrap source set; it is not intended as a
-general-purpose compiler behavior change.
+byte to its codepoint (identity for ASCII, lossy for non-ASCII).
 
 --- a/compiler/widestr.pas
 +++ b/compiler/widestr.pas
@@ -127,10 +125,10 @@ general-purpose compiler behavior change.
    j,l   : longint;
    d,s   : TCmdStr;
 -  unicodemapping : punicodemap;
- begin
-   if opt='' then
-    exit;
-@@ -901,14 +899,6 @@
+   proccallopt : tproccalloption;
+   cputypeopt : tcputype;
+   fputypeopt : tfputype;
+@@ -921,14 +919,6 @@
                       else
                         includesearchpath.AddPath(More,true);
                     end;

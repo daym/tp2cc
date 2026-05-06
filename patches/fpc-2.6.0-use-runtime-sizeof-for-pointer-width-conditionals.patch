@@ -1,11 +1,17 @@
 Author: Danny Milosavljevic <dannym@friendly-machines.com>
 Date: 2026-05-02
-Subject: Use runtime SizeOf for pointer-width conditionals
+Subject: Use ordinary SizeOf for pointer-width branches
 License: expat
 
-FPC 2.6.0 uses {$if sizeof(...)} in compiler implementation code to choose between 32-bit and 64-bit pointer-sized paths.  That requires the bootstrap translator preprocessor to resolve Pascal type sizes while scanning conditional directives.
+FPC 2.6.0 uses {$if sizeof(...)} in compiler implementation code to choose
+between 32-bit and 64-bit pointer-sized paths.  That requires the bootstrap
+translator preprocessor to resolve Pascal type sizes while scanning
+conditional directives.
 
-Use normal Pascal SizeOf checks instead.  The affected sites are executable code, so both branches can remain visible to the parser and the compiler can choose the same path at run time without requiring type-aware preprocessor evaluation.
+Use ordinary Pascal SizeOf checks instead.  The affected sites are executable
+code branches, not conditional-compilation branches, so both branches can
+remain visible to the parser without requiring type-aware preprocessor
+evaluation.
 
 --- a/compiler/defutil.pas
 +++ b/compiler/defutil.pas

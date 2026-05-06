@@ -8,8 +8,7 @@ debug/status reporting.  The tp2cc bootstrap does not need that
 diagnostic path to compile programs correctly, and keeping it would
 force extra runtime API surface into the bootstrap subset.
 
-Remove the reporting hooks while leaving the surrounding compiler logic
-intact.
+Remove the reporting hooks.
 
 --- a/compiler/cclasses.pas
 +++ b/compiler/cclasses.pas

@@ -1,11 +1,13 @@
-Description: Resolve compiler wide char size in conditional directives
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-02
 Subject: Resolve compilerwidechar size without directive sizeof
 License: expat
 
-FPC 2.6.0 defines `tcompilerwidechar = word' in compiler/widestr.pas, so
-`sizeof(tcompilerwidechar)' is 2 in these directive tests.  Replace the type
-size checks with explicit numeric comparisons instead of teaching p2cc's lexer
-about compiler type sizes.
+FPC 2.6.0 defines `tcompilerwidechar = word` in compiler/widestr.pas, so
+`sizeof(tcompilerwidechar)` is 2 in these directive tests.
+
+Replace the type-size checks with explicit numeric comparisons instead of
+requiring tp2cc's preprocessor to resolve Pascal type sizes.
 
 --- a/compiler/ncon.pas
 +++ b/compiler/ncon.pas
