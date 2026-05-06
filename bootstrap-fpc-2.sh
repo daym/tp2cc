@@ -56,6 +56,8 @@ export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:abort_on_err
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=0:print_stacktrace=1}"
 
 BOOT_ROOT="${BOOTSTRAP_ROOT:-$ROOT/build/fpc-2-bootstrap}"
+mkdir -p "$BOOT_ROOT"
+BOOT_ROOT=$(cd "$BOOT_ROOT" && pwd)
 HOST_BUILD="${TP2CC_BUILD:-$ROOT/build-tp2cc-host}"
 CLEAN_SRC="$BOOT_ROOT/source"
 STAGE1_DIR="$BOOT_ROOT/stage1"
@@ -146,6 +148,50 @@ install_support_files() {
   cp "$MSG_FILE" "$stage_dir/errore.msg"
   if [ "$stage_dir" != "$STAGE1_DIR" ]; then
     cp "$STAGE1_DIR/fpc.cfg" "$stage_dir/fpc.cfg"
+  fi
+}
+
+needs_sysinit_units() {
+  [ "$(fpc_source_version)" = "2.6.0" ]
+}
+
+build_sysinit_units() {
+  if ! needs_sysinit_units; then
+    return 0
+  fi
+  pp_bin="$1"
+  cfg_dir="$2"
+  sysinit_dir="$3"
+  echo "== build sysinit units for $pp_bin =="
+  rm -rf "$sysinit_dir"
+  mkdir -p "$sysinit_dir"
+  PPC_CONFIG_PATH="$cfg_dir" \
+  FPCDIR="$CLEAN_SRC" \
+    "$pp_bin" -B -a -s \
+      "-FE$sysinit_dir" \
+      "-FU$sysinit_dir" \
+      "$CLEAN_SRC/rtl/linux/si_prc.pp"
+  (
+    cd "$sysinit_dir"
+    sh ./ppas.sh
+  )
+}
+
+stage_extra_unit_flags() {
+  sysinit_dir="$1"
+  if needs_sysinit_units && [ -d "$sysinit_dir" ]; then
+    printf '%s ' "-Fu$sysinit_dir"
+  fi
+}
+
+stage_force_build() {
+  # FPC 2.6.0 i386 sysinit is prebuilt above so late unit injection loads
+  # si_prc.ppu.  Passing -B here would force source compilation again and hit
+  # the fmodule unit-map invariant that the prebuilt sysinit unit avoids.
+  if needs_sysinit_units; then
+    printf '0'
+  else
+    printf '1'
   fi
 }
 
@@ -243,6 +289,8 @@ compile_pp_stage() {
   echo "== [$stage_name] compile compiler/pp.pas =="
   rm -rf "$out_dir"
   mkdir -p "$out_dir"
+  sysinit_dir="$out_dir-sysinit-units"
+  build_sysinit_units "$pp_bin" "$cfg_dir" "$sysinit_dir"
   mkdir -p "$SAN_LOGDIR"
   log_name=$(printf '%s' "$stage_name" | tr -c 'A-Za-z0-9_' '_')
   log_file="$SAN_LOGDIR/$log_name.log"
@@ -251,8 +299,10 @@ compile_pp_stage() {
     PPC_CONFIG_PATH="$cfg_dir" \
     FPCDIR="$CLEAN_SRC" \
     STARTUP_AS="$STARTUP_AS" \
+    USE_FPC_FORCE_BUILD="$(stage_force_build)" \
       "$ROOT/use-fpc.sh" \
         $(compiler_dir_flags) \
+        $(stage_extra_unit_flags "$sysinit_dir") \
         "-o$out_dir/pp" \
         "$CLEAN_SRC/compiler/pp.pas" >"$log_file" 2>&1
   then

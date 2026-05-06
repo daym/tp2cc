@@ -17,6 +17,10 @@ AS="${AS:-as}"
 LD="${LD:-ld}"
 STARTUP_AS="${STARTUP_AS:-$ROOT/../rpm/rtl/linux/i386/prt0.as}"
 KEEP_WORK="${KEEP_TP2CC_WORK:-0}"
+FORCE_BUILD_FLAG="-B"
+if [ "${USE_FPC_FORCE_BUILD:-1}" = "0" ]; then
+  FORCE_BUILD_FLAG=
+fi
 
 if [ ! -x "$PP" ]; then
   echo "error: $PP not found; run the relevant bootstrap script first" >&2
@@ -92,7 +96,7 @@ trap cleanup EXIT INT TERM HUP
 
 if ! PPC_CONFIG_PATH="$CFG_DIR" \
   FPCDIR="${FPCDIR:-$FPCDIR_DEFAULT}" \
-  "$PP" "$@" -B -a -s "-FE$build_dir" "-FU$build_dir" >"$pp_stdout"
+  "$PP" "$@" $FORCE_BUILD_FLAG -a -s "-FE$build_dir" "-FU$build_dir" >"$pp_stdout"
 then
   cat "$pp_stdout" >&2
   exit 1
@@ -113,10 +117,7 @@ chmod +x "$pp_script"
 
 "$AS" --32 -o "$startup_obj" "$STARTUP_AS"
 
-(
-  cd "$build_dir"
-  sh ./ppas.sh
-)
+sh "$pp_script"
 
 produced_output=""
 
