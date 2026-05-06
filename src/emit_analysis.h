@@ -71,6 +71,7 @@ class EmitAnalysis {
   bool type_is_reference_class(const ast::TypeExpr* t);
   bool type_is_interface(const ast::TypeExpr* t);
   bool type_is_value_object(const ast::TypeExpr* t);
+  std::string_view current_unit_name() const { return scope_.current_unit_name; }
 
   // Constant folding for Pascal integer expressions. These routines answer in
   // Pascal's type/value model, not C++'s promotion rules, so later emit-time

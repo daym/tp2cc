@@ -274,7 +274,8 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
       cls = analysis_.deduce_class_alias(*mem.base);
     }
     if (!cls.empty()) {
-      if (auto* prop = registry_->lookup_class_property(cls, mem.name)) {
+      if (auto* prop = registry_->lookup_class_property(
+              cls, mem.name, scope_.current_unit_name)) {
         std::vector<const Expr*> no_indices;
         stmt_ops_.emitln(properties_.lower_property_write(
                              a.loc, stmt_ops_.expr_to_cxx(*mem.base), cls,
@@ -313,7 +314,8 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
         cls = analysis_.deduce_class_alias(*mem.base);
       }
       if (!cls.empty()) {
-        if (auto* prop = registry_->lookup_class_property(cls, mem.name)) {
+        if (auto* prop = registry_->lookup_class_property(
+                cls, mem.name, scope_.current_unit_name)) {
           if (!prop->params.empty()) {
             stmt_ops_.emitln(properties_.lower_property_write(
                                  a.loc, stmt_ops_.expr_to_cxx(*mem.base), cls,
@@ -337,7 +339,8 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
     }
     std::string cls = analysis_.deduce_class_alias(*ix.base);
     if (!cls.empty()) {
-      if (auto* prop = registry_->lookup_default_property(cls)) {
+      if (auto* prop = registry_->lookup_default_property(
+              cls, scope_.current_unit_name)) {
         stmt_ops_.emitln(properties_.lower_property_write(
                              a.loc, stmt_ops_.expr_to_cxx(*ix.base), cls,
                              *prop, indices, *a.value) +
@@ -553,7 +556,8 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
           std::string pointee = registry_->pointer_target_type_name(ptr_arg_ty);
           if (!pointee.empty()) {
             if (auto* m = registry_->lookup_class_method(
-                    pointee, static_cast<const Ident&>(*cc.callee).name)) {
+                    pointee, static_cast<const Ident&>(*cc.callee).name,
+                    scope_.current_unit_name)) {
               ctor_decl = m->decl.get();
             }
           }
@@ -612,14 +616,16 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
         if (mem.base && mem.base->kind == Kind::Ident) {
           const std::string base =
               ascii_lower(static_cast<const Ident&>(*mem.base).name);
-          if (!registry_->classes.count(base) && !registry_->records.count(base)) {
+          if (!registry_->has_class(base, scope_.current_unit_name) &&
+              !registry_->records.count(base)) {
             cls = analysis_.deduce_class_alias(*mem.base);
           }
         } else {
           cls = analysis_.deduce_class_alias(*mem.base);
         }
         if (!cls.empty()) {
-          if (const auto* method = registry_->lookup_class_method(cls, mem.name)) {
+          if (const auto* method = registry_->lookup_class_method(
+                  cls, mem.name, scope_.current_unit_name)) {
             stmt_autocalls_member = method->accepts_zero_args;
           } else if (ascii_lower(mem.name) == "destroy") {
             if (const auto* ci = analysis_.class_info_for_type_name(cls)) {

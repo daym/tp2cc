@@ -65,20 +65,7 @@ const ClassInfo* EmitAnalysis::class_info_for_type_name(std::string_view name) {
   }
 
   if (!registry_) return nullptr;
-  auto dot = low.find('.');
-  if (dot == std::string::npos) {
-    auto it = registry_->classes.find(low);
-    return it == registry_->classes.end() ? nullptr : &it->second;
-  }
-
-  // TypeRegistry indexes classes by unqualified Pascal name. Qualified
-  // references like `unitname.tfoo` therefore need a second defining-unit
-  // check here so `u1.tnode` and `u2.tnode` stay distinguishable.
-  std::string unit = low.substr(0, dot);
-  std::string tail = low.substr(dot + 1);
-  auto it = registry_->classes.find(tail);
-  if (it == registry_->classes.end()) return nullptr;
-  return it->second.defining_unit == unit ? &it->second : nullptr;
+  return registry_->lookup_class(low, scope_.current_unit_name);
 }
 
 const TypeExpr* EmitAnalysis::lookup_named_type_expr(std::string_view name) {
@@ -102,8 +89,7 @@ const TypeExpr* EmitAnalysis::lookup_named_type_expr(std::string_view name) {
         ait->second.target) {
       return ait->second.target.get();
     }
-    auto cit = registry_->classes.find(tail);
-    if (cit != registry_->classes.end() && cit->second.defining_unit == unit) {
+    if (registry_->lookup_class_exact(unit, tail)) {
       return named_pascal_type(name);
     }
     auto rit = registry_->records.find(tail);
@@ -121,7 +107,7 @@ const TypeExpr* EmitAnalysis::lookup_named_type_expr(std::string_view name) {
   if (ait != registry_->aliases.end() && ait->second.target) {
     return ait->second.target.get();
   }
-  if (registry_->classes.count(low) || registry_->records.count(low) ||
+  if (class_info_for_type_name(low) || registry_->records.count(low) ||
       registry_->enums.count(low)) {
     return named_pascal_type(name);
   }
@@ -986,13 +972,16 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       }
       // Class member lookup inside a known method body.
       if (!scope_.current_class_name.empty()) {
-        if (auto* f = registry_->lookup_class_field(scope_.current_class_name, id.name)) {
+        if (auto* f = registry_->lookup_class_field(
+                scope_.current_class_name, id.name, scope_.current_unit_name)) {
           return f->type.get();
         }
-        if (auto* p = registry_->lookup_class_property(scope_.current_class_name, id.name)) {
+        if (auto* p = registry_->lookup_class_property(
+                scope_.current_class_name, id.name, scope_.current_unit_name)) {
           return p->type.get();
         }
-        if (auto* m = registry_->lookup_class_method(scope_.current_class_name, id.name);
+        if (auto* m = registry_->lookup_class_method(
+                scope_.current_class_name, id.name, scope_.current_unit_name);
             m && m->decl && m->decl->return_type) {
           return m->decl->return_type.get();
         }
@@ -1003,13 +992,16 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
            ++it) {
         const std::string& ac = it->class_name;
         if (!ac.empty()) {
-          if (auto* f = registry_->lookup_class_field(ac, id.name)) {
+          if (auto* f = registry_->lookup_class_field(
+                  ac, id.name, scope_.current_unit_name)) {
             return f->type.get();
           }
-          if (auto* p = registry_->lookup_class_property(ac, id.name)) {
+          if (auto* p = registry_->lookup_class_property(
+                  ac, id.name, scope_.current_unit_name)) {
             return p->type.get();
           }
-          if (auto* m = registry_->lookup_class_method(ac, id.name);
+          if (auto* m = registry_->lookup_class_method(
+                  ac, id.name, scope_.current_unit_name);
               m && m->decl && m->decl->return_type) {
             return m->decl->return_type.get();
           }
@@ -1085,7 +1077,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       if (m.base->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*m.base);
         if (id.name == "self") cls = scope_.current_class_name;
-        else if (registry_->classes.count(id.name) ||
+        else if (class_info_for_type_name(id.name) ||
                  registry_->records.count(id.name)) cls = id.name;
       }
       if (cls.empty()) {
@@ -1103,16 +1095,19 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         }
         return nullptr;
       }
-      if (auto* pm = registry_->lookup_class_method(cls, m.name)) {
+      if (auto* pm = registry_->lookup_class_method(
+              cls, m.name, scope_.current_unit_name)) {
         if (pm->decl.get() && pm->decl.get()->return_type) {
           return pm->decl.get()->return_type.get();
         }
         return nullptr;
       }
-      if (auto* pf = registry_->lookup_class_field(cls, m.name)) {
+      if (auto* pf = registry_->lookup_class_field(
+              cls, m.name, scope_.current_unit_name)) {
         return pf->type.get();
       }
-      if (auto* pp = registry_->lookup_class_property(cls, m.name)) {
+      if (auto* pp = registry_->lookup_class_property(
+              cls, m.name, scope_.current_unit_name)) {
         return pp->type.get();
       }
       if (auto* rf = registry_->lookup_record_field(cls, m.name)) {
@@ -1140,7 +1135,8 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           cls = deduce_class_alias(*mem.base);
         }
         if (!cls.empty()) {
-          if (auto* prop = registry_->lookup_class_property(cls, mem.name);
+          if (auto* prop = registry_->lookup_class_property(
+                  cls, mem.name, scope_.current_unit_name);
               prop && !prop->params.empty()) {
             return prop->type.get();
           }
@@ -1168,7 +1164,8 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       if (registry_) {
         std::string cls = deduce_class_alias(*ix.base);
         if (!cls.empty()) {
-          if (auto* prop = registry_->lookup_default_property(cls)) {
+          if (auto* prop = registry_->lookup_default_property(
+                  cls, scope_.current_unit_name)) {
             return prop->type.get();
           }
         }
@@ -1193,7 +1190,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
             return int_ty;
           }
           if (is_builtin_reference_class_name(id.name) ||
-              registry_->classes.count(id.name) ||
+              class_info_for_type_name(id.name) ||
               registry_->records.count(id.name)) {
             return named_pascal_type(id.name);
           }
@@ -1264,7 +1261,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         if (mem.base->kind == Kind::Ident) {
           const auto& id = static_cast<const Ident&>(*mem.base);
           if (id.name == "self") cls = scope_.current_class_name;
-          else if (registry_->classes.count(id.name) ||
+          else if (class_info_for_type_name(id.name) ||
                    registry_->records.count(id.name)) cls = id.name;
         }
         if (cls.empty()) {
@@ -1273,7 +1270,8 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         }
         if (cls.empty()) cls = deduce_class_alias(*mem.base);
         if (!cls.empty()) {
-          if (auto* cm = registry_->lookup_class_method(cls, mem.name)) {
+          if (auto* cm = registry_->lookup_class_method(
+                  cls, mem.name, scope_.current_unit_name)) {
             if (cm->decl.get() && cm->decl.get()->return_type) {
               return cm->decl.get()->return_type.get();
             }
@@ -1330,8 +1328,8 @@ std::string EmitAnalysis::deduce_class_alias(const Expr& e) {
     const auto& c = static_cast<const Call&>(e);
     if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
       const auto& id = static_cast<const Ident&>(*c.callee);
-      auto cit = registry_->classes.find(id.name);
-      if (cit != registry_->classes.end() && cit->second.is_reference_type) {
+      const ClassInfo* ci = class_info_for_type_name(id.name);
+      if (ci && ci->is_reference_type) {
         return id.name;
       }
     }
@@ -1450,9 +1448,12 @@ bool EmitAnalysis::with_bind_has_visible_member(
     const ScopeStateView::WithBind& wb, std::string_view name) {
   if (!registry_) return false;
   if (!wb.class_name.empty()) {
-    if (registry_->lookup_class_method(wb.class_name, std::string(name)) ||
-        registry_->lookup_class_field(wb.class_name, std::string(name)) ||
-        registry_->lookup_class_property(wb.class_name, std::string(name))) {
+    if (registry_->lookup_class_method(wb.class_name, std::string(name),
+                                       scope_.current_unit_name) ||
+        registry_->lookup_class_field(wb.class_name, std::string(name),
+                                      scope_.current_unit_name) ||
+        registry_->lookup_class_property(wb.class_name, std::string(name),
+                                         scope_.current_unit_name)) {
       return true;
     }
   }
@@ -1534,7 +1535,8 @@ std::optional<ImplicitPropertyLookup> EmitAnalysis::find_implicit_class_property
   for (auto it = scope_.with_stack.rbegin(); it != scope_.with_stack.rend(); ++it) {
     const std::string& cls = it->class_name;
     if (cls.empty()) continue;
-    if (auto* prop = registry_->lookup_class_property(cls, std::string(name))) {
+    if (auto* prop = registry_->lookup_class_property(
+            cls, std::string(name), scope_.current_unit_name)) {
       return ImplicitPropertyLookup{prop, cls, it->cxx_text, true};
     }
   }
@@ -1543,8 +1545,9 @@ std::optional<ImplicitPropertyLookup> EmitAnalysis::find_implicit_class_property
   // Fall back to the current class only after locals and `with` scopes have
   // been ruled out; otherwise a same-named local would spuriously become a
   // property access.
-  if (auto* prop = registry_->lookup_class_property(scope_.current_class_name,
-                                                    std::string(name))) {
+  if (auto* prop = registry_->lookup_class_property(
+          scope_.current_class_name, std::string(name),
+          scope_.current_unit_name)) {
     return ImplicitPropertyLookup{prop, scope_.current_class_name,
                                   implicit_self_cxx(), false};
   }

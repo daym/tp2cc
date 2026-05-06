@@ -450,13 +450,15 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
     const std::vector<UntypedArgKind>& untyped_arg,
     const std::vector<bool>& mutable_ref_arg) {
   if (!registry_) return std::nullopt;
-  auto cit = registry_->classes.find(std::string(class_name));
-  if (cit == registry_->classes.end() || !cit->second.is_reference_type) {
+  const ClassInfo* ci =
+      analysis_.class_info_for_type_name(std::string(class_name));
+  if (!ci || !ci->is_reference_type) {
     return std::nullopt;
   }
   const auto* method =
       registry_->lookup_class_method(std::string(class_name),
-                                     std::string(member_name));
+                                     std::string(member_name),
+                                     scope_.current_unit_name);
   bool implicit_root_create = false;
   if (!method || method->kind != SymKind::Constructor) {
     if (ascii_lower(std::string(member_name)) != "create" || !args.empty()) {

@@ -376,7 +376,8 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
       const std::string metaclass =
           analysis_.metaclass_target_name(analysis_.deduce_type(*mem.base));
       if (metaclass.empty()) return false;
-      const auto* method = registry_->lookup_class_method(metaclass, mem.name);
+      const auto* method = registry_->lookup_class_method(
+          metaclass, mem.name, scope_.current_unit_name);
       if (!(method && (method->kind == SymKind::ClassMethod ||
                        method->kind == SymKind::Constructor))) {
         return false;
@@ -422,7 +423,8 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
       [&](const std::string& name) -> std::optional<std::string> {
     if (scope_.current_class_name.empty()) return std::nullopt;
     if (auto* method =
-            registry_->lookup_class_method(scope_.current_class_name, name);
+            registry_->lookup_class_method(scope_.current_class_name, name,
+                                           scope_.current_unit_name);
         method && method->decl && !method->decl->is_class_method) {
       return bind_method("(*this)", scope_.current_class_name, *method->decl,
                          false);
@@ -439,7 +441,8 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
       cls = analysis_.deduce_class_alias(*m.base);
     }
     if (cls.empty()) return std::nullopt;
-    if (auto* method = registry_->lookup_class_method(cls, m.name);
+    if (auto* method = registry_->lookup_class_method(
+            cls, m.name, scope_.current_unit_name);
         method && method->decl && !method->decl->is_class_method) {
       return bind_method(expr_ops_.expr_to_cxx(*m.base), cls, *method->decl,
                          storage_.expr_is_reference_class(*m.base));

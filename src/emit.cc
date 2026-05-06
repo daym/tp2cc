@@ -1194,10 +1194,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (base_is_ident(base_name) && base_name == "inherited") {
         std::string parent;
         if (registry && !current_class_name.empty()) {
-          auto cit = registry->classes.find(current_class_name);
-          if (cit != registry->classes.end()) {
-            parent = cit->second.parent;
-            if (parent.empty() && cit->second.is_reference_type) {
+          const ClassInfo* ci = registry->lookup_class(current_class_name,
+                                                       current_unit_name);
+          if (ci) {
+            parent = ci->parent;
+            if (parent.empty() && ci->is_reference_type) {
               parent = "tobject";
             }
           }
@@ -1234,9 +1235,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (registry && base_is_ident(base_name)) {
         bool shadowed = local_scope.count(base_name) > 0;
         if (!shadowed && !current_class_name.empty() &&
-            (registry->lookup_class_method(current_class_name, base_name) ||
-             registry->lookup_class_field(current_class_name, base_name) ||
-             registry->lookup_class_property(current_class_name, base_name)))
+            (registry->lookup_class_method(current_class_name, base_name,
+                                           current_unit_name) ||
+             registry->lookup_class_field(current_class_name, base_name,
+                                          current_unit_name) ||
+             registry->lookup_class_property(current_class_name, base_name,
+                                             current_unit_name)))
           shadowed = true;
         if (!shadowed) {
           for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
@@ -1272,7 +1276,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // `TClass.method` -- Pascal's way to call a specific
           // class's method (typically the parent's version from
           // inside an override). Emit `TClass::method`.
-          if (registry->classes.count(base_name) ||
+          if (registry->has_class(base_name, current_unit_name) ||
               registry->records.count(base_name)) {
             if (!is_callee_context_) {
               std::vector<const Expr*> no_args;
@@ -1321,8 +1325,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           is_callee_context_ = false;
           std::string base_cxx = expr_to_cxx(*m.base);
           is_callee_context_ = saved_callee;
-          if (const auto* method =
-                  registry->lookup_class_method(metaclass, m.name)) {
+          if (const auto* method = registry->lookup_class_method(
+                  metaclass, m.name, current_unit_name)) {
             if (method->kind == SymKind::Constructor ||
                 method->kind == SymKind::ClassMethod) {
               std::string text = base_cxx + "->" + mangle(m.name);
@@ -1371,7 +1375,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
       }
       if (registry && !bcls.empty()) {
-        if (auto* prop = registry->lookup_class_property(bcls, m.name)) {
+        if (auto* prop = registry->lookup_class_property(
+                bcls, m.name, current_unit_name)) {
           if (prop->params.empty()) {
             std::vector<const Expr*> no_indices;
             return lower_property_read(m.loc, base_cxx, bcls, *prop, no_indices);
@@ -1380,14 +1385,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       std::string member_cxx = mangle(m.name);
       if (registry && !bcls.empty() &&
-          (registry->lookup_class_field(bcls, m.name) ||
+          (registry->lookup_class_field(bcls, m.name, current_unit_name) ||
            registry->lookup_record_field(bcls, m.name))) {
         member_cxx = registry->field_cxx_name(m.name);
       }
       std::string text = base_cxx + member_access_op(*m.base) + member_cxx;
       if (is_callee_context_ || !registry) return text;
       if (bcls.empty()) return text;
-      if (const auto* method = registry->lookup_class_method(bcls, m.name)) {
+      if (const auto* method = registry->lookup_class_method(
+              bcls, m.name, current_unit_name)) {
         if (method->accepts_zero_args) {
           text = lower_implicit_zero_arg_call(text, method->decl.get());
         }
@@ -1412,9 +1418,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         const auto& m = static_cast<const Member&>(*a.operand);
         if (m.base && m.base->kind == Kind::Ident) {
           const auto& id = static_cast<const Ident&>(*m.base);
-          if (registry && (registry->classes.count(id.name) ||
+          if (registry && (registry->has_class(id.name, current_unit_name) ||
                            registry->records.count(id.name))) {
-            if (auto* method = registry->lookup_class_method(id.name, m.name);
+            if (auto* method = registry->lookup_class_method(
+                    id.name, m.name, current_unit_name);
                 method && method->decl && !method->decl->is_class_method) {
               return "::rt::tp2cc_method_code<&" +
                      named_type_struct_cxx(id.name) + "::" +
@@ -1427,7 +1434,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               metaclass_target_name(deduce_type(*m.base));
           if (!metaclass.empty()) {
             if (const auto* method =
-                    registry->lookup_class_method(metaclass, m.name);
+                    registry->lookup_class_method(metaclass, m.name,
+                                                  current_unit_name);
                 method && (method->kind == SymKind::ClassMethod ||
                            method->kind == SymKind::Constructor)) {
               report_error(a.loc,
@@ -1597,7 +1605,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return true;
           }
           if (registry) {
-            return registry->classes.count(low) ||
+            return registry->has_class(low, current_unit_name) ||
                    registry->records.count(low) ||
                    registry->enums.count(low) ||
                    registry->aliases.count(low);
@@ -1613,10 +1621,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               static_cast<const Ident&>(*mem.base).name;
           bool shadowed = local_scope.count(base_name) > 0;
           if (!shadowed && !current_class_name.empty() &&
-              (registry->lookup_class_method(current_class_name, base_name) ||
-               registry->lookup_class_field(current_class_name, base_name) ||
+              (registry->lookup_class_method(current_class_name, base_name,
+                                             current_unit_name) ||
+               registry->lookup_class_field(current_class_name, base_name,
+                                            current_unit_name) ||
                registry->lookup_class_property(current_class_name,
-                                               base_name))) {
+                                               base_name, current_unit_name))) {
             shadowed = true;
           }
           if (!shadowed) {
@@ -1722,7 +1732,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // at least compiles. Users of this value compare it for
           // equality/inequality at runtime only.
           const auto& a = static_cast<const Ident&>(*c.args[0]);
-          if (registry->classes.count(a.name) ||
+          if (registry->has_class(a.name, current_unit_name) ||
               registry->records.count(a.name)) {
             return "((void*)nullptr)";
           }
@@ -1832,8 +1842,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
           }
           if (registry) {
-            auto cit = registry->classes.find(n);
-            if (cit != registry->classes.end() && cit->second.is_reference_type) {
+            const ClassInfo* ci = class_info_for_type_name(n);
+            if (ci && ci->is_reference_type) {
               // Direct named class casts (`TNode(p)`) do not go through the
               // alias table, because reference classes are registered as
               // classes rather than aliases. Treat them as pointer casts here.
@@ -1908,7 +1918,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (auto view = storage_.typecast_storage_view(c)) {
             bool named_storage_view_type =
                 registry &&
-                (registry->records.count(n) || registry->classes.count(n));
+                (registry->records.count(n) ||
+                 registry->has_class(n, current_unit_name));
             bool aggregate_alias =
                 cast_ty && (cast_ty->kind == Kind::TyArray ||
                             cast_ty->kind == Kind::TyRecord ||
@@ -2039,7 +2050,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               std::string pointee = registry->pointer_target_type_name(&ptr_type);
               if (!pointee.empty()) {
                 if (auto* m = registry->lookup_class_method(
-                        pointee, static_cast<const Ident&>(*cc.callee).name)) {
+                        pointee, static_cast<const Ident&>(*cc.callee).name,
+                        current_unit_name)) {
                   ctor_decl = m->decl.get();
                 }
               }
@@ -2127,9 +2139,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           const std::string& base_name = base_id.name;
           bool shadowed = local_scope.count(base_name) > 0;
           if (!shadowed && !current_class_name.empty() &&
-              (registry->lookup_class_method(current_class_name, base_name) ||
-               registry->lookup_class_field(current_class_name, base_name) ||
-               registry->lookup_class_property(current_class_name, base_name))) {
+              (registry->lookup_class_method(current_class_name, base_name,
+                                             current_unit_name) ||
+               registry->lookup_class_field(current_class_name, base_name,
+                                            current_unit_name) ||
+               registry->lookup_class_property(current_class_name, base_name,
+                                               current_unit_name))) {
             shadowed = true;
           }
           if (!shadowed) {
@@ -2238,8 +2253,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         if (mem.base->kind == Kind::Ident && registry) {
           const auto& id = static_cast<const Ident&>(*mem.base);
-          auto cit = registry->classes.find(id.name);
-          if (cit != registry->classes.end()) {
+          if (registry->has_class(id.name, current_unit_name)) {
             if (auto ctor_call = maybe_lower_class_constructor_call(
                     id.name, mem.name, call_args, call_param_types,
                     call_untyped_arg, call_mutable_ref_arg)) {
@@ -2255,7 +2269,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           const auto& id = static_cast<const Ident&>(*c.callee);
           if (id.name == "setjmp") {
             ResolveResult rr = resolve_name(id.name);
-            is_tpexcept_setjmp = (rr.cxx == "p_tpexcept::p_setjmp");
+            is_tpexcept_setjmp = (rr.cxx == "::p_tpexcept::p_setjmp");
           }
         } else if (c.callee->kind == Kind::Member) {
           const auto& mem = static_cast<const Member&>(*c.callee);
@@ -2266,7 +2280,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
       }
       if (is_tpexcept_setjmp) {
-        return "setjmp(p_tpexcept::p_detail::p_state_for(&(" +
+        return "setjmp(::p_tpexcept::p_detail::p_state_for(&(" +
                expr_to_cxx(*c.args[0]) + ")).p_env)";
       }
       std::string out = callee_text + "(";
@@ -2318,7 +2332,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           cls = deduce_class_alias(*mem.base);
         }
         if (!cls.empty()) {
-          if (auto* prop = registry->lookup_class_property(cls, mem.name)) {
+          if (auto* prop = registry->lookup_class_property(
+                  cls, mem.name, current_unit_name)) {
             if (!prop->params.empty()) {
               return lower_property_read(i.loc, expr_to_cxx(*mem.base), cls,
                                          *prop, indices);
@@ -2337,7 +2352,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (registry) {
         std::string cls = deduce_class_alias(*i.base);
         if (!cls.empty()) {
-          if (auto* prop = registry->lookup_default_property(cls)) {
+          if (auto* prop = registry->lookup_default_property(
+                  cls, current_unit_name)) {
             return lower_property_read(i.loc, expr_to_cxx(*i.base), cls, *prop,
                                        indices);
           }

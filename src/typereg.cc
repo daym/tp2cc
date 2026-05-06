@@ -148,8 +148,21 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
           const auto& to = static_cast<const TyObject&>(*td.type);
           ci.parent = lc(to.parent);
           ci.is_reference_type = to.is_reference_type;
+          ci.is_forward = to.is_forward;
           add_class_members(ci, to);
-          r.classes[nm] = std::move(ci);
+          auto& bucket = r.classes[nm];
+          auto same_unit = std::find_if(
+              bucket.begin(), bucket.end(), [&](const ClassInfo& existing) {
+                return existing.defining_unit == unit;
+              });
+          if (same_unit == bucket.end()) {
+            bucket.push_back(std::move(ci));
+          } else if (!ci.is_forward || same_unit->is_forward) {
+            // A same-unit forward class declaration is only a placeholder for
+            // the later body. Keep one registry entry per Pascal class identity
+            // so member lookups do not hit an empty forward shell.
+            *same_unit = std::move(ci);
+          }
         } else if (td.type->kind == Kind::TyInterface) {
           InterfaceInfo ii;
           ii.name = nm;
@@ -774,6 +787,50 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   }
 }
 
+const ClassInfo* TypeRegistry::lookup_class_exact(std::string_view unit,
+                                                  std::string_view name) const {
+  std::string target_unit = lc(std::string(unit));
+  std::string target_name = lc(std::string(name));
+  auto it = classes.find(target_name);
+  if (it == classes.end()) return nullptr;
+  for (const auto& ci : it->second) {
+    if (ci.defining_unit == target_unit) return &ci;
+  }
+  return nullptr;
+}
+
+const ClassInfo* TypeRegistry::lookup_class(std::string_view name,
+                                            std::string_view current_unit) const {
+  std::string low = lc(std::string(name));
+  if (auto dot = low.find('.'); dot != std::string::npos) {
+    return lookup_class_exact(low.substr(0, dot), low.substr(dot + 1));
+  }
+
+  std::string cur_unit = lc(std::string(current_unit));
+  if (!cur_unit.empty()) {
+    if (const ClassInfo* own = lookup_class_exact(cur_unit, low)) return own;
+    auto uit = units.find(cur_unit);
+    if (uit != units.end()) {
+      for (auto use = uit->second.uses.rbegin(); use != uit->second.uses.rend();
+           ++use) {
+        if (*use == "__rt__") continue;
+        auto used = units.find(*use);
+        if (used == units.end()) continue;
+        if (used->second.has_export_type(low)) {
+          if (const ClassInfo* exported = lookup_class_exact(*use, low)) {
+            return exported;
+          }
+        }
+      }
+    }
+  }
+
+  auto it = classes.find(low);
+  if (it == classes.end() || it->second.empty()) return nullptr;
+  if (it->second.size() == 1) return &it->second.front();
+  return nullptr;
+}
+
 const TypeExpr* TypeRegistry::canonicalize(const TypeExpr* te) const {
   int hops = 0;
   while (te && te->kind == Kind::TyName) {
@@ -815,39 +872,42 @@ std::string TypeRegistry::field_cxx_name(std::string_view name) const {
 }
 
 const FieldInfo* TypeRegistry::lookup_class_field(
-    const std::string& class_name_in, const std::string& member) const {
-  std::string class_name = lc(class_name_in);
+    const std::string& class_name_in, const std::string& member,
+    std::string_view current_unit) const {
+  const ClassInfo* ci = lookup_class(class_name_in, current_unit);
   std::string key = lc(member);
   std::unordered_set<std::string> seen;
-  while (!class_name.empty() && !seen.count(class_name)) {
-    seen.insert(class_name);
-    auto cit = classes.find(class_name);
-    if (cit == classes.end()) return nullptr;
-    auto fit = cit->second.fields.find(key);
-    if (fit != cit->second.fields.end()) return &fit->second;
-    class_name = cit->second.parent;
+  while (ci) {
+    const std::string identity = ci->defining_unit + "." + ci->name;
+    if (seen.count(identity)) break;
+    seen.insert(identity);
+    auto fit = ci->fields.find(key);
+    if (fit != ci->fields.end()) return &fit->second;
+    ci = ci->parent.empty() ? nullptr : lookup_class(ci->parent, ci->defining_unit);
   }
   return nullptr;
 }
 
 bool TypeRegistry::class_has_enum_member(
-    const std::string& class_name_in, const std::string& member) const {
-  std::string class_name = lc(class_name_in);
+    const std::string& class_name_in, const std::string& member,
+    std::string_view current_unit) const {
+  const ClassInfo* ci = lookup_class(class_name_in, current_unit);
   std::string key = lc(member);
   std::unordered_set<std::string> seen;
-  while (!class_name.empty() && !seen.count(class_name)) {
-    seen.insert(class_name);
-    auto cit = classes.find(class_name);
-    if (cit == classes.end()) return false;
-    if (cit->second.enum_members.count(key)) return true;
-    class_name = cit->second.parent;
+  while (ci) {
+    const std::string identity = ci->defining_unit + "." + ci->name;
+    if (seen.count(identity)) break;
+    seen.insert(identity);
+    if (ci->enum_members.count(key)) return true;
+    ci = ci->parent.empty() ? nullptr : lookup_class(ci->parent, ci->defining_unit);
   }
   return false;
 }
 
 const MethodSig* TypeRegistry::lookup_class_method(
-    const std::string& class_name_in, const std::string& member) const {
-  if (auto* set = lookup_class_methods(class_name_in, member);
+    const std::string& class_name_in, const std::string& member,
+    std::string_view current_unit) const {
+  if (auto* set = lookup_class_methods(class_name_in, member, current_unit);
       set && !set->empty()) {
     return &(*set)[0];
   }
@@ -855,14 +915,19 @@ const MethodSig* TypeRegistry::lookup_class_method(
 }
 
 const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
-    const std::string& class_name_in, const std::string& member) const {
+    const std::string& class_name_in, const std::string& member,
+    std::string_view current_unit) const {
   // Walk the class chain looking for `member`, consulting translated
   // classes first; when the chain bottoms out into a name not in `classes`
   // (e.g. `Exception`, the parent of a translated `EFoo`), continue into
   // `rt_classes` so methods inherited from rt-side classes (like
   // `Exception.Create(string)`) still resolve. The lookup walks both
   // stores; code-gen iterates only `classes`.
+  const ClassInfo* ci = lookup_class(class_name_in, current_unit);
   std::string class_name = lc(class_name_in);
+  if (auto dot = class_name.find('.'); dot != std::string::npos) {
+    class_name = class_name.substr(dot + 1);
+  }
   std::string key = lc(member);
   auto iit = interfaces.find(class_name);
   if (iit != interfaces.end()) {
@@ -870,7 +935,8 @@ const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
     return mit == iit->second.methods.end() ? nullptr : &mit->second;
   }
   std::unordered_set<std::string> seen;
-  auto step = [&](const std::unordered_map<std::string, ClassInfo>& store)
+  auto step = [&](const std::string& class_name,
+                  const std::unordered_map<std::string, ClassInfo>& store)
       -> std::pair<const std::vector<MethodSig>*, std::string> {
     auto cit = store.find(class_name);
     if (cit == store.end()) return {nullptr, std::string{}};
@@ -880,54 +946,63 @@ const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
     }
     return {nullptr, cit->second.parent};
   };
-  while (!class_name.empty() && !seen.count(class_name)) {
-    seen.insert(class_name);
-    if (auto cit = classes.find(class_name); cit != classes.end()) {
-      auto mit = cit->second.methods.find(key);
-      if (mit != cit->second.methods.end()) return &mit->second;
-      if (cit->second.parent.empty() && cit->second.is_reference_type) {
-        class_name = "tobject";
-      } else {
-        class_name = cit->second.parent;
-      }
-      continue;
+  std::string rt_name;
+  while (ci) {
+    const std::string identity = ci->defining_unit + "." + ci->name;
+    if (seen.count(identity)) break;
+    seen.insert(identity);
+    auto mit = ci->methods.find(key);
+    if (mit != ci->methods.end()) return &mit->second;
+    if (ci->parent.empty() && ci->is_reference_type) {
+      rt_name = "tobject";
+      break;
     }
-    auto [rt_hit, rt_parent] = step(rt_classes);
+    const ClassInfo* next = lookup_class(ci->parent, ci->defining_unit);
+    if (!next) {
+      rt_name = ci->parent;
+      break;
+    }
+    ci = next;
+  }
+  while (!rt_name.empty() && !seen.count("__rt__." + rt_name)) {
+    seen.insert("__rt__." + rt_name);
+    auto [rt_hit, rt_parent] = step(rt_name, rt_classes);
     if (rt_hit) return rt_hit;
-    class_name = rt_parent;
+    rt_name = rt_parent;
   }
   return nullptr;
 }
 
 const PropertyInfo* TypeRegistry::lookup_class_property(
-    const std::string& class_name_in, const std::string& member) const {
-  std::string class_name = lc(class_name_in);
+    const std::string& class_name_in, const std::string& member,
+    std::string_view current_unit) const {
+  const ClassInfo* ci = lookup_class(class_name_in, current_unit);
   std::string key = lc(member);
   std::unordered_set<std::string> seen;
-  while (!class_name.empty() && !seen.count(class_name)) {
-    seen.insert(class_name);
-    auto cit = classes.find(class_name);
-    if (cit == classes.end()) return nullptr;
-    auto pit = cit->second.properties.find(key);
-    if (pit != cit->second.properties.end()) return &pit->second;
-    class_name = cit->second.parent;
+  while (ci) {
+    const std::string identity = ci->defining_unit + "." + ci->name;
+    if (seen.count(identity)) break;
+    seen.insert(identity);
+    auto pit = ci->properties.find(key);
+    if (pit != ci->properties.end()) return &pit->second;
+    ci = ci->parent.empty() ? nullptr : lookup_class(ci->parent, ci->defining_unit);
   }
   return nullptr;
 }
 
 const PropertyInfo* TypeRegistry::lookup_default_property(
-    const std::string& class_name_in) const {
-  std::string class_name = lc(class_name_in);
+    const std::string& class_name_in, std::string_view current_unit) const {
+  const ClassInfo* ci = lookup_class(class_name_in, current_unit);
   std::unordered_set<std::string> seen;
-  while (!class_name.empty() && !seen.count(class_name)) {
-    seen.insert(class_name);
-    auto cit = classes.find(class_name);
-    if (cit == classes.end()) return nullptr;
-    if (!cit->second.default_property_name.empty()) {
-      auto pit = cit->second.properties.find(cit->second.default_property_name);
-      if (pit != cit->second.properties.end()) return &pit->second;
+  while (ci) {
+    const std::string identity = ci->defining_unit + "." + ci->name;
+    if (seen.count(identity)) break;
+    seen.insert(identity);
+    if (!ci->default_property_name.empty()) {
+      auto pit = ci->properties.find(ci->default_property_name);
+      if (pit != ci->properties.end()) return &pit->second;
     }
-    class_name = cit->second.parent;
+    ci = ci->parent.empty() ? nullptr : lookup_class(ci->parent, ci->defining_unit);
   }
   return nullptr;
 }

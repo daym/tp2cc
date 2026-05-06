@@ -415,11 +415,11 @@ builtin_reference_class_map() {
   static const std::unordered_map<std::string, BuiltinReferenceClassInfo> m = {
       {"tobject", {"::rt::t_tobject", "", "__rt__"}},
       {"exception", {"::rt::t_exception", "tobject", "sysutils"}},
-      {"eexternal", {"p_sysutils::t_eexternal", "exception", "sysutils"}},
-      {"einterror", {"p_sysutils::t_einterror", "eexternal", "sysutils"}},
+      {"eexternal", {"::p_sysutils::t_eexternal", "exception", "sysutils"}},
+      {"einterror", {"::p_sysutils::t_einterror", "eexternal", "sysutils"}},
       {"eintoverflow",
-       {"p_sysutils::t_eintoverflow", "einterror", "sysutils"}},
-      {"eoserror", {"p_sysutils::t_eoserror", "exception", "sysutils"}},
+       {"::p_sysutils::t_eintoverflow", "einterror", "sysutils"}},
+      {"eoserror", {"::p_sysutils::t_eoserror", "exception", "sysutils"}},
   };
   return m;
 }
@@ -433,7 +433,7 @@ std::string builtin_reference_class_struct_cxx(std::string_view lowname) {
 
 std::string unit_namespace_prefix(std::string_view unit_name) {
   return unit_name == "__rt__" ? std::string("::rt::")
-                               : (mangle(unit_name) + "::");
+                               : ("::" + mangle(unit_name) + "::");
 }
 
 const PrimitiveInfo* primitive_info(std::string_view lowname) {

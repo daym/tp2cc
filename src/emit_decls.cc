@@ -55,27 +55,28 @@ std::vector<EmitDecls::MetaclassCallable> EmitDecls::collect_metaclass_callables
   if (!registry_) return out;
 
   std::string cls = ascii_lower(std::string(class_name));
-  std::vector<std::string> chain;
+  std::vector<const ClassInfo*> chain;
   std::unordered_set<std::string> seen;
-  while (!cls.empty() && !seen.count(cls)) {
-    seen.insert(cls);
-    auto it = registry_->classes.find(cls);
-    if (it == registry_->classes.end()) break;
-    chain.push_back(cls);
-    cls = it->second.parent;
+  const ClassInfo* ci = analysis_.class_info_for_type_name(cls);
+  while (ci) {
+    const std::string identity = ci->defining_unit + "." + ci->name;
+    if (seen.count(identity)) break;
+    seen.insert(identity);
+    chain.push_back(ci);
+    ci = ci->parent.empty() ? nullptr
+                            : registry_->lookup_class(ci->parent,
+                                                      ci->defining_unit);
   }
   std::reverse(chain.begin(), chain.end());
 
   std::unordered_map<std::string, size_t> pos;
-  for (const auto& current : chain) {
-    auto it = registry_->classes.find(current);
-    if (it == registry_->classes.end()) continue;
+  for (const ClassInfo* current : chain) {
     std::vector<std::string> names;
-    names.reserve(it->second.methods.size());
+    names.reserve(current->methods.size());
     // Pascal does not let overloads of one name disagree on
     // Constructor/ClassMethod-ness, so the representative overload's kind
     // classifies the whole slot for the metaclass-callable test.
-    for (const auto& [name, sigs] : it->second.methods) {
+    for (const auto& [name, sigs] : current->methods) {
       const MethodSig* sig = ::tp2cc::representative_method(sigs);
       if (!sig) continue;
       if (sig->kind == SymKind::Constructor ||
@@ -86,7 +87,7 @@ std::vector<EmitDecls::MetaclassCallable> EmitDecls::collect_metaclass_callables
     std::sort(names.begin(), names.end());
     for (const auto& name : names) {
       const MethodSig* sig =
-          ::tp2cc::representative_method(it->second.methods.at(name));
+          ::tp2cc::representative_method(current->methods.at(name));
       auto pit = pos.find(name);
       if (pit == pos.end()) {
         pos[name] = out.size();
@@ -128,19 +129,22 @@ EmitDecls::find_metaclass_callable_impl(std::string_view concrete_class,
 
   std::string cls = ascii_lower(std::string(concrete_class));
   std::unordered_set<std::string> seen;
-  while (!cls.empty() && !seen.count(cls)) {
-    seen.insert(cls);
-    auto it = registry_->classes.find(cls);
-    if (it == registry_->classes.end()) break;
-    auto mit = it->second.methods.find(target.name);
-    if (mit != it->second.methods.end()) {
+  const ClassInfo* ci = analysis_.class_info_for_type_name(cls);
+  while (ci) {
+    const std::string identity = ci->defining_unit + "." + ci->name;
+    if (seen.count(identity)) break;
+    seen.insert(identity);
+    auto mit = ci->methods.find(target.name);
+    if (mit != ci->methods.end()) {
       for (const auto& sig : mit->second) {
         if (matches_target(sig)) {
-          return MetaclassCallableImpl{cls, &sig, false};
+          return MetaclassCallableImpl{identity, &sig, false};
         }
       }
     }
-    cls = it->second.parent;
+    ci = ci->parent.empty() ? nullptr
+                            : registry_->lookup_class(ci->parent,
+                                                      ci->defining_unit);
   }
 
   if (target.implicit_root_create) {

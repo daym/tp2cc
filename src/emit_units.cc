@@ -341,9 +341,9 @@ void EmitUnits::emit_unit(const UnitNode& u) {
       // leaves never-finished units out of the finalization chain.
       for (const auto& uu : *unit_init_order_) {
         if (uu == u.name) continue;
-        std::string ns_name = mangle(uu);
-        ops_.emitln(ns_name + "::" + unit_init_name_ + "();");
-        ops_.emitln("if (std::atexit(" + ns_name + "::" + unit_fini_name_ +
+        std::string ns_name = unit_namespace_prefix(uu);
+        ops_.emitln(ns_name + unit_init_name_ + "();");
+        ops_.emitln("if (std::atexit(" + ns_name + unit_fini_name_ +
                    ") != 0) std::abort();");
       }
     }
@@ -425,8 +425,8 @@ void EmitUnits::emit_tpexcept_unit(const UnitNode& u) {
   ops_.nl();
   ops_.emitln("namespace {");
   ops_.indent();
-  ops_.emitln("std::unordered_map<const p_tpexcept::t_jmp_buf*,");
-  ops_.emitln("                   p_tpexcept::p_detail::p_jump_state> p_jump_states;");
+  ops_.emitln("std::unordered_map<const ::p_tpexcept::t_jmp_buf*,");
+  ops_.emitln("                   ::p_tpexcept::p_detail::p_jump_state> p_jump_states;");
   ops_.dedent();
   ops_.emitln("}  // namespace");
   ops_.nl();

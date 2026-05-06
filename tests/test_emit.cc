@@ -142,14 +142,14 @@ void test_program_registers_unit_finalizers() {
       "begin\n"
       "end.\n",
       {"sysutils", "classes"});
-  CHECK(contains(out.impl, "p_sysutils::tp2cc_unit_init();"));
+  CHECK(contains(out.impl, "::p_sysutils::tp2cc_unit_init();"));
   CHECK(contains(out.impl,
-                 "std::atexit(p_sysutils::tp2cc_unit_fini)"));
-  CHECK(contains(out.impl, "p_classes::tp2cc_unit_init();"));
+                 "std::atexit(::p_sysutils::tp2cc_unit_fini)"));
+  CHECK(contains(out.impl, "::p_classes::tp2cc_unit_init();"));
   CHECK(contains(out.impl,
-                 "std::atexit(p_classes::tp2cc_unit_fini)"));
-  CHECK(out.impl.find("p_sysutils::tp2cc_unit_init();") <
-        out.impl.find("p_classes::tp2cc_unit_init();"));
+                 "std::atexit(::p_classes::tp2cc_unit_fini)"));
+  CHECK(out.impl.find("::p_sysutils::tp2cc_unit_init();") <
+        out.impl.find("::p_classes::tp2cc_unit_init();"));
 }
 
 void test_uses_become_includes_without_open_namespaces() {
@@ -1108,7 +1108,7 @@ void test_unit_qualified_trailing_default_argument_is_lowered() {
       "  u.note(1);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_u::p_note(1, 7);"));
+  CHECK(contains(out.impl, "::p_u::p_note(1, 7);"));
 }
 
 void test_method_pointer_trailing_default_nil_is_lowered_as_empty_value() {
@@ -1791,25 +1791,25 @@ void test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers
   CHECK(contains(out.header, "t_tbox tp2cc_operator_assign_params_const_name_qword_ret_name_tbox(uint64_t p_n);"));
   CHECK(contains(out.header, "int32_t tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(t_tbox p_b);"));
   CHECK(contains(out.header, "int64_t tp2cc_operator_assign_params_const_name_tbox_ret_name_int64(t_tbox p_b);"));
-  CHECK(!contains(out.header, "tp2cc_operator_assign_params_const_name_tbox_ret_name_int64((p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox"));
+  CHECK(!contains(out.header, "tp2cc_operator_assign_params_const_name_tbox_ret_name_int64((::p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox"));
   CHECK(contains(out.impl, "t_tbox operator+(t_tbox p_a, t_tbox p_b) {"));
   CHECK(contains(out.impl, "t_tbox operator-(t_tbox p_a, t_tbox p_b) {"));
   CHECK(contains(out.impl, "bool operator==(t_tbox p_a, t_tbox p_b) {"));
   CHECK(contains(out.impl, "t_tbox tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(t_tbox p_a, t_tbox p_b) {"));
   CHECK(contains(out.impl, "double operator/(t_tbox p_a, t_tbox p_b) {"));
-  CHECK(contains(out.impl, "p_a = p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1);"));
+  CHECK(contains(out.impl, "p_a = ::p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1);"));
   CHECK(contains(out.impl, "p_b = (p_a + p_a);"));
-  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_a, p_b);"));
-  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1), p_b);"));
-  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_a, p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(static_cast<int32_t>(sizeof(t_tbox))));"));
-  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_ops::tp2cc_operator_assign_params_const_name_qword_ret_name_tbox(::std::numeric_limits<uint64_t>::max()), p_b);"));
-  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(p_limit), p_b);"));
-  CHECK(contains(out.impl, "p_c = p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(static_cast<t_tnode*>(p_base)->p_value, p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0));"));
+  CHECK(contains(out.impl, "p_c = ::p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_a, p_b);"));
+  CHECK(contains(out.impl, "p_c = ::p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(::p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1), p_b);"));
+  CHECK(contains(out.impl, "p_c = ::p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(p_a, ::p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(static_cast<int32_t>(sizeof(t_tbox))));"));
+  CHECK(contains(out.impl, "p_c = ::p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(::p_ops::tp2cc_operator_assign_params_const_name_qword_ret_name_tbox(::std::numeric_limits<uint64_t>::max()), p_b);"));
+  CHECK(contains(out.impl, "p_c = ::p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(::p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(p_limit), p_b);"));
+  CHECK(contains(out.impl, "p_c = ::p_ops::tp2cc_operator_div_params_const_name_tbox_const_name_tbox_ret_name_tbox(static_cast<t_tnode*>(p_base)->p_value, ::p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0));"));
   CHECK(contains(out.impl, "p_r = (p_a / p_b);"));
-  CHECK(contains(out.impl, "p_r = (p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1) / p_b);"));
-  CHECK(contains(out.impl, "if (::rt::p_not((p_a == p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0))))"));
-  CHECK(contains(out.impl, "if (::rt::p_not((static_cast<t_tnode*>(p_base)->p_value == p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0))))"));
-  CHECK(contains(out.impl, "p_i = p_ops::tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(p_b);"));
+  CHECK(contains(out.impl, "p_r = (::p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1) / p_b);"));
+  CHECK(contains(out.impl, "if (::rt::p_not((p_a == ::p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0))))"));
+  CHECK(contains(out.impl, "if (::rt::p_not((static_cast<t_tnode*>(p_base)->p_value == ::p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0))))"));
+  CHECK(contains(out.impl, "p_i = ::p_ops::tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(p_b);"));
 }
 
 void test_pchar_cast_argument_converts_to_string_value() {
@@ -2161,7 +2161,7 @@ void test_visible_pointer_alias_cast_uses_qualified_type_spelling() {
         "end;\n"
         "end.\n"}});
   CHECK(contains(out.impl,
-                 "static_cast<p_widestr::t_pcompilerwidestring>(p_raw)"));
+                 "static_cast<::p_widestr::t_pcompilerwidestring>(p_raw)"));
   CHECK(!contains(out.impl,
                   "((p_pcompilerwidestring)(p_raw))"));
 }
@@ -2454,9 +2454,9 @@ void test_sizeof_qualified_type_uses_type_spelling_not_value_namespace() {
         "  counter : longint;\n"
         "implementation\n"
         "end.\n"}});
-  CHECK(contains(out.impl, "sizeof(p_macho::t_section)"));
-  CHECK(!contains(out.impl, "sizeof(p_macho::p_section)"));
-  CHECK(contains(out.impl, "sizeof(p_macho::p_counter)"));
+  CHECK(contains(out.impl, "sizeof(::p_macho::t_section)"));
+  CHECK(!contains(out.impl, "sizeof(::p_macho::p_section)"));
+  CHECK(contains(out.impl, "sizeof(::p_macho::p_counter)"));
 }
 
 void test_unit_type_value_duplicates_across_sections_report_error() {
@@ -2505,8 +2505,8 @@ void test_sizeof_own_implementation_private_qualified_names() {
       "  writeln(sizeof(u.bar));\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "sizeof(p_u::t_foo)"));
-  CHECK(contains(out.impl, "sizeof(p_u::p_bar)"));
+  CHECK(contains(out.impl, "sizeof(::p_u::t_foo)"));
+  CHECK(contains(out.impl, "sizeof(::p_u::p_bar)"));
 }
 
 void test_primitive_cast_assign_reinterprets_storage() {
@@ -3171,9 +3171,9 @@ void test_for_loop_uses_resolved_global_control_var() {
         "  last_overloaded = _assignment;\n"
         "implementation\n"
         "end.\n"}});
-  CHECK(contains(out.impl, "p_globals::p_token = tp2cc_from;"));
-  CHECK(contains(out.impl, "if (p_globals::p_token == tp2cc_to) break;"));
-  CHECK(contains(out.impl, "::rt::p_inc(p_globals::p_token);"));
+  CHECK(contains(out.impl, "::p_globals::p_token = tp2cc_from;"));
+  CHECK(contains(out.impl, "if (::p_globals::p_token == tp2cc_to) break;"));
+  CHECK(contains(out.impl, "::rt::p_inc(::p_globals::p_token);"));
 }
 
 void test_const_object_param_uses_mutable_ref() {
@@ -3452,7 +3452,7 @@ void test_cross_unit_enum_set_literal_keeps_exported_enum_type() {
         "implementation\n"
         "end.\n"}});
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_Set<p_globals::t_tfpuexception>::from_list"));
+                 "::rt::tp2cc_Set<::p_globals::t_tfpuexception>::from_list"));
   CHECK(!contains(out.impl,
                   "::rt::tp2cc_Set<::rt::t_tfpuexception>::from_list"));
 }
@@ -4171,8 +4171,8 @@ void test_untyped_const_temporary_uses_addressable_helper() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_const_untyped_ptr(p_u::p_buildrec(42))"));
-  CHECK(!contains(out.impl, "&(p_u::p_buildrec(42))"));
+                 "::rt::tp2cc_const_untyped_ptr(::p_u::p_buildrec(42))"));
+  CHECK(!contains(out.impl, "&(::p_u::p_buildrec(42))"));
 }
 
 void test_class_types_lower_to_pointers_and_implicit_tobject() {
@@ -5929,6 +5929,45 @@ void test_method_definition_on_class_alias_uses_canonical_owner() {
   CHECK(!contains(out.impl, "t_talias::p_ping"));
 }
 
+void test_duplicate_class_names_across_units_keep_metaclass_owner_unit() {
+  auto out = compile_snippet_with_registry(
+      "unit agppcvasm;\n"
+      "interface\n"
+      "uses aggas, agppcgas;\n"
+      "type\n"
+      "  tppcinstrwriter = class(tcpuinstrwriter)\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n",
+      {{"aggas.pas",
+        "unit aggas;\n"
+        "interface\n"
+        "type\n"
+        "  tcpuinstrwriter = class\n"
+        "    constructor create;\n"
+        "  end;\n"
+        "implementation\n"
+        "constructor tcpuinstrwriter.create;\n"
+        "begin\n"
+        "end;\n"
+        "end.\n"},
+       {"agppcgas.pas",
+        "unit agppcgas;\n"
+        "interface\n"
+        "uses aggas;\n"
+        "type\n"
+        "  tppcinstrwriter = class(tcpuinstrwriter)\n"
+        "  end;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.header,
+                 "struct tp2cc_metaclass_t_tppcinstrwriter : public ::p_aggas::tp2cc_metaclass_t_tcpuinstrwriter {"));
+  CHECK(contains(out.header,
+                 "static tp2cc_metaclass_t_tppcinstrwriter value = tp2cc_metaclass_t_tppcinstrwriter("));
+  CHECK(!contains(out.header,
+                  "::p_agppcgas::tp2cc_metaclass_t_tppcinstrwriter"));
+}
+
 void test_metaclass_derived_constructor_surface_stays_visible() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -5986,7 +6025,7 @@ void test_metaclass_base_constructor_slot_survives_hidden_child_create() {
       "  inst := cls.create;\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "static_cast<t_tbase*>(tp2cc_ptr)->p_create();"));
+                 "static_cast<::p_u::t_tbase*>(tp2cc_ptr)->p_create();"));
   CHECK(contains(out.impl, "p_inst = p_cls->p_create();"));
 }
 
@@ -6931,6 +6970,7 @@ int main() {
   RUN_TEST(test_metaclass_member_base_emits_with_implicit_zero_arg_call);
   RUN_TEST(test_class_alias_in_value_position_lowers_to_underlying_metaclass);
   RUN_TEST(test_method_definition_on_class_alias_uses_canonical_owner);
+  RUN_TEST(test_duplicate_class_names_across_units_keep_metaclass_owner_unit);
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
   RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);
   RUN_TEST(test_metaclass_same_signature_constructor_keeps_derived_return_type);

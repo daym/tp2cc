@@ -100,7 +100,8 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
       return types_.type_name_text_to_cxx(id.name);
     }
     if (registry_ &&
-        (registry_->records.count(lower) || registry_->classes.count(lower))) {
+        (registry_->records.count(lower) ||
+         registry_->has_class(lower, scope_.current_unit_name))) {
       return types_.type_name_text_to_cxx(id.name);
     }
     return {};
@@ -264,7 +265,8 @@ bool EmitStorage::type_is_direct_packed_aggregate(const TypeExpr* t) {
   if (t->kind == Kind::TyName) {
     const std::string low = ascii_lower(static_cast<const TyName&>(*t).name);
     if (!low.empty() && registry_ &&
-        (registry_->records.count(low) || registry_->classes.count(low))) {
+        (registry_->records.count(low) ||
+         registry_->has_class(low, scope_.current_unit_name))) {
       return true;
     }
     static const std::unordered_set<std::string> runtime_aggregate_types = {
@@ -464,8 +466,10 @@ bool EmitStorage::expr_is_storage_lvalue(const Expr& e) {
     const auto& m = static_cast<const Member&>(root);
     std::string cls = analysis_.deduce_class_alias(*m.base);
     if (!cls.empty()) {
-      if (registry_->lookup_class_property(cls, m.name)) return false;
-      if (const auto* method = registry_->lookup_class_method(cls, m.name)) {
+      if (registry_->lookup_class_property(
+              cls, m.name, scope_.current_unit_name)) return false;
+      if (const auto* method = registry_->lookup_class_method(
+              cls, m.name, scope_.current_unit_name)) {
         if (method->accepts_zero_args) return false;
       }
     }
@@ -520,16 +524,19 @@ bool EmitStorage::expr_is_reference_class(const Expr& e) {
   if (e.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(e);
     if (id.name == "self" && !scope_.current_class_name.empty() && registry_) {
-      auto it = registry_->classes.find(scope_.current_class_name);
-      return it != registry_->classes.end() && it->second.is_reference_type;
+      const ClassInfo* ci =
+          registry_->lookup_class(scope_.current_class_name,
+                                  scope_.current_unit_name);
+      return ci && ci->is_reference_type;
     }
   } else if (e.kind == Kind::Call && registry_) {
     const auto& c = static_cast<const Call&>(e);
     if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
       const auto& id = static_cast<const Ident&>(*c.callee);
       if (analysis_.is_builtin_reference_class_name(id.name)) return true;
-      auto it = registry_->classes.find(id.name);
-      if (it != registry_->classes.end() && it->second.is_reference_type) {
+      const ClassInfo* ci =
+          registry_->lookup_class(id.name, scope_.current_unit_name);
+      if (ci && ci->is_reference_type) {
         return true;
       }
     }
@@ -705,7 +712,8 @@ std::optional<EmitAbsoluteTargetInfo> EmitStorage::resolve_absolute_target(
   if (rr.kind == ResolvedKind::ClassField && registry_ &&
       !scope_.current_class_name.empty()) {
     if (auto* f = registry_->lookup_class_field(scope_.current_class_name,
-                                                vd.absolute_target)) {
+                                                vd.absolute_target,
+                                                scope_.current_unit_name)) {
       info.type = f->type.get();
       info.is_pointerish = type_is_pointerish(info.type);
       return info;

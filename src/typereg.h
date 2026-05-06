@@ -72,6 +72,7 @@ struct ClassInfo {
   // always heap-allocated, `TFoo.Create(...)' returns a pointer,
   // destruction via `.Free'.  Emit decisions fork on this flag.
   bool is_reference_type = false;
+  bool is_forward = false;
   std::unordered_map<std::string, FieldInfo> fields;
   // Pascal allows overloaded methods (multiple `procedure foo(...)`
   // declarations on the same class), so the registry tracks the full set
@@ -248,12 +249,12 @@ struct UnitInfo {
 struct TypeRegistry {
   std::unordered_map<std::string, UnitInfo> units;
 
-  // User-source classes only. The emitter iterates this map for code
-  // generation (struct emission, vtable wiring, metaclass surfaces, ...);
-  // it must NOT contain rt-side classes (tobject, exception, ...) -- those
-  // have hand-written machinery in `tp2cc_rt/prelude.h` and any generated
-  // override would conflict with the fixed C++ struct shape.
-  std::unordered_map<std::string, ClassInfo> classes;
+  // User-source classes only, grouped by Pascal type name. Pascal units are
+  // real namespaces, so two units may both export `TFoo`; storing all entries
+  // under the existing name key prevents one unit from overwriting another.
+  // Code that needs one class must use lookup_class* so unit visibility picks
+  // the right entry.
+  std::unordered_map<std::string, std::vector<ClassInfo>> classes;
   // rt-side reference classes (tobject, exception, ...). Method lookups
   // (`lookup_class_method[s]`) consult this when a translated class chain
   // reaches a runtime parent, so a source class that inherits Create from
@@ -267,6 +268,15 @@ struct TypeRegistry {
 
   // Fill from all parsed UnitNodes.
   void build(const std::vector<const ast::UnitNode*>& units);
+
+  const ClassInfo* lookup_class(std::string_view name,
+                                std::string_view current_unit) const;
+  const ClassInfo* lookup_class_exact(std::string_view unit,
+                                      std::string_view name) const;
+  bool has_class(std::string_view name,
+                 std::string_view current_unit = {}) const {
+    return lookup_class(name, current_unit) != nullptr;
+  }
 
   // Chase TyName aliases through the registry to the first non-TyName
   // type expression. `unit_ctx` is unused for now (aliases are global).
@@ -285,12 +295,14 @@ struct TypeRegistry {
   std::string field_cxx_name(std::string_view name) const;
 
   const FieldInfo* lookup_class_field(
-      const std::string& class_name, const std::string& member) const;
+      const std::string& class_name, const std::string& member,
+      std::string_view current_unit) const;
 
   // True if `member` is a member of an inline anonymous enum used as
   // a field type on `class_name` (or any of its ancestors).
   bool class_has_enum_member(
-      const std::string& class_name, const std::string& member) const;
+      const std::string& class_name, const std::string& member,
+      std::string_view current_unit) const;
 
   // Single-method shim: returns the first overload (the one declared
   // earliest in source order). Wrong answer for overloaded names whose
@@ -298,16 +310,19 @@ struct TypeRegistry {
   // those queries depend on which overload the call actually resolves to.
   // Use `lookup_class_methods` and pick by argument types instead.
   const MethodSig* lookup_class_method(
-      const std::string& class_name, const std::string& member) const;
+      const std::string& class_name, const std::string& member,
+      std::string_view current_unit) const;
   // Full overload set, walking up the inheritance chain.
   const std::vector<MethodSig>* lookup_class_methods(
-      const std::string& class_name, const std::string& member) const;
+      const std::string& class_name, const std::string& member,
+      std::string_view current_unit) const;
 
   const PropertyInfo* lookup_class_property(
-      const std::string& class_name, const std::string& member) const;
+      const std::string& class_name, const std::string& member,
+      std::string_view current_unit) const;
 
   const PropertyInfo* lookup_default_property(
-      const std::string& class_name) const;
+      const std::string& class_name, std::string_view current_unit) const;
 
   const FieldInfo* lookup_record_field(
       const std::string& record_name, const std::string& member) const;

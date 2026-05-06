@@ -20,7 +20,8 @@ void EmitResolution::append_class_method_cands(
     const std::string& cls, const std::string& name,
     std::vector<AnyCand>& cands) {
   if (!registry_ || cls.empty()) return;
-  auto* set = registry_->lookup_class_methods(cls, name);
+  auto* set = registry_->lookup_class_methods(
+      cls, name, scope_.current_unit_name);
   if (!set) return;
   for (const auto& ms : *set) {
     if (!ms.decl) continue;
@@ -148,7 +149,7 @@ const ProcDecl* EmitResolution::resolve_call_decl(const Expr& callee) {
     const auto& id = static_cast<const Ident&>(*mem.base);
     if (id.name == "self") {
       cls = scope_.current_class_name;
-    } else if (registry_->classes.count(id.name) ||
+    } else if (registry_->has_class(id.name, scope_.current_unit_name) ||
                registry_->records.count(id.name)) {
       cls = id.name;
     } else {
@@ -161,7 +162,8 @@ const ProcDecl* EmitResolution::resolve_call_decl(const Expr& callee) {
     cls = analysis_.deduce_class_alias(*mem.base);
   }
   if (cls.empty()) return nullptr;
-  if (auto* m = registry_->lookup_class_method(cls, mem.name)) {
+  if (auto* m = registry_->lookup_class_method(
+          cls, mem.name, scope_.current_unit_name)) {
     return m->decl.get();
   }
   return nullptr;
@@ -247,16 +249,19 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
       const auto* pci = analysis_.class_info_for_type_name(pn);
       if (aci && pci) {
         std::unordered_set<std::string> seen;
-        std::string cur = aci->name;
+        const ClassInfo* cur = aci;
         int depth = 0;
-        while (!cur.empty() && !seen.count(cur)) {
-          if (cur == pci->name) return {ConvRank::ClassHierarchy, depth};
-          seen.insert(cur);
-          auto cit = registry_
-                         ? registry_->classes.find(cur)
-                         : decltype(registry_->classes)::const_iterator{};
-          if (!registry_ || cit == registry_->classes.end()) break;
-          cur = cit->second.parent;
+        while (cur) {
+          const std::string identity = cur->defining_unit + "." + cur->name;
+          if (seen.count(identity)) break;
+          if (cur->name == pci->name &&
+              cur->defining_unit == pci->defining_unit) {
+            return {ConvRank::ClassHierarchy, depth};
+          }
+          seen.insert(identity);
+          cur = cur->parent.empty()
+                    ? nullptr
+                    : registry_->lookup_class(cur->parent, cur->defining_unit);
           ++depth;
         }
       }
@@ -273,16 +278,19 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
     // expected. Fewer parent hops means the closer Pascal match.
     if (aci && pci) {
       std::unordered_set<std::string> seen;
-      std::string cur = aci->name;
+      const ClassInfo* cur = aci;
       int depth = 0;
-      while (!cur.empty() && !seen.count(cur)) {
-        if (cur == pci->name) return {ConvRank::ClassHierarchy, depth};
-        seen.insert(cur);
-        auto cit = registry_
-                       ? registry_->classes.find(cur)
-                       : decltype(registry_->classes)::const_iterator{};
-        if (!registry_ || cit == registry_->classes.end()) break;
-        cur = cit->second.parent;
+      while (cur) {
+        const std::string identity = cur->defining_unit + "." + cur->name;
+        if (seen.count(identity)) break;
+        if (cur->name == pci->name &&
+            cur->defining_unit == pci->defining_unit) {
+          return {ConvRank::ClassHierarchy, depth};
+        }
+        seen.insert(identity);
+        cur = cur->parent.empty()
+                  ? nullptr
+                  : registry_->lookup_class(cur->parent, cur->defining_unit);
         ++depth;
       }
     }
@@ -533,7 +541,7 @@ ResolvedCall EmitResolution::resolve_call(
       if (member.base->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*member.base);
         if (id.name == "self") return scope_.current_class_name;
-        if (registry_->classes.count(id.name) ||
+        if (registry_->has_class(id.name, scope_.current_unit_name) ||
             registry_->records.count(id.name)) {
           return id.name;
         }
@@ -550,10 +558,12 @@ ResolvedCall EmitResolution::resolve_call(
         // skipping the current class. The later picker still runs exactly the
         // same type-based disambiguation as any other method call.
         inherited_call = true;
-        auto cit = registry_->classes.find(scope_.current_class_name);
-        if (cit != registry_->classes.end()) {
-          std::string parent = cit->second.parent;
-          if (parent.empty() && cit->second.is_reference_type) {
+        const ClassInfo* ci =
+            registry_->lookup_class(scope_.current_class_name,
+                                    scope_.current_unit_name);
+        if (ci) {
+          std::string parent = ci->parent;
+          if (parent.empty() && ci->is_reference_type) {
             parent = "tobject";
           }
           append_class_method_cands(parent, mem.name, all_cands);
@@ -562,9 +572,12 @@ ResolvedCall EmitResolution::resolve_call(
       bool ident_is_value =
           scope_.local_scope.count(id.name) > 0 ||
           (!scope_.current_class_name.empty() &&
-           (registry_->lookup_class_field(scope_.current_class_name, id.name) ||
-            registry_->lookup_class_property(scope_.current_class_name, id.name) ||
-            registry_->lookup_class_method(scope_.current_class_name, id.name)));
+           (registry_->lookup_class_field(scope_.current_class_name, id.name,
+                                          scope_.current_unit_name) ||
+            registry_->lookup_class_property(scope_.current_class_name, id.name,
+                                             scope_.current_unit_name) ||
+            registry_->lookup_class_method(scope_.current_class_name, id.name,
+                                           scope_.current_unit_name)));
       // A bare identifier can be both a unit name and a local/field name.
       // Pascal lexical scope says locals/fields win, so only fall back to the
       // unit-qualified interpretation when the base ident is not a value.
@@ -674,7 +687,8 @@ BinaryOperatorResult EmitResolution::find_binary_operator(
       const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
       if (primitive_info(name)) return false;
       if (registry_->enums.count(name)) return false;
-      return registry_->records.count(name) || registry_->classes.count(name) ||
+      return registry_->records.count(name) ||
+             registry_->has_class(name, scope_.current_unit_name) ||
              registry_->aliases.count(name);
     }
     return t->kind == Kind::TyRecord || t->kind == Kind::TyObject ||

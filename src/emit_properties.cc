@@ -22,13 +22,12 @@ std::optional<std::string> EmitProperties::maybe_property_read_text(
   // declared backing field/getter/setter so we do not invent extra C++
   // members whose names could collide in ways Pascal itself forbids.
   if (!registry_) return std::nullopt;
+  const ClassInfo* ci = analysis_.class_info_for_type_name(class_name);
   const std::string access =
-      (registry_->classes.count(class_name) &&
-       registry_->classes.at(class_name).is_reference_type)
-          ? "->"
-          : ".";
+      (ci && ci->is_reference_type) ? "->" : ".";
   if (const auto* field =
-          registry_->lookup_class_field(class_name, prop.read_name)) {
+          registry_->lookup_class_field(class_name, prop.read_name,
+                                        analysis_.current_unit_name())) {
     (void)field;
     std::string text =
         base_cxx + access + registry_->field_cxx_name(prop.read_name);
@@ -38,7 +37,8 @@ std::optional<std::string> EmitProperties::maybe_property_read_text(
     return {text};
   }
   if (const auto* method =
-          registry_->lookup_class_method(class_name, prop.read_name)) {
+          registry_->lookup_class_method(class_name, prop.read_name,
+                                         analysis_.current_unit_name())) {
     (void)method;
     std::string text = base_cxx + access + mangle(prop.read_name) + "(";
     for (size_t i = 0; i < indices.size(); ++i) {
@@ -67,18 +67,17 @@ std::optional<std::string> EmitProperties::maybe_property_write_text(
     const PropertyInfo& prop, const std::vector<const Expr*>& indices,
     const Expr& value) {
   if (!registry_) return std::nullopt;
+  const ClassInfo* ci = analysis_.class_info_for_type_name(class_name);
   const std::string access =
-      (registry_->classes.count(class_name) &&
-       registry_->classes.at(class_name).is_reference_type)
-          ? "->"
-          : ".";
+      (ci && ci->is_reference_type) ? "->" : ".";
   if (prop.write_name.empty()) {
     return std::nullopt;
   }
   std::string rhs =
       expr_ops_.const_value_to_cxx(value, prop.type.get(), false);
   if (const auto* field =
-          registry_->lookup_class_field(class_name, prop.write_name)) {
+          registry_->lookup_class_field(class_name, prop.write_name,
+                                        analysis_.current_unit_name())) {
     (void)field;
     std::string text =
         base_cxx + access + registry_->field_cxx_name(prop.write_name);
@@ -88,7 +87,8 @@ std::optional<std::string> EmitProperties::maybe_property_write_text(
     return {text + " = " + rhs};
   }
   if (const auto* method =
-          registry_->lookup_class_method(class_name, prop.write_name)) {
+          registry_->lookup_class_method(class_name, prop.write_name,
+                                         analysis_.current_unit_name())) {
     (void)method;
     std::string text = base_cxx + access + mangle(prop.write_name) + "(";
     bool first = true;

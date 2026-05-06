@@ -66,7 +66,8 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   }
   if (qk == QualifierKind::Class) {
     if (registry_) {
-      if (auto* m = registry_->lookup_class_method(qualifier, name)) {
+      if (auto* m = registry_->lookup_class_method(
+              qualifier, name, scope_.current_unit_name)) {
         r.kind = ResolvedKind::ClassMethod;
         r.proc = m->decl.get();
         r.is_callable = true;
@@ -75,7 +76,8 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         r.cxx = mangle(name);  // caller emits the `base.` prefix
         return r;
       }
-      if (registry_->lookup_class_field(qualifier, name)) {
+      if (registry_->lookup_class_field(
+              qualifier, name, scope_.current_unit_name)) {
         r.kind = ResolvedKind::ClassField;
         r.cxx = registry_->field_cxx_name(name);
         return r;
@@ -139,7 +141,8 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         return r;
       }
       if (!cls.empty()) {
-        if (auto* m = registry_->lookup_class_method(cls, name)) {
+        if (auto* m = registry_->lookup_class_method(
+                cls, name, scope_.current_unit_name)) {
           r.cxx = it->cxx_text + access + mangle(name);
           r.kind = ResolvedKind::WithMethod;
           r.proc = m->decl.get();
@@ -148,7 +151,8 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
           r.accepts_zero_args = m->accepts_zero_args;
           return r;
         }
-        if (registry_->lookup_class_field(cls, name)) {
+        if (registry_->lookup_class_field(
+                cls, name, scope_.current_unit_name)) {
           r.cxx = it->cxx_text + access + registry_->field_cxx_name(name);
           r.kind = ResolvedKind::WithField;
           return r;
@@ -216,7 +220,8 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       return r;
     }
     if (auto* m = registry_->lookup_class_method(scope_.current_class_name,
-                                                 name)) {
+                                                 name,
+                                                 scope_.current_unit_name)) {
       r.cxx = mangle(name);
       r.kind = ResolvedKind::ClassMethod;
       r.proc = m->decl.get();
@@ -225,7 +230,8 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       r.accepts_zero_args = m->accepts_zero_args;
       return r;
     }
-    if (registry_->lookup_class_field(scope_.current_class_name, name)) {
+    if (registry_->lookup_class_field(scope_.current_class_name, name,
+                                      scope_.current_unit_name)) {
       r.cxx = registry_->field_cxx_name(name);
       r.kind = ResolvedKind::ClassField;
       return r;
@@ -234,7 +240,8 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     // members to the enclosing class scope. C++ resolves the bare name
     // through the enclosing-class scope at the use site, so we emit
     // unqualified.
-    if (registry_->class_has_enum_member(scope_.current_class_name, name)) {
+    if (registry_->class_has_enum_member(scope_.current_class_name, name,
+                                         scope_.current_unit_name)) {
       r.cxx = mangle(name);
       r.kind = ResolvedKind::EnumMember;
       return r;

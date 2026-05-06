@@ -39,8 +39,9 @@ std::string EmitTypes::type_name_to_cxx(const TyName& n) {
   if (registry_knows_translated_type(n.name)) {
     auto lookup_name = ascii_lower(n.name);
     if (registry_) {
-      auto cit = registry_->classes.find(std::string(lookup_name));
-      if (cit != registry_->classes.end() && cit->second.is_reference_type) {
+      const ClassInfo* ci =
+          registry_->lookup_class(lookup_name, scope_.current_unit_name);
+      if (ci && ci->is_reference_type) {
         return named_type_struct_cxx(n.name) + "*";
       }
       if (registry_->interfaces.count(std::string(lookup_name))) {
@@ -102,10 +103,10 @@ std::string EmitTypes::visible_type_prefix(std::string_view name) {
       if (uit->second.has_export_type(lower)) return unit_namespace_prefix(*it);
     }
   }
-  auto class_it = registry_->classes.find(lower);
-  if (class_it != registry_->classes.end() &&
-      class_it->second.defining_unit != scope_.current_unit_name) {
-    return unit_namespace_prefix(class_it->second.defining_unit);
+  if (const ClassInfo* ci =
+          registry_->lookup_class(lower, scope_.current_unit_name);
+      ci && ci->defining_unit != scope_.current_unit_name) {
+    return unit_namespace_prefix(ci->defining_unit);
   }
   auto interface_it = registry_->interfaces.find(lower);
   if (interface_it != registry_->interfaces.end() &&
@@ -148,8 +149,9 @@ bool EmitTypes::registry_knows_translated_type(std::string_view name) {
       if (uit->second.has_export_type(lower)) return true;
     }
   }
-  if (auto it = registry_->classes.find(lower);
-      it != registry_->classes.end() && it->second.defining_unit != "__rt__") {
+  if (const ClassInfo* ci =
+          registry_->lookup_class(lower, scope_.current_unit_name);
+      ci && ci->defining_unit != "__rt__") {
     return true;
   }
   if (auto it = registry_->records.find(lower);
@@ -361,7 +363,7 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
       if (!eit->second.members.empty()) {
         std::string prefix;
         if (eit->second.defining_unit != scope_.current_unit_name) {
-          prefix = mangle(eit->second.defining_unit) + "::";
+          prefix = unit_namespace_prefix(eit->second.defining_unit);
         }
         auto first = prefix + mangle(eit->second.members.front());
         auto last = prefix + mangle(eit->second.members.back());
@@ -933,7 +935,7 @@ std::string EmitTypes::low_high_expr_for_named_type(std::string_view name,
     if (defining_unit.empty() || defining_unit == scope_.current_unit_name) {
       return enum_bound_name(enum_name, want_low ? "low" : "high");
     }
-    return mangle(defining_unit) + "::" +
+    return unit_namespace_prefix(defining_unit) +
            enum_bound_name(enum_name, want_low ? "low" : "high");
   };
 
