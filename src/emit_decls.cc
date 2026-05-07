@@ -419,7 +419,20 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         }
       } else if (m.kind == ObjectMemberKind::Method) {
         const auto& pd = *m.method;
-        if (!pd.is_override && inherited_virtual_with_same_cxx_signature(pd)) {
+        const bool inherited_same_signature_virtual =
+            inherited_virtual_with_same_cxx_signature(pd);
+        // FPC rejects `override` on old-style Pascal `object` methods; its
+        // documented spelling for overriding an inherited object virtual is to
+        // redeclare the derived method as `virtual`. That still becomes a C++
+        // override, so emit the C++ `override` specifier for this accepted
+        // object case. For `class`, keep requiring the Pascal `override`
+        // directive so a source-level hide/reintroduce does not silently become
+        // an implicit C++ override.
+        const bool object_virtual_override =
+            inherited_same_signature_virtual && !to.is_reference_type &&
+            pd.is_virtual;
+        if (!pd.is_override && !object_virtual_override &&
+            inherited_same_signature_virtual) {
           emit_ops_.report_error(
               pd.loc,
               "same-signature inherited virtual method must use `override'; "
@@ -435,7 +448,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         }
         std::string suffix;
         if (!pd.is_class_method) {
-          if (pd.is_override) suffix = " override";
+          if (pd.is_override || object_virtual_override) suffix = " override";
         }
         if (pd.is_abstract && !pd.is_class_method) {
           emit_ops_.emitln(prefix + ret + " " + mangle(pd.name) + "(" +

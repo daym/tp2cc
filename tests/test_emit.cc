@@ -4485,6 +4485,45 @@ void test_override_same_signature_inherited_virtual_constructor_is_accepted() {
   CHECK(contains(out.impl, "bool t_tchild::p_create()"));
 }
 
+void test_object_virtual_same_signature_inherited_virtual_is_accepted() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = object\n"
+      "    procedure doit; virtual;\n"
+      "  end;\n"
+      "  tchild = object(tbase)\n"
+      "    procedure doit; virtual;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tbase.doit; begin end;\n"
+      "procedure tchild.doit; begin end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.header, "virtual void p_doit() override;"));
+}
+
+void test_object_plain_same_signature_inherited_virtual_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = object\n"
+      "    procedure doit; virtual;\n"
+      "  end;\n"
+      "  tchild = object(tbase)\n"
+      "    procedure doit;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tbase.doit; begin end;\n"
+      "procedure tchild.doit; begin end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
 void test_pointer_sized_integer_aliases_lower_through_rt() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -7149,6 +7188,8 @@ int main() {
   RUN_TEST(test_plain_same_signature_inherited_virtual_constructor_reports_error);
   RUN_TEST(test_override_same_signature_inherited_virtual_method_is_accepted);
   RUN_TEST(test_override_same_signature_inherited_virtual_constructor_is_accepted);
+  RUN_TEST(test_object_virtual_same_signature_inherited_virtual_is_accepted);
+  RUN_TEST(test_object_plain_same_signature_inherited_virtual_reports_error);
   RUN_TEST(test_pointer_sized_integer_aliases_lower_through_rt);
   RUN_TEST(test_tclass_alias_lowers_through_rt);
   RUN_TEST(test_corba_interface_emits_pure_virtual_base_and_pointer_calls);
