@@ -1,0 +1,1029 @@
+#+TITLE: tp2cc User Manual
+
+* About this manual
+~tp2cc~ is a Turbo Pascal compiler.  Its main target is bootstrapping FPC compiler sources. This manual describes the language surface that the current translator and runtime implement.
+
+Examples are Pascal source examples.
+
+Compile a program (and its reachable ~uses~ tree) with:
+#+begin_src sh
+  tp2cc emit-all demo.pas out
+  cd out && make -j
+#+end_src
+
+The useful search-path options are ~-FuDIR~ for Pascal units, and ~-FiDIR~ for include files used by ~{$I ...}~.
+
+* First programs
+** Hello world
+#+begin_src pascal
+program HelloWorld;
+
+begin
+  Writeln('hello world')
+end.
+#+end_src
+
+New words introduced here:
+- ~program~ starts a complete program source file.
+- ~begin~ starts a statement block.
+- ~end~ ends a statement block.  A program ends with ~end.~ rather than ~end;~.
+- ~Writeln~ writes values and then writes a newline.
+
+Pascal is case-insensitive: ~Writeln~, ~writeln~, and ~WRITELN~ name the same routine.  This manual uses the usual mixed-case spelling for readability.
+
+Statements inside a block are separated by semicolons.  The final statement before ~end~ usually does not need a semicolon, but using one is normally fine.
+
+** Console output
+#+begin_src pascal
+program ConsoleOutput;
+begin
+  Write('answer=');
+  Writeln(42);
+  Writeln('two ', 'pieces')
+end.
+#+end_src
+
+~Write~ writes values without adding a newline.  ~Writeln~ writes its arguments and then adds a newline.  The current runtime implements ordinary console output.
+
+Console input (~ReadLn~ etc) is recognized by tp2cc, but currently not implemented.
+
+For real line input in translated programs, use an explicit ~Text~ file as shown in the file I/O section.
+
+** File I/O
+Text files use the predefined ~Text~ type.  The runtime supports assigning a path, opening for writing or reading, writing strings and numbers, reading lines into strings, and closing.
+
+#+begin_src pascal
+program FileWriteDemo;
+var
+  F: Text;
+begin
+  Assign(F, 'message.txt');
+  Rewrite(F);
+  Writeln(F, 'first line');
+  Writeln(F, 'answer=', 42);
+  Close(F)
+end.
+#+end_src
+
+New words and routines:
+- ~var~ starts variable declarations.
+- ~Text~ is a text-file type.
+- ~Assign(F, Name)~ associates a file variable with a path.
+- ~Rewrite(F)~ opens the file for writing, replacing existing contents.
+- ~Writeln(F, ...)~ writes to that file instead of standard output.
+- ~Close(F)~ closes the file handle.
+
+Reading a text line:
+#+begin_src pascal
+program FileReadDemo;
+var
+  F: Text;
+  Line: String;
+begin
+  Assign(F, 'message.txt');
+  Reset(F);
+  ReadLn(F, Line);
+  Close(F);
+
+  Writeln('read: ', Line)
+end.
+#+end_src
+
+New words and routines:
+- ~String~ is a short string type.  In tp2cc it lowers to a runtime short-string carrier.
+- ~Reset(F)~ opens a file for reading.
+- ~ReadLn(F, Line)~ reads one line from a text file into a string.
+
+The runtime also has typed-file (not shown) and block I/O support (shown):
+#+begin_src pascal
+program BlockIoDemo;
+var
+  F: File;
+  S: String;
+  Count: Integer;
+begin
+  S := 'abc';
+  Assign(F, 'raw.bin');
+  Rewrite(F, 1);
+  BlockWrite(F, S[1], 3, Count);
+  Close(F);
+
+  Writeln('bytes written=', Count)
+end.
+#+end_src
+
+~File~ is an untyped file.  ~Rewrite(F, 1)~ opens it with record size 1 for byte-oriented block I/O.  ~BlockWrite~ and ~BlockRead~ work with storage addresses and byte counts.
+
+* Basic declarations and values
+** Variables
+#+begin_src pascal
+program Variables;
+var
+  I: Integer;
+  Name: String;
+begin
+  I := 7;
+  Name := 'Ada';
+  Writeln(Name, ' has number ', I)
+end.
+#+end_src
+
+New syntax:
+- ~I: Integer~ declares a variable named ~I~ with type ~Integer~.
+- ~Name: String~ declares a string variable.
+- ~:=~ assigns a value.  Pascal uses ~=~ for comparison, not assignment.
+
+Common integer names accepted by tp2cc include ~ShortInt~, ~Byte~, ~SmallInt~, ~Word~, ~Integer~, ~LongInt~, ~LongWord~, ~Int64~, and ~QWord~.  String names include ~String~, ~ShortString~, sized strings such as ~String[40]~, and ~AnsiString~.
+
+#+begin_src pascal
+program SizedString;
+var
+  ShortName: String[20];
+begin
+  ShortName := 'compiler';
+  Writeln(ShortName)
+end.
+#+end_src
+
+~String[20]~ is a short string with capacity 20.
+
+** Constants and types
+#+begin_src pascal
+program ConstAndType;
+const
+  Limit = 10;
+type
+  TCount = Integer;
+var
+  N: TCount;
+begin
+  N := Limit;
+  Writeln(N)
+end.
+#+end_src
+
+- ~const~ declares constants.
+- ~type~ declares type names.
+- ~TCount = Integer~ creates a type alias (another name for an existing type).
+
+* Control flow
+** If
+#+begin_src pascal
+program IfDemo;
+var
+  N: Integer;
+begin
+  N := 5;
+  if N > 0 then
+    Writeln('positive')
+  else
+    Writeln('not positive')
+end.
+#+end_src
+
+- ~if~ starts a conditional statement.
+- ~then~ introduces the statement to run when the condition is true.
+- ~else~ introduces the statement to run when the condition is false.
+
+Use ~begin~ / ~end~ when a branch needs more than one statement:
+#+begin_src pascal
+if N > 0 then
+begin
+  Writeln('positive');
+  Writeln(N)
+end;
+#+end_src
+
+** For
+#+begin_src pascal
+program ForDemo;
+
+var
+  I: Integer;
+
+begin
+  for I := 1 to 3 do
+    Writeln(I);
+
+  for I := 3 downto 1 do
+    Writeln(I)
+end.
+#+end_src
+
+- ~for~ repeats with a control variable.
+- ~to~ counts upward.
+- ~downto~ counts downward.
+- ~do~ introduces the loop body.
+
+** While
+~while~ tests before every iteration. While the condition is true, the ~do~ body runs. If the condition starts (or became) false at the checkpoint, the body does not run.
+
+#+begin_src pascal
+program WhileDemo;
+var
+  N: Integer;
+begin
+  N := 3;
+  while N > 0 do
+  begin
+    Writeln(N);
+    Dec(N)  { Decrement value of N by 1 }
+  end
+end.
+#+end_src
+
+** Repeat
+#+begin_src pascal
+program RepeatDemo;
+var
+  N: Integer;
+begin
+  N := 3;
+  repeat
+    Writeln(N);
+    Dec(N)
+  until N = 0;
+end.
+#+end_src
+
+~repeat~ runs its body and then tests the ~until~ condition. If the ~until~ condition is false, the ~repeat~ repeats.  The ~repeat~ body runs at least once. Every time the condition is checked at the end of the ~repeat~.
+
+* Routines
+** Functions
+#+begin_src pascal
+  program FunctionDemo;
+
+  function Add(A, B: Integer): Integer;
+  begin
+    Add := A + B
+  end;
+
+  begin
+    Writeln(Add(2, 3))
+  end.
+#+end_src
+
+- ~function~ declares a routine that returns a value.
+- ~Add(A, B: Integer): Integer~ says that ~Add~ has two formal parameters, ~A~ and ~B~, and returns an ~Integer~.
+- A formal parameter is the variable named in the function definition.
+- An argument is the value supplied at a call site.  In ~Add(2, 3)~, ~2~ and ~3~ are arguments.
+
+Turbo Pascal style allows assigning to the function name to set the result. tp2cc also recognizes ~Result~ in function bodies.
+
+#+begin_src pascal
+function Bigger(A, B: Integer): Integer;
+begin
+  if A > B then
+    Result := A
+  else
+    Result := B
+end;
+#+end_src
+
+Parameter modes:
+#+begin_src pascal
+function Next(Value: Integer): Integer;
+begin
+  Next := Value + 1
+end;
+
+procedure AddOne(var Value: Integer);
+begin
+  Value := Value + 1
+end;
+
+procedure Show(const Value: Integer);
+begin
+  Writeln(Value)
+end;
+#+end_src
+
+- A plain parameter receives a value.
+- ~var~ means the routine receives the caller's variable slot and can modify the value (of the slot inside the caller!).
+- ~const~ means the routine does not modify the parameter.
+
+** Procedures
+#+begin_src pascal
+program ProcedureDemo;
+
+procedure PrintSum(A, B: Integer);
+begin
+  Writeln(A + B)
+end;
+
+begin
+  PrintSum(4, 5)
+end.
+#+end_src
+
+~procedure~ declares a routine with no return value. The intention is to signal that such procedures almost always have side effects, and functions don't (often).
+
+** Nested procedures and closures
+Pascal routines may contain local routines.  A nested routine can use variables from the enclosing routine.  That function including the "captured lexical environment" is what people usually mean by a closure.
+
+#+begin_src pascal
+program NestedDemo;
+
+procedure CountFrom(Start: Integer);
+var
+  Current: Integer;
+
+  procedure Step;
+  begin
+    Writeln(Current);
+    Inc(Current)
+  end;
+
+begin
+  Current := Start;
+  Step;
+  Step
+end.
+#+end_src
+
+~Step~ has no formal parameters, but it uses ~Current~ from ~CountFrom~.  Both calls modify the same local variable.
+
+Nested functions work the same way:
+#+begin_src pascal
+function MakeTotal(Base: Integer): Integer;
+  function Add(Value: Integer): Integer;
+  begin
+    Add := Base + Value
+  end;
+begin
+  MakeTotal := Add(7)
+end;
+#+end_src
+
+** Forward declarations
+Sometimes routines refer to each other before both bodies have appeared. ~forward~ declares a routine header now and supplies the body later. Preferable is not to do that, and instead to define things first and use them later--but sometimes it's useful to be able to forward-declare things.
+
+#+begin_src pascal
+program ForwardDemo;
+
+procedure Second; forward;
+
+procedure First;
+begin
+  Second
+end;
+
+procedure Second;
+begin
+  Writeln('second')
+end;
+
+begin
+  First
+end.
+#+end_src
+
+~forward~ is a routine's directive.  Directives follow a routine header after the semicolon. They are not keywords, i.e. when not at that specific spot they can be used as regular names!
+
+* Aggregate types
+** Fixed arrays
+#+begin_src pascal
+program ArrayDemo;
+var
+  A: array[1..3] of Integer;
+  I: Integer;
+begin
+  A[1] := 10;
+  A[2] := 20;
+  A[3] := 30;
+
+  for I := 1 to 3 do
+    Writeln(A[I])
+end.
+#+end_src
+
+- ~array~ declares indexed storage.
+- ~1..3~ is a subrange used as the index bounds.
+- ~of Integer~ says every element is an integer.
+
+Array types can be named:
+#+begin_src pascal
+type
+  TThree = array[1..3] of Integer;
+
+var
+  A: TThree;
+#+end_src
+
+** Dynamic arrays
+#+begin_src pascal
+program DynamicArrayDemo;
+var
+  A: array of Integer;
+  I: Integer;
+begin
+  SetLength(A, 3);
+  for I := 0 to High(A) do
+    A[I] := I * 10;
+
+  for I := 0 to High(A) do
+    Writeln(A[I])
+end.
+#+end_src
+
+~array of Integer~ without explicit bounds is a dynamic array.  ~SetLength~ sizes the array at runtime.  ~High(A)~ returns the highest valid index; dynamic arrays are indexed from zero (which is ~Low(A)~).
+
+** Records
+#+begin_src pascal
+program RecordDemo;
+type
+  TPoint = record
+    X: Integer;
+    Y: Integer;
+  end;
+var
+  P: TPoint;
+begin
+  P.X := 2;
+  P.Y := 3;
+  Writeln(P.X, ',', P.Y)
+end.
+#+end_src
+
+~record~ declares a value type with named fields.  A record variable contains the fields directly.
+
+tp2cc supports ordinary records, packed records, and variant records, but there are deliberate restrictions around unsafe access through packed aggregate fields.  If a packed access would require a misaligned reference, tp2cc will often reject it.
+
+** Enumerations
+#+begin_src pascal
+program EnumDemo;
+type
+  TColor = (Red, Green, Blue);
+var
+  C: TColor;
+begin
+  C := Green;
+  if C = Green then
+    Writeln('green')
+end.
+#+end_src
+
+An enumeration is an ordinal type whose values are named constants (called "enum variants").  The names ~Red~, ~Green~, and ~Blue~ become values (enum variants) of type ~TColor~.
+
+Enumerations are useful as array bounds:
+
+#+begin_src pascal
+type
+  TColor = (Red, Green, Blue);
+  TCounts = array[TColor] of Integer;
+#+end_src
+
+* Object-oriented programming with classes
+** Classes and instances
+#+begin_src pascal
+  program ClassDemo;
+  
+  type
+    TCounter = class
+      Value: Integer;
+      constructor Create(Start: Integer);
+      procedure Inc;
+      function GetValue: Integer;
+    end;
+
+  constructor TCounter.Create(Start: Integer);
+  begin
+    Value := Start
+  end;
+
+  procedure TCounter.Inc;
+  begin
+    Value := Value + 1
+  end;
+
+  function TCounter.GetValue: Integer;
+  begin
+    GetValue := Value
+  end;
+
+  var
+    C: TCounter;
+
+  begin
+    C := TCounter.Create(10);
+    C.Inc;
+    Writeln(C.GetValue);
+    C.Free
+  end.
+#+end_src
+
+~class~ declares a reference type.  A variable ~C~ of class type holds a reference to an instance; it does not contain the fields inline.  An instance is the actual object allocated on the heap. One says that the variable "points" to the instance.
+
+Calling a constructor such as ~TCounter.Create(10)~ allocates a new instance and then runs the ~constructor~ body and then returns a "pointer" to that instance.
+
+** Memory management for class instances
+Class instances are not automatically freed.  If a constructor call succeeds and you keep the instance, call ~Free~ when ownership is finished:
+
+#+begin_src pascal
+C := TCounter.Create(0);
+try
+  C.Inc
+finally
+  C.Free
+end;
+#+end_src
+
+~Free~ is null-safe in the runtime: freeing ~nil~ is allowed.  After ~C.Free~, the variable ~C~ still contains its old pointer value.  If the variable should be cleared too, use ~FreeAndNil(C)~.
+
+** Methods
+A method is a procedure or function declared inside a class or object type. Its body is written later using a qualified name:
+
+#+begin_src pascal
+procedure TCounter.Inc;
+begin
+  Value := Value + 1
+end;
+#+end_src
+
+Inside an instance method, fields and other methods of the same instance can be used without writing the receiver, or one can write the receiver ~Self~.
+
+** Self
+~Self~, inside an instance method, means that instance.
+
+#+begin_src pascal
+procedure TCounter.Inc;
+begin
+  Self.Value := Self.Value + 1
+end;
+#+end_src
+
+If ~Self~ isn't specified, it's often implicit anyway that that is meant.  However, modern style is either to be explicit (i.e. specify ~Self.~ or otherwise have a naming convention for the instance field so it's clear that it's an instance field--like ~fValue~)
+
+** Inheritance, virtual, override, inherited
+#+begin_src pascal
+type
+  TBase = class
+    function Kind: Integer; virtual;
+  end;
+
+  TChild = class(TBase)
+    function Kind: Integer; override;
+  end;
+
+function TBase.Kind: Integer;
+begin
+  Kind := 1
+end;
+
+function TChild.Kind: Integer;
+begin
+  Kind := inherited Kind + 1
+end;
+#+end_src
+
+- ~class(TBase)~ declares a class that inherits from ~TBase~. That means that all the stuff from ~TBase~ is (in a way) copied into the definition of the new class as well (at the beginning).
+- ~virtual~ marks a method for dynamic dispatch. That means even if a variable has a static type ~TBase~, if you call ~virtual~ methods, it can happen that ~TChild's~ override is called anyway. This is not the case if the method is not ~virtual~. Then, always the static (i.e. declared) variable type would win.
+- ~override~ says that the derived method overrides an existing (~inherited~) ~virtual~ method. This is so one is notified if one makes a typo in the method name, instead of the method not being overridden (and you would find out approximately never that you had a typo).
+- ~inherited~ calls the inherited implementation (the one from the base class).
+
+Abstract instance methods get a fail-fast generated body rather than a pure virtual declaration, because Pascal code often instantiates classes that contain abstract placeholders. It's not a good idea to do that, but that's just how Pascal is.
+
+~reintroduce~ is recognized as a routine directive.  In Pascal, ~reintroduce~ says "this derived declaration intentionally introduces a new method and hides an inherited one; it is not meant to be an ~override~.". In tp2cc, if this situation would arise, you will get a compilation error and compilation will fail.
+
+** Class methods
+#+begin_src pascal
+type
+  TCounter = class
+    class function DefaultStart: Integer;
+  end;
+
+class function TCounter.DefaultStart: Integer;
+begin
+  DefaultStart := 0;
+end;
+
+begin
+  Writeln(TCounter.DefaultStart);
+end.
+#+end_src
+
+A ~class function~ or ~class procedure~ belongs to the class rather than to one instance. As you can see there are NO instances anywhere--and, still, ~DefaultStart~ can be called.
+
+Virtual class methods are supported:
+#+begin_src pascal
+type
+  TBase = class
+    class function Kind: Integer; virtual;
+  end;
+
+  TChild = class(TBase)
+    class function Kind: Integer; override;
+  end;
+
+  TBaseClass = class of TBase;
+#+end_src
+
+Calling ~Cls.Kind~ where ~Cls~ has type ~TBaseClass~ dispatches through the metaclass value.
+
+** Metaclasses
+A metaclass value names a class rather than an ordinary instance.  In Pascal, ~class of TBase~ means "a class reference whose concrete value is ~TBase~ or a descendant".  This is useful so you can have a reference to a class, not an instance, and pass that around.
+
+#+begin_src pascal
+program MetaclassDemo;
+
+type
+  TBase = class
+    constructor Create;
+    class function Kind: Integer; virtual;
+  end;
+
+  TChild = class(TBase)
+    class function Kind: Integer; override;
+  end;
+
+  TBaseClass = class of TBase;
+
+constructor TBase.Create;
+begin
+end;
+
+class function TBase.Kind: Integer;
+begin
+  Kind := 1
+end;
+
+class function TChild.Kind: Integer;
+begin
+  Kind := 2
+end;
+
+var
+  Cls: TBaseClass;
+  Obj: TBase;
+begin
+  Cls := TChild;
+  Obj := Cls.Create;
+  Writeln(Cls.Kind);
+  Obj.Free
+end.
+#+end_src
+
+Implemented metaclass surface:
+
+- ~class of T~ types.
+- ~TClass~ through the runtime root metaclass alias.
+- Class identifiers used as values, such as ~TChild~.
+- Equality comparison of metaclass values.
+- Constructors and class methods called through metaclass values.
+- ~ClassName~ on instances, metaclass variables, and class identifiers.
+- ~ClassType~, ~InstanceSize~, and ~InheritsFrom(TClassVar)~ on class instances.
+
+The Pascal-facing metaclass callable/member surface is small: constructors, declared class methods, and ~ClassName~.  The runtime also keeps an internal parent-class link so ~InheritsFrom~ can walk the class chain, but that link is not exposed as a general reflection API in Pascal source (no full runtime type information).
+
+#+begin_src pascal
+if Obj.ClassType = TChild then
+  Writeln(Obj.ClassName);
+
+if Obj.InheritsFrom(Cls) then
+  Writeln(Obj.InstanceSize);
+#+end_src
+
+* Memory management in general
+** Stack and heap
+Local variables declared in a routine live for that routine call.  In ordinary Pascal terms, they are stack-like:
+
+#+begin_src pascal
+procedure Work;
+var
+  N: Integer;
+begin
+  N := 1
+end;
+#+end_src
+
+Heap storage lives until you free it, or forever if you do not free it.  Pascal has several heap-allocation APIs because they serve different idioms (and are implemented differently):
+
+- ~TClass.Create(...)~ allocates a class instance and runs that class constructor.  Free it with ~Obj.Free~ or ~FreeAndNil(Obj)~.
+- ~New(P)~ allocates storage for the type pointed to by typed pointer ~P~ and initializes that storage as a value of that type.  Free it with ~Dispose(P)~.
+- ~GetMem(P, Size)~ allocates exactly ~Size~ raw bytes and stores the address in pointer variable ~P~.  The bytes are not promised to be zero.  Free it with ~FreeMem(P)~ or ~FreeMem(P, Size)~.
+- ~AllocMem(Size)~ allocates exactly ~Size~ raw bytes, zero-fills them, and returns the address as a pointer value.  Free it with ~FreeMem(P)~ or ~FreeMem(P, Size)~.
+- ~ReallocMem(P, Size)~ resizes a raw heap block previously allocated by ~GetMem~, ~AllocMem~, or an earlier ~ReallocMem~ call.  It takes the pointer variable as a ~var~-style argument, so it can replace ~P~ with a new address if the block moves.  Release the final block with ~FreeMem(P)~ or ~FreeMem(P, Size)~.
+
+Do not mix these cleanup paths.  A class instance created by ~TFoo.Create~ is not a raw byte block.  A buffer returned by ~AllocMem~ is not a class instance.  A typed pointer allocated by ~New~ should normally be released by ~Dispose~ so the pointed-to value can be destroyed before the storage is freed.
+
+** AllocMem and FreeMem
+#+begin_src pascal
+program MemoryDemo;
+
+type
+  PByte = ^Byte;
+
+var
+  P: PByte;
+
+begin
+  P := PByte(AllocMem(16));
+  P^ := 65;
+  Writeln(P^);
+  FreeMem(P, 16)
+end.
+#+end_src
+
+~AllocMem(Size)~ allocates zero-filled heap storage and returns a pointer.  ~FreeMem(P)~ or ~FreeMem(P, Size)~ releases such storage again.  In Pascal and tp2cc alike, ~FreeMem(P)~ frees the block that ~P~ points to; it does not assign a new value to ~P~.  After the ~FreeMem~ call, ~P~ may still contain the old address--but that address is no longer valid.  Do not dereference it ("dereference" means to follow the pointer), and do not treat ~P <> nil~ as proof that the block is still allocated.
+
+#+begin_src pascal
+P := AllocMem(16);
+FreeMem(P, 16);
+
+{ P may still be non-nil here, but P^ is invalid.  Better manually clear it. }
+P := nil;
+#+end_src
+
+If you want the pointer variable to become ~nil~, assign ~nil~ yourself after ~FreeMem~.  This is different from ~FreeAndNil(Obj)~, which is specifically for class-instance variables and clears the variable (to ~nil~) after freeing the instance.
+
+Use ~GetMem~ when a procedure should receive the pointer variable as an output parameter:
+#+begin_src pascal
+var
+  P: Pointer;
+begin
+  GetMem(P, 100);
+  FreeMem(P, 100)
+end;
+#+end_src
+
+Use ~New~ for typed pointer values:
+#+begin_src pascal
+type
+  PInteger = ^Integer;
+
+var
+  P: PInteger;
+
+begin
+  New(P);
+  P^ := 123;
+  Writeln(P^);
+  Dispose(P)
+end;
+#+end_src
+
+~PInteger = ^Integer~ declares a pointer type.  ~P^~ dereferences the pointer, meaning "the value that ~P~ points at".  ~New(P)~ here allocates enough space for one ~Integer~ and makes ~P~ point to it.  ~Dispose(P)~ destroys that pointed-to value and frees its storage.  As with normal Pascal, ~Dispose~ leaves the pointer variable holding its old now-invalid address, so set it to ~nil~ yourself if later code will test it.
+
+Use ~ReallocMem~ when a raw buffer needs to grow or shrink.  The pointer may change, so always keep using the variable passed to ~ReallocMem~, not a saved copy of the old address:
+#+begin_src pascal
+var
+  P: Pointer;
+begin
+  GetMem(P, 16);
+  ReallocMem(P, 32); {the value of P, i.e. the pointer, may be changed by ReallocMem }
+  FreeMem(P, 32);
+end;
+#+end_src
+
+The allocation family is what matters.  A block from ~GetMem~ may be resized with ~ReallocMem~ and later freed with ~FreeMem~.  A block from ~AllocMem~ may also be resized with ~ReallocMem~ and later freed with ~FreeMem~.  Do not use ~ReallocMem~ on a class instance from ~TFoo.Create~.
+
+** FreeAndNil
+~FreeAndNil(Obj)~ calls the null-safe object-free path and then stores ~nil~ in the variable.  Use it for class-instance variables when later code should be able to test ~Assigned(Obj)~ reliably. ~Assigned(Obj)~ does the check ~(Obj <> nil)~.
+
+#+begin_src pascal
+var
+  Obj: TCounter;
+begin
+  Obj := TCounter.Create(0);
+  FreeAndNil(Obj)
+end;
+#+end_src
+
+** x.Free
+~X.Free~ is object-instance cleanup.  It is different from ~FreeMem~:
+- ~X.Free~ is for class instances in the ~TObject~ model.  It is null-safe (if X is ~nil~, there will be no crash or memory corruption).
+- ~FreeMem(P)~ is for raw heap blocks allocated by memory routines such as ~GetMem~ or ~AllocMem~.
+- ~Dispose(P)~ frees storage allocated by ~New(P)~.  For ~object~ pointers, ~Dispose(P, Done)~ calls destructor ~Done~ before freeing the storage.
+
+Do not use ~FreeMem~ on a class instance created with ~TClass.Create~.  Do not use ~X.Free~ on raw memory from ~AllocMem~.
+
+* Pascal objects
+~object~ types are Turbo Pascal value objects.  They are not the same as ~class~ types.
+
+An ~object~ variable contains its fields inline.  It can live as a local variable, a global variable, a field, or inside another aggregate without a separate heap allocation.
+
+#+begin_src pascal
+program ObjectDemo;
+
+type
+  TBase = object
+    X: Integer;
+    procedure Init(Value: Integer);
+    function Twice: Integer;
+  end;
+
+procedure TBase.Init(Value: Integer);
+begin
+  X := Value
+end;
+
+function TBase.Twice: Integer;
+begin
+  Twice := X * 2
+end;
+
+var
+  B: TBase; { this is the INSTANCE, directly }
+
+begin
+  B.Init(5);
+  Writeln(B.Twice)
+end.
+#+end_src
+
+** Value objects and virtual methods
+Being a value type means the object storage is inline.  It does not mean the type cannot have virtual methods.  A virtual ~object~ is still a record-like value, but its stored bytes include the compiler/runtime information needed to dispatch virtual calls.
+
+If an ~object~ inherits from another ~object~, both just get concatenated (NO pointer indirection).  Calls through a base-typed object pointer can dispatch to the derived method (if it is ~virtual~ or ~override~).
+
+#+begin_src pascal
+program ObjectVirtualDemo;
+
+type
+  PShape = ^TShape;
+
+  TShape = object
+    procedure Draw; virtual;
+  end;
+
+  TBox = object(TShape)
+    Width: Integer;
+    procedure Draw; virtual;
+  end;
+
+procedure TShape.Draw;
+begin
+  Writeln('shape')
+end;
+
+procedure TBox.Draw;
+begin
+  Writeln('box width=', Width)
+end;
+
+var
+  Box: TBox;
+  Shape: PShape;
+begin
+  Box.Width := 10;
+  Box.Draw;
+
+  Shape := PShape(@Box);
+  Shape^.Draw
+end.
+#+end_src
+
+~Box~ is a value variable: its ~Width~ field is stored directly in ~Box~.  ~Shape~ is a pointer to the base object type (explicitly because of the ~^TShape~).  When ~Shape~ points at ~Box~ and the program calls ~Shape^.Draw~, virtual dispatch chooses ~TBox.Draw~ because the actual object storage is a ~TBox~.
+
+Without a pointer, reference, or ~var~-parameter-like path to existing storage, value semantics apply.  A variable declared as ~TShape~ contains a ~TShape~ value.  It is not secretly a reference that can hold a separate ~TBox~ instance the way a class variable can.  For polymorphic ~object~ code, users commonly use an explicit pointer to a base object type (~^TFoo~).
+
+~object~ constructors are also different from ~class~ constructors.  A ~class~ constructor *allocates* a new class instance (on the heap).
+An ~object~ constructor initializes storage that already exists, for example storage that was allocated for a typed ~object~ pointer by ~New~, or storage that was automatically allocated for the entire object on the stack for a variable.
+
+#+begin_src pascal
+type
+  PBox = ^TBox;
+
+  TBox = object
+    Width: Integer;
+    constructor Init(AWidth: Integer);
+    procedure Draw; virtual;
+  end;
+
+constructor TBox.Init(AWidth: Integer);
+begin
+  Width := AWidth
+end;
+
+var
+  P: PBox;
+begin
+  New(P, Init(20));
+  P^.Draw;
+  Dispose(P)
+end;
+#+end_src
+
+Plain ~New(P)~ only allocates storage for the object value pointed to by ~P~.  It does not call an object constructor.  ~New(P, Init(20))~ allocates that storage and then calls ~P^.Init(20)~ on the newly allocated object storage.  ~Dispose(P)~ frees the storage.  If the ~object~ has a destructor, the Pascal form is ~Dispose(P, Done)~, which calls ~P^.Done~ before freeing the storage.
+
+This is the model Turbo Vision style code uses: allocate an object pointer, initialize the object storage with a constructor such as ~Init~, use virtual methods through base object pointers, then call the destructor and dispose the storage.
+
+Turbo Vision style code used objects to build hierarchies of UI objects: records with methods, virtual dispatch, constructors such as ~Init~, and destructors such as ~Done~.  A pointer to an object could be allocated, initialized, used through virtual methods, and disposed later.  Turbo Vision itself is not part of tp2cc--but it's the most well-known large-scale ~object~ user.
+
+Classes differ in these important ways:
+- ~object~ is a value type; ~class~ is a reference type.
+- An ~object~ variable contains its data directly; a ~class~ variable points to an instance.
+- ~object~ construction is just a method call on existing storage; class construction allocates a heap instance.
+- ~object~ cleanup must be done by ~Dispose(P, Done)~ or manual destructor calls; ~class~ instance cleanup must be done by ~X.Free~ or ~FreeAndNil(X)~.
+
+* Units and the module system
+** Program vs unit
+A program is an executable entry:
+#+begin_src pascal
+program UsesDemo;
+
+uses MathUtil;
+
+begin
+  Writeln(Double(21))
+end.
+#+end_src
+
+A unit is a module with an interface and implementation:
+#+begin_src pascal
+unit MathUtil;
+
+interface
+
+function Double(N: Integer): Integer;
+
+implementation
+
+function Double(N: Integer): Integer;
+begin
+  Double := N * 2
+end;
+
+end.
+#+end_src
+
+New words:
+- ~unit~ starts a module.
+- ~interface~ contains exported declarations (those are visible OUTSIDE of the module).
+- ~implementation~ contains private declarations and routine bodies (those are visible INSIDE the module).
+- ~uses~ imports other units.
+
+Declarations in a unit interface are visible to users of the unit.  Declarations only in the implementation are private to that unit's implementation.
+
+For a unit's own implementation code, both its interface declarations and its implementation declarations are in scope.  For another unit that says ~uses MathUtil~, only ~MathUtil~'s *interface* declarations are imported.
+
+** Uses search and emission order
+Unit names are case-insensitive.  ~-FuDIR~ adds a non-recursive unit search directory.  First match wins across search paths.  Files named ~Name.pas~ and ~Name.pp~ can satisfy ~uses Name~.
+
+When tp2cc resolves an unqualified name that was not found in local/nested/member/current-unit scope, it searches used units in reverse ~uses~ order.  The last unit named in the relevant ~uses~ list wins over earlier used units.  Only interface exports of used units are searched.
+
+#+begin_src pascal
+uses A, B, C;
+#+end_src
+
+For an imported name ~Foo~, tp2cc checks ~C.Foo~, then ~B.Foo~, then ~A.Foo~.  A declaration named ~Foo~ in the current unit would still shadows all of those imports (and be preferred to them). 
+
+For a normal unit, tp2cc stores the unit's ~interface uses~ first and the ~implementation uses~ after that.  Since lookup walks the combined list backward, implementation-only imports are searched before interface imports while compiling that unit's implementation.  Runtime/System fallback is checked only after explicit used units.
+
+Pascal units also affect emission order:
+- ~interface uses~ forms the compile-order graph and must be acyclic.
+- ~implementation uses~ may cycle.
+- A program's ~uses~ list is stored like implementation uses internally, but it still creates real dependencies for the entry program.
+
+** Name resolution order
+tp2cc resolves names using Pascal rules.  The order is:
+1. function result / function-name-as-result
+2. active ~with~ scopes
+3. nested routines
+4. locals and parameters
+5. implicit properties
+6. current instance members
+7. current class members
+8. current unit
+9. used units, searched from last to first
+10. runtime fallback for supported runtime names
+
+Local declarations shadow imported declarations.  Instance fields and methods are also considered before unit-level imports while inside methods.
+
+** Interface and implementation type boundaries
+Types declared in a unit interface are exported and can be used by other units.  Types declared only in the implementation are private implementation details.
+
+A type that crosses a unit boundary must be an interface type.  Do not put a type only in ~implementation~ and then expose it in an interface routine, variable, property, or class field type.
+
+Within a single contiguous Pascal ~type~ section, tp2cc can reorder type declarations enough to handle ordinary forward references.  That does not make implementation-private types safe to leak through an interface.  The interface or the implementation may own a private type, but exported declarations should not depend on an implementation-only type.
+
+Class forward declarations are supported:
+#+begin_src pascal
+type
+  TFoo = class;
+  TFooRef = class of TFoo;
+  TFoo = class
+    Value: Integer;
+  end;
+#+end_src
+
+An empty inherited class declaration (which is *not the same* as a forward declaration) is also supported:
+#+begin_src pascal
+type
+  TBase = class
+  end;
+
+  TChild = class(TBase);
+#+end_src
+
+~TChild = class(TBase);~ is a complete empty class body, equivalent to ~class(TBase) end~.  It is not a forward declaration.
+
+* Known limitations worth remembering
+Some limitations are good to know:
+- No-file console ~ReadLn~ is currently a stub; file ~ReadLn(F, S)~ is real for strings.
+- External variables and external procedures and external functions may parse, but emitter support is limited or unsupported.
+- ~asm ... end~ ("inline assembly") is recognized, but not translated.
+- COM/refcounted interfaces are unsupported.  The implemented interface subset is CORBA-style and requires ~{$interfaces corba}~.
+- Anonymous inline records and objects are not equally strong in every type position; prefer named types.
+- Packed aggregate access (especially via pointers) is intentionally restricted.
+- ~reintroduce~ is accepted as a directive, but you will get an error in (most useful) cases.
