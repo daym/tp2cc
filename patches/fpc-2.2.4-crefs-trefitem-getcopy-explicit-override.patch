@@ -1,0 +1,34 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-07
+Subject: Make TRefItem.GetCopy an explicit override
+License: expat
+
+TRefItem.GetCopy has the same signature as the inherited virtual
+TLinkedListItem.GetCopy.  In class syntax, the source-level spelling that
+matches C++'s same-signature dispatch semantics is an explicit "override".
+
+The source-level dispatch sites that could observe a virtual slot difference
+are the generic linked-list copy helpers in compiler/cclasses.pas:
+
+  TLinkedList.insertListcopy, line 2058: NewNode2:=NewNode.Getcopy;
+  TLinkedList.concatListcopy, line 2073: NewNode2:=NewNode.Getcopy;
+
+For the FPC 2.2.4 compiler sources used by tp2cc, TRefItem is constructed
+directly in compiler/symtype.pas and read back by TRefItem casts in
+compiler/browcol.pas.  There are no TRefItem descendants, no TRefItem class
+reference type, and no uses of insertListcopy or concatListcopy on a
+TRefLinkedList.  Therefore changing this declaration to an explicit override
+does not change an observed bootstrap call path, and makes the Pascal source
+match the C++ dispatch semantics that tp2cc can emit.
+
+--- a/compiler/crefs.pas
++++ b/compiler/crefs.pas
+@@ -34,7 +34,7 @@ uses
+    TrefItem = class (TLinkedListItem)
+      refinfo  : tfileposinfo;
+      constructor create(const ARefInfo : tfileposinfo);
+-     Function GetCopy:TLinkedListItem;virtual;
++     Function GetCopy:TLinkedListItem;override;
+    end;
+ 
+    TRefLinkedList = class(TLinkedList)
