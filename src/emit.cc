@@ -111,6 +111,7 @@ struct Emitter : ResolveNameProvider,
   std::string lhs_outer_result_rewrite;
   std::string lhs_outer_result_rewrite_slot;
   bool suppress_packed_scalar_value_load = false;
+  bool storage_view_context = false;
 
   // Names bound in the current function's scope (parameters + locals).
   // `obj` resolved bare at block scope that hits this set must be a
@@ -200,6 +201,7 @@ struct Emitter : ResolveNameProvider,
                      lhs_outer_result_rewrite,
                      lhs_outer_result_rewrite_slot,
                      suppress_packed_scalar_value_load,
+                     storage_view_context,
                      local_scope,
                      local_types,
                      local_consts,
@@ -384,31 +386,6 @@ struct Emitter : ResolveNameProvider,
   std::string metaclass_target_name(const ast::TypeExpr* t) {
     return analysis_.metaclass_target_name(t);
   }
-  std::string primitive_cast_lvalue_ref(const ast::Call& c) {
-    return storage_.primitive_cast_lvalue_ref(c);
-  }
-  std::string primitive_cast_untyped_storage_ptr(const ast::Call& c) {
-    return storage_.primitive_cast_untyped_storage_ptr(c);
-  }
-  std::string primitive_cast_packed_field_ptr(const ast::Call& c) {
-    return storage_.primitive_cast_packed_field_ptr(c);
-  }
-  // Carries the result of `bytewise_storage_ref` / `packed_field_storage_ref`.
-  // The pointer text is only for byte-copy helpers; it may denote misaligned
-  // storage and must never be turned into `T*` / `T&`.
-  using BytewiseStorage = EmitBytewiseStorage;
-  std::optional<BytewiseStorage> bytewise_storage_ref(const ast::Expr& e) {
-    return storage_.bytewise_storage_ref(e);
-  }
-  std::optional<BytewiseStorage> packed_field_storage_ref(
-      const ast::Expr& e) {
-    return storage_.packed_field_storage_ref(e);
-  }
-  using UntypedStorageIndexView = EmitUntypedStorageIndexView;
-  std::optional<UntypedStorageIndexView> untyped_storage_index_view(
-      const ast::Index& i) {
-    return storage_.untyped_storage_index_view(i);
-  }
   void emit_proc_body(const ProcDecl& pd);
   void emit_nested_proc_lambda(const ProcDecl& pd);
   void emit_stmt(const Stmt& s);
@@ -421,10 +398,6 @@ struct Emitter : ResolveNameProvider,
   // for globals and the current scope tables for locals/self-class.
   const ast::TypeExpr* deduce_type(const ast::Expr& e);
 
-  // `with` targets can be anonymous local records, so name-based
-  // registry lookup is not enough. These helpers walk the stacked
-  // bound type itself and recover the member type/text directly.
-  bool with_bind_has_visible_member(const WithBind& wb, std::string_view name);
   bool type_is_packed_record(const ast::TypeExpr* t) {
     return storage_.type_is_packed_record(t);
   }
@@ -665,11 +638,6 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
 
 std::string Emitter::deduce_class_alias(const Expr& e) {
   return analysis_.deduce_class_alias(e);
-}
-
-bool Emitter::with_bind_has_visible_member(const WithBind& wb,
-                                           std::string_view name) {
-  return analysis_.with_bind_has_visible_member(wb, name);
 }
 
 // Pascal/FPC overload resolution conversion-rank table.
@@ -1230,81 +1198,59 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (base_is_ident(base_name) && base_name == "system") {
         return "::rt::" + mangle(m.name);
       }
-      // `Unit.name` -- only when the base ident names a known unit
-      // AND isn't shadowed by any nearer binding.
-      if (registry && base_is_ident(base_name)) {
-        bool shadowed = local_scope.count(base_name) > 0;
-        if (!shadowed && !current_class_name.empty() &&
-            (registry->lookup_class_method(current_class_name, base_name,
-                                           current_unit_name) ||
-             registry->lookup_class_field(current_class_name, base_name,
-                                          current_unit_name) ||
-             registry->lookup_class_property(current_class_name, base_name,
-                                             current_unit_name)))
-          shadowed = true;
-        if (!shadowed) {
-          for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
-            if (with_bind_has_visible_member(*it, base_name)) {
-              shadowed = true; break;
-            }
+      // `Unit.name` is not member access on a value named `Unit`. The shared
+      // analysis helper has already applied Pascal shadowing and uses-visibility
+      // rules, so this branch can emit the qualified symbol directly.
+      if (auto unit_member = analysis_.resolve_unit_qualified_member(m)) {
+        const ResolveResult& rr = unit_member->resolved;
+        if (rr.kind == ResolvedKind::UnitType) {
+          const std::string qualified =
+              unit_member->unit_name + "." + m.name;
+          if (const auto* ci = class_info_for_type_name(qualified);
+              ci && ci->is_reference_type) {
+            return metaclass_value_fn_cxx(qualified) + "()";
           }
         }
-        if (!shadowed) {
-          bool is_unit = registry->units.count(base_name) > 0;
-          if (!is_unit) {
-            auto uit = registry->units.find(current_unit_name);
-            if (uit != registry->units.end()) {
-              for (const auto& nm : uit->second.uses) {
-                if (nm == base_name) { is_unit = true; break; }
-              }
+        bool want_call =
+            !is_callee_context_ && rr.is_callable && rr.accepts_zero_args;
+        return want_call ? rr.cxx + "()" : rr.cxx;
+      }
+      if (registry && base_is_ident(base_name)) {
+        // `TClass.method` -- Pascal's way to call a specific
+        // class's method (typically the parent's version from
+        // inside an override). Emit `TClass::method`. This is a
+        // type-name interpretation, so a parameter/local/current-field named
+        // `TClass` must block it: in Pascal `tsym.typedef` is member access on
+        // value `tsym` even when a visible type named `tsym` also exists.
+        if (!analysis_.identifier_is_shadowed_value(base_name) &&
+            (registry->has_class(base_name, current_unit_name) ||
+             registry->records.count(base_name))) {
+          if (!is_callee_context_) {
+            std::vector<const Expr*> no_args;
+            std::vector<const TypeExpr*> no_param_types;
+            std::vector<UntypedArgKind> no_untyped_arg;
+            std::vector<bool> no_mutable_ref_arg;
+            if (auto ctor_call = maybe_lower_class_constructor_call(
+                    base_name, m.name, no_args, no_param_types,
+                    no_untyped_arg, no_mutable_ref_arg)) {
+              return *ctor_call;
             }
           }
-          if (is_unit) {
-            ResolveResult rr =
-                resolve_name(m.name, QualifierKind::Unit, base_name);
-            if (rr.kind == ResolvedKind::UnitType) {
-              const std::string qualified = base_name + "." + m.name;
-              if (const auto* ci = class_info_for_type_name(qualified);
-                  ci && ci->is_reference_type) {
-                return metaclass_value_fn_cxx(qualified) + "()";
-              }
-            }
+          ResolveResult rr =
+              resolve_name(m.name, QualifierKind::Class, base_name);
+          if (ascii_lower(m.name) == "classname") {
+            std::string text = metaclass_value_fn_cxx(base_name) +
+                               "()->" + mangle(m.name);
             bool want_call = !is_callee_context_ &&
                              rr.is_callable && rr.accepts_zero_args;
-            return want_call ? rr.cxx + "()" : rr.cxx;
+            return want_call ? lower_implicit_zero_arg_call(text, rr.proc)
+                             : text;
           }
-          // `TClass.method` -- Pascal's way to call a specific
-          // class's method (typically the parent's version from
-          // inside an override). Emit `TClass::method`.
-          if (registry->has_class(base_name, current_unit_name) ||
-              registry->records.count(base_name)) {
-            if (!is_callee_context_) {
-              std::vector<const Expr*> no_args;
-              std::vector<const TypeExpr*> no_param_types;
-              std::vector<UntypedArgKind> no_untyped_arg;
-              std::vector<bool> no_mutable_ref_arg;
-              if (auto ctor_call = maybe_lower_class_constructor_call(
-                      base_name, m.name, no_args, no_param_types,
-                      no_untyped_arg, no_mutable_ref_arg)) {
-                return *ctor_call;
-              }
-            }
-            ResolveResult rr =
-                resolve_name(m.name, QualifierKind::Class, base_name);
-            if (ascii_lower(m.name) == "classname") {
-              std::string text = metaclass_value_fn_cxx(base_name) +
-                                 "()->" + mangle(m.name);
-              bool want_call = !is_callee_context_ &&
-                               rr.is_callable && rr.accepts_zero_args;
-              return want_call ? lower_implicit_zero_arg_call(text, rr.proc)
-                               : text;
-            }
-            std::string text =
-                named_type_struct_cxx(base_name) + "::" + mangle(m.name);
-            bool want_call = !is_callee_context_ &&
-                             rr.is_callable && rr.accepts_zero_args;
-            return want_call ? lower_implicit_zero_arg_call(text, rr.proc) : text;
-          }
+          std::string text =
+              named_type_struct_cxx(base_name) + "::" + mangle(m.name);
+          bool want_call = !is_callee_context_ &&
+                           rr.is_callable && rr.accepts_zero_args;
+          return want_call ? lower_implicit_zero_arg_call(text, rr.proc) : text;
         }
       }
 
@@ -1418,7 +1364,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         const auto& m = static_cast<const Member&>(*a.operand);
         if (m.base && m.base->kind == Kind::Ident) {
           const auto& id = static_cast<const Ident&>(*m.base);
-          if (registry && (registry->has_class(id.name, current_unit_name) ||
+          if (registry && !analysis_.identifier_is_shadowed_value(id.name) &&
+              (registry->has_class(id.name, current_unit_name) ||
                            registry->records.count(id.name))) {
             if (auto* method = registry->lookup_class_method(
                     id.name, m.name, current_unit_name);
@@ -1509,7 +1456,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       is_callee_context_ = true;
       bool saved_suppress = suppress_packed_scalar_value_load;
       suppress_packed_scalar_value_load = true;
-      std::string inner = expr_to_cxx(*a.operand);
+      bool saved_storage_view = storage_view_context;
+      storage_view_context = true;
+      // `@expr` needs the address of the Pascal storage denoted by `expr`.
+      // That is not always `&expr_cxx`: for `p^`, Pascal address-of cancels
+      // the dereference (`@p^` is the operand pointer expression); packed
+      // fields can be byte-addressable Pascal storage that is not aligned
+      // enough for typed C++ references, so reads/writes through that storage
+      // need byte-copy access; and because address-of requires a variable
+      // designator, `T(x)` addresses `x`'s storage viewed as `T`, not a
+      // converted copy.
+      auto storage = storage_.storage_designator(*a.operand);
+      std::string inner = storage ? storage->text : expr_to_cxx(*a.operand);
+      storage_view_context = saved_storage_view;
       suppress_packed_scalar_value_load = saved_suppress;
       is_callee_context_ = saved;
       if (!a.double_addr && registry) {
@@ -1523,6 +1482,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // equally viable; hardwiring a decay here miscompiles one side.
           return "::rt::tp2cc_array_addr(" + inner + ")";
         }
+      }
+      if (storage) {
+        return storage_.storage_designator_typed_address_value(*storage);
       }
       return "(&" + inner + ")";
     }
@@ -1616,46 +1578,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             [&](const Expr& expr) -> std::optional<std::string> {
           if (!registry || expr.kind != Kind::Member) return std::nullopt;
           const auto& mem = static_cast<const Member&>(expr);
-          if (mem.base->kind != Kind::Ident) return std::nullopt;
-          const std::string& base_name =
-              static_cast<const Ident&>(*mem.base).name;
-          bool shadowed = local_scope.count(base_name) > 0;
-          if (!shadowed && !current_class_name.empty() &&
-              (registry->lookup_class_method(current_class_name, base_name,
-                                             current_unit_name) ||
-               registry->lookup_class_field(current_class_name, base_name,
-                                            current_unit_name) ||
-               registry->lookup_class_property(current_class_name,
-                                               base_name, current_unit_name))) {
-            shadowed = true;
+          auto unit_member = analysis_.resolve_unit_qualified_member(mem);
+          if (!unit_member ||
+              unit_member->resolved.kind != ResolvedKind::UnitType) {
+            return std::nullopt;
           }
-          if (!shadowed) {
-            for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
-              if (with_bind_has_visible_member(*it, base_name)) {
-                shadowed = true;
-                break;
-              }
-            }
-          }
-          if (shadowed) return std::nullopt;
-
-          bool is_unit = registry->units.count(base_name) > 0;
-          if (!is_unit) {
-            auto uit = registry->units.find(current_unit_name);
-            if (uit != registry->units.end()) {
-              for (const auto& nm : uit->second.uses) {
-                if (nm == base_name) {
-                  is_unit = true;
-                  break;
-                }
-              }
-            }
-          }
-          if (!is_unit) return std::nullopt;
-          ResolveResult rr =
-              resolve_name(mem.name, QualifierKind::Unit, base_name);
-          if (rr.kind != ResolvedKind::UnitType) return std::nullopt;
-          return base_name + "." + mem.name;
+          return unit_member->unit_name + "." + mem.name;
         };
 
         // Pascal `low` / `high` are type-driven:
@@ -1719,7 +1647,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // not permission to manufacture a misaligned `T&`. When the
           // argument denotes storage, load it via memcpy from the storage
           // address. Non-storage forms fall back to the runtime helper.
-          if (auto storage = bytewise_storage_ref(*c.args[0])) {
+          if (auto storage = storage_.bytewise_storage_ref(*c.args[0])) {
             return "::rt::tp2cc_unaligned_load<" + storage->elem_cxx + ">(" +
                    storage->void_ptr_text + ")";
           }
@@ -1773,19 +1701,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                      ">(" + arg0() + ")";
             }
           }
-          if (peeled && expr_is_storage_lvalue(*c.args[0])) {
-            const TypeExpr* source_ty = canonicalize_type(deduce_type(*peeled));
-            if (source_ty &&
-                (source_ty->kind == Kind::TyArray ||
-                 source_ty->kind == Kind::TyRecord ||
-                 source_ty->kind == Kind::TyObject ||
-                 source_ty->kind == Kind::TyProcedural)) {
-              // Aggregate-to-primitive typecasts in Pascal are byte
-              // reinterpretations, not numeric conversions. `double(MathInf)`
-              // in the compiler sources depends on preserving the byte pattern.
-              return "::rt::tp2cc_reinterpret_copy<" + primitive_type_cxx(n) +
-                     ">(" + expr_to_cxx(*peeled) + ")";
-            }
+          if (const TypeExpr* source_ty =
+                  canonicalize_type(deduce_type(*c.args[0]));
+              source_ty &&
+              (source_ty->kind == Kind::TyArray ||
+               source_ty->kind == Kind::TyRecord ||
+               source_ty->kind == Kind::TyObject ||
+               source_ty->kind == Kind::TyProcedural)) {
+            // FPC accepts same-size aggregate-to-scalar casts as
+            // representation casts. This is a value context, so first build the
+            // source value, then copy its bytes into the scalar target; storage
+            // contexts request storage views before reaching this branch.
+            return "::rt::tp2cc_reinterpret_copy<" + primitive_type_cxx(n) +
+                   ">(" + arg0() + ")";
           }
           if (n == "char") {
             return "::rt::p_chr(" + arg0() + ")";
@@ -1915,19 +1843,26 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (coerced != arg0()) return coerced;
             return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
           }
-          if (auto view = storage_.typecast_storage_view(c)) {
-            bool named_storage_view_type =
-                registry &&
-                (registry->records.count(n) ||
-                 registry->has_class(n, current_unit_name));
-            bool aggregate_alias =
-                cast_ty && (cast_ty->kind == Kind::TyArray ||
-                            cast_ty->kind == Kind::TyRecord ||
-                            cast_ty->kind == Kind::TyObject ||
-                            cast_ty->kind == Kind::TyProcedural);
-            if (aggregate_alias || named_storage_view_type) {
-              return reinterpret_ref_text(view->target_cxx, view->source_cxx,
-                                          view->pointee_view);
+          bool named_storage_view_type =
+              registry &&
+              (registry->records.count(n) ||
+               registry->has_class(n, current_unit_name));
+          bool aggregate_alias =
+              cast_ty && (cast_ty->kind == Kind::TyArray ||
+                          cast_ty->kind == Kind::TyRecord ||
+                          cast_ty->kind == Kind::TyObject ||
+                          cast_ty->kind == Kind::TyProcedural);
+          auto storage_view = storage_.typecast_storage_view(c);
+          if (storage_view) {
+            if (storage_view_context &&
+                (aggregate_alias || named_storage_view_type)) {
+              // Pascal decides `T(x)` from the enclosing context. In a storage
+              // context this is not an aggregate temporary: it is the same
+              // variable designator viewed as `T`, so assignment, `@`, and
+              // var/out actuals can mutate or address the original storage.
+              return reinterpret_ref_text(storage_view->target_cxx,
+                                          storage_view->source_cxx,
+                                          storage_view->pointee_view);
             }
           }
           if (cast_ty && cast_ty->kind == Kind::TyArray) {
@@ -1936,69 +1871,50 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                 arr.element ? canonicalize_type(arr.element.get()) : nullptr;
             if (arr.dims.size() == 1 &&
                 (tyname_is(elem, "byte") || tyname_is(elem, "char"))) {
+              // Array casts are value casts in expression context. Pascal
+              // arrays are first-class values: assigning or passing one copies
+              // the whole array, and there is no C-style array-to-pointer decay.
+              // Untyped `var` storage already denotes caller bytes, so copy from
+              // that address; otherwise copy bytes from the source value.
+              if (storage_view && storage_view->source_is_untyped_storage) {
+                return "::rt::tp2cc_reinterpret_load<" +
+                       type_name_text_to_cxx(n) + ">(" +
+                       storage_view->source_cxx + ")";
+              }
               return "::rt::tp2cc_reinterpret_bytes<" +
                      type_name_text_to_cxx(n) + ">(" + arg0() + ")";
             }
+          }
+          if (aggregate_alias || named_storage_view_type) {
+            // Value context produces a copied aggregate value, not a storage
+            // alias. Untyped `var` sources already are storage addresses; other
+            // sources are ordinary values whose object representation is copied.
+            if (storage_view && storage_view->source_is_untyped_storage) {
+              return "::rt::tp2cc_reinterpret_load<" +
+                     type_name_text_to_cxx(n) + ">(" +
+                     storage_view->source_cxx + ")";
+            }
+            return "::rt::tp2cc_reinterpret_copy<" + type_name_text_to_cxx(n) +
+                   ">(" + arg0() + ")";
           }
           if (cast_ty) {
             return "((" + type_name_text_to_cxx(n) + ")(" + arg0() + "))";
           }
         } else if ((n == "inc" || n == "dec") &&
-                   (c.args.size() == 1 || c.args.size() == 2) &&
-                   c.args[0]->kind == Kind::Call) {
-          // Pascal `inc(T(lv))` / `dec(T(lv))` mutate the storage behind
-          // `lv` as type T. Emit that reinterpreting lvalue explicitly.
-          const auto& inner = static_cast<const Call&>(*c.args[0]);
-          if (std::string ptr = primitive_cast_untyped_storage_ptr(inner);
-              !ptr.empty()) {
-            const auto& id = static_cast<const Ident&>(*inner.callee);
-            std::string op = (n == "inc") ? "::rt::tp2cc_reinterpret_inc"
-                                          : "::rt::tp2cc_reinterpret_dec";
-            if (c.args.size() == 2) {
-              return op + "<" + primitive_type_cxx(id.name) + ">(" + ptr + ", " +
-                     expr_to_cxx(*c.args[1]) + ")";
-            }
-            return op + "<" + primitive_type_cxx(id.name) + ">(" + ptr + ")";
-          }
-          // `inc(T(packed_record.field))`: the packed field cannot be
-          // bound as `T&`, so route through the same memcpy-based path as
-          // untyped storage. The address-of is byte-safe because
-          // `tp2cc_reinterpret_inc` reads/writes via memcpy.
-          if (std::string ptr = primitive_cast_packed_field_ptr(inner);
-              !ptr.empty()) {
-            const auto& id = static_cast<const Ident&>(*inner.callee);
-            std::string op = (n == "inc") ? "::rt::tp2cc_reinterpret_inc"
-                                          : "::rt::tp2cc_reinterpret_dec";
-            if (c.args.size() == 2) {
-              return op + "<" + primitive_type_cxx(id.name) + ">(" + ptr + ", " +
-                     expr_to_cxx(*c.args[1]) + ")";
-            }
-            return op + "<" + primitive_type_cxx(id.name) + ">(" + ptr + ")";
-          }
-          if (std::string ref = primitive_cast_lvalue_ref(inner);
-              !ref.empty()) {
-            std::string op = (n == "inc") ? "::rt::p_inc" : "::rt::p_dec";
-            if (c.args.size() == 2) {
-              return op + "(" + ref + ", " + expr_to_cxx(*c.args[1]) + ")";
-            }
-            return op + "(" + ref + ")";
-          }
-          // Fall through to generic emission.
-        } else if ((n == "inc" || n == "dec") &&
                    (c.args.size() == 1 || c.args.size() == 2)) {
-          // `inc(...)` / `dec(...)` should use one storage rule: if the
-          // target scalar lives in packed storage anywhere along its access
-          // path, route through the bytewise helpers instead of binding `T&`.
-          if (auto storage = storage_.packed_scalar_storage_ref(*c.args[0])) {
-            std::string op = (n == "inc") ? "::rt::tp2cc_reinterpret_inc"
-                                          : "::rt::tp2cc_reinterpret_dec";
-            if (c.args.size() == 2) {
-              return op + "<" + storage->elem_cxx + ">(" + storage->void_ptr_text +
-                     ", " + expr_to_cxx(*c.args[1]) + ")";
-            }
-            return op + "<" + storage->elem_cxx + ">(" + storage->void_ptr_text + ")";
+          bool saved_storage_view = storage_view_context;
+          storage_view_context = true;
+          // `Inc`/`Dec` mutate a Pascal variable designator. The designator
+          // decides whether that is an ordinary C++ lvalue, a reinterpreted
+          // lvalue, or bytewise storage that must use memcpy-style helpers.
+          auto storage = storage_.storage_designator(*c.args[0]);
+          storage_view_context = saved_storage_view;
+          if (storage) {
+            return storage_.storage_designator_inc_dec(
+                *storage, n == "inc",
+                c.args.size() == 2 ? expr_to_cxx(*c.args[1]) : std::string{});
           }
-          // Fall through to generic emission for non-packed scalar args.
+          // Fall through to generic emission for invalid non-storage args.
         } else if (n == "new" && !c.args.empty()) {
           // Expression-form `new(T)` or `new(T, Ctor(args))`. The first
           // argument is a pointer type name, not a value expression; lowering
@@ -2134,68 +2050,45 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       if (c.args.size() == 1 && c.callee->kind == Kind::Member && registry) {
         const auto& mem = static_cast<const Member&>(*c.callee);
-        if (mem.base->kind == Kind::Ident) {
-          const auto& base_id = static_cast<const Ident&>(*mem.base);
-          const std::string& base_name = base_id.name;
-          bool shadowed = local_scope.count(base_name) > 0;
-          if (!shadowed && !current_class_name.empty() &&
-              (registry->lookup_class_method(current_class_name, base_name,
-                                             current_unit_name) ||
-               registry->lookup_class_field(current_class_name, base_name,
-                                            current_unit_name) ||
-               registry->lookup_class_property(current_class_name, base_name,
-                                               current_unit_name))) {
-            shadowed = true;
-          }
-          if (!shadowed) {
-            for (auto it = with_stack.rbegin(); it != with_stack.rend(); ++it) {
-              if (with_bind_has_visible_member(*it, base_name)) {
-                shadowed = true;
-                break;
-              }
-            }
-          }
-          bool is_unit = !shadowed && registry->units.count(base_name) > 0;
-          if (!is_unit && !shadowed) {
-            auto uit = registry->units.find(current_unit_name);
-            if (uit != registry->units.end()) {
-              for (const auto& nm : uit->second.uses) {
-                if (nm == base_name) {
-                  is_unit = true;
-                  break;
-                }
-              }
-            }
-          }
-          if (is_unit) {
-            ResolveResult rr =
-                resolve_name(mem.name, QualifierKind::Unit, base_name);
-            if (rr.kind == ResolvedKind::UnitType) {
-              const std::string qualified = base_name + "." + mem.name;
-              const TypeExpr* cast_ty = lookup_named_type_expr(qualified);
-              if (cast_ty) cast_ty = canonicalize_type(cast_ty);
-              if (cast_ty && cast_ty->kind == Kind::TyPointer) {
-                const Expr* peeled = peel_primitive_casts(c.args[0].get());
-                std::string source =
-                    (peeled && expr_is_storage_lvalue(*c.args[0]))
-                        ? expr_to_cxx(*peeled)
-                        : expr_to_cxx(*c.args[0]);
-                std::string coerced = coerce_pointer_like_text(
-                    type_name_text_to_cxx(qualified), cast_ty,
-                    deduce_type(*c.args[0]), source,
-                    /*explicit_pascal_cast=*/true);
-                if (coerced != source) return coerced;
-                if (peeled && expr_is_storage_lvalue(*c.args[0])) {
-                  return "((" + type_name_text_to_cxx(qualified) + ")(" +
-                         expr_to_cxx(*peeled) + "))";
-                }
+        // Same `Member` AST node as a call, but semantically this can be a
+        // unit-qualified typecast: `Unit.Type(expr)`.
+        if (auto unit_member = analysis_.resolve_unit_qualified_member(mem)) {
+          if (unit_member->resolved.kind == ResolvedKind::UnitType) {
+            // The parser uses Call for both calls and Pascal typecasts, so
+            // `Unit.Type(expr)` reaches this point as a member callee. Once the
+            // shared resolver has proven the member is a unit-qualified type,
+            // lower it as an explicit cast instead of sending it through
+            // procedure overload resolution.
+            const std::string qualified =
+                unit_member->unit_name + "." + mem.name;
+            const TypeExpr* cast_ty = lookup_named_type_expr(qualified);
+            if (cast_ty) cast_ty = canonicalize_type(cast_ty);
+            if (cast_ty && cast_ty->kind == Kind::TyPointer) {
+              // Pointer casts are still Pascal value conversions, but their
+              // source may be a typed storage view such as `T(x)`. Peel only
+              // primitive storage-view casts before the pointer coercion so the
+              // emitted C++ casts the original storage expression, not a
+              // temporary/reference spelling built for another target type.
+              const Expr* peeled = peel_primitive_casts(c.args[0].get());
+              std::string source =
+                  (peeled && expr_is_storage_lvalue(*c.args[0]))
+                      ? expr_to_cxx(*peeled)
+                      : expr_to_cxx(*c.args[0]);
+              std::string coerced = coerce_pointer_like_text(
+                  type_name_text_to_cxx(qualified), cast_ty,
+                  deduce_type(*c.args[0]), source,
+                  /*explicit_pascal_cast=*/true);
+              if (coerced != source) return coerced;
+              if (peeled && expr_is_storage_lvalue(*c.args[0])) {
                 return "((" + type_name_text_to_cxx(qualified) + ")(" +
-                       source + "))";
+                       expr_to_cxx(*peeled) + "))";
               }
-              if (cast_ty) {
-                return "((" + type_name_text_to_cxx(qualified) + ")(" +
-                       expr_to_cxx(*c.args[0]) + "))";
-              }
+              return "((" + type_name_text_to_cxx(qualified) + ")(" +
+                     source + "))";
+            }
+            if (cast_ty) {
+              return "((" + type_name_text_to_cxx(qualified) + ")(" +
+                     expr_to_cxx(*c.args[0]) + "))";
             }
           }
         }
@@ -2253,7 +2146,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         if (mem.base->kind == Kind::Ident && registry) {
           const auto& id = static_cast<const Ident&>(*mem.base);
-          if (registry->has_class(id.name, current_unit_name)) {
+          if (!analysis_.identifier_is_shadowed_value(id.name) &&
+              registry->has_class(id.name, current_unit_name)) {
             if (auto ctor_call = maybe_lower_class_constructor_call(
                     id.name, mem.name, call_args, call_param_types,
                     call_untyped_arg, call_mutable_ref_arg)) {
@@ -2359,9 +2253,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
         }
       }
-      if (auto view = untyped_storage_index_view(i)) {
-        return "::rt::tp2cc_reinterpret_load<" + view->elem_cxx + ">(" +
-               view->ptr_cxx + ")";
+      if (auto storage = storage_.storage_designator(i);
+          storage && storage->is_special()) {
+        return storage_.storage_designator_value(*storage);
       }
       std::string out = expr_to_cxx(*i.base);
       for (const auto& idx : i.indices) out += "[" + expr_to_cxx(*idx) + "]";

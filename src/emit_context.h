@@ -50,6 +50,14 @@ struct ScopeStateView {
   // be lowered safely via byte offsets. Lvalue/address contexts must suppress
   // that path so the existing packed-aggregate guard still rejects references.
   bool& suppress_packed_scalar_value_load;
+  // Pascal typecasts are context-sensitive. The enclosing construct decides
+  // whether `T(x)` is a value expression or a variable designator. In ordinary
+  // expression context, `TArray(x)` produces an array value; Pascal arrays are
+  // first-class values and do not decay to pointers. In storage contexts, such
+  // as assignment targets, `@x`, var/out/untyped-var actual arguments, and
+  // mutation helpers like `Inc(T(x))`, the same spelling is a typed view of the
+  // original storage.
+  bool& storage_view_context;
 
   // Current lexical scope.
   std::unordered_set<std::string>& local_scope;

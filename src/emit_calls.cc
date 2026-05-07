@@ -287,15 +287,35 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
   PackedScalarValueLoadSuppressor suppress_packed_scalar_value_load(
       scope_.suppress_packed_scalar_value_load,
       mutable_ref_arg || untyped_arg != UntypedArgKind::None);
+  // `var`, `out`, and untyped actuals require a Pascal variable designator.
+  // Mark that context before emitting the argument so `T(x)` is treated as a
+  // storage view there, while the same spelling in a value argument still
+  // builds a converted/copied value.
+  struct StorageViewContextScope {
+    bool& slot;
+    bool saved;
+    StorageViewContextScope(bool& slot_in, bool value)
+        : slot(slot_in), saved(slot_in) {
+      slot = value;
+    }
+    ~StorageViewContextScope() { slot = saved; }
+  } storage_view_context(scope_.storage_view_context,
+                         scope_.storage_view_context || mutable_ref_arg ||
+                             untyped_arg != UntypedArgKind::None);
   const TypeExpr* arg_type = analysis_.deduce_type(arg);
   if (arg_type) arg_type = analysis_.canonicalize_type(arg_type);
   const TypeExpr* canon_param_type = analysis_.canonicalize_type(param_type);
   if (mutable_ref_arg && (canon_param_type || untyped_arg == UntypedArgKind::None)) {
-    if (auto view = storage_.typecast_storage_view(arg)) {
-      const std::string ref_type_cxx =
-          param_type ? types_.type_to_cxx(*param_type) : view->target_cxx;
-      return storage_.reinterpret_ref_text(ref_type_cxx, view->source_cxx,
-                                           false);
+    // `var`/`out` actuals are storage contexts. Reuse the same designator
+    // lowering as assignment so call-site typecasts like `Val(s,
+    // cardinal(result), code)` are storage views, not value casts.
+    if (auto storage = storage_.storage_designator(arg);
+        storage && storage->access == EmitStorageAccess::ReinterpretRef) {
+      if (param_type && storage->type_cxx != types_.type_to_cxx(*param_type)) {
+        return storage_.reinterpret_ref_text(types_.type_to_cxx(*param_type),
+                                             storage->text, false);
+      }
+      return storage->text;
     }
   }
   if (mutable_ref_arg && canon_param_type && arg_type &&
@@ -387,20 +407,6 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
       scope_.local_untyped_params.count(static_cast<const Ident&>(arg).name)) {
     return arg_text;
   }
-  if (const Expr* peeled = storage_.peel_primitive_casts(&arg);
-      peeled && peeled->kind == Kind::Deref) {
-    if (auto storage = storage_.bytewise_storage_ref(arg)) {
-      // Raw-memory helpers treat `ptr^` as "the bytes starting at ptr", not as
-      // "form a C++ lvalue for *ptr and then take its address". Native FPC
-      // accepts `indexword(buf^, 0, ...)` with `buf=nil`; preserve that by
-      // forwarding the pointer value itself for deref-shaped actuals.
-      const char* ptr_cast =
-          (untyped_arg == UntypedArgKind::Const && !mutable_ref_arg)
-              ? "const void*"
-              : "void*";
-      return "((" + std::string(ptr_cast) + ")(" + storage->void_ptr_text + "))";
-    }
-  }
   if (untyped_arg == UntypedArgKind::Const &&
       !mutable_ref_arg && !storage_.expr_is_storage_lvalue(arg)) {
     return "::rt::tp2cc_const_untyped_ptr(" + arg_text + ")";
@@ -409,6 +415,14 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
       (untyped_arg == UntypedArgKind::Const && !mutable_ref_arg)
           ? "const void*"
           : "void*";
+  // Untyped formals receive the address of Pascal caller storage. Ordinary
+  // lvalues use `&x`; `p^`, untyped byte views, and packed fields already have a
+  // storage address from the designator, so pass that address instead of first
+  // forming a typed C++ reference.
+  if (auto storage = storage_.storage_designator(arg)) {
+    return storage_.storage_designator_untyped_actual_address(*storage,
+                                                              ptr_cast);
+  }
   return "((" + std::string(ptr_cast) + ")&(" + arg_text + "))";
 }
 

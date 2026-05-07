@@ -1065,12 +1065,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
     }
     case Kind::Member: {
       const auto& m = static_cast<const Member&>(e);
-      if (m.base->kind == Kind::Ident) {
-        const auto& id = static_cast<const Ident&>(*m.base);
-        auto uit = registry_->units.find(id.name);
-        if (uit != registry_->units.end() &&
-            uit->second.has_export_enum_member(m.name)) {
-          return find_unit_enum_type(uit->second.name, m.name);
+      if (auto unit_member = resolve_unit_qualified_member(m)) {
+        if (unit_member->resolved.kind == ResolvedKind::EnumMember) {
+          return find_unit_enum_type(unit_member->unit_name, m.name);
         }
       }
       std::string cls;
@@ -1186,6 +1183,13 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           return builtin_char_type();
         }
         if (c.args.size() == 1) {
+          // A one-argument call whose callee is a type name is a Pascal
+          // typecast. The result type is the named type even when value
+          // emission later decides between value-copy and storage-view
+          // lowering for that cast.
+          if (const TypeExpr* named = lookup_named_type_expr(id.name)) {
+            return named;
+          }
           if (const TyName* int_ty = builtin_integer_type(id.name)) {
             return int_ty;
           }
@@ -1244,17 +1248,13 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         }
       } else if (c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
-        if (mem.base->kind == Kind::Ident) {
-          const auto& id = static_cast<const Ident&>(*mem.base);
-          if (registry_->units.count(id.name)) {
-            ResolveResult rr = resolve_name_provider_.resolve_name(
-                mem.name, QualifierKind::Unit, id.name);
-            if (rr.proc && rr.proc->return_type) {
-              return rr.proc->return_type.get();
-            }
-            if (!rr.return_type_name.empty()) {
-              return named_pascal_type(rr.return_type_name);
-            }
+        if (auto unit_member = resolve_unit_qualified_member(mem)) {
+          const ResolveResult& rr = unit_member->resolved;
+          if (rr.proc && rr.proc->return_type) {
+            return rr.proc->return_type.get();
+          }
+          if (!rr.return_type_name.empty()) {
+            return named_pascal_type(rr.return_type_name);
           }
         }
         std::string cls;
@@ -1458,6 +1458,71 @@ bool EmitAnalysis::with_bind_has_visible_member(
     }
   }
   return lookup_record_field_type_in_with(wb, name) != nullptr;
+}
+
+bool EmitAnalysis::identifier_is_shadowed_value(std::string_view name_in) {
+  const std::string name = ascii_lower(name_in);
+  // Unit qualifiers live in the same syntactic slot as ordinary values:
+  // `foo.bar` may mean a field/method of value `foo`, or symbol `bar` from
+  // unit `foo`. Pascal lexical lookup gives nearer values precedence, so a
+  // local, current-class member, or active `with` member named `foo` blocks the
+  // unit interpretation.
+  if (scope_.local_scope.count(name) > 0) return true;
+  if (!registry_) return false;
+  if (!scope_.current_class_name.empty() &&
+      (registry_->lookup_class_method(scope_.current_class_name, name,
+                                      scope_.current_unit_name) ||
+       registry_->lookup_class_field(scope_.current_class_name, name,
+                                     scope_.current_unit_name) ||
+       registry_->lookup_class_property(scope_.current_class_name, name,
+                                        scope_.current_unit_name))) {
+    return true;
+  }
+  for (auto it = scope_.with_stack.rbegin(); it != scope_.with_stack.rend();
+       ++it) {
+    if (with_bind_has_visible_member(*it, name)) return true;
+  }
+  return false;
+}
+
+bool EmitAnalysis::is_visible_unit_qualifier(std::string_view name_in) {
+  if (!registry_) return false;
+  const std::string name = ascii_lower(name_in);
+  // TypeRegistry includes parsed units plus empty semantic stubs for missing
+  // external RTL units that main.cc will emit with write_external_stub. A
+  // qualified unit name is still only in Pascal scope for the current unit
+  // itself or a unit named by the current unit's own `uses` list.
+  if (name == scope_.current_unit_name) {
+    return registry_->units.count(name) > 0;
+  }
+  auto cur = registry_->units.find(scope_.current_unit_name);
+  if (cur == registry_->units.end()) return false;
+  for (const auto& used : cur->second.uses) {
+    if (used == name) return registry_->units.count(name) > 0;
+  }
+  return false;
+}
+
+std::optional<UnitQualifiedMemberLookup>
+EmitAnalysis::resolve_unit_qualified_member(const ast::Member& mem) {
+  if (!registry_ || !mem.base || mem.base->kind != Kind::Ident) {
+    return std::nullopt;
+  }
+  const auto& id = static_cast<const Ident&>(*mem.base);
+  const std::string unit_name = ascii_lower(id.name);
+  if (identifier_is_shadowed_value(unit_name) ||
+      !is_visible_unit_qualifier(unit_name)) {
+    return std::nullopt;
+  }
+
+  // From here the base identifier is a unit qualifier, not a value expression.
+  // Call the normal qualified-name resolver once and hand that result to value,
+  // call, type, and storage consumers instead of letting each consumer recurse
+  // into the qualifier and rediscover the same rule.
+  ResolveResult rr =
+      resolve_name_provider_.resolve_name(mem.name, QualifierKind::Unit,
+                                          unit_name);
+  return UnitQualifiedMemberLookup{unit_name, mem.name, rr};
 }
 
 const VarInfo* EmitAnalysis::find_visible_unit_var(const std::string& name) {

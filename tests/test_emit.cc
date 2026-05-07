@@ -1111,6 +1111,48 @@ void test_unit_qualified_trailing_default_argument_is_lowered() {
   CHECK(contains(out.impl, "::p_u::p_note(1, 7);"));
 }
 
+void test_unit_qualified_variable_assignment_is_storage_designator() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure internalerror(i : longint);\n"
+      "implementation\n"
+      "uses dep;\n"
+      "procedure internalerror(i : longint);\n"
+      "begin\n"
+      "end;\n"
+      "initialization\n"
+      "  dep.internalerror := @internalerror;\n"
+      "end.\n",
+      {{"dep.pas",
+        "unit dep;\n"
+        "interface\n"
+        "var\n"
+        "  internalerror : procedure(i : longint);\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::p_dep::p_internalerror = (&p_internalerror);"));
+}
+
+void test_external_used_unit_qualified_call_keeps_namespace_spelling() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "uses dos;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  dos.getenv('PATH');\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::p_dos::p_getenv("));
+}
+
 void test_method_pointer_trailing_default_nil_is_lowered_as_empty_value() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1929,7 +1971,7 @@ void test_untyped_method_call_on_variable_uses_storage_address() {
   // `var buffer` passes the storage address of the local array value.
   // The receiver being a variable (`source.read`) must not lose that
   // metadata and accidentally pass the whole value expression instead.
-  CHECK(contains(out.impl, "p_result = p_source.p_read(((void*)&(p_buffer)), p_count);"));
+  CHECK(contains(out.impl, "p_result = p_source.p_read(((void*)((&p_buffer))), p_count);"));
   CHECK(!contains(out.impl, "p_source.p_read(p_buffer, p_count);"));
 }
 
@@ -1946,7 +1988,7 @@ void test_fillchar_uses_storage_address_for_pointer_slots() {
       "  fillchar(list[capacity], (4 - capacity) * sizeof(pointer), 0);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_fillchar(((void*)&(p_list[p_capacity]))"));
+  CHECK(contains(out.impl, "p_fillchar(((void*)((&p_list[p_capacity])))"));
   CHECK(!contains(out.impl, "p_fillchar(p_list[p_capacity],"));
 }
 
@@ -1965,8 +2007,8 @@ void test_move_uses_storage_addresses_for_source_and_destination_slots() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_move(((const void*)&(p_list[::rt::tp2cc_wrap_add(p_index, 1)]))"));
-  CHECK(contains(out.impl, "((void*)&(p_list[p_index]))"));
+                 "::rt::p_move(((const void*)((&p_list[::rt::tp2cc_wrap_add(p_index, 1)])))"));
+  CHECK(contains(out.impl, "((void*)((&p_list[p_index])))"));
   CHECK(!contains(out.impl, "::rt::p_move(p_list[(p_index + 1)],"));
 }
 
@@ -2031,8 +2073,8 @@ void test_string_index_buffer_helpers_use_storage_addresses() {
   // Untyped buffer helpers receive the address of the Pascal storage denoted
   // by s[i], not the C++ proxy object used to model string indexing.
   CHECK(contains(out.impl,
-                 "::rt::p_comparechar(((const void*)&(p_s1[p_i])), ((const void*)&(p_s2[p_i])), p_count)"));
-  CHECK(contains(out.impl, "::rt::p_indexbyte(((const void*)&(p_s1[p_i])), p_count,"));
+                 "::rt::p_comparechar(((const void*)((&p_s1[p_i]))), ((const void*)((&p_s2[p_i]))), p_count)"));
+  CHECK(contains(out.impl, "::rt::p_indexbyte(((const void*)((&p_s1[p_i]))), p_count,"));
   CHECK(!contains(out.impl, "::rt::p_comparechar(p_s1[p_i],"));
   CHECK(!contains(out.impl, "::rt::p_indexbyte(p_s1[p_i],"));
 }
@@ -2054,9 +2096,9 @@ void test_block_io_string_index_uses_storage_addresses() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_blockwrite(p_f, ((const void*)&(p_s[p_i])), p_count, p_transferred)"));
+                 "::rt::p_blockwrite(p_f, ((const void*)((&p_s[p_i]))), p_count, p_transferred)"));
   CHECK(contains(out.impl,
-                 "::rt::p_blockread(p_f, ((void*)&(p_s[p_i])), p_count, p_transferred)"));
+                 "::rt::p_blockread(p_f, ((void*)((&p_s[p_i]))), p_count, p_transferred)"));
   CHECK(!contains(out.impl, "::rt::p_blockwrite(p_f, p_s[p_i],"));
   CHECK(!contains(out.impl, "::rt::p_blockread(p_f, p_s[p_i],"));
 }
@@ -2076,11 +2118,11 @@ void test_blockwrite_fixed_array_uses_const_storage_address() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_blockwrite(p_f, ((const void*)&(p_buf)), p_count)"));
+                 "::rt::p_blockwrite(p_f, ((const void*)((&p_buf))), p_count)"));
   CHECK(!contains(out.impl, "::rt::p_blockwrite(p_f, p_buf, p_count)"));
 }
 
-void test_byte_array_typecast_reinterprets_storage() {
+void test_byte_array_typecast_index_read_builds_value() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -2094,11 +2136,11 @@ void test_byte_array_typecast_reinterprets_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<t_t80bitarray>(p_e)[p_i]"));
+                 "::rt::tp2cc_reinterpret_bytes<t_t80bitarray>(p_e)[p_i]"));
   CHECK(!contains(out.impl, "t_t80bitarray(p_e)[p_i]"));
 }
 
-void test_local_byte_array_typecast_reinterprets_storage() {
+void test_local_byte_array_typecast_index_read_builds_value() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -2112,8 +2154,68 @@ void test_local_byte_array_typecast_reinterprets_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<t_t80bitarray>(p_e)[p_i]"));
+                 "::rt::tp2cc_reinterpret_bytes<t_t80bitarray>(p_e)[p_i]"));
   CHECK(!contains(out.impl, "t_t80bitarray(p_e)[p_i]"));
+}
+
+void test_array_typecast_index_assignment_uses_storage_view() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tarr = array[0..7] of longint;\n"
+      "procedure poke(var b; i : longint; v : longint);\n"
+      "implementation\n"
+      "procedure poke(var b; i : longint; v : longint);\n"
+      "begin\n"
+      "  tarr(b)[i] := v;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<int32_t>(::rt::tp2cc_byte_offset(p_b, ((p_i) - (0)) * sizeof(int32_t)), p_v);"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_bytes<t_tarr>(p_b)[p_i]"));
+}
+
+void test_untyped_array_value_cast_copies_caller_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tarr = array[0..7] of byte;\n"
+      "procedure copy(var b);\n"
+      "implementation\n"
+      "procedure copy(var b);\n"
+      "var\n"
+      "  a : tarr;\n"
+      "begin\n"
+      "  a := tarr(b);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_a = ::rt::tp2cc_reinterpret_load<t_tarr>(p_b);"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_bytes<t_tarr>(p_b)"));
+}
+
+void test_untyped_record_value_cast_copies_caller_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    value : longint;\n"
+      "  end;\n"
+      "procedure copy(var b);\n"
+      "implementation\n"
+      "procedure copy(var b);\n"
+      "var\n"
+      "  r : trec;\n"
+      "begin\n"
+      "  r := trec(b);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_r = ::rt::tp2cc_reinterpret_load<t_trec>(p_b);"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_copy<t_trec>(p_b)"));
 }
 
 void test_text_typecast_over_pointer_deref_keeps_file_lvalue() {
@@ -2543,6 +2645,22 @@ void test_primitive_cast_read_reinterprets_storage() {
   CHECK(!contains(out.impl, "p_l = ((int32_t)(p_b));"));
 }
 
+void test_addr_of_primitive_cast_returns_typed_pointer() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  plongint = ^longint;\n"
+      "function addr(var b) : plongint;\n"
+      "implementation\n"
+      "function addr(var b) : plongint;\n"
+      "begin\n"
+      "  addr := @longint(b);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = reinterpret_cast<int32_t*>(p_b);"));
+}
+
 void test_inc_untyped_primitive_cast_reinterprets_storage_by_byte_copy() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2611,6 +2729,56 @@ void test_aggregate_to_primitive_cast_reinterprets_bytes() {
       "end.\n");
   CHECK(contains(out.impl, "p_d = ::rt::tp2cc_reinterpret_copy<double>(p_bits);"));
   CHECK(!contains(out.impl, "p_d = ((double)(p_bits));"));
+}
+
+void test_nested_aggregate_to_primitive_cast_reinterprets_source_bytes() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure fetch;\n"
+      "implementation\n"
+      "procedure fetch;\n"
+      "type\n"
+      "  tdummyarray = packed array[0..7] of byte;\n"
+      "const\n"
+      "  dummy1 : int64 = $4330000080000000;\n"
+      "var\n"
+      "  a : tdummyarray;\n"
+      "  d : double;\n"
+      "begin\n"
+      "  a := tdummyarray(dummy1);\n"
+      "  d := double(tdummyarray(dummy1));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_a = ::rt::tp2cc_reinterpret_bytes<t_tdummyarray>(p_dummy1);"));
+  CHECK(contains(out.impl,
+                 "p_d = ::rt::tp2cc_reinterpret_copy<double>(::rt::tp2cc_reinterpret_bytes<t_tdummyarray>(p_dummy1));"));
+  CHECK(!contains(out.impl,
+                  "((double)(::rt::tp2cc_reinterpret_storage_ref<t_tdummyarray>(p_dummy1)))"));
+  CHECK(!contains(out.impl,
+                  "::rt::tp2cc_reinterpret_storage_ref<t_tdummyarray>(p_dummy1)"));
+}
+
+void test_nested_untyped_aggregate_to_primitive_cast_reads_caller_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure fetch(var b);\n"
+      "implementation\n"
+      "procedure fetch(var b);\n"
+      "type\n"
+      "  tdummyarray = packed array[0..7] of byte;\n"
+      "var\n"
+      "  d : double;\n"
+      "begin\n"
+      "  d := double(tdummyarray(b));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_d = ::rt::tp2cc_reinterpret_copy<double>(::rt::tp2cc_reinterpret_load<t_tdummyarray>(p_b));"));
+  CHECK(!contains(out.impl,
+                  "::rt::tp2cc_reinterpret_bytes<t_tdummyarray>(p_b)"));
 }
 
 void test_absolute_pointer_target_reinterprets_pointee_storage() {
@@ -4084,7 +4252,7 @@ void test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes() {
   // locations, and byte-buffer writers rely on that distinction. The pointed
   // bytes now lower as the raw pointer value rather than `&tp2cc_deref(p)`, so
   // the zero-count/nil case stays out of C++ UB.
-  CHECK(contains(out.impl, "p_sink(((const void*)&(p_p)), 1);"));
+  CHECK(contains(out.impl, "p_sink(((const void*)((&p_p))), 1);"));
   CHECK(contains(out.impl, "p_sink(((const void*)(p_p)), 1);"));
   CHECK(!contains(out.impl, "p_sink(((void*)&(::rt::tp2cc_deref(p_p))), 1);"));
 }
@@ -5070,8 +5238,31 @@ void test_packed_field_typed_cast_assignment_uses_memcpy_store() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_store<int32_t>(&(p_p.p_d1), p_v);"));
+                 "::rt::tp2cc_reinterpret_store<int32_t>(::rt::tp2cc_byte_offset((&p_p), offsetof(t_tg, p_d1)), p_v);"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_storage_ref<int32_t>"));
+}
+
+void test_packed_record_typecast_field_assignment_uses_storage_view() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tkind = (ka, kb);\n"
+      "  tview = packed record\n"
+      "    lo : word;\n"
+      "    sub : byte;\n"
+      "    kind : tkind;\n"
+      "  end;\n"
+      "procedure run(var r : longint; k : tkind);\n"
+      "implementation\n"
+      "procedure run(var r : longint; k : tkind);\n"
+      "begin\n"
+      "  tview(r).kind := k;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<t_tkind>(::rt::tp2cc_byte_offset((&p_r), offsetof(t_tview, p_kind)), p_k);"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_copy<t_tview>(p_r).p_kind"));
 }
 
 void test_inc_packed_field_routes_through_memcpy_inc() {
@@ -5091,7 +5282,7 @@ void test_inc_packed_field_routes_through_memcpy_inc() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_inc<uint16_t>(&(p_p.p_name_ord), p_n);"));
+                 "::rt::tp2cc_reinterpret_inc<uint16_t>(::rt::tp2cc_byte_offset((&p_p), offsetof(t_tdir, p_name_ord)), p_n);"));
 }
 
 void test_inc_local_packed_pointee_field_routes_through_memcpy_inc() {
@@ -5453,6 +5644,53 @@ void test_record_field_named_like_type_keeps_pascal_type_lookup() {
   CHECK(contains(out.header, "t_fvmlib p_fvmlib;"));
   CHECK(!contains(out.header, "p_fvmlib p_fvmlib;"));
   CHECK(contains(out.impl, "p_c.p_fvmlib.p_x = 7"));
+}
+
+void test_member_base_local_record_shadows_same_named_type() {
+  // `section.sectname` is value-member access when `section` is a parameter,
+  // even if a visible record type has the same Pascal name. Static type
+  // qualification is only valid when the base identifier is not a nearer
+  // value in Pascal scope.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  section = record\n"
+      "    sectname : longint;\n"
+      "  end;\n"
+      "procedure run(var section : section);\n"
+      "implementation\n"
+      "procedure run(var section : section);\n"
+      "begin\n"
+      "  section.sectname := 7;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_section.p_sectname = 7"));
+  CHECK(!contains(out.impl, "t_section::p_sectname"));
+}
+
+void test_member_base_local_class_shadows_same_named_type() {
+  // Same rule for classes: `tsym.typedef` uses the local variable `tsym`.
+  // Otherwise a class/type named `tsym` would be misread as a static
+  // qualifier and emit `t_tsym::p_typedef`.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsym = class\n"
+      "  end;\n"
+      "  ttypesym = class(tsym)\n"
+      "    typedef : longint;\n"
+      "  end;\n"
+      "procedure run(tsym : ttypesym);\n"
+      "implementation\n"
+      "procedure run(tsym : ttypesym);\n"
+      "begin\n"
+      "  tsym.typedef := 3;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_tsym->p_typedef = 3"));
+  CHECK(!contains(out.impl, "t_tsym::p_typedef"));
 }
 
 void test_forward_decl_does_not_create_duplicate_overload_candidate() {
@@ -5887,6 +6125,35 @@ void test_property_write_lowers_to_setter_call() {
   CHECK(!contains(out.impl, "p_b->p_val ="));
 }
 
+void test_typecast_property_write_lowers_to_setter_call() {
+  // Property assignment must run before raw storage lowering. Even with a
+  // class typecast on the base, `T(x).Prop := y` must call the Pascal setter
+  // instead of emitting an assignment to a nonexistent C++ property field.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class end;\n"
+      "  tbox = class(tbase)\n"
+      "  private\n"
+      "    procedure setval(v : longint);\n"
+      "  public\n"
+      "    property val : longint write setval;\n"
+      "  end;\n"
+      "procedure write_it(b : tbase);\n"
+      "implementation\n"
+      "procedure tbox.setval(v : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure write_it(b : tbase);\n"
+      "begin\n"
+      "  tbox(b).val := 42;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, ")->p_setval(42);"));
+  CHECK(!contains(out.impl, "p_val = 42"));
+}
+
 void test_property_read_through_field_lowers_to_field_access() {
   // `read fieldname` (no getter) must lower to the underlying field
   // access, not a phantom `p_fieldname()` method call.
@@ -5908,6 +6175,40 @@ void test_property_read_through_field_lowers_to_field_access() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "p_b->p_fval"));
+}
+
+void test_typecast_property_read_field_ref_uses_backing_field() {
+  // A record `const` formal is passed by value here, but lowering the actual
+  // still has to spell the source expression correctly. When `Prop` reads a
+  // backing field, the value expression must use that field name; the Pascal
+  // property name is not a C++ member.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tslot = record\n"
+      "    value : longint;\n"
+      "  end;\n"
+      "  tbase = class end;\n"
+      "  tbox = class(tbase)\n"
+      "  private\n"
+      "    fslot : tslot;\n"
+      "  public\n"
+      "    property slot : tslot read fslot;\n"
+      "  end;\n"
+      "procedure take(const s : tslot);\n"
+      "procedure run(b : tbase);\n"
+      "implementation\n"
+      "procedure take(const s : tslot);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run(b : tbase);\n"
+      "begin\n"
+      "  take(tbox(b).slot);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, ")->p_fslot"));
+  CHECK(!contains(out.impl, "p_slot"));
 }
 
 void test_default_indexed_property_obj_brackets_calls_getter() {
@@ -6934,6 +7235,87 @@ void test_reference_class_cast_keeps_pointer_member_access() {
   CHECK(contains(out.impl, "p_result = static_cast<t_tchild*>(p_p)->p_next;"));
 }
 
+void test_addr_of_reference_class_typecast_field_uses_object_pointer() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  plongint = ^longint;\n"
+      "  tbase = class end;\n"
+      "  tchild = class(tbase)\n"
+      "    value : longint;\n"
+      "  end;\n"
+      "function field_addr(p : tbase) : plongint;\n"
+      "implementation\n"
+      "function field_addr(p : tbase) : plongint;\n"
+      "begin\n"
+      "  field_addr := @tchild(p).value;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_result = reinterpret_cast<int32_t*>("
+                 "::rt::tp2cc_byte_offset(static_cast<t_tchild*>(p_p), "
+                 "offsetof(t_tchild, p_value)));"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_byte_offset((&p_p), "
+                            "offsetof(t_tchild, p_value))"));
+}
+
+void test_addr_of_object_pointer_field_returns_typed_pointer() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tinfo = record\n"
+      "    line : longint;\n"
+      "  end;\n"
+      "  pinfo = ^tinfo;\n"
+      "  pai = ^tai;\n"
+      "  tai = object\n"
+      "    fileinfo : tinfo;\n"
+      "  end;\n"
+      "function last_fileinfo(last : pai) : pinfo;\n"
+      "implementation\n"
+      "function last_fileinfo(last : pai) : pinfo;\n"
+      "begin\n"
+      "  last_fileinfo := @last^.fileinfo;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_result = reinterpret_cast<t_tinfo*>("
+                 "::rt::tp2cc_byte_offset(p_last, "
+                 "offsetof(t_tai, p_fileinfo)));"));
+}
+
+void test_reference_class_typecast_field_assignment_uses_assignment_operator() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = record\n"
+      "    n : longint;\n"
+      "  end;\n"
+      "  tbase = class end;\n"
+      "  tchild = class(tbase)\n"
+      "    value : tbox;\n"
+      "  end;\n"
+      "operator :=(const n : longint) : tbox;\n"
+      "procedure store(p : tbase; n : longint);\n"
+      "implementation\n"
+      "operator :=(const n : longint) : tbox;\n"
+      "begin\n"
+      "  result.n := n;\n"
+      "end;\n"
+      "procedure store(p : tbase; n : longint);\n"
+      "begin\n"
+      "  tchild(p).value := n;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "static_cast<t_tchild*>(p_p)->p_value = "
+                 "::p_u::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(p_n);"));
+  CHECK(!contains(out.impl, "static_cast<t_tchild*>(p_p)->p_value = p_n;"));
+}
+
 void test_is_as_use_pointer_target_types() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -7040,6 +7422,8 @@ int main() {
   RUN_TEST(test_free_function_trailing_default_argument_is_lowered);
   RUN_TEST(test_method_trailing_default_argument_is_lowered);
   RUN_TEST(test_unit_qualified_trailing_default_argument_is_lowered);
+  RUN_TEST(test_unit_qualified_variable_assignment_is_storage_designator);
+  RUN_TEST(test_external_used_unit_qualified_call_keeps_namespace_spelling);
   RUN_TEST(test_method_pointer_trailing_default_nil_is_lowered_as_empty_value);
   RUN_TEST(test_singleton_typed_array_const);
   RUN_TEST(test_nested_array_type);
@@ -7084,8 +7468,11 @@ int main() {
   RUN_TEST(test_string_index_buffer_helpers_use_storage_addresses);
   RUN_TEST(test_block_io_string_index_uses_storage_addresses);
   RUN_TEST(test_blockwrite_fixed_array_uses_const_storage_address);
-  RUN_TEST(test_byte_array_typecast_reinterprets_storage);
-  RUN_TEST(test_local_byte_array_typecast_reinterprets_storage);
+  RUN_TEST(test_byte_array_typecast_index_read_builds_value);
+  RUN_TEST(test_local_byte_array_typecast_index_read_builds_value);
+  RUN_TEST(test_array_typecast_index_assignment_uses_storage_view);
+  RUN_TEST(test_untyped_array_value_cast_copies_caller_storage);
+  RUN_TEST(test_untyped_record_value_cast_copies_caller_storage);
   RUN_TEST(test_text_typecast_over_pointer_deref_keeps_file_lvalue);
   RUN_TEST(test_visible_pointer_alias_cast_uses_qualified_type_spelling);
   RUN_TEST(test_local_pointer_alias_cast_uses_local_type_spelling);
@@ -7100,10 +7487,13 @@ int main() {
   RUN_TEST(test_sizeof_own_implementation_private_qualified_names);
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
   RUN_TEST(test_primitive_cast_read_reinterprets_storage);
+  RUN_TEST(test_addr_of_primitive_cast_returns_typed_pointer);
   RUN_TEST(test_inc_untyped_primitive_cast_reinterprets_storage_by_byte_copy);
   RUN_TEST(test_inc_primitive_cast_reinterprets_storage);
   RUN_TEST(test_untyped_array_view_index_uses_byte_load_store);
   RUN_TEST(test_aggregate_to_primitive_cast_reinterprets_bytes);
+  RUN_TEST(test_nested_aggregate_to_primitive_cast_reinterprets_source_bytes);
+  RUN_TEST(test_nested_untyped_aggregate_to_primitive_cast_reads_caller_storage);
   RUN_TEST(test_absolute_pointer_target_reinterprets_pointee_storage);
   RUN_TEST(test_absolute_pointer_alias_reinterprets_pointer_storage);
   RUN_TEST(test_pointer_alias_cast_on_pointer_expression_uses_plain_cast);
@@ -7212,6 +7602,7 @@ int main() {
   RUN_TEST(test_inline_anonymous_packed_record_var_lowers_to_struct);
   RUN_TEST(test_inline_anonymous_variant_record_lowers_to_union);
   RUN_TEST(test_packed_field_typed_cast_assignment_uses_memcpy_store);
+  RUN_TEST(test_packed_record_typecast_field_assignment_uses_storage_view);
   RUN_TEST(test_inc_packed_field_routes_through_memcpy_inc);
   RUN_TEST(test_inc_local_packed_pointee_field_routes_through_memcpy_inc);
   RUN_TEST(test_unaligned_typed_deref_read_uses_bytewise_load);
@@ -7227,6 +7618,8 @@ int main() {
   RUN_TEST(test_overload_default_arg_extends_arity_disambiguates_cleanly);
   RUN_TEST(test_class_field_shadows_unit_name_in_member_call);
   RUN_TEST(test_record_field_named_like_type_keeps_pascal_type_lookup);
+  RUN_TEST(test_member_base_local_record_shadows_same_named_type);
+  RUN_TEST(test_member_base_local_class_shadows_same_named_type);
   RUN_TEST(test_forward_decl_does_not_create_duplicate_overload_candidate);
   RUN_TEST(test_overload_local_unit_shadows_uses_chain_overloads);
   RUN_TEST(test_overload_exact_match_dominates_widening_alternatives);
@@ -7239,7 +7632,9 @@ int main() {
   RUN_TEST(test_overload_picks_set_difference_arg_against_typed_set_param);
   RUN_TEST(test_property_read_lowers_to_getter_call);
   RUN_TEST(test_property_write_lowers_to_setter_call);
+  RUN_TEST(test_typecast_property_write_lowers_to_setter_call);
   RUN_TEST(test_property_read_through_field_lowers_to_field_access);
+  RUN_TEST(test_typecast_property_read_field_ref_uses_backing_field);
   RUN_TEST(test_default_indexed_property_obj_brackets_calls_getter);
   RUN_TEST(test_property_read_returning_class_then_default_index_chains_through_getter);
   RUN_TEST(test_implicit_pointer_call_argument_gets_explicit_cast);
@@ -7285,6 +7680,9 @@ int main() {
   RUN_TEST(test_type_order_sees_method_signature_dependencies);
   RUN_TEST(test_reference_class_typecast_is_pointer_cast);
   RUN_TEST(test_reference_class_cast_keeps_pointer_member_access);
+  RUN_TEST(test_addr_of_reference_class_typecast_field_uses_object_pointer);
+  RUN_TEST(test_addr_of_object_pointer_field_returns_typed_pointer);
+  RUN_TEST(test_reference_class_typecast_field_assignment_uses_assignment_operator);
   RUN_TEST(test_is_as_use_pointer_target_types);
   RUN_TEST(test_cxx_reserved_word_identifiers);
 

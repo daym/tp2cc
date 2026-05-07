@@ -126,21 +126,18 @@ const ProcDecl* EmitResolution::resolve_call_decl(const Expr& callee) {
   }
   if (callee.kind != Kind::Member || !registry_) return nullptr;
   const auto& mem = static_cast<const Member&>(callee);
-  if (mem.base->kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(*mem.base);
-    if (registry_->units.count(id.name)) {
-      // Unit-qualified calls still need the underlying ProcDecl here so call
-      // lowering can materialize trailing defaults and parameter modes before
-      // the printer spells the final C++ call.
-      auto uit = registry_->units.find(id.name);
-      if (uit != registry_->units.end()) {
-        const ProcInfo* pi =
-            (id.name == scope_.current_unit_name)
-                ? uit->second.find_proc(mem.name)
-                : uit->second.find_export_proc(mem.name);
-        if (pi) {
-          return pi->decl.get();
-        }
+  if (auto unit_member = analysis_.resolve_unit_qualified_member(mem)) {
+    // Unit-qualified calls still need the underlying ProcDecl here so call
+    // lowering can materialize trailing defaults and parameter modes before
+    // the printer spells the final C++ call.
+    auto uit = registry_->units.find(unit_member->unit_name);
+    if (uit != registry_->units.end()) {
+      const ProcInfo* pi =
+          (unit_member->unit_name == scope_.current_unit_name)
+              ? uit->second.find_proc(mem.name)
+              : uit->second.find_export_proc(mem.name);
+      if (pi) {
+        return pi->decl.get();
       }
     }
   }
@@ -149,8 +146,9 @@ const ProcDecl* EmitResolution::resolve_call_decl(const Expr& callee) {
     const auto& id = static_cast<const Ident&>(*mem.base);
     if (id.name == "self") {
       cls = scope_.current_class_name;
-    } else if (registry_->has_class(id.name, scope_.current_unit_name) ||
-               registry_->records.count(id.name)) {
+    } else if (!analysis_.identifier_is_shadowed_value(id.name) &&
+               (registry_->has_class(id.name, scope_.current_unit_name) ||
+                registry_->records.count(id.name))) {
       cls = id.name;
     } else {
       // Method calls through a variable or parameter receiver (`source.read`)
@@ -541,8 +539,9 @@ ResolvedCall EmitResolution::resolve_call(
       if (member.base->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*member.base);
         if (id.name == "self") return scope_.current_class_name;
-        if (registry_->has_class(id.name, scope_.current_unit_name) ||
-            registry_->records.count(id.name)) {
+        if (!analysis_.identifier_is_shadowed_value(id.name) &&
+            (registry_->has_class(id.name, scope_.current_unit_name) ||
+             registry_->records.count(id.name))) {
           return id.name;
         }
         return analysis_.deduce_class_alias(*member.base);
@@ -569,22 +568,16 @@ ResolvedCall EmitResolution::resolve_call(
           append_class_method_cands(parent, mem.name, all_cands);
         }
       }
-      bool ident_is_value =
-          scope_.local_scope.count(id.name) > 0 ||
-          (!scope_.current_class_name.empty() &&
-           (registry_->lookup_class_field(scope_.current_class_name, id.name,
-                                          scope_.current_unit_name) ||
-            registry_->lookup_class_property(scope_.current_class_name, id.name,
-                                             scope_.current_unit_name) ||
-            registry_->lookup_class_method(scope_.current_class_name, id.name,
-                                           scope_.current_unit_name)));
-      // A bare identifier can be both a unit name and a local/field name.
-      // Pascal lexical scope says locals/fields win, so only fall back to the
-      // unit-qualified interpretation when the base ident is not a value.
-      if (!inherited_call && !ident_is_value &&
-          registry_->units.count(id.name)) {
-        unit_qualified = true;
-        append_unit_export_proc_cands(id.name, mem.name, all_cands);
+      if (!inherited_call) {
+        // `Unit.proc(args)` uses the same Member AST node kind as
+        // `receiver.method(args)`. Ask analysis for the qualified-unit
+        // classification so overload resolution does not duplicate the
+        // shadowing/uses checks.
+        if (auto unit_member = analysis_.resolve_unit_qualified_member(mem)) {
+          unit_qualified = true;
+          append_unit_export_proc_cands(unit_member->unit_name, mem.name,
+                                        all_cands);
+        }
       }
     }
     if (!inherited_call && !unit_qualified) {

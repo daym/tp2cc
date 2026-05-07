@@ -200,70 +200,6 @@ void EmitStmts::emit_try_stmt(const Try& t) {
 }
 
 void EmitStmts::emit_assign_stmt(const Assign& a) {
-  // Pascal `T(lv) := rhs` writes through a cast view of the same
-  // storage. Emit that storage reinterpret explicitly.
-  if (a.target->kind == Kind::Call) {
-    const auto& c = static_cast<const Call&>(*a.target);
-    if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
-      const auto& id = static_cast<const Ident&>(*c.callee);
-      if (id.name == "unaligned") {
-        if (auto storage = storage_.bytewise_storage_ref(*c.args[0])) {
-          stmt_ops_.emitln("::rt::tp2cc_unaligned_store<" +
-                           storage->elem_cxx + ">(" + storage->void_ptr_text +
-                           ", " + stmt_ops_.expr_to_cxx(*a.value) + ");");
-          return;
-        }
-      }
-      if (std::string ptr = storage_.primitive_cast_untyped_storage_ptr(c);
-          !ptr.empty()) {
-        stmt_ops_.emitln("::rt::tp2cc_reinterpret_store<" +
-                         primitive_type_cxx(id.name) + ">(" + ptr + ", " +
-                         stmt_ops_.expr_to_cxx(*a.value) + ");");
-        return;
-      }
-      // `T(packed_record.field) := rhs` -- forming a `T&` to a packed
-      // field is UB, so route the assignment through `memcpy` via
-      // `tp2cc_reinterpret_store` instead of `lvalue_ref = rhs;`.
-      if (std::string ptr = storage_.primitive_cast_packed_field_ptr(c);
-          !ptr.empty()) {
-        stmt_ops_.emitln("::rt::tp2cc_reinterpret_store<" +
-                         primitive_type_cxx(id.name) + ">(" + ptr + ", " +
-                         stmt_ops_.expr_to_cxx(*a.value) + ");");
-        return;
-      }
-      if (std::string ref = storage_.primitive_cast_lvalue_ref(c);
-          !ref.empty()) {
-        stmt_ops_.emitln(ref + " = " + stmt_ops_.expr_to_cxx(*a.value) + ";");
-        return;
-      }
-      if (auto view = storage_.typecast_storage_view(c)) {
-        stmt_ops_.emitln(storage_.reinterpret_ref_text(
-                             view->target_cxx, view->source_cxx,
-                             view->pointee_view) +
-                         " = " + stmt_ops_.expr_to_cxx(*a.value) + ";");
-        return;
-      }
-      const TypeExpr* tgt = nullptr;
-      auto lit = scope_.local_type_aliases_scoped.find(id.name);
-      if (lit != scope_.local_type_aliases_scoped.end() && lit->second) {
-        tgt = analysis_.canonicalize_type(lit->second);
-      } else if (registry_) {
-        auto ait = registry_->aliases.find(id.name);
-        if (ait != registry_->aliases.end() && ait->second.target.get()) {
-          tgt = registry_->canonicalize(ait->second.target.get());
-        }
-      }
-      if (tgt && tgt->kind == Kind::TyPointer) {
-        std::string lv = stmt_ops_.expr_to_cxx(*c.args[0]);
-        std::string rhs = stmt_ops_.expr_to_cxx(*a.value);
-        stmt_ops_.emitln(storage_.reinterpret_ref_text(
-                             types_.type_name_text_to_cxx(id.name), lv,
-                             storage_.expr_is_untyped_storage_ref(*c.args[0])) +
-                         " = " + rhs + ";");
-        return;
-      }
-    }
-  }
   if (registry_ && a.target->kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(*a.target);
     std::string cls;
@@ -285,6 +221,43 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
       }
     }
   }
+  auto assignment_operator_rhs =
+      [&](const TypeExpr* value_ty,
+          const TypeExpr* target_ty) -> std::optional<std::string> {
+    if (auto conv = resolution_.find_assignment_operator(value_ty, target_ty);
+        conv.decl) {
+      std::string fn = pascal_assignment_operator_helper_name(*conv.decl);
+      if (!conv.defining_unit.empty()) {
+        fn = unit_namespace_prefix(conv.defining_unit) + fn;
+      }
+      return fn + "(" + stmt_ops_.expr_to_cxx(*a.value) + ")";
+    }
+    return std::nullopt;
+  };
+
+  // Assignment targets are storage contexts in Pascal. Most targets also spell
+  // ordinary C++ lvalues, and those must still use the normal assignment path
+  // below so shortstrings, range checks, properties, and custom assignment
+  // operators keep their existing rules. Intercept only targets whose storage
+  // cannot safely be expressed as a plain C++ lvalue, such as untyped storage,
+  // packed scalar storage, `unaligned(...)`, or a storage-view typecast.
+  if (auto target = storage_.storage_designator(*a.target);
+      target && target->is_special()) {
+    const TypeExpr* target_ty = analysis_.deduce_type(*a.target);
+    const TypeExpr* value_ty = analysis_.deduce_type(*a.value);
+    std::string rhs_cxx;
+    if (auto converted = assignment_operator_rhs(value_ty, target_ty)) {
+      rhs_cxx = *converted;
+    } else {
+      // Special storage changes only how the destination address is spelled.
+      // The RHS is still a Pascal assignment, so constants and user-defined
+      // `operator :=` conversions must be lowered exactly as for an ordinary
+      // lvalue before the bytewise/reference store receives the value.
+      rhs_cxx = stmt_ops_.const_value_to_cxx(*a.value, target_ty);
+    }
+    stmt_ops_.emitln(storage_.storage_designator_store(*target, rhs_cxx) + ";");
+    return;
+  }
   if (registry_ && a.target->kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(*a.target);
     if (auto text =
@@ -296,12 +269,6 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
   }
   if (registry_ && a.target->kind == Kind::Index) {
     const auto& ix = static_cast<const Index&>(*a.target);
-    if (auto view = storage_.untyped_storage_index_view(ix)) {
-      stmt_ops_.emitln("::rt::tp2cc_reinterpret_store<" + view->elem_cxx +
-                       ">(" + view->ptr_cxx + ", " +
-                       stmt_ops_.expr_to_cxx(*a.value) + ");");
-      return;
-    }
     std::vector<const Expr*> indices;
     for (const auto& idx : ix.indices) indices.push_back(idx.get());
     if (ix.base->kind == Kind::Member) {
@@ -363,7 +330,10 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
   bool saved_suppress_packed_scalar_value_load =
       scope_.suppress_packed_scalar_value_load;
   scope_.suppress_packed_scalar_value_load = true;
+  bool saved_storage_view_context = scope_.storage_view_context;
+  scope_.storage_view_context = true;
   std::string target_cxx = stmt_ops_.expr_to_cxx(*a.target);
+  scope_.storage_view_context = saved_storage_view_context;
   scope_.suppress_packed_scalar_value_load =
       saved_suppress_packed_scalar_value_load;
   scope_.lhs_fn_rewrite.clear();
@@ -372,14 +342,8 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
   scope_.lhs_outer_result_rewrite_slot.clear();
   const TypeExpr* target_ty = analysis_.deduce_type(*a.target);
   const TypeExpr* value_ty = analysis_.deduce_type(*a.value);
-  if (auto conv = resolution_.find_assignment_operator(value_ty, target_ty);
-      conv.decl) {
-    std::string fn = pascal_assignment_operator_helper_name(*conv.decl);
-    if (!conv.defining_unit.empty()) {
-      fn = unit_namespace_prefix(conv.defining_unit) + fn;
-    }
-    stmt_ops_.emitln(target_cxx + " = " + fn + "(" +
-                     stmt_ops_.expr_to_cxx(*a.value) + ");");
+  if (auto converted = assignment_operator_rhs(value_ty, target_ty)) {
+    stmt_ops_.emitln(target_cxx + " = " + *converted + ";");
     return;
   }
   std::string rhs_cxx = stmt_ops_.const_value_to_cxx(*a.value, target_ty);

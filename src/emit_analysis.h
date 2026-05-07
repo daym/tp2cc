@@ -45,6 +45,12 @@ struct ImplicitPropertyLookup {
   bool from_with = false;
 };
 
+struct UnitQualifiedMemberLookup {
+  std::string unit_name;
+  std::string member_name;
+  ResolveResult resolved;
+};
+
 enum class SetConversionKind : uint8_t {
   Incompatible,
   Exact,
@@ -106,6 +112,15 @@ class EmitAnalysis {
   // visibility rules rather than the registry's global last-wins maps.
   bool with_bind_has_visible_member(const ScopeStateView::WithBind& wb,
                                     std::string_view name);
+  // A value in the current lexical scope blocks interpreting the same
+  // identifier as a unit or type qualifier in `name.member`.
+  bool identifier_is_shadowed_value(std::string_view name);
+  // `Unit.name` and `record.field` share the same Member AST node. Resolve
+  // the unit-qualified form once, after Pascal lexical shadowing rules have
+  // ruled out a nearer value named `Unit`, so value/call/storage emitters do
+  // not each recurse into the qualifier as if it were an expression.
+  std::optional<UnitQualifiedMemberLookup> resolve_unit_qualified_member(
+      const ast::Member& mem);
   const VarInfo* find_visible_unit_var(const std::string& name);
   const ConstInfo* find_visible_unit_const(const std::string& name);
   const EnumInfoReg* find_visible_enum_info_for_member(const std::string& name);
@@ -134,6 +149,7 @@ class EmitAnalysis {
   };
 
   std::string implicit_self_cxx();
+  bool is_visible_unit_qualifier(std::string_view name);
   const ast::TySet* synthesize_set_type(
       const ast::TypeExpr* element,
       std::optional<std::pair<int64_t, int64_t>> explicit_bounds);

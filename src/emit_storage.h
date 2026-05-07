@@ -57,11 +57,54 @@ struct EmitAbsoluteTargetInfo {
 struct EmitTypecastStorageView {
   const ast::Expr* source = nullptr;
   std::string source_cxx;
+  std::string source_ptr_cxx;
   std::string target_cxx;
   const ast::TypeExpr* target_type = nullptr;
   bool target_is_primitive = false;
   bool source_is_untyped_storage = false;
   bool pointee_view = false;
+};
+
+enum class EmitStorageAccess {
+  Ordinary,
+  ReinterpretRef,
+  Bytewise,
+  UnalignedBytewise,
+};
+
+enum class EmitStorageAddressForm {
+  None,
+  TypedStoragePointer,
+  RawBytePointer,
+};
+
+// C++ lowering of one Pascal variable designator. Pascal has one storage
+// concept for assignment targets, `Inc`/`Dec`, `@`, and var/out/untyped-var
+// actuals, but that storage cannot always be represented as a C++ reference:
+// untyped-var storage is already a raw caller-storage pointer, and packed
+// fields may be misaligned and require byte-copy access instead of typed
+// references. Keep the semantic decision in one object so callers ask for
+// "store", "address", or "increment" and get the correct representation.
+struct EmitStorageDesignator {
+  EmitStorageAccess access = EmitStorageAccess::Ordinary;
+  std::string text;
+  // Address of the Pascal storage denoted by the designator, when that address
+  // is known without forming a typed C++ reference. This is set for cases such
+  // as `p^` and `T(x)`, where Pascal asks for storage but `&text` would first
+  // dereference a pointer or bind a reinterpreted reference.
+  std::string ptr_cxx;
+  std::string type_cxx;
+  EmitStorageAddressForm ptr_form = EmitStorageAddressForm::None;
+
+  bool is_bytewise() const {
+    return access == EmitStorageAccess::Bytewise ||
+           access == EmitStorageAccess::UnalignedBytewise;
+  }
+  bool is_special() const { return access != EmitStorageAccess::Ordinary; }
+  bool raw_address_needs_typed_cast() const {
+    return is_bytewise() || access == EmitStorageAccess::ReinterpretRef ||
+           ptr_form == EmitStorageAddressForm::RawBytePointer;
+  }
 };
 
 // Storage / aliasing lowering. This module owns the dangerous questions about
@@ -80,15 +123,29 @@ class EmitStorage {
               ResolveNameProvider& resolve_name_provider,
               EmitStorageExprOps& expr_ops);
 
-  std::string primitive_cast_lvalue_ref(const ast::Call& c);
-  std::string primitive_cast_untyped_storage_ptr(const ast::Call& c);
-  std::string primitive_cast_packed_field_ptr(const ast::Call& c);
   std::optional<EmitTypecastStorageView> typecast_storage_view(
       const ast::Expr& e);
+  std::optional<EmitStorageDesignator> storage_designator(const ast::Expr& e);
+  std::string storage_designator_value(const EmitStorageDesignator& d);
+  // Raw address of the Pascal storage denoted by a designator. This is for
+  // internal storage computations: byte offsets, memcpy helpers, and backing
+  // var/out machinery. It is not the public Pascal value of `@expr`.
+  std::string storage_designator_raw_address(const EmitStorageDesignator& d);
+  // Typed Pascal pointer value produced by `@expr`. This may cast an internal
+  // raw byte address to `T*` because `@expr` has the type "^T" in Pascal.
+  std::string storage_designator_typed_address_value(
+      const EmitStorageDesignator& d);
+  // Address passed to untyped `var`/`const` formals. Those formals receive raw
+  // caller storage as `void*`/`const void*`, not the typed value of `@expr`.
+  std::string storage_designator_untyped_actual_address(
+      const EmitStorageDesignator& d, std::string_view ptr_cast);
+  std::string storage_designator_store(const EmitStorageDesignator& d,
+                                       const std::string& value_cxx);
+  std::string storage_designator_inc_dec(const EmitStorageDesignator& d,
+                                         bool is_inc,
+                                         const std::string& delta_cxx = {});
 
   std::optional<EmitBytewiseStorage> bytewise_storage_ref(const ast::Expr& e);
-  std::optional<EmitBytewiseStorage> packed_field_storage_ref(
-      const ast::Expr& e);
   std::optional<EmitBytewiseStorage> packed_scalar_storage_ref(
       const ast::Expr& e);
   std::optional<EmitUntypedStorageIndexView> untyped_storage_index_view(
@@ -147,6 +204,13 @@ class EmitStorage {
       const ast::VarDecl& vd);
 
  private:
+  // Return the C++ type spelling to use as `offsetof(TYPE, field)`. Named
+  // Pascal record/object types use their generated struct name; anonymous local
+  // aggregates use `decltype(base_expr_cxx)` because there is no named Pascal
+  // type to ask the registry for.
+  std::string offsetof_base_type_cxx(const ast::TypeExpr* t,
+                                     const std::string& base_expr_cxx);
+
   const TypeRegistry* registry_;
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;
