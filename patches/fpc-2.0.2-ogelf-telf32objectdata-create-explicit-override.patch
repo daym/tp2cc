@@ -1,0 +1,31 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-07
+Subject: Make TElf32ObjectData.Create an explicit override
+License: expat
+
+TAsmObjectData.Create(const n:string) is virtual.  TElf32ObjectData.Create
+has the same signature but is not declared "override".  FPC treats that as a
+reintroduced method, which is distinct from overriding the inherited virtual
+method.
+
+The sibling COFF object-data classes in compiler/ogcoff.pas already declare
+their Create(const n:string) constructors as overrides.  The FPC 2.0.2
+compiler sources used by tp2cc have no TElf32ObjectData descendants and no
+TElf32ObjectData class-reference construction path.  The object data is
+created directly in TElf32ObjectOutput.NewObjectData by calling
+TElf32ObjectData.Create(n).  Therefore changing this declaration from a
+reintroduced method to an explicit override does not change an observed
+bootstrap call path, while avoiding a same-signature reintroduced class
+method that tp2cc cannot represent.
+
+--- a/compiler/ogelf.pas
++++ b/compiler/ogelf.pas
+@@ -67,7 +67,7 @@ const
+          plTSect,
+          symsect  : telf32Section;
+          syms     : Tdynamicarray;
+-         constructor create(const n:string);
++         constructor create(const n:string);override;
+          destructor  destroy;override;
+          function  sectionname(atype:tasmsectiontype;const aname:string):string;override;
+          procedure writereloc(data,len:aint;p:tasmsymbol;relative:TAsmRelocationType);override;
