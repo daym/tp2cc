@@ -552,8 +552,6 @@ void Parser::parse_proc_modifiers(ProcDecl& pd) {
     else if (is_directive("reintroduce")) {
       // `reintroduce' hides an inherited virtual method at this
       // overload-resolution level without marking it `override'.
-      // Emit-time: can be translated to a fresh `virtual' declaration
-      // on the derived class.  For now, recognise and skip.
       advance();
     }
     else if (is_directive("deprecated")

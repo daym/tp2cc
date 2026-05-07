@@ -343,6 +343,41 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
     if (to.is_forward) {
       return;
     }
+    auto inherited_virtual_with_same_cxx_signature =
+        [&](const ProcDecl& pd) -> bool {
+      if (!registry_ || pd.is_class_method || to.parent.empty()) return false;
+
+      const std::string method_name = ascii_lower(pd.name);
+      const std::string cxx_name = mangle(pd.name);
+      const std::string params = param_type_list_to_cxx(pd.params);
+      const ClassInfo* parent =
+          registry_->lookup_class(to.parent, scope_.current_unit_name);
+      std::unordered_set<std::string> seen;
+      while (parent) {
+        const std::string identity = parent->defining_unit + "." + parent->name;
+        if (seen.count(identity)) break;
+        seen.insert(identity);
+
+        auto mit = parent->methods.find(method_name);
+        if (mit != parent->methods.end()) {
+          for (const auto& inherited : mit->second) {
+            if (!inherited.decl || !inherited.is_virtual ||
+                inherited.kind == SymKind::ClassMethod) {
+              continue;
+            }
+            if (mangle(inherited.decl->name) == cxx_name &&
+                param_type_list_to_cxx(inherited.decl->params) == params) {
+              return true;
+            }
+          }
+        }
+        parent = parent->parent.empty()
+                     ? nullptr
+                     : registry_->lookup_class(parent->parent,
+                                              parent->defining_unit);
+      }
+      return false;
+    };
     std::string line = "struct " + name;
     std::vector<std::string> bases;
     if (!to.parent.empty()) {
@@ -384,6 +419,12 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         }
       } else if (m.kind == ObjectMemberKind::Method) {
         const auto& pd = *m.method;
+        if (!pd.is_override && inherited_virtual_with_same_cxx_signature(pd)) {
+          emit_ops_.report_error(
+              pd.loc,
+              "same-signature inherited virtual method must use `override'; "
+              "generated C++ would override it implicitly");
+        }
         std::string ret = proc_return_type_to_cxx(pd);
         std::string prefix;
         if (pd.is_class_method) {

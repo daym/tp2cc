@@ -4252,6 +4252,239 @@ void test_abstract_method_emits_fail_fast_virtual_body() {
   CHECK(!contains(out.header, "virtual void p_doit();"));
 }
 
+void test_reintroduce_same_signature_inherited_virtual_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    procedure doit(n : longint); virtual;\n"
+      "  end;\n"
+      "  tmid = class(tbase)\n"
+      "  end;\n"
+      "  tchild = class(tmid)\n"
+      "    procedure doit(n : longint); reintroduce;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tbase.doit(n : longint); begin end;\n"
+      "procedure tchild.doit(n : longint); begin end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_reintroduce_same_signature_inherited_virtual_constructor_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    constructor create; virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    constructor create; reintroduce;\n"
+      "  end;\n"
+      "implementation\n"
+      "constructor tbase.create; begin end;\n"
+      "constructor tchild.create; begin end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_reintroduce_different_signature_is_still_accepted() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    procedure doit(n : longint); virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    procedure doit(s : shortstring); reintroduce;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tbase.doit(n : longint); begin end;\n"
+      "procedure tchild.doit(s : shortstring); begin end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+}
+
+void test_plain_different_signature_inherited_virtual_is_accepted() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    procedure doit(n : longint); virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    procedure doit(s : shortstring);\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tbase.doit(n : longint); begin end;\n"
+      "procedure tchild.doit(s : shortstring); begin end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+}
+
+void test_explicit_reintroduce_same_signature_inherited_virtual_method_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    function getcopy : tbase; virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    function getcopy : tbase; virtual; reintroduce;\n"
+      "  end;\n"
+      "implementation\n"
+      "function tbase.getcopy : tbase; begin getcopy := nil; end;\n"
+      "function tchild.getcopy : tbase; begin getcopy := nil; end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_explicit_reintroduce_same_signature_inherited_virtual_constructor_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    constructor create; virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    constructor create; virtual; reintroduce;\n"
+      "  end;\n"
+      "implementation\n"
+      "constructor tbase.create; begin end;\n"
+      "constructor tchild.create; begin end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_explicit_reintroduce_nonvirtual_same_signature_method_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    procedure doit; virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    procedure doit; reintroduce;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tbase.doit; begin end;\n"
+      "procedure tchild.doit; begin end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_explicit_reintroduce_nonvirtual_same_signature_constructor_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    constructor create; virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    constructor create; reintroduce;\n"
+      "  end;\n"
+      "implementation\n"
+      "constructor tbase.create; begin end;\n"
+      "constructor tchild.create; begin end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_plain_same_signature_inherited_virtual_method_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    function getcopy : tbase; virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    function getcopy : tbase; virtual;\n"
+      "  end;\n"
+      "implementation\n"
+      "function tbase.getcopy : tbase; begin getcopy := nil; end;\n"
+      "function tchild.getcopy : tbase; begin getcopy := nil; end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_plain_same_signature_inherited_virtual_constructor_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    constructor create; virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    constructor create;\n"
+      "  end;\n"
+      "implementation\n"
+      "constructor tbase.create; begin end;\n"
+      "constructor tchild.create; begin end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_override_same_signature_inherited_virtual_method_is_accepted() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    function getcopy : tbase; virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    function getcopy : tbase; override;\n"
+      "  end;\n"
+      "implementation\n"
+      "function tbase.getcopy : tbase; begin getcopy := nil; end;\n"
+      "function tchild.getcopy : tbase; begin getcopy := nil; end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.header, "virtual t_tbase* p_getcopy() override;"));
+}
+
+void test_override_same_signature_inherited_virtual_constructor_is_accepted() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    constructor create; virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    constructor create; override;\n"
+      "  end;\n"
+      "implementation\n"
+      "constructor tbase.create; begin end;\n"
+      "constructor tchild.create; begin end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.header, "bool p_create() override;"));
+  CHECK(contains(out.impl, "bool t_tchild::p_create()"));
+}
+
 void test_pointer_sized_integer_aliases_lower_through_rt() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -6904,6 +7137,18 @@ int main() {
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
   RUN_TEST(test_empty_inherited_class_decl_emits_real_struct);
   RUN_TEST(test_abstract_method_emits_fail_fast_virtual_body);
+  RUN_TEST(test_reintroduce_same_signature_inherited_virtual_reports_error);
+  RUN_TEST(test_reintroduce_same_signature_inherited_virtual_constructor_reports_error);
+  RUN_TEST(test_reintroduce_different_signature_is_still_accepted);
+  RUN_TEST(test_plain_different_signature_inherited_virtual_is_accepted);
+  RUN_TEST(test_explicit_reintroduce_same_signature_inherited_virtual_method_reports_error);
+  RUN_TEST(test_explicit_reintroduce_same_signature_inherited_virtual_constructor_reports_error);
+  RUN_TEST(test_explicit_reintroduce_nonvirtual_same_signature_method_reports_error);
+  RUN_TEST(test_explicit_reintroduce_nonvirtual_same_signature_constructor_reports_error);
+  RUN_TEST(test_plain_same_signature_inherited_virtual_method_reports_error);
+  RUN_TEST(test_plain_same_signature_inherited_virtual_constructor_reports_error);
+  RUN_TEST(test_override_same_signature_inherited_virtual_method_is_accepted);
+  RUN_TEST(test_override_same_signature_inherited_virtual_constructor_is_accepted);
   RUN_TEST(test_pointer_sized_integer_aliases_lower_through_rt);
   RUN_TEST(test_tclass_alias_lowers_through_rt);
   RUN_TEST(test_corba_interface_emits_pure_virtual_base_and_pointer_calls);

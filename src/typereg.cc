@@ -84,7 +84,7 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
       const auto& pd = *m.method;
       MethodSig ms;
       ms.decl = m.method;
-      ms.is_virtual = pd.is_virtual;
+      ms.is_virtual = pd.is_virtual || pd.is_abstract || pd.is_override;
       ms.is_function = (pd.pkind == ProcKind::Function);
       if (pd.pkind == ProcKind::Constructor) ms.kind = SymKind::Constructor;
       else if (pd.pkind == ProcKind::Destructor) ms.kind = SymKind::Destructor;
