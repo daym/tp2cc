@@ -497,8 +497,15 @@ int cmd_emit(const CliOptions& opts, const std::string& path,
   Parser parser(*lex);
   auto u = parser.parse();
   if (!u || error_count() > 0) return 1;
+  // Even single-unit emission needs a registry. Typecasts to local/unit array
+  // aliases are context-sensitive: value emission builds a copied array value,
+  // while storage contexts need a typed view of the original storage. That
+  // decision depends on knowing that the callee name is a Pascal type.
+  TypeRegistry reg;
+  std::vector<const ast::UnitNode*> units{u.get()};
+  reg.build(units);
   int errs_before = error_count();
-  auto out = emit_unit(*u);
+  auto out = emit_unit(*u, &reg);
   if (error_count() != errs_before) return 1;
   fs::create_directories(outdir);
   std::string stem = u->name;
