@@ -435,8 +435,8 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
             inherited_same_signature_virtual) {
           emit_ops_.report_error(
               pd.loc,
-              "same-signature inherited virtual method must use `override'; "
-              "generated C++ would override it implicitly");
+              "method matches an inherited virtual method; use `override' "
+              "to override.  Note: `reintroduce' is not supported.");
         }
         std::string ret = proc_return_type_to_cxx(pd);
         std::string prefix;
