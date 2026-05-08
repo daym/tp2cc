@@ -865,15 +865,18 @@ void test_proc_modifiers_forward_external() {
       "interface\n"
       "procedure a; forward;\n"
       "procedure b; cdecl; external 'libc' name 'b';\n"
+      "procedure c; noreturn;\n"
       "implementation\n"
       "procedure a; begin end;\n"
       "end.\n");
   CHECK_EQ(error_count() - before, 0);
-  if (u && u->interface_decls.size() >= 2) {
+  if (u && u->interface_decls.size() >= 3) {
     auto* pa = dynamic_cast<ProcDecl*>(u->interface_decls[0].get());
     auto* pb = dynamic_cast<ProcDecl*>(u->interface_decls[1].get());
+    auto* pc = dynamic_cast<ProcDecl*>(u->interface_decls[2].get());
     CHECK(pa && pa->is_forward);
     CHECK(pb && pb->is_external && pb->is_cdecl);
+    CHECK(pc && pc->is_noreturn);
     if (pb) {
       CHECK_EQ(pb->external_lib, std::string("libc"));
       CHECK_EQ(pb->external_name, std::string("b"));

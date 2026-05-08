@@ -1030,6 +1030,20 @@ void test_proc_signature_in_header() {
   CHECK(contains(out.header, "int32_t p_bar(int32_t p_a, int32_t p_b);"));
 }
 
+void test_noreturn_directive_emits_cxx_attribute() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "procedure fatal(code : longint); noreturn;\n"
+      "implementation\n"
+      "procedure fatal(code : longint); noreturn;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "[[noreturn]] void p_fatal(int32_t p_code);"));
+  CHECK(contains(out.impl, "[[noreturn]] void p_fatal(int32_t p_code) {"));
+}
+
 void test_typed_array_const() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -7439,6 +7453,7 @@ int main() {
   RUN_TEST(test_const_fixed_record_array_parameter_stays_value_abi);
   RUN_TEST(test_const_fixed_classref_array_parameter_stays_value_abi);
   RUN_TEST(test_proc_signature_in_header);
+  RUN_TEST(test_noreturn_directive_emits_cxx_attribute);
   RUN_TEST(test_typed_array_const);
   RUN_TEST(test_typed_array_const_with_inline_subrange_element_type);
   RUN_TEST(test_free_function_trailing_default_argument_is_lowered);

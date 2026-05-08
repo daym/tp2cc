@@ -224,8 +224,8 @@ void EmitProcs::emit_proc_body(const ProcDecl& pd) {
                 analysis_.canonical_method_owner_type_name(pd.of_type)) +
             "::" + qname;
   }
-  emit_ops_.emitln(ret + " " + qname + "(" + decls_.param_list_to_cxx(pd.params) +
-                   ") {");
+  emit_ops_.emitln(decls_.proc_attributes_to_cxx(pd) + ret + " " + qname +
+                   "(" + decls_.param_list_to_cxx(pd.params) + ") {");
   emit_ops_.indent();
 
   if (pd.is_abstract && !pd.body) {

@@ -510,6 +510,7 @@ void Parser::parse_proc_modifiers(ProcDecl& pd) {
     else if (is_directive("forward")) { pd.is_forward = true; advance(); }
     else if (is_directive("inline")) { pd.is_inline = true; advance(); }
     else if (is_directive("cdecl")) { pd.is_cdecl = true; advance(); }
+    else if (is_directive("noreturn")) { pd.is_noreturn = true; advance(); }
     else if (is_directive("assembler")) { pd.is_assembler = true; advance(); }
     else if (is_directive("far")) { advance(); }
     else if (is_directive("near")) { advance(); }

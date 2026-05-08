@@ -425,6 +425,7 @@ struct ProcDecl : Decl {
   bool is_forward = false;
   bool is_inline = false;
   bool is_cdecl = false;
+  bool is_noreturn = false;
   bool is_external = false;
   bool is_assembler = false;
   std::string external_lib;    // when is_external

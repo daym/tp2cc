@@ -329,7 +329,8 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
     for (const auto& m : ti.members) {
       if (m.kind != ObjectMemberKind::Method || !m.method) continue;
       const auto& pd = *m.method;
-      emit_ops_.emitln("virtual " + proc_return_type_to_cxx(pd) + " " +
+      emit_ops_.emitln(proc_attributes_to_cxx(pd) + "virtual " +
+                       proc_return_type_to_cxx(pd) + " " +
                        mangle(pd.name) + "(" + param_list_to_cxx(pd.params) +
                        ") = 0;");
     }
@@ -451,11 +452,13 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
           if (pd.is_override || object_virtual_override) suffix = " override";
         }
         if (pd.is_abstract && !pd.is_class_method) {
-          emit_ops_.emitln(prefix + ret + " " + mangle(pd.name) + "(" +
+          emit_ops_.emitln(proc_attributes_to_cxx(pd) + prefix + ret + " " +
+                           mangle(pd.name) + "(" +
                            param_list_to_cxx(pd.params) + ")" + suffix +
                            " { ::std::abort(); }");
         } else {
-          emit_ops_.emitln(prefix + ret + " " + mangle(pd.name) + "(" +
+          emit_ops_.emitln(proc_attributes_to_cxx(pd) + prefix + ret + " " +
+                           mangle(pd.name) + "(" +
                            param_list_to_cxx(pd.params) + ")" + suffix + ";");
         }
         if (!pd.is_class_method) emit_method_pointer_thunk(name, pd, ret);
@@ -581,8 +584,9 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
                                              bool has_same_parent_slot) {
         const auto& pd = *callable.sig->decl;
         const std::string ret = callable_return_type(owner_class, callable);
-        std::string decl = "virtual " + ret + " " + mangle(callable.name) +
-                           "(" + callable_param_list(callable) + ") const";
+        std::string decl = proc_attributes_to_cxx(pd) + "virtual " + ret +
+                           " " + mangle(callable.name) + "(" +
+                           callable_param_list(callable) + ") const";
         if (has_same_parent_slot) decl += " override";
         decl += " { ";
         if (pd.is_abstract && !pd.body) {
@@ -928,6 +932,10 @@ std::string EmitDecls::proc_return_type_to_cxx(const ProcDecl& pd) {
   return "void";
 }
 
+std::string EmitDecls::proc_attributes_to_cxx(const ProcDecl& pd) {
+  return pd.is_noreturn ? "[[noreturn]] " : "";
+}
+
 void EmitDecls::emit_method_pointer_thunk(const std::string& owner_name,
                                           const ProcDecl& pd,
                                           const std::string& ret) {
@@ -1002,8 +1010,8 @@ void EmitDecls::emit_proc_decl_signature(const ProcDecl& pd) {
     ret = "void";
   }
   std::string params = param_list_to_cxx(pd.params);
-  emit_ops_.emitln(ret + " " + pascal_operator_decl_name_to_cxx(pd) + "(" +
-                   params + ");");
+  emit_ops_.emitln(proc_attributes_to_cxx(pd) + ret + " " +
+                   pascal_operator_decl_name_to_cxx(pd) + "(" + params + ");");
 }
 
 void EmitDecls::emit_decl(const Decl& d, bool in_header) {
