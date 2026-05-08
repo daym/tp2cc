@@ -144,10 +144,11 @@ void test_const_decls() {
       "  A = 5;\n"
       "  B : integer = 42;\n"
       "  S = 'hello';\n"
+      "  ExecuteProcess = 'Do not use' deprecated 'Use cfileutil instead';\n"
       "implementation\n"
       "end.\n");
   CHECK_EQ(error_count() - before, 0);
-  if (u) CHECK_EQ(u->interface_decls.size(), size_t{3});
+  if (u) CHECK_EQ(u->interface_decls.size(), size_t{4});
 }
 
 void test_type_decls_named_and_enum() {

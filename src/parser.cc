@@ -340,6 +340,11 @@ void Parser::parse_const_section(std::vector<DeclPtr>& out) {
     }
     expect(Tok::Eq, "const decl");
     cd->value = typed ? parse_const_value() : parse_expr();
+    while (is_directive("deprecated") || is_directive("platform") ||
+           is_directive("library") || is_directive("experimental")) {
+      advance();
+      if (cur_.kind == Tok::StringLit) advance();
+    }
     expect(Tok::Semi, "const decl");
     out.push_back(std::move(cd));
   }
