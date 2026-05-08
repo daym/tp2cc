@@ -29,6 +29,8 @@ FPC 2.6.0 has target CPU support for:
 
 The checked bootstrap path (see below) currently builds an i386-linux compiler.
 
+All the fpc compiler sources so far need to be patched slightly.  See directory `patches/` here.
+
 Bootstrap the FPC 0.99.14 compiler sources under `../rpm` with:
 
 `./bootstrap-fpc-0.sh`
@@ -54,7 +56,7 @@ For license see file COPYING in this directory.
 
 ## Limitations
 
-Since we don't want to special-case all the things, non-packed records are stored in a C compatible way (alignment of each field is a natural multiple of its offset).
+Since we don't want to special-case all the things, non-packed records are stored in a C compatible way (alignment of each field is a natural multiple of its size).
 These kind of records basically didn't exist in TP-style Pascal (all records were packed). Free Pascal has a default alignment of 2 Byte for those.
 
 When user is specifying "packed" records, we make a best effort to actually pack them.  If you see GCC warnings about packed being ignored you know where the limits are.
