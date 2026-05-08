@@ -590,6 +590,49 @@ void test_empty_inherited_class_decl() {
   }
 }
 
+void test_class_var_declaration_sections() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tfoo = class\n"
+      "  private\n"
+      "    class var sx, sy : integer;\n"
+      "  public\n"
+      "    ix : integer;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && !u->interface_decls.empty()) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    auto* to = td ? dynamic_cast<TyObject*>(td->type.get()) : nullptr;
+    CHECK(to);
+    if (to && to->members.size() == 2) {
+      CHECK(to->members[0].is_class_var);
+      CHECK_EQ(to->members[0].field_names.size(), size_t{2});
+      CHECK(!to->members[1].is_class_var);
+      CHECK_EQ(to->members[1].field_names.size(), size_t{1});
+    }
+  }
+}
+
+void test_class_var_rejected_in_object() {
+  int before = error_count();
+  (void)parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tfoo = object\n"
+      "    class var sx : integer;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
 void test_corba_interface_decl_and_class_implementation() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1325,6 +1368,8 @@ int main() {
   RUN_TEST(test_error_recovery_basic);
   RUN_TEST(test_class_declaration);
   RUN_TEST(test_empty_inherited_class_decl);
+  RUN_TEST(test_class_var_declaration_sections);
+  RUN_TEST(test_class_var_rejected_in_object);
   RUN_TEST(test_corba_interface_decl_and_class_implementation);
   RUN_TEST(test_com_interface_is_rejected);
   RUN_TEST(test_explicit_com_interface_is_rejected);

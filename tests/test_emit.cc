@@ -3143,6 +3143,66 @@ void test_class_method_static_emission_and_calls() {
   CHECK(contains(out.impl, "t_tx::p_bar();"));
 }
 
+void test_class_var_static_emission_and_access() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "  public\n"
+      "    y : integer;\n"
+      "    class var x : integer;\n"
+      "    function getx : integer;\n"
+      "  end;\n"
+      "  tne = class(tbase)\n"
+      "  public\n"
+      "    class var z : integer;\n"
+      "  end;\n"
+      "procedure run(b : tbase; n : tne);\n"
+      "implementation\n"
+      "function tbase.getx : integer;\n"
+      "begin\n"
+      "  getx := x;\n"
+      "end;\n"
+      "procedure run(b : tbase; n : tne);\n"
+      "begin\n"
+      "  tbase.x := 1;\n"
+      "  tne.x := 2;\n"
+      "  b.x := 3;\n"
+      "  b.y := 4;\n"
+      "  n.z := 5;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "inline static int32_t p_x{};"));
+  CHECK(contains(out.header, "int32_t p_y;"));
+  CHECK(contains(out.header, "inline static int32_t p_z{};"));
+  CHECK(contains(out.impl, "p_result = p_x;"));
+  CHECK(contains(out.impl, "t_tbase::p_x = 1;"));
+  CHECK(contains(out.impl, "t_tne::p_x = 2;"));
+  CHECK(contains(out.impl, "p_b->p_x = 3;"));
+  CHECK(contains(out.impl, "p_b->p_y = 4;"));
+  CHECK(contains(out.impl, "p_n->p_z = 5;"));
+}
+
+void test_class_var_inherited_duplicate_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "  public\n"
+      "    class var x : integer;\n"
+      "  end;\n"
+      "  tne = class(tbase)\n"
+      "  public\n"
+      "    class var x : integer;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
 void test_tobject_runtime_helpers_lower_in_method_body() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -7544,6 +7604,8 @@ int main() {
   RUN_TEST(test_procvar_property_stmt_and_value_context);
   RUN_TEST(test_default_indexed_procvar_property_stmt_autocalls);
   RUN_TEST(test_class_method_static_emission_and_calls);
+  RUN_TEST(test_class_var_static_emission_and_access);
+  RUN_TEST(test_class_var_inherited_duplicate_reports_error);
   RUN_TEST(test_tobject_runtime_helpers_lower_in_method_body);
   RUN_TEST(test_classname_uses_metaclass_descriptor_slot);
   RUN_TEST(test_tobject_cast_preserves_pointer_semantics_for_free);

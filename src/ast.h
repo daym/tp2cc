@@ -503,11 +503,13 @@ struct PropertyDecl {
 
 struct ObjectMember {
   // One of: field (names+type) | method (ProcDecl) | property (PropertyDecl)
+  Location loc;
   Visibility vis = Visibility::Public;
   ObjectMemberKind kind = ObjectMemberKind::Field;
   // field side
   std::vector<std::string> field_names;
   TypePtr field_type;
+  bool is_class_var = false;
   // method side -- typed so the "it's a ProcDecl" invariant is
   // enforced at the type level rather than via documented faith.
   std::shared_ptr<ProcDecl> method;

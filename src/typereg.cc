@@ -71,6 +71,7 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
     if (m.kind == ObjectMemberKind::Field) {
       FieldInfo fi;
       fi.type = m.field_type;
+      fi.is_class_var = m.is_class_var;
       for (const auto& n : m.field_names) ci.fields[lc(n)] = fi;
       // Inline anonymous enum used as the field type contributes its
       // members to the enclosing class scope -- they're visible by bare

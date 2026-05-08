@@ -1051,19 +1051,52 @@ TypePtr Parser::parse_object_type() {
     return to;
   }
   Visibility vis = Visibility::Public;
+  // `class var' starts a static-field section; a new visibility section
+  // starts ordinary instance fields again.
+  bool class_var_section = false;
   while (!at_end() && !check(Tok::KwEnd)) {
     // visibility change
-    if (is_directive("public")) { advance(); vis = Visibility::Public; continue; }
-    if (is_directive("private")) { advance(); vis = Visibility::Private; continue; }
-    if (is_directive("protected")) { advance(); vis = Visibility::Protected; continue; }
-    if (is_directive("published")) { advance(); vis = Visibility::Public; continue; }
+    if (is_directive("public")) {
+      advance();
+      vis = Visibility::Public;
+      class_var_section = false;
+      continue;
+    }
+    if (is_directive("private")) {
+      advance();
+      vis = Visibility::Private;
+      class_var_section = false;
+      continue;
+    }
+    if (is_directive("protected")) {
+      advance();
+      vis = Visibility::Protected;
+      class_var_section = false;
+      continue;
+    }
+    if (is_directive("published")) {
+      advance();
+      vis = Visibility::Public;
+      class_var_section = false;
+      continue;
+    }
 
     bool is_class_method = false;
     if (check(Tok::KwClass)) {
+      Location class_loc = cur_.loc;
       advance();
+      if (check(Tok::KwVar)) {
+        advance();
+        if (!to->is_reference_type) {
+          report_error(class_loc, "`class var' is only valid in class types");
+          continue;
+        }
+        class_var_section = true;
+        continue;
+      }
       if (!(check(Tok::KwProcedure) || check(Tok::KwFunction))) {
         report_error(cur_.loc,
-                     "expected `procedure' or `function' after `class'");
+                     "expected `procedure', `function', or `var' after `class'");
         break;
       }
       is_class_method = true;
@@ -1076,6 +1109,7 @@ TypePtr Parser::parse_object_type() {
       else if (check(Tok::KwConstructor)) pk = ProcKind::Constructor;
       else if (check(Tok::KwDestructor)) pk = ProcKind::Destructor;
       ObjectMember m;
+      m.loc = cur_.loc;
       m.vis = vis;
       m.kind = ObjectMemberKind::Method;
       // Method headers inside an object are always signatures only --
@@ -1088,6 +1122,7 @@ TypePtr Parser::parse_object_type() {
     if (is_directive("property")) {
       advance();
       ObjectMember m;
+      m.loc = cur_.loc;
       m.vis = vis;
       m.kind = ObjectMemberKind::Property;
       m.property.name = consume_name_or_directive("property name");
@@ -1136,8 +1171,10 @@ TypePtr Parser::parse_object_type() {
     // Field
     if (cur_.kind != Tok::Ident) break;
     ObjectMember m;
+    m.loc = cur_.loc;
     m.vis = vis;
     m.kind = ObjectMemberKind::Field;
+    m.is_class_var = class_var_section;
     m.field_names.push_back(cur_.text); advance();
     while (accept(Tok::Comma)) {
       if (cur_.kind != Tok::Ident) break;
@@ -1185,6 +1222,7 @@ TypePtr Parser::parse_interface_type() {
       ProcKind pk = check(Tok::KwFunction) ? ProcKind::Function
                                            : ProcKind::Procedure;
       ObjectMember m;
+      m.loc = cur_.loc;
       m.kind = ObjectMemberKind::Method;
       m.method = parse_proc_decl(pk, /*in_interface=*/true,
                                  /*is_class_method=*/false);

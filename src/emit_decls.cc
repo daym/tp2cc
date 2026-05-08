@@ -413,10 +413,20 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
     for (const auto& m : to.members) {
       if (m.kind == ObjectMemberKind::Field) {
         for (const auto& fn : m.field_names) {
+          // FPC rejects a field or class var that reuses an inherited field
+          // name. C++ would accept a derived static member with the same name,
+          // so diagnose it before emission can change the Pascal program.
+          if (!to.parent.empty() && registry_ &&
+              registry_->lookup_class_field(to.parent, fn,
+                                            scope_.current_unit_name)) {
+            emit_ops_.report_error(m.loc, "duplicate inherited field `" + fn + "'");
+          }
           const std::string field_name =
               registry_ ? registry_->field_cxx_name(fn) : mangle(fn);
-          emit_ops_.emitln(
-              types_.named_type_to_cxx(m.field_type.get(), field_name) + ";");
+          const std::string decl =
+              types_.named_type_to_cxx(m.field_type.get(), field_name);
+          emit_ops_.emitln(m.is_class_var ? ("inline static " + decl + "{};")
+                                           : (decl + ";"));
         }
       } else if (m.kind == ObjectMemberKind::Method) {
         const auto& pd = *m.method;
