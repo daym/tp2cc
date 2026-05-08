@@ -2,14 +2,32 @@
 
 This is a small compiler for the Pascal language, written in C++.
 
-The aim is to bootstrap fpc 0.99.14 and fpc 1.0.6 with it.
+The aim is to bootstrap fpc 0.99.14, fpc 1.0.6, and FPC 2.x
+compilers up to FPC 2.6.0 with it.
 
-Note that those do not support amd64.
-They do support the following targets:
+FPC 0.99.14 and fpc 1.0.6 do not support amd64.  They support the
+following targets:
 * i386
 * m68k
 * alpha
 * powerpc
+
+FPC 2.6.0 has target CPU support for:
+* i386
+* m68k
+* alpha
+* powerpc
+* sparc
+* vm
+* ia64
+* x86_64
+* mips
+* arm
+* powerpc64
+* avr
+* mipsel
+
+The checked bootstrap path (see below) currently builds an i386-linux compiler.
 
 Bootstrap the FPC 0.99.14 compiler sources under `../rpm` with:
 
@@ -18,6 +36,11 @@ Bootstrap the FPC 0.99.14 compiler sources under `../rpm` with:
 Or bootstrap the FPC 1.0.6 compiler sources under `../fpc-1.0.6/source` with:
 
 `./bootstrap-fpc-1.sh`
+
+Bootstrap FPC 2.x compiler sources, including FPC 2.6.0, by pointing
+`FPC2_SRC` at the source tree:
+
+`FPC2_SRC=$PWD/../fpc-2.6.0 ./bootstrap-fpc-2.sh`
 
 Compile and run the checked-in example programs with:
 
@@ -32,7 +55,7 @@ For license see file COPYING in this directory.
 ## Limitations
 
 Since we don't want to special-case all the things, non-packed records are stored in a C compatible way (alignment of each field is a natural multiple of its offset).
-These kind of records basically didn't exist in Turbo Pascal (all records were packed). Free Pascal has a default alignment of 2 Byte for those.
+These kind of records basically didn't exist in TP-style Pascal (all records were packed). Free Pascal has a default alignment of 2 Byte for those.
 
 When user is specifying "packed" records, we make a best effort to actually pack them.  If you see GCC warnings about packed being ignored you know where the limits are.
 
