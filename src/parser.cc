@@ -501,6 +501,10 @@ void Parser::parse_proc_modifiers(ProcDecl& pd) {
       pd.is_override = true;
       advance();
     }
+    else if (is_directive("final")) {
+      pd.is_final = true;
+      advance();
+    }
     else if (is_directive("dynamic")) {
       pd.is_virtual = true;
       advance();

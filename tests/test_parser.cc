@@ -520,6 +520,31 @@ void test_virtual_class_method_modifiers_are_recorded() {
   }
 }
 
+void test_final_method_modifier_is_recorded() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tfoo = class\n"
+      "    procedure seal; virtual; final;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(u != nullptr);
+  CHECK_EQ(error_count() - before, 0);
+  if (u && !u->interface_decls.empty()) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    auto* to = td ? dynamic_cast<TyObject*>(td->type.get()) : nullptr;
+    CHECK(to);
+    if (to && !to->members.empty()) {
+      auto* seal = to->members[0].method.get();
+      CHECK(seal && seal->is_virtual);
+      CHECK(seal && seal->is_final);
+    }
+  }
+}
+
 // Delphi-style `class' reuses the object-member parser, then records
 // reference-type semantics so the emitter can pick pointer storage and
 // heap allocation.
@@ -1099,6 +1124,7 @@ void test_directives_as_identifiers() {
       "  trec = record\n"
       "    name : string;\n"
       "    index : integer;\n"
+      "    final : integer;\n"
       "    read : longint;\n"
       "    write : longint;\n"
       "  end;\n"
@@ -1379,6 +1405,7 @@ int main() {
   RUN_TEST(test_class_directives);
   RUN_TEST(test_class_method_impl_decl);
   RUN_TEST(test_virtual_class_method_modifiers_are_recorded);
+  RUN_TEST(test_final_method_modifier_is_recorded);
   RUN_TEST(test_metaclass_type);
   RUN_TEST(test_try_except_finally_raise);
   RUN_TEST(test_distinct_type);

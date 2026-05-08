@@ -345,8 +345,8 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
       return;
     }
     auto inherited_virtual_with_same_cxx_signature =
-        [&](const ProcDecl& pd) -> bool {
-      if (!registry_ || pd.is_class_method || to.parent.empty()) return false;
+        [&](const ProcDecl& pd) -> const MethodSig* {
+      if (!registry_ || pd.is_class_method || to.parent.empty()) return nullptr;
 
       const std::string method_name = ascii_lower(pd.name);
       const std::string cxx_name = mangle(pd.name);
@@ -368,7 +368,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
             }
             if (mangle(inherited.decl->name) == cxx_name &&
                 param_type_list_to_cxx(inherited.decl->params) == params) {
-              return true;
+              return &inherited;
             }
           }
         }
@@ -377,7 +377,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
                      : registry_->lookup_class(parent->parent,
                                               parent->defining_unit);
       }
-      return false;
+      return nullptr;
     };
     std::string line = "struct " + name;
     std::vector<std::string> bases;
@@ -430,8 +430,11 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         }
       } else if (m.kind == ObjectMemberKind::Method) {
         const auto& pd = *m.method;
-        const bool inherited_same_signature_virtual =
+        const MethodSig* inherited_same_signature_virtual =
             inherited_virtual_with_same_cxx_signature(pd);
+        if (pd.is_final && !(pd.is_virtual || pd.is_abstract || pd.is_override)) {
+          emit_ops_.report_error(pd.loc, "only virtual methods can be final");
+        }
         // FPC rejects `override` on old-style Pascal `object` methods; its
         // documented spelling for overriding an inherited object virtual is to
         // redeclare the derived method as `virtual`. That still becomes a C++
@@ -442,7 +445,10 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         const bool object_virtual_override =
             inherited_same_signature_virtual && !to.is_reference_type &&
             pd.is_virtual;
-        if (!pd.is_override && !object_virtual_override &&
+        if (inherited_same_signature_virtual &&
+            inherited_same_signature_virtual->is_final) {
+          emit_ops_.report_error(pd.loc, "cannot override final method");
+        } else if (!pd.is_override && !object_virtual_override &&
             inherited_same_signature_virtual) {
           emit_ops_.report_error(
               pd.loc,
@@ -459,7 +465,12 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         }
         std::string suffix;
         if (!pd.is_class_method) {
-          if (pd.is_override || object_virtual_override) suffix = " override";
+          if (pd.is_override || object_virtual_override) suffix += " override";
+          if (pd.is_final &&
+              (pd.is_virtual || pd.is_abstract || pd.is_override ||
+               object_virtual_override)) {
+            suffix += " final";
+          }
         }
         if (pd.is_abstract && !pd.is_class_method) {
           emit_ops_.emitln(proc_attributes_to_cxx(pd) + prefix + ret + " " +

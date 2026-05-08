@@ -4516,6 +4516,77 @@ void test_abstract_method_emits_fail_fast_virtual_body() {
   CHECK(!contains(out.header, "virtual void p_doit();"));
 }
 
+void test_final_virtual_method_emits_cxx_final() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    procedure seal; virtual; final;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    procedure childseal; virtual; final;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tbase.seal; begin end;\n"
+      "procedure tchild.childseal; begin end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "virtual void p_seal() final;"));
+  CHECK(contains(out.header, "virtual void p_childseal() final;"));
+}
+
+void test_final_override_method_emits_override_final() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    procedure seal; virtual;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    procedure seal; override; final;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tbase.seal; begin end;\n"
+      "procedure tchild.seal; begin end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "virtual void p_seal() override final;"));
+}
+
+void test_final_nonvirtual_method_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    procedure seal; final;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tbase.seal; begin end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_override_final_method_reports_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    procedure seal; virtual; final;\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "    procedure seal; override;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tbase.seal; begin end;\n"
+      "procedure tchild.seal; begin end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
 void test_reintroduce_same_signature_inherited_virtual_reports_error() {
   int before = error_count();
   (void)compile_snippet_with_registry(
@@ -7666,6 +7737,10 @@ int main() {
   RUN_TEST(test_forward_class_decl_only_emits_one_struct_body);
   RUN_TEST(test_empty_inherited_class_decl_emits_real_struct);
   RUN_TEST(test_abstract_method_emits_fail_fast_virtual_body);
+  RUN_TEST(test_final_virtual_method_emits_cxx_final);
+  RUN_TEST(test_final_override_method_emits_override_final);
+  RUN_TEST(test_final_nonvirtual_method_reports_error);
+  RUN_TEST(test_override_final_method_reports_error);
   RUN_TEST(test_reintroduce_same_signature_inherited_virtual_reports_error);
   RUN_TEST(test_reintroduce_same_signature_inherited_virtual_constructor_reports_error);
   RUN_TEST(test_reintroduce_different_signature_is_still_accepted);

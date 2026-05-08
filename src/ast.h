@@ -422,6 +422,7 @@ struct ProcDecl : Decl {
   bool is_virtual = false;
   bool is_abstract = false;
   bool is_override = false;
+  bool is_final = false;
   bool is_forward = false;
   bool is_inline = false;
   bool is_cdecl = false;

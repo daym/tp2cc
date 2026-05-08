@@ -46,6 +46,7 @@ struct MethodSig {
   bool accepts_zero_args = false;
   bool is_function = false;       // returns a value
   bool is_virtual = false;
+  bool is_final = false;
   std::shared_ptr<const ast::ProcDecl> decl;
 };
 
