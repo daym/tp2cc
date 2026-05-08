@@ -69,8 +69,8 @@ trap 'on_signal 1'  HUP
       fi
     ' sh
 
-ok=$(grep -c "^OK"   "$STATUS" 2>/dev/null || echo 0)
-fail=$(grep -c "^FAIL" "$STATUS" 2>/dev/null || echo 0)
+ok=$(grep -c "^OK" "$STATUS" 2>/dev/null || true)
+fail=$(grep -c "^FAIL" "$STATUS" 2>/dev/null || true)
 
 {
   echo "=== compile summary ==="
@@ -90,3 +90,6 @@ fail=$(grep -c "^FAIL" "$STATUS" 2>/dev/null || echo 0)
 } > "$LOGDIR/summary.txt"
 
 echo "wrote $LOGDIR/summary.txt  ($ok ok, $fail failed)"
+if [ "$fail" -ne 0 ]; then
+  exit 1
+fi
