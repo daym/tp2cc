@@ -1493,6 +1493,28 @@ void test_try_except_raises_and_matches_exception_class() {
   CHECK(contains(out.impl, "auto p_e = tp2cc_match_1_0;"));
 }
 
+void test_raise_at_address_and_frame_metadata_is_accepted_and_discarded() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  efoo = class(exception)\n"
+      "  end;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  raise efoo.create at get_caller_addr(get_frame), "
+      "get_caller_frame(get_frame);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.impl, "throw ([&]{ auto tp2cc_ptr = new t_efoo{};"));
+  CHECK(!contains(out.impl, "get_caller_addr"));
+  CHECK(!contains(out.impl, "get_caller_frame"));
+}
+
 void test_try_except_multiple_handlers_start_with_if_and_base_pointer_cast() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -7443,6 +7465,7 @@ int main() {
   RUN_TEST(test_nested_function_uses_own_result_and_outer_name);
   RUN_TEST(test_try_finally_uses_scope_exit_guard);
   RUN_TEST(test_try_except_raises_and_matches_exception_class);
+  RUN_TEST(test_raise_at_address_and_frame_metadata_is_accepted_and_discarded);
   RUN_TEST(test_try_except_multiple_handlers_start_with_if_and_base_pointer_cast);
   RUN_TEST(test_char_plus_cast_uses_string_concat);
   RUN_TEST(test_nul_char_plus_cast_uses_string_concat);

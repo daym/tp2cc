@@ -369,6 +369,7 @@ void test_distinct_type() {
 //   - try ... except on TClass do ... else ... end  (no bind)
 //   - try ... finally ... end
 //   - raise EFoo.Create(...)
+//   - raise EFoo.Create(...) at Addr, Frame
 //   - bare `raise;' inside except arms
 //   - nested try (finally-wrapping-except)
 void test_try_except_finally_raise() {
@@ -388,7 +389,8 @@ void test_try_except_finally_raise() {
       "  finally\n"
       "    cleanup;\n"
       "  end;\n"
-      "  raise efoo.create('msg');\n"
+      "  raise efoo.create('msg') at get_caller_addr(get_frame), "
+      "get_caller_frame(get_frame);\n"
       "end.\n");
   CHECK_EQ(error_count() - before, 0);
   CHECK(u != nullptr);

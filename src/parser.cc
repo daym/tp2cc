@@ -1547,7 +1547,7 @@ StmtPtr Parser::parse_try() {
   return n;
 }
 
-// `raise [Expr] [at Expr]' -- raise or re-raise an exception.
+// `raise [Expr] [at Expr [, Expr]]' -- raise or re-raise an exception.
 // Bare `raise;' inside an except handler re-raises the current one.
 StmtPtr Parser::parse_raise() {
   Location loc = cur_.loc;
@@ -1560,10 +1560,11 @@ StmtPtr Parser::parse_raise() {
       && !check(Tok::KwUntil)) {
     n->value = parse_expr();
   }
-  // Optional `at <Expr>' suffix (Delphi debug aid); parsed and discarded.
+  // Optional `at <address>[, <frame>]' is a raise-statement suffix.
   if (is_directive("at")) {
     advance();
     parse_expr();
+    if (accept(Tok::Comma)) parse_expr();
   }
   return n;
 }
