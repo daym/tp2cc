@@ -100,6 +100,18 @@ inline int hex_val(char c) {
   return 10 + (c - 'A');
 }
 
+size_t initial_input_pos(const SourceFile& file) {
+  const std::string& s = file.contents;
+  // Skip a leading UTF-8 BOM
+  if (s.size() >= 3 &&
+      static_cast<unsigned char>(s[0]) == 0xef &&
+      static_cast<unsigned char>(s[1]) == 0xbb &&
+      static_cast<unsigned char>(s[2]) == 0xbf) {
+    return 3;
+  }
+  return 0;
+}
+
 }  // namespace
 
 std::string Lexer::lower(std::string_view s) {
@@ -115,6 +127,7 @@ Lexer::Lexer(std::shared_ptr<SourceFile> root,
     : include_dirs_(std::move(include_dirs)) {
   Input in;
   in.file = std::move(root);
+  in.pos = initial_input_pos(*in.file);
   stack_.push_back(std::move(in));
 
   for (auto& kv : kKeywordTable) keywords_.emplace(kv.first, kv.second);
@@ -720,6 +733,7 @@ void Lexer::do_include(std::string_view arg, Location where) {
     sf->contents = std::move(contents);
     Input in;
     in.file = std::move(sf);
+    in.pos = initial_input_pos(*in.file);
     stack_.push_back(std::move(in));
     return;
   }
@@ -764,6 +778,7 @@ void Lexer::do_include(std::string_view arg, Location where) {
   }
   Input in;
   in.file = std::move(sf);
+  in.pos = initial_input_pos(*in.file);
   stack_.push_back(std::move(in));
 }
 

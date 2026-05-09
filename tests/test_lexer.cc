@@ -58,6 +58,19 @@ void test_trivial_program() {
   CHECK(ts[2].kind == Tok::Dot);
 }
 
+void test_utf8_bom_at_start_is_skipped() {
+  std::string src;
+  src.push_back(static_cast<char>(0xef));
+  src.push_back(static_cast<char>(0xbb));
+  src.push_back(static_cast<char>(0xbf));
+  src += "begin end.";
+  auto ts = lex_all(src);
+  CHECK_EQ(ts.size(), size_t{3});
+  CHECK(ts[0].kind == Tok::KwBegin);
+  CHECK_EQ(ts[0].loc.line, 1u);
+  CHECK_EQ(ts[0].loc.col, 1u);
+}
+
 void test_hello_program() {
   // Exercises: program/unit name, uses form not here; string lit; writeln id.
   auto ts = lex_all(
@@ -524,6 +537,7 @@ int main() {
   RUN_TEST(test_empty);
   RUN_TEST(test_whitespace_only);
   RUN_TEST(test_trivial_program);
+  RUN_TEST(test_utf8_bom_at_start_is_skipped);
   RUN_TEST(test_hello_program);
   RUN_TEST(test_case_insensitive_keywords);
   RUN_TEST(test_identifiers_lowercased);
