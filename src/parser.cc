@@ -492,101 +492,115 @@ void Parser::parse_label_section(std::vector<DeclPtr>& out) {
 // ---------------------------------------------------------------------------
 // Procedure/function declarations
 
-void Parser::parse_proc_modifiers(ProcDecl& pd) {
-  // Pascal "directives" -- position-dependent modifiers that follow a
-  // routine header, separated by `;`.
-  for (;;) {
-    if (is_directive("virtual")) {
-      pd.is_virtual = true;
-      advance();
-    }
-    else if (is_directive("abstract")) {
-      pd.is_abstract = true;
-      advance();
-    }
-    else if (is_directive("override")) {
-      pd.is_override = true;
-      advance();
-    }
-    else if (is_directive("final")) {
-      pd.is_final = true;
-      advance();
-    }
-    else if (is_directive("dynamic")) {
-      pd.is_virtual = true;
-      advance();
-    }
-    else if (is_directive("message")) {
-      advance();
-      // integer constant or identifier for the message number/name.
-      if (cur_.kind == Tok::IntLit || cur_.kind == Tok::Ident
-          || cur_.kind == Tok::StringLit) advance();
-      pd.is_virtual = true;
-    }
-    else if (is_directive("forward")) { pd.is_forward = true; advance(); }
-    else if (is_directive("inline")) { pd.is_inline = true; advance(); }
-    else if (is_directive("cdecl")) { pd.is_cdecl = true; advance(); }
-    else if (is_directive("noreturn")) { pd.is_noreturn = true; advance(); }
-    else if (is_directive("assembler")) { pd.is_assembler = true; advance(); }
-    else if (is_directive("far")) { advance(); }
-    else if (is_directive("near")) { advance(); }
-    else if (is_directive("pascal")) { advance(); }
-    else if (is_directive("register")) { advance(); }
-    else if (is_directive("stdcall")) { advance(); }
-    else if (is_directive("safecall")) { advance(); }
-    else if (is_directive("interrupt")) { advance(); }
-    else if (is_directive("popstack")) { advance(); }
-    else if (is_directive("export")) { advance(); }
-    else if (is_directive("public")) { advance(); }
-    else if (is_directive("static")) { advance(); }
-    else if (is_directive("external")) {
-      pd.is_external = true;
-      advance();
-      if (cur_.kind == Tok::StringLit) { pd.external_lib = cur_.text; advance(); }
-      if (is_directive("name")) {
-        advance();
-        if (cur_.kind == Tok::StringLit) { pd.external_name = cur_.text; advance(); }
-      }
-    }
-    else if (is_directive("alias")) {
-      advance();
-      // `alias: 'FPC_FOO'` -- swallow the linkage name.
-      if (accept(Tok::Colon)) {
-        if (cur_.kind == Tok::StringLit) advance();
-      }
-    }
-    else if (is_directive("name")) {
-      // Standalone `name 'foo'` (rarely on its own; usually after external).
-      advance();
-      if (cur_.kind == Tok::StringLit) advance();
-    }
-    else if (is_directive("overload")) {
-      // Delphi-style method overloading.  Emit-time handling: drop the
-      // directive; C++ overload resolution picks the right signature
-      // from the emitted `p_<Method>(...)' candidates automatically.
-      advance();
-    }
-    else if (is_directive("reintroduce")) {
-      // `reintroduce' hides an inherited virtual method at this
-      // overload-resolution level without marking it `override'.
-      advance();
-    }
-    else if (is_directive("deprecated")
-             || is_directive("platform")
-             || is_directive("library")
-             || is_directive("experimental")) {
-      // Purely advisory; swallow and keep going.
-      advance();
-      if (cur_.kind == Tok::StringLit) advance();
-    }
-    else {
-      return;
-    }
-    // Semicolon between directives is conventional but optional in fpc --
-    // e.g. `: THandle;stdcall external 'x' name 'y';`. Consume one if
-    // present and continue.
-    accept(Tok::Semi);
+bool Parser::parse_proc_modifier(ProcDecl& pd) {
+  if (is_directive("virtual")) {
+    pd.is_virtual = true;
+    advance();
   }
+  else if (is_directive("abstract")) {
+    pd.is_abstract = true;
+    advance();
+  }
+  else if (is_directive("override")) {
+    pd.is_override = true;
+    advance();
+  }
+  else if (is_directive("final")) {
+    pd.is_final = true;
+    advance();
+  }
+  else if (is_directive("dynamic")) {
+    pd.is_virtual = true;
+    advance();
+  }
+  else if (is_directive("message")) {
+    advance();
+    // integer constant or identifier for the message number/name.
+    if (cur_.kind == Tok::IntLit || cur_.kind == Tok::Ident
+        || cur_.kind == Tok::StringLit) advance();
+    pd.is_virtual = true;
+  }
+  else if (is_directive("forward")) { pd.is_forward = true; advance(); }
+  else if (is_directive("inline")) { pd.is_inline = true; advance(); }
+  else if (is_directive("cdecl")) { pd.is_cdecl = true; advance(); }
+  else if (is_directive("noreturn")) { pd.is_noreturn = true; advance(); }
+  else if (is_directive("assembler")) { pd.is_assembler = true; advance(); }
+  else if (is_directive("far")) { advance(); }
+  else if (is_directive("near")) { advance(); }
+  else if (is_directive("pascal")) { advance(); }
+  else if (is_directive("register")) { advance(); }
+  else if (is_directive("stdcall")) { advance(); }
+  else if (is_directive("safecall")) { advance(); }
+  else if (is_directive("interrupt")) { advance(); }
+  else if (is_directive("popstack")) { advance(); }
+  else if (is_directive("export")) { advance(); }
+  else if (is_directive("public")) { advance(); }
+  else if (is_directive("static")) { advance(); }
+  else if (is_directive("external")) {
+    pd.is_external = true;
+    advance();
+    if (cur_.kind == Tok::StringLit) { pd.external_lib = cur_.text; advance(); }
+    if (is_directive("name")) {
+      advance();
+      if (cur_.kind == Tok::StringLit) { pd.external_name = cur_.text; advance(); }
+    }
+  }
+  else if (is_directive("alias")) {
+    advance();
+    // `alias: 'FPC_FOO'` -- swallow the linkage name.
+    if (accept(Tok::Colon)) {
+      if (cur_.kind == Tok::StringLit) advance();
+    }
+  }
+  else if (is_directive("name")) {
+    // Standalone `name 'foo'` (rarely on its own; usually after external).
+    advance();
+    if (cur_.kind == Tok::StringLit) advance();
+  }
+  else if (is_directive("overload")) {
+    // Delphi-style method overloading.  Emit-time handling: drop the
+    // directive; C++ overload resolution picks the right signature
+    // from the emitted `p_<Method>(...)' candidates automatically.
+    advance();
+  }
+  else if (is_directive("reintroduce")) {
+    // `reintroduce' hides an inherited virtual method at this
+    // overload-resolution level without marking it `override'.
+    advance();
+  }
+  else if (is_directive("deprecated")
+           || is_directive("platform")
+           || is_directive("library")
+           || is_directive("experimental")) {
+    // Purely advisory; swallow and keep going.
+    advance();
+    if (cur_.kind == Tok::StringLit) advance();
+  }
+  else {
+    return false;
+  }
+  return true;
+}
+
+void Parser::parse_proc_modifiers(ProcDecl& pd) {
+  while (parse_proc_modifier(pd)) accept(Tok::Semi);
+}
+
+void Parser::parse_proc_header_tail(ProcDecl& pd, const char* ctx) {
+  // FPC allows the semicolon between a routine header and the first routine
+  // directive to be omitted, but only when that next token is actually one of
+  // the routine directives. Use the same consumer as the modifier loop so the
+  // header exception cannot drift from the directive list.
+  if (accept(Tok::Semi)) {
+    parse_proc_modifiers(pd);
+    return;
+  }
+  if (!parse_proc_modifier(pd)) {
+    expect(Tok::Semi, ctx);
+    return;
+  }
+  accept(Tok::Semi);
+  parse_proc_modifiers(pd);
 }
 
 std::shared_ptr<ProcDecl> Parser::parse_proc_decl(
@@ -615,8 +629,7 @@ std::shared_ptr<ProcDecl> Parser::parse_proc_decl(
       pd->return_type = parse_type();
     }
   }
-  expect(Tok::Semi, "routine header");
-  parse_proc_modifiers(*pd);
+  parse_proc_header_tail(*pd, "routine header");
 
   // Interface sections never have bodies. Nor do forward/external/abstract
   // declarations.
@@ -679,8 +692,7 @@ std::shared_ptr<ProcDecl> Parser::parse_operator_decl(bool in_interface) {
   }
   expect(Tok::Colon, "operator return type");
   pd->return_type = parse_type();
-  expect(Tok::Semi, "operator header");
-  parse_proc_modifiers(*pd);
+  parse_proc_header_tail(*pd, "operator header");
 
   if (in_interface || pd->is_forward || pd->is_external ||
       pd->is_abstract) {

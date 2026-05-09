@@ -545,6 +545,47 @@ void test_final_method_modifier_is_recorded() {
   }
 }
 
+void test_proc_directives_may_follow_header_without_semicolon() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "procedure ext cdecl external 'libc' name 'ext';\n"
+      "type\n"
+      "  tfoo = class\n"
+      "    procedure a override;\n"
+      "    procedure b virtual abstract;\n"
+      "    procedure c virtual; abstract;\n"
+      "    procedure d; virtual abstract;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(u != nullptr);
+  CHECK_EQ(error_count() - before, 0);
+  if (u && u->interface_decls.size() >= 2) {
+    auto* ext = dynamic_cast<ProcDecl*>(u->interface_decls[0].get());
+    CHECK(ext);
+    if (ext) {
+      CHECK(ext->is_cdecl);
+      CHECK(ext->is_external);
+      CHECK_EQ(ext->external_lib, std::string("libc"));
+      CHECK_EQ(ext->external_name, std::string("ext"));
+    }
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[1].get());
+    auto* to = td ? dynamic_cast<TyObject*>(td->type.get()) : nullptr;
+    CHECK(to);
+    if (to && to->members.size() >= 4) {
+      CHECK(to->members[0].method->is_override);
+      CHECK(to->members[1].method->is_virtual);
+      CHECK(to->members[1].method->is_abstract);
+      CHECK(to->members[2].method->is_virtual);
+      CHECK(to->members[2].method->is_abstract);
+      CHECK(to->members[3].method->is_virtual);
+      CHECK(to->members[3].method->is_abstract);
+    }
+  }
+}
+
 // Delphi-style `class' reuses the object-member parser, then records
 // reference-type semantics so the emitter can pick pointer storage and
 // heap allocation.
@@ -1470,6 +1511,7 @@ int main() {
   RUN_TEST(test_class_method_impl_decl);
   RUN_TEST(test_virtual_class_method_modifiers_are_recorded);
   RUN_TEST(test_final_method_modifier_is_recorded);
+  RUN_TEST(test_proc_directives_may_follow_header_without_semicolon);
   RUN_TEST(test_metaclass_type);
   RUN_TEST(test_try_except_finally_raise);
   RUN_TEST(test_distinct_type);
