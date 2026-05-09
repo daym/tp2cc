@@ -1216,6 +1216,10 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       if (!bt) return nullptr;
       bt = canonicalize_type(bt);
       if (bt && bt->kind == Kind::TyString) return builtin_char_type();
+      if (tyname_is(bt, "shortstring") || tyname_is(bt, "ansistring") ||
+          tyname_is(bt, "utf8string")) {
+        return builtin_char_type();
+      }
       if (tyname_is(bt, "pchar")) return builtin_char_type();
       if (tyname_is(bt, "ppchar")) return builtin_pchar_type();
       if (bt && bt->kind == Kind::TyArray) {

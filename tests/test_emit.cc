@@ -2165,6 +2165,27 @@ void test_string_index_buffer_helpers_use_storage_addresses() {
   CHECK(!contains(out.impl, "::rt::p_indexbyte(p_s1[p_i],"));
 }
 
+void test_string_index_char_coerces_to_shortstring_formal() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure take(const s : string);\n"
+      "procedure run(i : longint);\n"
+      "implementation\n"
+      "procedure take(const s : string);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run(i : longint);\n"
+      "var\n"
+      "  s : string;\n"
+      "begin\n"
+      "  take(s[i]);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_take(::rt::tp2cc_shortstring_of<255>(p_s[p_i]))"));
+}
+
 void test_block_io_string_index_uses_storage_addresses() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -7688,6 +7709,7 @@ int main() {
   RUN_TEST(test_indexword_nil_pointer_deref_uses_pointer_actual);
   RUN_TEST(test_move_pointer_derefs_use_pointer_actuals);
   RUN_TEST(test_string_index_buffer_helpers_use_storage_addresses);
+  RUN_TEST(test_string_index_char_coerces_to_shortstring_formal);
   RUN_TEST(test_block_io_string_index_uses_storage_addresses);
   RUN_TEST(test_blockwrite_fixed_array_uses_const_storage_address);
   RUN_TEST(test_byte_array_typecast_index_read_builds_value);
