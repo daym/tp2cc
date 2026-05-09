@@ -14,6 +14,37 @@ using namespace ast;
 
 namespace {
 
+struct ClassLifecycleHooks {
+  std::vector<const ProcDecl*> constructors;
+  std::vector<const ProcDecl*> destructors;
+};
+
+bool is_class_lifecycle_proc(const ProcDecl& pd) {
+  return pd.is_class_method &&
+         (pd.pkind == ProcKind::Constructor ||
+          pd.pkind == ProcKind::Destructor);
+}
+
+ClassLifecycleHooks collect_class_lifecycle_hooks(
+    const std::vector<DeclPtr>& decls) {
+  ClassLifecycleHooks hooks;
+  for (const auto& d : decls) {
+    if (!d || d->kind != Kind::ProcDecl) continue;
+    const auto& pd = static_cast<const ProcDecl&>(*d);
+    if (pd.of_type.empty() || !is_class_lifecycle_proc(pd)) continue;
+    if (pd.pkind == ProcKind::Constructor) {
+      hooks.constructors.push_back(&pd);
+    } else {
+      hooks.destructors.push_back(&pd);
+    }
+  }
+  return hooks;
+}
+
+std::string class_lifecycle_call_cxx(const ProcDecl& pd) {
+  return type_mangle(pd.of_type) + "::" + mangle(pd.name);
+}
+
 // Collect every TyName (lowercased) mentioned in a TypeExpr. Recurses into
 // records/objects so that a record's field types contribute dependencies.
 void collect_type_refs(const TypeExpr& t, std::unordered_set<std::string>& out) {
@@ -233,12 +264,21 @@ void EmitUnits::emit_type_decl_run(const std::vector<DeclPtr>& decls,
   flush();
 }
 
-void EmitUnits::emit_unit_hook(std::string_view name, const StmtPtr& body) {
+void EmitUnits::emit_unit_hook(
+    std::string_view name, const StmtPtr& body,
+    const std::vector<const ProcDecl*>& before_body,
+    const std::vector<const ProcDecl*>& after_body) {
   ops_.nl();
   ops_.emitln(std::string("void ") + std::string(name) + "() {");
   ops_.indent();
   ++block_depth_;
+  for (const ProcDecl* pd : before_body) {
+    ops_.emitln(class_lifecycle_call_cxx(*pd) + "();");
+  }
   if (body) ops_.emit_stmt(*body);
+  for (const ProcDecl* pd : after_body) {
+    ops_.emitln(class_lifecycle_call_cxx(*pd) + "();");
+  }
   --block_depth_;
   ops_.dedent();
   ops_.emitln("}");
@@ -322,10 +362,15 @@ void EmitUnits::emit_unit(const UnitNode& u) {
     }
   }
   emit_type_decl_run(u.impl_decls, /*in_header=*/false);
+  const ClassLifecycleHooks class_lifecycle =
+      collect_class_lifecycle_hooks(u.impl_decls);
 
   if (!u.is_program) {
-    emit_unit_hook(unit_init_name_, u.init_body);
-    emit_unit_hook(unit_fini_name_, u.final_body);
+    // Emit class init hooks before the unit body and fini hooks after it.
+    emit_unit_hook(unit_init_name_, u.init_body,
+                   class_lifecycle.constructors, {});
+    emit_unit_hook(unit_fini_name_, u.final_body, {},
+                   class_lifecycle.destructors);
     ops_.nl();
     ops_.emitln("}  // namespace " + ns);
   } else {
@@ -349,6 +394,15 @@ void EmitUnits::emit_unit(const UnitNode& u) {
     }
     ops_.emitln("using namespace " + ns + ";");
     ++block_depth_;
+    // Register program-local fini hooks so Halt and normal return share the
+    // same cleanup path.
+    for (const ProcDecl* pd : class_lifecycle.constructors) {
+      ops_.emitln(class_lifecycle_call_cxx(*pd) + "();");
+    }
+    for (const ProcDecl* pd : class_lifecycle.destructors) {
+      ops_.emitln("if (std::atexit(" + class_lifecycle_call_cxx(*pd) +
+                  ") != 0) std::abort();");
+    }
     if (u.init_body) ops_.emit_stmt(*u.init_body);
     --block_depth_;
     ops_.emitln("return 0;");
@@ -452,8 +506,8 @@ void EmitUnits::emit_tpexcept_unit(const UnitNode& u) {
       "::longjmp(it->second.p_env, p_return_value == 0 ? 1 : p_return_value);");
   ops_.dedent();
   ops_.emitln("}");
-  emit_unit_hook(unit_init_name_, nullptr);
-  emit_unit_hook(unit_fini_name_, nullptr);
+  emit_unit_hook(unit_init_name_, nullptr, {}, {});
+  emit_unit_hook(unit_fini_name_, nullptr, {}, {});
   ops_.nl();
   ops_.emitln("}  // namespace p_tpexcept");
 }

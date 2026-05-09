@@ -318,10 +318,15 @@ void Parser::parse_decl_block(std::vector<DeclPtr>& out, bool in_interface) {
       }
       case Tok::KwClass: {
         Tok next = peek().kind;
-        if (next != Tok::KwProcedure && next != Tok::KwFunction) return;
+        if (next != Tok::KwProcedure && next != Tok::KwFunction &&
+            next != Tok::KwConstructor && next != Tok::KwDestructor) {
+          return;
+        }
         advance();
-        auto pk = check(Tok::KwFunction) ? ProcKind::Function
-                                         : ProcKind::Procedure;
+        ProcKind pk = ProcKind::Procedure;
+        if (check(Tok::KwFunction)) pk = ProcKind::Function;
+        else if (check(Tok::KwConstructor)) pk = ProcKind::Constructor;
+        else if (check(Tok::KwDestructor)) pk = ProcKind::Destructor;
         auto d = parse_proc_decl(pk, in_interface, /*is_class_method=*/true,
                                  /*in_type_member=*/false);
         if (d) out.push_back(std::move(d));
@@ -655,6 +660,20 @@ std::shared_ptr<ProcDecl> Parser::parse_proc_decl(
     } else if (accept(Tok::Colon)) {
       // Constructors typically have no return; accept if written.
       pd->return_type = parse_type();
+    }
+  }
+  if (is_class_method &&
+      (pk == ProcKind::Constructor || pk == ProcKind::Destructor)) {
+    size_t param_count = 0;
+    for (const auto& p : pd->params) {
+      param_count += p.names.empty() ? 1 : p.names.size();
+    }
+    if (param_count != 0) {
+      report_error(pd->loc,
+                   "class constructors and destructors cannot have parameters");
+    }
+    if (pd->return_type) {
+      report_error(pd->loc, "class constructors cannot have a return type");
     }
   }
   parse_proc_header_tail(*pd, "routine header", in_type_member);
@@ -1172,9 +1191,11 @@ TypePtr Parser::parse_object_type() {
         class_var_section = true;
         continue;
       }
-      if (!(check(Tok::KwProcedure) || check(Tok::KwFunction))) {
+      if (!(check(Tok::KwProcedure) || check(Tok::KwFunction) ||
+            check(Tok::KwConstructor) || check(Tok::KwDestructor))) {
         report_error(cur_.loc,
-                     "expected `procedure', `function', or `var' after `class'");
+                     "expected `procedure', `function', `constructor', "
+                     "`destructor', or `var' after `class'");
         break;
       }
       is_class_method = true;

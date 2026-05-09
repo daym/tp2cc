@@ -79,6 +79,13 @@ std::vector<EmitDecls::MetaclassCallable> EmitDecls::collect_metaclass_callables
     for (const auto& [name, sigs] : current->methods) {
       const MethodSig* sig = ::tp2cc::representative_method(sigs);
       if (!sig) continue;
+      if (sig->decl && sig->decl->is_class_method &&
+          (sig->decl->pkind == ProcKind::Constructor ||
+           sig->decl->pkind == ProcKind::Destructor)) {
+        // The metaclass method table contains callable constructor/class-method
+        // entries; class lifecycle methods run from unit init/fini emission.
+        continue;
+      }
       if (sig->kind == SymKind::Constructor ||
           sig->kind == SymKind::ClassMethod) {
         names.push_back(name);
@@ -434,6 +441,8 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         current_access = std::move(wanted);
       }
     };
+    bool seen_class_constructor = false;
+    bool seen_class_destructor = false;
     for (const auto& m : to.members) {
       ensure_access(m.vis);
       if (m.kind == ObjectMemberKind::Field) {
@@ -455,6 +464,29 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         }
       } else if (m.kind == ObjectMemberKind::Method) {
         const auto& pd = *m.method;
+        const bool is_class_lifecycle =
+            pd.is_class_method &&
+            (pd.pkind == ProcKind::Constructor ||
+             pd.pkind == ProcKind::Destructor);
+        if (is_class_lifecycle) {
+          bool& seen = pd.pkind == ProcKind::Constructor
+                           ? seen_class_constructor
+                           : seen_class_destructor;
+          if (seen) {
+            emit_ops_.report_error(
+                pd.loc,
+                pd.pkind == ProcKind::Constructor
+                    ? "duplicate class constructor"
+                    : "duplicate class destructor");
+          }
+          seen = true;
+          if (pd.is_virtual || pd.is_abstract || pd.is_override ||
+              pd.is_final) {
+            emit_ops_.report_error(
+                pd.loc,
+                "class constructors and destructors cannot be virtual");
+          }
+        }
         const MethodSig* inherited_same_signature_virtual =
             inherited_virtual_with_same_cxx_signature(pd);
         if (pd.is_final && !(pd.is_virtual || pd.is_abstract || pd.is_override)) {
@@ -973,7 +1005,7 @@ std::string EmitDecls::proc_return_type_to_cxx(const ProcDecl& pd) {
   if (pd.pkind == ProcKind::Function && pd.return_type) {
     return types_.type_to_cxx(*pd.return_type);
   }
-  if (pd.pkind == ProcKind::Constructor) {
+  if (pd.pkind == ProcKind::Constructor && !pd.is_class_method) {
     return "bool";
   }
   return "void";

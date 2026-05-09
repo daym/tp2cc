@@ -98,9 +98,9 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
       ms.is_virtual = pd.is_virtual || pd.is_abstract || pd.is_override;
       ms.is_final = pd.is_final;
       ms.is_function = (pd.pkind == ProcKind::Function);
-      if (pd.pkind == ProcKind::Constructor) ms.kind = SymKind::Constructor;
+      if (pd.is_class_method) ms.kind = SymKind::ClassMethod;
+      else if (pd.pkind == ProcKind::Constructor) ms.kind = SymKind::Constructor;
       else if (pd.pkind == ProcKind::Destructor) ms.kind = SymKind::Destructor;
-      else if (pd.is_class_method) ms.kind = SymKind::ClassMethod;
       else ms.kind = SymKind::Method;
       size_t pc = 0;
       for (const auto& p : pd.params) pc += p.names.size();

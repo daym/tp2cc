@@ -5040,6 +5040,37 @@ void test_class_constructor_call_allocates_instance() {
   CHECK(contains(out.impl, "tp2cc_ptr->p_create();"));
 }
 
+void test_class_lifecycle_methods_run_from_unit_hooks() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class\n"
+      "    class constructor init;\n"
+      "    class destructor done;\n"
+      "  end;\n"
+      "implementation\n"
+      "class constructor tnode.init;\n"
+      "begin\n"
+      "end;\n"
+      "class destructor tnode.done;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "static void p_init();"));
+  CHECK(contains(out.header, "static void p_done();"));
+  CHECK(contains(out.impl, "void t_tnode::p_init() {"));
+  CHECK(contains(out.impl, "void t_tnode::p_done() {"));
+  const size_t init_hook = out.impl.find("void tp2cc_unit_init() {");
+  const size_t init_call = out.impl.find("t_tnode::p_init();");
+  const size_t fini_hook = out.impl.find("void tp2cc_unit_fini() {");
+  const size_t fini_call = out.impl.find("t_tnode::p_done();");
+  CHECK(init_hook != std::string::npos && init_call != std::string::npos &&
+        init_hook < init_call);
+  CHECK(fini_hook != std::string::npos && fini_call != std::string::npos &&
+        fini_hook < fini_call);
+}
+
 void test_abstract_class_constructor_call_warns() {
   int before = warning_count();
   auto out = compile_snippet_with_registry(
@@ -7913,6 +7944,7 @@ int main() {
   RUN_TEST(test_tclass_alias_lowers_through_rt);
   RUN_TEST(test_corba_interface_emits_pure_virtual_base_and_pointer_calls);
   RUN_TEST(test_class_constructor_call_allocates_instance);
+  RUN_TEST(test_class_lifecycle_methods_run_from_unit_hooks);
   RUN_TEST(test_abstract_class_constructor_call_warns);
   RUN_TEST(test_class_constructor_trailing_default_argument_is_lowered);
   RUN_TEST(test_object_constructor_call_uses_base_method_on_self);

@@ -105,7 +105,8 @@ void EmitProcs::setup_proc_frame(const ProcDecl& pd, bool nested_lambda) {
   }
   scope_.current_fn_is_function = (pd.pkind == ProcKind::Function);
   scope_.current_fn_is_ctor =
-      !nested_lambda && (pd.pkind == ProcKind::Constructor);
+      !nested_lambda && !pd.is_class_method &&
+      (pd.pkind == ProcKind::Constructor);
   scope_.current_fn_result_type = pd.return_type.get();
 
   if (pd.pkind == ProcKind::Function && pd.return_type) {
@@ -250,7 +251,7 @@ void EmitProcs::emit_proc_body(const ProcDecl& pd) {
   // an already-declared C++ local.
   if (pd.pkind == ProcKind::Function && pd.return_type) {
     emit_ops_.emitln(ret + " " + scope_.current_result_slot_name + "{};");
-  } else if (pd.pkind == ProcKind::Constructor) {
+  } else if (pd.pkind == ProcKind::Constructor && !pd.is_class_method) {
     emit_ops_.emitln(std::string("bool ") + kCtorStatusSlotName + " = true;");
   }
   // Forward-declare any record/object types in locals so a pointer alias that
@@ -258,7 +259,8 @@ void EmitProcs::emit_proc_body(const ProcDecl& pd) {
   emit_ops_.emit_forward_struct_decls(pd.locals);
   for (const auto& l : pd.locals) emit_ops_.emit_decl(*l, /*in_header=*/false);
   if (pd.body) emit_ops_.emit_stmt(*pd.body);
-  if (pd.pkind == ProcKind::Function || pd.pkind == ProcKind::Constructor) {
+  if (pd.pkind == ProcKind::Function ||
+      (pd.pkind == ProcKind::Constructor && !pd.is_class_method)) {
     emit_ops_.emitln(std::string("return ") +
                      (pd.pkind == ProcKind::Function
                           ? scope_.current_result_slot_name

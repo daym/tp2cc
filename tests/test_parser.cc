@@ -524,6 +524,45 @@ void test_class_method_impl_decl() {
   }
 }
 
+void test_class_constructor_and_destructor_decl() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tfoo = class\n"
+      "    class constructor init;\n"
+      "    class destructor done;\n"
+      "  end;\n"
+      "implementation\n"
+      "class constructor tfoo.init;\n"
+      "begin\n"
+      "end;\n"
+      "class destructor tfoo.done;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && !u->interface_decls.empty() && u->impl_decls.size() >= 2) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    auto* to = td ? dynamic_cast<TyObject*>(td->type.get()) : nullptr;
+    CHECK(to);
+    if (to && to->members.size() >= 2) {
+      CHECK(to->members[0].method->is_class_method);
+      CHECK(to->members[0].method->pkind == ProcKind::Constructor);
+      CHECK(to->members[1].method->is_class_method);
+      CHECK(to->members[1].method->pkind == ProcKind::Destructor);
+    }
+    auto* init = dynamic_cast<ProcDecl*>(u->impl_decls[0].get());
+    auto* done = dynamic_cast<ProcDecl*>(u->impl_decls[1].get());
+    CHECK(init && init->is_class_method);
+    CHECK(init && init->pkind == ProcKind::Constructor);
+    CHECK(done && done->is_class_method);
+    CHECK(done && done->pkind == ProcKind::Destructor);
+  }
+}
+
 void test_virtual_class_method_modifiers_are_recorded() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1665,6 +1704,7 @@ int main() {
   RUN_TEST(test_class_directives);
   RUN_TEST(test_class_abstract_directive_before_parent);
   RUN_TEST(test_class_method_impl_decl);
+  RUN_TEST(test_class_constructor_and_destructor_decl);
   RUN_TEST(test_virtual_class_method_modifiers_are_recorded);
   RUN_TEST(test_final_method_modifier_is_recorded);
   RUN_TEST(test_proc_directives_may_follow_header_without_semicolon);

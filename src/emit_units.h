@@ -43,7 +43,9 @@ class EmitUnits {
   void seed_unit_const_scope(const std::vector<ast::DeclPtr>& decls);
   void emit_type_decl_run(const std::vector<ast::DeclPtr>& decls,
                           bool in_header);
-  void emit_unit_hook(std::string_view name, const ast::StmtPtr& body);
+  void emit_unit_hook(std::string_view name, const ast::StmtPtr& body,
+                      const std::vector<const ast::ProcDecl*>& before_body,
+                      const std::vector<const ast::ProcDecl*>& after_body);
   void emit_tpexcept_unit(const ast::UnitNode& u);
 
   ScopeStateView& scope_;
