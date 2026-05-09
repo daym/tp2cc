@@ -257,6 +257,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
           const auto& to = static_cast<const TyObject&>(*td.type);
           ci.parent = lc(to.parent);
           ci.is_reference_type = to.is_reference_type;
+          ci.is_abstract = to.is_abstract;
           ci.is_forward = to.is_forward;
           add_class_members(ci, to);
           auto& bucket = r.classes[nm];

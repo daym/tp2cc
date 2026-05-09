@@ -578,13 +578,13 @@ struct Emitter : ResolveNameProvider,
     return calls_.maybe_lower_class_free_member(base, member_name);
   }
   std::optional<std::string> maybe_lower_class_constructor_call(
-      std::string_view class_name, std::string_view member_name,
+      Location where, std::string_view class_name, std::string_view member_name,
       const std::vector<const ast::Expr*>& args,
       const std::vector<const ast::TypeExpr*>& param_types,
       const std::vector<UntypedArgKind>& untyped_arg,
       const std::vector<bool>& mutable_ref_arg) {
     return calls_.maybe_lower_class_constructor_call(
-        class_name, member_name, args, param_types, untyped_arg,
+        where, class_name, member_name, args, param_types, untyped_arg,
         mutable_ref_arg);
   }
   using ResolvedKind = tp2cc::ResolvedKind;
@@ -1231,7 +1231,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             std::vector<UntypedArgKind> no_untyped_arg;
             std::vector<bool> no_mutable_ref_arg;
             if (auto ctor_call = maybe_lower_class_constructor_call(
-                    base_name, m.name, no_args, no_param_types,
+                    m.loc, base_name, m.name, no_args, no_param_types,
                     no_untyped_arg, no_mutable_ref_arg)) {
               return *ctor_call;
             }
@@ -2162,7 +2162,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (!analysis_.identifier_is_shadowed_value(id.name) &&
               registry->has_class(id.name, current_unit_name)) {
             if (auto ctor_call = maybe_lower_class_constructor_call(
-                    id.name, mem.name, call_args, call_param_types,
+                    c.loc, id.name, mem.name, call_args, call_param_types,
                     call_untyped_arg, call_mutable_ref_arg)) {
               return *ctor_call;
             }

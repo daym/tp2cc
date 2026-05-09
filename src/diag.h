@@ -11,5 +11,6 @@ void report_error(Location where, std::string_view msg);
 void report_warning(Location where, std::string_view msg);
 
 int error_count();
+int warning_count();
 
 }  // namespace tp2cc

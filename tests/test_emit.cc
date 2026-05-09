@@ -5040,6 +5040,30 @@ void test_class_constructor_call_allocates_instance() {
   CHECK(contains(out.impl, "tp2cc_ptr->p_create();"));
 }
 
+void test_abstract_class_constructor_call_warns() {
+  int before = warning_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class abstract\n"
+      "    constructor create;\n"
+      "  end;\n"
+      "function build : tnode;\n"
+      "implementation\n"
+      "constructor tnode.create;\n"
+      "begin\n"
+      "end;\n"
+      "function build : tnode;\n"
+      "begin\n"
+      "  build := tnode.create;\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(warning_count() - before, 1);
+  CHECK(contains(out.impl, "auto tp2cc_ptr = new t_tnode{};"));
+  CHECK(contains(out.impl, "tp2cc_ptr->p_create();"));
+}
+
 void test_class_constructor_trailing_default_argument_is_lowered() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -7889,6 +7913,7 @@ int main() {
   RUN_TEST(test_tclass_alias_lowers_through_rt);
   RUN_TEST(test_corba_interface_emits_pure_virtual_base_and_pointer_calls);
   RUN_TEST(test_class_constructor_call_allocates_instance);
+  RUN_TEST(test_abstract_class_constructor_call_warns);
   RUN_TEST(test_class_constructor_trailing_default_argument_is_lowered);
   RUN_TEST(test_object_constructor_call_uses_base_method_on_self);
   RUN_TEST(test_implicit_tobject_inherited_constructor_autocalls);

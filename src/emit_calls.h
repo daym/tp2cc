@@ -84,7 +84,7 @@ class EmitCalls {
   std::optional<std::string> maybe_lower_class_free_member(
       const ast::Expr& base, std::string_view member_name);
   std::optional<std::string> maybe_lower_class_constructor_call(
-      std::string_view class_name, std::string_view member_name,
+      Location where, std::string_view class_name, std::string_view member_name,
       const std::vector<const ast::Expr*>& args,
       const std::vector<const ast::TypeExpr*>& param_types,
       const std::vector<UntypedArgKind>& untyped_arg,

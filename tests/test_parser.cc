@@ -470,6 +470,33 @@ void test_class_directives() {
   }
 }
 
+void test_class_abstract_directive_before_parent() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "  end;\n"
+      "  tfoo = class abstract (tbase)\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && u->interface_decls.size() >= 2) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[1].get());
+    CHECK(td);
+    auto* to = td ? dynamic_cast<TyObject*>(td->type.get()) : nullptr;
+    CHECK(to);
+    if (to) {
+      CHECK(to->is_reference_type);
+      CHECK(to->is_abstract);
+      CHECK_EQ(to->parent, std::string("tbase"));
+    }
+  }
+}
+
 void test_class_method_impl_decl() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1636,6 +1663,7 @@ int main() {
   RUN_TEST(test_write_only_property);
   RUN_TEST(test_property_dotted_field_accessor);
   RUN_TEST(test_class_directives);
+  RUN_TEST(test_class_abstract_directive_before_parent);
   RUN_TEST(test_class_method_impl_decl);
   RUN_TEST(test_virtual_class_method_modifiers_are_recorded);
   RUN_TEST(test_final_method_modifier_is_recorded);

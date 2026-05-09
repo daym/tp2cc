@@ -540,6 +540,8 @@ struct TyObject : TypeExpr {
   // TObject ancestor, constructor returns a pointer via `TFoo.Create(...)`,
   // destruction via `.Free` (null-safe at the call site).
   bool is_reference_type = false;
+  // Set by `class abstract`; direct constructor calls use it for diagnostics.
+  bool is_abstract = false;
   // Delphi-style forward declaration `T = class;' -- the body comes
   // later in the same type block (or same unit section). A true forward
   // declaration carries no members and no parent; `T = class(Base);` is a

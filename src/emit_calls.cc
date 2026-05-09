@@ -4,6 +4,7 @@
 #include <string_view>
 #include <vector>
 
+#include "diag.h"
 #include "emit_analysis.h"
 #include "emit_resolution.h"
 #include "emit_storage.h"
@@ -458,7 +459,7 @@ std::optional<std::string> EmitCalls::maybe_lower_class_free_member(
 }
 
 std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
-    std::string_view class_name, std::string_view member_name,
+    Location where, std::string_view class_name, std::string_view member_name,
     const std::vector<const Expr*>& args,
     const std::vector<const TypeExpr*>& param_types,
     const std::vector<UntypedArgKind>& untyped_arg,
@@ -479,6 +480,11 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
       return std::nullopt;
     }
     implicit_root_create = true;
+  }
+  if (ci->is_abstract) {
+    report_warning(where,
+                   "instantiating abstract class `" +
+                       std::string(class_name) + "`");
   }
 
   std::vector<const Expr*> effective_args(args.begin(), args.end());

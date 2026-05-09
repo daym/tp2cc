@@ -1089,6 +1089,10 @@ TypePtr Parser::parse_object_type() {
   if (check(Tok::KwClass)) {
     expect(Tok::KwClass, "class");
     to->is_reference_type = true;
+    if (is_directive("abstract")) {
+      advance();
+      to->is_abstract = true;
+    }
   } else {
     expect(Tok::KwObject, "object");
   }

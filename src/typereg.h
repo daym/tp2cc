@@ -95,6 +95,7 @@ struct ClassInfo {
   // always heap-allocated, `TFoo.Create(...)' returns a pointer,
   // destruction via `.Free'.  Emit decisions fork on this flag.
   bool is_reference_type = false;
+  bool is_abstract = false;
   bool is_forward = false;
   std::unordered_map<std::string, FieldInfo> fields;
   // Pascal allows overloaded methods (multiple `procedure foo(...)`
