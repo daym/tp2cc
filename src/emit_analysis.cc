@@ -1248,6 +1248,10 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         if ((id.name == "char" || id.name == "chr") && c.args.size() == 1) {
           return builtin_char_type();
         }
+        if ((id.name == "shortstring" || id.name == "ansistring" ||
+             id.name == "utf8string") && c.args.size() == 1) {
+          return named_pascal_type(id.name);
+        }
         if (c.args.size() == 1) {
           // A one-argument call whose callee is a type name is a Pascal
           // typecast. The result type is the named type even when value

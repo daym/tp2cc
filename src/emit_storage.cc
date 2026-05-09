@@ -874,8 +874,8 @@ bool EmitStorage::type_is_stringish(const TypeExpr* t) {
   t = analysis_.canonicalize_type(t);
   if (!t) return false;
   if (t->kind == Kind::TyString) return true;
-  return tyname_is(t, "string") || tyname_is(t, "shortstring") ||
-         tyname_is(t, "ansistring") || tyname_is(t, "utf8string");
+  return tyname_is(t, "shortstring") || tyname_is(t, "ansistring") ||
+         tyname_is(t, "utf8string");
 }
 
 bool EmitStorage::type_is_pointerish(const TypeExpr* t) {

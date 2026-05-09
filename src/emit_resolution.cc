@@ -329,7 +329,7 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
     if (t->kind == Kind::TyString) return true;
     if (t->kind != Kind::TyName) return false;
     const auto& n = ascii_lower(static_cast<const TyName&>(*t).name);
-    return n == "string" || n == "shortstring";
+    return n == "shortstring";
   };
   auto is_ansistring = [&](const TypeExpr* t) {
     return t && t->kind == Kind::TyName &&

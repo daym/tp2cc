@@ -24,13 +24,18 @@ EmitTypes::EmitTypes(const TypeRegistry* registry, ScopeStateView& scope,
       diag_ops_(diag_ops) {}
 
 std::string EmitTypes::type_name_to_cxx(const TyName& n) {
+  if (n.name == "string") {
+    diag_ops_.report_error(n.loc,
+                           "internal unresolved H-mode `string' type name");
+    return "::rt::tp2cc_ShortString<>";
+  }
   if (is_primitive_type(n.name)) return primitive_type_cxx(n.name);
   if (n.name == "nil") return "std::nullptr_t";
   if (n.name == "ansistring" || n.name == "utf8string") {
     return "::rt::tp2cc_AnsiString";
   }
   if (n.name == "text") return "::rt::tp2cc_TextFile";
-  if (n.name == "string" || n.name == "shortstring") {
+  if (n.name == "shortstring") {
     return "::rt::tp2cc_ShortString<>";
   }
   // Runtime aliases are also registered for analysis, but their emitted names
@@ -598,7 +603,7 @@ std::string EmitTypes::string_type_to_cxx(const TyString& s) {
 std::optional<std::string> EmitTypes::shortstring_capacity_to_cxx(
     const TypeExpr* t) {
   const TypeExpr* canon = analysis_.canonicalize_type(t);
-  if (tyname_is(canon, "string") || tyname_is(canon, "shortstring")) {
+  if (tyname_is(canon, "shortstring")) {
     return std::string("255");
   }
   if (!(canon && canon->kind == Kind::TyString)) return std::nullopt;

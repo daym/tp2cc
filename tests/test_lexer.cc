@@ -410,6 +410,17 @@ void test_directive_ignored_configs() {
   CHECK_EQ(ts[0].text, std::string("x"));
 }
 
+void test_ifopt_tracks_h_mode() {
+  auto ts = lex_all(
+      "{$H+}{$ifopt H+}long{$else}short{$endif}\n"
+      "{$H-}{$ifopt H-}short{$else}long{$endif}\n");
+  CHECK_EQ(ts.size(), size_t{2});
+  if (ts.size() >= 2) {
+    CHECK_EQ(ts[0].text, std::string("long"));
+    CHECK_EQ(ts[1].text, std::string("short"));
+  }
+}
+
 void test_enum_and_set_of_type() {
   auto ts = lex_all(
       "type\n"
@@ -540,6 +551,7 @@ int main() {
   RUN_TEST(test_inactive_ifdef_skips_full_string_literals);
   RUN_TEST(test_directive_builtin_macro_expands_deterministically);
   RUN_TEST(test_directive_ignored_configs);
+  RUN_TEST(test_ifopt_tracks_h_mode);
   RUN_TEST(test_enum_and_set_of_type);
   RUN_TEST(test_set_literal_and_in);
   RUN_TEST(test_object_declaration_syntax);

@@ -82,7 +82,7 @@ const ast::TyName* builtin_char_type() {
 const ast::TyName* builtin_string_type() {
   static const ast::TyName t = [] {
     ast::TyName n;
-    n.name = "string";
+    n.name = "shortstring";
     return n;
   }();
   return &t;
@@ -354,7 +354,6 @@ const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
       {"ptruint", {"::rt::t_ptruint", PrimitiveIntKind::Unsigned, 32}},
       {"sizeint", {"::rt::t_sizeint", PrimitiveIntKind::Signed, 32}},
       {"sizeuint", {"::rt::t_sizeuint", PrimitiveIntKind::Unsigned, 32}},
-      {"string", {"::rt::tp2cc_ShortString<>", PrimitiveIntKind::None, 0}},
       {"shortstring", {"::rt::tp2cc_ShortString<>", PrimitiveIntKind::None, 0}},
       {"ansistring", {"::rt::tp2cc_AnsiString", PrimitiveIntKind::None, 0}},
       {"utf8string", {"::rt::tp2cc_AnsiString", PrimitiveIntKind::None, 0}},

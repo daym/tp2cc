@@ -500,6 +500,8 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     else if (opt == "q-" || opt == "overflowchecks-") cond = !q_check_;
     else if (opt == "r+" || opt == "rangechecks+") cond = r_check_;
     else if (opt == "r-" || opt == "rangechecks-") cond = !r_check_;
+    else if (opt == "h+" || opt == "longstrings+") cond = h_long_strings_;
+    else if (opt == "h-" || opt == "longstrings-") cond = !h_long_strings_;
     IfdefFrame f;
     f.accepting = parent_ok && cond;
     f.any_taken = f.accepting;
@@ -611,6 +613,25 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     r_check_ = false;
     return;
   }
+  if (head == "h+" || head == "longstrings+") {
+    h_long_strings_ = true;
+    return;
+  }
+  if (head == "h-" || head == "longstrings-") {
+    h_long_strings_ = false;
+    return;
+  }
+  if (head == "longstrings") {
+    std::string mode = lower(trim(rest));
+    if (mode == "on" || mode == "+") {
+      h_long_strings_ = true;
+    } else if (mode == "off" || mode == "-") {
+      h_long_strings_ = false;
+    } else {
+      report_error(where, "illegal {$longstrings} value: " + trim(rest));
+    }
+    return;
+  }
   // FPC's default enum storage is 4 bytes (`{$PACKENUM 4}` / `{$Z4}`), but
   // `{$PACKENUM 1}`, `{$PACKENUM 2}`, `{$MINENUMSIZE ...}`, and `{$Z1/$Z2/$Z4}`
   // all change the minimum storage width for subsequently declared enums.
@@ -658,7 +679,7 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     return;
   }
 
-  // Everything else (mode, I+, R-, S-, H-, F+, ASMMODE, L, linklib, appid,
+  // Everything else (I+, F+, ASMMODE, L, linklib, appid,
   // apptype, memory, stacksize, heapsize, etc) is silently accepted.
 }
 
@@ -673,6 +694,8 @@ bool Lexer::range_check_active() const {
 int Lexer::packenum_active() const { return packenum_; }
 
 InterfaceMode Lexer::interface_mode_active() const { return interface_mode_; }
+
+bool Lexer::long_strings_active() const { return h_long_strings_; }
 
 void Lexer::set_overflow_check_default(bool on) { q_check_ = on; }
 void Lexer::set_range_check_default(bool on) { r_check_ = on; }

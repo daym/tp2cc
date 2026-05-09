@@ -1089,6 +1089,68 @@ void test_call_with_write_formatter() {
   CHECK_EQ(error_count() - before, 0);
 }
 
+void test_string_keyword_typecast_in_expression() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "{$H-}\n"
+      "function demo(p : pchar; i : longint) : string;\n"
+      "implementation\n"
+      "function demo(p : pchar; i : longint) : string;\n"
+      "begin\n"
+      "  demo := string(PChar(@p[i]));\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && !u->interface_decls.empty() && !u->impl_decls.empty()) {
+    auto* sig = dynamic_cast<ProcDecl*>(u->interface_decls[0].get());
+    auto* ret = sig ? dynamic_cast<TyName*>(sig->return_type.get()) : nullptr;
+    CHECK(ret != nullptr);
+    if (ret) CHECK_EQ(ret->name, std::string("shortstring"));
+    auto* impl = dynamic_cast<ProcDecl*>(u->impl_decls[0].get());
+    auto* body = impl ? dynamic_cast<Compound*>(impl->body.get()) : nullptr;
+    auto* asn = body && !body->body.empty()
+                    ? dynamic_cast<Assign*>(body->body[0].get())
+                    : nullptr;
+    auto* call = asn ? dynamic_cast<Call*>(asn->value.get()) : nullptr;
+    auto* callee = call ? dynamic_cast<Ident*>(call->callee.get()) : nullptr;
+    CHECK(callee != nullptr);
+    if (callee) CHECK_EQ(callee->name, std::string("shortstring"));
+  }
+
+  before = error_count();
+  u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "{$H+}\n"
+      "function demo(p : pchar; i : longint) : string;\n"
+      "implementation\n"
+      "function demo(p : pchar; i : longint) : string;\n"
+      "begin\n"
+      "  demo := string(PChar(@p[i]));\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && !u->interface_decls.empty() && !u->impl_decls.empty()) {
+    auto* sig = dynamic_cast<ProcDecl*>(u->interface_decls[0].get());
+    auto* ret = sig ? dynamic_cast<TyName*>(sig->return_type.get()) : nullptr;
+    CHECK(ret != nullptr);
+    if (ret) CHECK_EQ(ret->name, std::string("ansistring"));
+    auto* impl = dynamic_cast<ProcDecl*>(u->impl_decls[0].get());
+    auto* body = impl ? dynamic_cast<Compound*>(impl->body.get()) : nullptr;
+    auto* asn = body && !body->body.empty()
+                    ? dynamic_cast<Assign*>(body->body[0].get())
+                    : nullptr;
+    auto* call = asn ? dynamic_cast<Call*>(asn->value.get()) : nullptr;
+    auto* callee = call ? dynamic_cast<Ident*>(call->callee.get()) : nullptr;
+    CHECK(callee != nullptr);
+    if (callee) CHECK_EQ(callee->name, std::string("ansistring"));
+  }
+}
+
 void test_procedural_type_decl() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1380,6 +1442,7 @@ int main() {
   RUN_TEST(test_unary_plus_minus_parse_in_factor_position);
   RUN_TEST(test_set_literal_in_expr);
   RUN_TEST(test_call_with_write_formatter);
+  RUN_TEST(test_string_keyword_typecast_in_expression);
   RUN_TEST(test_procedural_type_decl);
   RUN_TEST(test_directives_as_identifiers);
   RUN_TEST(test_typed_array_constant);

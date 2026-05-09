@@ -757,15 +757,10 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
                             make_typename("boolean"),
                             /*class_method=*/true)});
 
-  // sysutils' Exception ancestor. `Create(const Msg: string)`; the
-  // array-of-const `CreateFmt` cousin is not registered (its only
-  // call site is rewritten by
-  // patches/fpc-2.2.4-replace-array-of-const-calls-with-string-concat
-  // to use plain Create).
   ast::Param exc_msg;
   exc_msg.mode = ast::Param::Const;
   exc_msg.names = {"msg"};
-  exc_msg.type = make_typename("string");
+  exc_msg.type = make_typename("shortstring");
   add_rt_class("exception", "tobject",
                {make_method("create", ast::ProcKind::Constructor,
                             {exc_msg})});

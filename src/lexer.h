@@ -50,6 +50,7 @@ class Lexer {
   bool range_check_active() const;
   int packenum_active() const;
   InterfaceMode interface_mode_active() const;
+  bool long_strings_active() const;
 
   // Initial `{$Q+}` / `{$R+}` state supplied by `-Co` / `-Cr` command-line
   // flags. Source-level `{$Q+/-}` / `{$R+/-}` directives still override
@@ -126,6 +127,11 @@ class Lexer {
   // `{$MINENUMSIZE ...}`, and `{$Z1/$Z2/$Z4}` switches at the point where an
   // enum type is parsed.
   int packenum_ = 4;
+
+  // Live `{$H+/-}` state. Under H- plain `string` is ShortString; under H+
+  // plain `string` is AnsiString. The parser snapshots this when it sees
+  // `string` in a type or expression typecast position.
+  bool h_long_strings_ = false;
 
   // FPC's default is COM interfaces. That implies IUnknown-style
   // refcounting; p2cc currently only lowers explicit CORBA interfaces.

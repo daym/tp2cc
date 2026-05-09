@@ -44,6 +44,13 @@ bool is_constant_subrange_bound_expr(const Expr& e) {
   }
 }
 
+TypePtr make_type_name(Location loc, std::string name) {
+  auto tn = std::make_shared<TyName>();
+  tn->loc = loc;
+  tn->name = std::move(name);
+  return tn;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -821,14 +828,21 @@ TypePtr Parser::parse_type() {
       return parse_procedural_type();
     case Tok::KwString:
     case Tok::KwShortstring: {
+      bool string_keyword = cur_.kind == Tok::KwString;
       advance();
       auto ts = std::make_shared<TyString>();
       ts->loc = loc;
       if (accept(Tok::LBrack)) {
         ts->max_length = parse_expr();
         expect(Tok::RBrack, "string length");
+        return ts;
       }
-      return ts;
+      if (string_keyword) {
+        return make_type_name(loc,
+                              lex_.long_strings_active() ? "ansistring"
+                                                         : "shortstring");
+      }
+      return make_type_name(loc, "shortstring");
     }
     default:
       return parse_simple_type();
@@ -1811,6 +1825,21 @@ ExprPtr Parser::parse_primary() {
         return parse_postfix(std::move(m));
       }
       return parse_postfix(std::move(base));
+    }
+    case Tok::KwString:
+    case Tok::KwShortstring: {
+      // In expression position, `string(x)` / `shortstring(x)` is a typecast.
+      // `string` is H-mode-sensitive, so resolve it here instead of letting
+      // later emit code guess whether the target was ShortString or AnsiString.
+      auto id = std::make_shared<Ident>();
+      id->loc = loc;
+      if (cur_.kind == Tok::KwString) {
+        id->name = lex_.long_strings_active() ? "ansistring" : "shortstring";
+      } else {
+        id->name = "shortstring";
+      }
+      advance();
+      return parse_postfix(std::move(id));
     }
     case Tok::Ident:
     case Tok::KwSelf: {

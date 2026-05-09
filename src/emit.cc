@@ -1674,6 +1674,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // Only the explicit lvalue forms handled elsewhere
           // (`T(lv) := ...`, `inc(T(lv))`, `dec(T(lv))`) reinterpret
           // storage. Plain `T(expr)` remains a value conversion.
+          if (n == "string") {
+            report_error(c.loc,
+                         "internal unresolved H-mode `string' typecast");
+            return "/* unresolved string typecast */";
+          }
+          if (n == "shortstring") {
+            return "::rt::tp2cc_shortstring_of<>(" + arg0() + ")";
+          }
           if (n == "ansistring" || n == "utf8string") {
             return "::rt::tp2cc_ansistring_of(" + arg0() + ")";
           }

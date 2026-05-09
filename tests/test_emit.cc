@@ -1628,6 +1628,40 @@ void test_shortstring_assignment_uses_pascal_string_helper() {
   CHECK(!contains(out.impl, "::rt::tp2cc_deref(p_p) = p_s;"));
 }
 
+void test_string_typecast_from_pchar_lowers_to_shortstring() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "{$H-}\n"
+      "function demo(p : pchar; i : longint) : string;\n"
+      "implementation\n"
+      "function demo(p : pchar; i : longint) : string;\n"
+      "begin\n"
+      "  demo := string(PChar(@p[i]));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_shortstring_assign(p_result, ::rt::tp2cc_shortstring_of<>(((::rt::p_char*)((&p_p[p_i])))));"));
+  CHECK(!contains(out.impl, "tp2cc_ansistring_of"));
+}
+
+void test_h_plus_string_typecast_from_pchar_lowers_to_ansistring() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "{$H+}\n"
+      "function demo(p : pchar; i : longint) : string;\n"
+      "implementation\n"
+      "function demo(p : pchar; i : longint) : string;\n"
+      "begin\n"
+      "  demo := string(PChar(@p[i]));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_result = ::rt::tp2cc_ansistring_of(((::rt::p_char*)((&p_p[p_i]))));"));
+  CHECK(!contains(out.impl, "tp2cc_shortstring_of"));
+}
+
 void test_typed_const_shortstring_literals_use_target_capacity() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -3555,7 +3589,7 @@ void test_open_array_method_signature_keeps_wrapper_type() {
   CHECK(contains(out.header,
                  "::rt::tp2cc_ShortString<> p_get(int32_t p_nr, ::rt::tp2cc_OpenArray<::rt::tp2cc_ShortString<>> p_args);"));
   CHECK(contains(out.header,
-                 "static ::rt::tp2cc_ShortString<> tp2cc_methodptr_get_value_name_integer_const_openarr_string_ret_string(void* tp2cc_self, int32_t p_nr, ::rt::tp2cc_OpenArray<::rt::tp2cc_ShortString<>> p_args)"));
+                 "static ::rt::tp2cc_ShortString<> tp2cc_methodptr_get_value_name_integer_const_openarr_name_shortstring_ret_name_shortstring(void* tp2cc_self, int32_t p_nr, ::rt::tp2cc_OpenArray<::rt::tp2cc_ShortString<>> p_args)"));
 }
 
 void test_open_array_procvar_signature_keeps_wrapper_type() {
@@ -7634,6 +7668,8 @@ int main() {
   RUN_TEST(test_nul_char_plus_cast_uses_string_concat);
   RUN_TEST(test_embedded_nul_string_literal_uses_explicit_length_builder);
   RUN_TEST(test_shortstring_assignment_uses_pascal_string_helper);
+  RUN_TEST(test_string_typecast_from_pchar_lowers_to_shortstring);
+  RUN_TEST(test_h_plus_string_typecast_from_pchar_lowers_to_ansistring);
   RUN_TEST(test_var_shortstring_call_keeps_lvalue_storage);
   RUN_TEST(test_var_shortstring_capacity_mismatch_uses_storage_ref);
   RUN_TEST(test_var_runtime_shortstring_alias_uses_storage_ref);
