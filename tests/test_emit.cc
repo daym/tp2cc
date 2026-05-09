@@ -963,6 +963,36 @@ void test_const_pointer_parameter_stays_value_abi() {
   CHECK(!contains(out.impl, "p_take(const "));
 }
 
+void test_constref_record_parameter_emits_const_reference() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    x : longint;\n"
+      "  end;\n"
+      "procedure take(constref r : trec);\n"
+      "function make : trec;\n"
+      "implementation\n"
+      "procedure take(constref r : trec);\n"
+      "begin\n"
+      "  if r.x <> 0 then ;\n"
+      "end;\n"
+      "function make : trec;\n"
+      "begin\n"
+      "  make.x := 1;\n"
+      "end;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  take(make);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "void p_take(const t_trec& p_r);"));
+  CHECK(contains(out.impl, "void p_take(const t_trec& p_r) {"));
+  CHECK(contains(out.impl, "if ((p_r.p_x != 0))"));
+  CHECK(contains(out.impl, "p_take(p_make());"));
+}
+
 void test_const_fixed_array_parameter_stays_value_abi() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -7761,6 +7791,7 @@ int main() {
   RUN_TEST(test_var_extern_in_header_and_def_in_impl);
   RUN_TEST(test_out_parameter_emits_like_var_reference);
   RUN_TEST(test_const_pointer_parameter_stays_value_abi);
+  RUN_TEST(test_constref_record_parameter_emits_const_reference);
   RUN_TEST(test_const_fixed_array_parameter_stays_value_abi);
   RUN_TEST(test_const_fixed_record_array_parameter_stays_value_abi);
   RUN_TEST(test_const_fixed_classref_array_parameter_stays_value_abi);

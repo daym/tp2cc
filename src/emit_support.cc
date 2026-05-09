@@ -148,6 +148,7 @@ std::string encode_helper_param_mode(ast::Param::Mode mode) {
     case ast::Param::Value: return "value";
     case ast::Param::Var: return "var";
     case ast::Param::Const: return "const";
+    case ast::Param::ConstRef: return "constref";
     case ast::Param::Out: return "out";
   }
   return "value";

@@ -149,13 +149,17 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
       if (!insert_local_name(pd.loc, nm)) continue;
       if (p.type) {
         scope_.local_types[nm] = p.type.get();
-        if (p.mode == Param::Const) scope_.local_const_params.insert(nm);
+        if (p.mode == Param::Const || p.mode == Param::ConstRef) {
+          scope_.local_const_params.insert(nm);
+        }
       } else {
-        // Untyped `const` params still arrive as `const void*` in C++; keep
-        // the const-mode bit so later pointer-slot coercions can make the
+        // Untyped read-only params arrive as `const void*` in C++; keep the
+        // const-mode bit so later pointer-slot coercions can make the
         // qualifier drop explicit instead of relying on `-fpermissive`.
         scope_.local_untyped_params.insert(nm);
-        if (p.mode == Param::Const) scope_.local_const_params.insert(nm);
+        if (p.mode == Param::Const || p.mode == Param::ConstRef) {
+          scope_.local_const_params.insert(nm);
+        }
       }
     }
   }

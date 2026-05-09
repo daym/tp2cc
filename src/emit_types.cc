@@ -696,7 +696,9 @@ std::string EmitTypes::procedural_param_types_to_cxx(
   for (const auto& pp : params) {
     std::string pt;
     if (!pp.type) {
-      pt = "void*";
+      pt = (pp.mode == Param::Const || pp.mode == Param::ConstRef)
+               ? "const void*"
+               : "void*";
     } else if (const TypeExpr* canon = analysis_.canonicalize_type(pp.type.get());
                canon && canon->kind == Kind::TyArray &&
                static_cast<const TyArray&>(*canon).array_kind ==
@@ -711,6 +713,8 @@ std::string EmitTypes::procedural_param_types_to_cxx(
       if (param_uses_shortstring_ref(pp.type.get(), pp.mode)) {
         // Mutable shortstrings are storage proxies, not C++ references; this
         // keeps virtual/interface method signatures capacity-agnostic.
+      } else if (pp.mode == Param::ConstRef) {
+        pt = "const " + pt + "&";
       } else if (pp.mode == Param::Var || pp.mode == Param::Out) pt += "&";
       else if (pp.mode == Param::Const) {
         if (analysis_.const_param_needs_mutable_ref(pp.type.get())) pt += "&";

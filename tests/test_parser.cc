@@ -1604,6 +1604,36 @@ void test_out_parameter_is_soft_and_parsed_in_formal_params() {
   }
 }
 
+void test_constref_parameter_is_soft_and_parsed_in_formal_params() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type trec = record x : longint; end;\n"
+      "procedure take(constref r : trec);\n"
+      "procedure keep(constref : trec);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && u->interface_decls.size() >= 3) {
+    auto* take = dynamic_cast<ProcDecl*>(u->interface_decls[1].get());
+    auto* keep = dynamic_cast<ProcDecl*>(u->interface_decls[2].get());
+    CHECK(take != nullptr);
+    CHECK(keep != nullptr);
+    if (take && !take->params.empty()) {
+      CHECK(take->params[0].mode == Param::ConstRef);
+      CHECK_EQ(take->params[0].names.size(), size_t{1});
+      CHECK_EQ(take->params[0].names[0], std::string("r"));
+    }
+    if (keep && !keep->params.empty()) {
+      CHECK(keep->params[0].mode == Param::Value);
+      CHECK_EQ(keep->params[0].names.size(), size_t{1});
+      CHECK_EQ(keep->params[0].names[0], std::string("constref"));
+    }
+  }
+}
+
 void test_open_and_dynamic_array_forms_stay_distinct() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1687,6 +1717,7 @@ int main() {
   RUN_TEST(test_directive_as_method_name);
   RUN_TEST(test_unit_named_like_directive);
   RUN_TEST(test_out_parameter_is_soft_and_parsed_in_formal_params);
+  RUN_TEST(test_constref_parameter_is_soft_and_parsed_in_formal_params);
   RUN_TEST(test_open_and_dynamic_array_forms_stay_distinct);
   RUN_TEST(test_error_recovery_basic);
   RUN_TEST(test_class_declaration);

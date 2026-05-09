@@ -396,7 +396,7 @@ struct LabelDecl : Decl {
 };
 
 struct Param {
-  enum Mode { Value, Var, Const, Out } mode = Value;
+  enum Mode { Value, Var, Const, ConstRef, Out } mode = Value;
   std::vector<std::string> names;
   TypePtr type;        // may be null for untyped `var`/`const` params
   ExprPtr default_value;  // optional
