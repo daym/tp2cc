@@ -112,6 +112,36 @@ size_t initial_input_pos(const SourceFile& file) {
   return 0;
 }
 
+std::string trim(std::string_view s) {
+  size_t a = 0, b = s.size();
+  while (a < b &&
+         (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n')) {
+    ++a;
+  }
+  while (b > a &&
+         (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r' ||
+          s[b - 1] == '\n')) {
+    --b;
+  }
+  return std::string(s.substr(a, b - a));
+}
+
+struct MacroDefinition {
+  std::string name;
+  std::optional<std::string> text;
+};
+
+MacroDefinition parse_macro_definition(std::string_view rest) {
+  std::string body = trim(rest);
+  size_t eq = body.find(":=");
+  if (eq == std::string::npos) {
+    return MacroDefinition{std::move(body), std::nullopt};
+  }
+  std::string name = trim(std::string_view(body).substr(0, eq));
+  std::string text = trim(std::string_view(body).substr(eq + 2));
+  return MacroDefinition{std::move(name), std::move(text)};
+}
+
 }  // namespace
 
 std::string Lexer::lower(std::string_view s) {
@@ -133,7 +163,14 @@ Lexer::Lexer(std::shared_ptr<SourceFile> root,
   for (auto& kv : kKeywordTable) keywords_.emplace(kv.first, kv.second);
 }
 
-void Lexer::define(std::string name) { defines_.insert(lower(name)); }
+void Lexer::define(std::string name) {
+  MacroDefinition def = parse_macro_definition(name);
+  std::string normalized = lower(def.name);
+  if (!normalized.empty()) {
+    defines_[std::move(normalized)] = std::move(def.text);
+  }
+}
+
 void Lexer::undefine(const std::string& name) { defines_.erase(lower(name)); }
 
 bool Lexer::at_eof_of_current() const {
@@ -218,13 +255,6 @@ std::pair<std::string, std::string_view> split_directive(std::string_view body) 
   return {std::move(head), body.substr(i)};
 }
 
-std::string trim(std::string_view s) {
-  size_t a = 0, b = s.size();
-  while (a < b && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n')) ++a;
-  while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r' || s[b - 1] == '\n')) --b;
-  return std::string(s.substr(a, b - a));
-}
-
 std::optional<int> parse_packenum_value(std::string_view rest) {
   std::string value = trim(rest);
   for (char& c : value) {
@@ -279,7 +309,19 @@ struct IfExprParser {
   std::string_view src;
   size_t pos = 0;
   bool ok = true;
-  const std::unordered_set<std::string>* defines;
+  std::string error;
+  const std::unordered_map<std::string, std::optional<std::string>>* defines;
+
+  IfExprParser(
+      std::string_view source,
+      const std::unordered_map<std::string, std::optional<std::string>>*
+          active_defines)
+      : src(source), defines(active_defines) {}
+
+  void fail(std::string msg) {
+    ok = false;
+    if (error.empty()) error = std::move(msg);
+  }
 
   void skip_ws() {
     while (pos < src.size() && (src[pos] == ' ' || src[pos] == '\t')) ++pos;
@@ -347,6 +389,13 @@ struct IfExprParser {
     }
     return out;
   }
+  std::optional<Value> parse_macro_value(std::string_view text) {
+    IfExprParser p{text, nullptr};
+    if (p.match_word("true") && p.eof()) return Value::bool_value(true);
+    if (p.match_word("false") && p.eof()) return Value::bool_value(false);
+    if (auto v = p.read_int(); v && p.eof()) return Value::int_value(*v);
+    return std::nullopt;
+  }
   Value parse_primary() {
     skip_ws();
     if (match_char('(')) {
@@ -357,22 +406,48 @@ struct IfExprParser {
     // `defined(SYM)`
     size_t saved = pos;
     if (match_word("defined")) {
-      if (!match_char('(')) { ok = false; return Value::bool_value(false); }
+      if (!match_char('(')) {
+        fail("expected `(' after `defined' in {$if} expression");
+        return Value::bool_value(false);
+      }
       std::string sym = read_ident();
-      if (!match_char(')')) { ok = false; return Value::bool_value(false); }
+      if (sym.empty()) {
+        fail("expected symbol name in `defined(...)' in {$if} expression");
+        return Value::bool_value(false);
+      }
+      if (!match_char(')')) {
+        fail("expected `)' after symbol name in {$if} expression");
+        return Value::bool_value(false);
+      }
       return Value::bool_value(defines && defines->count(sym) > 0);
     }
     pos = saved;
     if (match_word("true")) return Value::bool_value(true);
     if (match_word("false")) return Value::bool_value(false);
     if (auto v = read_int()) return Value::int_value(*v);
-    ok = false;
+    std::string ident = read_ident();
+    if (!ident.empty()) {
+      if (defines) {
+        auto it = defines->find(ident);
+        if (it != defines->end() && it->second) {
+          if (auto v = parse_macro_value(*it->second)) return *v;
+          fail("symbol `" + ident + "' has unsupported {$if} value `" +
+               *it->second + "'");
+          return Value::bool_value(false);
+        }
+      }
+      fail("undefined symbol `" + ident + "' in {$if} expression");
+      return Value::bool_value(false);
+    }
+    fail("expected operand in {$if} expression");
     return Value::bool_value(false);
   }
   Value parse_unary() {
     if (match_word("not")) {
       Value v = parse_unary();
-      if (v.kind != Value::Kind::Bool) ok = false;
+      if (v.kind != Value::Kind::Bool) {
+        fail("operator `not' requires a boolean operand in {$if} expression");
+      }
       return Value::bool_value(!v.b);
     }
     return parse_primary();
@@ -382,7 +457,7 @@ struct IfExprParser {
     while (match_word("and")) {
       Value r = parse_unary();
       if (v.kind != Value::Kind::Bool || r.kind != Value::Kind::Bool) {
-        ok = false;
+        fail("operator `and' requires boolean operands in {$if} expression");
         return Value::bool_value(false);
       }
       v = Value::bool_value(v.b && r.b);
@@ -394,7 +469,7 @@ struct IfExprParser {
     while (match_word("or")) {
       Value r = parse_and();
       if (v.kind != Value::Kind::Bool || r.kind != Value::Kind::Bool) {
-        ok = false;
+        fail("operator `or' requires boolean operands in {$if} expression");
         return Value::bool_value(false);
       }
       v = Value::bool_value(v.b || r.b);
@@ -436,13 +511,13 @@ struct IfExprParser {
     if (!op) return lhs;
     Value rhs = parse_simple_expr();
     if (lhs.kind != rhs.kind) {
-      ok = false;
+      fail("cannot compare boolean and integer values in {$if} expression");
       return Value::bool_value(false);
     }
     if (lhs.kind == Value::Kind::Bool) {
       if (*op == "=") return Value::bool_value(lhs.b == rhs.b);
       if (*op == "<>") return Value::bool_value(lhs.b != rhs.b);
-      ok = false;
+      fail("only `=' and `<>' are valid for boolean {$if} values");
       return Value::bool_value(false);
     }
     if (*op == "=") return Value::bool_value(lhs.i == rhs.i);
@@ -451,20 +526,29 @@ struct IfExprParser {
     if (*op == ">") return Value::bool_value(lhs.i > rhs.i);
     if (*op == "<=") return Value::bool_value(lhs.i <= rhs.i);
     if (*op == ">=") return Value::bool_value(lhs.i >= rhs.i);
-    ok = false;
+    fail("unsupported operator in {$if} expression");
     return Value::bool_value(false);
   }
 };
 
 }  // namespace
 
-std::optional<bool> Lexer::eval_if_expr(std::string_view expr) {
-  IfExprParser p{expr, 0, true, &defines_};
+Lexer::IfEvalResult Lexer::eval_if_expr(std::string_view expr) {
+  IfExprParser p{expr, &defines_};
   IfExprParser::Value v = p.parse_expr();
-  if (!p.ok) return std::nullopt;
-  if (!p.eof()) return std::nullopt;
-  if (v.kind != IfExprParser::Value::Kind::Bool) return std::nullopt;
-  return v.b;
+  if (!p.ok) {
+    return IfEvalResult{false, false, std::move(p.error)};
+  }
+  if (!p.eof()) {
+    return IfEvalResult{false, false,
+                        "unexpected text after {$if} expression: `" +
+                            trim(p.src.substr(p.pos)) + "`"};
+  }
+  if (v.kind != IfExprParser::Value::Kind::Bool) {
+    return IfEvalResult{false, false,
+                        "{$if} expression does not produce a boolean value"};
+  }
+  return IfEvalResult{true, v.b, {}};
 }
 
 void Lexer::handle_directive(std::string_view body, Location where) {
@@ -488,10 +572,11 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     bool parent_ok = accepting();
     bool cond = false;
     if (parent_ok) {
-      if (std::optional<bool> v = eval_if_expr(rest)) {
-        cond = *v;
+      IfEvalResult v = eval_if_expr(rest);
+      if (v.ok) {
+        cond = v.value;
       } else {
-        report_error(where, "unsupported {$if} expression: " + trim(rest));
+        report_error(where, "cannot evaluate {$if}: " + v.error);
       }
     }
     IfdefFrame f;
@@ -538,10 +623,11 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     }
     bool cond = false;
     if (parent_ok && !f.any_taken) {
-      if (std::optional<bool> v = eval_if_expr(rest)) {
-        cond = *v;
+      IfEvalResult v = eval_if_expr(rest);
+      if (v.ok) {
+        cond = v.value;
       } else {
-        report_error(where, "unsupported {$elseif} expression: " + trim(rest));
+        report_error(where, "cannot evaluate {$elseif}: " + v.error);
       }
     }
     f.accepting = parent_ok && !f.any_taken && cond;
@@ -581,11 +667,11 @@ void Lexer::handle_directive(std::string_view body, Location where) {
   if (!accepting()) return;
 
   if (head == "define") {
-    std::string sym = lower(trim(rest));
-    // fpc allows `{$define FOO:=bar}` macro form -- we ignore the value.
-    size_t eq = sym.find(":=");
-    if (eq != std::string::npos) sym = sym.substr(0, eq);
-    if (!sym.empty()) defines_.insert(sym);
+    MacroDefinition def = parse_macro_definition(rest);
+    std::string normalized = lower(def.name);
+    if (!normalized.empty()) {
+      defines_[std::move(normalized)] = std::move(def.text);
+    }
     return;
   }
   if (head == "undef") {

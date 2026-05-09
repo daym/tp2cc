@@ -6,7 +6,6 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "source.h"
@@ -26,7 +25,9 @@ class Lexer {
   explicit Lexer(std::shared_ptr<SourceFile> root,
                  std::vector<std::filesystem::path> include_dirs = {});
 
-  // Predefine a symbol for {$ifdef}.
+  // Predefine a symbol for {$ifdef}. If the spelling is NAME:=TEXT,
+  // TEXT is kept as macro text and typed only when a {$if} expression
+  // reads NAME.
   void define(std::string name);
   void undefine(const std::string& name);
 
@@ -82,11 +83,15 @@ class Lexer {
 
   void handle_directive(std::string_view body, Location where);
   void do_include(std::string_view arg, Location where);
-  // Evaluate a `{$if EXPR}` / `{$elseif EXPR}` body. Supports the subset the
-  // bootstrap uses: `defined(SYM)`, `not`, `and`, `or`, parens. Unsupported
-  // syntax returns nullopt so the directive handler can diagnose it instead of
-  // silently selecting a branch.
-  std::optional<bool> eval_if_expr(std::string_view expr);
+  struct IfEvalResult {
+    bool ok = false;
+    bool value = false;
+    std::string error;
+  };
+
+  // Evaluate a `{$if EXPR}` / `{$elseif EXPR}` body and preserve the reason
+  // when the expression cannot be evaluated.
+  IfEvalResult eval_if_expr(std::string_view expr);
 
   Token scan_identifier_or_keyword();
   Token scan_number();
@@ -111,7 +116,8 @@ class Lexer {
   // release_sources().
   std::vector<std::unique_ptr<SourceFile>> retired_;
   std::vector<IfdefFrame> ifdef_stack_;
-  std::unordered_set<std::string> defines_;           // lowercased
+  std::unordered_map<std::string, std::optional<std::string>>
+      defines_;  // lowercased names
   std::unordered_map<std::string, Tok> keywords_;     // lowercased -> kind
   std::vector<std::filesystem::path> include_dirs_;
 

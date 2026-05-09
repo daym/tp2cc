@@ -348,6 +348,42 @@ void test_directive_if_comparison_has_fpc_precedence() {
   CHECK_EQ(ts[1].text, std::string("plain_ok"));
 }
 
+void test_directive_if_uses_text_valued_defines() {
+  auto ts = lex_all(
+      "{$if FPC_FULLVERSION >= 30200}\n"
+      "new\n"
+      "{$else}\n"
+      "old\n"
+      "{$endif}\n",
+      {"FPC_FULLVERSION:=30200"});
+  CHECK_EQ(ts.size(), size_t{1});
+  CHECK_EQ(ts[0].text, std::string("new"));
+}
+
+void test_directive_if_uses_text_valued_define_without_spaces() {
+  auto ts = lex_all(
+      "{$if FPC_FULLVERSION<20600}\n"
+      "old\n"
+      "{$else}\n"
+      "new\n"
+      "{$endif}\n",
+      {"FPC_FULLVERSION:=20002"});
+  CHECK_EQ(ts.size(), size_t{1});
+  CHECK_EQ(ts[0].text, std::string("old"));
+}
+
+void test_directive_define_keeps_text_value_for_if() {
+  auto ts = lex_all(
+      "{$define X:=5}\n"
+      "{$if X = 5}\n"
+      "five\n"
+      "{$else}\n"
+      "other\n"
+      "{$endif}\n");
+  CHECK_EQ(ts.size(), size_t{1});
+  CHECK_EQ(ts[0].text, std::string("five"));
+}
+
 void test_directive_if_unknown_predicate_reports_error() {
   int errs_before = tp2cc::error_count();
   auto ts = lex_all(
@@ -560,6 +596,9 @@ int main() {
   RUN_TEST(test_directive_if_elseif_falls_through_to_match);
   RUN_TEST(test_directive_if_numeric_comparison);
   RUN_TEST(test_directive_if_comparison_has_fpc_precedence);
+  RUN_TEST(test_directive_if_uses_text_valued_defines);
+  RUN_TEST(test_directive_if_uses_text_valued_define_without_spaces);
+  RUN_TEST(test_directive_define_keeps_text_value_for_if);
   RUN_TEST(test_directive_if_unknown_predicate_reports_error);
   RUN_TEST(test_directive_define_undef);
   RUN_TEST(test_inactive_ifdef_skips_full_string_literals);

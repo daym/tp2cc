@@ -567,7 +567,7 @@ int cmd_topo(const CliOptions& opts,
 void usage() {
   std::fprintf(stderr,
     "usage:\n"
-    "  tp2cc <subcommand> [-h] [-m] [-dSYMBOL]... [-Fu<dir>]... [-Fi<dir>]... "
+    "  tp2cc <subcommand> [-h] [-m] [-dSYMBOL[:=TEXT]]... [-Fu<dir>]... [-Fi<dir>]... "
     "[--] <args>...\n"
     "\n"
     "subcommands:\n"
@@ -582,7 +582,8 @@ void usage() {
     "options (anywhere after <subcommand>, interleavable with positional):\n"
     "  -h, --help   show this help and exit\n"
     "  -m           also emit a Makefile in the output directory\n"
-    "  -dSYMBOL     predefine SYMBOL for {$ifdef}\n"
+    "  -dSYMBOL[:=TEXT]\n"
+    "               predefine SYMBOL, optionally with text for {$if}\n"
     "  -Fu<dir>     add <dir> to unit search path (for `uses`)\n"
     "  -Fi<dir>     add <dir> to include search path (for {$I})\n"
     "  --           end of options (subsequent args are positional)\n");
