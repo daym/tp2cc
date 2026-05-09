@@ -685,6 +685,36 @@ void test_class_var_declaration_sections() {
   }
 }
 
+void test_strict_visibility_sections() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tfoo = class\n"
+      "  strict protected\n"
+      "    procedure hook;\n"
+      "  strict private\n"
+      "    secret : integer;\n"
+      "  public\n"
+      "    value : integer;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && !u->interface_decls.empty()) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    auto* to = td ? dynamic_cast<TyObject*>(td->type.get()) : nullptr;
+    CHECK(to);
+    if (to && to->members.size() == 3) {
+      CHECK(to->members[0].vis == Visibility::StrictProtected);
+      CHECK(to->members[1].vis == Visibility::StrictPrivate);
+      CHECK(to->members[2].vis == Visibility::Public);
+    }
+  }
+}
+
 void test_class_var_rejected_in_object() {
   int before = error_count();
   (void)parse_snippet(
@@ -1500,6 +1530,7 @@ int main() {
   RUN_TEST(test_class_declaration);
   RUN_TEST(test_empty_inherited_class_decl);
   RUN_TEST(test_class_var_declaration_sections);
+  RUN_TEST(test_strict_visibility_sections);
   RUN_TEST(test_class_var_rejected_in_object);
   RUN_TEST(test_corba_interface_decl_and_class_implementation);
   RUN_TEST(test_com_interface_is_rejected);

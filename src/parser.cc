@@ -1104,6 +1104,22 @@ TypePtr Parser::parse_object_type() {
       class_var_section = false;
       continue;
     }
+    if (is_directive("strict")) {
+      Location strict_loc = cur_.loc;
+      advance();
+      if (is_directive("private")) {
+        advance();
+        vis = Visibility::StrictPrivate;
+      } else if (is_directive("protected")) {
+        advance();
+        vis = Visibility::StrictProtected;
+      } else {
+        report_error(strict_loc,
+                     "expected `private' or `protected' after `strict'");
+      }
+      class_var_section = false;
+      continue;
+    }
     if (is_directive("published")) {
       advance();
       vis = Visibility::Public;

@@ -489,7 +489,13 @@ struct TyRecord : TypeExpr {
   TyRecord() : TypeExpr(Kind::TyRecord) {}
 };
 
-enum class Visibility : uint8_t { Public, Private, Protected };
+enum class Visibility : uint8_t {
+  Public,
+  Private,
+  Protected,
+  StrictPrivate,
+  StrictProtected,
+};
 
 enum class ObjectMemberKind : uint8_t { Field, Method, Property };
 

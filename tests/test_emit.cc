@@ -3255,6 +3255,32 @@ void test_class_var_static_emission_and_access() {
   CHECK(contains(out.impl, "p_n->p_z = 5;"));
 }
 
+void test_strict_visibility_lowers_to_cxx_access_sections() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tfoo = class\n"
+      "  protected\n"
+      "    plain : integer;\n"
+      "  strict protected\n"
+      "    procedure hook;\n"
+      "  strict private\n"
+      "    secret : integer;\n"
+      "  public\n"
+      "    value : integer;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tfoo.hook;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "int32_t p_plain;"));
+  CHECK(contains(out.header, "protected:\n  void p_hook();"));
+  CHECK(contains(out.header, "private:\n  int32_t p_secret;"));
+  CHECK(contains(out.header, "public:\n  int32_t p_value;"));
+}
+
 void test_class_var_inherited_duplicate_reports_error() {
   int before = error_count();
   (void)compile_snippet_with_registry(
@@ -7751,6 +7777,7 @@ int main() {
   RUN_TEST(test_default_indexed_procvar_property_stmt_autocalls);
   RUN_TEST(test_class_method_static_emission_and_calls);
   RUN_TEST(test_class_var_static_emission_and_access);
+  RUN_TEST(test_strict_visibility_lowers_to_cxx_access_sections);
   RUN_TEST(test_class_var_inherited_duplicate_reports_error);
   RUN_TEST(test_tobject_runtime_helpers_lower_in_method_body);
   RUN_TEST(test_classname_uses_metaclass_descriptor_slot);

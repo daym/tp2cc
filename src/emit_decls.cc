@@ -410,7 +410,32 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
       emit_ops_.emitln("virtual int32_t p_instancesize() const override;");
     }
     bool has_virtual = false;
+    std::string current_access = "public";
+    auto cxx_access = [](Visibility vis) {
+      switch (vis) {
+        case Visibility::StrictPrivate:
+          return "private";
+        case Visibility::StrictProtected:
+          return "protected";
+        case Visibility::Public:
+        case Visibility::Private:
+        case Visibility::Protected:
+          // Non-strict Pascal private/protected members remain public in C++:
+          // Pascal still permits same-unit access, and those accesses are
+          // emitted as ordinary namespace-level C++ code.
+          return "public";
+      }
+      return "public";
+    };
+    auto ensure_access = [&](Visibility vis) {
+      std::string wanted = cxx_access(vis);
+      if (wanted != current_access) {
+        emit_ops_.emitln(wanted + ":");
+        current_access = std::move(wanted);
+      }
+    };
     for (const auto& m : to.members) {
+      ensure_access(m.vis);
       if (m.kind == ObjectMemberKind::Field) {
         for (const auto& fn : m.field_names) {
           // FPC rejects a field or class var that reuses an inherited field
@@ -486,6 +511,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
       }
     }
     if (has_virtual) {
+      ensure_access(Visibility::Public);
       emit_ops_.emitln("virtual ~" + name + "() = default;");
     }
     emit_ops_.dedent();
