@@ -299,13 +299,15 @@ void Parser::parse_decl_block(std::vector<DeclPtr>& out, bool in_interface) {
       case Tok::KwLabel: parse_label_section(out); break;
       case Tok::KwProcedure: {
         auto d = parse_proc_decl(ProcKind::Procedure, in_interface,
-                                 /*is_class_method=*/false);
+                                 /*is_class_method=*/false,
+                                 /*in_type_member=*/false);
         if (d) out.push_back(std::move(d));
         break;
       }
       case Tok::KwFunction: {
         auto d = parse_proc_decl(ProcKind::Function, in_interface,
-                                 /*is_class_method=*/false);
+                                 /*is_class_method=*/false,
+                                 /*in_type_member=*/false);
         if (d) out.push_back(std::move(d));
         break;
       }
@@ -320,7 +322,8 @@ void Parser::parse_decl_block(std::vector<DeclPtr>& out, bool in_interface) {
         advance();
         auto pk = check(Tok::KwFunction) ? ProcKind::Function
                                          : ProcKind::Procedure;
-        auto d = parse_proc_decl(pk, in_interface, /*is_class_method=*/true);
+        auto d = parse_proc_decl(pk, in_interface, /*is_class_method=*/true,
+                                 /*in_type_member=*/false);
         if (d) out.push_back(std::move(d));
         break;
       }
@@ -329,7 +332,8 @@ void Parser::parse_decl_block(std::vector<DeclPtr>& out, bool in_interface) {
         auto pk = check(Tok::KwConstructor) ? ProcKind::Constructor
                                             : ProcKind::Destructor;
         auto d = parse_proc_decl(pk, in_interface,
-                                 /*is_class_method=*/false);
+                                 /*is_class_method=*/false,
+                                 /*in_type_member=*/false);
         if (d) out.push_back(std::move(d));
         break;
       }
@@ -501,7 +505,20 @@ void Parser::parse_label_section(std::vector<DeclPtr>& out) {
 // ---------------------------------------------------------------------------
 // Procedure/function declarations
 
-bool Parser::parse_proc_modifier(ProcDecl& pd) {
+bool Parser::parse_proc_modifier(ProcDecl& pd, bool in_type_member) {
+  if (in_type_member) {
+    // After a method semicolon, tokens that start the next class/object member
+    // are no longer routine modifiers. In this context `public' starts a
+    // visibility section, and an identifier followed by ':' or ',' starts a
+    // field declaration even when that identifier is also a routine directive
+    // name such as `name' or `external'.
+    if (is_directive("public")) return false;
+    if (cur_.kind == Tok::Ident &&
+        (peek().kind == Tok::Colon || peek().kind == Tok::Comma)) {
+      return false;
+    }
+  }
+
   if (is_directive("virtual")) {
     pd.is_virtual = true;
     advance();
@@ -591,29 +608,31 @@ bool Parser::parse_proc_modifier(ProcDecl& pd) {
   return true;
 }
 
-void Parser::parse_proc_modifiers(ProcDecl& pd) {
-  while (parse_proc_modifier(pd)) accept(Tok::Semi);
+void Parser::parse_proc_modifiers(ProcDecl& pd, bool in_type_member) {
+  while (parse_proc_modifier(pd, in_type_member)) accept(Tok::Semi);
 }
 
-void Parser::parse_proc_header_tail(ProcDecl& pd, const char* ctx) {
+void Parser::parse_proc_header_tail(ProcDecl& pd, const char* ctx,
+                                    bool in_type_member) {
   // FPC allows the semicolon between a routine header and the first routine
   // directive to be omitted, but only when that next token is actually one of
   // the routine directives. Use the same consumer as the modifier loop so the
   // header exception cannot drift from the directive list.
   if (accept(Tok::Semi)) {
-    parse_proc_modifiers(pd);
+    parse_proc_modifiers(pd, in_type_member);
     return;
   }
-  if (!parse_proc_modifier(pd)) {
+  if (!parse_proc_modifier(pd, in_type_member)) {
     expect(Tok::Semi, ctx);
     return;
   }
   accept(Tok::Semi);
-  parse_proc_modifiers(pd);
+  parse_proc_modifiers(pd, in_type_member);
 }
 
 std::shared_ptr<ProcDecl> Parser::parse_proc_decl(
-    ProcKind pk, bool in_interface, bool is_class_method) {
+    ProcKind pk, bool in_interface, bool is_class_method,
+    bool in_type_member) {
   auto pd = std::make_shared<ProcDecl>(is_class_method);
   pd->loc = cur_.loc;
   pd->pkind = pk;
@@ -638,7 +657,7 @@ std::shared_ptr<ProcDecl> Parser::parse_proc_decl(
       pd->return_type = parse_type();
     }
   }
-  parse_proc_header_tail(*pd, "routine header");
+  parse_proc_header_tail(*pd, "routine header", in_type_member);
 
   // Interface sections never have bodies. Nor do forward/external/abstract
   // declarations.
@@ -701,7 +720,7 @@ std::shared_ptr<ProcDecl> Parser::parse_operator_decl(bool in_interface) {
   }
   expect(Tok::Colon, "operator return type");
   pd->return_type = parse_type();
-  parse_proc_header_tail(*pd, "operator header");
+  parse_proc_header_tail(*pd, "operator header", /*in_type_member=*/false);
 
   if (in_interface || pd->is_forward || pd->is_external ||
       pd->is_abstract) {
@@ -1169,7 +1188,8 @@ TypePtr Parser::parse_object_type() {
       m.kind = ObjectMemberKind::Method;
       // Method headers inside an object are always signatures only --
       // bodies live in the implementation section (TP 7.0 semantics).
-      m.method = parse_proc_decl(pk, /*in_interface=*/true, is_class_method);
+      m.method = parse_proc_decl(pk, /*in_interface=*/true, is_class_method,
+                                 /*in_type_member=*/true);
       to->members.push_back(std::move(m));
       continue;
     }
@@ -1280,7 +1300,8 @@ TypePtr Parser::parse_interface_type() {
       m.loc = cur_.loc;
       m.kind = ObjectMemberKind::Method;
       m.method = parse_proc_decl(pk, /*in_interface=*/true,
-                                 /*is_class_method=*/false);
+                                 /*is_class_method=*/false,
+                                 /*in_type_member=*/true);
       ti->members.push_back(std::move(m));
       continue;
     }

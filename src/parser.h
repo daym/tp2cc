@@ -48,11 +48,13 @@ class Parser {
   void parse_label_section(std::vector<ast::DeclPtr>& out);
   std::shared_ptr<ast::ProcDecl> parse_proc_decl(ast::ProcKind pk,
                                                  bool in_interface,
-                                                 bool is_class_method);
+                                                 bool is_class_method,
+                                                 bool in_type_member);
   std::shared_ptr<ast::ProcDecl> parse_operator_decl(bool in_interface);
-  bool parse_proc_modifier(ast::ProcDecl& pd);
-  void parse_proc_modifiers(ast::ProcDecl& pd);
-  void parse_proc_header_tail(ast::ProcDecl& pd, const char* ctx);
+  bool parse_proc_modifier(ast::ProcDecl& pd, bool in_type_member);
+  void parse_proc_modifiers(ast::ProcDecl& pd, bool in_type_member);
+  void parse_proc_header_tail(ast::ProcDecl& pd, const char* ctx,
+                              bool in_type_member);
 
   // Pascal "directives" are position-dependent keywords spelled as ordinary
   // identifiers (e.g. `name`, `alias`, `read`, `write`, `stored`,
