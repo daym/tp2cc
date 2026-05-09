@@ -105,6 +105,7 @@ class Parser {
   // directive-like word. Those arrive from the lexer as Tok::Ident too, so
   // this helper just documents the intent at those call sites.
   std::string consume_name_or_directive(const char* ctx);
+  ast::PropertyDecl::Accessor parse_property_accessor_path(const char* ctx);
   bool tok_starts_type() const;
 
   // Typed-constant value (on the RHS of `ident : type = ...`). Handles

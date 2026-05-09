@@ -25,22 +25,15 @@ std::optional<std::string> EmitProperties::maybe_property_read_text(
   const ClassInfo* ci = analysis_.class_info_for_type_name(class_name);
   const std::string access =
       (ci && ci->is_reference_type) ? "->" : ".";
-  if (const auto* field =
-          registry_->lookup_class_field(class_name, prop.read_name,
-                                        analysis_.current_unit_name())) {
-    (void)field;
-    std::string text =
-        base_cxx + access + registry_->field_cxx_name(prop.read_name);
+  if (prop.read.kind == PropertyAccessorKind::FieldPath) {
+    std::string text = base_cxx + access + prop.read.cxx_path;
     for (const auto* idx : indices) {
       text += "[" + expr_ops_.expr_to_cxx(*idx) + "]";
     }
     return {text};
   }
-  if (const auto* method =
-          registry_->lookup_class_method(class_name, prop.read_name,
-                                         analysis_.current_unit_name())) {
-    (void)method;
-    std::string text = base_cxx + access + mangle(prop.read_name) + "(";
+  if (prop.read.kind == PropertyAccessorKind::Method) {
+    std::string text = base_cxx + access + mangle(prop.read.method_name) + "(";
     for (size_t i = 0; i < indices.size(); ++i) {
       if (i) text += ", ";
       text += expr_ops_.expr_to_cxx(*indices[i]);
@@ -58,8 +51,9 @@ std::string EmitProperties::lower_property_read(
     return *text;
   }
   expr_ops_.report_error(
-      where, "unsupported property read accessor '" + prop.read_name + "'");
-  return base_cxx + "." + mangle(prop.read_name);
+      where, "unsupported property read accessor '" + prop.read.display_name() +
+                 "'");
+  return base_cxx;
 }
 
 std::optional<std::string> EmitProperties::maybe_property_write_text(
@@ -70,27 +64,20 @@ std::optional<std::string> EmitProperties::maybe_property_write_text(
   const ClassInfo* ci = analysis_.class_info_for_type_name(class_name);
   const std::string access =
       (ci && ci->is_reference_type) ? "->" : ".";
-  if (prop.write_name.empty()) {
+  if (prop.write.empty()) {
     return std::nullopt;
   }
   std::string rhs =
       expr_ops_.const_value_to_cxx(value, prop.type.get(), false);
-  if (const auto* field =
-          registry_->lookup_class_field(class_name, prop.write_name,
-                                        analysis_.current_unit_name())) {
-    (void)field;
-    std::string text =
-        base_cxx + access + registry_->field_cxx_name(prop.write_name);
+  if (prop.write.kind == PropertyAccessorKind::FieldPath) {
+    std::string text = base_cxx + access + prop.write.cxx_path;
     for (const auto* idx : indices) {
       text += "[" + expr_ops_.expr_to_cxx(*idx) + "]";
     }
     return {text + " = " + rhs};
   }
-  if (const auto* method =
-          registry_->lookup_class_method(class_name, prop.write_name,
-                                         analysis_.current_unit_name())) {
-    (void)method;
-    std::string text = base_cxx + access + mangle(prop.write_name) + "(";
+  if (prop.write.kind == PropertyAccessorKind::Method) {
+    std::string text = base_cxx + access + mangle(prop.write.method_name) + "(";
     bool first = true;
     for (const auto* idx : indices) {
       if (!first) text += ", ";
@@ -113,11 +100,12 @@ std::string EmitProperties::lower_property_write(
           maybe_property_write_text(base_cxx, class_name, prop, indices, value)) {
     return *text;
   }
-  if (prop.write_name.empty()) {
+  if (prop.write.empty()) {
     expr_ops_.report_error(where, "property is read-only");
   } else {
     expr_ops_.report_error(
-        where, "unsupported property write accessor '" + prop.write_name + "'");
+        where, "unsupported property write accessor '" +
+                   prop.write.display_name() + "'");
   }
   return base_cxx;
 }

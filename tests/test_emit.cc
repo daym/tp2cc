@@ -6441,6 +6441,34 @@ void test_property_read_through_field_lowers_to_field_access() {
   CHECK(contains(out.impl, "p_b->p_fval"));
 }
 
+void test_property_dotted_field_accessor_lowers_to_field_path() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tdata = record\n"
+      "    typ : longint;\n"
+      "  end;\n"
+      "  tbox = class\n"
+      "    data : tdata;\n"
+      "    property datatype : longint read data.typ write data.typ;\n"
+      "  end;\n"
+      "function read_it(b : tbox) : longint;\n"
+      "procedure write_it(b : tbox);\n"
+      "implementation\n"
+      "function read_it(b : tbox) : longint;\n"
+      "begin\n"
+      "  read_it := b.datatype;\n"
+      "end;\n"
+      "procedure write_it(b : tbox);\n"
+      "begin\n"
+      "  b.datatype := 9;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_b->p_data.p_typ"));
+  CHECK(!contains(out.impl, "p_datatype"));
+}
+
 void test_typecast_property_read_field_ref_uses_backing_field() {
   // A record `const` formal is passed by value here, but lowering the actual
   // still has to spell the source expression correctly. When `Prop` reads a
@@ -7911,6 +7939,7 @@ int main() {
   RUN_TEST(test_property_write_lowers_to_setter_call);
   RUN_TEST(test_typecast_property_write_lowers_to_setter_call);
   RUN_TEST(test_property_read_through_field_lowers_to_field_access);
+  RUN_TEST(test_property_dotted_field_accessor_lowers_to_field_path);
   RUN_TEST(test_typecast_property_read_field_ref_uses_backing_field);
   RUN_TEST(test_default_indexed_property_obj_brackets_calls_getter);
   RUN_TEST(test_property_read_returning_class_then_default_index_chains_through_getter);

@@ -12,6 +12,7 @@
 // with their members, type aliases, and unit-level procs/vars with
 // their signatures/types. Expression resolution lives on top of this.
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -55,11 +56,31 @@ struct FieldInfo {
   bool is_class_var = false;
 };
 
+enum class PropertyAccessorKind : uint8_t {
+  None,
+  FieldPath,
+  Method,
+  Unsupported,
+};
+
+struct PropertyAccessorInfo {
+  // Set after class member registration. A Pascal property accessor is a
+  // field designator or a method name, and later emit code must use that
+  // resolved kind instead of guessing from the original token text.
+  PropertyAccessorKind kind = PropertyAccessorKind::None;
+  std::vector<std::string> path;
+  std::string cxx_path;
+  std::string method_name;
+
+  bool empty() const;
+  std::string display_name() const;
+};
+
 struct PropertyInfo {
   std::shared_ptr<const ast::TypeExpr> type;
   std::vector<ast::Param> params;
-  std::string read_name;
-  std::string write_name;
+  PropertyAccessorInfo read;
+  PropertyAccessorInfo write;
   bool is_default = false;
 };
 

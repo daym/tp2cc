@@ -4,9 +4,11 @@
 // the produced AST. We deliberately test a wide variety of Pascal constructs
 // so parse regressions show up immediately.
 
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ast.h"
 #include "diag.h"
@@ -29,6 +31,12 @@ std::shared_ptr<UnitNode> parse_snippet(std::string text) {
   Lexer lx(std::move(sf));
   Parser p(lx);
   return p.parse();
+}
+
+std::vector<std::string> path(std::initializer_list<const char*> names) {
+  std::vector<std::string> out;
+  for (const char* name : names) out.emplace_back(name);
+  return out;
 }
 
 
@@ -855,13 +863,13 @@ void test_class_properties() {
         CHECK_EQ(to->members.size(), size_t{5});
         CHECK_EQ(to->members[3].kind, ObjectMemberKind::Property);
         CHECK_EQ(to->members[3].property.name, std::string("count"));
-        CHECK_EQ(to->members[3].property.read_name, std::string("fcount"));
+        CHECK_EQ(to->members[3].property.read_accessor.path, path({"fcount"}));
         CHECK_EQ(to->members[3].property.params.size(), size_t{0});
         CHECK_EQ(to->members[4].kind, ObjectMemberKind::Property);
         CHECK_EQ(to->members[4].property.name, std::string("items"));
         CHECK_EQ(to->members[4].property.params.size(), size_t{1});
-        CHECK_EQ(to->members[4].property.read_name, std::string("get"));
-        CHECK_EQ(to->members[4].property.write_name, std::string("put"));
+        CHECK_EQ(to->members[4].property.read_accessor.path, path({"get"}));
+        CHECK_EQ(to->members[4].property.write_accessor.path, path({"put"}));
         CHECK(to->members[4].property.is_default);
       }
     }
@@ -893,8 +901,43 @@ void test_write_only_property() {
       if (to) {
         CHECK_EQ(to->members.size(), size_t{2});
         CHECK_EQ(to->members[1].kind, ObjectMemberKind::Property);
-        CHECK_EQ(to->members[1].property.write_name, std::string("fvalue"));
-        CHECK_EQ(to->members[1].property.read_name, std::string(""));
+        CHECK_EQ(to->members[1].property.write_accessor.path, path({"fvalue"}));
+        CHECK(to->members[1].property.read_accessor.empty());
+      }
+    }
+  }
+}
+
+void test_property_dotted_field_accessor() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tdata = record\n"
+      "    typ : integer;\n"
+      "  end;\n"
+      "  tbox = class\n"
+      "    data : tdata;\n"
+      "    property datatype : integer read data.typ write data.typ;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(u != nullptr);
+  if (u && u->interface_decls.size() >= 2) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[1].get());
+    CHECK(td);
+    if (td) {
+      auto* to = dynamic_cast<TyObject*>(td->type.get());
+      CHECK(to);
+      if (to) {
+        CHECK_EQ(to->members.size(), size_t{2});
+        CHECK_EQ(to->members[1].kind, ObjectMemberKind::Property);
+        CHECK_EQ(to->members[1].property.read_accessor.path,
+                 path({"data", "typ"}));
+        CHECK_EQ(to->members[1].property.write_accessor.path,
+                 path({"data", "typ"}));
       }
     }
   }
@@ -1538,6 +1581,7 @@ int main() {
   RUN_TEST(test_interfaces_default_restores_com_rejection);
   RUN_TEST(test_class_properties);
   RUN_TEST(test_write_only_property);
+  RUN_TEST(test_property_dotted_field_accessor);
   RUN_TEST(test_class_directives);
   RUN_TEST(test_class_method_impl_decl);
   RUN_TEST(test_virtual_class_method_modifiers_are_recorded);

@@ -291,16 +291,15 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
         if (const auto* prop = registry_->lookup_class_property(
                 owner, m.name, scope_.current_unit_name)) {
           // A property name is not a C++ member name. In storage contexts we
-          // can only expose the property as storage when its read accessor is a
-          // real backing field, e.g. `property Vartype read _Vartype`. Getter
-          // methods produce values, and write accessors are handled before
-          // assignment asks for a raw storage designator.
-          if (!prop->params.empty() || prop->read_name.empty() ||
-              !registry_->lookup_class_field(owner, prop->read_name,
-                                             scope_.current_unit_name)) {
+          // can only expose the property as storage when its read accessor is
+          // an actual backing field path, e.g. `property Datatype read data.typ`.
+          // Getter methods produce values, and write accessors are handled
+          // before assignment asks for a raw storage designator.
+          if (!prop->params.empty() ||
+              prop->read.kind != PropertyAccessorKind::FieldPath) {
             return std::nullopt;
           }
-          member_cxx = registry_->field_cxx_name(prop->read_name);
+          member_cxx = prop->read.cxx_path;
         } else if (registry_->lookup_class_field(owner, m.name,
                                                  scope_.current_unit_name) ||
                    registry_->lookup_record_field(owner, m.name)) {

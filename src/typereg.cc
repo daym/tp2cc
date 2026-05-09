@@ -1,6 +1,7 @@
 #include "typereg.h"
 
 #include <algorithm>
+#include <optional>
 #include <stdexcept>
 
 #include "diag.h"
@@ -16,6 +17,15 @@ std::string lc(std::string s) {
   for (auto& ch : s)
     if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
   return s;
+}
+
+std::string join_path(const std::vector<std::string>& path) {
+  std::string out;
+  for (const auto& segment : path) {
+    if (!out.empty()) out += ".";
+    out += segment;
+  }
+  return out;
 }
 
 bool proc_accepts_zero_args(const ProcDecl& pd) {
@@ -101,8 +111,6 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
       PropertyInfo pi;
       pi.type = m.property.type;
       pi.params = m.property.params;
-      pi.read_name = lc(m.property.read_name);
-      pi.write_name = lc(m.property.write_name);
       pi.is_default = m.property.is_default;
       std::string name = lc(m.property.name);
       ci.properties[name] = pi;
@@ -124,6 +132,105 @@ void add_interface_members(InterfaceInfo& ii, const TyInterface& ti) {
     ms.param_count = pc;
     ms.accepts_zero_args = proc_accepts_zero_args(pd);
     ii.methods[lc(pd.name)].push_back(ms);
+  }
+}
+
+ClassInfo* lookup_class_exact_mut(TypeRegistry& r, std::string_view unit,
+                                  std::string_view name) {
+  const std::string target_unit = lc(std::string(unit));
+  const std::string target_name = lc(std::string(name));
+  auto it = r.classes.find(target_name);
+  if (it == r.classes.end()) return nullptr;
+  for (auto& ci : it->second) {
+    if (ci.defining_unit == target_unit) return &ci;
+  }
+  return nullptr;
+}
+
+std::vector<std::string> lower_path(const PropertyDecl::Accessor& accessor) {
+  std::vector<std::string> out;
+  out.reserve(accessor.path.size());
+  for (const auto& segment : accessor.path) out.push_back(lc(segment));
+  return out;
+}
+
+std::optional<std::string> resolve_field_accessor_cxx(
+    const TypeRegistry& r, const ClassInfo& owner,
+    const std::vector<std::string>& path) {
+  if (path.empty()) return std::nullopt;
+
+  const FieldInfo* field =
+      r.lookup_class_field(owner.name, path.front(), owner.defining_unit);
+  if (!field) return std::nullopt;
+
+  std::string out = r.field_cxx_name(path.front());
+  const TypeExpr* current_type = field->type.get();
+  for (size_t i = 1; i < path.size(); ++i) {
+    const std::string nested_owner = r.direct_type_name(current_type);
+    if (nested_owner.empty()) return std::nullopt;
+
+    const FieldInfo* nested = nullptr;
+    std::string access = ".";
+    if (const ClassInfo* nested_class =
+            r.lookup_class(nested_owner, owner.defining_unit)) {
+      access = nested_class->is_reference_type ? "->" : ".";
+      nested =
+          r.lookup_class_field(nested_owner, path[i], owner.defining_unit);
+    } else {
+      nested = r.lookup_record_field(nested_owner, path[i]);
+    }
+    if (!nested) return std::nullopt;
+
+    out += access + r.field_cxx_name(path[i]);
+    current_type = nested->type.get();
+  }
+  return out;
+}
+
+PropertyAccessorInfo resolve_property_accessor(
+    const TypeRegistry& r, const ClassInfo& owner,
+    const PropertyDecl::Accessor& accessor) {
+  PropertyAccessorInfo out;
+  out.path = lower_path(accessor);
+  if (out.path.empty()) return out;
+
+  if (auto cxx_path = resolve_field_accessor_cxx(r, owner, out.path)) {
+    out.kind = PropertyAccessorKind::FieldPath;
+    out.cxx_path = *cxx_path;
+    return out;
+  }
+
+  if (out.path.size() == 1 &&
+      r.lookup_class_methods(owner.name, out.path.front(), owner.defining_unit)) {
+    out.kind = PropertyAccessorKind::Method;
+    out.method_name = out.path.front();
+    return out;
+  }
+
+  out.kind = PropertyAccessorKind::Unsupported;
+  return out;
+}
+
+void resolve_property_accessors_from_decls(TypeRegistry& r,
+                                           std::string_view unit,
+                                           const std::vector<DeclPtr>& decls) {
+  for (const auto& d : decls) {
+    if (!d || d->kind != Kind::TypeDecl) continue;
+    const auto& td = static_cast<const TypeDecl&>(*d);
+    if (!td.type || td.type->kind != Kind::TyObject) continue;
+
+    ClassInfo* ci = lookup_class_exact_mut(r, unit, td.name);
+    if (!ci) continue;
+    const auto& to = static_cast<const TyObject&>(*td.type);
+    for (const auto& member : to.members) {
+      if (member.kind != ObjectMemberKind::Property) continue;
+      auto pit = ci->properties.find(lc(member.property.name));
+      if (pit == ci->properties.end()) continue;
+      pit->second.read =
+          resolve_property_accessor(r, *ci, member.property.read_accessor);
+      pit->second.write =
+          resolve_property_accessor(r, *ci, member.property.write_accessor);
+    }
   }
 }
 
@@ -302,6 +409,15 @@ void report_type_value_collisions(const UnitInfo& ui) {
 }
 
 }  // namespace
+
+bool PropertyAccessorInfo::empty() const {
+  return kind == PropertyAccessorKind::None;
+}
+
+std::string PropertyAccessorInfo::display_name() const {
+  if (kind == PropertyAccessorKind::Method) return method_name;
+  return join_path(path);
+}
 
 void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   // rt:: builtins that live in `tp2cc_rt/prelude.h` rather than a
@@ -799,6 +915,13 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     };
     for (const auto& nm : u->interface_uses) add_external_stub(nm);
     for (const auto& nm : u->impl_uses) add_external_stub(nm);
+  }
+
+  for (const auto* u : us) {
+    if (!u) continue;
+    const std::string unit = lc(u->name);
+    resolve_property_accessors_from_decls(*this, unit, u->interface_decls);
+    resolve_property_accessors_from_decls(*this, unit, u->impl_decls);
   }
 }
 

@@ -500,11 +500,17 @@ enum class Visibility : uint8_t {
 enum class ObjectMemberKind : uint8_t { Field, Method, Property };
 
 struct PropertyDecl {
+  struct Accessor {
+    std::vector<std::string> path;
+
+    bool empty() const { return path.empty(); }
+  };
+
   std::string name;
   std::vector<Param> params;
   TypePtr type;
-  std::string read_name;
-  std::string write_name;
+  Accessor read_accessor;
+  Accessor write_accessor;
   bool is_default = false;
 };
 

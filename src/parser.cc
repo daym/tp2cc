@@ -145,6 +145,15 @@ std::string Parser::consume_name_or_directive(const char* ctx) {
   return {};
 }
 
+PropertyDecl::Accessor Parser::parse_property_accessor_path(const char* ctx) {
+  PropertyDecl::Accessor accessor;
+  accessor.path.push_back(consume_name_or_directive(ctx));
+  while (accept(Tok::Dot)) {
+    accessor.path.push_back(consume_name_or_directive(ctx));
+  }
+  return accessor;
+}
+
 // ---------------------------------------------------------------------------
 // Entry
 
@@ -1180,17 +1189,17 @@ TypePtr Parser::parse_object_type() {
       m.property.type = parse_type();
       bool saw_accessor = false;
       while (true) {
-        if (m.property.read_name.empty() && is_directive("read")) {
+        if (m.property.read_accessor.empty() && is_directive("read")) {
           advance();
-          m.property.read_name =
-              consume_name_or_directive("property read accessor");
+          m.property.read_accessor =
+              parse_property_accessor_path("property read accessor");
           saw_accessor = true;
           continue;
         }
-        if (m.property.write_name.empty() && is_directive("write")) {
+        if (m.property.write_accessor.empty() && is_directive("write")) {
           advance();
-          m.property.write_name =
-              consume_name_or_directive("property write accessor");
+          m.property.write_accessor =
+              parse_property_accessor_path("property write accessor");
           saw_accessor = true;
           continue;
         }
