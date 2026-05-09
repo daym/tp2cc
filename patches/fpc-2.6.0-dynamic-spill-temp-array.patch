@@ -1,0 +1,77 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-02
+Subject: Use a dynamic array for spills
+License: expat
+
+`Tspill_temp_list = array[tsuperregister] of Treference` declares a
+static array spanning the full superregister range. `trgobj.spill_registers`
+allocates only `sizeof(treference)*maxreg` bytes and treats that as a
+pointer to the static-typed array, indexing within `[0..maxreg-1]`.
+Native FPC happens not to crash because it passes `const spilltemplist`
+by hidden reference and does not copy the full static array from the
+under-allocated buffer.  That is a calling-convention accident, not a
+property the source can rely on.
+
+Switch the type to `array of Treference` (dynamic array, carried as
+length+pointer) and use `SetLength` / `:=nil` instead of `allocmem` /
+`freemem`. Both fpc and the C++ translation now see a small handle-sized
+value; pass-by-value only copies the handle.
+
+--- a/compiler/rgobj.pas
++++ b/compiler/rgobj.pas
+@@ -116,7 +116,7 @@ unit rgobj;
+       end;
+       tspillregsinfo = array[0..3] of tspillreginfo;
+ 
+-      Tspill_temp_list=array[tsuperregister] of Treference;
++      Tspill_temp_list=array of Treference;
+ 
+       {#------------------------------------------------------------------
+ 
+@@ -1738,7 +1738,7 @@ unit rgobj;
+         t : tsuperregister;
+         p,q : Tai;
+         regs_to_spill_set:Tsuperregisterset;
+-        spill_temps : ^Tspill_temp_list;
++        spill_temps : Tspill_temp_list;
+         supreg : tsuperregister;
+         templist : TAsmList;
+         size: ptrint;
+@@ -1747,7 +1747,7 @@ unit rgobj;
+         live_registers.clear;
+         for i:=first_imaginary to maxreg-1 do
+           exclude(reginfo[i].flags,ri_selected);
+-        spill_temps:=allocmem(sizeof(treference)*maxreg);
++        SetLength(spill_temps,maxreg);
+         supregset_reset(regs_to_spill_set,false,$ffff);
+         { Allocate temps and insert in front of the list }
+         templist:=TAsmList.create;
+@@ -1772,7 +1772,7 @@ unit rgobj;
+                 size:=tcgsize2size[reg_cgsize(newreg(regtype,t,reginfo[t].subreg))];
+               tg.gettemp(templist,
+                          size,size,
+-                         tt_noreuse,spill_temps^[t]);
++                         tt_noreuse,spill_temps[t]);
+             end;
+         list.insertlistafter(headertai,templist);
+         templist.free;
+@@ -1812,7 +1812,7 @@ unit rgobj;
+                 with Taicpu(p) do
+                   begin
+                     current_filepos:=fileinfo;
+-                    if instr_spill_register(list,taicpu(p),regs_to_spill_set,spill_temps^) then
++                    if instr_spill_register(list,taicpu(p),regs_to_spill_set,spill_temps) then
+                       spill_registers:=true;
+                   end;
+             end;
+@@ -1822,8 +1822,8 @@ unit rgobj;
+         {Safe: this procedure is only called if there are spilled nodes.}
+         with spillednodes do
+           for i:=0 to length-1 do
+-            tg.ungettemp(list,spill_temps^[buf^[i]]);
+-        freemem(spill_temps);
++            tg.ungettemp(list,spill_temps[buf^[i]]);
++        spill_temps:=nil;
+       end;
+ 
+ 
