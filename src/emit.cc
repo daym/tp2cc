@@ -1490,14 +1490,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Call: {
       const auto& c = static_cast<const Call&>(e);
-      // Only three Pascal builtins need special emit-time handling -- the
-      // rest (length, ord, chr, assigned, odd, abs, sqr, sqrt, sin, cos,
-      // ln, exp, arctan, trunc, round, int, frac, inc, dec, succ, pred,
-      // ...) live in `rt::` under their exact Pascal names and pass through
-      // ordinary name resolution as explicit `::rt::...` calls.
+      // Most Pascal builtins go through ordinary name resolution, which maps
+      // Pascal names to their C++ runtime helpers. The cases below need
+      // emitter handling because they are type-sensitive or lower to C++
+      // syntax instead of a normal function call.
       //
       // Special cases below:
       //   * `low(T)` / `high(T)` when T is a type name  -> emitted constant
+      //   * `ord(x)`                                    -> runtime ordinal
+      //                                                   helper
       //   * `sizeof(x)`                                 -> C++ `sizeof`
       //   * `TypeName(expr)` function-style cast        -> paren-cast when
       //                                                   the C++ type is
@@ -1619,6 +1620,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               return type_to_cxx(*at) + "::" + n + "()";
             }
           }
+        }
+
+        if (n == "ord" && c.args.size() == 1) {
+          return "::rt::p_ord(" + arg0() + ")";
         }
 
         if (n == "sizeof" && c.args.size() == 1) {

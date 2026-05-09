@@ -1188,6 +1188,7 @@ void test_subrange_bound_constant_intrinsic_calls() {
       "type\n"
       "  tcgloc = (loc_invalid, loc_void, loc_creference, loc_reference);\n"
       "  tcgnonrefloc = low(tcgloc)..pred(loc_creference);\n"
+      "  tdefmap = array[1..ord(high(tcgloc))] of byte;\n"
       "implementation\n"
       "end.\n");
   CHECK_EQ(error_count() - before, 0);

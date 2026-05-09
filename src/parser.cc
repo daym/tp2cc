@@ -13,7 +13,7 @@ namespace {
 
 bool is_subrange_bound_intrinsic(const std::string& name) {
   return name == "low" || name == "high" || name == "pred" ||
-         name == "succ" || name == "sizeof";
+         name == "succ" || name == "sizeof" || name == "ord";
 }
 
 bool is_constant_subrange_bound_expr(const Expr& e) {

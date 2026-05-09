@@ -394,6 +394,22 @@ void test_subrange_type_accepts_constant_ordinal_intrinsics() {
   CHECK(contains(out.impl, "p_l.p_loc = p_lt;"));
 }
 
+void test_subrange_bound_folds_ord_high_enum_type() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tdefoption = (do_one, do_two, do_three);\n"
+      "  tindex = 1..ord(high(tdefoption));\n"
+      "  tmap = array[tindex] of byte;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "using t_tindex = uint8_t;"));
+  CHECK(contains(out.header,
+                 "using t_tmap = ::rt::tp2cc_Array<uint8_t, 1, "
+                 "((::rt::p_ord(tp2cc_enum_high_tdefoption)) - (1) + 1)>;"));
+}
+
 void test_char_subrange_preserves_char_storage() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -7549,6 +7565,7 @@ int main() {
   RUN_TEST(test_mode_objfpc_restores_default_enum_size_to_longword);
   RUN_TEST(test_subrange_type_uses_minimal_ordinal_storage);
   RUN_TEST(test_subrange_type_accepts_constant_ordinal_intrinsics);
+  RUN_TEST(test_subrange_bound_folds_ord_high_enum_type);
   RUN_TEST(test_char_subrange_preserves_char_storage);
   RUN_TEST(test_packed_record_shortstring_field_emits_exact_layout_asserts);
   RUN_TEST(test_packed_record_array_field_keeps_array_wrapper_with_exact_layout_asserts);

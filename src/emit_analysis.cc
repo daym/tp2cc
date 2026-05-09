@@ -693,10 +693,76 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
       const auto& c = static_cast<const Call&>(e);
       if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
         const auto& callee = static_cast<const Ident&>(*c.callee);
-        if (callee.name == "length" && c.args[0]->kind == Kind::StringLit) {
+        const std::string callee_name = ascii_lower(callee.name);
+        if (callee_name == "length" && c.args[0]->kind == Kind::StringLit) {
           const auto& s = static_cast<const StringLit&>(*c.args[0]);
           if (s.value.size() <= static_cast<size_t>(INT64_MAX)) {
             int64_t value = static_cast<int64_t>(s.value.size());
+            return ConstIntExprInfo{value, primitive_info_for_value(value)};
+          }
+        }
+        auto type_arg = [&](const Expr& arg) -> const TypeExpr* {
+          if (arg.kind == Kind::Ident) {
+            const auto& id = static_cast<const Ident&>(arg);
+            const std::string low = ascii_lower(id.name);
+            if (auto it = scope_.local_enums.find(low);
+                it != scope_.local_enums.end()) {
+              return it->second;
+            }
+            if (auto it = scope_.local_type_aliases_scoped.find(low);
+                it != scope_.local_type_aliases_scoped.end()) {
+              return it->second;
+            }
+            return lookup_named_type_expr(id.name);
+          }
+          if (arg.kind == Kind::Member) {
+            const auto& mem = static_cast<const Member&>(arg);
+            if (mem.base && mem.base->kind == Kind::Ident) {
+              const auto& unit = static_cast<const Ident&>(*mem.base);
+              return lookup_named_type_expr(unit.name + "." + mem.name);
+            }
+          }
+          return nullptr;
+        };
+        if ((callee_name == "pred" || callee_name == "succ") && c.args[0]) {
+          int64_t value = 0;
+          OrdinalFamily family = OrdinalFamily::Invalid;
+          std::string enum_key;
+          if (try_eval_ordinal_expr(*c.args[0], &value, &family, &enum_key)) {
+            if (callee_name == "pred") {
+              if (!checked_sub_int64(value, 1, &value)) return std::nullopt;
+            } else if (!checked_add_int64(value, 1, &value)) {
+              return std::nullopt;
+            }
+            return ConstIntExprInfo{value, primitive_info_for_value(value)};
+          }
+        }
+        if (callee_name == "ord" && c.args[0]) {
+          if (c.args[0]->kind == Kind::Call) {
+            const auto& inner = static_cast<const Call&>(*c.args[0]);
+            if (inner.callee && inner.callee->kind == Kind::Ident &&
+                inner.args.size() == 1 && inner.args[0]) {
+              const std::string inner_name =
+                  ascii_lower(static_cast<const Ident&>(*inner.callee).name);
+              if (inner_name == "low" || inner_name == "high") {
+                // `high(T)` normally lowers to an emitted enum-bound helper.
+                // Inside `ord(...)` in a type bound, the integer folder needs
+                // the ordinal value instead of that helper expression.
+                if (const TypeExpr* t = type_arg(*inner.args[0])) {
+                  if (auto dom = ordinal_domain_for_type(t)) {
+                    int64_t value =
+                        (inner_name == "low") ? dom->low : dom->high;
+                    return ConstIntExprInfo{value,
+                                            primitive_info_for_value(value)};
+                  }
+                }
+              }
+            }
+          }
+          int64_t value = 0;
+          OrdinalFamily family = OrdinalFamily::Invalid;
+          std::string enum_key;
+          if (try_eval_ordinal_expr(*c.args[0], &value, &family, &enum_key)) {
             return ConstIntExprInfo{value, primitive_info_for_value(value)};
           }
         }
