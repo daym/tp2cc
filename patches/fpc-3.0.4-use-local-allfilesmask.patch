@@ -1,0 +1,30 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-10
+Subject: Use local AllFilesMask constant
+License: expat
+
+The compiler source has version-conditionals that choose between an
+RTL-provided `AllFilesMask` and a local fallback.  The translated bootstrap
+does not import the RTL symbol here, so keep the compiler-local definition.
+
+--- a/compiler/cfileutl.pas
++++ b/compiler/cfileutl.pas
+@@ -165,18 +165,6 @@
+ 
+ {$undef AllFilesMaskIsInRTL}
+ 
+-{$if (FPC_VERSION > 2)}
+-  {$define AllFilesMaskIsInRTL}
+-{$endif FPC_VERSION}
+-
+-{$if (FPC_VERSION = 2) and (FPC_RELEASE > 2)}
+-  {$define AllFilesMaskIsInRTL}
+-{$endif}
+-
+-{$if (FPC_VERSION = 2) and (FPC_RELEASE = 2) and (FPC_PATCH > 0)}
+-  {$define AllFilesMaskIsInRTL}
+-{$endif}
+-
+ {$ifndef AllFilesMaskIsInRTL}
+   {$if defined(go32v2) or defined(watcom)}
+   const
