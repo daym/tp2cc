@@ -1,5 +1,6 @@
 #include "emit_stmts.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -223,20 +224,6 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
       }
     }
   }
-  auto assignment_operator_rhs =
-      [&](const TypeExpr* value_ty,
-          const TypeExpr* target_ty) -> std::optional<std::string> {
-    if (auto conv = resolution_.find_assignment_operator(value_ty, target_ty);
-        conv.decl) {
-      std::string fn = pascal_assignment_operator_helper_name(*conv.decl);
-      if (!conv.defining_unit.empty()) {
-        fn = unit_namespace_prefix(conv.defining_unit) + fn;
-      }
-      return fn + "(" + stmt_ops_.expr_to_cxx(*a.value) + ")";
-    }
-    return std::nullopt;
-  };
-
   // Assignment targets are storage contexts in Pascal. Most targets also spell
   // ordinary C++ lvalues, and those must still use the normal assignment path
   // below so shortstrings, range checks, properties, and custom assignment
@@ -246,17 +233,7 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
   if (auto target = storage_.storage_designator(*a.target);
       target && target->is_special()) {
     const TypeExpr* target_ty = analysis_.deduce_type(*a.target);
-    const TypeExpr* value_ty = overload_types_.type_for_overload(*a.value);
-    std::string rhs_cxx;
-    if (auto converted = assignment_operator_rhs(value_ty, target_ty)) {
-      rhs_cxx = *converted;
-    } else {
-      // Special storage changes only how the destination address is spelled.
-      // The RHS is still a Pascal assignment, so constants and user-defined
-      // `operator :=` conversions must be lowered exactly as for an ordinary
-      // lvalue before the bytewise/reference store receives the value.
-      rhs_cxx = stmt_ops_.const_value_to_cxx(*a.value, target_ty);
-    }
+    std::string rhs_cxx = stmt_ops_.const_value_to_cxx(*a.value, target_ty);
     stmt_ops_.emitln(storage_.storage_designator_store(*target, rhs_cxx) + ";");
     return;
   }
@@ -343,11 +320,6 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
   scope_.lhs_outer_result_rewrite.clear();
   scope_.lhs_outer_result_rewrite_slot.clear();
   const TypeExpr* target_ty = analysis_.deduce_type(*a.target);
-  const TypeExpr* value_ty = overload_types_.type_for_overload(*a.value);
-  if (auto converted = assignment_operator_rhs(value_ty, target_ty)) {
-    stmt_ops_.emitln(target_cxx + " = " + *converted + ";");
-    return;
-  }
   std::string rhs_cxx = stmt_ops_.const_value_to_cxx(*a.value, target_ty);
   if (target_ty && types_.shortstring_capacity_to_cxx(target_ty)) {
     stmt_ops_.emitln("::rt::tp2cc_shortstring_assign(" + target_cxx + ", " +
@@ -518,27 +490,39 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
         if (cc.callee->kind == Kind::Ident) {
           method = mangle(static_cast<const Ident&>(*cc.callee).name);
         }
-        const ProcDecl* ctor_decl = nullptr;
+        std::vector<const Expr*> ctor_args;
+        ctor_args.reserve(cc.args.size());
+        for (const auto& arg : cc.args) ctor_args.push_back(arg.get());
+        const size_t explicit_ctor_arg_count = ctor_args.size();
+        ResolvedCall ctor_resolved;
         if (registry_ && ptr_arg_ty && cc.callee->kind == Kind::Ident) {
           std::string pointee = registry_->pointer_target_type_name(ptr_arg_ty);
           if (!pointee.empty()) {
-            if (auto* m = registry_->lookup_class_method(
-                    pointee, static_cast<const Ident&>(*cc.callee).name,
-                    scope_.current_unit_name)) {
-              ctor_decl = m->decl.get();
-            }
+            auto base = std::make_unique<Ident>();
+            base->name = pointee;
+            Member member;
+            member.base = std::move(base);
+            member.name = static_cast<const Ident&>(*cc.callee).name;
+            ctor_resolved = resolution_.resolve_call(member, ctor_args);
           }
         }
-        std::vector<UntypedArgKind> untyped_arg(cc.args.size(),
+        calls_.append_defaulted_trailing_call_args(ctor_resolved.decl,
+                                                   ctor_args);
+        std::vector<UntypedArgKind> untyped_arg(ctor_args.size(),
                                                 UntypedArgKind::None);
-        std::vector<bool> mutable_ref_arg(cc.args.size(), false);
-        std::vector<const TypeExpr*> param_types(cc.args.size(), nullptr);
-        calls_.mark_call_param_info(ctor_decl, untyped_arg, mutable_ref_arg,
-                                    param_types);
-        for (size_t i = 0; i < cc.args.size(); ++i) {
+        std::vector<bool> mutable_ref_arg(ctor_args.size(), false);
+        std::vector<const TypeExpr*> param_types(ctor_args.size(), nullptr);
+        calls_.mark_call_param_info(ctor_resolved.decl, untyped_arg,
+                                    mutable_ref_arg, param_types);
+        for (size_t i = 0; i < ctor_args.size(); ++i) {
           if (i) args += ", ";
-          args += calls_.lower_call_arg(*cc.args[i], param_types[i],
-                                        untyped_arg[i], mutable_ref_arg[i]);
+          const std::string_view default_arg_unit =
+              i >= explicit_ctor_arg_count
+                  ? std::string_view(ctor_resolved.default_arg_unit)
+                  : std::string_view{};
+          args += calls_.lower_call_arg(*ctor_args[i], param_types[i],
+                                        untyped_arg[i], mutable_ref_arg[i],
+                                        default_arg_unit);
         }
       } else if (second.kind == Kind::Ident) {
         method = mangle(static_cast<const Ident&>(second).name);
@@ -591,9 +575,14 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
           cls = analysis_.deduce_class_alias(*mem.base);
         }
         if (!cls.empty()) {
-          if (const auto* method = registry_->lookup_class_method(
+          if (const auto* methods = registry_->lookup_class_methods(
                   cls, mem.name, scope_.current_unit_name)) {
-            stmt_autocalls_member = method->accepts_zero_args;
+            std::vector<const ProcDecl*> candidates;
+            for (const auto& method : *methods) {
+              if (method.decl) candidates.push_back(method.decl.get());
+            }
+            PickResult picked = resolution_.pick_overload(candidates, {});
+            stmt_autocalls_member = !picked.ambiguous && picked.decl;
           } else if (ascii_lower(mem.name) == "destroy") {
             if (const auto* ci = analysis_.class_info_for_type_name(cls)) {
               stmt_autocalls_member = ci->is_reference_type;
@@ -632,7 +621,7 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
 }
 
 std::string EmitStmts::case_selector_expr(const CaseStmt& cs, const Expr& e) {
-  const TypeExpr* t = analysis_.deduce_type(*cs.selector);
+  const TypeExpr* t = overload_types_.type_for_overload(*cs.selector);
   bool selector_is_charish = false;
   if (t) {
     t = analysis_.canonicalize_type(t);

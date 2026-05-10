@@ -94,6 +94,7 @@ class EmitCalls {
       const std::vector<UntypedArgKind>& untyped_arg,
       const std::vector<bool>& mutable_ref_arg,
       size_t explicit_arg_count,
+      const ast::ProcDecl* selected_decl,
       std::string_view default_arg_unit);
 
  private:

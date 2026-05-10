@@ -562,6 +562,7 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
     const std::vector<UntypedArgKind>& untyped_arg,
     const std::vector<bool>& mutable_ref_arg,
     size_t explicit_arg_count,
+    const ProcDecl* selected_decl,
     std::string_view default_arg_unit) {
   if (!registry_) return std::nullopt;
   const ClassInfo* ci =
@@ -569,10 +570,19 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
   if (!ci || !ci->is_reference_type) {
     return std::nullopt;
   }
-  const auto* method =
-      registry_->lookup_class_method(std::string(class_name),
-                                     std::string(member_name),
-                                     scope_.current_unit_name);
+  const MethodSig* method = nullptr;
+  if (selected_decl) {
+    if (const auto* methods = registry_->lookup_class_methods(
+            std::string(class_name), std::string(member_name),
+            scope_.current_unit_name)) {
+      for (const auto& candidate : *methods) {
+        if (candidate.decl.get() == selected_decl) {
+          method = &candidate;
+          break;
+        }
+      }
+    }
+  }
   bool implicit_root_create = false;
   if (!method || method->kind != SymKind::Constructor) {
     if (ascii_lower(std::string(member_name)) != "create" || !args.empty()) {

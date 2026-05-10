@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -44,6 +45,7 @@ constexpr const char* kCtorStatusSlotName = "tp2cc_ctor_ok";
 
 struct Emitter : ResolveNameProvider,
                  OverloadTypeProvider,
+                 CallTypeProvider,
                  ResolutionTypeOps,
                  EmitTypeConstRender,
                  EmitTypeDiagOps,
@@ -203,7 +205,7 @@ struct Emitter : ResolveNameProvider,
                      outer_result_name,
                      outer_result_slot_name,
                      outer_result_type},
-        analysis_(registry, scope_state_, *this),
+        analysis_(registry, scope_state_, *this, *this),
         types_(registry, scope_state_, analysis_, *this, *this),
         storage_(registry, scope_state_, analysis_, types_, *this, *this),
         resolution_(registry, scope_state_, analysis_, *this, *this),
@@ -378,6 +380,8 @@ struct Emitter : ResolveNameProvider,
   // for globals and the current scope tables for locals/self-class.
   const ast::TypeExpr* deduce_type(const ast::Expr& e);
   const ast::TypeExpr* type_for_overload(const ast::Expr& e) override;
+  const ast::TypeExpr* type_for_resolved_call(
+      const ast::Call& call) override;
 
   bool type_is_packed_record(const ast::TypeExpr* t) {
     return storage_.type_is_packed_record(t);
@@ -417,7 +421,9 @@ struct Emitter : ResolveNameProvider,
     return storage_.expr_is_untyped_storage_ref(e);
   }
   bool expr_is_charish(const ast::Expr& e) {
-    return storage_.expr_is_charish(e);
+    const ast::TypeExpr* t = type_for_overload(e);
+    if (!t) return false;
+    return tyname_is_charish(canonicalize_type(t));
   }
   bool type_is_pcharish(const ast::TypeExpr* t) override {
     return storage_.type_is_pcharish(t);
@@ -569,10 +575,11 @@ struct Emitter : ResolveNameProvider,
       const std::vector<UntypedArgKind>& untyped_arg,
       const std::vector<bool>& mutable_ref_arg,
       size_t explicit_arg_count,
+      const ast::ProcDecl* selected_decl,
       std::string_view default_arg_unit) {
     return calls_.maybe_lower_class_constructor_call(
         where, class_name, member_name, args, param_types, untyped_arg,
-        mutable_ref_arg, explicit_arg_count, default_arg_unit);
+        mutable_ref_arg, explicit_arg_count, selected_decl, default_arg_unit);
   }
   using ResolvedKind = tp2cc::ResolvedKind;
   using ResolveResult = tp2cc::ResolveResult;
@@ -623,31 +630,35 @@ const TypeExpr* Emitter::deduce_type(const Expr& e) {
   return analysis_.deduce_type(e);
 }
 
+const TypeExpr* Emitter::type_for_resolved_call(const Call& c) {
+  std::vector<const Expr*> args;
+  args.reserve(c.args.size());
+  for (const auto& arg : c.args) args.push_back(arg.get());
+  ResolvedCall resolved = resolution_.resolve_call(*c.callee, args);
+  if (resolved.ambiguous) return nullptr;
+  if (resolved.decl && resolved.decl->return_type) {
+    return resolved.decl->return_type.get();
+  }
+  if (resolved.return_type_name.empty()) return nullptr;
+  if (const TypeExpr* named =
+          analysis_.lookup_named_type_expr(resolved.return_type_name)) {
+    return named;
+  }
+  const std::string low = ascii_lower(resolved.return_type_name);
+  if (const TyName* int_ty = builtin_integer_type(low)) return int_ty;
+  if (low == "boolean") return builtin_boolean_type();
+  if (primitive_name_is_charish(low)) return builtin_char_type();
+  if (low == "pointer") return named_pascal_type("pointer");
+  if (low == "string" || low == "shortstring") return builtin_string_type();
+  if (low == "pchar" || low == "pansichar") return builtin_pchar_type();
+  return nullptr;
+}
+
 const TypeExpr* Emitter::type_for_overload(const Expr& e) {
   if (e.kind == Kind::Call) {
-    const auto& c = static_cast<const Call&>(e);
-    std::vector<const Expr*> args;
-    args.reserve(c.args.size());
-    for (const auto& arg : c.args) args.push_back(arg.get());
-    ResolvedCall resolved = resolution_.resolve_call(*c.callee, args);
-    if (!resolved.ambiguous) {
-      if (resolved.decl && resolved.decl->return_type) {
-        return resolved.decl->return_type.get();
-      }
-      if (!resolved.return_type_name.empty()) {
-        if (const TypeExpr* named =
-                analysis_.lookup_named_type_expr(resolved.return_type_name)) {
-          return named;
-        }
-        const std::string low = ascii_lower(resolved.return_type_name);
-        if (const TyName* int_ty = builtin_integer_type(low)) return int_ty;
-        if (low == "boolean") return builtin_boolean_type();
-        if (primitive_name_is_charish(low)) return builtin_char_type();
-        if (low == "string" || low == "shortstring") {
-          return builtin_string_type();
-        }
-        if (low == "pchar" || low == "pansichar") return builtin_pchar_type();
-      }
+    if (const TypeExpr* t =
+            type_for_resolved_call(static_cast<const Call&>(e))) {
+      return t;
     }
   } else if (e.kind == Kind::Binary) {
     const auto& b = static_cast<const Binary&>(e);
@@ -1268,10 +1279,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             std::vector<const TypeExpr*> no_param_types;
             std::vector<UntypedArgKind> no_untyped_arg;
             std::vector<bool> no_mutable_ref_arg;
+            ResolvedCall ctor_resolved = resolve_call(m, no_args);
             if (auto ctor_call = maybe_lower_class_constructor_call(
                     m.loc, base_name, m.name, no_args, no_param_types,
                     no_untyped_arg, no_mutable_ref_arg, no_args.size(),
-                    {})) {
+                    ctor_resolved.decl, ctor_resolved.default_arg_unit)) {
               return *ctor_call;
             }
           }
@@ -1313,16 +1325,30 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           is_callee_context_ = false;
           std::string base_cxx = expr_to_cxx(*m.base);
           is_callee_context_ = saved_callee;
-          if (const auto* method = registry->lookup_class_method(
-                  metaclass, m.name, current_unit_name)) {
-            if (method->kind == SymKind::Constructor ||
-                method->kind == SymKind::ClassMethod) {
+          if (const auto* methods =
+                  registry->lookup_class_methods(metaclass, m.name,
+                                                 current_unit_name)) {
+            std::vector<const ProcDecl*> candidates;
+            for (const auto& method : *methods) {
+              if ((method.kind == SymKind::Constructor ||
+                   method.kind == SymKind::ClassMethod) &&
+                  method.decl) {
+                candidates.push_back(method.decl.get());
+              }
+            }
+            PickResult picked = resolution_.pick_overload(candidates, {});
+            if (!picked.ambiguous && picked.decl) {
               std::string text = base_cxx + "->" + mangle(m.name);
-              bool want_call = !is_callee_context_ &&
-                               method->accepts_zero_args;
-              return want_call
-                         ? lower_implicit_zero_arg_call(
-                               text, method->decl.get(), method->defining_unit)
+              const std::string unit = [&]() {
+                for (const auto& method : *methods) {
+                  if (method.decl.get() == picked.decl) {
+                    return method.defining_unit;
+                  }
+                }
+                return std::string{};
+              }();
+              return !is_callee_context_
+                         ? lower_implicit_zero_arg_call(text, picked.decl, unit)
                          : text;
             }
           }
@@ -1381,11 +1407,22 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       std::string text = base_cxx + member_access_op(*m.base) + member_cxx;
       if (is_callee_context_ || !registry) return text;
       if (bcls.empty()) return text;
-      if (const auto* method = registry->lookup_class_method(
-              bcls, m.name, current_unit_name)) {
-        if (method->accepts_zero_args) {
-          text = lower_implicit_zero_arg_call(text, method->decl.get(),
-                                              method->defining_unit);
+      if (const auto* methods =
+              registry->lookup_class_methods(bcls, m.name, current_unit_name)) {
+        std::vector<const ProcDecl*> candidates;
+        for (const auto& method : *methods) {
+          if (method.decl) candidates.push_back(method.decl.get());
+        }
+        PickResult picked = resolution_.pick_overload(candidates, {});
+        if (!picked.ambiguous && picked.decl) {
+          std::string unit;
+          for (const auto& method : *methods) {
+            if (method.decl.get() == picked.decl) {
+              unit = method.defining_unit;
+              break;
+            }
+          }
+          text = lower_implicit_zero_arg_call(text, picked.decl, unit);
         }
       }
       return text;
@@ -1411,12 +1448,23 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (registry && !analysis_.identifier_is_shadowed_value(id.name) &&
               (registry->has_class(id.name, current_unit_name) ||
                            registry->records.count(id.name))) {
-            if (auto* method = registry->lookup_class_method(
-                    id.name, m.name, current_unit_name);
-                method && method->decl && !method->decl->is_class_method) {
+            const ProcDecl* selected = nullptr;
+            if (const auto* methods =
+                    registry->lookup_class_methods(id.name, m.name,
+                                                   current_unit_name)) {
+              for (const auto& method : *methods) {
+                if (!method.decl || method.decl->is_class_method) continue;
+                if (selected) {
+                  selected = nullptr;
+                  break;
+                }
+                selected = method.decl.get();
+              }
+            }
+            if (selected) {
               return "::rt::tp2cc_method_code<&" +
                      named_type_struct_cxx(id.name) + "::" +
-                     method_pointer_helper_name(*method->decl) + ">()";
+                     method_pointer_helper_name(*selected) + ">()";
             }
           }
         }
@@ -1424,11 +1472,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           const std::string metaclass =
               metaclass_target_name(deduce_type(*m.base));
           if (!metaclass.empty()) {
-            if (const auto* method =
-                    registry->lookup_class_method(metaclass, m.name,
-                                                  current_unit_name);
-                method && (method->kind == SymKind::ClassMethod ||
-                           method->kind == SymKind::Constructor)) {
+            bool class_method = false;
+            if (const auto* methods =
+                    registry->lookup_class_methods(metaclass, m.name,
+                                                   current_unit_name)) {
+              for (const auto& method : *methods) {
+                if (method.kind == SymKind::ClassMethod ||
+                    method.kind == SymKind::Constructor) {
+                  class_method = true;
+                  break;
+                }
+              }
+            }
+            if (class_method) {
               report_error(a.loc,
                            "cannot take address of class method through "
                            "metaclass value");
@@ -2020,38 +2076,37 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (cc.callee->kind == Kind::Ident) {
               method = mangle(static_cast<const Ident&>(*cc.callee).name);
             }
-            const ProcDecl* ctor_decl = nullptr;
-            std::string ctor_default_arg_unit;
+            std::vector<const Expr*> ctor_args;
+            ctor_args.reserve(cc.args.size());
+            for (const auto& arg : cc.args) ctor_args.push_back(arg.get());
+            const size_t explicit_ctor_arg_count = ctor_args.size();
+            ResolvedCall ctor_resolved;
             if (registry && c.args[0]->kind == Kind::Ident &&
                 cc.callee->kind == Kind::Ident) {
               TyName ptr_type;
               ptr_type.name = static_cast<const Ident&>(*c.args[0]).name;
               std::string pointee = registry->pointer_target_type_name(&ptr_type);
               if (!pointee.empty()) {
-                if (auto* m = registry->lookup_class_method(
-                        pointee, static_cast<const Ident&>(*cc.callee).name,
-                        current_unit_name)) {
-                  ctor_decl = m->decl.get();
-                  ctor_default_arg_unit = m->defining_unit;
-                }
+                auto base = std::make_unique<Ident>();
+                base->name = pointee;
+                Member member;
+                member.base = std::move(base);
+                member.name = static_cast<const Ident&>(*cc.callee).name;
+                ctor_resolved = resolve_call(member, ctor_args);
               }
             }
-            std::vector<const Expr*> ctor_args;
-            ctor_args.reserve(cc.args.size());
-            for (const auto& arg : cc.args) ctor_args.push_back(arg.get());
-            const size_t explicit_ctor_arg_count = ctor_args.size();
-            append_defaulted_trailing_call_args(ctor_decl, ctor_args);
+            append_defaulted_trailing_call_args(ctor_resolved.decl, ctor_args);
             std::vector<UntypedArgKind> untyped_arg(ctor_args.size(),
                                                     UntypedArgKind::None);
             std::vector<bool> mutable_ref_arg(ctor_args.size(), false);
             std::vector<const TypeExpr*> param_types(ctor_args.size(), nullptr);
-            mark_call_param_info(ctor_decl, untyped_arg, mutable_ref_arg,
-                                 param_types);
+            mark_call_param_info(ctor_resolved.decl, untyped_arg,
+                                 mutable_ref_arg, param_types);
             for (size_t i = 0; i < ctor_args.size(); ++i) {
               if (i) margs += ", ";
               const std::string_view default_arg_unit =
                   i >= explicit_ctor_arg_count
-                      ? std::string_view(ctor_default_arg_unit)
+                      ? std::string_view(ctor_resolved.default_arg_unit)
                       : std::string_view{};
               margs += lower_call_arg(*ctor_args[i], param_types[i],
                                       untyped_arg[i], mutable_ref_arg[i],
@@ -2223,7 +2278,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (auto ctor_call = maybe_lower_class_constructor_call(
                     c.loc, id.name, mem.name, call_args, call_param_types,
                     call_untyped_arg, call_mutable_ref_arg, explicit_arg_count,
-                    resolved.default_arg_unit)) {
+                    resolved.decl, resolved.default_arg_unit)) {
               return *ctor_call;
             }
           }

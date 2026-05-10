@@ -375,10 +375,19 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
       const std::string metaclass =
           analysis_.metaclass_target_name(analysis_.deduce_type(*mem.base));
       if (metaclass.empty()) return false;
-      const auto* method = registry_->lookup_class_method(
+      const auto* methods = registry_->lookup_class_methods(
           metaclass, mem.name, scope_.current_unit_name);
-      if (!(method && (method->kind == SymKind::ClassMethod ||
-                       method->kind == SymKind::Constructor))) {
+      bool rejects = false;
+      if (methods) {
+        for (const auto& method : *methods) {
+          if (method.kind == SymKind::ClassMethod ||
+              method.kind == SymKind::Constructor) {
+            rejects = true;
+            break;
+          }
+        }
+      }
+      if (!rejects) {
         return false;
       }
       report_error(value.loc,
@@ -418,15 +427,34 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
            ", " + self_expr + ")";
   };
 
+  auto method_matches_target = [&](const MethodSig& method) {
+    if (!method.decl || method.decl->is_class_method) return false;
+    if (method.decl->pkind == ProcKind::Function) {
+      if (!proc.is_function || !proc.return_type || !method.decl->return_type) {
+        return false;
+      }
+      if (types_.type_to_cxx(*proc.return_type) !=
+          types_.type_to_cxx(*method.decl->return_type)) {
+        return false;
+      }
+    } else if (proc.is_function) {
+      return false;
+    }
+    return types_.procedural_param_types_to_cxx(method.decl->params) ==
+           types_.procedural_param_types_to_cxx(proc.params);
+  };
+
   auto bind_current_method =
       [&](const std::string& name) -> std::optional<std::string> {
     if (scope_.current_class_name.empty()) return std::nullopt;
-    if (auto* method =
-            registry_->lookup_class_method(scope_.current_class_name, name,
-                                           scope_.current_unit_name);
-        method && method->decl && !method->decl->is_class_method) {
-      return bind_method("(*this)", scope_.current_class_name, *method->decl,
-                         false);
+    if (const auto* methods = registry_->lookup_class_methods(
+            scope_.current_class_name, name, scope_.current_unit_name)) {
+      for (const auto& method : *methods) {
+        if (method_matches_target(method)) {
+          return bind_method("(*this)", scope_.current_class_name,
+                             *method.decl, false);
+        }
+      }
     }
     return std::nullopt;
   };
@@ -440,11 +468,15 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
       cls = analysis_.deduce_class_alias(*m.base);
     }
     if (cls.empty()) return std::nullopt;
-    if (auto* method = registry_->lookup_class_method(
-            cls, m.name, scope_.current_unit_name);
-        method && method->decl && !method->decl->is_class_method) {
-      return bind_method(expr_ops_.expr_to_cxx(*m.base), cls, *method->decl,
-                         storage_.expr_is_reference_class(*m.base));
+    if (const auto* methods = registry_->lookup_class_methods(
+            cls, m.name, scope_.current_unit_name)) {
+      for (const auto& method : *methods) {
+        if (method_matches_target(method)) {
+          return bind_method(expr_ops_.expr_to_cxx(*m.base), cls,
+                             *method.decl,
+                             storage_.expr_is_reference_class(*m.base));
+        }
+      }
     }
     return std::nullopt;
   };

@@ -7475,11 +7475,10 @@ void test_inherited_exception_create_lowers_as_constructor_call() {
 void test_recursive_call_var_param_gets_param_info_for_reinterpret_ref() {
   // A recursive call to the current function: `resolve_name` rewrites the
   // bare function name to its result slot for assignments like `f := f(...)`,
-  // but `resolve_call_decl` must still recover the actual proc decl so
-  // arg/param type info reaches `lower_call_arg`. Without that, a
-  // var-T pointer parameter receiving a subclass-field expression
-  // misses the reinterpret_storage_ref lowering and C++ rejects the
-  // pointer-base mismatch.
+  // while call lowering must still use the selected function declaration for
+  // parameter modes. Without that, a var-T pointer parameter receiving a
+  // subclass-field expression misses the reinterpret_storage_ref lowering and
+  // C++ rejects the pointer-base mismatch.
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"

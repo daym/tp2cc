@@ -775,10 +775,8 @@ bool EmitStorage::expr_is_storage_lvalue(const Expr& e) {
     if (!cls.empty()) {
       if (registry_->lookup_class_property(
               cls, m.name, scope_.current_unit_name)) return false;
-      if (const auto* method = registry_->lookup_class_method(
-              cls, m.name, scope_.current_unit_name)) {
-        if (method->accepts_zero_args) return false;
-      }
+      if (registry_->lookup_class_methods(cls, m.name,
+                                          scope_.current_unit_name)) return false;
     }
   }
   return true;
