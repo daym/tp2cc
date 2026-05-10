@@ -753,6 +753,11 @@ void test_str_formats_real_values() {
   CHECK_EQ(tp2cc_to_std_string(s), std::string(" 0.01"));
 }
 
+void test_inttostr_formats_integer_values() {
+  CHECK_EQ(tp2cc_to_std_string(p_inttostr(int32_t{-42})), std::string("-42"));
+  CHECK_EQ(tp2cc_to_std_string(p_inttostr(uint32_t{42})), std::string("42"));
+}
+
 void test_reinterpret_bytes_copies_raw_object_bytes() {
   long double v = 10.0L;
   auto bytes = tp2cc_reinterpret_bytes<tp2cc_Array<uint8_t, 0, sizeof(v)>>(v);
@@ -1431,6 +1436,7 @@ int main() {
   RUN_TEST(test_char_array_assignment_from_shortstring_matches_fpc);
   RUN_TEST(test_shortstring_assignment_from_char_array_matches_fpc);
   RUN_TEST(test_str_formats_real_values);
+  RUN_TEST(test_inttostr_formats_integer_values);
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
   RUN_TEST(test_reinterpret_copy_preserves_scalar_bit_pattern);
   RUN_TEST(test_reinterpret_load_store_and_inc_handle_misaligned_bytes);

@@ -165,6 +165,7 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
         "p_filesetdate",
         "p_fileage",
         "p_getfilehandle",
+        "p_inttostr",
         "p_stringofchar",
         "p_comparetext",
         "p_ansicomparefilename",

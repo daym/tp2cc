@@ -3268,6 +3268,11 @@ inline int32_t p_strtoint(const tp2cc_AnsiString& s) {
   return std::atoi(tp2cc_to_std_string(s).c_str());
 }
 
+template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>
+inline tp2cc_ShortString<> p_inttostr(T value) {
+  return tp2cc_shortstring_of<>(std::to_string(value).c_str());
+}
+
 inline int tp2cc_digit_value(char c) {
   if (c >= '0' && c <= '9') return c - '0';
   if (c >= 'a' && c <= 'f') return c - 'a' + 10;

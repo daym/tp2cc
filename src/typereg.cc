@@ -485,6 +485,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"strdispose", 1, false, false, ""},
       {"val",        3, false, false, ""},
       {"str",        2, false, false, ""},
+      {"inttostr",   1, true,  false, "shortstring"},
       {"strtoint",   1, true,  false, "longint"},
       {"stringofchar", 2, true, false, "ansistring"},
       {"strlen",     1, true,  false, "longint"},
