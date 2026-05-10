@@ -1,6 +1,7 @@
 #include "typereg.h"
 
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <stdexcept>
 #include <unordered_set>
@@ -800,6 +801,27 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     t->name = n;
     return t;
   };
+  auto make_proc_param = [&](const std::string& name, ast::TypePtr type) {
+    ast::Param p;
+    p.mode = ast::Param::Const;
+    p.names = {name};
+    p.type = std::move(type);
+    return p;
+  };
+  auto add_rt_string_compare_operator =
+      [&](const std::string& op, ast::TypePtr lhs_type, ast::TypePtr rhs_type,
+          ast::TypePtr return_type) {
+        auto pd = std::make_shared<ast::ProcDecl>(false);
+        pd->pkind = ast::ProcKind::Function;
+        pd->name = "operator_" + op;
+        pd->is_operator = true;
+        pd->operator_token = op;
+        pd->intrinsic_operator = ast::ProcDecl::IntrinsicOperator::StringCompare;
+        pd->params.push_back(make_proc_param("a", std::move(lhs_type)));
+        pd->params.push_back(make_proc_param("b", std::move(rhs_type)));
+        pd->return_type = std::move(return_type);
+        rt_exports.iface_operators[op].push_back(make_proc_info("__rt__", pd));
+      };
   auto make_pointer = [](ast::TypePtr target = nullptr) {
     auto t = std::make_shared<ast::TyPointer>();
     t->target = std::move(target);
@@ -968,6 +990,22 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   add_rt_alias("ppointer", make_pointer(make_typename("pointer")));
   add_rt_alias("pqword", make_pointer(make_typename("qword")));
   add_rt_alias("pshortstring", make_pointer(make_typename("shortstring")));
+  const std::array<const char*, 6> string_compare_ops{
+      "=", "<>", "<", ">", "<=", ">="};
+  for (const char* op : string_compare_ops) {
+    add_rt_string_compare_operator(op, make_typename("shortstring"),
+                                   make_typename("shortstring"),
+                                   make_typename("boolean"));
+    add_rt_string_compare_operator(op, make_typename("shortstring"),
+                                   make_typename("ansistring"),
+                                   make_typename("boolean"));
+    add_rt_string_compare_operator(op, make_typename("ansistring"),
+                                   make_typename("shortstring"),
+                                   make_typename("boolean"));
+    add_rt_string_compare_operator(op, make_typename("ansistring"),
+                                   make_typename("ansistring"),
+                                   make_typename("boolean"));
+  }
   add_rt_var("allowdirectoryseparators", make_set(make_typename("char")));
   auto make_method = [&](const std::string& name, ast::ProcKind pkind,
                          std::vector<ast::Param> params,

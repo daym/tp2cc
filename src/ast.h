@@ -414,6 +414,8 @@ struct ProcDecl : Decl {
   // declarations are represented as function-like ProcDecls so they can
   // reuse the existing parameter/body/result lowering.
   std::string operator_token;
+  enum class IntrinsicOperator { None, StringCompare };
+  IntrinsicOperator intrinsic_operator = IntrinsicOperator::None;
   // For methods: the object/record type this belongs to, if parsed as
   // `procedure TFoo.Bar(...)`. Empty otherwise.
   std::string of_type;

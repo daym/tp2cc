@@ -2825,6 +2825,29 @@ void test_runtime_aliases_cover_currency_systemtime_and_pansistring() {
   CHECK(contains(out.impl, "::rt::t_pshortstring p_pss{};"));
 }
 
+void test_string_comparison_uses_runtime_operator_resolution() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var\n"
+      "  s : ansistring;\n"
+      "  ps : pshortstring;\n"
+      "begin\n"
+      "  if s <> ps^ then ;\n"
+      "  if ps^ = s then ;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_string_compare(p_s, ::rt::tp2cc_deref(p_ps)) != 0"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_string_compare(::rt::tp2cc_deref(p_ps), p_s) == 0"));
+  CHECK(!contains(out.impl, "p_s != ::rt::tp2cc_deref(p_ps)"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_deref(p_ps) == p_s"));
+}
+
 void test_tmethod_type_name_is_explicitly_qualified() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -3364,7 +3387,8 @@ void test_implicit_property_lookup_in_method_body() {
       "end.\n");
   CHECK(contains(out.impl,
                  "this->p_fcount = ::rt::tp2cc_wrap_add(this->p_fcount, 1);"));
-  CHECK(contains(out.impl, "if ((this->p_getname() != ::rt::tp2cc_shortstring_literal<255>()))"));
+  CHECK(contains(out.impl,
+                 "if ((::rt::tp2cc_string_compare(this->p_getname(), ::rt::tp2cc_shortstring_literal<255>()) != 0))"));
   CHECK(!contains(out.impl, "p_count ="));
   CHECK(!contains(out.impl, "p_name !="));
 }
@@ -8427,6 +8451,7 @@ int main() {
   RUN_TEST(test_runtime_alias_type_names_are_explicitly_qualified);
   RUN_TEST(test_tdatetime_and_runtime_date_time_lower_through_rt);
   RUN_TEST(test_runtime_aliases_cover_currency_systemtime_and_pansistring);
+  RUN_TEST(test_string_comparison_uses_runtime_operator_resolution);
   RUN_TEST(test_tmethod_type_name_is_explicitly_qualified);
   RUN_TEST(test_local_enum_members_do_not_fall_back_to_runtime);
   RUN_TEST(test_sizeof_visible_type_uses_type_spelling_not_identifier_lookup);

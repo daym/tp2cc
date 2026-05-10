@@ -150,6 +150,7 @@ class ResolutionTypeOps {
   // whole emitter implementation.
   virtual std::string type_to_cxx(const ast::TypeExpr& t) = 0;
   virtual bool type_is_pcharish(const ast::TypeExpr* t) = 0;
+  virtual bool type_is_stringish(const ast::TypeExpr* t) = 0;
 };
 
 }  // namespace tp2cc

@@ -455,7 +455,7 @@ struct Emitter : ResolveNameProvider,
   std::string member_access_op(const ast::Expr& e) {
     return storage_.member_access_op(e);
   }
-  bool type_is_stringish(const ast::TypeExpr* t) {
+  bool type_is_stringish(const ast::TypeExpr* t) override {
     return storage_.type_is_stringish(t);
   }
   bool type_is_pointerish(const ast::TypeExpr* t) {
@@ -1009,6 +1009,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           std::string rhs =
               lower_call_arg(*n.rhs, param_types[1], untyped_arg[1],
                              mutable_ref_arg[1]);
+          if (resolved.decl->intrinsic_operator ==
+              ProcDecl::IntrinsicOperator::StringCompare) {
+            std::string cmp =
+                pascal_operator_cxx_token(resolved.decl->operator_token);
+            return "(::rt::tp2cc_string_compare(" + lhs + ", " + rhs + ") " +
+                   cmp + " 0)";
+          }
           if (pascal_operator_decl_uses_named_helper(*resolved.decl)) {
             std::string fn = pascal_operator_decl_name_to_cxx(*resolved.decl);
             if (!resolved.defining_unit.empty()) {

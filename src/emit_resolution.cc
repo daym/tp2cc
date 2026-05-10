@@ -677,6 +677,7 @@ BinaryOperatorResult EmitResolution::find_binary_operator(
   auto operand_allows_operator_lookup = [&](const TypeExpr* t) {
     t = analysis_.canonicalize_type(t);
     if (!t) return false;
+    if (type_ops_.type_is_stringish(t)) return true;
     if (t->kind == Kind::TyName) {
       const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
       if (primitive_info(name)) return false;
