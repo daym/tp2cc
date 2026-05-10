@@ -66,8 +66,7 @@ std::string EmitTypes::type_name_to_cxx(const TyName& n) {
 }
 
 std::string EmitTypes::type_name_text_to_cxx(std::string_view name) {
-  TyName t;
-  t.name = std::string(name);
+  TyName t{std::string(name)};
   return type_name_to_cxx(t);
 }
 
@@ -791,10 +790,7 @@ std::string EmitTypes::inline_record_type_to_cxx(const TyRecord& tr) {
   append_fields(tr.fields);
   if (tr.has_variant) {
     if (!tr.variant_tag_name.empty() && tr.variant_tag_type) {
-      RecordField tag_field;
-      tag_field.names.push_back(tr.variant_tag_name);
-      tag_field.type = tr.variant_tag_type;
-      append_fields({tag_field});
+      append_fields({RecordField({tr.variant_tag_name}, tr.variant_tag_type)});
     }
     out += "union { ";
     for (const auto& vc : tr.variant_cases) {
@@ -820,13 +816,10 @@ std::vector<EmitRecordFieldDecl> EmitTypes::record_field_decls(
     std::string type_cxx =
         f.type ? type_to_cxx(*f.type) : std::string("int32_t");
     for (const auto& fn : f.names) {
-      EmitRecordFieldDecl entry;
-      entry.type = f.type.get();
-      entry.type_cxx = type_cxx;
-      entry.mangled_name =
+      std::string mangled_name =
           registry_ ? registry_->field_cxx_name(fn) : mangle(fn);
-      entry.decl = named_type_to_cxx(f.type.get(), entry.mangled_name);
-      out.push_back(std::move(entry));
+      out.emplace_back(f.type.get(), type_cxx, mangled_name,
+                       named_type_to_cxx(f.type.get(), mangled_name));
     }
   }
   return out;
@@ -834,22 +827,20 @@ std::vector<EmitRecordFieldDecl> EmitTypes::record_field_decls(
 
 EmitPackedRecordLayout EmitTypes::compute_packed_record_layout(
     const TyRecord& tr) {
-  EmitPackedRecordLayout out;
-  out.size_expr = "0";
+  std::vector<std::pair<std::string, std::string>> field_offsets;
+  std::string size_expr = "0";
   auto append_run =
       [&](const std::vector<RecordField>& fields, std::string& size_expr) {
         for (const auto& field : record_field_decls(fields)) {
-          out.field_offsets.emplace_back(field.mangled_name, size_expr);
+          field_offsets.emplace_back(field.mangled_name, size_expr);
           size_expr = "(" + size_expr + " + sizeof(" + field.type_cxx + "))";
         }
       };
-  append_run(tr.fields, out.size_expr);
+  append_run(tr.fields, size_expr);
   if (tr.has_variant) {
     if (!tr.variant_tag_name.empty() && tr.variant_tag_type) {
-      RecordField tag_field;
-      tag_field.names.push_back(tr.variant_tag_name);
-      tag_field.type = tr.variant_tag_type;
-      append_run({tag_field}, out.size_expr);
+      append_run({RecordField({tr.variant_tag_name}, tr.variant_tag_type)},
+                 size_expr);
     }
     std::vector<std::string> case_sizes;
     for (const auto& vc : tr.variant_cases) {
@@ -859,8 +850,8 @@ EmitPackedRecordLayout EmitTypes::compute_packed_record_layout(
         // Variant-case fields share the same outer offset; the per-case base
         // is `(packed_size_expr + case_size_so_far)`.
         const std::string field_offset =
-            "(" + out.size_expr + " + " + case_size_expr + ")";
-        out.field_offsets.emplace_back(field.mangled_name, field_offset);
+            "(" + size_expr + " + " + case_size_expr + ")";
+        field_offsets.emplace_back(field.mangled_name, field_offset);
         case_size_expr =
             "(" + case_size_expr + " + sizeof(" + field.type_cxx + "))";
       }
@@ -872,10 +863,10 @@ EmitPackedRecordLayout EmitTypes::compute_packed_record_layout(
         max_case = "((" + max_case + ") < (" + case_sizes[i] + ") ? (" +
                    case_sizes[i] + ") : (" + max_case + "))";
       }
-      out.size_expr = "(" + out.size_expr + " + " + max_case + ")";
+      size_expr = "(" + size_expr + " + " + max_case + ")";
     }
   }
-  return out;
+  return EmitPackedRecordLayout(std::move(field_offsets), std::move(size_expr));
 }
 
 std::string EmitTypes::named_type_to_cxx(const TypeExpr* t, std::string_view name,

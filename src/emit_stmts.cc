@@ -498,11 +498,8 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
         if (registry_ && ptr_arg_ty && cc.callee->kind == Kind::Ident) {
           std::string pointee = registry_->pointer_target_type_name(ptr_arg_ty);
           if (!pointee.empty()) {
-            auto base = std::make_unique<Ident>();
-            base->name = pointee;
-            Member member;
-            member.base = std::move(base);
-            member.name = static_cast<const Ident&>(*cc.callee).name;
+            Member member(std::make_shared<Ident>(pointee),
+                          static_cast<const Ident&>(*cc.callee).name);
             ctor_resolved = resolution_.resolve_call(member, ctor_args);
           }
         }
@@ -817,13 +814,11 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_operator_enumerator(
   if (!op.defining_unit.empty()) {
     fn = unit_namespace_prefix(op.defining_unit) + fn;
   }
-  ForInEnumeratorProvider provider;
-  provider.value_cxx =
+  ForInEnumeratorProvider provider(
       fn + "(" + calls_.lower_call_arg(*f.in_expr, param_types[0],
                                        untyped_arg[0], mutable_ref_arg[0]) +
-      ")";
-  provider.type = op.decl->return_type.get();
-  provider.loc = f.loc;
+          ")",
+      op.decl->return_type.get(), f.loc);
   return emit_for_in_enumerator_provider(f, var, provider);
 }
 
@@ -850,12 +845,10 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_own_get_enumerator(
 
   const ClassInfo* ci = analysis_.class_info_for_type_name(class_name);
   std::string access = (ci && ci->is_reference_type) ? "->" : ".";
-  ForInEnumeratorProvider provider;
-  provider.value_cxx =
+  ForInEnumeratorProvider provider(
       stmt_ops_.expr_to_cxx(*f.in_expr) + access + mangle(get->decl->name) +
-      "()";
-  provider.type = get->decl->return_type.get();
-  provider.loc = f.loc;
+          "()",
+      get->decl->return_type.get(), f.loc);
   return emit_for_in_enumerator_provider(f, var, provider);
 }
 

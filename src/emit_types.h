@@ -3,6 +3,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "ast.h"
@@ -35,6 +36,12 @@ struct EmitRecordFieldDecl {
   std::string type_cxx;
   std::string mangled_name;
   std::string decl;
+  EmitRecordFieldDecl(const ast::TypeExpr* type_in, std::string type_cxx_in,
+                      std::string mangled_name_in, std::string decl_in)
+      : type(type_in),
+        type_cxx(std::move(type_cxx_in)),
+        mangled_name(std::move(mangled_name_in)),
+        decl(std::move(decl_in)) {}
 };
 
 struct EmitPackedRecordLayout {
@@ -42,6 +49,11 @@ struct EmitPackedRecordLayout {
   // expression plus the total packed size expression.
   std::vector<std::pair<std::string, std::string>> field_offsets;
   std::string size_expr;
+  EmitPackedRecordLayout(
+      std::vector<std::pair<std::string, std::string>> field_offsets_in,
+      std::string size_expr_in)
+      : field_offsets(std::move(field_offsets_in)),
+        size_expr(std::move(size_expr_in)) {}
 };
 
 // Central Pascal type/layout lowering. This module owns the rules for spelling

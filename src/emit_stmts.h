@@ -3,6 +3,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "ast.h"
@@ -61,6 +62,9 @@ class EmitStmts {
     std::string value_cxx;
     const ast::TypeExpr* type = nullptr;
     Location loc;
+    ForInEnumeratorProvider(std::string value_cxx_in,
+                            const ast::TypeExpr* type_in, Location loc_in)
+        : value_cxx(std::move(value_cxx_in)), type(type_in), loc(loc_in) {}
   };
 
   bool stmt_autocalls_procvar(const ast::Expr& expr);
