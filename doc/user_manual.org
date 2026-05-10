@@ -1125,6 +1125,7 @@ System implements these type names beyond the basic scalar/string/pointer types 
 | ~EExternal~, ~EIntError~, ~EIntOverflow~, ~ERangeError~, ~EDivByZero~ | exception classes | Exception classes thrown or caught by runtime checking helpers. |
 | ~EOSError~ | exception class with ~ErrorCode: LongInt~ | Exception class for code that catches or inspects OS errors. |
 | ~TDateTime~ | type alias | Date/time value, represented by the runtime as a floating value. |
+| ~TSysCharSet~ | ~set of Char~ | Character set type for string-scanning interfaces. |
 | ~TSystemTime~ | record alias | Year/month/day/hour/min/sec/millisecond fields for ~GetLocalTime~. |
 | ~HRESULT~ | integer alias | Windows-style result code type used by compiler support code. |
 | ~PAnsiString~, ~PDWord~, ~PQWord~, ~PShortString~ | pointer aliases | Pointer type aliases reached by translated compiler sources. |

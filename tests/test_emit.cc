@@ -2658,6 +2658,7 @@ void test_runtime_aliases_cover_currency_systemtime_and_pansistring() {
       "  hr : hresult;\n"
       "  pd : pdword;\n"
       "  pl : plongword;\n"
+      "  sc : tsyscharset;\n"
       "  st : tsystemtime;\n"
       "  ps : pansistring;\n"
       "  pq : pqword;\n"
@@ -2669,6 +2670,7 @@ void test_runtime_aliases_cover_currency_systemtime_and_pansistring() {
   CHECK(contains(out.impl, "::rt::t_hresult p_hr{};"));
   CHECK(contains(out.impl, "::rt::t_pdword p_pd{};"));
   CHECK(contains(out.impl, "::rt::t_plongword p_pl{};"));
+  CHECK(contains(out.impl, "::rt::t_tsyscharset p_sc{};"));
   CHECK(contains(out.impl, "::rt::t_tsystemtime p_st{};"));
   CHECK(contains(out.impl, "::rt::t_pansistring p_ps{};"));
   CHECK(contains(out.impl, "::rt::t_pqword p_pq{};"));

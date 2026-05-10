@@ -2756,6 +2756,7 @@ enum t_tfpuexception : uint8_t {
   p_exunderflow,
   p_exprecision,
 };
+using t_tsyscharset = tp2cc_Set<p_char>;
 using t_tfpuexceptionmask = tp2cc_Set<t_tfpuexception>;
 
 // Pascal `Math.GetExceptionMask` / `SetExceptionMask` use the same six-bit
