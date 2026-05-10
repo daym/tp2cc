@@ -887,8 +887,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (n.rhs->kind == Kind::Ident) {
             const auto& id = static_cast<const Ident&>(*n.rhs);
             if (class_info_for_type_name(id.name)) {
-              TyName tn;
-              tn.name = id.name;
+              TyName tn(id.name);
               return type_name_to_cxx(tn);
             }
           }
@@ -902,8 +901,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (n.rhs->kind == Kind::Ident) {
             const auto& id = static_cast<const Ident&>(*n.rhs);
             if (class_info_for_type_name(id.name)) {
-              TyName tn;
-              tn.name = id.name;
+              TyName tn(id.name);
               return type_name_to_cxx(tn);
             }
           }
@@ -1839,8 +1837,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           if (n == "pointer" || n == "pchar" || n == "pansichar" ||
               n == "ppchar") {
-            TyName cast_name;
-            cast_name.name = n;
+            TyName cast_name(n);
             std::string source =
                 (peeled && expr_is_storage_lvalue(*c.args[0]))
                     ? expr_to_cxx(*peeled)
@@ -1861,8 +1858,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "((" + primitive_type_cxx(n) + ")(::rt::p_ord(" +
                    arg0() + ")))";
           }
-          TyName target;
-          target.name = n;
+          TyName target(n);
           if (auto conv = resolution_.find_assignment_operator(
                   type_for_overload(*c.args[0]), &target);
               conv.decl) {
@@ -1881,8 +1877,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (is_builtin_reference_class_name(n)) {
             // `TObject(expr)` is a pointer cast even though `TObject` itself
             // comes from the runtime root instead of the registry.
-            TyName cast_name;
-            cast_name.name = n;
+            TyName cast_name(n);
             std::string coerced = coerce_pointer_like_text(
                 type_name_to_cxx(cast_name), &cast_name,
                 type_for_overload(*c.args[0]), arg0(),
@@ -1896,8 +1891,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               // Direct named class casts (`TNode(p)`) do not go through the
               // alias table, because reference classes are registered as
               // classes rather than aliases. Treat them as pointer casts here.
-              TyName cast_name;
-              cast_name.name = n;
+              TyName cast_name(n);
               std::string coerced = coerce_pointer_like_text(
                   type_name_to_cxx(cast_name), &cast_name,
                   type_for_overload(*c.args[0]), arg0(),
@@ -1939,8 +1933,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                    arg0() + ")";
           }
           {
-            TyName target;
-            target.name = n;
+            TyName target(n);
             if (auto conv = resolution_.find_assignment_operator(
                     type_for_overload(*c.args[0]), &target);
                 conv.decl) {
@@ -1957,8 +1950,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             // direct-initialisation attempt. Emit an explicit pointer cast so
             // bootstrap casts like `TLinkedListItemClass(ClassType)` keep
             // pointer semantics instead of turning into constructor calls.
-            TyName cast_name;
-            cast_name.name = n;
+            TyName cast_name(n);
             std::string coerced = coerce_pointer_like_text(
                 type_name_to_cxx(cast_name), cast_ty,
                 type_for_overload(*c.args[0]), arg0(),
@@ -2088,15 +2080,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             ResolvedCall ctor_resolved;
             if (registry && c.args[0]->kind == Kind::Ident &&
                 cc.callee->kind == Kind::Ident) {
-              TyName ptr_type;
-              ptr_type.name = static_cast<const Ident&>(*c.args[0]).name;
+              TyName ptr_type(static_cast<const Ident&>(*c.args[0]).name);
               std::string pointee = registry->pointer_target_type_name(&ptr_type);
               if (!pointee.empty()) {
-                auto base = std::make_unique<Ident>();
-                base->name = pointee;
-                Member member;
-                member.base = std::move(base);
-                member.name = static_cast<const Ident&>(*cc.callee).name;
+                Member member(std::make_shared<Ident>(pointee),
+                              static_cast<const Ident&>(*cc.callee).name);
                 ctor_resolved = resolve_call(member, ctor_args);
               }
             }
@@ -2142,8 +2130,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if (id.name == "pointer") {
           cast_to_pointer = true;
           cast_type_cxx = "void*";
-          static TyName pointer_type_name;
-          pointer_type_name.name = "pointer";
+          static TyName pointer_type_name("pointer");
           pointer_cast_ty = &pointer_type_name;
         } else {
           const TypeExpr* tgt = nullptr;

@@ -45,13 +45,78 @@ bool is_constant_subrange_bound_expr(const Expr& e) {
 }
 
 TypePtr make_type_name(Location loc, std::string name) {
-  auto tn = std::make_shared<TyName>();
-  tn->loc = loc;
-  tn->name = std::move(name);
-  return tn;
+  return std::make_shared<TyName>(loc, std::move(name));
 }
 
 }  // namespace
+
+Parser::ProcModifiers Parser::combine_proc_modifiers(ProcModifiers base,
+                                                     ProcModifiers delta) {
+  return ProcModifiers{
+      base.is_virtual || delta.is_virtual,
+      base.is_abstract || delta.is_abstract,
+      base.is_override || delta.is_override,
+      base.is_final || delta.is_final,
+      base.is_forward || delta.is_forward,
+      base.is_inline || delta.is_inline,
+      base.is_cdecl || delta.is_cdecl,
+      base.is_noreturn || delta.is_noreturn,
+      base.is_external || delta.is_external,
+      base.is_assembler || delta.is_assembler,
+      delta.external_lib.empty() ? std::move(base.external_lib)
+                                 : std::move(delta.external_lib),
+      delta.external_name.empty() ? std::move(base.external_name)
+                                  : std::move(delta.external_name)};
+}
+
+Parser::ProcModifiers Parser::proc_modifier(ProcModifierFlag flag) {
+  switch (flag) {
+    case ProcModifierFlag::Virtual:
+      return ProcModifiers{true, false, false, false, false, false,
+                           false, false, false, false, "", ""};
+    case ProcModifierFlag::Abstract:
+      return ProcModifiers{false, true, false, false, false, false,
+                           false, false, false, false, "", ""};
+    case ProcModifierFlag::Override:
+      return ProcModifiers{false, false, true, false, false, false,
+                           false, false, false, false, "", ""};
+    case ProcModifierFlag::Final:
+      return ProcModifiers{false, false, false, true, false, false,
+                           false, false, false, false, "", ""};
+    case ProcModifierFlag::Forward:
+      return ProcModifiers{false, false, false, false, true, false,
+                           false, false, false, false, "", ""};
+    case ProcModifierFlag::Inline:
+      return ProcModifiers{false, false, false, false, false, true,
+                           false, false, false, false, "", ""};
+    case ProcModifierFlag::Cdecl:
+      return ProcModifiers{false, false, false, false, false, false,
+                           true, false, false, false, "", ""};
+    case ProcModifierFlag::Noreturn:
+      return ProcModifiers{false, false, false, false, false, false,
+                           false, true, false, false, "", ""};
+    case ProcModifierFlag::Assembler:
+      return ProcModifiers{false, false, false, false, false, false,
+                           false, false, false, true, "", ""};
+  }
+  return ProcModifiers{};
+}
+
+Parser::ProcModifiers Parser::external_proc_modifier(
+    std::string external_lib, std::string external_name) {
+  return ProcModifiers{false,
+                       false,
+                       false,
+                       false,
+                       false,
+                       false,
+                       false,
+                       false,
+                       true,
+                       false,
+                       std::move(external_lib),
+                       std::move(external_name)};
+}
 
 // ---------------------------------------------------------------------------
 // Token stream plumbing
@@ -146,12 +211,12 @@ std::string Parser::consume_name_or_directive(const char* ctx) {
 }
 
 PropertyDecl::Accessor Parser::parse_property_accessor_path(const char* ctx) {
-  PropertyDecl::Accessor accessor;
-  accessor.path.push_back(consume_name_or_directive(ctx));
+  std::vector<std::string> path;
+  path.push_back(consume_name_or_directive(ctx));
   while (accept(Tok::Dot)) {
-    accessor.path.push_back(consume_name_or_directive(ctx));
+    path.push_back(consume_name_or_directive(ctx));
   }
-  return accessor;
+  return PropertyDecl::Accessor(std::move(path));
 }
 
 // ---------------------------------------------------------------------------
@@ -163,12 +228,13 @@ std::shared_ptr<UnitNode> Parser::parse() {
   // Some sources are `.inc` files or program-body-only; treat as program
   // without a header.
   if (cur_.kind == Tok::KwBegin) {
-    auto u = std::make_shared<UnitNode>();
-    u->loc = cur_.loc;
-    u->is_program = true;
-    u->init_body = parse_compound_statement();
+    Location loc = cur_.loc;
+    auto init_body = parse_compound_statement();
     if (check(Tok::Dot)) advance();
-    return u;
+    return std::make_shared<UnitNode>(
+        loc, "", std::vector<std::string>{}, std::vector<DeclPtr>{},
+        std::vector<std::string>{}, std::vector<DeclPtr>{},
+        std::move(init_body), nullptr, true);
   }
   report_error(cur_.loc,
                "expected 'program' or 'unit' at top of compilation unit");
@@ -176,11 +242,9 @@ std::shared_ptr<UnitNode> Parser::parse() {
 }
 
 std::shared_ptr<UnitNode> Parser::parse_program() {
-  auto u = std::make_shared<UnitNode>();
-  u->loc = cur_.loc;
-  u->is_program = true;
+  Location loc = cur_.loc;
   expect(Tok::KwProgram, "program header");
-  u->name = consume_name_or_directive("program name");
+  std::string name = consume_name_or_directive("program name");
   // Optional program parameter list: program foo(input, output);
   if (accept(Tok::LParen)) {
     while (!at_end() && !check(Tok::RParen)) {
@@ -191,65 +255,78 @@ std::shared_ptr<UnitNode> Parser::parse_program() {
   }
   expect(Tok::Semi, "program header");
   // Optional uses.
+  std::vector<std::string> impl_uses;
   if (check(Tok::KwUses)) {
     advance();
-    parse_uses_into(u->impl_uses);
+    parse_uses_into(impl_uses);
     expect(Tok::Semi, "uses clause");
   }
-  parse_decl_block(u->impl_decls, /*in_interface=*/false);
+  std::vector<DeclPtr> impl_decls;
+  parse_decl_block(impl_decls, /*in_interface=*/false);
   // Main body.
+  StmtPtr init_body;
   if (check(Tok::KwBegin)) {
-    u->init_body = parse_compound_statement();
+    init_body = parse_compound_statement();
   }
   expect(Tok::Dot, "program tail");
-  return u;
+  return std::make_shared<UnitNode>(
+      loc, std::move(name), std::vector<std::string>{}, std::vector<DeclPtr>{},
+      std::move(impl_uses), std::move(impl_decls), std::move(init_body),
+      nullptr, true);
 }
 
 std::shared_ptr<UnitNode> Parser::parse_unit() {
-  auto u = std::make_shared<UnitNode>();
-  u->loc = cur_.loc;
-  u->is_program = false;
+  Location loc = cur_.loc;
   expect(Tok::KwUnit, "unit header");
-  u->name = consume_name_or_directive("unit name");
+  std::string name = consume_name_or_directive("unit name");
   expect(Tok::Semi, "unit header");
 
   expect(Tok::KwInterface, "unit interface");
+  std::vector<std::string> interface_uses;
   if (check(Tok::KwUses)) {
     advance();
-    parse_uses_into(u->interface_uses);
+    parse_uses_into(interface_uses);
     expect(Tok::Semi, "interface uses");
   }
-  parse_decl_block(u->interface_decls, /*in_interface=*/true);
+  std::vector<DeclPtr> interface_decls;
+  parse_decl_block(interface_decls, /*in_interface=*/true);
 
   expect(Tok::KwImplementation, "unit implementation");
+  std::vector<std::string> impl_uses;
   if (check(Tok::KwUses)) {
     advance();
-    parse_uses_into(u->impl_uses);
+    parse_uses_into(impl_uses);
     expect(Tok::Semi, "implementation uses");
   }
-  parse_decl_block(u->impl_decls, /*in_interface=*/false);
+  std::vector<DeclPtr> impl_decls;
+  parse_decl_block(impl_decls, /*in_interface=*/false);
 
   // TP-7-style init body: optional `begin ... end.` or just `end.`
+  StmtPtr init_body;
+  StmtPtr final_body;
   if (check(Tok::KwBegin)) {
-    u->init_body = parse_compound_statement();
+    init_body = parse_compound_statement();
     expect(Tok::Dot, "unit tail");
   } else if (check(Tok::KwEnd)) {
     advance();
     expect(Tok::Dot, "unit tail");
   } else if (check(Tok::KwInitialization) || check(Tok::KwFinalization)) {
     if (accept(Tok::KwInitialization)) {
-      u->init_body = parse_statement_block_until(
-          {Tok::KwFinalization, Tok::KwEnd});
+      init_body = parse_statement_block_until({Tok::KwFinalization, Tok::KwEnd});
     }
     if (accept(Tok::KwFinalization)) {
-      u->final_body = parse_statement_block_until({Tok::KwEnd});
+      final_body = parse_statement_block_until({Tok::KwEnd});
     }
     expect(Tok::KwEnd, "unit tail");
     expect(Tok::Dot, "unit tail");
   } else {
     expect(Tok::KwEnd, "unit tail");
   }
-  return u;
+  return std::make_shared<UnitNode>(
+      loc, std::move(name), std::move(interface_uses),
+      std::move(interface_decls), std::move(impl_uses),
+      std::move(impl_decls), std::move(init_body), std::move(final_body),
+      false);
 }
 
 void Parser::parse_uses_into(std::vector<std::string>& out) {
@@ -277,14 +354,14 @@ StmtPtr Parser::parse_statement_block_until(std::initializer_list<Tok> stops) {
     return false;
   };
 
-  auto c = std::make_shared<Compound>();
-  c->loc = cur_.loc;
+  Location loc = cur_.loc;
+  std::vector<StmtPtr> body;
   while (!is_stop()) {
     auto s = parse_statement();
-    if (s) c->body.push_back(std::move(s));
+    if (s) body.push_back(std::move(s));
     if (!accept(Tok::Semi)) break;
   }
-  return c;
+  return std::make_shared<Compound>(loc, std::move(body));
 }
 
 // ---------------------------------------------------------------------------
@@ -354,24 +431,25 @@ void Parser::parse_decl_block(std::vector<DeclPtr>& out, bool in_interface) {
 void Parser::parse_const_section(std::vector<DeclPtr>& out) {
   expect(Tok::KwConst, "const section");
   while (check(Tok::Ident)) {
-    auto cd = std::make_shared<ConstDecl>();
-    cd->loc = cur_.loc;
-    cd->name = cur_.text;
+    Location loc = cur_.loc;
+    std::string name = cur_.text;
     advance();
     bool typed = false;
+    TypePtr type;
     if (accept(Tok::Colon)) {
-      cd->type = parse_type();
+      type = parse_type();
       typed = true;
     }
     expect(Tok::Eq, "const decl");
-    cd->value = typed ? parse_const_value(cd->type.get()) : parse_expr();
+    ExprPtr value = typed ? parse_const_value(type.get()) : parse_expr();
     while (is_directive("deprecated") || is_directive("platform") ||
            is_directive("library") || is_directive("experimental")) {
       advance();
       if (cur_.kind == Tok::StringLit) advance();
     }
     expect(Tok::Semi, "const decl");
-    out.push_back(std::move(cd));
+    out.push_back(std::make_shared<ConstDecl>(
+        loc, std::move(name), std::move(type), std::move(value)));
   }
 }
 
@@ -389,12 +467,10 @@ ast::ExprPtr Parser::parse_const_value(const TypeExpr* target) {
     const auto& arr = static_cast<const TyArray&>(*target);
     elem_target = arr.element.get();
     if (arr.dims.size() > 1) {
-      nested_array_target = std::make_shared<TyArray>();
-      nested_array_target->loc = arr.loc;
-      nested_array_target->dims.assign(arr.dims.begin() + 1, arr.dims.end());
-      nested_array_target->element = arr.element;
-      nested_array_target->is_packed = arr.is_packed;
-      nested_array_target->array_kind = arr.array_kind;
+      std::vector<TypePtr> dims(arr.dims.begin() + 1, arr.dims.end());
+      nested_array_target = std::make_shared<TyArray>(
+          arr.loc, std::move(dims), arr.element, arr.is_packed,
+          arr.array_kind);
       elem_target = nested_array_target.get();
     }
   }
@@ -404,46 +480,41 @@ ast::ExprPtr Parser::parse_const_value(const TypeExpr* target) {
   bool is_record = cur_.kind == Tok::Ident && peek().kind == Tok::Colon;
 
   if (is_record) {
-    auto rc = std::make_shared<RecordConst>();
-    rc->loc = loc;
+    std::vector<std::pair<std::string, ExprPtr>> fields;
     while (!at_end() && !check(Tok::RParen)) {
       std::string fname = consume_name_or_directive("record-constant field");
       expect(Tok::Colon, "record-constant field");
       auto val = parse_const_value();
-      rc->fields.emplace_back(std::move(fname), std::move(val));
+      fields.emplace_back(std::move(fname), std::move(val));
       // Fields separated by ';'. Allow a trailing ';'.
       if (!accept(Tok::Semi)) break;
     }
     expect(Tok::RParen, "record constant");
-    return rc;
+    return std::make_shared<RecordConst>(loc, std::move(fields));
   }
 
   // Array constant or a single parenthesised expression.
   if (check(Tok::RParen)) {
     // Empty `()` -- treat as empty array constant.
-    auto ac = std::make_shared<ArrayConst>();
-    ac->loc = loc;
     advance();
-    return ac;
+    return std::make_shared<ArrayConst>(loc);
   }
   auto first = parse_const_value(elem_target);
   if (accept(Tok::Comma)) {
-    auto ac = std::make_shared<ArrayConst>();
-    ac->loc = loc;
-    ac->elements.push_back(std::move(first));
-    ac->elements.push_back(parse_const_value(elem_target));
+    std::vector<ExprPtr> elements;
+    elements.push_back(std::move(first));
+    elements.push_back(parse_const_value(elem_target));
     while (accept(Tok::Comma)) {
-      ac->elements.push_back(parse_const_value(elem_target));
+      elements.push_back(parse_const_value(elem_target));
     }
     expect(Tok::RParen, "array constant");
-    return ac;
+    return std::make_shared<ArrayConst>(loc, std::move(elements));
   }
   if (target && target->kind == Kind::TyArray) {
-    auto ac = std::make_shared<ArrayConst>();
-    ac->loc = loc;
-    ac->elements.push_back(std::move(first));
+    std::vector<ExprPtr> elements;
+    elements.push_back(std::move(first));
     expect(Tok::RParen, "array constant");
-    return ac;
+    return std::make_shared<ArrayConst>(loc, std::move(elements));
   }
   // Single item inside parens is just a parenthesised constant. Without the
   // enclosing type we cannot reliably distinguish `(x)` from a 1-element
@@ -456,130 +527,151 @@ ast::ExprPtr Parser::parse_const_value(const TypeExpr* target) {
 void Parser::parse_type_section(std::vector<DeclPtr>& out) {
   expect(Tok::KwType, "type section");
   while (check(Tok::Ident)) {
-    auto td = std::make_shared<TypeDecl>();
-    td->loc = cur_.loc;
-    td->name = cur_.text;
+    Location loc = cur_.loc;
+    std::string name = cur_.text;
     advance();
     expect(Tok::Eq, "type decl");
-    td->type = parse_type();
+    TypePtr type = parse_type();
     expect(Tok::Semi, "type decl");
-    out.push_back(std::move(td));
+    out.push_back(
+        std::make_shared<TypeDecl>(loc, std::move(name), std::move(type)));
   }
 }
 
 void Parser::parse_var_section(std::vector<DeclPtr>& out) {
   expect(Tok::KwVar, "var section");
   while (check(Tok::Ident)) {
-    auto vd = std::make_shared<VarDecl>();
-    vd->loc = cur_.loc;
-    vd->names.push_back(cur_.text);
+    Location loc = cur_.loc;
+    std::vector<std::string> names;
+    names.push_back(cur_.text);
     advance();
     while (accept(Tok::Comma)) {
       if (cur_.kind != Tok::Ident) break;
-      vd->names.push_back(cur_.text);
+      names.push_back(cur_.text);
       advance();
     }
     expect(Tok::Colon, "var decl");
-    vd->type = parse_type();
+    TypePtr type = parse_type();
+    ExprPtr init;
+    bool is_absolute = false;
+    bool is_external = false;
+    std::string absolute_target;
+    ExprPtr external_name;
+    std::string external_lib;
     // absolute / external / initialiser tail
     if (is_directive("absolute")) {
       advance();
-      vd->is_absolute = true;
+      is_absolute = true;
       // `absolute Identifier` -- other forms (address literals) not needed yet
       if (cur_.kind == Tok::Ident) {
-        vd->absolute_target = cur_.text;
+        absolute_target = cur_.text;
         advance();
       } else {
         report_error(cur_.loc, "expected identifier after 'absolute'");
       }
     } else if (accept(Tok::Eq)) {
-      vd->init = parse_const_value(vd->type.get());
+      init = parse_const_value(type.get());
     } else if (is_directive("external")) {
       advance();
-      vd->is_external = true;
-      vd->external_name = nullptr;
+      is_external = true;
       if (cur_.kind == Tok::StringLit) {
-        vd->external_lib = cur_.text;
+        external_lib = cur_.text;
         advance();
       }
       if (is_directive("name")) {
         advance();
         if (cur_.kind == Tok::StringLit) {
-          auto s = std::make_shared<StringLit>();
-          s->loc = cur_.loc;
-          s->value = cur_.text;
-          vd->external_name = std::move(s);
+          external_name = std::make_shared<StringLit>(cur_.loc, cur_.text);
           advance();
         }
       }
     }
     expect(Tok::Semi, "var decl");
-    out.push_back(std::move(vd));
+    out.push_back(std::make_shared<VarDecl>(
+        loc, std::move(names), std::move(type), std::move(init), is_absolute,
+        is_external, std::move(absolute_target), std::move(external_name),
+        std::move(external_lib)));
   }
 }
 
 void Parser::parse_label_section(std::vector<DeclPtr>& out) {
   expect(Tok::KwLabel, "label section");
-  auto ld = std::make_shared<LabelDecl>();
-  ld->loc = cur_.loc;
+  Location loc = cur_.loc;
+  std::vector<std::string> labels;
   while (check(Tok::Ident) || check(Tok::IntLit)) {
-    ld->labels.push_back(cur_.text);
+    labels.push_back(cur_.text);
     advance();
     if (!accept(Tok::Comma)) break;
   }
   expect(Tok::Semi, "label section");
-  out.push_back(std::move(ld));
+  out.push_back(std::make_shared<LabelDecl>(loc, std::move(labels)));
 }
 
 // ---------------------------------------------------------------------------
 // Procedure/function declarations
 
-bool Parser::parse_proc_modifier(ProcDecl& pd, bool in_type_member) {
+std::optional<Parser::ProcModifiers> Parser::parse_proc_modifier(
+    bool in_type_member) {
   if (in_type_member) {
     // After a method semicolon, tokens that start the next class/object member
     // are no longer routine modifiers. In this context `public' starts a
     // visibility section, and an identifier followed by ':' or ',' starts a
     // field declaration even when that identifier is also a routine directive
     // name such as `name' or `external'.
-    if (is_directive("public")) return false;
+    if (is_directive("public")) return std::nullopt;
     if (cur_.kind == Tok::Ident &&
         (peek().kind == Tok::Colon || peek().kind == Tok::Comma)) {
-      return false;
+      return std::nullopt;
     }
   }
 
   if (is_directive("virtual")) {
-    pd.is_virtual = true;
     advance();
+    return proc_modifier(ProcModifierFlag::Virtual);
   }
   else if (is_directive("abstract")) {
-    pd.is_abstract = true;
     advance();
+    return proc_modifier(ProcModifierFlag::Abstract);
   }
   else if (is_directive("override")) {
-    pd.is_override = true;
     advance();
+    return proc_modifier(ProcModifierFlag::Override);
   }
   else if (is_directive("final")) {
-    pd.is_final = true;
     advance();
+    return proc_modifier(ProcModifierFlag::Final);
   }
   else if (is_directive("dynamic")) {
-    pd.is_virtual = true;
     advance();
+    return proc_modifier(ProcModifierFlag::Virtual);
   }
   else if (is_directive("message")) {
     advance();
     // integer constant or identifier for the message number/name.
     if (cur_.kind == Tok::IntLit || cur_.kind == Tok::Ident
         || cur_.kind == Tok::StringLit) advance();
-    pd.is_virtual = true;
+    return proc_modifier(ProcModifierFlag::Virtual);
   }
-  else if (is_directive("forward")) { pd.is_forward = true; advance(); }
-  else if (is_directive("inline")) { pd.is_inline = true; advance(); }
-  else if (is_directive("cdecl")) { pd.is_cdecl = true; advance(); }
-  else if (is_directive("noreturn")) { pd.is_noreturn = true; advance(); }
-  else if (is_directive("assembler")) { pd.is_assembler = true; advance(); }
+  else if (is_directive("forward")) {
+    advance();
+    return proc_modifier(ProcModifierFlag::Forward);
+  }
+  else if (is_directive("inline")) {
+    advance();
+    return proc_modifier(ProcModifierFlag::Inline);
+  }
+  else if (is_directive("cdecl")) {
+    advance();
+    return proc_modifier(ProcModifierFlag::Cdecl);
+  }
+  else if (is_directive("noreturn")) {
+    advance();
+    return proc_modifier(ProcModifierFlag::Noreturn);
+  }
+  else if (is_directive("assembler")) {
+    advance();
+    return proc_modifier(ProcModifierFlag::Assembler);
+  }
   else if (is_directive("far")) { advance(); }
   else if (is_directive("near")) { advance(); }
   else if (is_directive("pascal")) { advance(); }
@@ -592,13 +684,22 @@ bool Parser::parse_proc_modifier(ProcDecl& pd, bool in_type_member) {
   else if (is_directive("public")) { advance(); }
   else if (is_directive("static")) { advance(); }
   else if (is_directive("external")) {
-    pd.is_external = true;
     advance();
-    if (cur_.kind == Tok::StringLit) { pd.external_lib = cur_.text; advance(); }
+    std::string external_lib;
+    std::string external_name;
+    if (cur_.kind == Tok::StringLit) {
+      external_lib = cur_.text;
+      advance();
+    }
     if (is_directive("name")) {
       advance();
-      if (cur_.kind == Tok::StringLit) { pd.external_name = cur_.text; advance(); }
+      if (cur_.kind == Tok::StringLit) {
+        external_name = cur_.text;
+        advance();
+      }
     }
+    return external_proc_modifier(std::move(external_lib),
+                                  std::move(external_name));
   }
   else if (is_directive("alias")) {
     advance();
@@ -632,101 +733,116 @@ bool Parser::parse_proc_modifier(ProcDecl& pd, bool in_type_member) {
     if (cur_.kind == Tok::StringLit) advance();
   }
   else {
-    return false;
+    return std::nullopt;
   }
-  return true;
+  return ProcModifiers{};
 }
 
-void Parser::parse_proc_modifiers(ProcDecl& pd, bool in_type_member) {
-  while (parse_proc_modifier(pd, in_type_member)) accept(Tok::Semi);
+Parser::ProcModifiers Parser::parse_proc_modifiers(ProcModifiers modifiers,
+                                                   bool in_type_member) {
+  auto delta = parse_proc_modifier(in_type_member);
+  if (!delta) return modifiers;
+  accept(Tok::Semi);
+  return parse_proc_modifiers(
+      combine_proc_modifiers(std::move(modifiers), std::move(*delta)),
+      in_type_member);
 }
 
-void Parser::parse_proc_header_tail(ProcDecl& pd, const char* ctx,
-                                    bool in_type_member) {
+Parser::ProcModifiers Parser::parse_proc_header_tail(const char* ctx,
+                                                     bool in_type_member) {
   // FPC allows the semicolon between a routine header and the first routine
   // directive to be omitted, but only when that next token is actually one of
   // the routine directives. Use the same consumer as the modifier loop so the
   // header exception cannot drift from the directive list.
   if (accept(Tok::Semi)) {
-    parse_proc_modifiers(pd, in_type_member);
-    return;
+    return parse_proc_modifiers(ProcModifiers{}, in_type_member);
   }
-  if (!parse_proc_modifier(pd, in_type_member)) {
+  auto first = parse_proc_modifier(in_type_member);
+  if (!first) {
     expect(Tok::Semi, ctx);
-    return;
+    return ProcModifiers{};
   }
   accept(Tok::Semi);
-  parse_proc_modifiers(pd, in_type_member);
+  return parse_proc_modifiers(std::move(*first), in_type_member);
 }
 
 std::shared_ptr<ProcDecl> Parser::parse_proc_decl(
     ProcKind pk, bool in_interface, bool is_class_method,
     bool in_type_member) {
-  auto pd = std::make_shared<ProcDecl>(is_class_method);
-  pd->loc = cur_.loc;
-  pd->pkind = pk;
+  Location loc = cur_.loc;
   advance();  // consume procedure/function/constructor/destructor
   // Name, possibly qualified `TFoo.Bar`. Allow directive words as names
   // (e.g., `function TCollection.At(...)`).
-  pd->name = consume_name_or_directive("routine name");
+  std::string name = consume_name_or_directive("routine name");
+  std::string of_type;
   if (accept(Tok::Dot)) {
-    pd->of_type = pd->name;
-    pd->name = consume_name_or_directive("method name");
+    of_type = std::move(name);
+    name = consume_name_or_directive("method name");
   }
+  std::vector<Param> params;
   if (accept(Tok::LParen)) {
-    pd->params = parse_formal_param_list();
+    params = parse_formal_param_list();
     expect(Tok::RParen, "parameter list");
   }
+  TypePtr return_type;
   if (pk == ProcKind::Function || pk == ProcKind::Constructor) {
     if (pk == ProcKind::Function) {
       expect(Tok::Colon, "function return type");
-      pd->return_type = parse_type();
+      return_type = parse_type();
     } else if (accept(Tok::Colon)) {
       // Constructors typically have no return; accept if written.
-      pd->return_type = parse_type();
+      return_type = parse_type();
     }
   }
   if (is_class_method &&
       (pk == ProcKind::Constructor || pk == ProcKind::Destructor)) {
     size_t param_count = 0;
-    for (const auto& p : pd->params) {
+    for (const auto& p : params) {
       param_count += p.names.empty() ? 1 : p.names.size();
     }
     if (param_count != 0) {
-      report_error(pd->loc,
+      report_error(loc,
                    "class constructors and destructors cannot have parameters");
     }
-    if (pd->return_type) {
-      report_error(pd->loc, "class constructors cannot have a return type");
+    if (return_type) {
+      report_error(loc, "class constructors cannot have a return type");
     }
   }
-  parse_proc_header_tail(*pd, "routine header", in_type_member);
+  ProcModifiers modifiers =
+      parse_proc_header_tail("routine header", in_type_member);
 
   // Interface sections never have bodies. Nor do forward/external/abstract
   // declarations.
-  if (in_interface || pd->is_forward || pd->is_external || pd->is_abstract) {
-    return pd;
+  std::vector<DeclPtr> locals;
+  StmtPtr body;
+  if (!(in_interface || modifiers.is_forward || modifiers.is_external ||
+        modifiers.is_abstract)) {
+    // Implementation-side definition: parse locals and body.
+    parse_decl_block(locals, /*in_interface=*/false);
+    if (check(Tok::KwBegin)) {
+      body = parse_compound_statement();
+      expect(Tok::Semi, "routine body");
+    } else if (check(Tok::KwAsm)) {
+      body = parse_asm();
+      expect(Tok::Semi, "routine body");
+    }
   }
-  // Implementation-side definition: parse locals and body.
-  parse_decl_block(pd->locals, /*in_interface=*/false);
-  if (check(Tok::KwBegin)) {
-    pd->body = parse_compound_statement();
-    expect(Tok::Semi, "routine body");
-  } else if (check(Tok::KwAsm)) {
-    pd->body = parse_asm();
-    expect(Tok::Semi, "routine body");
-  }
-  return pd;
+  return std::make_shared<ProcDecl>(
+      loc, pk, std::move(name), false, "",
+      ProcDecl::IntrinsicOperator::None, std::move(of_type), is_class_method,
+      std::move(params), std::move(return_type), modifiers.is_virtual,
+      modifiers.is_abstract, modifiers.is_override, modifiers.is_final,
+      modifiers.is_forward, modifiers.is_inline, modifiers.is_cdecl,
+      modifiers.is_noreturn, modifiers.is_external, modifiers.is_assembler,
+      std::move(modifiers.external_lib), std::move(modifiers.external_name),
+      std::move(locals), std::move(body));
 }
 
 std::shared_ptr<ProcDecl> Parser::parse_operator_decl(bool in_interface) {
-  auto pd = std::make_shared<ProcDecl>(/*class_method=*/false);
-  pd->loc = cur_.loc;
-  pd->pkind = ProcKind::Function;
-  pd->is_operator = true;
+  Location loc = cur_.loc;
   advance();  // consume operator
 
-  auto op_text = [&]() -> std::string {
+  std::string op_text = [&]() -> std::string {
     switch (cur_.kind) {
       case Tok::Assign: return ":=";
       case Tok::Plus: return "+";
@@ -755,75 +871,87 @@ std::shared_ptr<ProcDecl> Parser::parse_operator_decl(bool in_interface) {
   if (op_text.empty()) {
     report_error(cur_.loc, "expected operator token after 'operator'");
   } else {
-    pd->operator_token = op_text;
     advance();
   }
-  pd->name = "operator_" + pd->operator_token;
 
+  std::vector<Param> params;
   if (accept(Tok::LParen)) {
-    pd->params = parse_formal_param_list();
+    params = parse_formal_param_list();
     expect(Tok::RParen, "operator parameter list");
   }
   expect(Tok::Colon, "operator return type");
-  pd->return_type = parse_type();
-  parse_proc_header_tail(*pd, "operator header", /*in_type_member=*/false);
+  TypePtr return_type = parse_type();
+  ProcModifiers modifiers =
+      parse_proc_header_tail("operator header", /*in_type_member=*/false);
 
-  if (in_interface || pd->is_forward || pd->is_external ||
-      pd->is_abstract) {
-    return pd;
+  std::vector<DeclPtr> locals;
+  StmtPtr body;
+  if (!(in_interface || modifiers.is_forward || modifiers.is_external ||
+        modifiers.is_abstract)) {
+    parse_decl_block(locals, /*in_interface=*/false);
+    if (check(Tok::KwBegin)) {
+      body = parse_compound_statement();
+      expect(Tok::Semi, "operator body");
+    } else if (check(Tok::KwAsm)) {
+      body = parse_asm();
+      expect(Tok::Semi, "operator body");
+    }
   }
-  parse_decl_block(pd->locals, /*in_interface=*/false);
-  if (check(Tok::KwBegin)) {
-    pd->body = parse_compound_statement();
-    expect(Tok::Semi, "operator body");
-  } else if (check(Tok::KwAsm)) {
-    pd->body = parse_asm();
-    expect(Tok::Semi, "operator body");
-  }
-  return pd;
+  return std::make_shared<ProcDecl>(
+      loc, ProcKind::Function, "operator_" + op_text, true, std::move(op_text),
+      ProcDecl::IntrinsicOperator::None, "", false, std::move(params),
+      std::move(return_type), modifiers.is_virtual, modifiers.is_abstract,
+      modifiers.is_override, modifiers.is_final, modifiers.is_forward,
+      modifiers.is_inline, modifiers.is_cdecl, modifiers.is_noreturn,
+      modifiers.is_external, modifiers.is_assembler,
+      std::move(modifiers.external_lib), std::move(modifiers.external_name),
+      std::move(locals), std::move(body));
 }
 
 std::vector<Param> Parser::parse_param_list(Tok close) {
   std::vector<Param> out;
   while (!at_end() && !check(close)) {
-    Param p;
-    if (accept(Tok::KwVar)) p.mode = Param::Var;
-    else if (accept(Tok::KwConst)) p.mode = Param::Const;
+    Param::Mode mode = Param::Value;
+    if (accept(Tok::KwVar)) mode = Param::Var;
+    else if (accept(Tok::KwConst)) mode = Param::Const;
     else if (is_directive("constref") && peek().kind == Tok::Ident) {
-      p.mode = Param::ConstRef;
+      mode = Param::ConstRef;
       advance();
     }
     else if (is_directive("out") && peek().kind == Tok::Ident) {
       // `out` is a soft keyword here: consume it as a modifier only when a
       // parameter name follows, so bare identifiers named `out` stay legal.
-      p.mode = Param::Out;
+      mode = Param::Out;
       advance();
     }
     // (Open-array `array of ...` -- accepted as a type later.)
+    std::vector<std::string> names;
     if (cur_.kind == Tok::Ident) {
-      p.names.push_back(cur_.text);
+      names.push_back(cur_.text);
       advance();
       while (accept(Tok::Comma)) {
         if (cur_.kind != Tok::Ident) break;
-        p.names.push_back(cur_.text);
+        names.push_back(cur_.text);
         advance();
       }
     }
+    TypePtr type;
     if (accept(Tok::Colon)) {
       // `array of T` open-array form
-      if (accept(Tok::KwArray)) {
+      if (check(Tok::KwArray)) {
+        Location loc = cur_.loc;
+        advance();
         expect(Tok::KwOf, "open array parameter");
-        auto ta = std::make_shared<TyArray>();
-        ta->loc = cur_.loc;
-        ta->array_kind = ArrayKind::Open;
-        ta->element = parse_type();
-        p.type = std::move(ta);
+        type = std::make_shared<TyArray>(
+            loc, std::vector<TypePtr>{}, parse_type(), false, ArrayKind::Open);
       } else {
-        p.type = parse_type();
+        type = parse_type();
       }
     }
-    if (accept(Tok::Eq)) p.default_value = parse_expr();
-    out.push_back(std::move(p));
+    ExprPtr default_value;
+    if (accept(Tok::Eq)) default_value = parse_expr();
+    out.emplace_back(mode, std::move(names), std::move(type),
+                     std::move(default_value));
     if (!accept(Tok::Semi)) break;
   }
   return out;
@@ -868,10 +996,7 @@ TypePtr Parser::parse_type() {
   Location loc = cur_.loc;
   // Pointer form: ^T
   if (accept(Tok::Caret)) {
-    auto tp = std::make_shared<TyPointer>();
-    tp->loc = loc;
-    tp->target = parse_type();
-    return tp;
+    return std::make_shared<TyPointer>(loc, parse_type());
   }
   // Delphi distinct-type alias: `T = type <Underlying>;'.  Creates
   // a new type that is layout-compatible with its underlying but
@@ -881,10 +1006,7 @@ TypePtr Parser::parse_type() {
   // preserving Pascal's type discipline (an integer variable can
   // NOT silently receive a TSuperRegister value).
   if (accept(Tok::KwType)) {
-    auto td = std::make_shared<TyDistinct>();
-    td->loc = loc;
-    td->underlying = parse_type();
-    return td;
+    return std::make_shared<TyDistinct>(loc, parse_type());
   }
   bool packed = false;
   if (accept(Tok::KwPacked)) packed = true;
@@ -904,10 +1026,8 @@ TypePtr Parser::parse_type() {
         Location mloc = cur_.loc;
         advance();  // class
         advance();  // of
-        auto tm = std::make_shared<TyMetaclass>();
-        tm->loc = mloc;
-        tm->class_name = consume_ident("metaclass target");
-        return tm;
+        return std::make_shared<TyMetaclass>(
+            mloc, consume_ident("metaclass target"));
       }
       return parse_object_type();
     }
@@ -920,12 +1040,10 @@ TypePtr Parser::parse_type() {
     case Tok::KwShortstring: {
       bool string_keyword = cur_.kind == Tok::KwString;
       advance();
-      auto ts = std::make_shared<TyString>();
-      ts->loc = loc;
       if (accept(Tok::LBrack)) {
-        ts->max_length = parse_expr();
+        ExprPtr max_length = parse_expr();
         expect(Tok::RBrack, "string length");
-        return ts;
+        return std::make_shared<TyString>(loc, std::move(max_length));
       }
       if (string_keyword) {
         return make_type_name(loc,
@@ -942,38 +1060,34 @@ TypePtr Parser::parse_type() {
 TypePtr Parser::parse_simple_type() {
   Location loc = cur_.loc;
   auto finish_subrange = [&](ExprPtr lo) -> TypePtr {
-    auto sr = std::make_shared<TySubrange>();
-    sr->loc = loc;
-    sr->lo = std::move(lo);
-    if (sr->lo && !is_constant_subrange_bound_expr(*sr->lo)) {
-      report_error(sr->lo->loc, "non-constant subrange bound");
+    if (lo && !is_constant_subrange_bound_expr(*lo)) {
+      report_error(lo->loc, "non-constant subrange bound");
     }
     expect(Tok::DotDot, "subrange");
-    sr->hi = parse_subrange_bound();
-    if (sr->hi && !is_constant_subrange_bound_expr(*sr->hi)) {
-      report_error(sr->hi->loc, "non-constant subrange bound");
+    ExprPtr hi = parse_subrange_bound();
+    if (hi && !is_constant_subrange_bound_expr(*hi)) {
+      report_error(hi->loc, "non-constant subrange bound");
     }
-    return sr;
+    return std::make_shared<TySubrange>(loc, std::move(lo), std::move(hi));
   };
 
   // Enum: `( a, b, c )`
   if (accept(Tok::LParen)) {
-    auto te = std::make_shared<TyEnum>();
-    te->loc = loc;
-    te->packenum = static_cast<uint8_t>(lex_.packenum_active());
+    std::vector<EnumMember> members;
     while (cur_.kind == Tok::Ident) {
-      EnumMember member;
-      member.name = cur_.text;
+      std::string name = cur_.text;
       advance();
       // FPC accepts both `:=` and `=` here.
+      ExprPtr value;
       if (accept(Tok::Assign) || accept(Tok::Eq)) {
-        member.value = parse_expr();
+        value = parse_expr();
       }
-      te->members.push_back(std::move(member));
+      members.emplace_back(std::move(name), std::move(value));
       if (!accept(Tok::Comma)) break;
     }
     expect(Tok::RParen, "enumeration");
-    return te;
+    return std::make_shared<TyEnum>(
+        loc, static_cast<uint8_t>(lex_.packenum_active()), std::move(members));
   }
   // Either a name (possibly qualified) or a subrange literal-start.
   // Pascal named types are simple identifiers.  A subrange whose lower bound
@@ -990,21 +1104,19 @@ TypePtr Parser::parse_simple_type() {
         is_subrange_bound_intrinsic(cur_.text)) {
       return finish_subrange(parse_subrange_bound());
     }
-    auto tn = std::make_shared<TyName>();
-    tn->loc = loc;
-    tn->name = cur_.text;
+    std::string name = cur_.text;
     advance();
     // Qualified: unit.Type.
     while (accept(Tok::Dot)) {
       if (cur_.kind == Tok::Ident) {
-        tn->name += ".";
-        tn->name += cur_.text;
+        name += ".";
+        name += cur_.text;
         advance();
       } else {
         break;
       }
     }
-    return tn;
+    return std::make_shared<TyName>(loc, std::move(name));
   }
   // Otherwise, treat as subrange.
   return finish_subrange(parse_subrange_bound());
@@ -1013,72 +1125,72 @@ TypePtr Parser::parse_simple_type() {
 TypePtr Parser::parse_array_type(bool packed) {
   Location loc = cur_.loc;
   expect(Tok::KwArray, "array");
-  auto ta = std::make_shared<TyArray>();
-  ta->loc = loc;
-  ta->is_packed = packed;
+  std::vector<TypePtr> dims;
+  ArrayKind array_kind = ArrayKind::Fixed;
   if (accept(Tok::LBrack)) {
     while (!at_end() && !check(Tok::RBrack)) {
-      ta->dims.push_back(parse_simple_type());
+      dims.push_back(parse_simple_type());
       if (!accept(Tok::Comma)) break;
     }
     expect(Tok::RBrack, "array dimensions");
   } else {
-    ta->array_kind = ArrayKind::Dynamic;
+    array_kind = ArrayKind::Dynamic;
   }
   expect(Tok::KwOf, "array");
-  ta->element = parse_type();
-  return ta;
+  return std::make_shared<TyArray>(loc, std::move(dims), parse_type(), packed,
+                                   array_kind);
 }
 
 TypePtr Parser::parse_record_type(bool packed) {
   Location loc = cur_.loc;
   expect(Tok::KwRecord, "record");
-  auto tr = std::make_shared<TyRecord>();
-  tr->loc = loc;
-  tr->is_packed = packed;
+  std::vector<RecordField> fields;
 
   // Plain fields until `end` or `case`.
   while (!at_end() && !check(Tok::KwEnd) && !check(Tok::KwCase)) {
-    RecordField f;
     if (cur_.kind != Tok::Ident) break;
-    f.names.push_back(cur_.text); advance();
+    std::vector<std::string> names;
+    names.push_back(cur_.text); advance();
     while (accept(Tok::Comma)) {
       if (cur_.kind != Tok::Ident) break;
-      f.names.push_back(cur_.text); advance();
+      names.push_back(cur_.text); advance();
     }
     expect(Tok::Colon, "record field");
-    f.type = parse_type();
-    tr->fields.push_back(std::move(f));
+    fields.emplace_back(std::move(names), parse_type());
     if (!accept(Tok::Semi)) break;
   }
 
+  bool has_variant = false;
+  std::string variant_tag_name;
+  TypePtr variant_tag_type;
+  std::vector<VariantCase> variant_cases;
   if (accept(Tok::KwCase)) {
-    tr->has_variant = true;
+    has_variant = true;
     if (cur_.kind == Tok::Ident && peek().kind == Tok::Colon) {
-      tr->variant_tag_name = cur_.text;
+      variant_tag_name = cur_.text;
       advance();
       advance();  // ':'
     }
-    tr->variant_tag_type = parse_type();
+    variant_tag_type = parse_type();
     expect(Tok::KwOf, "variant record");
 
     while (!at_end() && !check(Tok::KwEnd) && !check(Tok::RParen)) {
-      VariantCase vc;
-      vc.labels.push_back(parse_expr());
-      while (accept(Tok::Comma)) vc.labels.push_back(parse_expr());
+      std::vector<ExprPtr> labels;
+      labels.push_back(parse_expr());
+      while (accept(Tok::Comma)) labels.push_back(parse_expr());
       expect(Tok::Colon, "variant case");
       expect(Tok::LParen, "variant case");
+      std::vector<RecordField> case_fields;
       while (!at_end() && !check(Tok::RParen) && !check(Tok::KwCase)) {
-        RecordField f;
         if (cur_.kind != Tok::Ident) break;
-        f.names.push_back(cur_.text); advance();
+        std::vector<std::string> names;
+        names.push_back(cur_.text); advance();
         while (accept(Tok::Comma)) {
           if (cur_.kind != Tok::Ident) break;
-          f.names.push_back(cur_.text); advance();
+          names.push_back(cur_.text); advance();
         }
         expect(Tok::Colon, "variant field");
-        f.type = parse_type();
-        vc.fields.push_back(std::move(f));
+        case_fields.emplace_back(std::move(names), parse_type());
         if (!accept(Tok::Semi)) break;
       }
       // Nested variant part inside this case body: `case [tag:] T of ...`
@@ -1094,37 +1206,40 @@ TypePtr Parser::parse_record_type(bool packed) {
         (void)parse_type();
         expect(Tok::KwOf, "nested variant");
         while (!at_end() && !check(Tok::RParen)) {
-          VariantCase sub;
-          sub.labels.push_back(parse_expr());
-          while (accept(Tok::Comma)) sub.labels.push_back(parse_expr());
+          std::vector<ExprPtr> sub_labels;
+          sub_labels.push_back(parse_expr());
+          while (accept(Tok::Comma)) sub_labels.push_back(parse_expr());
           expect(Tok::Colon, "nested variant case");
           expect(Tok::LParen, "nested variant case");
+          std::vector<RecordField> sub_fields;
           while (!at_end() && !check(Tok::RParen)) {
-            RecordField nf;
             if (cur_.kind != Tok::Ident) break;
-            nf.names.push_back(cur_.text); advance();
+            std::vector<std::string> names;
+            names.push_back(cur_.text); advance();
             while (accept(Tok::Comma)) {
               if (cur_.kind != Tok::Ident) break;
-              nf.names.push_back(cur_.text); advance();
+              names.push_back(cur_.text); advance();
             }
             expect(Tok::Colon, "nested variant field");
-            nf.type = parse_type();
-            sub.fields.push_back(std::move(nf));
+            sub_fields.emplace_back(std::move(names), parse_type());
             if (!accept(Tok::Semi)) break;
           }
           expect(Tok::RParen, "nested variant case");
-          tr->variant_cases.push_back(std::move(sub));
+          variant_cases.emplace_back(std::move(sub_labels),
+                                     std::move(sub_fields));
           if (!accept(Tok::Semi)) break;
         }
       }
       expect(Tok::RParen, "variant case");
-      tr->variant_cases.push_back(std::move(vc));
+      variant_cases.emplace_back(std::move(labels), std::move(case_fields));
       if (!accept(Tok::Semi)) break;
     }
   }
 
   expect(Tok::KwEnd, "record");
-  return tr;
+  return std::make_shared<TyRecord>(
+      loc, std::move(fields), has_variant, std::move(variant_tag_name),
+      std::move(variant_tag_type), std::move(variant_cases), packed);
 }
 
 TypePtr Parser::parse_object_type() {
@@ -1135,22 +1250,24 @@ TypePtr Parser::parse_object_type() {
   // We record which keyword was used on the resulting TyObject so the
   // emitter can pick value-semantics (object) vs reference-semantics
   // (class).
-  auto to = std::make_shared<TyObject>();
+  bool is_reference_type = false;
+  bool is_abstract = false;
   if (check(Tok::KwClass)) {
     expect(Tok::KwClass, "class");
-    to->is_reference_type = true;
+    is_reference_type = true;
     if (is_directive("abstract")) {
       advance();
-      to->is_abstract = true;
+      is_abstract = true;
     }
   } else {
     expect(Tok::KwObject, "object");
   }
-  to->loc = loc;
+  std::string parent;
+  std::vector<std::string> interfaces;
   if (accept(Tok::LParen)) {
-    to->parent = consume_ident("parent class");
+    parent = consume_ident("parent class");
     while (accept(Tok::Comma)) {
-      to->interfaces.push_back(consume_ident("implemented interface"));
+      interfaces.push_back(consume_ident("implemented interface"));
     }
     expect(Tok::RParen, "parent class");
   }
@@ -1158,14 +1275,18 @@ TypePtr Parser::parse_object_type() {
   // later type declaration within the same section). A parenthesized
   // ancestor changes the meaning: `T = class(Base);` is a complete empty
   // class declaration, equivalent to `class(Base) end`.
-  if (to->is_reference_type && check(Tok::Semi)) {
-    if (to->parent.empty()) to->is_forward = true;
-    return to;
+  if (is_reference_type && check(Tok::Semi)) {
+    bool is_forward = parent.empty();
+    return std::make_shared<TyObject>(
+        loc, std::move(parent), std::move(interfaces),
+        std::vector<ObjectMember>{}, is_reference_type, is_abstract,
+        is_forward);
   }
   Visibility vis = Visibility::Public;
   // `class var' starts a static-field section; a new visibility section
   // starts ordinary instance fields again.
   bool class_var_section = false;
+  std::vector<ObjectMember> members;
   while (!at_end() && !check(Tok::KwEnd)) {
     // visibility change
     if (is_directive("public")) {
@@ -1215,7 +1336,7 @@ TypePtr Parser::parse_object_type() {
       advance();
       if (check(Tok::KwVar)) {
         advance();
-        if (!to->is_reference_type) {
+        if (!is_reference_type) {
           report_error(class_loc, "`class var' is only valid in class types");
           continue;
         }
@@ -1238,44 +1359,42 @@ TypePtr Parser::parse_object_type() {
       if (check(Tok::KwFunction)) pk = ProcKind::Function;
       else if (check(Tok::KwConstructor)) pk = ProcKind::Constructor;
       else if (check(Tok::KwDestructor)) pk = ProcKind::Destructor;
-      ObjectMember m;
-      m.loc = cur_.loc;
-      m.vis = vis;
-      m.kind = ObjectMemberKind::Method;
+      Location member_loc = cur_.loc;
       // Method headers inside an object are always signatures only --
       // bodies live in the implementation section (TP 7.0 semantics).
-      m.method = parse_proc_decl(pk, /*in_interface=*/true, is_class_method,
-                                 /*in_type_member=*/true);
-      to->members.push_back(std::move(m));
+      members.emplace_back(
+          member_loc, vis,
+          parse_proc_decl(pk, /*in_interface=*/true, is_class_method,
+                          /*in_type_member=*/true));
       continue;
     }
 
     if (is_directive("property")) {
       advance();
-      ObjectMember m;
-      m.loc = cur_.loc;
-      m.vis = vis;
-      m.kind = ObjectMemberKind::Property;
-      m.property.name = consume_name_or_directive("property name");
+      Location member_loc = cur_.loc;
+      std::string name = consume_name_or_directive("property name");
+      std::vector<Param> params;
       if (accept(Tok::LBrack)) {
-        m.property.params = parse_param_list(Tok::RBrack);
+        params = parse_param_list(Tok::RBrack);
         expect(Tok::RBrack, "property index list");
       }
       expect(Tok::Colon, "property");
-      m.property.type = parse_type();
+      TypePtr property_type = parse_type();
+      std::optional<PropertyDecl::Accessor> read_accessor;
+      std::optional<PropertyDecl::Accessor> write_accessor;
       bool saw_accessor = false;
       while (true) {
-        if (m.property.read_accessor.empty() && is_directive("read")) {
+        if (!read_accessor && is_directive("read")) {
           advance();
-          m.property.read_accessor =
-              parse_property_accessor_path("property read accessor");
+          read_accessor.emplace(
+              parse_property_accessor_path("property read accessor"));
           saw_accessor = true;
           continue;
         }
-        if (m.property.write_accessor.empty() && is_directive("write")) {
+        if (!write_accessor && is_directive("write")) {
           advance();
-          m.property.write_accessor =
-              parse_property_accessor_path("property write accessor");
+          write_accessor.emplace(
+              parse_property_accessor_path("property write accessor"));
           saw_accessor = true;
           continue;
         }
@@ -1285,46 +1404,52 @@ TypePtr Parser::parse_object_type() {
         report_error(cur_.loc, "expected property accessor in declaration");
       }
       bool consumed_tail_semi = false;
+      bool is_default = false;
       while (accept(Tok::Semi)) {
         consumed_tail_semi = true;
         if (is_directive("default")) {
           advance();
-          m.property.is_default = true;
+          is_default = true;
           continue;
         }
         break;
       }
       if (!consumed_tail_semi) expect(Tok::Semi, "property");
-      to->members.push_back(std::move(m));
+      members.emplace_back(
+          member_loc, vis,
+          PropertyDecl(std::move(name), std::move(params),
+                       std::move(property_type),
+                       read_accessor ? std::move(*read_accessor)
+                                     : PropertyDecl::Accessor{},
+                       write_accessor ? std::move(*write_accessor)
+                                      : PropertyDecl::Accessor{},
+                       is_default));
       continue;
     }
 
     // Field
     if (cur_.kind != Tok::Ident) break;
-    ObjectMember m;
-    m.loc = cur_.loc;
-    m.vis = vis;
-    m.kind = ObjectMemberKind::Field;
-    m.is_class_var = class_var_section;
-    m.field_names.push_back(cur_.text); advance();
+    Location member_loc = cur_.loc;
+    std::vector<std::string> names;
+    names.push_back(cur_.text); advance();
     while (accept(Tok::Comma)) {
       if (cur_.kind != Tok::Ident) break;
-      m.field_names.push_back(cur_.text); advance();
+      names.push_back(cur_.text); advance();
     }
     expect(Tok::Colon, "object field");
-    m.field_type = parse_type();
-    to->members.push_back(std::move(m));
+    members.emplace_back(member_loc, vis, std::move(names), parse_type(),
+                         class_var_section);
     if (!accept(Tok::Semi)) break;
   }
   expect(Tok::KwEnd, "object");
-  return to;
+  return std::make_shared<TyObject>(
+      loc, std::move(parent), std::move(interfaces), std::move(members),
+      is_reference_type, is_abstract, false);
 }
 
 TypePtr Parser::parse_interface_type() {
   Location loc = cur_.loc;
   expect(Tok::KwInterface, "interface");
-  auto ti = std::make_shared<TyInterface>();
-  ti->loc = loc;
 
   // Bare FPC interfaces default to COM/IUnknown semantics, which means
   // refcounting and QueryInterface support. p2cc only lowers the non-
@@ -1338,9 +1463,10 @@ TypePtr Parser::parse_interface_type() {
   // The optional bracketed interface string is metadata only for p2cc's C++
   // lowering:
   //   IFoo = interface ['{...}'] ... end;
+  std::string metadata_string;
   if (accept(Tok::LBrack)) {
     if (cur_.kind == Tok::StringLit) {
-      ti->metadata_string = cur_.text;
+      metadata_string = cur_.text;
       advance();
     } else {
       report_error(cur_.loc, "expected interface metadata string");
@@ -1348,70 +1474,71 @@ TypePtr Parser::parse_interface_type() {
     expect(Tok::RBrack, "interface metadata");
   }
 
+  std::vector<ObjectMember> members;
   while (!at_end() && !check(Tok::KwEnd)) {
     if (check(Tok::KwProcedure) || check(Tok::KwFunction)) {
       ProcKind pk = check(Tok::KwFunction) ? ProcKind::Function
                                            : ProcKind::Procedure;
-      ObjectMember m;
-      m.loc = cur_.loc;
-      m.kind = ObjectMemberKind::Method;
-      m.method = parse_proc_decl(pk, /*in_interface=*/true,
-                                 /*is_class_method=*/false,
-                                 /*in_type_member=*/true);
-      ti->members.push_back(std::move(m));
+      Location member_loc = cur_.loc;
+      members.emplace_back(
+          member_loc, Visibility::Public,
+          parse_proc_decl(pk, /*in_interface=*/true,
+                          /*is_class_method=*/false,
+                          /*in_type_member=*/true));
       continue;
     }
     report_error(cur_.loc, "expected interface method declaration");
     break;
   }
   expect(Tok::KwEnd, "interface");
-  return ti;
+  return std::make_shared<TyInterface>(loc, std::move(metadata_string),
+                                       std::move(members));
 }
 
 TypePtr Parser::parse_set_type() {
   Location loc = cur_.loc;
   expect(Tok::KwSet, "set");
   expect(Tok::KwOf, "set");
-  auto ts = std::make_shared<TySet>();
-  ts->loc = loc;
-  ts->element = parse_simple_type();
-  return ts;
+  return std::make_shared<TySet>(loc, parse_simple_type());
 }
 
 TypePtr Parser::parse_file_type() {
   Location loc = cur_.loc;
   expect(Tok::KwFile, "file");
-  auto tf = std::make_shared<TyFile>();
-  tf->loc = loc;
-  if (accept(Tok::KwOf)) tf->element = parse_type();
-  return tf;
+  TypePtr element;
+  if (accept(Tok::KwOf)) element = parse_type();
+  return std::make_shared<TyFile>(loc, std::move(element));
 }
 
 TypePtr Parser::parse_procedural_type() {
   Location loc = cur_.loc;
-  auto tp = std::make_shared<TyProcedural>();
-  tp->loc = loc;
-  tp->is_function = check(Tok::KwFunction);
+  bool is_function = check(Tok::KwFunction);
   advance();  // procedure/function
+  std::vector<Param> params;
   if (accept(Tok::LParen)) {
-    tp->params = parse_formal_param_list();
+    params = parse_formal_param_list();
     expect(Tok::RParen, "procedural type");
   }
-  if (tp->is_function) {
+  TypePtr return_type;
+  if (is_function) {
     expect(Tok::Colon, "function type");
-    tp->return_type = parse_type();
+    return_type = parse_type();
   }
+  bool is_method = false;
   if (accept(Tok::KwOf)) {
     expect(Tok::KwObject, "procedural type");
-    tp->is_method = true;
+    is_method = true;
   }
   // Optional calling-convention modifier (no `;` required in type position).
+  bool is_cdecl = false;
   while (is_directive("cdecl") || is_directive("pascal") ||
          is_directive("stdcall")) {
-    if (is_directive("cdecl")) tp->is_cdecl = true;
+    if (is_directive("cdecl")) is_cdecl = true;
     advance();
   }
-  return tp;
+  return std::make_shared<TyProcedural>(
+      loc, is_function, std::move(params), std::move(return_type), is_cdecl,
+      is_method);
 }
 
 // ---------------------------------------------------------------------------
@@ -1420,15 +1547,14 @@ TypePtr Parser::parse_procedural_type() {
 StmtPtr Parser::parse_compound_statement() {
   Location loc = cur_.loc;
   expect(Tok::KwBegin, "compound statement");
-  auto c = std::make_shared<Compound>();
-  c->loc = loc;
+  std::vector<StmtPtr> body;
   while (!at_end() && !check(Tok::KwEnd)) {
     auto s = parse_statement();
-    if (s) c->body.push_back(std::move(s));
+    if (s) body.push_back(std::move(s));
     if (!accept(Tok::Semi)) break;
   }
   expect(Tok::KwEnd, "compound statement");
-  return c;
+  return std::make_shared<Compound>(loc, std::move(body));
 }
 
 StmtPtr Parser::parse_statement() {
@@ -1451,21 +1577,13 @@ StmtPtr Parser::parse_statement() {
     // are never ascribing, so the following heuristic is safe.
     advance();
     advance();  // ':'
-    auto lbl = std::make_shared<Labeled>();
-    lbl->loc = loc;
-    lbl->label = lab;
-    lbl->body = parse_statement();
-    return lbl;
+    return std::make_shared<Labeled>(loc, std::move(lab), parse_statement());
   }
   if (cur_.kind == Tok::IntLit && peek().kind == Tok::Colon) {
     std::string lab = cur_.text;
     Location loc = cur_.loc;
     advance(); advance();
-    auto lbl = std::make_shared<Labeled>();
-    lbl->loc = loc;
-    lbl->label = lab;
-    lbl->body = parse_statement();
-    return lbl;
+    return std::make_shared<Labeled>(loc, std::move(lab), parse_statement());
   }
 
   switch (cur_.kind) {
@@ -1477,13 +1595,15 @@ StmtPtr Parser::parse_statement() {
     case Tok::KwCase:   return parse_case();
     case Tok::KwWith:   return parse_with();
     case Tok::KwGoto: {
-      auto g = std::make_shared<Goto>(); g->loc = cur_.loc; advance();
+      Location loc = cur_.loc;
+      advance();
+      std::string label;
       if (cur_.kind == Tok::Ident || cur_.kind == Tok::IntLit) {
-        g->label = cur_.text; advance();
+        label = cur_.text; advance();
       } else {
         expect(Tok::Ident, "goto target");
       }
-      return g;
+      return std::make_shared<Goto>(loc, std::move(label));
     }
     // `break`, `continue`, `exit`, `fail`, `halt`, `new`, `dispose` are
     // builtin procedures -- not grammar keywords -- so they come through as
@@ -1497,8 +1617,7 @@ StmtPtr Parser::parse_statement() {
     case Tok::KwUntil:
     case Tok::KwElse: {
       // Empty statement.
-      auto e = std::make_shared<EmptyStmt>(); e->loc = cur_.loc;
-      return e;
+      return std::make_shared<EmptyStmt>(cur_.loc);
     }
     default:
       return parse_labeled_or_simple();
@@ -1510,140 +1629,123 @@ StmtPtr Parser::parse_labeled_or_simple() {
   Location loc = cur_.loc;
   auto lhs = parse_expr();
   if (accept(Tok::Assign)) {
-    auto a = std::make_shared<Assign>();
-    a->loc = loc;
-    a->target = std::move(lhs);
-    a->value = parse_expr();
-    a->r_check = lex_.range_check_active();
-    return a;
+    return std::make_shared<Assign>(loc, std::move(lhs), parse_expr(),
+                                    lex_.range_check_active());
   }
-  auto es = std::make_shared<ExprStmt>();
-  es->loc = loc;
-  es->expr = std::move(lhs);
-  return es;
+  return std::make_shared<ExprStmt>(loc, std::move(lhs));
 }
 
 StmtPtr Parser::parse_if() {
   Location loc = cur_.loc;
   expect(Tok::KwIf, "if");
-  auto n = std::make_shared<If>();
-  n->loc = loc;
-  n->cond = parse_expr();
+  ExprPtr cond = parse_expr();
   expect(Tok::KwThen, "if");
-  n->then_branch = parse_statement();
-  if (accept(Tok::KwElse)) n->else_branch = parse_statement();
-  return n;
+  StmtPtr then_branch = parse_statement();
+  StmtPtr else_branch;
+  if (accept(Tok::KwElse)) else_branch = parse_statement();
+  return std::make_shared<If>(loc, std::move(cond), std::move(then_branch),
+                              std::move(else_branch));
 }
 
 StmtPtr Parser::parse_while() {
   Location loc = cur_.loc;
   expect(Tok::KwWhile, "while");
-  auto n = std::make_shared<While>();
-  n->loc = loc;
-  n->cond = parse_expr();
+  ExprPtr cond = parse_expr();
   expect(Tok::KwDo, "while");
-  n->body = parse_statement();
-  return n;
+  return std::make_shared<While>(loc, std::move(cond), parse_statement());
 }
 
 StmtPtr Parser::parse_repeat() {
   Location loc = cur_.loc;
   expect(Tok::KwRepeat, "repeat");
-  auto n = std::make_shared<Repeat>();
-  n->loc = loc;
+  std::vector<StmtPtr> body;
   while (!at_end() && !check(Tok::KwUntil)) {
     auto s = parse_statement();
-    if (s) n->body.push_back(std::move(s));
+    if (s) body.push_back(std::move(s));
     if (!accept(Tok::Semi)) break;
   }
   expect(Tok::KwUntil, "repeat");
-  n->cond = parse_expr();
-  return n;
+  return std::make_shared<Repeat>(loc, std::move(body), parse_expr());
 }
 
 StmtPtr Parser::parse_for() {
   Location loc = cur_.loc;
   expect(Tok::KwFor, "for");
-  auto n = std::make_shared<For>();
-  n->loc = loc;
-  n->var = consume_ident("for variable");
+  std::string var = consume_ident("for variable");
   if (accept(Tok::KwIn)) {
-    n->for_in = true;
-    n->in_expr = parse_expr();
-  } else {
-    expect(Tok::Assign, "for");
-    n->from = parse_expr();
-    if (accept(Tok::KwTo)) n->downto = false;
-    else if (accept(Tok::KwDownto)) n->downto = true;
-    else { expect(Tok::KwTo, "for"); }
-    n->to = parse_expr();
+    ExprPtr in_expr = parse_expr();
+    expect(Tok::KwDo, "for");
+    return std::make_shared<For>(loc, std::move(var), std::move(in_expr),
+                                 parse_statement());
   }
+  expect(Tok::Assign, "for");
+  ExprPtr from = parse_expr();
+  bool downto = false;
+  if (accept(Tok::KwTo)) downto = false;
+  else if (accept(Tok::KwDownto)) downto = true;
+  else { expect(Tok::KwTo, "for"); }
+  ExprPtr to = parse_expr();
   expect(Tok::KwDo, "for");
-  n->body = parse_statement();
-  return n;
+  return std::make_shared<For>(loc, std::move(var), std::move(from),
+                               std::move(to), downto, parse_statement());
 }
 
 StmtPtr Parser::parse_case() {
   Location loc = cur_.loc;
   expect(Tok::KwCase, "case");
-  auto n = std::make_shared<CaseStmt>();
-  n->loc = loc;
-  n->selector = parse_expr();
+  ExprPtr selector = parse_expr();
   expect(Tok::KwOf, "case");
+  std::vector<CaseArm> arms;
   while (!at_end() && !check(Tok::KwEnd) && !check(Tok::KwElse) &&
          !check(Tok::KwOtherwise)) {
-    CaseArm arm;
-    arm.labels.push_back(parse_expr());
+    std::vector<ExprPtr> labels;
+    labels.push_back(parse_expr());
     if (accept(Tok::DotDot)) {
-      // Rewrite as Range on last label.
-      auto r = std::make_shared<Range>();
-      r->loc = arm.labels.back()->loc;
-      r->lo = std::move(arm.labels.back());
-      arm.labels.pop_back();
-      r->hi = parse_expr();
-      arm.labels.push_back(std::move(r));
+      Location range_loc = labels.back()->loc;
+      auto lo = std::move(labels.back());
+      labels.pop_back();
+      auto r = std::make_shared<Range>(range_loc, std::move(lo), parse_expr());
+      labels.push_back(std::move(r));
     }
     while (accept(Tok::Comma)) {
       auto lab = parse_expr();
       if (accept(Tok::DotDot)) {
-        auto r = std::make_shared<Range>();
-        r->loc = lab->loc;
-        r->lo = std::move(lab);
-        r->hi = parse_expr();
+        Location range_loc = lab->loc;
+        auto r =
+            std::make_shared<Range>(range_loc, std::move(lab), parse_expr());
         lab = std::move(r);
       }
-      arm.labels.push_back(std::move(lab));
+      labels.push_back(std::move(lab));
     }
     expect(Tok::Colon, "case arm");
-    arm.body = parse_statement();
-    n->arms.push_back(std::move(arm));
+    arms.emplace_back(std::move(labels), parse_statement());
     if (!accept(Tok::Semi)) break;
   }
+  StmtPtr else_branch;
   if (accept(Tok::KwElse) || accept(Tok::KwOtherwise)) {
     // Body is a statement sequence up to end.
-    auto c = std::make_shared<Compound>();
-    c->loc = cur_.loc;
+    Location else_loc = cur_.loc;
+    std::vector<StmtPtr> body;
     while (!at_end() && !check(Tok::KwEnd)) {
       auto s = parse_statement();
-      if (s) c->body.push_back(std::move(s));
+      if (s) body.push_back(std::move(s));
       if (!accept(Tok::Semi)) break;
     }
-    n->else_branch = std::move(c);
+    else_branch = std::make_shared<Compound>(else_loc, std::move(body));
   }
   expect(Tok::KwEnd, "case");
-  return n;
+  return std::make_shared<CaseStmt>(loc, std::move(selector), std::move(arms),
+                                    std::move(else_branch));
 }
 
 StmtPtr Parser::parse_with() {
   Location loc = cur_.loc;
   expect(Tok::KwWith, "with");
-  auto n = std::make_shared<With>();
-  n->loc = loc;
-  n->exprs.push_back(parse_expr());
-  while (accept(Tok::Comma)) n->exprs.push_back(parse_expr());
+  std::vector<ExprPtr> exprs;
+  exprs.push_back(parse_expr());
+  while (accept(Tok::Comma)) exprs.push_back(parse_expr());
   expect(Tok::KwDo, "with");
-  n->body = parse_statement();
-  return n;
+  return std::make_shared<With>(loc, std::move(exprs), parse_statement());
 }
 
 // Pascal `try ... except/finally ... end'.
@@ -1661,20 +1763,22 @@ StmtPtr Parser::parse_with() {
 StmtPtr Parser::parse_try() {
   Location loc = cur_.loc;
   expect(Tok::KwTry, "try");
-  auto n = std::make_shared<Try>();
-  n->loc = loc;
+  std::vector<StmtPtr> body;
   while (!at_end() && !check(Tok::KwExcept) && !check(Tok::KwFinally)) {
-    n->body.push_back(parse_statement());
+    body.push_back(parse_statement());
     if (!accept(Tok::Semi)) break;
   }
+  bool is_finally = false;
+  std::vector<ExceptHandler> handlers;
+  StmtPtr except_else;
+  std::vector<StmtPtr> finally_body;
   if (accept(Tok::KwFinally)) {
-    n->is_finally = true;
+    is_finally = true;
     while (!at_end() && !check(Tok::KwEnd)) {
-      n->finally_body.push_back(parse_statement());
+      finally_body.push_back(parse_statement());
       if (!accept(Tok::Semi)) break;
     }
   } else if (accept(Tok::KwExcept)) {
-    n->is_finally = false;
     // Zero or more `on ClassName [: Ident?] do Stmt;' arms.  If the
     // first token isn't `on', the body is a catch-all statement list
     // that runs on any exception (Delphi shorthand).
@@ -1685,47 +1789,50 @@ StmtPtr Parser::parse_try() {
     if (is_directive("on")) {
       while (is_directive("on")) {
         advance();
-        ExceptHandler h;
         // `on Ident : ClassName do' OR `on ClassName do' (bind omitted).
         // Disambiguate by 1-token lookahead for `:'.
         std::string first = consume_ident("exception handler");
+        std::string var_name;
+        std::string class_name;
         if (accept(Tok::Colon)) {
-          h.var_name = first;
-          h.class_name = consume_ident("exception class");
+          var_name = std::move(first);
+          class_name = consume_ident("exception class");
         } else {
-          h.class_name = first;
+          class_name = std::move(first);
         }
         expect(Tok::KwDo, "exception handler");
-        h.body = parse_statement();
-        n->handlers.push_back(std::move(h));
+        handlers.emplace_back(std::move(var_name), std::move(class_name),
+                              parse_statement());
         accept(Tok::Semi);
       }
       // Optional else-branch after `on' arms: catch-all.
       if (accept(Tok::KwElse)) {
-        auto compound = std::make_shared<Compound>();
-        compound->loc = cur_.loc;
+        Location else_loc = cur_.loc;
+        std::vector<StmtPtr> else_body;
         while (!at_end() && !check(Tok::KwEnd)) {
-          compound->body.push_back(parse_statement());
+          else_body.push_back(parse_statement());
           if (!accept(Tok::Semi)) break;
         }
-        n->except_else = std::move(compound);
+        except_else = std::make_shared<Compound>(else_loc, std::move(else_body));
       }
     } else {
       // Catch-all shorthand: any statement list here runs on any
       // exception.  Model as the else-branch of an handlerless except.
-      auto compound = std::make_shared<Compound>();
-      compound->loc = cur_.loc;
+      Location else_loc = cur_.loc;
+      std::vector<StmtPtr> else_body;
       while (!at_end() && !check(Tok::KwEnd)) {
-        compound->body.push_back(parse_statement());
+        else_body.push_back(parse_statement());
         if (!accept(Tok::Semi)) break;
       }
-      n->except_else = std::move(compound);
+      except_else = std::make_shared<Compound>(else_loc, std::move(else_body));
     }
   } else {
     expect(Tok::KwExcept, "try");  // reports a useful error
   }
   expect(Tok::KwEnd, "try");
-  return n;
+  return std::make_shared<Try>(
+      loc, std::move(body), is_finally, std::move(handlers),
+      std::move(except_else), std::move(finally_body));
 }
 
 // `raise [Expr] [at Expr [, Expr]]' -- raise or re-raise an exception.
@@ -1733,13 +1840,12 @@ StmtPtr Parser::parse_try() {
 StmtPtr Parser::parse_raise() {
   Location loc = cur_.loc;
   expect(Tok::KwRaise, "raise");
-  auto n = std::make_shared<Raise>();
-  n->loc = loc;
+  ExprPtr value;
   // Optional expression -- the instance being raised.  Absent iff the
   // next token ends the statement (`;', `end', `else', ...).
   if (!check(Tok::Semi) && !check(Tok::KwEnd) && !check(Tok::KwElse)
       && !check(Tok::KwUntil)) {
-    n->value = parse_expr();
+    value = parse_expr();
   }
   // Optional `at <address>[, <frame>]' is a raise-statement suffix.
   if (is_directive("at")) {
@@ -1747,14 +1853,12 @@ StmtPtr Parser::parse_raise() {
     parse_expr();
     if (accept(Tok::Comma)) parse_expr();
   }
-  return n;
+  return std::make_shared<Raise>(loc, std::move(value));
 }
 
 StmtPtr Parser::parse_asm() {
   Location loc = cur_.loc;
   expect(Tok::KwAsm, "asm");
-  auto n = std::make_shared<AsmStmt>();
-  n->loc = loc;
   // We do not tokenize asm bodies. Drain lexer tokens until matching `end`.
   // Because the lexer doesn't know we're in asm, this strategy only works
   // for small/well-formed asm blocks -- but the only one in the compiler
@@ -1768,7 +1872,7 @@ StmtPtr Parser::parse_asm() {
     advance();
   }
   expect(Tok::KwEnd, "asm");
-  return n;
+  return std::make_shared<AsmStmt>(loc);
 }
 
 // ---------------------------------------------------------------------------
@@ -1801,10 +1905,8 @@ ExprPtr Parser::parse_expr() {
     }
     Location loc = cur_.loc; advance();
     auto rhs = parse_simple_expr();
-    auto b = std::make_shared<Binary>();
-    b->loc = loc; b->op = op;
-    b->lhs = std::move(lhs); b->rhs = std::move(rhs);
-    b->q_check = lex_.overflow_check_active();
+    auto b = std::make_shared<Binary>(loc, op, std::move(lhs), std::move(rhs),
+                                      lex_.overflow_check_active());
     lhs = std::move(b);
   }
 }
@@ -1831,10 +1933,8 @@ ExprPtr Parser::parse_simple_expr() {
     }
     Location loc = cur_.loc; advance();
     auto rhs = parse_term();
-    auto b = std::make_shared<Binary>();
-    b->loc = loc; b->op = op;
-    b->lhs = std::move(lhs); b->rhs = std::move(rhs);
-    b->q_check = lex_.overflow_check_active();
+    auto b = std::make_shared<Binary>(loc, op, std::move(lhs), std::move(rhs),
+                                      lex_.overflow_check_active());
     lhs = std::move(b);
   }
 }
@@ -1855,10 +1955,8 @@ ExprPtr Parser::parse_term() {
     }
     Location loc = cur_.loc; advance();
     auto rhs = parse_factor();
-    auto b = std::make_shared<Binary>();
-    b->loc = loc; b->op = op;
-    b->lhs = std::move(lhs); b->rhs = std::move(rhs);
-    b->q_check = lex_.overflow_check_active();
+    auto b = std::make_shared<Binary>(loc, op, std::move(lhs), std::move(rhs),
+                                      lex_.overflow_check_active());
     lhs = std::move(b);
   }
 }
@@ -1867,27 +1965,18 @@ ExprPtr Parser::parse_factor() {
   if (check(Tok::Plus) || check(Tok::Minus)) {
     UnOp op = check(Tok::Minus) ? UnOp::Neg : UnOp::Plus;
     Location loc = cur_.loc; advance();
-    auto u = std::make_shared<Unary>();
-    u->loc = loc; u->op = op;
-    u->operand = parse_factor();
-    u->q_check = lex_.overflow_check_active();
-    return u;
+    return std::make_shared<Unary>(loc, op, parse_factor(),
+                                   lex_.overflow_check_active());
   }
   if (check(Tok::KwNot)) {
     Location loc = cur_.loc; advance();
-    auto u = std::make_shared<Unary>();
-    u->loc = loc; u->op = UnOp::Not;
-    u->operand = parse_factor();
-    return u;
+    return std::make_shared<Unary>(loc, UnOp::Not, parse_factor());
   }
   if (check(Tok::At) || check(Tok::AtAt)) {
     Location loc = cur_.loc;
     bool dbl = (cur_.kind == Tok::AtAt);
     advance();
-    auto a = std::make_shared<AddrOf>();
-    a->loc = loc; a->double_addr = dbl;
-    a->operand = parse_factor();
-    return a;
+    return std::make_shared<AddrOf>(loc, dbl, parse_factor());
   }
   return parse_primary();
 }
@@ -1896,29 +1985,29 @@ ExprPtr Parser::parse_primary() {
   Location loc = cur_.loc;
   switch (cur_.kind) {
     case Tok::IntLit: {
-      auto n = std::make_shared<IntLit>();
-      n->loc = loc; n->value = cur_.int_value; advance();
+      auto n = std::make_shared<IntLit>(loc, cur_.int_value);
+      advance();
       return parse_postfix(std::move(n));
     }
     case Tok::RealLit: {
-      auto n = std::make_shared<RealLit>();
-      n->loc = loc; n->text = cur_.text; advance();
+      auto n = std::make_shared<RealLit>(loc, cur_.text);
+      advance();
       return parse_postfix(std::move(n));
     }
     case Tok::StringLit: {
-      auto n = std::make_shared<StringLit>();
-      n->loc = loc; n->value = cur_.text; advance();
+      auto n = std::make_shared<StringLit>(loc, cur_.text);
+      advance();
       return parse_postfix(std::move(n));
     }
     case Tok::KwNil: {
-      auto n = std::make_shared<NilLit>();
-      n->loc = loc; advance();
+      auto n = std::make_shared<NilLit>(loc);
+      advance();
       return parse_postfix(std::move(n));
     }
     case Tok::KwTrue:
     case Tok::KwFalse: {
-      auto n = std::make_shared<BoolLit>();
-      n->loc = loc; n->value = (cur_.kind == Tok::KwTrue); advance();
+      auto n = std::make_shared<BoolLit>(loc, cur_.kind == Tok::KwTrue);
+      advance();
       return parse_postfix(std::move(n));
     }
     case Tok::LParen: {
@@ -1933,13 +2022,9 @@ ExprPtr Parser::parse_primary() {
       // `inherited Method[(...)]` -> Member(Ident("inherited"), "method").
       // Bare `inherited;` stays as Ident("inherited").
       advance();
-      auto base = std::make_shared<Ident>();
-      base->loc = loc; base->name = "inherited";
+      auto base = std::make_shared<Ident>(loc, "inherited");
       if (cur_.kind == Tok::Ident) {
-        auto m = std::make_shared<Member>();
-        m->loc = loc;
-        m->base = std::move(base);
-        m->name = cur_.text;
+        auto m = std::make_shared<Member>(loc, std::move(base), cur_.text);
         advance();
         return parse_postfix(std::move(m));
       }
@@ -1950,27 +2035,24 @@ ExprPtr Parser::parse_primary() {
       // In expression position, `string(x)` / `shortstring(x)` is a typecast.
       // `string` is H-mode-sensitive, so resolve it here instead of letting
       // later emit code guess whether the target was ShortString or AnsiString.
-      auto id = std::make_shared<Ident>();
-      id->loc = loc;
-      if (cur_.kind == Tok::KwString) {
-        id->name = lex_.long_strings_active() ? "ansistring" : "shortstring";
-      } else {
-        id->name = "shortstring";
-      }
+      auto id = std::make_shared<Ident>(
+          loc,
+          cur_.kind == Tok::KwString && lex_.long_strings_active()
+              ? "ansistring"
+              : "shortstring");
       advance();
       return parse_postfix(std::move(id));
     }
     case Tok::Ident:
     case Tok::KwSelf: {
-      auto id = std::make_shared<Ident>();
-      id->loc = loc; id->name = cur_.text; advance();
+      auto id = std::make_shared<Ident>(loc, cur_.text);
+      advance();
       return parse_postfix(std::move(id));
     }
     default: {
       report_error(loc,
                    "expected expression, got '" + cur_.text + "'");
-      auto n = std::make_shared<IntLit>();
-      n->loc = loc;
+      auto n = std::make_shared<IntLit>(loc, 0);
       advance();
       return n;
     }
@@ -1981,31 +2063,27 @@ ExprPtr Parser::parse_postfix(ExprPtr lhs) {
   for (;;) {
     Location loc = cur_.loc;
     if (accept(Tok::Dot)) {
-      auto m = std::make_shared<Member>();
-      m->loc = loc;
-      m->base = std::move(lhs);
-      m->name = consume_name_or_directive("member name");
+      auto m = std::make_shared<Member>(
+          loc, std::move(lhs), consume_name_or_directive("member name"));
       lhs = std::move(m);
       continue;
     }
     if (accept(Tok::Caret)) {
-      auto d = std::make_shared<Deref>();
-      d->loc = loc; d->operand = std::move(lhs);
-      lhs = std::move(d);
+      lhs = std::make_shared<Deref>(loc, std::move(lhs));
       continue;
     }
     if (accept(Tok::LBrack)) {
-      auto ix = std::make_shared<Index>();
-      ix->loc = loc; ix->base = std::move(lhs);
-      ix->indices.push_back(parse_expr());
-      while (accept(Tok::Comma)) ix->indices.push_back(parse_expr());
+      std::vector<ExprPtr> indices;
+      indices.push_back(parse_expr());
+      while (accept(Tok::Comma)) indices.push_back(parse_expr());
       expect(Tok::RBrack, "index");
-      lhs = std::move(ix);
+      lhs = std::make_shared<Index>(loc, std::move(lhs), std::move(indices));
       continue;
     }
     if (accept(Tok::LParen)) {
-      auto c = std::make_shared<Call>();
-      c->loc = loc; c->callee = std::move(lhs);
+      std::vector<ExprPtr> args;
+      std::vector<ExprPtr> width;
+      std::vector<ExprPtr> precision;
       while (!at_end() && !check(Tok::RParen)) {
         auto arg = parse_expr();
         ExprPtr w, p;
@@ -2013,13 +2091,14 @@ ExprPtr Parser::parse_postfix(ExprPtr lhs) {
           w = parse_expr();
           if (accept(Tok::Colon)) p = parse_expr();
         }
-        c->args.push_back(std::move(arg));
-        c->width.push_back(std::move(w));
-        c->precision.push_back(std::move(p));
+        args.push_back(std::move(arg));
+        width.push_back(std::move(w));
+        precision.push_back(std::move(p));
         if (!accept(Tok::Comma)) break;
       }
       expect(Tok::RParen, "call");
-      lhs = std::move(c);
+      lhs = std::make_shared<Call>(loc, std::move(lhs), std::move(args),
+                                   std::move(width), std::move(precision));
       continue;
     }
     return lhs;
@@ -2029,23 +2108,20 @@ ExprPtr Parser::parse_postfix(ExprPtr lhs) {
 ExprPtr Parser::parse_set_literal() {
   Location loc = cur_.loc;
   expect(Tok::LBrack, "set literal");
-  auto s = std::make_shared<SetLit>();
-  s->loc = loc;
+  std::vector<ExprPtr> elements;
   while (!at_end() && !check(Tok::RBrack)) {
     auto lo = parse_expr();
     if (accept(Tok::DotDot)) {
-      auto r = std::make_shared<Range>();
-      r->loc = lo->loc;
-      r->lo = std::move(lo);
-      r->hi = parse_expr();
-      s->elements.push_back(std::move(r));
+      Location range_loc = lo->loc;
+      auto r = std::make_shared<Range>(range_loc, std::move(lo), parse_expr());
+      elements.push_back(std::move(r));
     } else {
-      s->elements.push_back(std::move(lo));
+      elements.push_back(std::move(lo));
     }
     if (!accept(Tok::Comma)) break;
   }
   expect(Tok::RBrack, "set literal");
-  return s;
+  return std::make_shared<SetLit>(loc, std::move(elements));
 }
 
 }  // namespace tp2cc

@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "source.h"
@@ -98,6 +99,7 @@ struct Node {
   virtual ~Node() = default;
  protected:
   explicit Node(Kind k) : kind(k) {}
+  Node(Kind k, Location loc_in) : kind(k), loc(loc_in) {}
 };
 
 struct Expr : Node { using Node::Node; };
@@ -116,6 +118,10 @@ using TypePtr = std::shared_ptr<TypeExpr>;
 struct Ident : Expr {
   std::string name;   // lowercased
   Ident() : Expr(Kind::Ident) {}
+  explicit Ident(std::string name_in)
+      : Expr(Kind::Ident), name(std::move(name_in)) {}
+  Ident(Location loc_in, std::string name_in)
+      : Expr(Kind::Ident, loc_in), name(std::move(name_in)) {}
 };
 
 struct IntLit : Expr {
@@ -125,23 +131,40 @@ struct IntLit : Expr {
   // fits without bit-preserving casts.
   uint64_t value = 0;
   IntLit() : Expr(Kind::IntLit) {}
+  explicit IntLit(uint64_t value_in) : Expr(Kind::IntLit), value(value_in) {}
+  IntLit(Location loc_in, uint64_t value_in)
+      : Expr(Kind::IntLit, loc_in), value(value_in) {}
 };
 
 struct RealLit : Expr {
   std::string text;   // keep textual form; codegen emits as-is
   RealLit() : Expr(Kind::RealLit) {}
+  explicit RealLit(std::string text_in)
+      : Expr(Kind::RealLit), text(std::move(text_in)) {}
+  RealLit(Location loc_in, std::string text_in)
+      : Expr(Kind::RealLit, loc_in), text(std::move(text_in)) {}
 };
 
 struct StringLit : Expr {
   std::string value;  // already unescaped
   StringLit() : Expr(Kind::StringLit) {}
+  explicit StringLit(std::string value_in)
+      : Expr(Kind::StringLit), value(std::move(value_in)) {}
+  StringLit(Location loc_in, std::string value_in)
+      : Expr(Kind::StringLit, loc_in), value(std::move(value_in)) {}
 };
 
-struct NilLit : Expr { NilLit() : Expr(Kind::NilLit) {} };
+struct NilLit : Expr {
+  NilLit() : Expr(Kind::NilLit) {}
+  explicit NilLit(Location loc_in) : Expr(Kind::NilLit, loc_in) {}
+};
 
 struct BoolLit : Expr {
   bool value = false;
   BoolLit() : Expr(Kind::BoolLit) {}
+  explicit BoolLit(bool value_in) : Expr(Kind::BoolLit), value(value_in) {}
+  BoolLit(Location loc_in, bool value_in)
+      : Expr(Kind::BoolLit, loc_in), value(value_in) {}
 };
 
 enum class BinOp : uint8_t {
@@ -160,6 +183,19 @@ struct Binary : Expr {
   // helpers when set; otherwise plain `+` / `-` / `*`.
   bool q_check = false;
   Binary() : Expr(Kind::Binary) {}
+  Binary(BinOp op_in, ExprPtr lhs_in, ExprPtr rhs_in, bool q_check_in)
+      : Expr(Kind::Binary),
+        op(op_in),
+        lhs(std::move(lhs_in)),
+        rhs(std::move(rhs_in)),
+        q_check(q_check_in) {}
+  Binary(Location loc_in, BinOp op_in, ExprPtr lhs_in, ExprPtr rhs_in,
+         bool q_check_in)
+      : Expr(Kind::Binary, loc_in),
+        op(op_in),
+        lhs(std::move(lhs_in)),
+        rhs(std::move(rhs_in)),
+        q_check(q_check_in) {}
 };
 
 enum class UnOp : uint8_t { Neg, Plus, Not };
@@ -169,6 +205,12 @@ struct Unary : Expr {
   ExprPtr operand;
   bool q_check = false;
   Unary() : Expr(Kind::Unary) {}
+  Unary(Location loc_in, UnOp op_in, ExprPtr operand_in,
+        bool q_check_in = false)
+      : Expr(Kind::Unary, loc_in),
+        op(op_in),
+        operand(std::move(operand_in)),
+        q_check(q_check_in) {}
 };
 
 struct Call : Expr {
@@ -180,40 +222,73 @@ struct Call : Expr {
   std::vector<ExprPtr> width;
   std::vector<ExprPtr> precision;
   Call() : Expr(Kind::Call) {}
+  Call(Location loc_in, ExprPtr callee_in, std::vector<ExprPtr> args_in,
+       std::vector<ExprPtr> width_in, std::vector<ExprPtr> precision_in)
+      : Expr(Kind::Call, loc_in),
+        callee(std::move(callee_in)),
+        args(std::move(args_in)),
+        width(std::move(width_in)),
+        precision(std::move(precision_in)) {}
 };
 
 struct Index : Expr {
   ExprPtr base;
   std::vector<ExprPtr> indices;
   Index() : Expr(Kind::Index) {}
+  Index(Location loc_in, ExprPtr base_in, std::vector<ExprPtr> indices_in)
+      : Expr(Kind::Index, loc_in),
+        base(std::move(base_in)),
+        indices(std::move(indices_in)) {}
 };
 
 struct Member : Expr {
   ExprPtr base;
   std::string name;   // lowercased
   Member() : Expr(Kind::Member) {}
+  Member(ExprPtr base_in, std::string name_in)
+      : Expr(Kind::Member),
+        base(std::move(base_in)),
+        name(std::move(name_in)) {}
+  Member(Location loc_in, ExprPtr base_in, std::string name_in)
+      : Expr(Kind::Member, loc_in),
+        base(std::move(base_in)),
+        name(std::move(name_in)) {}
 };
 
 struct Deref : Expr {
   ExprPtr operand;
   Deref() : Expr(Kind::Deref) {}
+  Deref(Location loc_in, ExprPtr operand_in)
+      : Expr(Kind::Deref, loc_in), operand(std::move(operand_in)) {}
 };
 
 struct AddrOf : Expr {
   ExprPtr operand;
   bool double_addr = false;   // @@
   AddrOf() : Expr(Kind::AddrOf) {}
+  AddrOf(Location loc_in, bool double_addr_in, ExprPtr operand_in)
+      : Expr(Kind::AddrOf, loc_in),
+        operand(std::move(operand_in)),
+        double_addr(double_addr_in) {}
 };
 
 struct SetLit : Expr {
   // Each element is either a plain expr or a range expr (Range).
   std::vector<ExprPtr> elements;
   SetLit() : Expr(Kind::SetLit) {}
+  SetLit(Location loc_in, std::vector<ExprPtr> elements_in)
+      : Expr(Kind::SetLit, loc_in), elements(std::move(elements_in)) {}
 };
 
 struct Range : Expr {
   ExprPtr lo, hi;
   Range() : Expr(Kind::Range) {}
+  Range(ExprPtr lo_in, ExprPtr hi_in)
+      : Expr(Kind::Range), lo(std::move(lo_in)), hi(std::move(hi_in)) {}
+  Range(Location loc_in, ExprPtr lo_in, ExprPtr hi_in)
+      : Expr(Kind::Range, loc_in),
+        lo(std::move(lo_in)),
+        hi(std::move(hi_in)) {}
 };
 
 // Typed-constant initializers. Pascal distinguishes these from ordinary
@@ -223,12 +298,17 @@ struct Range : Expr {
 struct ArrayConst : Expr {
   std::vector<ExprPtr> elements;
   ArrayConst() : Expr(Kind::ArrayConst) {}
+  ArrayConst(Location loc_in, std::vector<ExprPtr> elements_in = {})
+      : Expr(Kind::ArrayConst, loc_in), elements(std::move(elements_in)) {}
 };
 
 // `( fld : val ; fld : val ; ... )`.
 struct RecordConst : Expr {
   std::vector<std::pair<std::string, ExprPtr>> fields;
   RecordConst() : Expr(Kind::RecordConst) {}
+  RecordConst(Location loc_in,
+              std::vector<std::pair<std::string, ExprPtr>> fields_in)
+      : Expr(Kind::RecordConst, loc_in), fields(std::move(fields_in)) {}
 };
 
 // ---------------------------------------------------------------------------
@@ -237,6 +317,8 @@ struct RecordConst : Expr {
 struct Compound : Stmt {
   std::vector<StmtPtr> body;
   Compound() : Stmt(Kind::Compound) {}
+  Compound(Location loc_in, std::vector<StmtPtr> body_in = {})
+      : Stmt(Kind::Compound, loc_in), body(std::move(body_in)) {}
 };
 
 struct Assign : Stmt {
@@ -247,12 +329,20 @@ struct Assign : Stmt {
   // (real -> int, wider-int -> narrower-int, ...) when set.
   bool r_check = false;
   Assign() : Stmt(Kind::Assign) {}
+  Assign(Location loc_in, ExprPtr target_in, ExprPtr value_in,
+         bool r_check_in)
+      : Stmt(Kind::Assign, loc_in),
+        target(std::move(target_in)),
+        value(std::move(value_in)),
+        r_check(r_check_in) {}
 };
 
 struct ExprStmt : Stmt {
   // For a bare `foo;` or `foo(x);` used as a statement.
   ExprPtr expr;
   ExprStmt() : Stmt(Kind::ExprStmt) {}
+  ExprStmt(Location loc_in, ExprPtr expr_in)
+      : Stmt(Kind::ExprStmt, loc_in), expr(std::move(expr_in)) {}
 };
 
 struct If : Stmt {
@@ -260,18 +350,32 @@ struct If : Stmt {
   StmtPtr then_branch;
   StmtPtr else_branch;   // may be null
   If() : Stmt(Kind::If) {}
+  If(Location loc_in, ExprPtr cond_in, StmtPtr then_branch_in,
+     StmtPtr else_branch_in = nullptr)
+      : Stmt(Kind::If, loc_in),
+        cond(std::move(cond_in)),
+        then_branch(std::move(then_branch_in)),
+        else_branch(std::move(else_branch_in)) {}
 };
 
 struct While : Stmt {
   ExprPtr cond;
   StmtPtr body;
   While() : Stmt(Kind::While) {}
+  While(Location loc_in, ExprPtr cond_in, StmtPtr body_in)
+      : Stmt(Kind::While, loc_in),
+        cond(std::move(cond_in)),
+        body(std::move(body_in)) {}
 };
 
 struct Repeat : Stmt {
   std::vector<StmtPtr> body;
   ExprPtr cond;
   Repeat() : Stmt(Kind::Repeat) {}
+  Repeat(Location loc_in, std::vector<StmtPtr> body_in, ExprPtr cond_in)
+      : Stmt(Kind::Repeat, loc_in),
+        body(std::move(body_in)),
+        cond(std::move(cond_in)) {}
 };
 
 struct For : Stmt {
@@ -282,12 +386,29 @@ struct For : Stmt {
   bool for_in = false;
   StmtPtr body;
   For() : Stmt(Kind::For) {}
+  For(Location loc_in, std::string var_in, ExprPtr in_expr_in, StmtPtr body_in)
+      : Stmt(Kind::For, loc_in),
+        var(std::move(var_in)),
+        in_expr(std::move(in_expr_in)),
+        for_in(true),
+        body(std::move(body_in)) {}
+  For(Location loc_in, std::string var_in, ExprPtr from_in, ExprPtr to_in,
+      bool downto_in, StmtPtr body_in)
+      : Stmt(Kind::For, loc_in),
+        var(std::move(var_in)),
+        from(std::move(from_in)),
+        to(std::move(to_in)),
+        downto(downto_in),
+        body(std::move(body_in)) {}
 };
 
 struct CaseArm {
   // Each label is an expression; range labels use Range nodes.
   std::vector<ExprPtr> labels;
   StmtPtr body;
+  CaseArm() = default;
+  CaseArm(std::vector<ExprPtr> labels_in, StmtPtr body_in)
+      : labels(std::move(labels_in)), body(std::move(body_in)) {}
 };
 
 struct CaseStmt : Stmt {
@@ -295,32 +416,59 @@ struct CaseStmt : Stmt {
   std::vector<CaseArm> arms;
   StmtPtr else_branch;   // may be null; covers `else` / `otherwise`
   CaseStmt() : Stmt(Kind::CaseStmt) {}
+  CaseStmt(Location loc_in, ExprPtr selector_in, std::vector<CaseArm> arms_in,
+           StmtPtr else_branch_in = nullptr)
+      : Stmt(Kind::CaseStmt, loc_in),
+        selector(std::move(selector_in)),
+        arms(std::move(arms_in)),
+        else_branch(std::move(else_branch_in)) {}
 };
 
 struct With : Stmt {
   std::vector<ExprPtr> exprs;   // `with A, B do S` is modeled as one node
   StmtPtr body;
   With() : Stmt(Kind::With) {}
+  With(Location loc_in, std::vector<ExprPtr> exprs_in, StmtPtr body_in)
+      : Stmt(Kind::With, loc_in),
+        exprs(std::move(exprs_in)),
+        body(std::move(body_in)) {}
 };
 
 struct Goto : Stmt {
   std::string label;
   Goto() : Stmt(Kind::Goto) {}
+  Goto(Location loc_in, std::string label_in)
+      : Stmt(Kind::Goto, loc_in), label(std::move(label_in)) {}
 };
 
 struct Labeled : Stmt {
   std::string label;
   StmtPtr body;
   Labeled() : Stmt(Kind::Labeled) {}
+  Labeled(Location loc_in, std::string label_in, StmtPtr body_in)
+      : Stmt(Kind::Labeled, loc_in),
+        label(std::move(label_in)),
+        body(std::move(body_in)) {}
 };
 
-struct BreakStmt : Stmt { BreakStmt() : Stmt(Kind::BreakStmt) {} };
-struct ContinueStmt : Stmt { ContinueStmt() : Stmt(Kind::ContinueStmt) {} };
+struct BreakStmt : Stmt {
+  BreakStmt() : Stmt(Kind::BreakStmt) {}
+  explicit BreakStmt(Location loc_in) : Stmt(Kind::BreakStmt, loc_in) {}
+};
+struct ContinueStmt : Stmt {
+  ContinueStmt() : Stmt(Kind::ContinueStmt) {}
+  explicit ContinueStmt(Location loc_in) : Stmt(Kind::ContinueStmt, loc_in) {}
+};
 struct ExitStmt : Stmt {
   ExprPtr value;   // optional: exit(expr)
   ExitStmt() : Stmt(Kind::ExitStmt) {}
+  ExitStmt(Location loc_in, ExprPtr value_in = nullptr)
+      : Stmt(Kind::ExitStmt, loc_in), value(std::move(value_in)) {}
 };
-struct EmptyStmt : Stmt { EmptyStmt() : Stmt(Kind::EmptyStmt) {} };
+struct EmptyStmt : Stmt {
+  EmptyStmt() : Stmt(Kind::EmptyStmt) {}
+  explicit EmptyStmt(Location loc_in) : Stmt(Kind::EmptyStmt, loc_in) {}
+};
 
 struct AsmStmt : Stmt {
   // We don't parse asm bodies -- the only one in the compiler proper lives in
@@ -328,6 +476,8 @@ struct AsmStmt : Stmt {
   // for diagnostics.
   std::string raw;
   AsmStmt() : Stmt(Kind::AsmStmt) {}
+  AsmStmt(Location loc_in, std::string raw_in = {})
+      : Stmt(Kind::AsmStmt, loc_in), raw(std::move(raw_in)) {}
 };
 
 // One `on <var>: <Class> do <stmt>' arm inside `try ... except ... end'.
@@ -336,6 +486,12 @@ struct ExceptHandler {
   std::string var_name;      // may be empty
   std::string class_name;    // lowercased; empty means catch-all (rare)
   StmtPtr body;
+  ExceptHandler() = default;
+  ExceptHandler(std::string var_name_in, std::string class_name_in,
+                StmtPtr body_in)
+      : var_name(std::move(var_name_in)),
+        class_name(std::move(class_name_in)),
+        body(std::move(body_in)) {}
 };
 
 // Pascal `try ... except ... end' / `try ... finally ... end'.
@@ -351,6 +507,15 @@ struct Try : Stmt {
   // finally-form: statements that always run on exit from body.
   std::vector<StmtPtr> finally_body;
   Try() : Stmt(Kind::Try) {}
+  Try(Location loc_in, std::vector<StmtPtr> body_in, bool is_finally_in,
+      std::vector<ExceptHandler> handlers_in, StmtPtr except_else_in,
+      std::vector<StmtPtr> finally_body_in)
+      : Stmt(Kind::Try, loc_in),
+        body(std::move(body_in)),
+        is_finally(is_finally_in),
+        handlers(std::move(handlers_in)),
+        except_else(std::move(except_else_in)),
+        finally_body(std::move(finally_body_in)) {}
 };
 
 // `raise' statement.  Two AST variants:
@@ -362,6 +527,8 @@ struct Try : Stmt {
 struct Raise : Stmt {
   ExprPtr value;                     // null for bare `raise;'
   Raise() : Stmt(Kind::Raise) {}
+  Raise(Location loc_in, ExprPtr value_in = nullptr)
+      : Stmt(Kind::Raise, loc_in), value(std::move(value_in)) {}
 };
 
 // ---------------------------------------------------------------------------
@@ -372,12 +539,22 @@ struct ConstDecl : Decl {
   TypePtr type;         // may be null (untyped const)
   ExprPtr value;        // required
   ConstDecl() : Decl(Kind::ConstDecl) {}
+  ConstDecl(Location loc_in, std::string name_in, TypePtr type_in,
+            ExprPtr value_in)
+      : Decl(Kind::ConstDecl, loc_in),
+        name(std::move(name_in)),
+        type(std::move(type_in)),
+        value(std::move(value_in)) {}
 };
 
 struct TypeDecl : Decl {
   std::string name;
   TypePtr type;
   TypeDecl() : Decl(Kind::TypeDecl) {}
+  TypeDecl(Location loc_in, std::string name_in, TypePtr type_in)
+      : Decl(Kind::TypeDecl, loc_in),
+        name(std::move(name_in)),
+        type(std::move(type_in)) {}
 };
 
 struct VarDecl : Decl {
@@ -390,11 +567,26 @@ struct VarDecl : Decl {
   ExprPtr external_name;         // `external 'name'` -- null if not external
   std::string external_lib;      // `external 'lib' name '...'`; may be empty
   VarDecl() : Decl(Kind::VarDecl) {}
+  VarDecl(Location loc_in, std::vector<std::string> names_in, TypePtr type_in,
+          ExprPtr init_in, bool is_absolute_in, bool is_external_in,
+          std::string absolute_target_in, ExprPtr external_name_in,
+          std::string external_lib_in)
+      : Decl(Kind::VarDecl, loc_in),
+        names(std::move(names_in)),
+        type(std::move(type_in)),
+        init(std::move(init_in)),
+        is_absolute(is_absolute_in),
+        is_external(is_external_in),
+        absolute_target(std::move(absolute_target_in)),
+        external_name(std::move(external_name_in)),
+        external_lib(std::move(external_lib_in)) {}
 };
 
 struct LabelDecl : Decl {
   std::vector<std::string> labels;
   LabelDecl() : Decl(Kind::LabelDecl) {}
+  LabelDecl(Location loc_in, std::vector<std::string> labels_in)
+      : Decl(Kind::LabelDecl, loc_in), labels(std::move(labels_in)) {}
 };
 
 struct Param {
@@ -402,6 +594,13 @@ struct Param {
   std::vector<std::string> names;
   TypePtr type;        // may be null for untyped `var`/`const` params
   ExprPtr default_value;  // optional
+  Param() = default;
+  Param(Mode mode_in, std::vector<std::string> names_in, TypePtr type_in,
+        ExprPtr default_value_in = nullptr)
+      : mode(mode_in),
+        names(std::move(names_in)),
+        type(std::move(type_in)),
+        default_value(std::move(default_value_in)) {}
 };
 
 enum class ProcKind : uint8_t { Procedure, Function, Constructor, Destructor };
@@ -440,11 +639,47 @@ struct ProcDecl : Decl {
   StmtPtr body;                // null for forward / abstract / external
   explicit ProcDecl(bool class_method)
       : Decl(Kind::ProcDecl), is_class_method(class_method) {}
+  ProcDecl(Location loc_in, ProcKind pkind_in, std::string name_in,
+           bool is_operator_in, std::string operator_token_in,
+           IntrinsicOperator intrinsic_operator_in, std::string of_type_in,
+           bool is_class_method_in, std::vector<Param> params_in,
+           TypePtr return_type_in, bool is_virtual_in, bool is_abstract_in,
+           bool is_override_in, bool is_final_in, bool is_forward_in,
+           bool is_inline_in, bool is_cdecl_in, bool is_noreturn_in,
+           bool is_external_in, bool is_assembler_in,
+           std::string external_lib_in, std::string external_name_in,
+           std::vector<DeclPtr> locals_in, StmtPtr body_in)
+      : Decl(Kind::ProcDecl, loc_in),
+        pkind(pkind_in),
+        name(std::move(name_in)),
+        is_operator(is_operator_in),
+        operator_token(std::move(operator_token_in)),
+        intrinsic_operator(intrinsic_operator_in),
+        of_type(std::move(of_type_in)),
+        is_class_method(is_class_method_in),
+        params(std::move(params_in)),
+        return_type(std::move(return_type_in)),
+        is_virtual(is_virtual_in),
+        is_abstract(is_abstract_in),
+        is_override(is_override_in),
+        is_final(is_final_in),
+        is_forward(is_forward_in),
+        is_inline(is_inline_in),
+        is_cdecl(is_cdecl_in),
+        is_noreturn(is_noreturn_in),
+        is_external(is_external_in),
+        is_assembler(is_assembler_in),
+        external_lib(std::move(external_lib_in)),
+        external_name(std::move(external_name_in)),
+        locals(std::move(locals_in)),
+        body(std::move(body_in)) {}
 };
 
 struct UsesClause : Decl {
   std::vector<std::string> units;
   UsesClause() : Decl(Kind::UsesClause) {}
+  UsesClause(Location loc_in, std::vector<std::string> units_in)
+      : Decl(Kind::UsesClause, loc_in), units(std::move(units_in)) {}
 };
 
 // ---------------------------------------------------------------------------
@@ -455,6 +690,10 @@ struct TyName : TypeExpr {
   // `^TFoo` style pointer-to-not-yet-defined named types become TyPointer
   // with inner=TyName.
   TyName() : TypeExpr(Kind::TyName) {}
+  explicit TyName(std::string name_in)
+      : TypeExpr(Kind::TyName), name(std::move(name_in)) {}
+  TyName(Location loc_in, std::string name_in)
+      : TypeExpr(Kind::TyName, loc_in), name(std::move(name_in)) {}
 };
 
 enum class ArrayKind : uint8_t {
@@ -469,17 +708,31 @@ struct TyArray : TypeExpr {
   bool is_packed = false;
   ArrayKind array_kind = ArrayKind::Fixed;
   TyArray() : TypeExpr(Kind::TyArray) {}
+  TyArray(Location loc_in, std::vector<TypePtr> dims_in, TypePtr element_in,
+          bool is_packed_in, ArrayKind array_kind_in)
+      : TypeExpr(Kind::TyArray, loc_in),
+        dims(std::move(dims_in)),
+        element(std::move(element_in)),
+        is_packed(is_packed_in),
+        array_kind(array_kind_in) {}
 };
 
 struct RecordField {
   std::vector<std::string> names;
   TypePtr type;
+  RecordField() = default;
+  RecordField(std::vector<std::string> names_in, TypePtr type_in)
+      : names(std::move(names_in)), type(std::move(type_in)) {}
 };
 
 // Variant-record tail: `case Tag : T of lit,lit : (fields...); ...`
 struct VariantCase {
   std::vector<ExprPtr> labels;
   std::vector<RecordField> fields;
+  VariantCase() = default;
+  VariantCase(std::vector<ExprPtr> labels_in,
+              std::vector<RecordField> fields_in)
+      : labels(std::move(labels_in)), fields(std::move(fields_in)) {}
 };
 
 struct TyRecord : TypeExpr {
@@ -491,6 +744,17 @@ struct TyRecord : TypeExpr {
   std::vector<VariantCase> variant_cases;
   bool is_packed = false;
   TyRecord() : TypeExpr(Kind::TyRecord) {}
+  TyRecord(Location loc_in, std::vector<RecordField> fields_in,
+           bool has_variant_in, std::string variant_tag_name_in,
+           TypePtr variant_tag_type_in,
+           std::vector<VariantCase> variant_cases_in, bool is_packed_in)
+      : TypeExpr(Kind::TyRecord, loc_in),
+        fields(std::move(fields_in)),
+        has_variant(has_variant_in),
+        variant_tag_name(std::move(variant_tag_name_in)),
+        variant_tag_type(std::move(variant_tag_type_in)),
+        variant_cases(std::move(variant_cases_in)),
+        is_packed(is_packed_in) {}
 };
 
 enum class Visibility : uint8_t {
@@ -507,6 +771,9 @@ struct PropertyDecl {
   struct Accessor {
     std::vector<std::string> path;
 
+    Accessor() = default;
+    explicit Accessor(std::vector<std::string> path_in)
+        : path(std::move(path_in)) {}
     bool empty() const { return path.empty(); }
   };
 
@@ -516,6 +783,16 @@ struct PropertyDecl {
   Accessor read_accessor;
   Accessor write_accessor;
   bool is_default = false;
+  PropertyDecl() = default;
+  PropertyDecl(std::string name_in, std::vector<Param> params_in,
+               TypePtr type_in, Accessor read_accessor_in,
+               Accessor write_accessor_in, bool is_default_in)
+      : name(std::move(name_in)),
+        params(std::move(params_in)),
+        type(std::move(type_in)),
+        read_accessor(std::move(read_accessor_in)),
+        write_accessor(std::move(write_accessor_in)),
+        is_default(is_default_in) {}
 };
 
 struct ObjectMember {
@@ -532,6 +809,27 @@ struct ObjectMember {
   std::shared_ptr<ProcDecl> method;
   // property side
   PropertyDecl property;
+  ObjectMember() = default;
+  ObjectMember(Location loc_in, Visibility vis_in,
+               std::vector<std::string> field_names_in, TypePtr field_type_in,
+               bool is_class_var_in)
+      : loc(loc_in),
+        vis(vis_in),
+        kind(ObjectMemberKind::Field),
+        field_names(std::move(field_names_in)),
+        field_type(std::move(field_type_in)),
+        is_class_var(is_class_var_in) {}
+  ObjectMember(Location loc_in, Visibility vis_in,
+               std::shared_ptr<ProcDecl> method_in)
+      : loc(loc_in),
+        vis(vis_in),
+        kind(ObjectMemberKind::Method),
+        method(std::move(method_in)) {}
+  ObjectMember(Location loc_in, Visibility vis_in, PropertyDecl property_in)
+      : loc(loc_in),
+        vis(vis_in),
+        kind(ObjectMemberKind::Property),
+        property(std::move(property_in)) {}
 };
 
 struct TyObject : TypeExpr {
@@ -552,12 +850,28 @@ struct TyObject : TypeExpr {
   // complete empty class declaration instead, not a forward.
   bool is_forward = false;
   TyObject() : TypeExpr(Kind::TyObject) {}
+  TyObject(Location loc_in, std::string parent_in,
+           std::vector<std::string> interfaces_in,
+           std::vector<ObjectMember> members_in, bool is_reference_type_in,
+           bool is_abstract_in, bool is_forward_in)
+      : TypeExpr(Kind::TyObject, loc_in),
+        parent(std::move(parent_in)),
+        interfaces(std::move(interfaces_in)),
+        members(std::move(members_in)),
+        is_reference_type(is_reference_type_in),
+        is_abstract(is_abstract_in),
+        is_forward(is_forward_in) {}
 };
 
 struct TyInterface : TypeExpr {
   std::string metadata_string;
   std::vector<ObjectMember> members;
   TyInterface() : TypeExpr(Kind::TyInterface) {}
+  TyInterface(Location loc_in, std::string metadata_string_in,
+              std::vector<ObjectMember> members_in)
+      : TypeExpr(Kind::TyInterface, loc_in),
+        metadata_string(std::move(metadata_string_in)),
+        members(std::move(members_in)) {}
 };
 
 struct TySet : TypeExpr {
@@ -572,17 +886,30 @@ struct TySet : TypeExpr {
   int64_t explicit_low = 0;
   int64_t explicit_high = 0;
   TySet() : TypeExpr(Kind::TySet) {}
+  TySet(Location loc_in, TypePtr element_in, bool has_explicit_bounds_in = false,
+        int64_t explicit_low_in = 0, int64_t explicit_high_in = 0)
+      : TypeExpr(Kind::TySet, loc_in),
+        element(std::move(element_in)),
+        has_explicit_bounds(has_explicit_bounds_in),
+        explicit_low(explicit_low_in),
+        explicit_high(explicit_high_in) {}
 };
 
 struct TyFile : TypeExpr {
   TypePtr element;   // null for untyped `file`; special marker for `text`
   bool is_text = false;
   TyFile() : TypeExpr(Kind::TyFile) {}
+  TyFile(Location loc_in, TypePtr element_in, bool is_text_in = false)
+      : TypeExpr(Kind::TyFile, loc_in),
+        element(std::move(element_in)),
+        is_text(is_text_in) {}
 };
 
 struct TyPointer : TypeExpr {
   TypePtr target;
   TyPointer() : TypeExpr(Kind::TyPointer) {}
+  TyPointer(Location loc_in, TypePtr target_in)
+      : TypeExpr(Kind::TyPointer, loc_in), target(std::move(target_in)) {}
 };
 
 // Delphi distinct-type alias: `T = type <Underlying>'.  Creates a new
@@ -595,6 +922,9 @@ struct TyPointer : TypeExpr {
 struct TyDistinct : TypeExpr {
   TypePtr underlying;
   TyDistinct() : TypeExpr(Kind::TyDistinct) {}
+  TyDistinct(Location loc_in, TypePtr underlying_in)
+      : TypeExpr(Kind::TyDistinct, loc_in),
+        underlying(std::move(underlying_in)) {}
 };
 
 // Delphi `class of T' -- a metaclass reference.  A value of this
@@ -609,6 +939,9 @@ struct TyDistinct : TypeExpr {
 struct TyMetaclass : TypeExpr {
   std::string class_name;
   TyMetaclass() : TypeExpr(Kind::TyMetaclass) {}
+  TyMetaclass(Location loc_in, std::string class_name_in)
+      : TypeExpr(Kind::TyMetaclass, loc_in),
+        class_name(std::move(class_name_in)) {}
 };
 
 struct TyProcedural : TypeExpr {
@@ -618,11 +951,24 @@ struct TyProcedural : TypeExpr {
   bool is_cdecl = false;
   bool is_method = false; // `procedure/function ... of object`
   TyProcedural() : TypeExpr(Kind::TyProcedural) {}
+  TyProcedural(Location loc_in, bool is_function_in,
+               std::vector<Param> params_in, TypePtr return_type_in,
+               bool is_cdecl_in, bool is_method_in)
+      : TypeExpr(Kind::TyProcedural, loc_in),
+        is_function(is_function_in),
+        params(std::move(params_in)),
+        return_type(std::move(return_type_in)),
+        is_cdecl(is_cdecl_in),
+        is_method(is_method_in) {}
 };
 
 struct EnumMember {
   std::string name;
   ExprPtr value;  // optional explicit ordinal value
+  EnumMember() = default;
+  explicit EnumMember(std::string name_in) : name(std::move(name_in)) {}
+  EnumMember(std::string name_in, ExprPtr value_in)
+      : name(std::move(name_in)), value(std::move(value_in)) {}
 };
 
 struct TyEnum : TypeExpr {
@@ -633,16 +979,28 @@ struct TyEnum : TypeExpr {
   uint8_t packenum = 4;
   std::vector<EnumMember> members;
   TyEnum() : TypeExpr(Kind::TyEnum) {}
+  TyEnum(Location loc_in, uint8_t packenum_in,
+         std::vector<EnumMember> members_in)
+      : TypeExpr(Kind::TyEnum, loc_in),
+        packenum(packenum_in),
+        members(std::move(members_in)) {}
 };
 
 struct TySubrange : TypeExpr {
   ExprPtr lo, hi;
   TySubrange() : TypeExpr(Kind::TySubrange) {}
+  TySubrange(Location loc_in, ExprPtr lo_in, ExprPtr hi_in)
+      : TypeExpr(Kind::TySubrange, loc_in),
+        lo(std::move(lo_in)),
+        hi(std::move(hi_in)) {}
 };
 
 struct TyString : TypeExpr {
   ExprPtr max_length;   // null for unsized `string`
   TyString() : TypeExpr(Kind::TyString) {}
+  TyString(Location loc_in, ExprPtr max_length_in = nullptr)
+      : TypeExpr(Kind::TyString, loc_in),
+        max_length(std::move(max_length_in)) {}
 };
 
 // ---------------------------------------------------------------------------
@@ -661,6 +1019,21 @@ struct UnitNode : Node {
   StmtPtr final_body;   // Delphi/FPC `finalization` block
   bool is_program = false;
   UnitNode() : Node(Kind::UnitNode) {}
+  UnitNode(Location loc_in, std::string name_in,
+           std::vector<std::string> interface_uses_in,
+           std::vector<DeclPtr> interface_decls_in,
+           std::vector<std::string> impl_uses_in,
+           std::vector<DeclPtr> impl_decls_in, StmtPtr init_body_in,
+           StmtPtr final_body_in, bool is_program_in)
+      : Node(Kind::UnitNode, loc_in),
+        name(std::move(name_in)),
+        interface_uses(std::move(interface_uses_in)),
+        interface_decls(std::move(interface_decls_in)),
+        impl_uses(std::move(impl_uses_in)),
+        impl_decls(std::move(impl_decls_in)),
+        init_body(std::move(init_body_in)),
+        final_body(std::move(final_body_in)),
+        is_program(is_program_in) {}
 };
 
 }  // namespace tp2cc::ast
