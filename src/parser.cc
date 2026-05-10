@@ -88,6 +88,33 @@ std::optional<BinOp> multiplicative_operator(Tok tok) {
   }
 }
 
+std::string operator_decl_token_text(const Token& token) {
+  switch (token.kind) {
+    case Tok::Assign: return ":=";
+    case Tok::Plus: return "+";
+    case Tok::Minus: return "-";
+    case Tok::Star: return "*";
+    case Tok::Slash: return "/";
+    case Tok::Eq: return "=";
+    case Tok::Lt: return "<";
+    case Tok::Gt: return ">";
+    case Tok::LtEq: return "<=";
+    case Tok::GtEq: return ">=";
+    case Tok::NotEq: return "<>";
+    case Tok::KwDiv: return "div";
+    case Tok::KwMod: return "mod";
+    case Tok::KwAnd: return "and";
+    case Tok::KwOr: return "or";
+    case Tok::KwXor: return "xor";
+    case Tok::KwShl: return "shl";
+    case Tok::KwShr: return "shr";
+    case Tok::Ident:
+      if (token.text == "enumerator") return "enumerator";
+      return {};
+    default: return {};
+  }
+}
+
 }  // namespace
 
 Parser::ProcModifiers Parser::combine_proc_modifiers(ProcModifiers base,
@@ -877,32 +904,7 @@ std::shared_ptr<ProcDecl> Parser::parse_operator_decl(bool in_interface) {
   Location loc = cur_.loc;
   advance();  // consume operator
 
-  std::string op_text = [&]() -> std::string {
-    switch (cur_.kind) {
-      case Tok::Assign: return ":=";
-      case Tok::Plus: return "+";
-      case Tok::Minus: return "-";
-      case Tok::Star: return "*";
-      case Tok::Slash: return "/";
-      case Tok::Eq: return "=";
-      case Tok::Lt: return "<";
-      case Tok::Gt: return ">";
-      case Tok::LtEq: return "<=";
-      case Tok::GtEq: return ">=";
-      case Tok::NotEq: return "<>";
-      case Tok::KwDiv: return "div";
-      case Tok::KwMod: return "mod";
-      case Tok::KwAnd: return "and";
-      case Tok::KwOr: return "or";
-      case Tok::KwXor: return "xor";
-      case Tok::KwShl: return "shl";
-      case Tok::KwShr: return "shr";
-      case Tok::Ident:
-        if (cur_.text == "enumerator") return "enumerator";
-        return {};
-      default: return {};
-    }
-  }();
+  std::string op_text = operator_decl_token_text(cur_);
   if (op_text.empty()) {
     report_error(cur_.loc, "expected operator token after 'operator'");
   } else {

@@ -40,6 +40,14 @@ constexpr const char* kUnitFiniName = "tp2cc_unit_fini";
 constexpr const char* kPascalResultSlotName = "p_result";
 constexpr const char* kCtorStatusSlotName = "tp2cc_ctor_ok";
 
+std::string defining_unit_for_method_decl(
+    const std::vector<MethodSig>& methods, const ProcDecl* decl) {
+  for (const auto& method : methods) {
+    if (method.decl.get() == decl) return method.defining_unit;
+  }
+  return {};
+}
+
 // ---------------------------------------------------------------------------
 // Emitter state
 
@@ -359,6 +367,10 @@ struct Emitter : ResolveNameProvider,
   const ClassInfo* class_info_for_type_name(std::string_view name) {
     return analysis_.class_info_for_type_name(name);
   }
+  std::string class_cast_rhs_type_cxx(const ast::Expr& rhs);
+  tp2cc::ResolvedCall resolve_new_constructor_call(
+      const ast::Expr& pointer_type_expr, const ast::Expr& ctor_callee,
+      const std::vector<const ast::Expr*>& args);
   const ast::TypeExpr* lookup_named_type_expr(std::string_view name) {
     return analysis_.lookup_named_type_expr(name);
   }
@@ -680,6 +692,30 @@ std::string Emitter::deduce_class_alias(const Expr& e) {
   return analysis_.deduce_class_alias(e);
 }
 
+std::string Emitter::class_cast_rhs_type_cxx(const Expr& rhs) {
+  if (rhs.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(rhs);
+    if (class_info_for_type_name(id.name)) {
+      TyName tn(rhs.loc, id.name);
+      return type_name_to_cxx(tn);
+    }
+  }
+  return expr_to_cxx(rhs);
+}
+
+tp2cc::ResolvedCall Emitter::resolve_new_constructor_call(
+    const Expr& pointer_type_expr, const Expr& ctor_callee,
+    const std::vector<const Expr*>& args) {
+  if (pointer_type_expr.kind != Kind::Ident) {
+    return resolution_.resolve_pointer_target_constructor(nullptr, ctor_callee,
+                                                          args);
+  }
+  const auto& ptr_ident = static_cast<const Ident&>(pointer_type_expr);
+  TyName ptr_type_name(ptr_ident.loc, ptr_ident.name);
+  return resolution_.resolve_pointer_target_constructor(&ptr_type_name,
+                                                        ctor_callee, args);
+}
+
 // Pascal/FPC overload resolution conversion-rank table.
 //
 //   rank | name                    | example
@@ -883,30 +919,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (n.op == BinOp::Is) {
         // `class` names lower to pointer types, so `x is TChild` becomes a
         // pointer dynamic_cast rather than address-taking the lhs storage.
-        auto rhs_type = [&]() {
-          if (n.rhs->kind == Kind::Ident) {
-            const auto& id = static_cast<const Ident&>(*n.rhs);
-            if (class_info_for_type_name(id.name)) {
-              TyName tn(id.name);
-              return type_name_to_cxx(tn);
-            }
-          }
-          return expr_to_cxx(*n.rhs);
-        }();
+        std::string rhs_type = class_cast_rhs_type_cxx(*n.rhs);
         return "(dynamic_cast<" + rhs_type + ">(" +
                expr_to_cxx(*n.lhs) + ") != nullptr)";
       }
       if (n.op == BinOp::As) {
-        auto rhs_type = [&]() {
-          if (n.rhs->kind == Kind::Ident) {
-            const auto& id = static_cast<const Ident&>(*n.rhs);
-            if (class_info_for_type_name(id.name)) {
-              TyName tn(id.name);
-              return type_name_to_cxx(tn);
-            }
-          }
-          return expr_to_cxx(*n.rhs);
-        }();
+        std::string rhs_type = class_cast_rhs_type_cxx(*n.rhs);
         return "dynamic_cast<" + rhs_type + ">(" +
                expr_to_cxx(*n.lhs) + ")";
       }
@@ -1342,14 +1360,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
             PickResult picked = resolution_.pick_overload(candidates, {});
             if (!picked.ambiguous && picked.decl) {
-              const std::string unit = [&]() {
-                for (const auto& method : *methods) {
-                  if (method.decl.get() == picked.decl) {
-                    return method.defining_unit;
-                  }
-                }
-                return std::string{};
-              }();
+              const std::string unit =
+                  defining_unit_for_method_decl(*methods, picked.decl);
               return !is_callee_context_
                          ? lower_implicit_zero_arg_call(text, picked.decl, unit)
                          : text;
@@ -2077,27 +2089,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             ctor_args.reserve(cc.args.size());
             for (const auto& arg : cc.args) ctor_args.push_back(arg.get());
             const size_t explicit_ctor_arg_count = ctor_args.size();
-            ResolvedCall ctor_resolved = [&]() -> ResolvedCall {
-              if (registry && c.args[0]->kind == Kind::Ident &&
-                  cc.callee->kind == Kind::Ident) {
-                TyName ptr_type(static_cast<const Ident&>(*c.args[0]).name);
-                std::string pointee =
-                    registry->pointer_target_type_name(&ptr_type);
-                if (!pointee.empty()) {
-                  Member member(std::make_shared<Ident>(pointee),
-                                static_cast<const Ident&>(*cc.callee).name);
-                  return resolve_call(member, ctor_args);
-                }
-              }
-              return ResolvedCall{.decl = nullptr,
-                                  .callee_kind = ResolvedCalleeKind::Default,
-                                  .defining_unit = {},
-                                  .member_name = {},
-                                  .default_arg_unit = {},
-                                  .return_type_name = {},
-                                  .needs_arg_casts = false,
-                                  .ambiguous = false};
-            }();
+            ResolvedCall ctor_resolved =
+                resolve_new_constructor_call(*c.args[0], *cc.callee,
+                                             ctor_args);
             append_defaulted_trailing_call_args(ctor_resolved.decl, ctor_args);
             std::vector<UntypedArgKind> untyped_arg(ctor_args.size(),
                                                     UntypedArgKind::None);

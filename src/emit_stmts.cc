@@ -493,25 +493,9 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
         ctor_args.reserve(cc.args.size());
         for (const auto& arg : cc.args) ctor_args.push_back(arg.get());
         const size_t explicit_ctor_arg_count = ctor_args.size();
-        ResolvedCall ctor_resolved = [&]() -> ResolvedCall {
-          if (registry_ && ptr_arg_ty && cc.callee->kind == Kind::Ident) {
-            std::string pointee =
-                registry_->pointer_target_type_name(ptr_arg_ty);
-            if (!pointee.empty()) {
-              Member member(std::make_shared<Ident>(pointee),
-                            static_cast<const Ident&>(*cc.callee).name);
-              return resolution_.resolve_call(member, ctor_args);
-            }
-          }
-          return ResolvedCall{.decl = nullptr,
-                              .callee_kind = ResolvedCalleeKind::Default,
-                              .defining_unit = {},
-                              .member_name = {},
-                              .default_arg_unit = {},
-                              .return_type_name = {},
-                              .needs_arg_casts = false,
-                              .ambiguous = false};
-        }();
+        ResolvedCall ctor_resolved =
+            resolution_.resolve_pointer_target_constructor(
+                ptr_arg_ty, *cc.callee, ctor_args);
         calls_.append_defaulted_trailing_call_args(ctor_resolved.decl,
                                                    ctor_args);
         std::vector<UntypedArgKind> untyped_arg(ctor_args.size(),

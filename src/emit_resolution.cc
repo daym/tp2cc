@@ -1,12 +1,39 @@
 #include "emit_resolution.h"
 
 #include <algorithm>
+#include <memory>
+#include <utility>
 
 #include "typereg.h"
 
 namespace tp2cc {
 
 using namespace ast;
+
+namespace {
+
+std::string callable_member_name(const Expr& callee) {
+  if (callee.kind == Kind::Ident) {
+    return static_cast<const Ident&>(callee).name;
+  }
+  if (callee.kind == Kind::Member) {
+    return static_cast<const Member&>(callee).name;
+  }
+  return {};
+}
+
+ResolvedCall unresolved_call(std::string member_name = {}) {
+  return ResolvedCall{.decl = nullptr,
+                      .callee_kind = ResolvedCalleeKind::Default,
+                      .defining_unit = {},
+                      .member_name = std::move(member_name),
+                      .default_arg_unit = {},
+                      .return_type_name = {},
+                      .needs_arg_casts = false,
+                      .ambiguous = false};
+}
+
+}  // namespace
 
 EmitResolution::EmitResolution(const TypeRegistry* registry,
                                ScopeStateView& scope, EmitAnalysis& analysis,
@@ -476,24 +503,9 @@ PickResult EmitResolution::pick_overload(
 
 ResolvedCall EmitResolution::resolve_call(
     const Expr& callee, const std::vector<const Expr*>& args) {
-  const std::string member_name = [&]() -> std::string {
-    if (callee.kind == Kind::Ident) {
-      return static_cast<const Ident&>(callee).name;
-    }
-    if (callee.kind == Kind::Member) {
-      return static_cast<const Member&>(callee).name;
-    }
-    return {};
-  }();
+  const std::string member_name = callable_member_name(callee);
   auto unresolved = [&]() {
-    return ResolvedCall{.decl = nullptr,
-                        .callee_kind = ResolvedCalleeKind::Default,
-                        .defining_unit = {},
-                        .member_name = member_name,
-                        .default_arg_unit = {},
-                        .return_type_name = {},
-                        .needs_arg_casts = false,
-                        .ambiguous = false};
+    return unresolved_call(member_name);
   };
   auto resolved = [&](const AnyCand& chosen, bool ran_type_picker) {
     const bool free_unit = !chosen.callee_unit.empty();
@@ -654,6 +666,21 @@ ResolvedCall EmitResolution::resolve_call(
   }
 
   return unresolved();
+}
+
+ResolvedCall EmitResolution::resolve_pointer_target_constructor(
+    const TypeExpr* pointer_type, const Expr& ctor_callee,
+    const std::vector<const Expr*>& args) {
+  if (!registry_ || !pointer_type || ctor_callee.kind != Kind::Ident) {
+    return unresolved_call();
+  }
+  std::string pointee = registry_->pointer_target_type_name(pointer_type);
+  if (pointee.empty()) return unresolved_call();
+  const auto& ctor_ident = static_cast<const Ident&>(ctor_callee);
+  Member member(ctor_callee.loc,
+                std::make_shared<Ident>(ctor_callee.loc, std::move(pointee)),
+                ctor_ident.name);
+  return resolve_call(member, args);
 }
 
 BinaryOperatorResult EmitResolution::find_binary_operator(

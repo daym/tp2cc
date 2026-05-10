@@ -60,6 +60,9 @@ class EmitResolution {
   // redo any of this logic ad hoc.
   ResolvedCall resolve_call(
       const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
+  ResolvedCall resolve_pointer_target_constructor(
+      const ast::TypeExpr* pointer_type, const ast::Expr& ctor_callee,
+      const std::vector<const ast::Expr*>& args);
 
   // Flatten Pascal formal parameters to call-site slots. Repeated names in one
   // parameter declaration become one row per actual argument position so the
