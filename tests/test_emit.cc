@@ -4127,6 +4127,26 @@ void test_runtime_string_and_memory_helpers_resolve_explicitly() {
   CHECK(contains(out.impl, "::rt::p_strrscan("));
 }
 
+void test_sysutils_setdirseparators_resolves_qualified_and_unqualified() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses sysutils;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var s : string;\n"
+      "begin\n"
+      "  s := SetDirSeparators(s);\n"
+      "  s := SysUtils.SetDirSeparators(s);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "::rt::p_setdirseparators("));
+  CHECK(contains(out.impl, "::p_sysutils::p_setdirseparators("));
+}
+
 void test_prefetch_intrinsic_statement_is_noop() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -8084,6 +8104,7 @@ int main() {
   RUN_TEST(test_runtime_endian_helpers_resolve_explicitly);
   RUN_TEST(test_runtime_rotate_helpers_resolve_explicitly);
   RUN_TEST(test_runtime_string_and_memory_helpers_resolve_explicitly);
+  RUN_TEST(test_sysutils_setdirseparators_resolves_qualified_and_unqualified);
   RUN_TEST(test_and_with_not_of_xor_short_circuits);
   RUN_TEST(test_r_plus_routes_narrowing_assignment_through_range_check);
   RUN_TEST(test_q_minus_routes_signed_negate_through_wrap_helper);

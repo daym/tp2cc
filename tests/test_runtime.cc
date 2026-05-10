@@ -180,6 +180,9 @@ void test_runtime_path_helpers_match_compiler_expectations() {
   CHECK_EQ(tp2cc_to_std_string(p_extractfileext(path)), std::string(".gz"));
   CHECK_EQ(tp2cc_to_std_string(p_changefileext(path, tp2cc_ansistring_of(".o"))),
            std::string("/tmp/archive.tar.o"));
+  CHECK_EQ(tp2cc_to_std_string(p_setdirseparators(
+                tp2cc_ansistring_of("foo\\bar/baz"))),
+           std::string("foo/bar/baz"));
 
   // IncludeTrailingPathDelimiter appends `/` only when missing. Empty
   // input round-trips to empty per Pascal's sysutils contract.

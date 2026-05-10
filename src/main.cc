@@ -150,6 +150,7 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
         "p_changefileext",
         "p_getenvironmentvariable",
         "p_expandfilename",
+        "p_setdirseparators",
         "p_executeprocess",
         "p_getlocaltime",
         "p_decodetime",

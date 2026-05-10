@@ -5782,6 +5782,20 @@ inline tp2cc_AnsiString p_includetrailingpathdelimiter(const Str& input) {
 // AllowDirectorySeparators` against arbitrary input paths.
 inline tp2cc_Set<p_char> p_allowdirectoryseparators =
     set_of<p_char>({tp2cc_char_of('/'), tp2cc_char_of('\\')});
+
+// SysUtils.SetDirSeparators copies the path and replaces each character in
+// AllowDirectorySeparators with DirectorySeparator.
+template <typename Str>
+inline tp2cc_AnsiString p_setdirseparators(const Str& input) {
+  std::string s = tp2cc_to_std_string(input);
+  for (char& c : s) {
+    if (p_allowdirectoryseparators.contains(tp2cc_char_of(c))) {
+      c = tp2cc_char_to_c(p_directoryseparator);
+    }
+  }
+  return tp2cc_ansistring_of(s.c_str());
+}
+
 inline int32_t p_extraoptions = 0;
 inline int32_t p_moduleindex = 0;
 template <int N, int M>

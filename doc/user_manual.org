@@ -1098,7 +1098,7 @@ In the table, ~S~ denotes any tp2cc-supported string value (typically ~String~, 
 | ~FileGetDate~, ~FileSetDate~, ~FileAge~, ~GetFileHandle~ | file timestamp/handle helpers | SysUtils-compatible file timestamp and handle operations. |
 | ~FileExists~, ~DeleteFile~, ~DirectoryExists~, ~RenameFile~ | path argument, boolean result | File and directory existence, removal, and rename helpers. |
 | ~ExtractFilePath~, ~ExtractFileDir~, ~ExtractFileName~, ~ExtractFileExt~ | path argument, returns ~AnsiString~ | Splits path strings. |
-| ~ChangeFileExt~, ~ExpandFileName~, ~IncludeTrailingPathDelimiter~ | path string helpers | Path normalization and extension/path delimiter helpers. |
+| ~ChangeFileExt~, ~ExpandFileName~, ~IncludeTrailingPathDelimiter~, ~SetDirSeparators~ | path string helpers | Path normalization and extension/path delimiter helpers. |
 | ~GetEnvironmentVariable~ | ~GetEnvironmentVariable(Name): AnsiString~ | Reads an environment variable as a string. |
 | ~AnsiCompareFileName~, ~CompareText~ | ~(...A, B): LongInt~ | Case-insensitive string comparison used by file/path code. |
 | ~FindFirst~, ~FindNext~, ~FindClose~ | Dos search-record enumeration | Glob-backed file search for Dos-style directory scans. |
@@ -1131,6 +1131,7 @@ System implements these type names beyond the basic scalar/string/pointer types 
 | ~ChangeFileExt(Path, Ext)~ | returns ~AnsiString~ | Replaces or adds a file extension. |
 | ~GetEnvironmentVariable(Name)~ | returns ~AnsiString~ | Reads an environment variable. |
 | ~ExpandFileName(Path)~ | returns ~AnsiString~ | Converts a path through the runtime expansion helper. |
+| ~SetDirSeparators(Path)~ | returns ~AnsiString~ | Replaces every accepted directory separator in ~Path~ with ~DirectorySeparator~. |
 | ~ExecuteProcess(Path, CommandLine)~ | returns ~LongInt~ | Runs a child process and returns its exit status. |
 | ~GetLocalTime(var TSystemTime)~ | procedure | Fills local wall-clock time fields. |
 | ~DecodeTime(Value, var Hour, Minute, Second, Millisecond)~ | procedure | Splits a ~TDateTime~ time value. |

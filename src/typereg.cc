@@ -559,6 +559,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"changefileext", 2, true, false, "ansistring"},
       {"ansicomparefilename", 2, true, false, "longint"},
       {"expandfilename", 1, true, false, "ansistring"},
+      {"setdirseparators", 1, true, false, "ansistring"},
       {"getenvironmentvariable", 1, true, false, "ansistring"},
       {"includetrailingpathdelimiter", 1, true, false, "ansistring"},
       {"getftime",   2, false, false, ""},
