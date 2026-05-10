@@ -405,6 +405,96 @@ ConvScore EmitResolution::score_conversion(
   return {};
 }
 
+bool EmitResolution::proc_decl_matches_procedural_type(
+    const ProcDecl& decl, const TyProcedural& proc) {
+  if ((decl.pkind == ProcKind::Function) != proc.is_function) return false;
+  if (proc.is_function) {
+    if (!proc.return_type || !decl.return_type) return false;
+    if (type_ops_.type_to_cxx(*proc.return_type) !=
+        type_ops_.type_to_cxx(*decl.return_type)) {
+      return false;
+    }
+  }
+
+  auto expanded = [&](const std::vector<Param>& params) {
+    std::vector<std::pair<Param::Mode, std::string>> out;
+    for (const auto& p : params) {
+      const std::string type_text =
+          p.type ? type_ops_.type_to_cxx(*p.type)
+                 : ((p.mode == Param::Const || p.mode == Param::ConstRef)
+                        ? std::string("const void*")
+                        : std::string("void*"));
+      const size_t repeats = p.names.empty() ? 1 : p.names.size();
+      for (size_t i = 0; i < repeats; ++i) {
+        out.emplace_back(p.mode, type_text);
+      }
+    }
+    return out;
+  };
+  return expanded(decl.params) == expanded(proc.params);
+}
+
+std::optional<ConvScore> EmitResolution::score_procedural_argument_conversion(
+    const Expr& arg, const TyProcedural& proc) {
+  if (proc.is_method && arg.kind == Kind::NilLit) {
+    return ConvScore{ConvRank::Exact, 0};
+  }
+  if (!registry_) return std::nullopt;
+
+  const Expr* value = &arg;
+  if (arg.kind == Kind::AddrOf) {
+    const auto& addr = static_cast<const AddrOf&>(arg);
+    if (addr.double_addr || !addr.operand) return std::nullopt;
+    value = addr.operand.get();
+  }
+
+  auto score_methods =
+      [&](const std::vector<MethodSig>* methods) -> std::optional<ConvScore> {
+    if (!methods) return std::nullopt;
+    bool has_instance_method = false;
+    for (const auto& method : *methods) {
+      if (!method.decl || method.decl->is_class_method) continue;
+      has_instance_method = true;
+      if (proc.is_method &&
+          proc_decl_matches_procedural_type(*method.decl, proc)) {
+        return ConvScore{ConvRank::Exact, 0};
+      }
+    }
+    if (has_instance_method) return ConvScore{};
+    return std::nullopt;
+  };
+
+  if (value->kind == Kind::Ident) {
+    if (scope_.current_class_name.empty()) return std::nullopt;
+    return score_methods(registry_->lookup_class_methods(
+        scope_.current_class_name, static_cast<const Ident&>(*value).name,
+        scope_.current_unit_name));
+  }
+
+  if (value->kind != Kind::Member) return std::nullopt;
+  const auto& member = static_cast<const Member&>(*value);
+  if (!analysis_.metaclass_target_name(analysis_.deduce_type(*member.base))
+           .empty()) {
+    return std::nullopt;
+  }
+
+  std::string cls;
+  if (member.base->kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(*member.base);
+    if (id.name == "self") {
+      cls = scope_.current_class_name;
+    } else if (!analysis_.identifier_is_shadowed_value(id.name) &&
+               (registry_->has_class(id.name, scope_.current_unit_name) ||
+                registry_->records.count(id.name))) {
+      return std::nullopt;
+    }
+  }
+  if (cls.empty()) cls = analysis_.deduce_class_alias(*member.base);
+  if (cls.empty()) return std::nullopt;
+  return score_methods(registry_->lookup_class_methods(
+      cls, member.name, scope_.current_unit_name));
+}
+
 ConvScore EmitResolution::score_argument_conversion(
     const Expr& arg, const FlatCallParamInfo& param,
     bool allow_assignment_operator_conversions) {
@@ -417,6 +507,12 @@ ConvScore EmitResolution::score_argument_conversion(
       canon_param->kind == Kind::TySet &&
       static_cast<const SetLit&>(arg).elements.empty()) {
     return {ConvRank::Exact, 0};
+  }
+  if (canon_param && canon_param->kind == Kind::TyProcedural) {
+    if (auto score = score_procedural_argument_conversion(
+            arg, static_cast<const TyProcedural&>(*canon_param))) {
+      return *score;
+    }
   }
   return score_conversion(overload_types_.type_for_overload(arg), param.type,
                           param.mutable_ref,

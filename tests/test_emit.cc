@@ -6425,6 +6425,37 @@ void test_overload_ambiguous_two_default_arg_overloads_reports_error() {
   CHECK(error_count() > before);
 }
 
+void test_overload_picks_method_callback_for_current_method_address() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class end;\n"
+      "  tobjectcallback = procedure(p : titem; arg : pointer) of object;\n"
+      "  tstaticcallback = procedure(p : titem; arg : pointer);\n"
+      "  tlist = class\n"
+      "    procedure foreachcall(cb : tobjectcallback; arg : pointer); overload;\n"
+      "    procedure foreachcall(cb : tstaticcallback; arg : pointer); overload;\n"
+      "  end;\n"
+      "  tholder = class\n"
+      "    list : tlist;\n"
+      "    procedure visit(p : titem; arg : pointer);\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tlist.foreachcall(cb : tobjectcallback; arg : pointer); begin end;\n"
+      "procedure tlist.foreachcall(cb : tstaticcallback; arg : pointer); begin end;\n"
+      "procedure tholder.visit(p : titem; arg : pointer); begin end;\n"
+      "procedure tholder.run;\n"
+      "begin\n"
+      "  list.foreachcall(@visit, nil);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_list->p_foreachcall(t_tobjectcallback("));
+  CHECK(contains(out.impl, "tp2cc_method_code"));
+  CHECK(!contains(out.impl, "p_foreachcall((&p_visit)"));
+}
+
 void test_class_field_shadows_unit_name_in_member_call() {
   // When a class field name happens to match a unit name visible
   // through `uses` (here: `symtable` is both a unit and a field on
@@ -8771,6 +8802,7 @@ int main() {
   RUN_TEST(test_overload_ambiguous_default_arg_vs_no_default_reports_error);
   RUN_TEST(test_overload_ambiguous_two_default_arg_overloads_reports_error);
   RUN_TEST(test_overload_default_arg_extends_arity_disambiguates_cleanly);
+  RUN_TEST(test_overload_picks_method_callback_for_current_method_address);
   RUN_TEST(test_class_field_shadows_unit_name_in_member_call);
   RUN_TEST(test_record_field_named_like_type_keeps_pascal_type_lookup);
   RUN_TEST(test_member_base_local_record_shadows_same_named_type);

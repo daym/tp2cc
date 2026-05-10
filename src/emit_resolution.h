@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -119,6 +120,10 @@ class EmitResolution {
                              const ast::TypeExpr* param,
                              bool var_param,
                              bool allow_assignment_operator_conversions);
+  bool proc_decl_matches_procedural_type(const ast::ProcDecl& decl,
+                                         const ast::TyProcedural& proc);
+  std::optional<ConvScore> score_procedural_argument_conversion(
+      const ast::Expr& arg, const ast::TyProcedural& proc);
   ConvScore score_argument_conversion(
       const ast::Expr& arg, const FlatCallParamInfo& param,
       bool allow_assignment_operator_conversions);
