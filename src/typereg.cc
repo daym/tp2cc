@@ -151,20 +151,21 @@ bool proc_accepts_zero_args(const ProcDecl& pd) {
   return true;
 }
 
+size_t proc_param_count(const std::vector<Param>& params) {
+  size_t count = 0;
+  for (const auto& p : params) count += p.names.empty() ? 1 : p.names.size();
+  return count;
+}
+
 ProcInfo make_proc_info(const std::string& unit,
                         std::shared_ptr<const ProcDecl> pd_sp) {
   const auto& pd = *pd_sp;
-  ProcInfo p;
-  p.defining_unit = unit;
-  p.decl = pd_sp;
-  p.is_function = (pd.pkind == ProcKind::Function);
-  size_t pc = 0;
-  for (const auto& par : pd.params) {
-    pc += par.names.empty() ? 1 : par.names.size();
-  }
-  p.param_count = pc;
-  p.accepts_zero_args = proc_accepts_zero_args(pd);
-  return p;
+  return ProcInfo{.defining_unit = unit,
+                  .decl = std::move(pd_sp),
+                  .param_count = proc_param_count(pd.params),
+                  .is_function = (pd.pkind == ProcKind::Function),
+                  .accepts_zero_args = proc_accepts_zero_args(pd),
+                  .return_type_name = {}};
 }
 
 void add_unit_enum_members(UnitInfo* ui, bool is_interface,
@@ -175,24 +176,25 @@ void add_unit_enum_members(UnitInfo* ui, bool is_interface,
   for (const auto& m : te.members) members.insert(lc(m.name));
 }
 
-void add_class_enum_members(ClassInfo& ci, const TypePtr& t) {
+void add_enum_members(std::unordered_set<std::string>& members,
+                      const TypePtr& t) {
   if (!t) return;
   std::vector<const TyEnum*> enums;
   collect_enum_types(*t, enums);
   for (const TyEnum* te : enums)
-    for (const auto& em : te->members) ci.enum_members.insert(lc(em.name));
+    for (const auto& em : te->members) members.insert(lc(em.name));
 }
 
 void register_enum_type(TypeRegistry& r, UnitInfo* ui, bool is_interface,
                         const std::string& unit, const std::string& key,
                         const std::string& cxx_name, const TyEnum& te) {
-  EnumInfoReg ei;
-  ei.name = key;
-  ei.defining_unit = unit;
-  ei.type = &te;
-  ei.cxx_name = cxx_name;
-  for (const auto& m : te.members) ei.members.push_back(lc(m.name));
-  r.enums[key] = std::move(ei);
+  std::vector<std::string> members;
+  for (const auto& m : te.members) members.push_back(lc(m.name));
+  r.enums[key] = EnumInfoReg{.name = key,
+                             .defining_unit = unit,
+                             .type = &te,
+                             .cxx_name = cxx_name,
+                             .members = std::move(members)};
   r.enum_type_names[&te] = key;
   add_unit_enum_members(ui, is_interface, te);
 }
@@ -219,80 +221,171 @@ void register_enums_in_type(TypeRegistry& r, UnitInfo* ui, bool is_interface,
   }
 }
 
-void add_record_fields(RecordInfo& ri, const TyRecord& tr) {
+std::unordered_map<std::string, FieldInfo> record_fields(const TyRecord& tr) {
+  std::unordered_map<std::string, FieldInfo> fields;
   for (const auto& f : tr.fields) {
-    FieldInfo fi;
-    fi.type = f.type;
-    for (const auto& n : f.names) ri.fields[lc(n)] = fi;
+    const FieldInfo field{.type = f.type, .is_class_var = false};
+    for (const auto& n : f.names) fields[lc(n)] = field;
   }
   // Variant-record tag (`case typ : toptype of ...`) -- `typ` is an
   // actual field in the emitted struct, so it must be indexed as one.
   if (tr.has_variant && !tr.variant_tag_name.empty()) {
-    FieldInfo fi;
-    fi.type = tr.variant_tag_type;
-    ri.fields[lc(tr.variant_tag_name)] = fi;
+    fields[lc(tr.variant_tag_name)] =
+        FieldInfo{.type = tr.variant_tag_type, .is_class_var = false};
   }
   for (const auto& vc : tr.variant_cases) {
     for (const auto& f : vc.fields) {
-      FieldInfo fi;
-      fi.type = f.type;
-      for (const auto& n : f.names) ri.fields[lc(n)] = fi;
+      const FieldInfo field{.type = f.type, .is_class_var = false};
+      for (const auto& n : f.names) fields[lc(n)] = field;
     }
   }
+  return fields;
 }
 
-void add_class_members(ClassInfo& ci, const TyObject& to) {
+SymKind method_kind_for(const ProcDecl& pd) {
+  if (pd.is_class_method) return SymKind::ClassMethod;
+  if (pd.pkind == ProcKind::Constructor) return SymKind::Constructor;
+  if (pd.pkind == ProcKind::Destructor) return SymKind::Destructor;
+  return SymKind::Method;
+}
+
+MethodSig method_sig_for(std::string defining_unit,
+                         std::shared_ptr<const ProcDecl> method) {
+  const auto& pd = *method;
+  return MethodSig{.kind = method_kind_for(pd),
+                   .defining_unit = std::move(defining_unit),
+                   .param_count = proc_param_count(pd.params),
+                   .accepts_zero_args = proc_accepts_zero_args(pd),
+                   .is_function = (pd.pkind == ProcKind::Function),
+                   .is_virtual = pd.is_virtual || pd.is_abstract || pd.is_override,
+                   .is_final = pd.is_final,
+                   .decl = std::move(method)};
+}
+
+std::unordered_map<std::string, FieldInfo> class_fields(const TyObject& to) {
+  std::unordered_map<std::string, FieldInfo> fields;
   for (const auto& m : to.members) {
     if (m.kind == ObjectMemberKind::Field) {
-      FieldInfo fi;
-      fi.type = m.field_type;
-      fi.is_class_var = m.is_class_var;
-      for (const auto& n : m.field_names) ci.fields[lc(n)] = fi;
-      add_class_enum_members(ci, m.field_type);
-    } else if (m.kind == ObjectMemberKind::Method && m.method) {
-      const auto& pd = *m.method;
-      MethodSig ms;
-      ms.defining_unit = ci.defining_unit;
-      ms.decl = m.method;
-      ms.is_virtual = pd.is_virtual || pd.is_abstract || pd.is_override;
-      ms.is_final = pd.is_final;
-      ms.is_function = (pd.pkind == ProcKind::Function);
-      if (pd.is_class_method) ms.kind = SymKind::ClassMethod;
-      else if (pd.pkind == ProcKind::Constructor) ms.kind = SymKind::Constructor;
-      else if (pd.pkind == ProcKind::Destructor) ms.kind = SymKind::Destructor;
-      else ms.kind = SymKind::Method;
-      size_t pc = 0;
-      for (const auto& p : pd.params) pc += p.names.size();
-      ms.param_count = pc;
-      ms.accepts_zero_args = proc_accepts_zero_args(pd);
-      ci.methods[lc(pd.name)].push_back(ms);
-    } else if (m.kind == ObjectMemberKind::Property) {
-      PropertyInfo pi;
-      pi.type = m.property.type;
-      pi.params = m.property.params;
-      pi.is_default = m.property.is_default;
-      std::string name = lc(m.property.name);
-      ci.properties[name] = pi;
-      if (pi.is_default) ci.default_property_name = name;
+      const FieldInfo field{.type = m.field_type,
+                            .is_class_var = m.is_class_var};
+      for (const auto& n : m.field_names) fields[lc(n)] = field;
     }
   }
+  return fields;
 }
 
-void add_interface_members(InterfaceInfo& ii, const TyInterface& ti) {
+std::unordered_set<std::string> class_enum_members(const TyObject& to) {
+  std::unordered_set<std::string> members;
+  for (const auto& m : to.members) {
+    if (m.kind == ObjectMemberKind::Field) add_enum_members(members, m.field_type);
+  }
+  return members;
+}
+
+std::unordered_map<std::string, std::vector<MethodSig>> class_methods(
+    const std::string& defining_unit, const TyObject& to) {
+  std::unordered_map<std::string, std::vector<MethodSig>> methods;
+  for (const auto& m : to.members) {
+    if (m.kind == ObjectMemberKind::Method && m.method) {
+      methods[lc(m.method->name)].push_back(
+          method_sig_for(defining_unit, m.method));
+    }
+  }
+  return methods;
+}
+
+std::unordered_map<std::string, PropertyInfo> class_properties(
+    const TyObject& to) {
+  std::unordered_map<std::string, PropertyInfo> properties;
+  for (const auto& m : to.members) {
+    if (m.kind != ObjectMemberKind::Property) continue;
+    properties[lc(m.property.name)] =
+        PropertyInfo{.type = m.property.type,
+                     .params = m.property.params,
+                     .read = {},
+                     .write = {},
+                     .is_default = m.property.is_default};
+  }
+  return properties;
+}
+
+std::string class_default_property_name(const TyObject& to) {
+  for (const auto& m : to.members) {
+    if (m.kind == ObjectMemberKind::Property && m.property.is_default) {
+      return lc(m.property.name);
+    }
+  }
+  return {};
+}
+
+std::unordered_map<std::string, std::vector<MethodSig>> interface_methods(
+    const std::string& defining_unit, const TyInterface& ti) {
+  std::unordered_map<std::string, std::vector<MethodSig>> methods;
   for (const auto& m : ti.members) {
     if (m.kind != ObjectMemberKind::Method || !m.method) continue;
     const auto& pd = *m.method;
-    MethodSig ms;
-    ms.defining_unit = ii.defining_unit;
-    ms.decl = m.method;
-    ms.is_function = (pd.pkind == ProcKind::Function);
-    ms.kind = SymKind::Method;
-    size_t pc = 0;
-    for (const auto& p : pd.params) pc += p.names.size();
-    ms.param_count = pc;
-    ms.accepts_zero_args = proc_accepts_zero_args(pd);
-    ii.methods[lc(pd.name)].push_back(ms);
+    methods[lc(pd.name)].push_back(MethodSig{
+        .kind = SymKind::Method,
+        .defining_unit = defining_unit,
+        .param_count = proc_param_count(pd.params),
+        .accepts_zero_args = proc_accepts_zero_args(pd),
+        .is_function = (pd.pkind == ProcKind::Function),
+        .is_virtual = false,
+        .is_final = false,
+        .decl = m.method});
   }
+  return methods;
+}
+
+ClassInfo class_info_for(const std::string& unit, const std::string& name,
+                         const TyObject& to) {
+  return ClassInfo{.name = name,
+                   .parent = lc(to.parent),
+                   .defining_unit = unit,
+                   .is_reference_type = to.is_reference_type,
+                   .is_abstract = to.is_abstract,
+                   .is_forward = to.is_forward,
+                   .fields = class_fields(to),
+                   .methods = class_methods(unit, to),
+                   .properties = class_properties(to),
+                   .enum_members = class_enum_members(to),
+                   .default_property_name = class_default_property_name(to)};
+}
+
+InterfaceInfo interface_info_for(const std::string& unit,
+                                 const std::string& name,
+                                 const TyInterface& ti) {
+  return InterfaceInfo{.name = name,
+                       .defining_unit = unit,
+                       .metadata_string = ti.metadata_string,
+                       .methods = interface_methods(unit, ti)};
+}
+
+RecordInfo record_info_for(const std::string& unit, const std::string& name,
+                           const TyRecord& tr) {
+  return RecordInfo{.name = name,
+                    .defining_unit = unit,
+                    .is_packed = tr.is_packed,
+                    .fields = record_fields(tr)};
+}
+
+UnitInfo unit_info_for(
+    std::string name, std::vector<std::string> uses = {},
+    std::unordered_map<std::string, std::vector<ProcInfo>> iface_procs = {}) {
+  return UnitInfo{.name = std::move(name),
+                  .uses = std::move(uses),
+                  .iface_vars = {},
+                  .iface_consts = {},
+                  .iface_procs = std::move(iface_procs),
+                  .iface_operators = {},
+                  .iface_types = {},
+                  .iface_enum_members = {},
+                  .impl_vars = {},
+                  .impl_consts = {},
+                  .impl_procs = {},
+                  .impl_operators = {},
+                  .impl_types = {},
+                  .impl_enum_members = {}};
 }
 
 ClassInfo* lookup_class_exact_mut(TypeRegistry& r, std::string_view unit,
@@ -350,25 +443,28 @@ std::optional<std::string> resolve_field_accessor_cxx(
 PropertyAccessorInfo resolve_property_accessor(
     const TypeRegistry& r, const ClassInfo& owner,
     const PropertyDecl::Accessor& accessor) {
-  PropertyAccessorInfo out;
-  out.path = lower_path(accessor);
-  if (out.path.empty()) return out;
+  std::vector<std::string> path = lower_path(accessor);
+  if (path.empty()) return PropertyAccessorInfo{};
 
-  if (auto cxx_path = resolve_field_accessor_cxx(r, owner, out.path)) {
-    out.kind = PropertyAccessorKind::FieldPath;
-    out.cxx_path = *cxx_path;
-    return out;
+  if (auto cxx_path = resolve_field_accessor_cxx(r, owner, path)) {
+    return PropertyAccessorInfo{.kind = PropertyAccessorKind::FieldPath,
+                                .path = std::move(path),
+                                .cxx_path = *cxx_path,
+                                .method_name = {}};
   }
 
-  if (out.path.size() == 1 &&
-      r.lookup_class_methods(owner.name, out.path.front(), owner.defining_unit)) {
-    out.kind = PropertyAccessorKind::Method;
-    out.method_name = out.path.front();
-    return out;
+  if (path.size() == 1 &&
+      r.lookup_class_methods(owner.name, path.front(), owner.defining_unit)) {
+    return PropertyAccessorInfo{.kind = PropertyAccessorKind::Method,
+                                .path = path,
+                                .cxx_path = {},
+                                .method_name = path.front()};
   }
 
-  out.kind = PropertyAccessorKind::Unsupported;
-  return out;
+  return PropertyAccessorInfo{.kind = PropertyAccessorKind::Unsupported,
+                              .path = std::move(path),
+                              .cxx_path = {},
+                              .method_name = {}};
 }
 
 void resolve_property_accessors_from_decls(TypeRegistry& r,
@@ -411,15 +507,8 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         std::string nm = lc(td.name);
         if (ui) (is_interface ? ui->iface_types : ui->impl_types).insert(nm);
         if (td.type->kind == Kind::TyObject) {
-          ClassInfo ci;
-          ci.name = nm;
-          ci.defining_unit = unit;
           const auto& to = static_cast<const TyObject&>(*td.type);
-          ci.parent = lc(to.parent);
-          ci.is_reference_type = to.is_reference_type;
-          ci.is_abstract = to.is_abstract;
-          ci.is_forward = to.is_forward;
-          add_class_members(ci, to);
+          ClassInfo ci = class_info_for(unit, nm, to);
           auto& bucket = r.classes[nm];
           auto same_unit = std::find_if(
               bucket.begin(), bucket.end(), [&](const ClassInfo& existing) {
@@ -434,31 +523,19 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
             *same_unit = std::move(ci);
           }
         } else if (td.type->kind == Kind::TyInterface) {
-          InterfaceInfo ii;
-          ii.name = nm;
-          ii.defining_unit = unit;
           const auto& ti = static_cast<const TyInterface&>(*td.type);
-          ii.metadata_string = ti.metadata_string;
-          add_interface_members(ii, ti);
-          r.interfaces[nm] = std::move(ii);
+          r.interfaces[nm] = interface_info_for(unit, nm, ti);
         } else if (td.type->kind == Kind::TyRecord) {
-          RecordInfo ri;
-          ri.name = nm;
-          ri.defining_unit = unit;
           const auto& tr = static_cast<const TyRecord&>(*td.type);
-          ri.is_packed = tr.is_packed;
-          add_record_fields(ri, tr);
-          r.records[nm] = std::move(ri);
+          r.records[nm] = record_info_for(unit, nm, tr);
         } else if (td.type->kind == Kind::TyEnum) {
           const auto& te = static_cast<const TyEnum&>(*td.type);
           register_enum_type(r, ui, is_interface, unit, nm, type_mangle(nm),
                              te);
         } else {
           // Alias (possibly pointer / array / primitive).
-          AliasInfo a;
-          a.defining_unit = unit;
-          a.target = td.type;
-          r.aliases[nm] = a;
+          r.aliases[nm] = AliasInfo{.defining_unit = unit,
+                                    .target = td.type};
         }
         register_enums_in_type(
             r, ui, is_interface, unit, *td.type, nm,
@@ -486,18 +563,15 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         // (correctly) flag the call ambiguous. Skip the forward stub --
         // the implementation pass will register the real one.
         if (pd.is_forward) break;
-        ProcInfo p = make_proc_info(unit, pd_sp);
         if (ui) (is_interface ? ui->iface_procs : ui->impl_procs)[lc(pd.name)]
-                    .push_back(p);
+                    .push_back(make_proc_info(unit, pd_sp));
         break;
       }
       case Kind::VarDecl: {
         const auto& vd = static_cast<const VarDecl&>(*d);
-        VarInfo v;
-        v.defining_unit = unit;
-        v.type = vd.type;
+        const VarInfo var{.defining_unit = unit, .type = vd.type};
         for (const auto& n : vd.names) {
-          if (ui) (is_interface ? ui->iface_vars : ui->impl_vars)[lc(n)] = v;
+          if (ui) (is_interface ? ui->iface_vars : ui->impl_vars)[lc(n)] = var;
         }
         if (vd.type && !vd.names.empty()) {
           register_enums_in_type(r, ui, is_interface, unit, *vd.type,
@@ -507,12 +581,11 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
       }
       case Kind::ConstDecl: {
         const auto& cd = static_cast<const ConstDecl&>(*d);
-        ConstInfo c;
-        c.defining_unit = unit;
-        c.type = cd.type;
-        c.value = cd.value;
         if (ui)
-          (is_interface ? ui->iface_consts : ui->impl_consts)[lc(cd.name)] = c;
+          (is_interface ? ui->iface_consts : ui->impl_consts)[lc(cd.name)] =
+              ConstInfo{.defining_unit = unit,
+                        .type = cd.type,
+                        .value = cd.value};
         if (cd.type) {
           register_enums_in_type(r, ui, is_interface, unit, *cd.type,
                                  lc(cd.name), nullptr);
@@ -768,19 +841,17 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   };
   // Synthetic unit "rt::" holds the builtins so lookups that walk
   // the uses chain can find them as an always-available fallback.
-  UnitInfo rtui;
-  rtui.name = "__rt__";
+  std::unordered_map<std::string, std::vector<ProcInfo>> rt_iface_procs;
   for (const auto& b : rt_builtins) {
-    ProcInfo p;
-    p.defining_unit = "__rt__";
-    p.decl = nullptr;
-    p.param_count = b.params;
-    p.is_function = b.is_fn;
-    p.accepts_zero_args = b.zero_ok || b.params == 0;
-    p.return_type_name = b.ret;
-    rtui.iface_procs[b.name].push_back(p);
+    rt_iface_procs[b.name].push_back(
+        ProcInfo{.defining_unit = "__rt__",
+                 .decl = nullptr,
+                 .param_count = b.params,
+                 .is_function = b.is_fn,
+                 .accepts_zero_args = b.zero_ok || b.params == 0,
+                 .return_type_name = b.ret});
   }
-  units["__rt__"] = std::move(rtui);
+  units["__rt__"] = unit_info_for("__rt__", {}, std::move(rt_iface_procs));
   UnitInfo& rt_exports = units["__rt__"];
 
   // Register the rt-side reference classes (tobject, exception, ...) so
@@ -791,119 +862,104 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   // constructor-call lowering falls back to a plain method call, which
   // fails because the rt method is non-static.
   //
-  // Each MethodSig carries a synthesized ProcDecl with real params, so
-  // consumers that walk `decl->params` (param_list_to_cxx,
-  // procedural_param_types_to_cxx, ...) work uniformly. Without the
-  // synthesized decl, every such consumer would need to special-case
-  // null and we'd be back to ad-hoc.
+  // Each MethodSig carries a synthesized ProcDecl with real params. Emit code
+  // reads `decl->params` through the same path used for Pascal declarations.
   auto make_typename = [](const std::string& n) {
-    auto t = std::make_shared<ast::TyName>();
-    t->name = n;
-    return t;
+    return std::make_shared<ast::TyName>(n);
   };
   auto make_proc_param = [&](const std::string& name, ast::TypePtr type) {
-    ast::Param p;
-    p.mode = ast::Param::Const;
-    p.names = {name};
-    p.type = std::move(type);
-    return p;
+    return ast::Param(ast::Param::Const, {name}, std::move(type));
+  };
+  auto make_rt_proc_decl =
+      [](ast::ProcKind pkind, std::string name, std::vector<ast::Param> params,
+         ast::TypePtr return_type = nullptr, bool class_method = false,
+         bool is_operator = false, std::string operator_token = {},
+         ast::ProcDecl::IntrinsicOperator intrinsic_operator =
+             ast::ProcDecl::IntrinsicOperator::None) {
+        return std::make_shared<ast::ProcDecl>(
+            Location{}, pkind, std::move(name), is_operator,
+            std::move(operator_token), intrinsic_operator, std::string{},
+            class_method, std::move(params), std::move(return_type),
+            false, false, false, false, false, false, false, false, false,
+            false, std::string{}, std::string{}, std::vector<ast::DeclPtr>{},
+            nullptr);
   };
   auto add_rt_string_compare_operator =
       [&](const std::string& op, ast::TypePtr lhs_type, ast::TypePtr rhs_type,
           ast::TypePtr return_type) {
-        auto pd = std::make_shared<ast::ProcDecl>(false);
-        pd->pkind = ast::ProcKind::Function;
-        pd->name = "operator_" + op;
-        pd->is_operator = true;
-        pd->operator_token = op;
-        pd->intrinsic_operator = ast::ProcDecl::IntrinsicOperator::StringCompare;
-        pd->params.push_back(make_proc_param("a", std::move(lhs_type)));
-        pd->params.push_back(make_proc_param("b", std::move(rhs_type)));
-        pd->return_type = std::move(return_type);
+        auto pd = make_rt_proc_decl(
+            ast::ProcKind::Function, "operator_" + op,
+            {make_proc_param("a", std::move(lhs_type)),
+             make_proc_param("b", std::move(rhs_type))},
+            std::move(return_type), false, true, op,
+            ast::ProcDecl::IntrinsicOperator::StringCompare);
         rt_exports.iface_operators[op].push_back(make_proc_info("__rt__", pd));
       };
   auto make_pointer = [](ast::TypePtr target = nullptr) {
-    auto t = std::make_shared<ast::TyPointer>();
-    t->target = std::move(target);
-    return t;
+    return std::make_shared<ast::TyPointer>(Location{}, std::move(target));
   };
   auto make_field = [](const std::string& name,
                        ast::TypePtr type) {
-    ast::RecordField f;
-    f.names = {name};
-    f.type = std::move(type);
-    return f;
+    return ast::RecordField({name}, std::move(type));
   };
   auto make_record = [](std::vector<ast::RecordField> fields) {
-    auto t = std::make_shared<ast::TyRecord>();
-    t->fields = std::move(fields);
-    return t;
+    return std::make_shared<ast::TyRecord>(
+        Location{}, std::move(fields), false, std::string{}, nullptr,
+        std::vector<ast::VariantCase>{}, false);
   };
   auto make_set = [](ast::TypePtr element) {
-    auto t = std::make_shared<ast::TySet>();
-    t->element = std::move(element);
-    return t;
+    return std::make_shared<ast::TySet>(Location{}, std::move(element));
   };
   auto make_procedural = [](bool is_function, std::vector<ast::Param> params,
                             ast::TypePtr return_type = nullptr) {
-    auto t = std::make_shared<ast::TyProcedural>();
-    t->is_function = is_function;
-    t->params = std::move(params);
-    t->return_type = std::move(return_type);
-    return t;
+    return std::make_shared<ast::TyProcedural>(
+        Location{}, is_function, std::move(params), std::move(return_type),
+        false, false);
   };
   auto make_enum = [](std::vector<std::string> names) {
-    auto t = std::make_shared<ast::TyEnum>();
+    std::vector<ast::EnumMember> members;
     for (auto& name : names) {
-      ast::EnumMember m;
-      m.name = name;
-      t->members.push_back(std::move(m));
+      members.push_back(ast::EnumMember(std::move(name)));
     }
-    return t;
+    return std::make_shared<ast::TyEnum>(Location{}, 4, std::move(members));
   };
   auto make_int_lit = [](int64_t value) {
-    auto e = std::make_shared<ast::IntLit>();
-    e->value = static_cast<uint64_t>(value);
-    return e;
+    return std::make_shared<ast::IntLit>(static_cast<uint64_t>(value));
   };
   auto add_rt_var = [&](const std::string& name,
                         std::shared_ptr<const ast::TypeExpr> type) {
-    VarInfo v;
-    v.defining_unit = "__rt__";
-    v.type = std::move(type);
-    rt_exports.iface_vars[lc(name)] = std::move(v);
+    rt_exports.iface_vars[lc(name)] =
+        VarInfo{.defining_unit = "__rt__", .type = std::move(type)};
   };
   auto add_rt_const = [&](const std::string& name,
                           std::shared_ptr<const ast::TypeExpr> type,
                           std::shared_ptr<const ast::Expr> value) {
-    ConstInfo c;
-    c.defining_unit = "__rt__";
-    c.type = std::move(type);
-    c.value = std::move(value);
-    rt_exports.iface_consts[lc(name)] = std::move(c);
+    rt_exports.iface_consts[lc(name)] =
+        ConstInfo{.defining_unit = "__rt__",
+                  .type = std::move(type),
+                  .value = std::move(value)};
   };
   auto add_rt_alias = [&](const std::string& name,
                           std::shared_ptr<const ast::TypeExpr> target) {
     std::string low = lc(name);
     rt_exports.iface_types.insert(low);
     if (target && target->kind == Kind::TyEnum) {
-      EnumInfoReg ei;
-      ei.name = low;
-      ei.defining_unit = "__rt__";
-      ei.type = static_cast<const TyEnum*>(target.get());
-      ei.cxx_name = type_mangle(low);
+      const auto* enum_type = static_cast<const TyEnum*>(target.get());
+      std::vector<std::string> members;
       for (const auto& m : static_cast<const TyEnum&>(*target).members) {
         std::string lm = lc(m.name);
-        ei.members.push_back(lm);
+        members.push_back(lm);
         rt_exports.iface_enum_members.insert(lm);
       }
-      enum_type_names[ei.type] = low;
-      enums[low] = std::move(ei);
+      enum_type_names[enum_type] = low;
+      enums[low] = EnumInfoReg{.name = low,
+                               .defining_unit = "__rt__",
+                               .type = enum_type,
+                               .cxx_name = type_mangle(low),
+                               .members = std::move(members)};
     }
-    AliasInfo a;
-    a.defining_unit = "__rt__";
-    a.target = std::move(target);
-    aliases[low] = std::move(a);
+    aliases[low] =
+        AliasInfo{.defining_unit = "__rt__", .target = std::move(target)};
   };
 
   // Runtime globals/constants that old compiler trees refer to directly.
@@ -940,9 +996,8 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   add_rt_const("maxlongint", make_typename("longint"),
                make_int_lit(2147483647));
 
-  // Runtime type names that Pascal code can mention directly. Model them
-  // explicitly instead of relying on the old unresolved-name -> ::rt::
-  // fallback so casts/member lookups still go through normal type analysis.
+  // Runtime type names that Pascal code can mention directly are registered as
+  // aliases so casts and member lookups go through normal type analysis.
   add_rt_alias("signalhandler", make_pointer());
   add_rt_alias("tfpuexception",
                make_enum({"exinvalidop", "exdenormalized", "exzerodivide",
@@ -1011,41 +1066,45 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
                          std::vector<ast::Param> params,
                          ast::TypePtr return_type = nullptr,
                          bool class_method = false) {
-    auto pd = std::make_shared<ast::ProcDecl>(class_method);
-    pd->pkind = pkind;
-    pd->name = name;
-    pd->params = std::move(params);
-    pd->return_type = std::move(return_type);
-    MethodSig ms;
-    ms.defining_unit = "__rt__";
-    ms.kind = (pkind == ast::ProcKind::Constructor) ? SymKind::Constructor
-              : (pkind == ast::ProcKind::Destructor) ? SymKind::Destructor
-              : class_method ? SymKind::ClassMethod
-                                                     : SymKind::Method;
-    size_t pc = 0;
-    for (const auto& p : pd->params) pc += p.names.empty() ? 1 : p.names.size();
-    ms.param_count = pc;
-    ms.accepts_zero_args = (pc == 0);
-    ms.decl = pd;
-    return ms;
+    auto pd = make_rt_proc_decl(pkind, name, std::move(params),
+                                std::move(return_type), class_method);
+    const size_t param_count = proc_param_count(pd->params);
+    return MethodSig{
+        .kind = (pkind == ast::ProcKind::Constructor) ? SymKind::Constructor
+                : (pkind == ast::ProcKind::Destructor) ? SymKind::Destructor
+                : class_method ? SymKind::ClassMethod
+                               : SymKind::Method,
+        .defining_unit = "__rt__",
+        .param_count = param_count,
+        .accepts_zero_args = (param_count == 0),
+        .is_function = (pkind == ast::ProcKind::Function),
+        .is_virtual = false,
+        .is_final = false,
+        .decl = std::move(pd)};
   };
   auto add_rt_class = [&](const std::string& name, const std::string& parent,
                           std::vector<MethodSig> methods) {
-    ClassInfo ci;
-    ci.name = name;
-    ci.parent = parent;
-    ci.defining_unit = "__rt__";
-    ci.is_reference_type = true;
+    std::unordered_map<std::string, std::vector<MethodSig>> method_map;
     for (auto& m : methods) {
       const std::string mname = m.decl->name;
-      ci.methods[mname].push_back(std::move(m));
+      method_map[mname].push_back(std::move(m));
     }
-    rt_classes[name] = std::move(ci);
+    rt_classes[name] =
+        ClassInfo{.name = name,
+                  .parent = parent,
+                  .defining_unit = "__rt__",
+                  .is_reference_type = true,
+                  .is_abstract = false,
+                  .is_forward = false,
+                  .fields = {},
+                  .methods = std::move(method_map),
+                  .properties = {},
+                  .enum_members = {},
+                  .default_property_name = {}};
   };
 
-  ast::Param inh_aclass;
-  inh_aclass.names = {"aclass"};
-  inh_aclass.type = make_typename("tclass");
+  const ast::Param inh_aclass =
+      make_proc_param("aclass", make_typename("tclass"));
   add_rt_class("tobject", "",
                {make_method("create",  ast::ProcKind::Constructor, {}),
                 make_method("destroy", ast::ProcKind::Destructor,  {}),
@@ -1069,10 +1128,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
                             make_typename("boolean"),
                             /*class_method=*/true)});
 
-  ast::Param exc_msg;
-  exc_msg.mode = ast::Param::Const;
-  exc_msg.names = {"msg"};
-  exc_msg.type = make_typename("shortstring");
+  const ast::Param exc_msg = make_proc_param("msg", make_typename("shortstring"));
   add_rt_class("exception", "tobject",
                {make_method("create", ast::ProcKind::Constructor,
                             {exc_msg})});
@@ -1089,14 +1145,13 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
 
   for (const auto* u : us) {
     if (!u) continue;
-    UnitInfo ui;
-    ui.name = lc(u->name);
-    for (const auto& nm : u->interface_uses) ui.uses.push_back(lc(nm));
-    for (const auto& nm : u->impl_uses) ui.uses.push_back(lc(nm));
+    std::vector<std::string> uses;
+    for (const auto& nm : u->interface_uses) uses.push_back(lc(nm));
+    for (const auto& nm : u->impl_uses) uses.push_back(lc(nm));
     // Every Pascal unit implicitly uses `System` -- we model rt as
     // that implicit last fallback on the uses chain.
-    ui.uses.push_back("__rt__");
-    units[lc(u->name)] = std::move(ui);
+    uses.push_back("__rt__");
+    units[lc(u->name)] = unit_info_for(lc(u->name), std::move(uses));
 
     register_decl_list(*this, lc(u->name), u->interface_decls,
                        /*is_interface=*/true);
@@ -1115,9 +1170,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       // in the semantic registry with an empty UnitInfo: the unit has no parsed
       // exports, but `Unit.name` is still a valid qualified spelling and
       // EmitLookup can fall back to the generated stub namespace.
-      UnitInfo stub;
-      stub.name = low;
-      units[low] = std::move(stub);
+      units[low] = unit_info_for(low);
     };
     for (const auto& nm : u->interface_uses) add_external_stub(nm);
     for (const auto& nm : u->impl_uses) add_external_stub(nm);

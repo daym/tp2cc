@@ -409,7 +409,7 @@ int cmd_parse_all(const CliOptions& opts,
 
 int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
                  const std::string& outdir) {
-  UnitGraph g;
+  UnitGraph g{};
   configure_graph(g, opts);
   fs::path input = input_path;
   if (!fs::is_regular_file(input)) {
@@ -427,17 +427,16 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
   fs::create_directories(outdir);
   int emitted = 0, failed = 0;
   std::set<std::string> rtl_refs;
-  EmittedBuildManifest manifest;
-  manifest.tp2cc_program = make_tp2cc_program(opts.invoked_as, fs::path(outdir));
-  manifest.include_dirs = make_tp2cc_include_dirs(opts.invoked_as, fs::path(outdir));
-  manifest.tp2cc_args =
-      make_regen_tp2cc_args("emit-all", opts, input);
+  std::vector<std::string> pas_sources;
+  std::vector<std::string> cc_sources;
+  std::vector<std::string> headers;
+  std::string program_name;
 
   std::vector<const ast::UnitNode*> asts;
   for (const auto& [_, pu] : g.units()) {
     if (pu.ast) asts.push_back(pu.ast.get());
   }
-  TypeRegistry reg;
+  TypeRegistry reg{};
   reg.build(asts);
 
   for (const auto& name : tr.order) {
@@ -468,11 +467,11 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
       std::ofstream c(fs::path(outdir) / ("p_" + name + ".cc"));
       c << out.impl;
     }
-    manifest.pas_sources.push_back(fs::absolute(pu->path).generic_string());
-    manifest.cc_sources.push_back("p_" + name + ".cc");
-    manifest.headers.push_back("p_" + name + ".h");
-    if (pu->ast->is_program && manifest.program_name.empty()) {
-      manifest.program_name = name;
+    pas_sources.push_back(fs::absolute(pu->path).generic_string());
+    cc_sources.push_back("p_" + name + ".cc");
+    headers.push_back("p_" + name + ".h");
+    if (pu->ast->is_program && program_name.empty()) {
+      program_name = name;
     }
     auto scan = [&](const std::vector<std::string>& uses) {
       for (const auto& u : uses) {
@@ -487,9 +486,18 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
   for (const auto& u : rtl_refs) {
     std::ofstream h(fs::path(outdir) / ("p_" + u + ".h"));
     write_external_stub(h, u);
-    manifest.headers.push_back("p_" + u + ".h");
+    headers.push_back("p_" + u + ".h");
   }
   if (opts.emit_makefile) {
+    EmittedBuildManifest manifest{
+        .cc_sources = std::move(cc_sources),
+        .headers = std::move(headers),
+        .pas_sources = std::move(pas_sources),
+        .tp2cc_program = make_tp2cc_program(opts.invoked_as, fs::path(outdir)),
+        .include_dirs = make_tp2cc_include_dirs(opts.invoked_as,
+                                                fs::path(outdir)),
+        .tp2cc_args = make_regen_tp2cc_args("emit-all", opts, input),
+        .program_name = std::move(program_name)};
     std::ofstream mk(fs::path(outdir) / "Makefile");
     mk << emit_makefile(manifest);
   }
@@ -510,7 +518,7 @@ int cmd_emit(const CliOptions& opts, const std::string& path,
   // aliases are context-sensitive: value emission builds a copied array value,
   // while storage contexts need a typed view of the original storage. That
   // decision depends on knowing that the callee name is a Pascal type.
-  TypeRegistry reg;
+  TypeRegistry reg{};
   std::vector<const ast::UnitNode*> units{u.get()};
   reg.build(units);
   int errs_before = error_count();
@@ -528,14 +536,15 @@ int cmd_emit(const CliOptions& opts, const std::string& path,
     c << out.impl;
   }
   if (opts.emit_makefile) {
-    EmittedBuildManifest manifest;
-    manifest.tp2cc_program = make_tp2cc_program(opts.invoked_as, fs::path(outdir));
-    manifest.include_dirs = make_tp2cc_include_dirs(opts.invoked_as, fs::path(outdir));
-    manifest.tp2cc_args = make_regen_tp2cc_args("emit", opts, path);
-    manifest.pas_sources.push_back(fs::absolute(path).generic_string());
-    manifest.cc_sources.push_back("p_" + stem + ".cc");
-    manifest.headers.push_back("p_" + stem + ".h");
-    if (u->is_program) manifest.program_name = stem;
+    EmittedBuildManifest manifest{
+        .cc_sources = {"p_" + stem + ".cc"},
+        .headers = {"p_" + stem + ".h"},
+        .pas_sources = {fs::absolute(path).generic_string()},
+        .tp2cc_program = make_tp2cc_program(opts.invoked_as, fs::path(outdir)),
+        .include_dirs = make_tp2cc_include_dirs(opts.invoked_as,
+                                                fs::path(outdir)),
+        .tp2cc_args = make_regen_tp2cc_args("emit", opts, path),
+        .program_name = u->is_program ? stem : std::string{}};
     std::ofstream mk(fs::path(outdir) / "Makefile");
     mk << emit_makefile(manifest);
     std::printf("emitted p_%s.h, p_%s.cc, and Makefile\n",
@@ -552,7 +561,7 @@ int cmd_topo(const CliOptions& opts,
     std::fprintf(stderr, "topo: expected exactly one entry file\n");
     return 2;
   }
-  UnitGraph g;
+  UnitGraph g{};
   configure_graph(g, opts);
   fs::path input = files[0];
   if (!fs::is_regular_file(input)) {
@@ -605,8 +614,13 @@ int main(int argc, char** argv) {
   std::string cmd = argv[1];
   if (cmd == "-h" || cmd == "--help") { usage(); return 0; }
 
-  CliOptions opts;
-  opts.invoked_as = argv[0];
+  std::vector<std::string> defines;
+  std::vector<fs::path> unit_paths;
+  std::vector<fs::path> include_paths;
+  std::vector<std::string> regen_cli_args;
+  bool overflow_check = false;
+  bool range_check = false;
+  bool emit_makefile = false;
   std::vector<std::string> positional;
   bool end_of_opts = false;
   for (int i = 2; i < argc; ++i) {
@@ -614,30 +628,30 @@ int main(int argc, char** argv) {
     if (!end_of_opts) {
       if (a == "--") { end_of_opts = true; continue; }
       if (a == "-h" || a == "--help") { usage(); return 0; }
-      if (a == "-m") { opts.emit_makefile = true; continue; }
+      if (a == "-m") { emit_makefile = true; continue; }
       if (a.size() > 2 && a[0] == '-' && a[1] == 'd') {
-        opts.defines.emplace_back(a.substr(2));
-        opts.regen_cli_args.emplace_back(argv[i]);
+        defines.emplace_back(a.substr(2));
+        regen_cli_args.emplace_back(argv[i]);
         continue;
       }
       if (a.size() > 3 && a[0] == '-' && a[1] == 'F' && a[2] == 'u') {
-        opts.unit_paths.emplace_back(std::string(a.substr(3)));
-        opts.regen_cli_args.emplace_back(argv[i]);
+        unit_paths.emplace_back(std::string(a.substr(3)));
+        regen_cli_args.emplace_back(argv[i]);
         continue;
       }
       if (a.size() > 3 && a[0] == '-' && a[1] == 'F' && a[2] == 'i') {
-        opts.include_paths.emplace_back(std::string(a.substr(3)));
-        opts.regen_cli_args.emplace_back(argv[i]);
+        include_paths.emplace_back(std::string(a.substr(3)));
+        regen_cli_args.emplace_back(argv[i]);
         continue;
       }
       if (a == "-Co") {
-        opts.overflow_check = true;
-        opts.regen_cli_args.emplace_back(argv[i]);
+        overflow_check = true;
+        regen_cli_args.emplace_back(argv[i]);
         continue;
       }
       if (a == "-Cr") {
-        opts.range_check = true;
-        opts.regen_cli_args.emplace_back(argv[i]);
+        range_check = true;
+        regen_cli_args.emplace_back(argv[i]);
         continue;
       }
       if (!a.empty() && a[0] == '-') {
@@ -648,6 +662,15 @@ int main(int argc, char** argv) {
     }
     positional.emplace_back(argv[i]);
   }
+
+  const CliOptions opts{.defines = std::move(defines),
+                        .unit_paths = std::move(unit_paths),
+                        .include_paths = std::move(include_paths),
+                        .regen_cli_args = std::move(regen_cli_args),
+                        .invoked_as = argv[0],
+                        .overflow_check = overflow_check,
+                        .range_check = range_check,
+                        .emit_makefile = emit_makefile};
 
   if (cmd == "lex")       return cmd_lex(opts, positional);
   if (cmd == "lex-all")   return cmd_lex_all(opts, positional);

@@ -1,6 +1,7 @@
 #include "parser.h"
 
 #include <initializer_list>
+#include <optional>
 #include <utility>
 
 #include "diag.h"
@@ -46,6 +47,45 @@ bool is_constant_subrange_bound_expr(const Expr& e) {
 
 TypePtr make_type_name(Location loc, std::string name) {
   return std::make_shared<TyName>(loc, std::move(name));
+}
+
+std::optional<BinOp> relational_operator(Tok tok) {
+  switch (tok) {
+    case Tok::Eq: return BinOp::Eq;
+    case Tok::NotEq: return BinOp::NotEq;
+    case Tok::Lt: return BinOp::Lt;
+    case Tok::Gt: return BinOp::Gt;
+    case Tok::LtEq: return BinOp::LtEq;
+    case Tok::GtEq: return BinOp::GtEq;
+    case Tok::KwIn: return BinOp::In;
+    case Tok::KwIs: return BinOp::Is;
+    case Tok::KwAs: return BinOp::As;
+    default: return std::nullopt;
+  }
+}
+
+std::optional<BinOp> additive_operator(Tok tok) {
+  switch (tok) {
+    case Tok::Plus: return BinOp::Add;
+    case Tok::Minus: return BinOp::Sub;
+    case Tok::KwOr: return BinOp::Or;
+    case Tok::KwXor: return BinOp::Xor;
+    case Tok::SymDiff: return BinOp::SymDiff;
+    default: return std::nullopt;
+  }
+}
+
+std::optional<BinOp> multiplicative_operator(Tok tok) {
+  switch (tok) {
+    case Tok::Star: return BinOp::Mul;
+    case Tok::Slash: return BinOp::RealDiv;
+    case Tok::KwDiv: return BinOp::IntDiv;
+    case Tok::KwMod: return BinOp::Mod;
+    case Tok::KwAnd: return BinOp::And;
+    case Tok::KwShl: return BinOp::Shl;
+    case Tok::KwShr: return BinOp::Shr;
+    default: return std::nullopt;
+  }
 }
 
 }  // namespace
@@ -434,12 +474,8 @@ void Parser::parse_const_section(std::vector<DeclPtr>& out) {
     Location loc = cur_.loc;
     std::string name = cur_.text;
     advance();
-    bool typed = false;
-    TypePtr type;
-    if (accept(Tok::Colon)) {
-      type = parse_type();
-      typed = true;
-    }
+    const bool typed = accept(Tok::Colon);
+    TypePtr type = typed ? parse_type() : nullptr;
     expect(Tok::Eq, "const decl");
     ExprPtr value = typed ? parse_const_value(type.get()) : parse_expr();
     while (is_directive("deprecated") || is_directive("platform") ||
@@ -552,7 +588,7 @@ void Parser::parse_var_section(std::vector<DeclPtr>& out) {
     }
     expect(Tok::Colon, "var decl");
     TypePtr type = parse_type();
-    ExprPtr init;
+    ExprPtr init = nullptr;
     bool is_absolute = false;
     bool is_external = false;
     std::string absolute_target;
@@ -728,7 +764,6 @@ std::optional<Parser::ProcModifiers> Parser::parse_proc_modifier(
            || is_directive("platform")
            || is_directive("library")
            || is_directive("experimental")) {
-    // Purely advisory; swallow and keep going.
     advance();
     if (cur_.kind == Tok::StringLit) advance();
   }
@@ -814,7 +849,7 @@ std::shared_ptr<ProcDecl> Parser::parse_proc_decl(
   // Interface sections never have bodies. Nor do forward/external/abstract
   // declarations.
   std::vector<DeclPtr> locals;
-  StmtPtr body;
+  StmtPtr body = nullptr;
   if (!(in_interface || modifiers.is_forward || modifiers.is_external ||
         modifiers.is_abstract)) {
     // Implementation-side definition: parse locals and body.
@@ -885,7 +920,7 @@ std::shared_ptr<ProcDecl> Parser::parse_operator_decl(bool in_interface) {
       parse_proc_header_tail("operator header", /*in_type_member=*/false);
 
   std::vector<DeclPtr> locals;
-  StmtPtr body;
+  StmtPtr body = nullptr;
   if (!(in_interface || modifiers.is_forward || modifiers.is_external ||
         modifiers.is_abstract)) {
     parse_decl_block(locals, /*in_interface=*/false);
@@ -935,7 +970,7 @@ std::vector<Param> Parser::parse_param_list(Tok close) {
         advance();
       }
     }
-    TypePtr type;
+    TypePtr type = nullptr;
     if (accept(Tok::Colon)) {
       // `array of T` open-array form
       if (check(Tok::KwArray)) {
@@ -1078,7 +1113,7 @@ TypePtr Parser::parse_simple_type() {
       std::string name = cur_.text;
       advance();
       // FPC accepts both `:=` and `=` here.
-      ExprPtr value;
+      ExprPtr value = nullptr;
       if (accept(Tok::Assign) || accept(Tok::Eq)) {
         value = parse_expr();
       }
@@ -1505,7 +1540,7 @@ TypePtr Parser::parse_set_type() {
 TypePtr Parser::parse_file_type() {
   Location loc = cur_.loc;
   expect(Tok::KwFile, "file");
-  TypePtr element;
+  TypePtr element = nullptr;
   if (accept(Tok::KwOf)) element = parse_type();
   return std::make_shared<TyFile>(loc, std::move(element));
 }
@@ -1558,23 +1593,10 @@ StmtPtr Parser::parse_compound_statement() {
 }
 
 StmtPtr Parser::parse_statement() {
-  // Labeled statement: LabelId `:` Stmt
+  // In statement position, `Ident:` and `123:` start labeled statements.
   if (cur_.kind == Tok::Ident && peek().kind == Tok::Colon) {
-    // But only if the identifier was declared as a label -- we can't know
-    // here. Heuristic: if the next-next token looks like a statement start,
-    // treat as labeled. Otherwise fall through (it'll be an assignment or
-    // call with an ident LHS).
-    // Fpc sources use labels like `exit_label:` before a statement -- safe
-    // to always treat ident-colon as label when the identifier is
-    // short/uppercased; but simpler: always treat as label here, then parse
-    // another statement.
-    // This introduces ambiguity only in declarations which don't reach us.
-    // Keep it permissive: treat as labeled.
     std::string lab = cur_.text;
     Location loc = cur_.loc;
-    // Peek further: a labeled statement in Pascal must be followed by a
-    // full statement, not be a type ascription. In statement position we
-    // are never ascribing, so the following heuristic is safe.
     advance();
     advance();  // ':'
     return std::make_shared<Labeled>(loc, std::move(lab), parse_statement());
@@ -1840,7 +1862,7 @@ StmtPtr Parser::parse_try() {
 StmtPtr Parser::parse_raise() {
   Location loc = cur_.loc;
   expect(Tok::KwRaise, "raise");
-  ExprPtr value;
+  ExprPtr value = nullptr;
   // Optional expression -- the instance being raised.  Absent iff the
   // next token ends the statement (`;', `end', `else', ...).
   if (!check(Tok::Semi) && !check(Tok::KwEnd) && !check(Tok::KwElse)
@@ -1890,22 +1912,11 @@ StmtPtr Parser::parse_asm() {
 ExprPtr Parser::parse_expr() {
   auto lhs = parse_simple_expr();
   for (;;) {
-    BinOp op;
-    switch (cur_.kind) {
-      case Tok::Eq:    op = BinOp::Eq; break;
-      case Tok::NotEq: op = BinOp::NotEq; break;
-      case Tok::Lt:    op = BinOp::Lt; break;
-      case Tok::Gt:    op = BinOp::Gt; break;
-      case Tok::LtEq:  op = BinOp::LtEq; break;
-      case Tok::GtEq:  op = BinOp::GtEq; break;
-      case Tok::KwIn:  op = BinOp::In; break;
-      case Tok::KwIs:  op = BinOp::Is; break;
-      case Tok::KwAs:  op = BinOp::As; break;
-      default: return lhs;
-    }
+    const auto op = relational_operator(cur_.kind);
+    if (!op) return lhs;
     Location loc = cur_.loc; advance();
     auto rhs = parse_simple_expr();
-    auto b = std::make_shared<Binary>(loc, op, std::move(lhs), std::move(rhs),
+    auto b = std::make_shared<Binary>(loc, *op, std::move(lhs), std::move(rhs),
                                       lex_.overflow_check_active());
     lhs = std::move(b);
   }
@@ -1922,18 +1933,11 @@ ExprPtr Parser::parse_subrange_bound() {
 ExprPtr Parser::parse_simple_expr() {
   auto lhs = parse_term();
   for (;;) {
-    BinOp op;
-    switch (cur_.kind) {
-      case Tok::Plus:  op = BinOp::Add; break;
-      case Tok::Minus: op = BinOp::Sub; break;
-      case Tok::KwOr:  op = BinOp::Or;  break;
-      case Tok::KwXor: op = BinOp::Xor; break;
-      case Tok::SymDiff: op = BinOp::SymDiff; break;
-      default: return lhs;
-    }
+    const auto op = additive_operator(cur_.kind);
+    if (!op) return lhs;
     Location loc = cur_.loc; advance();
     auto rhs = parse_term();
-    auto b = std::make_shared<Binary>(loc, op, std::move(lhs), std::move(rhs),
+    auto b = std::make_shared<Binary>(loc, *op, std::move(lhs), std::move(rhs),
                                       lex_.overflow_check_active());
     lhs = std::move(b);
   }
@@ -1942,20 +1946,11 @@ ExprPtr Parser::parse_simple_expr() {
 ExprPtr Parser::parse_term() {
   auto lhs = parse_factor();
   for (;;) {
-    BinOp op;
-    switch (cur_.kind) {
-      case Tok::Star:  op = BinOp::Mul; break;
-      case Tok::Slash: op = BinOp::RealDiv; break;
-      case Tok::KwDiv: op = BinOp::IntDiv; break;
-      case Tok::KwMod: op = BinOp::Mod; break;
-      case Tok::KwAnd: op = BinOp::And; break;
-      case Tok::KwShl: op = BinOp::Shl; break;
-      case Tok::KwShr: op = BinOp::Shr; break;
-      default: return lhs;
-    }
+    const auto op = multiplicative_operator(cur_.kind);
+    if (!op) return lhs;
     Location loc = cur_.loc; advance();
     auto rhs = parse_factor();
-    auto b = std::make_shared<Binary>(loc, op, std::move(lhs), std::move(rhs),
+    auto b = std::make_shared<Binary>(loc, *op, std::move(lhs), std::move(rhs),
                                       lex_.overflow_check_active());
     lhs = std::move(b);
   }
@@ -2033,8 +2028,7 @@ ExprPtr Parser::parse_primary() {
     case Tok::KwString:
     case Tok::KwShortstring: {
       // In expression position, `string(x)` / `shortstring(x)` is a typecast.
-      // `string` is H-mode-sensitive, so resolve it here instead of letting
-      // later emit code guess whether the target was ShortString or AnsiString.
+      // `string` follows the current H-mode at parse time.
       auto id = std::make_shared<Ident>(
           loc,
           cur_.kind == Tok::KwString && lex_.long_strings_active()
