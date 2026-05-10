@@ -1242,6 +1242,16 @@ void test_exception_create_stores_message_for_pascal_message_property() {
   CHECK_EQ(tp2cc_to_std_string(e.p_message), std::string("permission denied"));
 }
 
+void test_sysutils_exception_runtime_classes() {
+  t_eoutofmemory oom;
+  t_einouterror io;
+  CHECK(dynamic_cast<t_exception*>(&oom) != nullptr);
+  CHECK(dynamic_cast<t_eheapmemoryerror*>(&oom) != nullptr);
+  CHECK(dynamic_cast<t_exception*>(&io) != nullptr);
+  io.p_errorcode = 5;
+  CHECK_EQ(io.p_errorcode, 5);
+}
+
 void test_exception_metaclass_accepts_concrete_root_create_thunk() {
   tp2cc_metaclass_t_exception meta(tp2cc_metaclass_t_tobject(+[]() -> t_tobject* {
     auto* instance = new t_exception{};
@@ -1527,6 +1537,7 @@ int main() {
   RUN_TEST(test_exception_metaclass_exists_and_constructs_exception_instance);
   RUN_TEST(test_classname_comes_from_metaclass_descriptor);
   RUN_TEST(test_exception_create_stores_message_for_pascal_message_property);
+  RUN_TEST(test_sysutils_exception_runtime_classes);
   RUN_TEST(test_exception_metaclass_accepts_concrete_root_create_thunk);
   RUN_TEST(test_hi_lo_split_ordinal_halves);
   RUN_TEST(test_fillword_and_compareword_operate_on_word_counts);

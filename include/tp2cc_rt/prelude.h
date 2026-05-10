@@ -1118,6 +1118,20 @@ struct t_einterror : t_eexternal {
   using inherited = t_eexternal;
   using inherited::p_create;
 };
+struct t_einouterror : t_exception {
+  using inherited = t_exception;
+  using inherited::p_create;
+  int32_t p_errorcode = 0;
+};
+struct t_eheapmemoryerror : t_exception {
+  using inherited = t_exception;
+  using inherited::p_create;
+};
+using t_eheapexception = t_eheapmemoryerror;
+struct t_eoutofmemory : t_eheapmemoryerror {
+  using inherited = t_eheapmemoryerror;
+  using inherited::p_create;
+};
 struct t_eintoverflow : t_einterror {
   using inherited = t_einterror;
   using inherited::p_create;

@@ -1124,6 +1124,8 @@ System implements these type names beyond the basic scalar/string/pointer types 
 | Name | Interface | Use |
 | ~Exception~ | class with ~Create(const Msg: String)~ and ~Message~ storage | Base exception class used by translated ~raise~ and ~try..except~ code. |
 | ~EExternal~, ~EIntError~, ~EIntOverflow~, ~ERangeError~, ~EDivByZero~ | exception classes | Exception classes thrown or caught by runtime checking helpers. |
+| ~EInOutError~ | exception class with ~ErrorCode: LongInt~ | I/O exception class used by code that catches or inspects runtime I/O failures. |
+| ~EHeapMemoryError~, ~EHeapException~, ~EOutOfMemory~ | exception classes | Heap-allocation exception classes; ~EHeapException~ is an alias of ~EHeapMemoryError~. |
 | ~EOSError~ | exception class with ~ErrorCode: LongInt~ | Exception class for code that catches or inspects OS errors. |
 | ~TDateTime~ | type alias | Date/time value, represented by the runtime as a floating value. |
 | ~TExecuteFlags~ | ~set of (ExecInheritsHandles)~ | Process-execution flags accepted by ~ExecuteProcess~. |

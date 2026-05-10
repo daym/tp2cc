@@ -55,6 +55,10 @@ const ClassInfo* EmitAnalysis::class_info_for_type_name(std::string_view name) {
       if (low == "exception") it->second.parent = "tobject";
       else if (low == "eexternal") it->second.parent = "exception";
       else if (low == "einterror") it->second.parent = "eexternal";
+      else if (low == "einouterror") it->second.parent = "exception";
+      else if (low == "eheapmemoryerror") it->second.parent = "exception";
+      else if (low == "eheapexception") it->second.parent = "eheapmemoryerror";
+      else if (low == "eoutofmemory") it->second.parent = "eheapmemoryerror";
       else if (low == "eintoverflow") it->second.parent = "einterror";
       else if (low == "eoserror") it->second.parent = "exception";
       it->second.defining_unit =

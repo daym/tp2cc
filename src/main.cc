@@ -187,6 +187,10 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
     static constexpr const char* kRtAliasedExceptionClasses[] = {
         "t_eexternal",
         "t_einterror",
+        "t_einouterror",
+        "t_eheapmemoryerror",
+        "t_eheapexception",
+        "t_eoutofmemory",
         "t_eintoverflow",
         "t_erangeerror",
         "t_edivbyzero",

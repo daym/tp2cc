@@ -1781,6 +1781,36 @@ void test_try_except_multiple_handlers_start_with_if_and_base_pointer_cast() {
   CHECK(!contains(out.impl, "bool tp2cc_handled_1 = false;\n      else if"));
 }
 
+void test_sysutils_exception_handlers_are_qualified_and_pointer_bound() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses sysutils;\n"
+      "function demo : boolean;\n"
+      "implementation\n"
+      "function demo : boolean;\n"
+      "begin\n"
+      "  try\n"
+      "    raise exception.create('x');\n"
+      "  except\n"
+      "    on EOutOfMemory do\n"
+      "      Result := true;\n"
+      "    on e : EInOutError do\n"
+      "      Result := e.message <> '';\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "dynamic_cast<::p_sysutils::t_eoutofmemory*>("));
+  CHECK(contains(out.impl,
+                 "dynamic_cast<::p_sysutils::t_einouterror*>("));
+  CHECK(contains(out.impl, "auto p_e = tp2cc_match_1_1;"));
+  CHECK(contains(out.impl, "p_e->p_message"));
+  CHECK(!contains(out.impl, "dynamic_cast<t_eoutofmemory*>"));
+  CHECK(!contains(out.impl, "dynamic_cast<t_einouterror*>"));
+  CHECK(!contains(out.impl, "p_e.p_message"));
+}
+
 void test_char_plus_cast_uses_string_concat() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -8308,6 +8338,7 @@ int main() {
   RUN_TEST(test_try_except_raises_and_matches_exception_class);
   RUN_TEST(test_raise_at_address_and_frame_metadata_is_accepted_and_discarded);
   RUN_TEST(test_try_except_multiple_handlers_start_with_if_and_base_pointer_cast);
+  RUN_TEST(test_sysutils_exception_handlers_are_qualified_and_pointer_bound);
   RUN_TEST(test_char_plus_cast_uses_string_concat);
   RUN_TEST(test_nul_char_plus_cast_uses_string_concat);
   RUN_TEST(test_embedded_nul_string_literal_uses_explicit_length_builder);

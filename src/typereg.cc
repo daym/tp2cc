@@ -1038,6 +1038,16 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   add_rt_class("exception", "tobject",
                {make_method("create", ast::ProcKind::Constructor,
                             {exc_msg})});
+  add_rt_class("eexternal", "exception", {});
+  add_rt_class("einterror", "eexternal", {});
+  add_rt_class("einouterror", "exception", {});
+  add_rt_class("eheapmemoryerror", "exception", {});
+  add_rt_class("eheapexception", "eheapmemoryerror", {});
+  add_rt_class("eoutofmemory", "eheapmemoryerror", {});
+  add_rt_class("eintoverflow", "einterror", {});
+  add_rt_class("erangeerror", "einterror", {});
+  add_rt_class("edivbyzero", "einterror", {});
+  add_rt_class("eoserror", "exception", {});
 
   for (const auto* u : us) {
     if (!u) continue;
