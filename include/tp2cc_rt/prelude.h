@@ -2756,7 +2756,11 @@ enum t_tfpuexception : uint8_t {
   p_exunderflow,
   p_exprecision,
 };
+enum t_texecuteflag : uint8_t {
+  p_execinheritshandles,
+};
 using t_tsyscharset = tp2cc_Set<p_char>;
+using t_texecuteflags = tp2cc_Set<t_texecuteflag>;
 using t_tfpuexceptionmask = tp2cc_Set<t_tfpuexception>;
 
 // Pascal `Math.GetExceptionMask` / `SetExceptionMask` use the same six-bit
@@ -4106,6 +4110,12 @@ inline int32_t p_executeprocess(const Path& path, const Cmd& command_line) {
   return tp2cc_last_dosexitcode;
 }
 
+template <typename Path, typename Cmd>
+inline int32_t p_executeprocess(const Path& path, const Cmd& command_line,
+                                t_texecuteflags) {
+  return p_executeprocess(path, command_line);
+}
+
 inline int32_t p_executeprocess(const tp2cc_AnsiString& path,
                                 const tp2cc_OpenArray<tp2cc_AnsiString>& args) {
   std::vector<std::string> argv;
@@ -4114,6 +4124,12 @@ inline int32_t p_executeprocess(const tp2cc_AnsiString& path,
   for (const auto& arg : args) argv.push_back(tp2cc_to_std_string(arg));
   tp2cc_spawn_process(argv);
   return tp2cc_last_dosexitcode;
+}
+
+inline int32_t p_executeprocess(const tp2cc_AnsiString& path,
+                                const tp2cc_OpenArray<tp2cc_AnsiString>& args,
+                                t_texecuteflags) {
+  return p_executeprocess(path, args);
 }
 
 inline tp2cc_AnsiString p_stringofchar(p_char c, t_sizeint count) {

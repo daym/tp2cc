@@ -368,6 +368,8 @@ const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
       {"datetime", "::rt::t_datetime"},
       {"hresult", "::rt::t_hresult"},
       {"tdatetime", "::rt::t_tdatetime"},
+      {"texecuteflag", "::rt::t_texecuteflag"},
+      {"texecuteflags", "::rt::t_texecuteflags"},
       {"tsyscharset", "::rt::t_tsyscharset"},
       {"comstr", "::rt::t_comstr"},
       {"dirstr", "::rt::t_dirstr"},

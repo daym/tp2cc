@@ -602,6 +602,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"renamefile", 2, true,  false, "boolean"},
       {"exec",       2, false, false, ""},
       {"executeprocess", 2, true, false, "longint"},
+      {"executeprocess", 3, true, false, "longint"},
       {"trunc",      1, true,  false, "longint"},
       {"frac",       1, true,  false, "double"},
       {"octstr",     2, true,  false, "shortstring"},
@@ -808,6 +809,8 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   add_rt_alias("extstr", make_typename("shortstring"));
   add_rt_alias("pathstr", make_typename("shortstring"));
   add_rt_alias("comstr", make_typename("shortstring"));
+  add_rt_alias("texecuteflag", make_enum({"execinheritshandles"}));
+  add_rt_alias("texecuteflags", make_set(make_typename("texecuteflag")));
   add_rt_alias("tfpuexceptionmask", make_set(make_typename("tfpuexception")));
   add_rt_alias("tsyscharset", make_set(make_typename("char")));
   add_rt_alias("hresult", make_typename("longint"));

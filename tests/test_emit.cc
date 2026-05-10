@@ -2675,6 +2675,7 @@ void test_runtime_aliases_cover_currency_systemtime_and_pansistring() {
       "procedure demo;\n"
       "var\n"
       "  c : currency;\n"
+      "  ef : texecuteflags;\n"
       "  hr : hresult;\n"
       "  pd : pdword;\n"
       "  pl : plongword;\n"
@@ -2687,6 +2688,7 @@ void test_runtime_aliases_cover_currency_systemtime_and_pansistring() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "::rt::t_currency p_c{};"));
+  CHECK(contains(out.impl, "::rt::t_texecuteflags p_ef{};"));
   CHECK(contains(out.impl, "::rt::t_hresult p_hr{};"));
   CHECK(contains(out.impl, "::rt::t_pdword p_pd{};"));
   CHECK(contains(out.impl, "::rt::t_plongword p_pl{};"));
@@ -3948,6 +3950,29 @@ void test_runtime_enum_members_resolve_explicitly() {
   CHECK(contains(out.impl, "::rt::p_setexceptionmask("));
   CHECK(contains(out.impl, "::rt::p_exinvalidop"));
   CHECK(contains(out.impl, "::rt::p_exprecision"));
+}
+
+void test_sysutils_executeprocess_accepts_execute_flags() {
+  auto out = compile_snippet_with_registry(
+      "unit cfileutl;\n"
+      "interface\n"
+      "uses sysutils;\n"
+      "function RunIt(const path: ansistring; flags: TExecuteFlags = []): longint;\n"
+      "implementation\n"
+      "function RunIt(const path: ansistring; flags: TExecuteFlags): longint;\n"
+      "begin\n"
+      "  RunIt := SysUtils.ExecuteProcess(path, 'arg', flags);\n"
+      "end;\n"
+      "procedure Demo;\n"
+      "begin\n"
+      "  RunIt('tool');\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "int32_t p_runit(::rt::tp2cc_AnsiString p_path, "
+                 "::rt::t_texecuteflags p_flags);"));
+  CHECK(contains(out.impl, "::p_sysutils::p_executeprocess("));
+  CHECK(contains(out.impl, "::rt::tp2cc_Set<::rt::t_texecuteflag>{}"));
 }
 
 void test_ansicomparefilename_resolves_explicitly() {
@@ -8153,6 +8178,7 @@ int main() {
   RUN_TEST(test_typed_set_literal_uses_surrounding_set_type);
   RUN_TEST(test_cross_unit_enum_set_literal_keeps_exported_enum_type);
   RUN_TEST(test_runtime_enum_members_resolve_explicitly);
+  RUN_TEST(test_sysutils_executeprocess_accepts_execute_flags);
   RUN_TEST(test_ansicomparefilename_resolves_explicitly);
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
   RUN_TEST(test_named_set_const_assigns_to_compatible_set_via_runtime_helper);

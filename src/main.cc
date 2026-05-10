@@ -136,6 +136,7 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
     h << "// external RTL stub.\n";
     static constexpr const char* kSysutilsTypeAliases[] = {
         "t_tdatetime",
+        "t_texecuteflags",
         "t_tsyscharset",
         "t_tsystemtime",
         "t_hresult",

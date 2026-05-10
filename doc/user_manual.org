@@ -1125,6 +1125,7 @@ System implements these type names beyond the basic scalar/string/pointer types 
 | ~EExternal~, ~EIntError~, ~EIntOverflow~, ~ERangeError~, ~EDivByZero~ | exception classes | Exception classes thrown or caught by runtime checking helpers. |
 | ~EOSError~ | exception class with ~ErrorCode: LongInt~ | Exception class for code that catches or inspects OS errors. |
 | ~TDateTime~ | type alias | Date/time value, represented by the runtime as a floating value. |
+| ~TExecuteFlags~ | ~set of (ExecInheritsHandles)~ | Process-execution flags accepted by ~ExecuteProcess~. |
 | ~TSysCharSet~ | ~set of Char~ | Character set type for string-scanning interfaces. |
 | ~TSystemTime~ | record alias | Year/month/day/hour/min/sec/millisecond fields for ~GetLocalTime~. |
 | ~HRESULT~ | integer alias | Windows-style result code type used by compiler support code. |
@@ -1133,7 +1134,7 @@ System implements these type names beyond the basic scalar/string/pointer types 
 | ~GetEnvironmentVariable(Name)~ | returns ~AnsiString~ | Reads an environment variable. |
 | ~ExpandFileName(Path)~ | returns ~AnsiString~ | Converts a path through the runtime expansion helper. |
 | ~SetDirSeparators(Path)~ | returns ~AnsiString~ | Replaces every accepted directory separator in ~Path~ with ~DirectorySeparator~. |
-| ~ExecuteProcess(Path, CommandLine)~ | returns ~LongInt~ | Runs a child process and returns its exit status. |
+| ~ExecuteProcess(Path, CommandLine[, Flags])~ | returns ~LongInt~ | Runs a child process and returns its exit status. |
 | ~GetLocalTime(var TSystemTime)~ | procedure | Fills local wall-clock time fields. |
 | ~DecodeTime(Value, var Hour, Minute, Second, Millisecond)~ | procedure | Splits a ~TDateTime~ time value. |
 | ~DecodeDate(Value, var Year, Month, Day)~ | procedure | Splits a ~TDateTime~ date value. |
