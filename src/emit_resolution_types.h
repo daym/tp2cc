@@ -7,6 +7,7 @@
 namespace tp2cc::ast {
 struct Call;
 struct Expr;
+struct Param;
 struct ProcDecl;
 struct TypeExpr;
 }  // namespace tp2cc::ast
@@ -188,6 +189,18 @@ class ResolutionTypeOps {
   virtual std::string type_to_cxx(const ast::TypeExpr& t) = 0;
   virtual bool type_is_pcharish(const ast::TypeExpr* t) = 0;
   virtual bool type_is_stringish(const ast::TypeExpr* t) = 0;
+  // True for any type that lowers to a C++ pointer (typed pointers,
+  // procedural variables, reference-class instances, the pchar family,
+  // etc.). The picker uses it to recognize Pascal nil-compatible slots
+  // without re-listing the cases at the call site.
+  virtual bool type_is_pointerish(const ast::TypeExpr* t) = 0;
+  // The procedure-of-object signature comparison must agree byte-for-byte
+  // between the picker (scoring `@method` against the of-object slot) and
+  // the emitter (binding `@method` to a `tp2cc_MethodPtr` constructor).
+  // Routing both through this one shared spelling avoids the dual-source
+  // definitions diverging on edge cases like var/const mode adornments.
+  virtual std::string procedural_param_types_to_cxx(
+      const std::vector<ast::Param>& params) = 0;
 };
 
 }  // namespace tp2cc

@@ -408,96 +408,29 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
     }
   }
 
-  if (!registry_) return std::nullopt;
+  // Picker and emitter share `resolve_method_value_binding` so they agree
+  // by construction on which method a `@expr` resolves to. If we get a
+  // binding, format the `tp2cc_MethodPtr` constructor; otherwise nullopt
+  // and the caller falls back to plain expr_to_cxx.
+  auto bind = resolution_.resolve_method_value_binding(e, proc);
+  if (!bind || !bind->decl) return std::nullopt;
+
   const std::string target_cxx = types_.type_to_cxx(*target);
-
-  auto method_code_text = [&](const std::string& cls,
-                              const ProcDecl& pd) -> std::string {
-    return "::rt::tp2cc_method_code<&" + types_.named_type_struct_cxx(cls) + "::" +
-           types_.method_pointer_helper_name(pd) + ">()";
-  };
-
-  auto bind_method = [&](const std::string& base_cxx, const std::string& cls,
-                         const ProcDecl& pd,
-                         bool base_is_reference_class) -> std::string {
-    std::string self_expr = base_is_reference_class
-                                ? "(void*)(" + base_cxx + ")"
-                                : "(void*)(&(" + base_cxx + "))";
-    return target_cxx + "(" + method_code_text(cls, pd) +
-           ", " + self_expr + ")";
-  };
-
-  auto method_matches_target = [&](const MethodSig& method) {
-    if (!method.decl || method.decl->is_class_method) return false;
-    if (method.decl->pkind == ProcKind::Function) {
-      if (!proc.is_function || !proc.return_type || !method.decl->return_type) {
-        return false;
-      }
-      if (types_.type_to_cxx(*proc.return_type) !=
-          types_.type_to_cxx(*method.decl->return_type)) {
-        return false;
-      }
-    } else if (proc.is_function) {
-      return false;
-    }
-    return types_.procedural_param_types_to_cxx(method.decl->params) ==
-           types_.procedural_param_types_to_cxx(proc.params);
-  };
-
-  auto bind_current_method =
-      [&](const std::string& name) -> std::optional<std::string> {
-    if (scope_.current_class_name.empty()) return std::nullopt;
-    if (const auto* methods = registry_->lookup_class_methods(
-            scope_.current_class_name, name, scope_.current_unit_name)) {
-      for (const auto& method : *methods) {
-        if (method_matches_target(method)) {
-          return bind_method("(*this)", scope_.current_class_name,
-                             *method.decl, false);
-        }
-      }
-    }
-    return std::nullopt;
-  };
-
-  auto bind_member = [&](const Member& m) -> std::optional<std::string> {
-    std::string cls;
-    if (m.base->kind == Kind::Ident &&
-        static_cast<const Ident&>(*m.base).name == "self") {
-      cls = scope_.current_class_name;
-    } else {
-      cls = analysis_.deduce_class_alias(*m.base);
-    }
-    if (cls.empty()) return std::nullopt;
-    if (const auto* methods = registry_->lookup_class_methods(
-            cls, m.name, scope_.current_unit_name)) {
-      for (const auto& method : *methods) {
-        if (method_matches_target(method)) {
-          return bind_method(expr_ops_.expr_to_cxx(*m.base), cls,
-                             *method.decl,
-                             storage_.expr_is_reference_class(*m.base));
-        }
-      }
-    }
-    return std::nullopt;
-  };
-
-  if (e.kind == Kind::Ident) {
-    return bind_current_method(static_cast<const Ident&>(e).name);
+  const std::string code_text = "::rt::tp2cc_method_code<&" +
+                                types_.named_type_struct_cxx(bind->class_name) +
+                                "::" +
+                                types_.method_pointer_helper_name(*bind->decl) +
+                                ">()";
+  std::string self_expr;
+  if (!bind->member_base) {
+    self_expr = "(void*)(&((*this)))";
+  } else {
+    const std::string base_cxx = expr_ops_.expr_to_cxx(*bind->member_base);
+    self_expr = storage_.expr_is_reference_class(*bind->member_base)
+                    ? "(void*)(" + base_cxx + ")"
+                    : "(void*)(&(" + base_cxx + "))";
   }
-  if (e.kind == Kind::Member) {
-    return bind_member(static_cast<const Member&>(e));
-  }
-  if (e.kind == Kind::AddrOf) {
-    const auto& a = static_cast<const AddrOf&>(e);
-    if (!a.operand) return std::nullopt;
-    if (a.operand->kind == Kind::Ident) {
-      return bind_current_method(static_cast<const Ident&>(*a.operand).name);
-    }
-    if (a.operand->kind == Kind::Member) {
-      return bind_member(static_cast<const Member&>(*a.operand));
-    }
-  }
-  return std::nullopt;
+  return target_cxx + "(" + code_text + ", " + self_expr + ")";
 }
 
 std::optional<std::string> EmitValues::maybe_lower_metaclass_value(

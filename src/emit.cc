@@ -455,7 +455,7 @@ struct Emitter : ResolveNameProvider,
   bool type_is_stringish(const ast::TypeExpr* t) override {
     return storage_.type_is_stringish(t);
   }
-  bool type_is_pointerish(const ast::TypeExpr* t) {
+  bool type_is_pointerish(const ast::TypeExpr* t) override {
     return storage_.type_is_pointerish(t);
   }
   bool type_is_open_array(const ast::TypeExpr* t) {

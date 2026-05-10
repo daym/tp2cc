@@ -31,6 +31,33 @@ struct UnaryOperatorResult {
   bool ambiguous = false;
 };
 
+// Result of resolving an `@method` / nil / bare-ident expression against a
+// `procedure of object` target. One source of truth for both the overload
+// picker (scoring `@method` against a procedural-typed parameter slot) and
+// the emitter (lowering `@method` to a `tp2cc_MethodPtr` constructor).
+//
+// `member_base == nullptr` means the receiver is the current method's
+// `Self`; nonnull means the receiver is the Pascal expression `*member_base`
+// and the emitter decides reference-class-ness from that. A nullptr `decl`
+// means a method with the given name was found on `class_name` but its
+// signature does not match the requested procedural type - picker scores
+// that Not-Viable, and the emitter must not bind.
+struct MethodValueBinding {
+  const ast::ProcDecl* decl;
+  std::string class_name;
+  const ast::Expr* member_base;
+
+  static MethodValueBinding via_self(const ast::ProcDecl* decl,
+                                     std::string class_name) {
+    return {decl, std::move(class_name), nullptr};
+  }
+  static MethodValueBinding via_member(const ast::ProcDecl* decl,
+                                       std::string class_name,
+                                       const ast::Expr* base) {
+    return {decl, std::move(class_name), base};
+  }
+};
+
 class EmitResolution {
  public:
   EmitResolution(const TypeRegistry* registry, ScopeStateView& scope,
@@ -86,6 +113,15 @@ class EmitResolution {
   AssignmentOperatorResult find_assignment_operator(
       const ast::TypeExpr* source, const ast::TypeExpr* target);
 
+  // Resolve an `@method` / `Ident` / `Member` expression against a
+  // `procedure of object` target. Returns nullopt when the expression is
+  // not @method-shaped, or when `proc.is_method` is false (no method-pointer
+  // value is admissible into a non-method-of-object slot). Otherwise
+  // returns a binding describing which method is bound and how to spell
+  // `Self`. See `MethodValueBinding`.
+  std::optional<MethodValueBinding> resolve_method_value_binding(
+      const ast::Expr& arg, const ast::TyProcedural& proc);
+
  private:
   // One row in a callable-name lookup result. `decl` is null only for
   // metadata-only runtime builtins; arity filtering still uses
@@ -120,8 +156,6 @@ class EmitResolution {
                              const ast::TypeExpr* param,
                              bool var_param,
                              bool allow_assignment_operator_conversions);
-  bool proc_decl_matches_procedural_type(const ast::ProcDecl& decl,
-                                         const ast::TyProcedural& proc);
   std::optional<ConvScore> score_procedural_argument_conversion(
       const ast::Expr& arg, const ast::TyProcedural& proc);
   ConvScore score_argument_conversion(

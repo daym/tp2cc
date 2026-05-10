@@ -405,42 +405,12 @@ ConvScore EmitResolution::score_conversion(
   return {};
 }
 
-bool EmitResolution::proc_decl_matches_procedural_type(
-    const ProcDecl& decl, const TyProcedural& proc) {
-  if ((decl.pkind == ProcKind::Function) != proc.is_function) return false;
-  if (proc.is_function) {
-    if (!proc.return_type || !decl.return_type) return false;
-    if (type_ops_.type_to_cxx(*proc.return_type) !=
-        type_ops_.type_to_cxx(*decl.return_type)) {
-      return false;
-    }
-  }
-
-  auto expanded = [&](const std::vector<Param>& params) {
-    std::vector<std::pair<Param::Mode, std::string>> out;
-    for (const auto& p : params) {
-      const std::string type_text =
-          p.type ? type_ops_.type_to_cxx(*p.type)
-                 : ((p.mode == Param::Const || p.mode == Param::ConstRef)
-                        ? std::string("const void*")
-                        : std::string("void*"));
-      const size_t repeats = p.names.empty() ? 1 : p.names.size();
-      for (size_t i = 0; i < repeats; ++i) {
-        out.emplace_back(p.mode, type_text);
-      }
-    }
-    return out;
-  };
-  return expanded(decl.params) == expanded(proc.params);
-}
-
-std::optional<ConvScore> EmitResolution::score_procedural_argument_conversion(
+std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
     const Expr& arg, const TyProcedural& proc) {
-  if (proc.is_method && arg.kind == Kind::NilLit) {
-    return ConvScore{ConvRank::Exact, 0};
-  }
-  if (!registry_) return std::nullopt;
+  if (!proc.is_method || !registry_) return std::nullopt;
 
+  // Strip an optional address-of (`@method`); both bare ident-form (`method`)
+  // and addressed form lower the same way for procedure-of-object targets.
   const Expr* value = &arg;
   if (arg.kind == Kind::AddrOf) {
     const auto& addr = static_cast<const AddrOf&>(arg);
@@ -448,31 +418,56 @@ std::optional<ConvScore> EmitResolution::score_procedural_argument_conversion(
     value = addr.operand.get();
   }
 
-  auto score_methods =
-      [&](const std::vector<MethodSig>* methods) -> std::optional<ConvScore> {
-    if (!methods) return std::nullopt;
-    bool has_instance_method = false;
-    for (const auto& method : *methods) {
-      if (!method.decl || method.decl->is_class_method) continue;
-      has_instance_method = true;
-      if (proc.is_method &&
-          proc_decl_matches_procedural_type(*method.decl, proc)) {
-        return ConvScore{ConvRank::Exact, 0};
+  auto signatures_match = [&](const ProcDecl& decl) {
+    if ((decl.pkind == ProcKind::Function) != proc.is_function) return false;
+    if (proc.is_function) {
+      if (!proc.return_type || !decl.return_type) return false;
+      if (type_ops_.type_to_cxx(*proc.return_type) !=
+          type_ops_.type_to_cxx(*decl.return_type)) {
+        return false;
       }
     }
-    if (has_instance_method) return ConvScore{};
+    return type_ops_.procedural_param_types_to_cxx(decl.params) ==
+           type_ops_.procedural_param_types_to_cxx(proc.params);
+  };
+
+  // Look up `name` on `cls`'s instance methods. Return:
+  //   nullopt           - no instance method by that name (caller falls back).
+  //   binding(decl=...) - first signature-matching method.
+  //   binding(decl=nil) - methods exist by that name but none match `proc`.
+  auto pick_decl =
+      [&](const std::string& cls,
+          const std::string& name) -> std::optional<const ProcDecl*> {
+    const auto* methods =
+        registry_->lookup_class_methods(cls, name, scope_.current_unit_name);
+    if (!methods) return std::nullopt;
+    bool saw_instance = false;
+    for (const auto& method : *methods) {
+      if (!method.decl || method.decl->is_class_method) continue;
+      saw_instance = true;
+      if (signatures_match(*method.decl)) {
+        return method.decl.get();
+      }
+    }
+    if (saw_instance) return static_cast<const ProcDecl*>(nullptr);
     return std::nullopt;
   };
 
   if (value->kind == Kind::Ident) {
     if (scope_.current_class_name.empty()) return std::nullopt;
-    return score_methods(registry_->lookup_class_methods(
-        scope_.current_class_name, static_cast<const Ident&>(*value).name,
-        scope_.current_unit_name));
+    auto decl = pick_decl(scope_.current_class_name,
+                          static_cast<const Ident&>(*value).name);
+    if (!decl) return std::nullopt;
+    return MethodValueBinding::via_self(*decl, scope_.current_class_name);
   }
 
   if (value->kind != Kind::Member) return std::nullopt;
   const auto& member = static_cast<const Member&>(*value);
+  if (!member.base) return std::nullopt;
+
+  // `Klass.method` (a metaclass-qualified reference) doesn't bind a Self -
+  // it would name a class function, which is not a valid value for a
+  // procedure-of-object target.
   if (!analysis_.metaclass_target_name(analysis_.deduce_type(*member.base))
            .empty()) {
     return std::nullopt;
@@ -486,13 +481,42 @@ std::optional<ConvScore> EmitResolution::score_procedural_argument_conversion(
     } else if (!analysis_.identifier_is_shadowed_value(id.name) &&
                (registry_->has_class(id.name, scope_.current_unit_name) ||
                 registry_->records.count(id.name))) {
+      // `Klass.method` where Klass is a type name (not a value) - same as
+      // the metaclass case above; not a method-value binding.
       return std::nullopt;
     }
   }
   if (cls.empty()) cls = analysis_.deduce_class_alias(*member.base);
   if (cls.empty()) return std::nullopt;
-  return score_methods(registry_->lookup_class_methods(
-      cls, member.name, scope_.current_unit_name));
+
+  auto decl = pick_decl(cls, member.name);
+  if (!decl) return std::nullopt;
+  return MethodValueBinding::via_member(*decl, std::move(cls),
+                                        member.base.get());
+}
+
+std::optional<ConvScore> EmitResolution::score_procedural_argument_conversion(
+    const Expr& arg, const TyProcedural& proc) {
+  if (proc.is_method && arg.kind == Kind::NilLit) {
+    return ConvScore{ConvRank::Exact, 0};
+  }
+  if (proc.is_method) {
+    auto bind = resolve_method_value_binding(arg, proc);
+    if (!bind) return std::nullopt;
+    return bind->decl ? ConvScore{ConvRank::Exact, 0} : ConvScore{};
+  }
+  // Plain `procedure(...)` slot: an `@instance_method` is not a viable value
+  // here. Reuse the same resolver against a synthetic of-object view to ask
+  // "does this @-shape name an instance method in scope?" - one lookup-and-
+  // shadow walker for both this rejection and the bind path. If yes, score
+  // Not-Viable so the picker prefers the of-object overload; otherwise fall
+  // through to the default rank-conversion path.
+  TyProcedural method_view = proc;
+  method_view.is_method = true;
+  if (resolve_method_value_binding(arg, method_view)) {
+    return ConvScore{};
+  }
+  return std::nullopt;
 }
 
 ConvScore EmitResolution::score_argument_conversion(
@@ -507,6 +531,35 @@ ConvScore EmitResolution::score_argument_conversion(
       canon_param->kind == Kind::TySet &&
       static_cast<const SetLit&>(arg).elements.empty()) {
     return {ConvRank::Exact, 0};
+  }
+  // `nil` has no standalone type; deduce_type(NilLit) returns null, so
+  // rank_conversion bails with Not-Viable. Without this case the picker
+  // would reject `nil` for every pointer-shaped slot, killing overload
+  // resolution on calls like `foo(@method, nil)`. Pascal accepts `nil`
+  // wherever a pointer-shaped value goes - typed pointers, procedural
+  // variables (including procedure-of-object), reference-class instances,
+  // pchar-family aliases - so reuse the same `type_is_pointerish` predicate
+  // the storage layer uses to classify those targets, instead of
+  // rebuilding the list of accepting kinds here.
+  if (arg.kind == Kind::NilLit && canon_param &&
+      type_ops_.type_is_pointerish(canon_param)) {
+    return {ConvRank::Exact, 0};
+  }
+  // Pascal's `pointer` is the universal pointer type: any typed-pointer
+  // value (including `@var` results and reference-class values) is freely
+  // assignable to a `pointer` parameter without a cast. rank_conversion
+  // doesn't model this implicit narrowing, so the picker rejects e.g.
+  // `foo(@s, ...)` against a `pointer` slot when there's a competing
+  // overload. Score it Exact here so the picker sees the call as viable.
+  if (canon_param && canon_param->kind == Kind::TyName &&
+      static_cast<const TyName&>(*canon_param).name == "pointer") {
+    if (const TypeExpr* arg_type =
+            overload_types_.type_for_overload(arg)) {
+      const TypeExpr* canon_arg = analysis_.canonicalize_type(arg_type);
+      if (canon_arg && type_ops_.type_is_pointerish(canon_arg)) {
+        return {ConvRank::Exact, 0};
+      }
+    }
   }
   if (canon_param && canon_param->kind == Kind::TyProcedural) {
     if (auto score = score_procedural_argument_conversion(
