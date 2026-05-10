@@ -1,0 +1,60 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-10
+Subject: Replace SysUtils.Format and Exception.CreateFmt calls with string concat
+License: expat
+
+`array of const` is not supported in tp2cc.
+
+Rewrite the reached `Format` and `CreateFmt` uses as ordinary string
+concatenation.  The `FPC_FULLVERSION` value remains byte-identical for the
+single-digit version components used here.
+
+--- a/compiler/options.pas
++++ b/compiler/options.pas
+@@ -105,6 +105,14 @@
+   ppccfg,
+   param_file    : string;   { file to compile specified on the commandline }
+ 
++function tp2cc_pad2(v : longint) : string;
++begin
++  if v < 10 then
++    tp2cc_pad2 := '0' + tostr(v)
++  else
++    tp2cc_pad2 := tostr(v);
++end;
++
+ 
+ {****************************************************************************
+                      Options not supported on all platforms
+@@ -3890,7 +3898,10 @@
+   set_system_macro('FPC_VERSION',version_nr);
+   set_system_macro('FPC_RELEASE',release_nr);
+   set_system_macro('FPC_PATCH',patch_nr);
+-  set_system_macro('FPC_FULLVERSION',Format('%d%.02d%.02d',[StrToInt(version_nr),StrToInt(release_nr),StrToInt(patch_nr)]));
++  set_system_macro('FPC_FULLVERSION',
++                   tostr(StrToInt(version_nr)) +
++                   tp2cc_pad2(StrToInt(release_nr)) +
++                   tp2cc_pad2(StrToInt(patch_nr)));
+ 
+   if not(target_info.system in systems_windows) then
+     def_system_macro('FPC_WIDESTRING_EQUAL_UNICODESTRING');
+--- a/compiler/cclasses.pas
++++ b/compiler/cclasses.pas
+@@ -809,7 +809,7 @@
+ 
+ class procedure TFPList.Error(const Msg: string; Data: PtrInt);{$ifndef VER2_6}noreturn;{$endif VER2_6}
+ begin
+-  Raise EListError.CreateFmt(Msg,[Data]) at get_caller_addr(get_frame), get_caller_frame(get_frame);
++  Raise EListError.Create(Msg + ' (' + tostr(Data) + ')') at get_caller_addr(get_frame), get_caller_frame(get_frame);
+ end;
+ 
+ procedure TFPList.Exchange(Index1, Index2: Integer);
+@@ -1507,7 +1507,7 @@
+ 
+ class procedure TFPHashList.Error(const Msg: string; Data: PtrInt);{$ifndef VER2_6}noreturn;{$endif VER2_6}
+ begin
+-  Raise EListError.CreateFmt(Msg,[Data])  at get_caller_addr(get_frame), get_caller_frame(get_frame);
++  Raise EListError.Create(Msg + ' (' + tostr(Data) + ')')  at get_caller_addr(get_frame), get_caller_frame(get_frame);
+ end;
+ 
+ function TFPHashList.Expand: TFPHashList;
