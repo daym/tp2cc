@@ -990,7 +990,21 @@ const TypeExpr* TypeRegistry::canonicalize(const TypeExpr* te) const {
           "kMaxAliasChainHops; cycle or registry corruption");
     }
     const auto& n = static_cast<const TyName&>(*te);
-    auto it = aliases.find(lc(n.name));
+    std::string low = lc(n.name);
+    auto it = aliases.find(low);
+    if (it == aliases.end()) {
+      if (auto dot = low.find('.'); dot != std::string::npos) {
+        // Default-argument lowering can qualify a formal type as `unit.alias`
+        // because the C++ default value is emitted at a caller in another
+        // unit. Alias lookup is keyed by Pascal type name plus defining unit,
+        // so strip the qualifier only after verifying it names that unit.
+        auto tail_it = aliases.find(low.substr(dot + 1));
+        if (tail_it != aliases.end() &&
+            tail_it->second.defining_unit == low.substr(0, dot)) {
+          it = tail_it;
+        }
+      }
+    }
     if (it == aliases.end()) return te;  // unknown alias; leave as-is
     te = it->second.target.get();
   }

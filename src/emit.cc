@@ -95,6 +95,7 @@ struct Emitter : ResolveNameProvider,
   // to disambiguate it from a same-named symbol brought in by another
   // `uses` clause.
   std::string current_unit_name;
+  std::string default_arg_emission_unit_name;
 
   // Suppresses the "bare method reference -> append ()" rewrite. tp2cc_Set
   // while emitting (a) the CALLEE of a Call (else `foo(args)` would
@@ -196,6 +197,7 @@ struct Emitter : ResolveNameProvider,
         unit_init_order(unit_init_order_in),
         scope_state_{current_class_name,
                      current_unit_name,
+                     default_arg_emission_unit_name,
                      lhs_fn_rewrite,
                      lhs_fn_rewrite_slot,
                      lhs_outer_result_rewrite,

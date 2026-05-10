@@ -1,6 +1,7 @@
 #include "emit_calls.h"
 
 #include <algorithm>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,23 +47,65 @@ struct DefaultArgumentUnitScope {
   // A default argument expression belongs to the declaration that introduced
   // it, even though tp2cc lowers it while emitting a later call site.
   std::string& current_unit;
-  std::string saved;
+  std::string& emission_unit;
+  std::string saved_current_unit;
+  std::string saved_emission_unit;
   bool active = false;
 
   DefaultArgumentUnitScope(std::string& current_unit_in,
+                           std::string& emission_unit_in,
                            std::string_view default_arg_unit)
-      : current_unit(current_unit_in) {
+      : current_unit(current_unit_in), emission_unit(emission_unit_in) {
     if (!default_arg_unit.empty() && default_arg_unit != current_unit) {
-      saved = current_unit;
+      saved_current_unit = current_unit;
+      saved_emission_unit = emission_unit;
+      emission_unit = current_unit;
       current_unit = std::string(default_arg_unit);
       active = true;
     }
   }
 
   ~DefaultArgumentUnitScope() {
-    if (active) current_unit = saved;
+    if (active) {
+      current_unit = saved_current_unit;
+      emission_unit = saved_emission_unit;
+    }
   }
 };
+
+std::string visible_type_unit_from(std::string_view type_name,
+                                   std::string_view unit_name,
+                                   const TypeRegistry* registry) {
+  if (!registry) return {};
+  const std::string low = ascii_lower(std::string(type_name));
+  const std::string unit = ascii_lower(std::string(unit_name));
+  auto uit = registry->units.find(unit);
+  if (uit != registry->units.end()) {
+    if (uit->second.has_type(low)) return unit;
+    for (auto it = uit->second.uses.rbegin(); it != uit->second.uses.rend();
+         ++it) {
+      if (*it == "__rt__") continue;
+      auto used = registry->units.find(*it);
+      if (used != registry->units.end() && used->second.has_export_type(low)) {
+        return *it;
+      }
+    }
+  }
+  if (auto ait = registry->aliases.find(low);
+      ait != registry->aliases.end()) {
+    return ait->second.defining_unit;
+  }
+  if (const ClassInfo* ci = registry->lookup_class(low, unit)) {
+    return ci->defining_unit;
+  }
+  auto iit = registry->interfaces.find(low);
+  if (iit != registry->interfaces.end()) return iit->second.defining_unit;
+  auto rit = registry->records.find(low);
+  if (rit != registry->records.end()) return rit->second.defining_unit;
+  auto eit = registry->enums.find(low);
+  if (eit != registry->enums.end()) return eit->second.defining_unit;
+  return {};
+}
 
 void mark_builtin_memory_helper_param_info(
     std::string_view name, std::vector<UntypedArgKind>& untyped_arg,
@@ -283,7 +326,29 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
                                       UntypedArgKind untyped_arg,
                                       bool mutable_ref_arg,
                                       std::string_view default_arg_unit) {
+  std::shared_ptr<TyName> qualified_default_param_type;
+  if (!default_arg_unit.empty() && default_arg_unit != scope_.current_unit_name &&
+      param_type &&
+      param_type->kind == Kind::TyName) {
+    const auto& tn = static_cast<const TyName&>(*param_type);
+    if (tn.name.find('.') == std::string::npos &&
+        !is_primitive_type(tn.name) && tn.name != "nil" &&
+        runtime_named_type_cxx(tn.name).empty()) {
+      if (std::string unit =
+              visible_type_unit_from(tn.name, default_arg_unit, registry_);
+          !unit.empty()) {
+        // Default argument expressions are resolved as if they were still in
+        // the declaring unit. The generated argument text is inserted at the
+        // caller, so a named formal type from that declaration must keep its
+        // defining unit in the emitted C++ spelling.
+        qualified_default_param_type = std::make_shared<TyName>(tn);
+        qualified_default_param_type->name = unit + "." + tn.name;
+        param_type = qualified_default_param_type.get();
+      }
+    }
+  }
   DefaultArgumentUnitScope default_scope(scope_.current_unit_name,
+                                         scope_.default_arg_emission_unit_name,
                                          default_arg_unit);
   if (param_type && storage_.type_is_open_array(param_type) &&
       arg.kind == Kind::SetLit) {

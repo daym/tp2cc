@@ -259,11 +259,19 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     const UnitInfo* ui = (uit != registry_->units.end()) ? &uit->second
                                                           : nullptr;
     bool own = ui && ui->has(name);
-    // Current unit's own symbols shadow everything from `uses`.
-    // Emit bare (C++ picks them up in the current namespace).
+    const std::string own_prefix =
+        (!scope_.default_arg_emission_unit_name.empty() &&
+         scope_.default_arg_emission_unit_name != scope_.current_unit_name)
+            ? unit_namespace_prefix(scope_.current_unit_name)
+            : std::string{};
+    // Current unit's own symbols shadow everything from `uses`. Normal
+    // emission leaves them bare. Default-argument lowering is different:
+    // lookup is intentionally in the declaration unit, but the C++ argument is
+    // inserted at a caller in another unit, so declaration-unit symbols need
+    // an explicit namespace prefix there.
     if (ui) {
       if (auto* pi = ui->find_proc(name)) {
-        r.cxx = mangle(name);
+        r.cxx = own_prefix + mangle(name);
         r.kind = ResolvedKind::UnitProc;
         r.proc = pi->decl.get();
         r.is_callable = true;
@@ -273,22 +281,22 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         return r;
       }
       if (ui->find_var(name)) {
-        r.cxx = mangle(name);
+        r.cxx = own_prefix + mangle(name);
         r.kind = ResolvedKind::UnitVar;
         return r;
       }
       if (ui->find_const(name)) {
-        r.cxx = mangle(name);
+        r.cxx = own_prefix + mangle(name);
         r.kind = ResolvedKind::UnitConst;
         return r;
       }
       if (ui->has_enum_member(name)) {
-        r.cxx = mangle(name);
+        r.cxx = own_prefix + mangle(name);
         r.kind = ResolvedKind::EnumMember;
         return r;
       }
       if (ui->has_type(name)) {
-        r.cxx = mangle(name);
+        r.cxx = own_prefix + mangle(name);
         r.kind = ResolvedKind::UnitType;
         return r;
       }

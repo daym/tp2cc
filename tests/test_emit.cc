@@ -1253,6 +1253,65 @@ void test_imported_default_argument_resolves_in_declaring_unit() {
   CHECK(contains(out.impl, "::p_api::p_note(1, ::p_base::p_at_none);"));
 }
 
+void test_imported_nil_default_argument_qualifies_procedural_type() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "uses api;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  note;\n"
+      "end;\n"
+      "end.\n",
+      {{"api.pas",
+        "unit api;\n"
+        "interface\n"
+        "type\n"
+        "  tcallback = procedure(v : longint) of object;\n"
+        "procedure note(cb : tcallback = nil);\n"
+        "implementation\n"
+        "procedure note(cb : tcallback);\n"
+        "begin\n"
+        "end;\n"
+        "end.\n"}});
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::p_api::p_note(::p_api::t_tcallback{});"));
+}
+
+void test_imported_default_argument_qualifies_declaring_unit_const() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "uses api;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  handle;\n"
+      "end;\n"
+      "end.\n",
+      {{"api.pas",
+        "unit api;\n"
+        "interface\n"
+        "type\n"
+        "  thccflag = (hcc_check);\n"
+        "  thccflags = set of thccflag;\n"
+        "const\n"
+        "  hcc_all = [hcc_check];\n"
+        "procedure handle(flags : thccflags = hcc_all);\n"
+        "implementation\n"
+        "procedure handle(flags : thccflags);\n"
+        "begin\n"
+        "end;\n"
+        "end.\n"}});
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::p_api::p_handle(::p_api::p_hcc_all);"));
+}
+
 void test_unit_qualified_variable_assignment_is_storage_designator() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -8061,6 +8120,8 @@ int main() {
   RUN_TEST(test_method_trailing_default_argument_is_lowered);
   RUN_TEST(test_unit_qualified_trailing_default_argument_is_lowered);
   RUN_TEST(test_imported_default_argument_resolves_in_declaring_unit);
+  RUN_TEST(test_imported_nil_default_argument_qualifies_procedural_type);
+  RUN_TEST(test_imported_default_argument_qualifies_declaring_unit_const);
   RUN_TEST(test_unit_qualified_variable_assignment_is_storage_designator);
   RUN_TEST(test_external_used_unit_qualified_call_keeps_namespace_spelling);
   RUN_TEST(test_method_pointer_trailing_default_nil_is_lowered_as_empty_value);

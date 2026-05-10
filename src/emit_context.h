@@ -40,6 +40,11 @@ struct ScopeStateView {
 
   std::string& current_class_name;
   std::string& current_unit_name;
+  // Non-empty only while lowering an omitted default argument. Name lookup
+  // uses `current_unit_name` set to the declaration unit, but generated C++
+  // is inserted in this caller unit. Own-unit symbols found through that
+  // declaration-unit lookup therefore need explicit namespace qualification.
+  std::string& default_arg_emission_unit_name;
 
   // LHS-only rewrites for Pascal's implicit result variables.
   std::string& lhs_fn_rewrite;
