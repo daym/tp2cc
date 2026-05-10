@@ -133,6 +133,22 @@ struct PickResult {
   bool ambiguous = false;
 };
 
+// Flattened formal parameter slot used by overload ranking and default
+// argument expansion. A Pascal declaration with repeated names contributes one
+// row per call-site argument position.
+struct FlatCallParamInfo {
+  const ast::TypeExpr* type = nullptr;
+  bool untyped = false;
+  bool mutable_ref = false;
+  const ast::Expr* default_value = nullptr;
+  FlatCallParamInfo(const ast::TypeExpr* type_in, bool untyped_in,
+                    bool mutable_ref_in, const ast::Expr* default_value_in)
+      : type(type_in),
+        untyped(untyped_in),
+        mutable_ref(mutable_ref_in),
+        default_value(default_value_in) {}
+};
+
 enum class ResolvedCalleeKind {
   Default,            // emitter uses ordinary expr/callee logic
   FreeFunctionInUnit, // emitter uses <unit_ns>::<mangled_name>

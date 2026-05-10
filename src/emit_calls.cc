@@ -20,13 +20,6 @@ using namespace ast;
 
 namespace {
 
-struct FlatCallParamInfo {
-  const ast::TypeExpr* type = nullptr;
-  bool untyped = false;
-  bool mutable_ref = false;
-  const ast::Expr* default_value = nullptr;
-};
-
 struct PackedScalarValueLoadSuppressor {
   // Var/out/untyped formals need caller storage, not the value stored there.
   // Suppress packed scalar value loads while their actuals are being lowered
@@ -241,22 +234,8 @@ void EmitCalls::mark_call_param_info(
 void EmitCalls::append_defaulted_trailing_call_args(
     const ProcDecl* decl, std::vector<const Expr*>& args) {
   if (!decl) return;
-  std::vector<FlatCallParamInfo> flat_params;
-  flat_params.clear();
-  for (const auto& p : decl->params) {
-    size_t count = p.names.empty() ? 1 : p.names.size();
-    for (size_t i = 0; i < count; ++i) {
-      FlatCallParamInfo info;
-      info.type = p.type.get();
-      info.untyped = !p.type;
-      info.mutable_ref =
-          p.mode == Param::Var || p.mode == Param::Out ||
-          (p.mode == Param::Const &&
-           analysis_.const_param_needs_mutable_ref(p.type.get()));
-      info.default_value = p.default_value.get();
-      flat_params.push_back(info);
-    }
-  }
+  std::vector<FlatCallParamInfo> flat_params =
+      resolution_.flatten_call_param_info(decl);
   if (args.size() >= flat_params.size()) return;
 
   for (size_t i = args.size(); i < flat_params.size(); ++i) {

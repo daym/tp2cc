@@ -61,6 +61,12 @@ class EmitResolution {
   ResolvedCall resolve_call(
       const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
 
+  // Flatten Pascal formal parameters to call-site slots. Repeated names in one
+  // parameter declaration become one row per actual argument position so the
+  // picker and default-argument expansion reason in call-site order.
+  std::vector<FlatCallParamInfo> flatten_call_param_info(
+      const ast::ProcDecl* decl);
+
   // Resolve a Pascal binary operator overload by Pascal operator token and
   // operand expressions. The caller decides whether the chosen declaration is
   // spelled as C++ infix operator syntax or as a named helper.
@@ -89,16 +95,6 @@ class EmitResolution {
     std::string return_type_name;  // for decl-less runtime builtins
   };
 
-  // Flatten Pascal formal parameters to call-site slots. Repeated names in one
-  // parameter declaration become one row per actual argument position so the
-  // picker and default-argument expansion reason in call-site order.
-  struct FlatCallParamInfo {
-    const ast::TypeExpr* type = nullptr;
-    bool untyped = false;
-    bool mutable_ref = false;
-    const ast::Expr* default_value = nullptr;
-  };
-
   // Pascal lookup order for an unqualified callable name:
   // `with` stack -> nested procs -> current class chain -> current unit ->
   // uses chain. The first contributing non-uses scope wins; the uses chain
@@ -116,8 +112,6 @@ class EmitResolution {
                                        std::vector<AnyCand>& cands);
   void gather_operator_in_pascal_scope(const std::string& op,
                                        std::vector<AnyCand>& cands);
-  void flatten_call_param_info(const ast::ProcDecl* decl,
-                               std::vector<FlatCallParamInfo>& flat_params);
   ConvScore score_conversion(const ast::TypeExpr* arg,
                              const ast::TypeExpr* param,
                              bool var_param,

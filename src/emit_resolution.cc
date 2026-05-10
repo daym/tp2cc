@@ -134,24 +134,22 @@ void EmitResolution::gather_operator_in_pascal_scope(
   }
 }
 
-void EmitResolution::flatten_call_param_info(
-    const ProcDecl* decl, std::vector<FlatCallParamInfo>& flat_params) {
-  flat_params.clear();
-  if (!decl) return;
+std::vector<FlatCallParamInfo> EmitResolution::flatten_call_param_info(
+    const ProcDecl* decl) {
+  std::vector<FlatCallParamInfo> flat_params;
+  if (!decl) return flat_params;
   for (const auto& p : decl->params) {
     size_t count = p.names.empty() ? 1 : p.names.size();
     for (size_t i = 0; i < count; ++i) {
-      FlatCallParamInfo info;
-      info.type = p.type.get();
-      info.untyped = !p.type;
-      info.mutable_ref =
+      flat_params.emplace_back(
+          p.type.get(), !p.type,
           p.mode == Param::Var || p.mode == Param::Out ||
-          (p.mode == Param::Const &&
-           analysis_.const_param_needs_mutable_ref(p.type.get()));
-      info.default_value = p.default_value.get();
-      flat_params.push_back(info);
+              (p.mode == Param::Const &&
+               analysis_.const_param_needs_mutable_ref(p.type.get())),
+          p.default_value.get());
     }
   }
+  return flat_params;
 }
 
 ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
@@ -411,8 +409,7 @@ PickResult EmitResolution::pick_overload(
   std::vector<Scored> viable;
   for (const ProcDecl* decl : candidates) {
     if (!decl) continue;
-    std::vector<FlatCallParamInfo> flat;
-    flatten_call_param_info(decl, flat);
+    std::vector<FlatCallParamInfo> flat = flatten_call_param_info(decl);
     // First filter by arity plus default-argument slack.
     if (args.size() > flat.size()) continue;
     bool ok = true;
@@ -566,8 +563,7 @@ ResolvedCall EmitResolution::resolve_call(
     if (args.size() > a.param_count) continue;
     if (args.size() < a.param_count && !a.accepts_zero_args) {
       if (!a.decl) continue;
-      std::vector<FlatCallParamInfo> flat;
-      flatten_call_param_info(a.decl, flat);
+      std::vector<FlatCallParamInfo> flat = flatten_call_param_info(a.decl);
       bool ok = true;
       for (size_t i = args.size(); i < flat.size(); ++i) {
         if (!flat[i].default_value) {
@@ -671,8 +667,7 @@ BinaryOperatorResult EmitResolution::find_binary_operator(
   std::vector<const ProcDecl*> arity_ok;
   for (const auto& c : cands) {
     if (!c.decl) continue;
-    std::vector<FlatCallParamInfo> flat;
-    flatten_call_param_info(c.decl, flat);
+    std::vector<FlatCallParamInfo> flat = flatten_call_param_info(c.decl);
     if (flat.size() == 2) arity_ok.push_back(c.decl);
   }
   if (arity_ok.empty()) return {};
@@ -698,8 +693,7 @@ UnaryOperatorResult EmitResolution::find_unary_operator(
   std::vector<const ProcDecl*> arity_ok;
   for (const auto& c : cands) {
     if (!c.decl) continue;
-    std::vector<FlatCallParamInfo> flat;
-    flatten_call_param_info(c.decl, flat);
+    std::vector<FlatCallParamInfo> flat = flatten_call_param_info(c.decl);
     if (flat.size() == 1) arity_ok.push_back(c.decl);
   }
   if (arity_ok.empty()) return {};
@@ -731,8 +725,7 @@ AssignmentOperatorResult EmitResolution::find_assignment_operator(
     if (!pd || pd->params.size() != 1 || !pd->return_type) continue;
     const TypeExpr* ret = analysis_.canonicalize_type(pd->return_type.get());
     if (!ret || type_ops_.type_to_cxx(*ret) != target_cxx) continue;
-    std::vector<FlatCallParamInfo> flat;
-    flatten_call_param_info(pd, flat);
+    std::vector<FlatCallParamInfo> flat = flatten_call_param_info(pd);
     if (flat.size() != 1) continue;
     if (rank_conversion(source, flat[0].type, flat[0].mutable_ref).viable()) {
       viable.push_back(pd);
@@ -756,8 +749,7 @@ AssignmentOperatorResult EmitResolution::find_assignment_operator(
   bool have_best = false;
   bool ambiguous = false;
   for (const ProcDecl* pd : viable) {
-    std::vector<FlatCallParamInfo> flat;
-    flatten_call_param_info(pd, flat);
+    std::vector<FlatCallParamInfo> flat = flatten_call_param_info(pd);
     ConvScore score = rank_conversion(source, flat[0].type, flat[0].mutable_ref);
     if (!score.viable()) continue;
     if (!have_best || score.rank < best_score.rank ||
