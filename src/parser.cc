@@ -722,6 +722,9 @@ std::shared_ptr<ProcDecl> Parser::parse_operator_decl(bool in_interface) {
       case Tok::KwXor: return "xor";
       case Tok::KwShl: return "shl";
       case Tok::KwShr: return "shr";
+      case Tok::Ident:
+        if (cur_.text == "enumerator") return "enumerator";
+        return {};
       default: return {};
     }
   }();
@@ -1540,12 +1543,17 @@ StmtPtr Parser::parse_for() {
   auto n = std::make_shared<For>();
   n->loc = loc;
   n->var = consume_ident("for variable");
-  expect(Tok::Assign, "for");
-  n->from = parse_expr();
-  if (accept(Tok::KwTo)) n->downto = false;
-  else if (accept(Tok::KwDownto)) n->downto = true;
-  else { expect(Tok::KwTo, "for"); }
-  n->to = parse_expr();
+  if (accept(Tok::KwIn)) {
+    n->for_in = true;
+    n->in_expr = parse_expr();
+  } else {
+    expect(Tok::Assign, "for");
+    n->from = parse_expr();
+    if (accept(Tok::KwTo)) n->downto = false;
+    else if (accept(Tok::KwDownto)) n->downto = true;
+    else { expect(Tok::KwTo, "for"); }
+    n->to = parse_expr();
+  }
   expect(Tok::KwDo, "for");
   n->body = parse_statement();
   return n;

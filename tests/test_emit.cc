@@ -6305,6 +6305,83 @@ void test_membership_in_empty_set_uses_shared_set_api() {
   CHECK(contains(out.impl, "(::rt::EmptySet{}).contains(p_code)"));
 }
 
+void test_set_for_in_lowers_to_ordered_membership_scan() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  treg = 0..7;\n"
+      "  tregs = set of treg;\n"
+      "procedure p;\n"
+      "implementation\n"
+      "procedure p;\n"
+      "var regs : tregs; j : treg; total : integer;\n"
+      "begin\n"
+      "  total := 0;\n"
+      "  for j in regs do\n"
+      "    total := total + j;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "auto tp2cc_set_"));
+  CHECK(contains(out.impl, "t_treg tp2cc_item_"));
+  CHECK(contains(out.impl, " = 0;"));
+  CHECK(contains(out.impl, ".contains(tp2cc_item_"));
+  CHECK(contains(out.impl, "p_j = tp2cc_item_"));
+  CHECK(contains(out.impl, "if (tp2cc_item_"));
+  CHECK(contains(out.impl, " == 7) break;"));
+  CHECK(contains(out.impl, "::rt::p_inc(tp2cc_item_"));
+}
+
+void test_type_for_in_lowers_to_ordinal_bounds_loop() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tkind = (ka, kb, kc);\n"
+      "procedure p;\n"
+      "implementation\n"
+      "procedure p;\n"
+      "var k : tkind; total : integer;\n"
+      "begin\n"
+      "  total := 0;\n"
+      "  for k in tkind do\n"
+      "    total := total + 1;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "tp2cc_enum_low_tkind"));
+  CHECK(contains(out.impl, "tp2cc_enum_high_tkind"));
+  CHECK(contains(out.impl, "p_k = tp2cc_from;"));
+  CHECK(contains(out.impl, "::rt::p_inc(p_k);"));
+  CHECK(!contains(out.impl, "tp2cc_set_"));
+}
+
+void test_for_in_operator_enumerator_precedes_builtin_set() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tregs = set of 0..3;\n"
+      "  tenumerator = class\n"
+      "    fcurrent : integer;\n"
+      "    function MoveNext : boolean;\n"
+      "    property Current : integer read fcurrent;\n"
+      "  end;\n"
+      "procedure p;\n"
+      "implementation\n"
+      "operator enumerator(s : tregs) : tenumerator;\n"
+      "begin\n"
+      "end;\n"
+      "procedure p;\n"
+      "var regs : tregs; j : integer;\n"
+      "begin\n"
+      "  for j in regs do\n"
+      "    j := j + 1;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
 void test_overload_picks_set_difference_arg_against_typed_set_param() {
   // Pascal's `set - set` (set difference) returns the same set type as
   // its operands. Without typing the binary expression here, the
@@ -8022,6 +8099,9 @@ int main() {
   RUN_TEST(test_overload_picks_string_concat_arg_against_string_param);
   RUN_TEST(test_overload_picks_empty_set_literal_against_typed_set_param);
   RUN_TEST(test_membership_in_empty_set_uses_shared_set_api);
+  RUN_TEST(test_set_for_in_lowers_to_ordered_membership_scan);
+  RUN_TEST(test_type_for_in_lowers_to_ordinal_bounds_loop);
+  RUN_TEST(test_for_in_operator_enumerator_precedes_builtin_set);
   RUN_TEST(test_overload_picks_set_difference_arg_against_typed_set_param);
   RUN_TEST(test_property_read_lowers_to_getter_call);
   RUN_TEST(test_property_write_lowers_to_setter_call);

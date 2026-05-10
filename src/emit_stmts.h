@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -52,9 +53,28 @@ class EmitStmts {
   void emit_stmt(const ast::Stmt& s);
 
  private:
+  enum class ForInEmitResult { NotMatched, Emitted, Error };
+
   bool stmt_autocalls_procvar(const ast::Expr& expr);
   void emit_assign_stmt(const ast::Assign& a);
   void emit_expr_stmt(const ast::ExprStmt& es);
+  void emit_ordinal_for_body(const ast::For& f, const std::string& var,
+                             const std::string& from, const std::string& to,
+                             bool downto);
+  void emit_for_in_stmt(const ast::For& f, const std::string& var);
+  ForInEmitResult emit_for_in_type_rhs(const ast::For& f,
+                                       const std::string& var);
+  ForInEmitResult emit_for_in_operator_enumerator(const ast::For& f,
+                                                  const std::string& var);
+  ForInEmitResult emit_for_in_get_enumerator(const ast::For& f,
+                                             const std::string& var);
+  ForInEmitResult emit_for_in_builtin_string(const ast::For& f,
+                                             const std::string& var);
+  ForInEmitResult emit_for_in_builtin_array(const ast::For& f,
+                                            const std::string& var);
+  ForInEmitResult emit_for_in_builtin_set(const ast::For& f,
+                                          const std::string& var);
+  std::optional<std::string> for_in_type_rhs_name(const ast::Expr& e);
   std::string case_selector_expr(const ast::CaseStmt& cs, const ast::Expr& e);
 
   const TypeRegistry* registry_;

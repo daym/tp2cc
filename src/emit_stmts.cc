@@ -639,6 +639,287 @@ std::string EmitStmts::case_selector_expr(const CaseStmt& cs, const Expr& e) {
   return selector_is_charish ? "::rt::p_ord(" + text + ")" : text;
 }
 
+void EmitStmts::emit_ordinal_for_body(const For& f, const std::string& var,
+                                      const std::string& from,
+                                      const std::string& to, bool downto) {
+  std::string n = std::to_string(++loop_label_counter_);
+  std::string brk = "tp2cc_loop_break_" + n;
+  std::string cont = "tp2cc_loop_continue_" + n;
+  const char* cmp = downto ? ">=" : "<=";
+  const char* step = downto ? "::rt::p_dec" : "::rt::p_inc";
+  stmt_ops_.emitln("{");
+  stmt_ops_.indent();
+  stmt_ops_.emitln("auto tp2cc_from = (" + from + ");");
+  stmt_ops_.emitln("auto tp2cc_to = (" + to + ");");
+  stmt_ops_.emitln(std::string("if (tp2cc_from ") + cmp + " tp2cc_to) {");
+  stmt_ops_.indent();
+  stmt_ops_.emitln(var + " = tp2cc_from;");
+  stmt_ops_.emitln("while (true) {");
+  stmt_ops_.indent();
+  loop_break_labels_.push_back(brk);
+  loop_continue_labels_.push_back(cont);
+  if (f.body) emit_stmt(*f.body);
+  stmt_ops_.emitln(cont + ":;");
+  loop_continue_labels_.pop_back();
+  loop_break_labels_.pop_back();
+  stmt_ops_.emitln("if (" + var + " == tp2cc_to) break;");
+  stmt_ops_.emitln(std::string(step) + "(" + var + ");");
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  stmt_ops_.emitln(brk + ":;");
+}
+
+std::optional<std::string> EmitStmts::for_in_type_rhs_name(const Expr& e) {
+  if (e.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(e);
+    const std::string low = ascii_lower(id.name);
+    ResolveResult rr = resolve_name_provider_.resolve_name(id.name);
+    if (rr.kind == ResolvedKind::UnitType) return id.name;
+    if (rr.kind == ResolvedKind::Unknown &&
+        (is_primitive_type(low) || analysis_.lookup_named_type_expr(id.name))) {
+      return id.name;
+    }
+    return std::nullopt;
+  }
+  if (e.kind == Kind::Member) {
+    const auto& mem = static_cast<const Member&>(e);
+    if (auto resolved = analysis_.resolve_unit_qualified_member(mem);
+        resolved && resolved->resolved.kind == ResolvedKind::UnitType) {
+      return resolved->unit_name + "." + resolved->member_name;
+    }
+  }
+  return std::nullopt;
+}
+
+EmitStmts::ForInEmitResult EmitStmts::emit_for_in_type_rhs(
+    const For& f, const std::string& var) {
+  if (!f.in_expr) return ForInEmitResult::NotMatched;
+  auto type_name = for_in_type_rhs_name(*f.in_expr);
+  if (!type_name) return ForInEmitResult::NotMatched;
+
+  const TypeExpr* named = analysis_.lookup_named_type_expr(*type_name);
+  named = analysis_.canonicalize_type(named);
+  if (named && named->kind == Kind::TyEnum &&
+      types_.enum_has_explicit_values(static_cast<const TyEnum&>(*named))) {
+    stmt_ops_.report_error(f.loc,
+                           "for-in over non-contiguous enum type is not "
+                           "supported");
+    return ForInEmitResult::Error;
+  }
+
+  std::string low = types_.low_high_expr_for_named_type(*type_name, true);
+  std::string high = types_.low_high_expr_for_named_type(*type_name, false);
+  if (low.empty() || high.empty()) {
+    stmt_ops_.report_error(f.loc, "cannot determine bounds for for-in type");
+    return ForInEmitResult::Error;
+  }
+  emit_ordinal_for_body(f, var, low, high, false);
+  return ForInEmitResult::Emitted;
+}
+
+EmitStmts::ForInEmitResult EmitStmts::emit_for_in_operator_enumerator(
+    const For& f, const std::string& var) {
+  (void)var;
+  if (!f.in_expr) return ForInEmitResult::NotMatched;
+  UnaryOperatorResult op =
+      resolution_.find_unary_operator("enumerator", *f.in_expr);
+  if (op.ambiguous) {
+    stmt_ops_.report_error(f.loc, "ambiguous operator enumerator");
+    return ForInEmitResult::Error;
+  }
+  if (!op.decl) return ForInEmitResult::NotMatched;
+  stmt_ops_.report_error(f.loc, "operator enumerator in for-in is not supported");
+  return ForInEmitResult::Error;
+}
+
+EmitStmts::ForInEmitResult EmitStmts::emit_for_in_get_enumerator(
+    const For& f, const std::string& var) {
+  (void)f;
+  (void)var;
+  return ForInEmitResult::NotMatched;
+}
+
+EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_string(
+    const For& f, const std::string& var) {
+  if (!f.in_expr) return ForInEmitResult::NotMatched;
+  const TypeExpr* in_type =
+      analysis_.canonicalize_type(analysis_.deduce_type(*f.in_expr));
+  bool is_string = in_type && in_type->kind == Kind::TyString;
+  if (!is_string && in_type && in_type->kind == Kind::TyName) {
+    const std::string name =
+        ascii_lower(static_cast<const TyName&>(*in_type).name);
+    is_string =
+        name == "string" || name == "shortstring" || name == "ansistring";
+  }
+  if (!is_string) return ForInEmitResult::NotMatched;
+
+  std::string n = std::to_string(++loop_label_counter_);
+  std::string brk = "tp2cc_loop_break_" + n;
+  std::string cont = "tp2cc_loop_continue_" + n;
+  std::string str = "tp2cc_string_" + n;
+  std::string idx = "tp2cc_index_" + n;
+  stmt_ops_.emitln("{");
+  stmt_ops_.indent();
+  stmt_ops_.emitln("auto " + str + " = (" + stmt_ops_.expr_to_cxx(*f.in_expr) +
+                   ");");
+  stmt_ops_.emitln("int32_t " + idx + " = 1;");
+  stmt_ops_.emitln("int32_t tp2cc_high_" + n + " = ::rt::p_length(" + str +
+                   ");");
+  stmt_ops_.emitln("if (" + idx + " <= tp2cc_high_" + n + ") {");
+  stmt_ops_.indent();
+  stmt_ops_.emitln("while (true) {");
+  stmt_ops_.indent();
+  stmt_ops_.emitln(var + " = " + str + "[" + idx + "];");
+  loop_break_labels_.push_back(brk);
+  loop_continue_labels_.push_back(cont);
+  if (f.body) emit_stmt(*f.body);
+  stmt_ops_.emitln(cont + ":;");
+  loop_continue_labels_.pop_back();
+  loop_break_labels_.pop_back();
+  stmt_ops_.emitln("if (" + idx + " == tp2cc_high_" + n + ") break;");
+  stmt_ops_.emitln("::rt::p_inc(" + idx + ");");
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  stmt_ops_.emitln(brk + ":;");
+  return ForInEmitResult::Emitted;
+}
+
+EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_array(
+    const For& f, const std::string& var) {
+  if (!f.in_expr) return ForInEmitResult::NotMatched;
+  const TypeExpr* in_type =
+      analysis_.canonicalize_type(analysis_.deduce_type(*f.in_expr));
+  if (!(in_type && in_type->kind == Kind::TyArray)) {
+    return ForInEmitResult::NotMatched;
+  }
+  const auto& arr_type = static_cast<const TyArray&>(*in_type);
+  if (arr_type.array_kind != ArrayKind::Fixed) {
+    stmt_ops_.report_error(f.loc,
+                           "for-in over open or dynamic arrays is not "
+                           "supported");
+    return ForInEmitResult::Error;
+  }
+  std::string low = types_.low_high_expr_for_type(in_type, true);
+  std::string high = types_.low_high_expr_for_type(in_type, false);
+  if (low.empty() || high.empty()) {
+    stmt_ops_.report_error(f.loc, "cannot determine bounds for array for-in");
+    return ForInEmitResult::Error;
+  }
+
+  std::string n = std::to_string(++loop_label_counter_);
+  std::string brk = "tp2cc_loop_break_" + n;
+  std::string cont = "tp2cc_loop_continue_" + n;
+  std::string arr = "tp2cc_array_" + n;
+  std::string idx = "tp2cc_index_" + n;
+  stmt_ops_.emitln("{");
+  stmt_ops_.indent();
+  stmt_ops_.emitln("auto&& " + arr + " = (" +
+                   stmt_ops_.expr_to_cxx(*f.in_expr) + ");");
+  stmt_ops_.emitln("auto " + idx + " = (" + low + ");");
+  stmt_ops_.emitln("auto tp2cc_high_" + n + " = (" + high + ");");
+  stmt_ops_.emitln("if (" + idx + " <= tp2cc_high_" + n + ") {");
+  stmt_ops_.indent();
+  stmt_ops_.emitln("while (true) {");
+  stmt_ops_.indent();
+  stmt_ops_.emitln(var + " = " + arr + "[" + idx + "];");
+  loop_break_labels_.push_back(brk);
+  loop_continue_labels_.push_back(cont);
+  if (f.body) emit_stmt(*f.body);
+  stmt_ops_.emitln(cont + ":;");
+  loop_continue_labels_.pop_back();
+  loop_break_labels_.pop_back();
+  stmt_ops_.emitln("if (" + idx + " == tp2cc_high_" + n + ") break;");
+  stmt_ops_.emitln("::rt::p_inc(" + idx + ");");
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  stmt_ops_.emitln(brk + ":;");
+  return ForInEmitResult::Emitted;
+}
+
+EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_set(
+    const For& f, const std::string& var) {
+  if (!f.in_expr) return ForInEmitResult::NotMatched;
+  const TypeExpr* in_type =
+      analysis_.canonicalize_type(analysis_.deduce_type(*f.in_expr));
+  if (!(in_type && in_type->kind == Kind::TySet)) {
+    return ForInEmitResult::NotMatched;
+  }
+
+  const auto& set_type = static_cast<const TySet&>(*in_type);
+  std::string low;
+  std::string high;
+  if (set_type.has_explicit_bounds) {
+    low = std::to_string(set_type.explicit_low);
+    high = std::to_string(set_type.explicit_high);
+  } else {
+    low = types_.low_high_expr_for_type(set_type.element.get(), true);
+    high = types_.low_high_expr_for_type(set_type.element.get(), false);
+  }
+  if (low.empty() || high.empty()) {
+    stmt_ops_.report_error(f.loc, "cannot determine bounds for set for-in loop");
+    return ForInEmitResult::Error;
+  }
+
+  std::string n = std::to_string(++loop_label_counter_);
+  std::string brk = "tp2cc_loop_break_" + n;
+  std::string cont = "tp2cc_loop_continue_" + n;
+  std::string set = "tp2cc_set_" + n;
+  std::string item = "tp2cc_item_" + n;
+  std::string elem_type = types_.type_to_cxx(*set_type.element);
+
+  stmt_ops_.emitln("{");
+  stmt_ops_.indent();
+  stmt_ops_.emitln("auto " + set + " = (" +
+                   stmt_ops_.expr_to_cxx(*f.in_expr) + ");");
+  stmt_ops_.emitln(elem_type + " " + item + " = " + low + ";");
+  stmt_ops_.emitln("while (true) {");
+  stmt_ops_.indent();
+  stmt_ops_.emitln("if (" + set + ".contains(" + item + ")) {");
+  stmt_ops_.indent();
+  stmt_ops_.emitln(var + " = " + item + ";");
+  loop_break_labels_.push_back(brk);
+  loop_continue_labels_.push_back(cont);
+  if (f.body) emit_stmt(*f.body);
+  stmt_ops_.emitln(cont + ":;");
+  loop_continue_labels_.pop_back();
+  loop_break_labels_.pop_back();
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  stmt_ops_.emitln("if (" + item + " == " + high + ") break;");
+  stmt_ops_.emitln("::rt::p_inc(" + item + ");");
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  stmt_ops_.emitln(brk + ":;");
+  return ForInEmitResult::Emitted;
+}
+
+void EmitStmts::emit_for_in_stmt(const For& f, const std::string& var) {
+  auto done = [](ForInEmitResult r) {
+    return r != ForInEmitResult::NotMatched;
+  };
+  if (done(emit_for_in_type_rhs(f, var))) return;
+  if (done(emit_for_in_operator_enumerator(f, var))) return;
+  if (done(emit_for_in_get_enumerator(f, var))) return;
+  if (done(emit_for_in_builtin_string(f, var))) return;
+  if (done(emit_for_in_builtin_array(f, var))) return;
+  if (done(emit_for_in_builtin_set(f, var))) return;
+  stmt_ops_.report_error(f.loc, "for-in expression type is not supported");
+}
+
 void EmitStmts::emit_stmt(const Stmt& s) {
   switch (s.kind) {
     case Kind::Compound: {
@@ -714,42 +995,14 @@ void EmitStmts::emit_stmt(const Stmt& s) {
       const auto& f = static_cast<const For&>(s);
       ResolveResult vr = resolve_name_provider_.resolve_name(f.var);
       std::string var = vr.cxx.empty() ? mangle(f.var) : vr.cxx;
+      if (f.for_in) {
+        emit_for_in_stmt(f, var);
+        break;
+      }
+
       std::string from = stmt_ops_.expr_to_cxx(*f.from);
       std::string to = stmt_ops_.expr_to_cxx(*f.to);
-      std::string n = std::to_string(++loop_label_counter_);
-      std::string brk = "tp2cc_loop_break_" + n;
-      std::string cont = "tp2cc_loop_continue_" + n;
-      // Pascal `for X := A to B do S` is NOT `for (X=A; X<=B; ++X)`:
-      // when X's type is `byte` and B is 255, ++X wraps to 0 and the
-      // condition never fails. True semantics: body runs for each X in
-      // [A,B]; terminate by equality after the body. Snapshot the end
-      // bound so mid-body assignments to B don't alter the loop count.
-      stmt_ops_.emitln("{");
-      stmt_ops_.indent();
-      stmt_ops_.emitln("auto tp2cc_from = (" + from + ");");
-      stmt_ops_.emitln("auto tp2cc_to = (" + to + ");");
-      const char* cmp = f.downto ? ">=" : "<=";
-      const char* step = f.downto ? "::rt::p_dec" : "::rt::p_inc";
-      stmt_ops_.emitln(std::string("if (tp2cc_from ") + cmp + " tp2cc_to) {");
-      stmt_ops_.indent();
-      stmt_ops_.emitln(var + " = tp2cc_from;");
-      stmt_ops_.emitln("while (true) {");
-      stmt_ops_.indent();
-      loop_break_labels_.push_back(brk);
-      loop_continue_labels_.push_back(cont);
-      if (f.body) emit_stmt(*f.body);
-      stmt_ops_.emitln(cont + ":;");
-      loop_continue_labels_.pop_back();
-      loop_break_labels_.pop_back();
-      stmt_ops_.emitln("if (" + var + " == tp2cc_to) break;");
-      stmt_ops_.emitln(std::string(step) + "(" + var + ");");
-      stmt_ops_.dedent();
-      stmt_ops_.emitln("}");
-      stmt_ops_.dedent();
-      stmt_ops_.emitln("}");
-      stmt_ops_.dedent();
-      stmt_ops_.emitln("}");
-      stmt_ops_.emitln(brk + ":;");
+      emit_ordinal_for_body(f, var, from, to, f.downto);
       break;
     }
     case Kind::CaseStmt: {

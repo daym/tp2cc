@@ -277,7 +277,9 @@ struct Repeat : Stmt {
 struct For : Stmt {
   std::string var;
   ExprPtr from, to;
+  ExprPtr in_expr;
   bool downto = false;
+  bool for_in = false;
   StmtPtr body;
   For() : Stmt(Kind::For) {}
 };

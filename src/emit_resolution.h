@@ -24,6 +24,12 @@ struct BinaryOperatorResult {
   bool ambiguous = false;
 };
 
+struct UnaryOperatorResult {
+  const ast::ProcDecl* decl = nullptr;
+  std::string defining_unit;
+  bool ambiguous = false;
+};
+
 class EmitResolution {
  public:
   EmitResolution(const TypeRegistry* registry, ScopeStateView& scope,
@@ -65,6 +71,9 @@ class EmitResolution {
   // spelled as C++ infix operator syntax or as a named helper.
   BinaryOperatorResult find_binary_operator(
       const std::string& op, const ast::Expr& lhs, const ast::Expr& rhs);
+
+  UnaryOperatorResult find_unary_operator(
+      const std::string& op, const ast::Expr& operand);
 
   // Pascal `operator :=' is a conversion operator. C++ has no namespace-scope
   // assignment operator, so emit sites that know a source and destination type

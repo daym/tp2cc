@@ -1232,6 +1232,7 @@ void test_statement_repeat_for_case_with() {
       "  repeat i := i + 1 until i > 5;\n"
       "  for i := 1 to 10 do i := i + 1;\n"
       "  for i := 10 downto 1 do i := i - 1;\n"
+      "  for i in [1, 3, 5] do i := i + 1;\n"
       "  case i of\n"
       "    1 : i := 0;\n"
       "    2, 3 : i := 1;\n"
