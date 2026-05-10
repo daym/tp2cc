@@ -1,6 +1,8 @@
 #include "emit_lookup.h"
 
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "emit_analysis.h"
@@ -34,39 +36,72 @@ static const MethodSig* unique_zero_arg_method(
   return found;
 }
 
-static bool adopt_proc_overloads(ResolveResult& r,
-                                 const std::vector<ProcInfo>* procs,
-                                 ResolvedKind kind,
-                                 const std::string& cxx) {
-  if (!procs || procs->empty()) return false;
-  r.kind = kind;
-  r.cxx = cxx;
-  r.is_callable = true;
-  if (const ProcInfo* proc = unique_zero_arg_proc(procs)) {
-    r.proc = proc->decl.get();
-    r.is_parameterless = (proc->param_count == 0);
-    r.accepts_zero_args = true;
-    r.return_type_name = proc->return_type_name;
-    r.default_arg_unit = proc->defining_unit;
-  }
-  return true;
+static ResolveResult resolved_value(ResolvedKind kind, std::string cxx) {
+  return ResolveResult{.kind = kind,
+                       .cxx = std::move(cxx),
+                       .is_parameterless = false,
+                       .is_callable = false,
+                       .proc = nullptr,
+                       .accepts_zero_args = false,
+                       .return_type_name = {},
+                       .default_arg_unit = {}};
 }
 
-static bool adopt_method_overloads(ResolveResult& r,
-                                   const std::vector<MethodSig>* methods,
-                                   ResolvedKind kind,
-                                   const std::string& cxx) {
-  if (!methods || methods->empty()) return false;
-  r.kind = kind;
-  r.cxx = cxx;
-  r.is_callable = true;
-  if (const MethodSig* method = unique_zero_arg_method(methods)) {
-    r.proc = method->decl.get();
-    r.is_parameterless = (method->param_count == 0);
-    r.accepts_zero_args = true;
-    r.default_arg_unit = method->defining_unit;
+static ResolveResult zero_arg_callable(ResolvedKind kind, std::string cxx) {
+  return ResolveResult{.kind = kind,
+                       .cxx = std::move(cxx),
+                       .is_parameterless = true,
+                       .is_callable = true,
+                       .proc = nullptr,
+                       .accepts_zero_args = true,
+                       .return_type_name = {},
+                       .default_arg_unit = {}};
+}
+
+static std::optional<ResolveResult> resolve_proc_overloads(
+    const std::vector<ProcInfo>* procs, ResolvedKind kind, std::string cxx) {
+  if (!procs || procs->empty()) return std::nullopt;
+  if (const ProcInfo* proc = unique_zero_arg_proc(procs)) {
+    return ResolveResult{.kind = kind,
+                         .cxx = std::move(cxx),
+                         .is_parameterless = (proc->param_count == 0),
+                         .is_callable = true,
+                         .proc = proc->decl.get(),
+                         .accepts_zero_args = true,
+                         .return_type_name = proc->return_type_name,
+                         .default_arg_unit = proc->defining_unit};
   }
-  return true;
+  return ResolveResult{.kind = kind,
+                       .cxx = std::move(cxx),
+                       .is_parameterless = false,
+                       .is_callable = true,
+                       .proc = nullptr,
+                       .accepts_zero_args = false,
+                       .return_type_name = {},
+                       .default_arg_unit = {}};
+}
+
+static std::optional<ResolveResult> resolve_method_overloads(
+    const std::vector<MethodSig>* methods, ResolvedKind kind, std::string cxx) {
+  if (!methods || methods->empty()) return std::nullopt;
+  if (const MethodSig* method = unique_zero_arg_method(methods)) {
+    return ResolveResult{.kind = kind,
+                         .cxx = std::move(cxx),
+                         .is_parameterless = (method->param_count == 0),
+                         .is_callable = true,
+                         .proc = method->decl.get(),
+                         .accepts_zero_args = true,
+                         .return_type_name = {},
+                         .default_arg_unit = method->defining_unit};
+  }
+  return ResolveResult{.kind = kind,
+                       .cxx = std::move(cxx),
+                       .is_parameterless = false,
+                       .is_callable = true,
+                       .proc = nullptr,
+                       .accepts_zero_args = false,
+                       .return_type_name = {},
+                       .default_arg_unit = {}};
 }
 
 EmitLookup::EmitLookup(const TypeRegistry* registry, ScopeStateView& scope,
@@ -79,11 +114,9 @@ EmitLookup::EmitLookup(const TypeRegistry* registry, ScopeStateView& scope,
 ResolveResult EmitLookup::resolve_name(const std::string& name,
                                        QualifierKind qk,
                                        const std::string& qualifier) {
-  ResolveResult r;
-
   // ----- Qualified lookups first: `Unit.name` / `Class.name`. -----
   if (qk == QualifierKind::Unit) {
-    r.cxx = unit_namespace_prefix(qualifier) + mangle(name);
+    const std::string unit_cxx = unit_namespace_prefix(qualifier) + mangle(name);
     if (registry_) {
       auto uit = registry_->units.find(qualifier);
       if (uit != registry_->units.end()) {
@@ -91,53 +124,45 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         const bool own_unit = qualifier == scope_.current_unit_name;
         const std::vector<ProcInfo>* procs =
             own_unit ? u.find_procs(name) : u.find_export_procs(name);
-        if (adopt_proc_overloads(r, procs, ResolvedKind::UnitProc, r.cxx)) {
-          return r;
+        if (auto result =
+                resolve_proc_overloads(procs, ResolvedKind::UnitProc, unit_cxx)) {
+          return *result;
         }
         if (own_unit ? u.find_var(name) : u.find_export_var(name)) {
-          r.kind = ResolvedKind::UnitVar;
-          return r;
+          return resolved_value(ResolvedKind::UnitVar, unit_cxx);
         }
         if (own_unit ? u.find_const(name) : u.find_export_const(name)) {
-          r.kind = ResolvedKind::UnitConst;
-          return r;
+          return resolved_value(ResolvedKind::UnitConst, unit_cxx);
         }
         if (own_unit ? u.has_enum_member(name) : u.has_export_enum_member(name)) {
-          r.kind = ResolvedKind::EnumMember;
-          return r;
+          return resolved_value(ResolvedKind::EnumMember, unit_cxx);
         }
         if (own_unit ? u.has_type(name) : u.has_export_type(name)) {
-          r.kind = ResolvedKind::UnitType;
-          return r;
+          return resolved_value(ResolvedKind::UnitType, unit_cxx);
         }
       }
     }
     // RTL unit unavailable to translation. Keep the Pascal unit qualifier in
     // the emitted text and let the runtime's stub namespace alias own that
     // lookup.
-    r.kind = ResolvedKind::Unknown;
-    return r;
+    return resolved_value(ResolvedKind::Unknown, unit_cxx);
   }
   if (qk == QualifierKind::Class) {
+    const std::string member_cxx = mangle(name);
     if (registry_) {
-      if (adopt_method_overloads(
-              r,
+      if (auto result = resolve_method_overloads(
               registry_->lookup_class_methods(qualifier, name,
                                               scope_.current_unit_name),
-              ResolvedKind::ClassMethod,
-              mangle(name))) {
-        return r;
+              ResolvedKind::ClassMethod, member_cxx)) {
+        return *result;
       }
       if (registry_->lookup_class_field(
               qualifier, name, scope_.current_unit_name)) {
-        r.kind = ResolvedKind::ClassField;
-        r.cxx = registry_->field_cxx_name(name);
-        return r;
+        return resolved_value(ResolvedKind::ClassField,
+                              registry_->field_cxx_name(name));
       }
     }
-    r.cxx = mangle(name);
-    r.kind = ResolvedKind::Unknown;
-    return r;
+    return resolved_value(ResolvedKind::Unknown, member_cxx);
   }
 
   // ----- Unqualified lookup. -----
@@ -146,20 +171,16 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   //    result variable.
   if (scope_.current_fn_is_function && scope_.current_fn_result_type &&
       !scope_.current_fn_name.empty() && name == scope_.current_fn_name) {
-    r.cxx = scope_.current_result_slot_name;
-    r.kind = ResolvedKind::ResultSlot;
-    return r;
+    return resolved_value(ResolvedKind::ResultSlot,
+                          scope_.current_result_slot_name);
   }
   if (scope_.bare_result_type && is_pascal_result_ident(name)) {
-    r.cxx = scope_.bare_result_slot_name;
-    r.kind = ResolvedKind::ResultSlot;
-    return r;
+    return resolved_value(ResolvedKind::ResultSlot, scope_.bare_result_slot_name);
   }
   if (scope_.outer_result_type && !scope_.outer_result_name.empty() &&
       name == scope_.outer_result_name) {
-    r.cxx = scope_.outer_result_slot_name;
-    r.kind = ResolvedKind::ResultSlot;
-    return r;
+    return resolved_value(ResolvedKind::ResultSlot,
+                          scope_.outer_result_slot_name);
   }
 
   // 2. `with X do` bindings (inside-out). Fields and methods of X's
@@ -172,12 +193,8 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       if (const auto* ci = analysis_.class_info_for_type_name(cls);
           ci && ci->is_reference_type &&
           (name == "classtype" || name == "instancesize")) {
-        r.cxx = it->cxx_text + access + mangle(name);
-        r.kind = ResolvedKind::WithMethod;
-        r.is_callable = true;
-        r.is_parameterless = true;
-        r.accepts_zero_args = true;
-        return r;
+        return zero_arg_callable(ResolvedKind::WithMethod,
+                                 it->cxx_text + access + mangle(name));
       }
       // `with obj do ... Free;` is the bare-identifier form of `obj.Free`.
       // Resolve it through the active `with` expression so inherited TObject
@@ -185,33 +202,30 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       // rather than an entry in `registry->classes`.
       if (const auto* ci = analysis_.class_info_for_type_name(cls);
           ci && ci->is_reference_type && name == "free") {
-        r.cxx = "::rt::t_tobject::p_free(" + it->cxx_text + ")";
-        r.kind = ResolvedKind::WithMethod;
         // The expression is already a complete call; no implicit-zero-arg
         // wrap is wanted at the use site.
-        r.is_callable = false;
-        return r;
+        return resolved_value(ResolvedKind::WithMethod,
+                              "::rt::t_tobject::p_free(" + it->cxx_text + ")");
       }
       if (!cls.empty()) {
-        if (adopt_method_overloads(
-                r,
+        if (auto result = resolve_method_overloads(
                 registry_->lookup_class_methods(cls, name,
                                                 scope_.current_unit_name),
                 ResolvedKind::WithMethod,
                 it->cxx_text + access + mangle(name))) {
-          return r;
+          return *result;
         }
         if (registry_->lookup_class_field(
                 cls, name, scope_.current_unit_name)) {
-          r.cxx = it->cxx_text + access + registry_->field_cxx_name(name);
-          r.kind = ResolvedKind::WithField;
-          return r;
+          return resolved_value(ResolvedKind::WithField,
+                                it->cxx_text + access +
+                                    registry_->field_cxx_name(name));
         }
       }
       if (analysis_.lookup_record_field_type_in_with(*it, name)) {
-        r.cxx = it->cxx_text + access + registry_->field_cxx_name(name);
-        r.kind = ResolvedKind::WithField;
-        return r;
+        return resolved_value(ResolvedKind::WithField,
+                              it->cxx_text + access +
+                                  registry_->field_cxx_name(name));
       }
     }
   }
@@ -221,35 +235,29 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   {
     auto nit = scope_.local_nested_fns.find(name);
     if (nit != scope_.local_nested_fns.end()) {
-      r.kind = ResolvedKind::NestedFn;
-      r.cxx = mangle(name);
-      r.proc = nit->second.decl;
-      r.is_callable = true;
-      r.is_parameterless = (nit->second.param_count == 0);
-      r.accepts_zero_args = nit->second.accepts_zero_args;
-      r.default_arg_unit = scope_.current_unit_name;
-      return r;
+      return ResolveResult{.kind = ResolvedKind::NestedFn,
+                           .cxx = mangle(name),
+                           .is_parameterless = (nit->second.param_count == 0),
+                           .is_callable = true,
+                           .proc = nit->second.decl,
+                           .accepts_zero_args = nit->second.accepts_zero_args,
+                           .return_type_name = {},
+                           .default_arg_unit = scope_.current_unit_name};
     }
   }
 
   // 4. Procedure-local (param, var, typed const, nested-proc-name).
   if (scope_.local_scope.count(name)) {
-    r.kind = ResolvedKind::Local;
-    r.cxx = mangle(name);
-    return r;
+    return resolved_value(ResolvedKind::Local, mangle(name));
   }
   if (scope_.local_consts.count(name)) {
-    r.kind = ResolvedKind::Local;
-    r.cxx = mangle(name);
-    return r;
+    return resolved_value(ResolvedKind::Local, mangle(name));
   }
   for (const auto& [_, en] : scope_.local_enums) {
     if (!en) continue;
     for (const auto& member : en->members) {
       if (ascii_lower(member.name) == ascii_lower(name)) {
-        r.kind = ResolvedKind::EnumMember;
-        r.cxx = mangle(name);
-        return r;
+        return resolved_value(ResolvedKind::EnumMember, mangle(name));
       }
     }
   }
@@ -263,32 +271,22 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
             analysis_.class_info_for_type_name(scope_.current_class_name);
         ci && ci->is_reference_type &&
         (name == "classtype" || name == "instancesize")) {
-      r.cxx = mangle(name);
-      r.kind = ResolvedKind::ClassMethod;
-      r.is_callable = true;
-      r.is_parameterless = true;
-      r.accepts_zero_args = true;
-      return r;
+      return zero_arg_callable(ResolvedKind::ClassMethod, mangle(name));
     }
-    if (adopt_method_overloads(
-            r,
+    if (auto result = resolve_method_overloads(
             registry_->lookup_class_methods(scope_.current_class_name, name,
                                             scope_.current_unit_name),
-            ResolvedKind::ClassMethod,
-            mangle(name))) {
-      return r;
+            ResolvedKind::ClassMethod, mangle(name))) {
+      return *result;
     }
     if (registry_->lookup_class_field(scope_.current_class_name, name,
                                       scope_.current_unit_name)) {
-      r.cxx = registry_->field_cxx_name(name);
-      r.kind = ResolvedKind::ClassField;
-      return r;
+      return resolved_value(ResolvedKind::ClassField,
+                            registry_->field_cxx_name(name));
     }
     if (registry_->class_has_enum_member(scope_.current_class_name, name,
                                          scope_.current_unit_name)) {
-      r.cxx = mangle(name);
-      r.kind = ResolvedKind::EnumMember;
-      return r;
+      return resolved_value(ResolvedKind::EnumMember, mangle(name));
     }
   }
 
@@ -308,30 +306,23 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     // inserted at a caller in another unit, so declaration-unit symbols need
     // an explicit namespace prefix there.
     if (ui) {
-      if (adopt_proc_overloads(r, ui->find_procs(name),
-                               ResolvedKind::UnitProc,
-                               own_prefix + mangle(name))) {
-        return r;
+      if (auto result = resolve_proc_overloads(
+              ui->find_procs(name), ResolvedKind::UnitProc,
+              own_prefix + mangle(name))) {
+        return *result;
       }
       if (ui->find_var(name)) {
-        r.cxx = own_prefix + mangle(name);
-        r.kind = ResolvedKind::UnitVar;
-        return r;
+        return resolved_value(ResolvedKind::UnitVar, own_prefix + mangle(name));
       }
       if (ui->find_const(name)) {
-        r.cxx = own_prefix + mangle(name);
-        r.kind = ResolvedKind::UnitConst;
-        return r;
+        return resolved_value(ResolvedKind::UnitConst, own_prefix + mangle(name));
       }
       if (ui->has_enum_member(name)) {
-        r.cxx = own_prefix + mangle(name);
-        r.kind = ResolvedKind::EnumMember;
-        return r;
+        return resolved_value(ResolvedKind::EnumMember,
+                              own_prefix + mangle(name));
       }
       if (ui->has_type(name)) {
-        r.cxx = own_prefix + mangle(name);
-        r.kind = ResolvedKind::UnitType;
-        return r;
+        return resolved_value(ResolvedKind::UnitType, own_prefix + mangle(name));
       }
     }
 
@@ -339,42 +330,35 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     // the first match in a unit that actually exports this name.
     // Ambiguity between same-named symbols in two `using namespace`'d
     // units is resolved by emitting the fully-qualified form.
-    auto check_unit = [&](const std::string& un) -> bool {
+    auto check_unit = [&](const std::string& un) -> std::optional<ResolveResult> {
       auto it = registry_->units.find(un);
-      if (it == registry_->units.end()) return false;
+      if (it == registry_->units.end()) return std::nullopt;
       const UnitInfo& u = it->second;
       // Synthetic `__rt__` unit holds runtime builtins. Emit them fully
       // qualified so translated units do not depend on `using namespace
       // ::rt;` for correctness.
       const std::string prefix = unit_namespace_prefix(un);
       // Other units contribute only their interface-exported names.
-      if (adopt_proc_overloads(r, u.find_export_procs(name),
-                               (un == "__rt__") ? ResolvedKind::RtBuiltin
-                                                : ResolvedKind::UnitProc,
-                               prefix + mangle(name))) {
-        return true;
+      if (auto result = resolve_proc_overloads(
+              u.find_export_procs(name),
+              (un == "__rt__") ? ResolvedKind::RtBuiltin
+                               : ResolvedKind::UnitProc,
+              prefix + mangle(name))) {
+        return result;
       }
       if (u.find_export_var(name)) {
-        r.cxx = prefix + mangle(name);
-        r.kind = ResolvedKind::UnitVar;
-        return true;
+        return resolved_value(ResolvedKind::UnitVar, prefix + mangle(name));
       }
       if (u.find_export_const(name)) {
-        r.cxx = prefix + mangle(name);
-        r.kind = ResolvedKind::UnitConst;
-        return true;
+        return resolved_value(ResolvedKind::UnitConst, prefix + mangle(name));
       }
       if (u.has_export_enum_member(name)) {
-        r.cxx = prefix + mangle(name);
-        r.kind = ResolvedKind::EnumMember;
-        return true;
+        return resolved_value(ResolvedKind::EnumMember, prefix + mangle(name));
       }
       if (u.has_export_type(name)) {
-        r.cxx = prefix + mangle(name);
-        r.kind = ResolvedKind::UnitType;
-        return true;
+        return resolved_value(ResolvedKind::UnitType, prefix + mangle(name));
       }
-      return false;
+      return std::nullopt;
     };
     if (ui) {
       // Right-to-left is Pascal's uses resolution order. Keep the synthetic
@@ -382,11 +366,11 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       // runtime builtin names such as FPU exception enum members.
       for (auto it = ui->uses.rbegin(); it != ui->uses.rend(); ++it) {
         if (*it == "__rt__") continue;
-        if (check_unit(*it)) return r;
+        if (auto result = check_unit(*it)) return *result;
       }
       for (auto it = ui->uses.rbegin(); it != ui->uses.rend(); ++it) {
         if (*it != "__rt__") continue;
-        if (check_unit(*it)) return r;
+        if (auto result = check_unit(*it)) return *result;
       }
     }
   }
@@ -395,9 +379,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   // Known runtime helpers already resolve through the synthetic `__rt__`
   // unit on every unit's uses-chain; reaching this fallback therefore means
   // "lookup failed", not "implicit runtime builtin".
-  r.cxx = mangle(name);
-  r.kind = ResolvedKind::Unknown;
-  return r;
+  return resolved_value(ResolvedKind::Unknown, mangle(name));
 }
 
 }  // namespace tp2cc
