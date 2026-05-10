@@ -146,7 +146,14 @@ class EmitAnalysis {
     OrdinalFamily family = OrdinalFamily::Invalid;
     int64_t low = 0;
     int64_t high = 0;
-    std::string enum_key;
+    // Enum identity for `OrdinalFamily::Enum`. The TyEnum AST node IS the
+    // enum's identity: there's one per Pascal `type T = (...)` declaration,
+    // and the registry stores it (EnumInfoReg::type). Using the pointer
+    // directly removes the "what spelling did this come from" question that
+    // a string key invites - every path to the same enum (raw TyEnum from
+    // deduce_type of an enum-member ident, or TyName canonicalised through
+    // the registry) ends at the same pointer.
+    const ast::TyEnum* enum_key = nullptr;
   };
 
   std::string implicit_self_cxx();
@@ -159,7 +166,8 @@ class EmitAnalysis {
   std::optional<OrdinalDomain> ordinal_domain_for_set_type(
       const ast::TypeExpr* t);
   bool try_eval_ordinal_expr(const ast::Expr& e, int64_t* value,
-                             OrdinalFamily* family, std::string* enum_key);
+                             OrdinalFamily* family,
+                             const ast::TyEnum** enum_key);
 
   const TypeRegistry* registry_;
   ScopeStateView& scope_;
