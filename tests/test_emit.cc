@@ -7670,6 +7670,29 @@ void test_metaclass_derived_constructor_surface_stays_visible() {
   CHECK(contains(out.impl, "p_inst = p_cls->p_create(7);"));
 }
 
+void test_metaclass_named_constructor_with_args_lowers_to_descriptor_slot() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class\n"
+      "    constructor create_internal(n : integer);\n"
+      "  end;\n"
+      "  tnodeclass = class of tnode;\n"
+      "var\n"
+      "  cls : tnodeclass;\n"
+      "  inst : tnode;\n"
+      "implementation\n"
+      "constructor tnode.create_internal(n : integer);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  inst := cls.create_internal(7);\n"
+      "end.\n");
+  CHECK(contains(out.header, "t_tnode* (*p_create_internal)(int32_t);"));
+  CHECK(contains(out.impl, "p_inst = p_cls->p_create_internal(7);"));
+}
+
 void test_metaclass_base_constructor_slot_survives_hidden_child_create() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -8793,6 +8816,7 @@ int main() {
   RUN_TEST(test_method_definition_on_class_alias_uses_canonical_owner);
   RUN_TEST(test_duplicate_class_names_across_units_keep_metaclass_owner_unit);
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
+  RUN_TEST(test_metaclass_named_constructor_with_args_lowers_to_descriptor_slot);
   RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);
   RUN_TEST(test_metaclass_same_signature_constructor_keeps_derived_return_type);
   RUN_TEST(test_inheritsfrom_uses_runtime_tclass_and_method_call);

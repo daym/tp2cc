@@ -106,6 +106,9 @@ class EmitResolution {
   void append_class_method_cands(const std::string& cls,
                                  const std::string& name,
                                  std::vector<AnyCand>& cands);
+  void append_metaclass_method_cands(const std::string& cls,
+                                     const std::string& name,
+                                     std::vector<AnyCand>& cands);
   void append_unit_export_proc_cands(const std::string& unit,
                                      const std::string& name,
                                      std::vector<AnyCand>& cands);

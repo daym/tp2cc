@@ -1329,16 +1329,21 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                   registry->lookup_class_methods(metaclass, m.name,
                                                  current_unit_name)) {
             std::vector<const ProcDecl*> candidates;
+            bool callable_metaclass_member = false;
             for (const auto& method : *methods) {
               if ((method.kind == SymKind::Constructor ||
                    method.kind == SymKind::ClassMethod) &&
                   method.decl) {
+                callable_metaclass_member = true;
                 candidates.push_back(method.decl.get());
               }
             }
+            std::string text = base_cxx + "->" + mangle(m.name);
+            if (is_callee_context_ && callable_metaclass_member) {
+              return text;
+            }
             PickResult picked = resolution_.pick_overload(candidates, {});
             if (!picked.ambiguous && picked.decl) {
-              std::string text = base_cxx + "->" + mangle(m.name);
               const std::string unit = [&]() {
                 for (const auto& method : *methods) {
                   if (method.decl.get() == picked.decl) {

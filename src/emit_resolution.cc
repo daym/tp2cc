@@ -32,6 +32,23 @@ void EmitResolution::append_class_method_cands(
   }
 }
 
+void EmitResolution::append_metaclass_method_cands(
+    const std::string& cls, const std::string& name,
+    std::vector<AnyCand>& cands) {
+  if (!registry_ || cls.empty()) return;
+  auto* set = registry_->lookup_class_methods(
+      cls, name, scope_.current_unit_name);
+  if (!set) return;
+  for (const auto& ms : *set) {
+    if (!ms.decl) continue;
+    if (ms.kind != SymKind::Constructor && ms.kind != SymKind::ClassMethod) {
+      continue;
+    }
+    cands.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args, {},
+                     ms.defining_unit, {}});
+  }
+}
+
 void EmitResolution::append_unit_export_proc_cands(
     const std::string& unit, const std::string& name,
     std::vector<AnyCand>& cands) {
@@ -528,8 +545,14 @@ ResolvedCall EmitResolution::resolve_call(
       }
     }
     if (!inherited_call && !unit_qualified) {
-      std::string cls = receiver_class(callee);
-      if (!cls.empty()) append_class_method_cands(cls, mem.name, all_cands);
+      const std::string metaclass =
+          analysis_.metaclass_target_name(analysis_.deduce_type(*mem.base));
+      if (!metaclass.empty()) {
+        append_metaclass_method_cands(metaclass, mem.name, all_cands);
+      } else {
+        std::string cls = receiver_class(callee);
+        if (!cls.empty()) append_class_method_cands(cls, mem.name, all_cands);
+      }
     }
   }
 
