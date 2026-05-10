@@ -400,6 +400,17 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
     line += " {";
     emit_ops_.emitln(line);
     emit_ops_.indent();
+    if (to.is_reference_type) {
+      const std::string meta_name = "tp2cc_metaclass_" + name;
+      const std::string value_fn = "tp2cc_metaclass_value_" + name;
+      // The metaclass struct and value function implement Pascal `class of`
+      // dispatch. A virtual class method can be strict protected and still
+      // have an entry in that table, so the generated table code must be able
+      // to call the protected C++ member without making normal Pascal calls
+      // bypass visibility.
+      emit_ops_.emitln("friend struct " + meta_name + ";");
+      emit_ops_.emitln("friend " + meta_name + "* " + value_fn + "();");
+    }
     if (!to.parent.empty()) {
       emit_ops_.emitln("using inherited = " +
                        types_.named_type_struct_cxx(to.parent) + ";");

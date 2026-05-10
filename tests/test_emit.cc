@@ -3458,6 +3458,40 @@ void test_strict_visibility_lowers_to_cxx_access_sections() {
   CHECK(contains(out.header, "public:\n  int32_t p_value;"));
 }
 
+void test_metaclass_support_can_call_strict_protected_class_methods() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tfoo = class\n"
+      "  strict protected\n"
+      "    class procedure hidden;\n"
+      "    class procedure hook; virtual;\n"
+      "  public\n"
+      "    class procedure run;\n"
+      "  end;\n"
+      "implementation\n"
+      "class procedure tfoo.hidden;\n"
+      "begin\n"
+      "end;\n"
+      "class procedure tfoo.hook;\n"
+      "begin\n"
+      "end;\n"
+      "class procedure tfoo.run;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "friend struct tp2cc_metaclass_t_tfoo;"));
+  CHECK(contains(out.header,
+                 "friend tp2cc_metaclass_t_tfoo* "
+                 "tp2cc_metaclass_value_t_tfoo();"));
+  CHECK(contains(out.header, "protected:\n  static void p_hidden();"));
+  CHECK(contains(out.header,
+                 "virtual void p_hook() const { t_tfoo::p_hook(); }"));
+  CHECK(contains(out.header,
+                 "+[]() -> void { ::p_u::t_tfoo::p_hidden(); }"));
+}
+
 void test_class_var_inherited_duplicate_reports_error() {
   int before = error_count();
   (void)compile_snippet_with_registry(
@@ -8212,6 +8246,7 @@ int main() {
   RUN_TEST(test_class_method_static_emission_and_calls);
   RUN_TEST(test_class_var_static_emission_and_access);
   RUN_TEST(test_strict_visibility_lowers_to_cxx_access_sections);
+  RUN_TEST(test_metaclass_support_can_call_strict_protected_class_methods);
   RUN_TEST(test_class_var_inherited_duplicate_reports_error);
   RUN_TEST(test_tobject_runtime_helpers_lower_in_method_body);
   RUN_TEST(test_classname_uses_metaclass_descriptor_slot);
