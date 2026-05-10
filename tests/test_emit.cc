@@ -756,6 +756,34 @@ void test_low_high_use_resolved_pascal_type() {
   CHECK(!contains(out.impl, "p_high(p_arr)"));
 }
 
+void test_low_high_on_set_type_uses_element_bounds() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tflag = (fa, fb, fc);\n"
+      "  tflags = set of tflag;\n"
+      "  tsmall = set of 2..5;\n"
+      "const\n"
+      "  lastflag = ord(high(tflags));\n"
+      "  firstsmall = low(tsmall);\n"
+      "  lastsmall = high(tsmall);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "begin\n"
+      "  if ord(high(tflags)) > 31 then begin end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "const int32_t p_lastflag = ::rt::p_ord(tp2cc_enum_high_tflag);"));
+  CHECK(contains(out.header, "const auto p_firstsmall = 2;"));
+  CHECK(contains(out.header, "const auto p_lastsmall = 5;"));
+  CHECK(contains(out.impl, "if ((::rt::p_ord(tp2cc_enum_high_tflag) > 31))"));
+  CHECK(!contains(out.header, "::rt::p_high("));
+  CHECK(!contains(out.impl, "::rt::p_high("));
+}
+
 void test_low_high_on_local_array_type_lowers_to_index_bounds() {
   // `low(arrtype)` / `high(arrtype)` where the type is a function-local
   // array alias. The arg is a type name (no value to deduce_type), so
@@ -7898,6 +7926,7 @@ int main() {
   RUN_TEST(test_signed_ordinal_array_bounds_preserve_negative_low);
   RUN_TEST(test_unsupported_fixed_array_index_reports_error_and_stays_array_typed);
   RUN_TEST(test_low_high_use_resolved_pascal_type);
+  RUN_TEST(test_low_high_on_set_type_uses_element_bounds);
   RUN_TEST(test_low_high_on_local_array_type_lowers_to_index_bounds);
   RUN_TEST(test_system_qualified_low_high_lowers_like_unqualified);
   RUN_TEST(test_char_array_typed_const_uses_explicit_array_literal_helper);

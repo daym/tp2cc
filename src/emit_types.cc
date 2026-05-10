@@ -1013,6 +1013,13 @@ std::string EmitTypes::low_high_expr_for_type(const TypeExpr* t,
     if (arr.dims.empty()) return {};
     return low_high_expr_for_type(arr.dims[0].get(), want_low);
   }
+  if (t->kind == Kind::TySet) {
+    const auto& s = static_cast<const TySet&>(*t);
+    if (s.has_explicit_bounds) {
+      return std::to_string(want_low ? s.explicit_low : s.explicit_high);
+    }
+    return low_high_expr_for_type(s.element.get(), want_low);
+  }
   return {};
 }
 
