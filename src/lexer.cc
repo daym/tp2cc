@@ -155,10 +155,11 @@ std::string Lexer::lower(std::string_view s) {
 Lexer::Lexer(std::shared_ptr<SourceFile> root,
              std::vector<std::filesystem::path> include_dirs)
     : include_dirs_(std::move(include_dirs)) {
-  Input in;
-  in.file = std::move(root);
-  in.pos = initial_input_pos(*in.file);
-  stack_.push_back(std::move(in));
+  const size_t pos = initial_input_pos(*root);
+  stack_.push_back(Input{.file = std::move(root),
+                         .pos = pos,
+                         .line = 1,
+                         .col = 1});
 
   for (auto& kv : kKeywordTable) keywords_.emplace(kv.first, kv.second);
 }
@@ -561,11 +562,10 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     bool defined = defines_.count(sym) > 0;
     bool take = (head == "ifdef") ? defined : !defined;
     bool parent_ok = accepting();
-    IfdefFrame f;
-    f.accepting = parent_ok && take;
-    f.any_taken = f.accepting;
-    f.in_else = false;
-    ifdef_stack_.push_back(f);
+    const bool accepting_branch = parent_ok && take;
+    ifdef_stack_.push_back(IfdefFrame{.accepting = accepting_branch,
+                                      .any_taken = accepting_branch,
+                                      .in_else = false});
     return;
   }
   if (head == "if") {
@@ -579,11 +579,10 @@ void Lexer::handle_directive(std::string_view body, Location where) {
         report_error(where, "cannot evaluate {$if}: " + v.error);
       }
     }
-    IfdefFrame f;
-    f.accepting = parent_ok && cond;
-    f.any_taken = f.accepting;
-    f.in_else = false;
-    ifdef_stack_.push_back(f);
+    const bool accepting_branch = parent_ok && cond;
+    ifdef_stack_.push_back(IfdefFrame{.accepting = accepting_branch,
+                                      .any_taken = accepting_branch,
+                                      .in_else = false});
     return;
   }
   if (head == "ifopt") {
@@ -600,11 +599,10 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     else if (opt == "r-" || opt == "rangechecks-") cond = !r_check_;
     else if (opt == "h+" || opt == "longstrings+") cond = h_long_strings_;
     else if (opt == "h-" || opt == "longstrings-") cond = !h_long_strings_;
-    IfdefFrame f;
-    f.accepting = parent_ok && cond;
-    f.any_taken = f.accepting;
-    f.in_else = false;
-    ifdef_stack_.push_back(f);
+    const bool accepting_branch = parent_ok && cond;
+    ifdef_stack_.push_back(IfdefFrame{.accepting = accepting_branch,
+                                      .any_taken = accepting_branch,
+                                      .in_else = false});
     return;
   }
   if (head == "elseif") {
@@ -817,10 +815,11 @@ void Lexer::do_include(std::string_view arg, Location where) {
     auto sf = std::make_shared<SourceFile>();
     sf->path = stack_.back().file->path + ":{$I " + a + "}";
     sf->contents = std::move(contents);
-    Input in;
-    in.file = std::move(sf);
-    in.pos = initial_input_pos(*in.file);
-    stack_.push_back(std::move(in));
+    const size_t pos = initial_input_pos(*sf);
+    stack_.push_back(Input{.file = std::move(sf),
+                           .pos = pos,
+                           .line = 1,
+                           .col = 1});
     return;
   }
 
@@ -862,10 +861,11 @@ void Lexer::do_include(std::string_view arg, Location where) {
     report_error(where, "cannot read include file: " + resolved.string());
     return;
   }
-  Input in;
-  in.file = std::move(sf);
-  in.pos = initial_input_pos(*in.file);
-  stack_.push_back(std::move(in));
+  const size_t pos = initial_input_pos(*sf);
+  stack_.push_back(Input{.file = std::move(sf),
+                         .pos = pos,
+                         .line = 1,
+                         .col = 1});
 }
 
 // ---------------------------------------------------------------------------
@@ -981,23 +981,14 @@ Token Lexer::scan_identifier_or_keyword() {
   // casing by looking up a canonical form. For now, lowercase.
   std::string key = lower(text);
   auto it = keywords_.find(key);
-  Token t;
-  t.loc = loc;
   if (it != keywords_.end()) {
-    t.kind = it->second;
-    t.text = key;
-  } else {
-    t.kind = Tok::Ident;
-    t.text = std::move(key);
+    return Token(it->second, loc, key);
   }
-  return t;
+  return Token(Tok::Ident, loc, std::move(key));
 }
 
 Token Lexer::scan_number() {
   Location loc = here();
-  Token t;
-  t.loc = loc;
-  t.kind = Tok::IntLit;
 
   std::string text;
   char c = peek();
@@ -1030,9 +1021,7 @@ Token Lexer::scan_number() {
       text.push_back(d);
     }
     if (ovf) report_error(loc, "integer literal exceeds 64 bits");
-    t.int_value = v;
-    t.text = std::move(text);
-    return t;
+    return Token(Tok::IntLit, loc, std::move(text), v);
   }
   if (c == '%') {
     text.push_back(get());
@@ -1044,9 +1033,7 @@ Token Lexer::scan_number() {
       text.push_back(d);
     }
     if (ovf) report_error(loc, "integer literal exceeds 64 bits");
-    t.int_value = v;
-    t.text = std::move(text);
-    return t;
+    return Token(Tok::IntLit, loc, std::move(text), v);
   }
   if (c == '&') {
     text.push_back(get());
@@ -1058,9 +1045,7 @@ Token Lexer::scan_number() {
       text.push_back(d);
     }
     if (ovf) report_error(loc, "integer literal exceeds 64 bits");
-    t.int_value = v;
-    t.text = std::move(text);
-    return t;
+    return Token(Tok::IntLit, loc, std::move(text), v);
   }
 
   // Decimal, possibly real.
@@ -1085,23 +1070,15 @@ Token Lexer::scan_number() {
     while (!at_eof_of_current() && is_digit(peek())) text.push_back(get());
   }
 
-  if (is_real) {
-    t.kind = Tok::RealLit;
-  } else {
-    if (ivalue_ovf) report_error(loc, "integer literal exceeds 64 bits");
-    t.int_value = ivalue;
-  }
-  t.text = std::move(text);
-  return t;
+  if (is_real) return Token(Tok::RealLit, loc, std::move(text));
+  if (ivalue_ovf) report_error(loc, "integer literal exceeds 64 bits");
+  return Token(Tok::IntLit, loc, std::move(text), ivalue);
 }
 
 Token Lexer::scan_string() {
   // Pascal strings: sequences of '...' pieces and #NN char codes, with
   // doubled '' being an embedded quote.
   Location loc = here();
-  Token t;
-  t.loc = loc;
-  t.kind = Tok::StringLit;
   std::string out;
   for (;;) {
     char c = peek();
@@ -1110,14 +1087,12 @@ Token Lexer::scan_string() {
       for (;;) {
         if (at_eof_of_current()) {
           report_error(loc, "unterminated string literal");
-          t.text = std::move(out);
-          return t;
+          return Token(Tok::StringLit, loc, std::move(out));
         }
         char d = peek();
         if (d == '\n') {
           report_error(loc, "newline in string literal");
-          t.text = std::move(out);
-          return t;
+          return Token(Tok::StringLit, loc, std::move(out));
         }
         if (d == '\'') {
           get();
@@ -1169,67 +1144,53 @@ Token Lexer::scan_string() {
     }
     break;
   }
-  t.text = std::move(out);
-  return t;
+  return Token(Tok::StringLit, loc, std::move(out));
 }
 
 Token Lexer::scan_punctuation() {
   Location loc = here();
-  Token t;
-  t.loc = loc;
-  t.kind = Tok::Error;
-
   char c = get();
   switch (c) {
-    case '+': t.kind = Tok::Plus; t.text = "+"; break;
-    case '-': t.kind = Tok::Minus; t.text = "-"; break;
+    case '+': return Token(Tok::Plus, loc, "+");
+    case '-': return Token(Tok::Minus, loc, "-");
     case '*':
-      if (peek() == '*') { get(); t.kind = Tok::StarStar; t.text = "**"; }
-      else { t.kind = Tok::Star; t.text = "*"; }
-      break;
-    case '/': t.kind = Tok::Slash; t.text = "/"; break;
-    case '=': t.kind = Tok::Eq; t.text = "="; break;
+      if (peek() == '*') { get(); return Token(Tok::StarStar, loc, "**"); }
+      return Token(Tok::Star, loc, "*");
+    case '/': return Token(Tok::Slash, loc, "/");
+    case '=': return Token(Tok::Eq, loc, "=");
     case '<':
-      if (peek() == '=') { get(); t.kind = Tok::LtEq; t.text = "<="; }
-      else if (peek() == '>') { get(); t.kind = Tok::NotEq; t.text = "<>"; }
-      else if (peek() == '<') { get(); t.kind = Tok::KwShl; t.text = "<<"; }
-      else { t.kind = Tok::Lt; t.text = "<"; }
-      break;
+      if (peek() == '=') { get(); return Token(Tok::LtEq, loc, "<="); }
+      if (peek() == '>') { get(); return Token(Tok::NotEq, loc, "<>"); }
+      if (peek() == '<') { get(); return Token(Tok::KwShl, loc, "<<"); }
+      return Token(Tok::Lt, loc, "<");
     case '>':
-      if (peek() == '=') { get(); t.kind = Tok::GtEq; t.text = ">="; }
-      else if (peek() == '<') { get(); t.kind = Tok::SymDiff; t.text = "><"; }
-      else if (peek() == '>') { get(); t.kind = Tok::KwShr; t.text = ">>"; }
-      else { t.kind = Tok::Gt; t.text = ">"; }
-      break;
+      if (peek() == '=') { get(); return Token(Tok::GtEq, loc, ">="); }
+      if (peek() == '<') { get(); return Token(Tok::SymDiff, loc, "><"); }
+      if (peek() == '>') { get(); return Token(Tok::KwShr, loc, ">>"); }
+      return Token(Tok::Gt, loc, ">");
     case ':':
-      if (peek() == '=') { get(); t.kind = Tok::Assign; t.text = ":="; }
-      else { t.kind = Tok::Colon; t.text = ":"; }
-      break;
-    case ';': t.kind = Tok::Semi; t.text = ";"; break;
-    case ',': t.kind = Tok::Comma; t.text = ","; break;
-    case '(': t.kind = Tok::LParen; t.text = "("; break;
-    case ')': t.kind = Tok::RParen; t.text = ")"; break;
-    case '[': t.kind = Tok::LBrack; t.text = "["; break;
-    case ']': t.kind = Tok::RBrack; t.text = "]"; break;
-    case '^': t.kind = Tok::Caret; t.text = "^"; break;
+      if (peek() == '=') { get(); return Token(Tok::Assign, loc, ":="); }
+      return Token(Tok::Colon, loc, ":");
+    case ';': return Token(Tok::Semi, loc, ";");
+    case ',': return Token(Tok::Comma, loc, ",");
+    case '(': return Token(Tok::LParen, loc, "(");
+    case ')': return Token(Tok::RParen, loc, ")");
+    case '[': return Token(Tok::LBrack, loc, "[");
+    case ']': return Token(Tok::RBrack, loc, "]");
+    case '^': return Token(Tok::Caret, loc, "^");
     case '@':
-      if (peek() == '@') { get(); t.kind = Tok::AtAt; t.text = "@@"; }
-      else { t.kind = Tok::At; t.text = "@"; }
-      break;
+      if (peek() == '@') { get(); return Token(Tok::AtAt, loc, "@@"); }
+      return Token(Tok::At, loc, "@");
     case '.':
-      if (peek() == '.') { get(); t.kind = Tok::DotDot; t.text = ".."; }
-      else { t.kind = Tok::Dot; t.text = "."; }
-      break;
+      if (peek() == '.') { get(); return Token(Tok::DotDot, loc, ".."); }
+      return Token(Tok::Dot, loc, ".");
     default: {
       char buf[32];
       std::snprintf(buf, sizeof(buf), "unexpected character 0x%02x", (unsigned)(unsigned char)c);
       report_error(loc, buf);
-      t.kind = Tok::Error;
-      t.text.assign(1, c);
-      break;
+      return Token(Tok::Error, loc, std::string(1, c));
     }
   }
-  return t;
 }
 
 // ---------------------------------------------------------------------------
@@ -1241,7 +1202,7 @@ Token Lexer::next() {
     // After directives, we may have moved; check EOF.
     if (pop_input_if_eof()) continue;
     if (stack_.empty() || (stack_.size() == 1 && at_eof_of_current())) {
-      Token t; t.kind = Tok::Eof; t.loc = here(); return t;
+      return Token(Tok::Eof, here());
     }
 
     if (!accepting()) {

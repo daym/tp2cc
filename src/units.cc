@@ -68,24 +68,23 @@ int UnitGraph::parse_recursive(const fs::path& path) {
   auto node = parser.parse();
   int errs = error_count() - errs_before;
 
-  ParsedUnit pu;
-  pu.path = path;
-  pu.ok = (errs == 0 && node != nullptr);
-  if (node) pu.name = to_lower(node->name);
-  pu.ast = std::move(node);
-
-  if (pu.name.empty()) {
-    pu.name = std::string("__prog_") + path.stem().string();
+  std::string unit_name = node ? to_lower(node->name) : std::string{};
+  if (unit_name.empty()) {
+    unit_name = std::string("__prog_") + path.stem().string();
   }
+  const bool parsed_ok = errs == 0 && node != nullptr;
+  ParsedUnit pu{.name = std::move(unit_name),
+                .path = path,
+                .ast = std::move(node),
+                .ok = parsed_ok};
 
   auto it = units_.find(pu.name);
   if (it != units_.end()) {
     if (it->second.path != pu.path) {
-      Location loc;
-      if (pu.ast) loc = pu.ast->loc;
-      report_warning(loc, "duplicate unit '" + pu.name + "' at " +
-                               path.string() + " (first seen at " +
-                               it->second.path.string() + ")");
+      report_warning(pu.ast ? pu.ast->loc : Location{},
+                     "duplicate unit '" + pu.name + "' at " +
+                         path.string() + " (first seen at " +
+                         it->second.path.string() + ")");
     }
     return errs > 0 ? errs : 0;
   }
@@ -121,7 +120,8 @@ int UnitGraph::discover_from_entry(fs::path entry_path) {
 }
 
 UnitGraph::TopoResult UnitGraph::topo_sort() const {
-  TopoResult out;
+  std::vector<std::string> order;
+  std::vector<std::pair<std::string, std::string>> cycle_edges;
 
   // Build adjacency: for each unit, its (lowercased) uses entries. Edges
   // are reversed for Kahn's algorithm.
@@ -172,7 +172,7 @@ UnitGraph::TopoResult UnitGraph::topo_sort() const {
     std::sort(ready.begin(), ready.end());
     std::string n = std::move(ready.front());
     ready.erase(ready.begin());
-    out.order.push_back(n);
+    order.push_back(n);
     auto it = reverse.find(n);
     if (it == reverse.end()) continue;
     for (const auto& dep : it->second) {
@@ -193,11 +193,12 @@ UnitGraph::TopoResult UnitGraph::topo_sort() const {
       auto it = deps.find(name);
       if (it == deps.end()) continue;
       for (const auto& dep : it->second) {
-        out.cycle_edges.emplace_back(name, dep);
+        cycle_edges.emplace_back(name, dep);
       }
     }
   }
-  return out;
+  return TopoResult{.order = std::move(order),
+                    .cycle_edges = std::move(cycle_edges)};
 }
 
 const ParsedUnit* UnitGraph::lookup(std::string_view name) const {

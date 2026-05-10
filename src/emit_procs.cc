@@ -32,30 +32,29 @@ EmitProcs::EmitProcs(ScopeStateView& scope, int& block_depth,
       emit_ops_(emit_ops) {}
 
 EmitProcs::SavedProcState EmitProcs::save_proc_state() const {
-  SavedProcState saved;
-  saved.current_fn_name = scope_.current_fn_name;
-  saved.current_fn_param_names = scope_.current_fn_param_names;
-  saved.current_fn_is_function = scope_.current_fn_is_function;
-  saved.current_fn_is_ctor = scope_.current_fn_is_ctor;
-  saved.current_fn_result_type = scope_.current_fn_result_type;
-  saved.current_result_slot_name = scope_.current_result_slot_name;
-  saved.bare_result_slot_name = scope_.bare_result_slot_name;
-  saved.bare_result_type = scope_.bare_result_type;
-  saved.outer_result_name = scope_.outer_result_name;
-  saved.outer_result_slot_name = scope_.outer_result_slot_name;
-  saved.outer_result_type = scope_.outer_result_type;
-  saved.current_class_name = scope_.current_class_name;
-  saved.local_scope = scope_.local_scope;
-  saved.local_types = scope_.local_types;
-  saved.local_consts = scope_.local_consts;
-  saved.local_nested_fns = scope_.local_nested_fns;
-  saved.local_nested_forwards = scope_.local_nested_forwards;
-  saved.local_untyped_params = scope_.local_untyped_params;
-  saved.local_enums = scope_.local_enums;
-  saved.local_const_params = scope_.local_const_params;
-  saved.local_type_aliases_scoped = scope_.local_type_aliases_scoped;
-  saved.block_depth = block_depth_;
-  return saved;
+  return SavedProcState{
+      .current_fn_name = scope_.current_fn_name,
+      .current_fn_param_names = scope_.current_fn_param_names,
+      .current_fn_is_function = scope_.current_fn_is_function,
+      .current_fn_is_ctor = scope_.current_fn_is_ctor,
+      .current_fn_result_type = scope_.current_fn_result_type,
+      .current_result_slot_name = scope_.current_result_slot_name,
+      .bare_result_slot_name = scope_.bare_result_slot_name,
+      .bare_result_type = scope_.bare_result_type,
+      .outer_result_name = scope_.outer_result_name,
+      .outer_result_slot_name = scope_.outer_result_slot_name,
+      .outer_result_type = scope_.outer_result_type,
+      .current_class_name = scope_.current_class_name,
+      .local_scope = scope_.local_scope,
+      .local_types = scope_.local_types,
+      .local_consts = scope_.local_consts,
+      .local_nested_fns = scope_.local_nested_fns,
+      .local_nested_forwards = scope_.local_nested_forwards,
+      .local_untyped_params = scope_.local_untyped_params,
+      .local_enums = scope_.local_enums,
+      .local_const_params = scope_.local_const_params,
+      .local_type_aliases_scoped = scope_.local_type_aliases_scoped,
+      .block_depth = block_depth_};
 }
 
 void EmitProcs::restore_proc_state(SavedProcState&& saved) {
@@ -201,13 +200,14 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
     } else if (l->kind == Kind::ProcDecl) {
       const auto& npd = static_cast<const ProcDecl&>(*l);
       if (!insert_local_name(npd.loc, npd.name)) continue;
-      ScopeStateView::NestedFn nf;
-      for (const auto& p : npd.params) nf.param_count += p.names.size();
-      nf.accepts_zero_args = calls_.proc_accepts_zero_args(npd);
-      nf.is_function = (npd.pkind == ProcKind::Function);
-      nf.return_type = npd.return_type.get();
-      nf.decl = &npd;
-      scope_.local_nested_fns[npd.name] = nf;
+      size_t param_count = 0;
+      for (const auto& p : npd.params) param_count += p.names.size();
+      scope_.local_nested_fns[npd.name] = ScopeStateView::NestedFn{
+          .param_count = param_count,
+          .accepts_zero_args = calls_.proc_accepts_zero_args(npd),
+          .is_function = (npd.pkind == ProcKind::Function),
+          .return_type = npd.return_type.get(),
+          .decl = &npd};
     }
   }
 }

@@ -385,23 +385,20 @@ std::optional<EmitAnalysis::OrdinalDomain> EmitAnalysis::ordinal_domain_for_type
         lo_family != hi_family || lo_key != hi_key) {
       return std::nullopt;
     }
-    OrdinalDomain dom;
-    dom.family = lo_family;
-    dom.low = std::min(lo, hi);
-    dom.high = std::max(lo, hi);
-    dom.enum_key = lo_key;
-    return dom;
+    return OrdinalDomain{.family = lo_family,
+                         .low = std::min(lo, hi),
+                         .high = std::max(lo, hi),
+                         .enum_key = lo_key};
   }
   if (t->kind == Kind::TyEnum) {
     const auto& en = static_cast<const TyEnum&>(*t);
-    OrdinalDomain dom;
-    dom.family = OrdinalFamily::Enum;
-    dom.low = 0;
-    dom.high =
-        en.members.empty() ? 0 : static_cast<int64_t>(en.members.size() - 1);
-    dom.enum_key = "enum@" +
-                   std::to_string(reinterpret_cast<uintptr_t>(&en));
-    return dom;
+    return OrdinalDomain{
+        .family = OrdinalFamily::Enum,
+        .low = 0,
+        .high =
+            en.members.empty() ? 0 : static_cast<int64_t>(en.members.size() - 1),
+        .enum_key =
+            "enum@" + std::to_string(reinterpret_cast<uintptr_t>(&en))};
   }
   if (t->kind != Kind::TyName) return std::nullopt;
 
@@ -417,25 +414,25 @@ std::optional<EmitAnalysis::OrdinalDomain> EmitAnalysis::ordinal_domain_for_type
   }
   if (const auto* info = primitive_info(low);
       info && info->int_kind != PrimitiveIntKind::None) {
-    OrdinalDomain dom;
-    dom.family = OrdinalFamily::Integer;
-    dom.low = 0;
-    dom.high = 0;
+    int64_t domain_low = 0;
+    int64_t domain_high = 0;
     if (info->int_kind == PrimitiveIntKind::Unsigned) {
-      dom.low = 0;
       if (info->bits >= 63) {
-        dom.high = std::numeric_limits<int64_t>::max();
+        domain_high = std::numeric_limits<int64_t>::max();
       } else {
-        dom.high = (int64_t{1} << info->bits) - 1;
+        domain_high = (int64_t{1} << info->bits) - 1;
       }
     } else if (info->bits >= 64) {
-      dom.low = std::numeric_limits<int64_t>::min();
-      dom.high = std::numeric_limits<int64_t>::max();
+      domain_low = std::numeric_limits<int64_t>::min();
+      domain_high = std::numeric_limits<int64_t>::max();
     } else {
-      dom.low = -(int64_t{1} << (info->bits - 1));
-      dom.high = (int64_t{1} << (info->bits - 1)) - 1;
+      domain_low = -(int64_t{1} << (info->bits - 1));
+      domain_high = (int64_t{1} << (info->bits - 1)) - 1;
     }
-    return dom;
+    return OrdinalDomain{.family = OrdinalFamily::Integer,
+                         .low = domain_low,
+                         .high = domain_high,
+                         .enum_key = {}};
   }
   if (!registry_) return std::nullopt;
   std::string unit;
@@ -447,17 +444,15 @@ std::optional<EmitAnalysis::OrdinalDomain> EmitAnalysis::ordinal_domain_for_type
   auto eit = registry_->enums.find(tail);
   if (eit == registry_->enums.end()) return std::nullopt;
   if (!unit.empty() && eit->second.defining_unit != unit) return std::nullopt;
-  OrdinalDomain dom;
-  dom.family = OrdinalFamily::Enum;
-  dom.low = 0;
-  dom.high =
-      eit->second.members.empty()
-          ? 0
-          : static_cast<int64_t>(eit->second.members.size() - 1);
-  dom.enum_key = eit->second.defining_unit.empty()
-                     ? eit->second.name
-                     : eit->second.defining_unit + "." + eit->second.name;
-  return dom;
+  return OrdinalDomain{
+      .family = OrdinalFamily::Enum,
+      .low = 0,
+      .high = eit->second.members.empty()
+                  ? 0
+                  : static_cast<int64_t>(eit->second.members.size() - 1),
+      .enum_key = eit->second.defining_unit.empty()
+                      ? eit->second.name
+                      : eit->second.defining_unit + "." + eit->second.name};
 }
 
 std::optional<EmitAnalysis::OrdinalDomain>
@@ -629,25 +624,23 @@ std::optional<ConvertedConstInt> EmitAnalysis::convert_const_int_value(
     report_warning(where, "range check error while evaluating constants");
   }
 
-  ConvertedConstInt converted;
-  converted.type = info;
-  converted.bits = low_bits(static_cast<uint64_t>(value), info->bits);
+  const uint64_t bits = low_bits(static_cast<uint64_t>(value), info->bits);
   if (info->int_kind == PrimitiveIntKind::Unsigned) {
-    converted.value = static_cast<int64_t>(converted.bits);
-    return converted;
+    return ConvertedConstInt{.value = static_cast<int64_t>(bits),
+                             .bits = bits,
+                             .type = info};
   }
   if (info->bits == 64) {
-    converted.value = static_cast<int64_t>(converted.bits);
-    return converted;
+    return ConvertedConstInt{.value = static_cast<int64_t>(bits),
+                             .bits = bits,
+                             .type = info};
   }
   uint64_t sign_bit = uint64_t{1} << (info->bits - 1);
-  if ((converted.bits & sign_bit) == 0) {
-    converted.value = static_cast<int64_t>(converted.bits);
-  } else {
-    converted.value =
-        static_cast<int64_t>(converted.bits | ~low_bits(UINT64_MAX, info->bits));
-  }
-  return converted;
+  const int64_t converted_value =
+      (bits & sign_bit) == 0
+          ? static_cast<int64_t>(bits)
+          : static_cast<int64_t>(bits | ~low_bits(UINT64_MAX, info->bits));
+  return ConvertedConstInt{.value = converted_value, .bits = bits, .type = info};
 }
 
 std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_cast(

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 
 #include "source.h"
 
@@ -91,6 +92,13 @@ struct Token {
   // 64-bit unsigned range is required for legitimate Pascal
   // constants such as `$ffffffffffffffff'.
   uint64_t int_value = 0;
+  Token() = default;
+  Token(Tok kind_in, Location loc_in, std::string text_in = {},
+        uint64_t int_value_in = 0)
+      : kind(kind_in),
+        loc(loc_in),
+        text(std::move(text_in)),
+        int_value(int_value_in) {}
 };
 
 const char* tok_name(Tok t);

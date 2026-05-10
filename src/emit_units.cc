@@ -28,18 +28,20 @@ bool is_class_lifecycle_proc(const ProcDecl& pd) {
 
 ClassLifecycleHooks collect_class_lifecycle_hooks(
     const std::vector<DeclPtr>& decls) {
-  ClassLifecycleHooks hooks;
+  std::vector<const ProcDecl*> constructors;
+  std::vector<const ProcDecl*> destructors;
   for (const auto& d : decls) {
     if (!d || d->kind != Kind::ProcDecl) continue;
     const auto& pd = static_cast<const ProcDecl&>(*d);
     if (pd.of_type.empty() || !is_class_lifecycle_proc(pd)) continue;
     if (pd.pkind == ProcKind::Constructor) {
-      hooks.constructors.push_back(&pd);
+      constructors.push_back(&pd);
     } else {
-      hooks.destructors.push_back(&pd);
+      destructors.push_back(&pd);
     }
   }
-  return hooks;
+  return ClassLifecycleHooks{.constructors = std::move(constructors),
+                             .destructors = std::move(destructors)};
 }
 
 std::string class_lifecycle_call_cxx(const ProcDecl& pd) {
