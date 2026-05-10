@@ -6356,8 +6356,7 @@ void test_type_for_in_lowers_to_ordinal_bounds_loop() {
 }
 
 void test_for_in_operator_enumerator_precedes_builtin_set() {
-  int before = error_count();
-  (void)compile_snippet_with_registry(
+  auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
       "type\n"
@@ -6371,6 +6370,11 @@ void test_for_in_operator_enumerator_precedes_builtin_set() {
       "implementation\n"
       "operator enumerator(s : tregs) : tenumerator;\n"
       "begin\n"
+      "  Result := nil;\n"
+      "end;\n"
+      "function tenumerator.MoveNext : boolean;\n"
+      "begin\n"
+      "  Result := false;\n"
       "end;\n"
       "procedure p;\n"
       "var regs : tregs; j : integer;\n"
@@ -6379,7 +6383,47 @@ void test_for_in_operator_enumerator_precedes_builtin_set() {
       "    j := j + 1;\n"
       "end;\n"
       "end.\n");
-  CHECK(error_count() > before);
+  CHECK(contains(out.impl, "tp2cc_operator_enumerator"));
+  CHECK(contains(out.impl, "p_j = tp2cc_enum_"));
+  CHECK(contains(out.impl, "->p_fcurrent"));
+  CHECK(contains(out.impl, "->p_movenext()"));
+  CHECK(!contains(out.impl, "auto tp2cc_set_"));
+}
+
+void test_for_in_own_getenumerator_uses_movenext_and_current() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tenumerator = class\n"
+      "    fcurrent : integer;\n"
+      "    function MoveNext : boolean;\n"
+      "    property Current : integer read fcurrent;\n"
+      "  end;\n"
+      "  tbox = class\n"
+      "    function GetEnumerator : tenumerator;\n"
+      "  end;\n"
+      "procedure p;\n"
+      "implementation\n"
+      "function tenumerator.MoveNext : boolean;\n"
+      "begin\n"
+      "  Result := false;\n"
+      "end;\n"
+      "function tbox.GetEnumerator : tenumerator;\n"
+      "begin\n"
+      "  Result := nil;\n"
+      "end;\n"
+      "procedure p;\n"
+      "var box : tbox; i : integer;\n"
+      "begin\n"
+      "  for i in box do\n"
+      "    i := i + 1;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_box->p_getenumerator()"));
+  CHECK(contains(out.impl, "p_i = tp2cc_enum_"));
+  CHECK(contains(out.impl, "->p_fcurrent"));
+  CHECK(contains(out.impl, "->p_movenext()"));
 }
 
 void test_overload_picks_set_difference_arg_against_typed_set_param() {
@@ -8102,6 +8146,7 @@ int main() {
   RUN_TEST(test_set_for_in_lowers_to_ordered_membership_scan);
   RUN_TEST(test_type_for_in_lowers_to_ordinal_bounds_loop);
   RUN_TEST(test_for_in_operator_enumerator_precedes_builtin_set);
+  RUN_TEST(test_for_in_own_getenumerator_uses_movenext_and_current);
   RUN_TEST(test_overload_picks_set_difference_arg_against_typed_set_param);
   RUN_TEST(test_property_read_lowers_to_getter_call);
   RUN_TEST(test_property_write_lowers_to_setter_call);

@@ -17,6 +17,7 @@ class EmitProperties;
 class EmitResolution;
 class EmitStorage;
 class EmitTypes;
+struct MethodSig;
 struct TypeRegistry;
 
 class EmitStmtOps {
@@ -55,6 +56,12 @@ class EmitStmts {
  private:
   enum class ForInEmitResult { NotMatched, Emitted, Error };
 
+  struct ForInEnumeratorProvider {
+    std::string value_cxx;
+    const ast::TypeExpr* type = nullptr;
+    Location loc;
+  };
+
   bool stmt_autocalls_procvar(const ast::Expr& expr);
   void emit_assign_stmt(const ast::Assign& a);
   void emit_expr_stmt(const ast::ExprStmt& es);
@@ -66,15 +73,24 @@ class EmitStmts {
                                        const std::string& var);
   ForInEmitResult emit_for_in_operator_enumerator(const ast::For& f,
                                                   const std::string& var);
-  ForInEmitResult emit_for_in_get_enumerator(const ast::For& f,
-                                             const std::string& var);
+  ForInEmitResult emit_for_in_helper_get_enumerator(const ast::For& f,
+                                                    const std::string& var);
+  ForInEmitResult emit_for_in_own_get_enumerator(const ast::For& f,
+                                                 const std::string& var);
   ForInEmitResult emit_for_in_builtin_string(const ast::For& f,
                                              const std::string& var);
   ForInEmitResult emit_for_in_builtin_array(const ast::For& f,
                                             const std::string& var);
   ForInEmitResult emit_for_in_builtin_set(const ast::For& f,
                                           const std::string& var);
+  ForInEmitResult emit_for_in_enumerator_provider(
+      const ast::For& f, const std::string& var,
+      const ForInEnumeratorProvider& provider);
   std::optional<std::string> for_in_type_rhs_name(const ast::Expr& e);
+  std::string for_in_class_type_name(const ast::TypeExpr* type);
+  const MethodSig* for_in_zero_arg_method(Location loc,
+                                          const std::string& class_name,
+                                          const std::string& method_name);
   std::string case_selector_expr(const ast::CaseStmt& cs, const ast::Expr& e);
 
   const TypeRegistry* registry_;

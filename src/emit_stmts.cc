@@ -695,6 +695,37 @@ std::optional<std::string> EmitStmts::for_in_type_rhs_name(const Expr& e) {
   return std::nullopt;
 }
 
+std::string EmitStmts::for_in_class_type_name(const TypeExpr* type) {
+  type = analysis_.canonicalize_type(type);
+  if (!type || type->kind != Kind::TyName) return {};
+  const std::string name = static_cast<const TyName&>(*type).name;
+  return analysis_.class_info_for_type_name(name) ? name : std::string{};
+}
+
+const MethodSig* EmitStmts::for_in_zero_arg_method(
+    Location loc, const std::string& class_name,
+    const std::string& method_name) {
+  if (!registry_) return nullptr;
+  const auto* methods = registry_->lookup_class_methods(
+      class_name, method_name, scope_.current_unit_name);
+  if (!methods) return nullptr;
+
+  std::vector<const ProcDecl*> candidates;
+  for (const auto& method : *methods) {
+    if (method.decl) candidates.push_back(method.decl.get());
+  }
+  PickResult picked = resolution_.pick_overload(candidates, {});
+  if (picked.ambiguous) {
+    stmt_ops_.report_error(loc, "ambiguous " + method_name + " method");
+    return nullptr;
+  }
+  if (!picked.decl) return nullptr;
+  for (const auto& method : *methods) {
+    if (method.decl.get() == picked.decl) return &method;
+  }
+  return nullptr;
+}
+
 EmitStmts::ForInEmitResult EmitStmts::emit_for_in_type_rhs(
     const For& f, const std::string& var) {
   if (!f.in_expr) return ForInEmitResult::NotMatched;
@@ -723,7 +754,6 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_type_rhs(
 
 EmitStmts::ForInEmitResult EmitStmts::emit_for_in_operator_enumerator(
     const For& f, const std::string& var) {
-  (void)var;
   if (!f.in_expr) return ForInEmitResult::NotMatched;
   UnaryOperatorResult op =
       resolution_.find_unary_operator("enumerator", *f.in_expr);
@@ -732,15 +762,131 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_operator_enumerator(
     return ForInEmitResult::Error;
   }
   if (!op.decl) return ForInEmitResult::NotMatched;
-  stmt_ops_.report_error(f.loc, "operator enumerator in for-in is not supported");
-  return ForInEmitResult::Error;
+
+  std::vector<UntypedArgKind> untyped_arg(1, UntypedArgKind::None);
+  std::vector<bool> mutable_ref_arg(1, false);
+  std::vector<const TypeExpr*> param_types(1, nullptr);
+  calls_.mark_call_param_info(op.decl, untyped_arg, mutable_ref_arg,
+                              param_types);
+  std::string fn = pascal_operator_decl_name_to_cxx(*op.decl);
+  if (!op.defining_unit.empty()) {
+    fn = unit_namespace_prefix(op.defining_unit) + fn;
+  }
+  ForInEnumeratorProvider provider;
+  provider.value_cxx =
+      fn + "(" + calls_.lower_call_arg(*f.in_expr, param_types[0],
+                                       untyped_arg[0], mutable_ref_arg[0]) +
+      ")";
+  provider.type = op.decl->return_type.get();
+  provider.loc = f.loc;
+  return emit_for_in_enumerator_provider(f, var, provider);
 }
 
-EmitStmts::ForInEmitResult EmitStmts::emit_for_in_get_enumerator(
+EmitStmts::ForInEmitResult EmitStmts::emit_for_in_helper_get_enumerator(
     const For& f, const std::string& var) {
   (void)f;
   (void)var;
   return ForInEmitResult::NotMatched;
+}
+
+EmitStmts::ForInEmitResult EmitStmts::emit_for_in_own_get_enumerator(
+    const For& f, const std::string& var) {
+  if (!f.in_expr) return ForInEmitResult::NotMatched;
+  const std::string class_name =
+      for_in_class_type_name(analysis_.deduce_type(*f.in_expr));
+  if (class_name.empty()) return ForInEmitResult::NotMatched;
+  const MethodSig* get =
+      for_in_zero_arg_method(f.loc, class_name, "GetEnumerator");
+  if (!get) return ForInEmitResult::NotMatched;
+  if (!get->is_function || !get->decl || !get->decl->return_type) {
+    stmt_ops_.report_error(f.loc, "GetEnumerator must return an enumerator");
+    return ForInEmitResult::Error;
+  }
+
+  const ClassInfo* ci = analysis_.class_info_for_type_name(class_name);
+  std::string access = (ci && ci->is_reference_type) ? "->" : ".";
+  ForInEnumeratorProvider provider;
+  provider.value_cxx =
+      stmt_ops_.expr_to_cxx(*f.in_expr) + access + mangle(get->decl->name) +
+      "()";
+  provider.type = get->decl->return_type.get();
+  provider.loc = f.loc;
+  return emit_for_in_enumerator_provider(f, var, provider);
+}
+
+EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
+    const For& f, const std::string& var,
+    const ForInEnumeratorProvider& provider) {
+  const std::string enum_class = for_in_class_type_name(provider.type);
+  if (enum_class.empty()) {
+    stmt_ops_.report_error(provider.loc,
+                           "enumerator provider must return an object or class");
+    return ForInEmitResult::Error;
+  }
+
+  const MethodSig* move =
+      for_in_zero_arg_method(provider.loc, enum_class, "MoveNext");
+  if (!move) {
+    stmt_ops_.report_error(provider.loc,
+                           "enumerator is missing MoveNext");
+    return ForInEmitResult::Error;
+  }
+  const TypeExpr* move_ret = move->decl ? move->decl->return_type.get() : nullptr;
+  move_ret = analysis_.canonicalize_type(move_ret);
+  if (!move->is_function || !tyname_is(move_ret, "boolean")) {
+    stmt_ops_.report_error(provider.loc,
+                           "enumerator MoveNext must return Boolean");
+    return ForInEmitResult::Error;
+  }
+
+  const PropertyInfo* current = registry_->lookup_class_property(
+      enum_class, "Current", scope_.current_unit_name);
+  if (!current || current->read.empty() || !current->params.empty()) {
+    stmt_ops_.report_error(provider.loc,
+                           "enumerator is missing readable Current");
+    return ForInEmitResult::Error;
+  }
+
+  const ClassInfo* enum_info = analysis_.class_info_for_type_name(enum_class);
+  const bool enum_is_reference = enum_info && enum_info->is_reference_type;
+  const std::string access = enum_is_reference ? "->" : ".";
+  const std::string n = std::to_string(++loop_label_counter_);
+  const std::string enum_var = "tp2cc_enum_" + n;
+  const std::string brk = "tp2cc_loop_break_" + n;
+  const std::string cont = "tp2cc_loop_continue_" + n;
+
+  stmt_ops_.emitln("{");
+  stmt_ops_.indent();
+  stmt_ops_.emitln("auto " + enum_var + " = " + provider.value_cxx + ";");
+  if (enum_is_reference) {
+    stmt_ops_.emitln("if (" + enum_var + " != nullptr) {");
+    stmt_ops_.indent();
+  }
+  stmt_ops_.emitln("while (" + enum_var + access + mangle(move->decl->name) +
+                   "()) {");
+  stmt_ops_.indent();
+  std::vector<const Expr*> no_indices;
+  stmt_ops_.emitln(var + " = " +
+                   properties_.lower_property_read(
+                       provider.loc, enum_var, enum_class, *current,
+                       no_indices) +
+                   ";");
+  loop_break_labels_.push_back(brk);
+  loop_continue_labels_.push_back(cont);
+  if (f.body) emit_stmt(*f.body);
+  stmt_ops_.emitln(cont + ":;");
+  loop_continue_labels_.pop_back();
+  loop_break_labels_.pop_back();
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  if (enum_is_reference) {
+    stmt_ops_.dedent();
+    stmt_ops_.emitln("}");
+  }
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+  stmt_ops_.emitln(brk + ":;");
+  return ForInEmitResult::Emitted;
 }
 
 EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_string(
@@ -913,7 +1059,8 @@ void EmitStmts::emit_for_in_stmt(const For& f, const std::string& var) {
   };
   if (done(emit_for_in_type_rhs(f, var))) return;
   if (done(emit_for_in_operator_enumerator(f, var))) return;
-  if (done(emit_for_in_get_enumerator(f, var))) return;
+  if (done(emit_for_in_helper_get_enumerator(f, var))) return;
+  if (done(emit_for_in_own_get_enumerator(f, var))) return;
   if (done(emit_for_in_builtin_string(f, var))) return;
   if (done(emit_for_in_builtin_array(f, var))) return;
   if (done(emit_for_in_builtin_set(f, var))) return;
