@@ -205,21 +205,6 @@ struct UnitInfo {
   const ConstInfo* find_const(const std::string& n) const {
     return find(iface_consts, impl_consts, n);
   }
-  // Returns the first-registered overload. WRONG ANSWER for overloaded
-  // names -- `accepts_zero_args`, `param_count`, and `return_type` are all
-  // per-overload, and the right value depends on which overload the call
-  // resolves to. This stays only as a transitional shim for callers that
-  // haven't been switched to the overload-aware path yet; it works in
-  // practice today because every overload set in the bootstrap source
-  // (`upper`, `lower`, `tostr`, `maybequoted`) happens to share arity and
-  // return type across its overloads. Use `find_procs` and pick by
-  // arg types whenever a real call site is involved.
-  const ProcInfo* find_proc(const std::string& n) const {
-    if (auto* v = find(iface_procs, impl_procs, n); v && !v->empty()) {
-      return &(*v)[0];
-    }
-    return nullptr;
-  }
   const std::vector<ProcInfo>* find_procs(const std::string& n) const {
     return find(iface_procs, impl_procs, n);
   }
@@ -232,8 +217,12 @@ struct UnitInfo {
   bool has_enum_member(const std::string& n) const {
     return iface_enum_members.count(n) || impl_enum_members.count(n);
   }
+  bool has_proc(const std::string& n) const {
+    if (auto* procs = find_procs(n)) return !procs->empty();
+    return false;
+  }
   bool has(const std::string& n) const {
-    return find_var(n) || find_const(n) || find_proc(n) ||
+    return find_var(n) || find_const(n) || has_proc(n) ||
            has_type(n) || has_enum_member(n);
   }
   // Interface-exports view: what other units see when they `uses`
@@ -245,13 +234,6 @@ struct UnitInfo {
   const ConstInfo* find_export_const(const std::string& n) const {
     auto it = iface_consts.find(n);
     return it == iface_consts.end() ? nullptr : &it->second;
-  }
-  // Same caveat as `find_proc`: returns one arbitrary overload. Overloaded
-  // call sites must use `find_export_procs` and pick by arg types.
-  const ProcInfo* find_export_proc(const std::string& n) const {
-    auto it = iface_procs.find(n);
-    if (it == iface_procs.end() || it->second.empty()) return nullptr;
-    return &it->second[0];
   }
   const std::vector<ProcInfo>* find_export_procs(const std::string& n) const {
     auto it = iface_procs.find(n);
@@ -330,14 +312,6 @@ struct TypeRegistry {
       const std::string& class_name, const std::string& member,
       std::string_view current_unit) const;
 
-  // Single-method shim: returns the first overload (the one declared
-  // earliest in source order). Wrong answer for overloaded names whose
-  // overloads differ in arity / return type / `accepts_zero_args` --
-  // those queries depend on which overload the call actually resolves to.
-  // Use `lookup_class_methods` and pick by argument types instead.
-  const MethodSig* lookup_class_method(
-      const std::string& class_name, const std::string& member,
-      std::string_view current_unit) const;
   // Full overload set, walking up the inheritance chain.
   const std::vector<MethodSig>* lookup_class_methods(
       const std::string& class_name, const std::string& member,

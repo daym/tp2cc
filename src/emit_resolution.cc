@@ -117,60 +117,6 @@ void EmitResolution::gather_operator_in_pascal_scope(
   }
 }
 
-const ProcDecl* EmitResolution::resolve_call_decl(const Expr& callee) {
-  if (callee.kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(callee);
-    if (!registry_) return nullptr;
-    std::vector<AnyCand> cands;
-    gather_callable_in_pascal_scope(id.name, cands);
-    for (const auto& c : cands) {
-      if (c.decl) return c.decl;
-    }
-    return nullptr;
-  }
-  if (callee.kind != Kind::Member || !registry_) return nullptr;
-  const auto& mem = static_cast<const Member&>(callee);
-  if (auto unit_member = analysis_.resolve_unit_qualified_member(mem)) {
-    // Unit-qualified calls still need the underlying ProcDecl here so call
-    // lowering can materialize trailing defaults and parameter modes before
-    // the printer spells the final C++ call.
-    auto uit = registry_->units.find(unit_member->unit_name);
-    if (uit != registry_->units.end()) {
-      const ProcInfo* pi =
-          (unit_member->unit_name == scope_.current_unit_name)
-              ? uit->second.find_proc(mem.name)
-              : uit->second.find_export_proc(mem.name);
-      if (pi) {
-        return pi->decl.get();
-      }
-    }
-  }
-  std::string cls;
-  if (mem.base->kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(*mem.base);
-    if (id.name == "self") {
-      cls = scope_.current_class_name;
-    } else if (!analysis_.identifier_is_shadowed_value(id.name) &&
-               (registry_->has_class(id.name, scope_.current_unit_name) ||
-                registry_->records.count(id.name))) {
-      cls = id.name;
-    } else {
-      // Method calls through a variable or parameter receiver (`source.read`)
-      // still need the receiver's declared Pascal type here so later lowering
-      // can recover parameter modes and trailing defaults from the right decl.
-      cls = analysis_.deduce_class_alias(*mem.base);
-    }
-  } else {
-    cls = analysis_.deduce_class_alias(*mem.base);
-  }
-  if (cls.empty()) return nullptr;
-  if (auto* m = registry_->lookup_class_method(
-          cls, mem.name, scope_.current_unit_name)) {
-    return m->decl.get();
-  }
-  return nullptr;
-}
-
 void EmitResolution::flatten_call_param_info(
     const ProcDecl* decl, std::vector<FlatCallParamInfo>& flat_params) {
   flat_params.clear();
@@ -522,10 +468,7 @@ ResolvedCall EmitResolution::resolve_call(
   } else if (callee.kind == Kind::Member) {
     out.member_name = static_cast<const Member&>(callee).name;
   }
-  if (!registry_) {
-    out.decl = resolve_call_decl(callee);
-    return out;
-  }
+  if (!registry_) return out;
   // Method overloads and free-function overloads share the same picker.
   // Methods come from class-chain lookup; free functions come from the current
   // unit plus the visible uses chain. `inherited foo(...)` is still a separate
@@ -615,7 +558,7 @@ ResolvedCall EmitResolution::resolve_call(
   }
 
   auto adopt = [&](const AnyCand& chosen, bool ran_type_picker) {
-    out.decl = chosen.decl ? chosen.decl : resolve_call_decl(callee);
+    out.decl = chosen.decl;
     out.needs_arg_casts = ran_type_picker;
     out.default_arg_unit = chosen.declaration_unit;
     out.return_type_name = chosen.return_type_name;
@@ -642,7 +585,6 @@ ResolvedCall EmitResolution::resolve_call(
       if (a.decl) with_decl.push_back(a.decl);
     }
     if (with_decl.empty()) {
-      out.decl = resolve_call_decl(callee);
       return out;
     }
     PickResult pr = pick_overload(
@@ -653,7 +595,6 @@ ResolvedCall EmitResolution::resolve_call(
       return out;
     }
     if (!pr.decl) {
-      out.decl = resolve_call_decl(callee);
       return out;
     }
     for (const auto& a : arity_ok) {
@@ -670,7 +611,6 @@ ResolvedCall EmitResolution::resolve_call(
     return out;
   }
 
-  out.decl = resolve_call_decl(callee);
   return out;
 }
 

@@ -3,6 +3,7 @@
 #include <limits>
 #include <stdexcept>
 #include <unordered_set>
+#include <vector>
 
 #include "diag.h"
 #include "typereg.h"
@@ -12,10 +13,50 @@ namespace tp2cc {
 using namespace ast;
 
 EmitAnalysis::EmitAnalysis(const TypeRegistry* registry, ScopeStateView& scope,
-                           ResolveNameProvider& resolve_name_provider)
+                           ResolveNameProvider& resolve_name_provider,
+                           CallTypeProvider& call_type_provider)
     : registry_(registry),
       scope_(scope),
-      resolve_name_provider_(resolve_name_provider) {}
+      resolve_name_provider_(resolve_name_provider),
+      call_type_provider_(call_type_provider) {}
+
+static const ProcInfo* unique_zero_arg_proc(
+    const std::vector<ProcInfo>* procs) {
+  if (!procs) return nullptr;
+  const ProcInfo* found = nullptr;
+  for (const auto& proc : *procs) {
+    if (!proc.accepts_zero_args) continue;
+    if (found) return nullptr;
+    found = &proc;
+  }
+  return found;
+}
+
+static const MethodSig* unique_zero_arg_method(
+    const std::vector<MethodSig>* methods) {
+  if (!methods) return nullptr;
+  const MethodSig* found = nullptr;
+  for (const auto& method : *methods) {
+    if (!method.accepts_zero_args) continue;
+    if (found) return nullptr;
+    found = &method;
+  }
+  return found;
+}
+
+static const TypeExpr* proc_result_type(const ProcInfo* proc) {
+  if (!proc) return nullptr;
+  if (proc->decl && proc->decl->return_type) return proc->decl->return_type.get();
+  if (!proc->return_type_name.empty()) {
+    return named_pascal_type(proc->return_type_name);
+  }
+  return nullptr;
+}
+
+static const TypeExpr* method_result_type(const MethodSig* method) {
+  if (!method || !method->decl || !method->decl->return_type) return nullptr;
+  return method->decl->return_type.get();
+}
 
 const TypeExpr* EmitAnalysis::canonicalize_type(const TypeExpr* t) {
   int hops = 0;
@@ -1031,10 +1072,11 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
                 scope_.current_class_name, id.name, scope_.current_unit_name)) {
           return p->type.get();
         }
-        if (auto* m = registry_->lookup_class_method(
-                scope_.current_class_name, id.name, scope_.current_unit_name);
-            m && m->decl && m->decl->return_type) {
-          return m->decl->return_type.get();
+        if (const TypeExpr* mt = method_result_type(unique_zero_arg_method(
+                registry_->lookup_class_methods(scope_.current_class_name,
+                                                id.name,
+                                                scope_.current_unit_name)))) {
+          return mt;
         }
       }
       // `with X do` bindings contribute fields/properties/methods from their
@@ -1051,10 +1093,10 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
                   ac, id.name, scope_.current_unit_name)) {
             return p->type.get();
           }
-          if (auto* m = registry_->lookup_class_method(
-                  ac, id.name, scope_.current_unit_name);
-              m && m->decl && m->decl->return_type) {
-            return m->decl->return_type.get();
+          if (const TypeExpr* mt = method_result_type(unique_zero_arg_method(
+                  registry_->lookup_class_methods(ac, id.name,
+                                                  scope_.current_unit_name)))) {
+            return mt;
           }
         }
         if (const TypeExpr* rf = lookup_record_field_type_in_with(*it, id.name)) {
@@ -1064,18 +1106,18 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       auto lookup_own = [&](const UnitInfo& u) -> const TypeExpr* {
         if (auto* v = u.find_var(id.name)) return v->type.get();
         if (auto* c = u.find_const(id.name)) return deduce_const_info_type(*c);
-        if (auto* p = u.find_proc(id.name);
-            p && p->decl && p->decl->return_type) {
-          return p->decl->return_type.get();
+        if (const TypeExpr* pt =
+                proc_result_type(unique_zero_arg_proc(u.find_procs(id.name)))) {
+          return pt;
         }
         return nullptr;
       };
       auto lookup_export = [&](const UnitInfo& u) -> const TypeExpr* {
         if (auto* v = u.find_export_var(id.name)) return v->type.get();
         if (auto* c = u.find_export_const(id.name)) return deduce_const_info_type(*c);
-        if (auto* p = u.find_export_proc(id.name);
-            p && p->decl && p->decl->return_type) {
-          return p->decl->return_type.get();
+        if (const TypeExpr* pt = proc_result_type(
+                unique_zero_arg_proc(u.find_export_procs(id.name)))) {
+          return pt;
         }
         return nullptr;
       };
@@ -1145,12 +1187,10 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         }
         return nullptr;
       }
-      if (auto* pm = registry_->lookup_class_method(
-              cls, m.name, scope_.current_unit_name)) {
-        if (pm->decl.get() && pm->decl.get()->return_type) {
-          return pm->decl.get()->return_type.get();
-        }
-        return nullptr;
+      if (const TypeExpr* mt = method_result_type(unique_zero_arg_method(
+              registry_->lookup_class_methods(cls, m.name,
+                                              scope_.current_unit_name)))) {
+        return mt;
       }
       if (auto* pf = registry_->lookup_class_field(
               cls, m.name, scope_.current_unit_name)) {
@@ -1303,44 +1343,8 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           // Pascal type even before later emit-time cast spelling happens.
           return ait->second.target.get();
         }
-        ResolveResult rr = resolve_name_provider_.resolve_name(id.name);
-        if (rr.proc && rr.proc->return_type) return rr.proc->return_type.get();
-        if (!rr.return_type_name.empty()) {
-          return named_pascal_type(rr.return_type_name);
-        }
-      } else if (c.callee->kind == Kind::Member) {
-        const auto& mem = static_cast<const Member&>(*c.callee);
-        if (auto unit_member = resolve_unit_qualified_member(mem)) {
-          if (unit_member->resolved.proc &&
-              unit_member->resolved.proc->return_type) {
-            return unit_member->resolved.proc->return_type.get();
-          }
-          if (!unit_member->resolved.return_type_name.empty()) {
-            return named_pascal_type(unit_member->resolved.return_type_name);
-          }
-        }
-        std::string cls;
-        if (mem.base->kind == Kind::Ident) {
-          const auto& id = static_cast<const Ident&>(*mem.base);
-          if (id.name == "self") cls = scope_.current_class_name;
-          else if (class_info_for_type_name(id.name) ||
-                   registry_->records.count(id.name)) cls = id.name;
-        }
-        if (cls.empty()) {
-          const TypeExpr* bt = deduce_type(*mem.base);
-          if (bt) cls = metaclass_target_name(bt);
-        }
-        if (cls.empty()) cls = deduce_class_alias(*mem.base);
-        if (!cls.empty()) {
-          if (auto* cm = registry_->lookup_class_method(
-                  cls, mem.name, scope_.current_unit_name)) {
-            if (cm->decl.get() && cm->decl.get()->return_type) {
-              return cm->decl.get()->return_type.get();
-            }
-          }
-        }
       }
-      return nullptr;
+      return call_type_provider_.type_for_resolved_call(c);
     }
     case Kind::StringLit: {
       const auto& sl = static_cast<const StringLit&>(e);
@@ -1510,8 +1514,8 @@ bool EmitAnalysis::with_bind_has_visible_member(
     const ScopeStateView::WithBind& wb, std::string_view name) {
   if (!registry_) return false;
   if (!wb.class_name.empty()) {
-    if (registry_->lookup_class_method(wb.class_name, std::string(name),
-                                       scope_.current_unit_name) ||
+    if (registry_->lookup_class_methods(wb.class_name, std::string(name),
+                                        scope_.current_unit_name) ||
         registry_->lookup_class_field(wb.class_name, std::string(name),
                                       scope_.current_unit_name) ||
         registry_->lookup_class_property(wb.class_name, std::string(name),
@@ -1532,8 +1536,8 @@ bool EmitAnalysis::identifier_is_shadowed_value(std::string_view name_in) {
   if (scope_.local_scope.count(name) > 0) return true;
   if (!registry_) return false;
   if (!scope_.current_class_name.empty() &&
-      (registry_->lookup_class_method(scope_.current_class_name, name,
-                                      scope_.current_unit_name) ||
+      (registry_->lookup_class_methods(scope_.current_class_name, name,
+                                       scope_.current_unit_name) ||
        registry_->lookup_class_field(scope_.current_class_name, name,
                                      scope_.current_unit_name) ||
        registry_->lookup_class_property(scope_.current_class_name, name,

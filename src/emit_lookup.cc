@@ -1,6 +1,7 @@
 #include "emit_lookup.h"
 
 #include <string>
+#include <vector>
 
 #include "emit_analysis.h"
 #include "emit_properties.h"
@@ -8,6 +9,65 @@
 #include "typereg.h"
 
 namespace tp2cc {
+
+static const ProcInfo* unique_zero_arg_proc(
+    const std::vector<ProcInfo>* procs) {
+  if (!procs) return nullptr;
+  const ProcInfo* found = nullptr;
+  for (const auto& proc : *procs) {
+    if (!proc.accepts_zero_args) continue;
+    if (found) return nullptr;
+    found = &proc;
+  }
+  return found;
+}
+
+static const MethodSig* unique_zero_arg_method(
+    const std::vector<MethodSig>* methods) {
+  if (!methods) return nullptr;
+  const MethodSig* found = nullptr;
+  for (const auto& method : *methods) {
+    if (!method.accepts_zero_args) continue;
+    if (found) return nullptr;
+    found = &method;
+  }
+  return found;
+}
+
+static bool adopt_proc_overloads(ResolveResult& r,
+                                 const std::vector<ProcInfo>* procs,
+                                 ResolvedKind kind,
+                                 const std::string& cxx) {
+  if (!procs || procs->empty()) return false;
+  r.kind = kind;
+  r.cxx = cxx;
+  r.is_callable = true;
+  if (const ProcInfo* proc = unique_zero_arg_proc(procs)) {
+    r.proc = proc->decl.get();
+    r.is_parameterless = (proc->param_count == 0);
+    r.accepts_zero_args = true;
+    r.return_type_name = proc->return_type_name;
+    r.default_arg_unit = proc->defining_unit;
+  }
+  return true;
+}
+
+static bool adopt_method_overloads(ResolveResult& r,
+                                   const std::vector<MethodSig>* methods,
+                                   ResolvedKind kind,
+                                   const std::string& cxx) {
+  if (!methods || methods->empty()) return false;
+  r.kind = kind;
+  r.cxx = cxx;
+  r.is_callable = true;
+  if (const MethodSig* method = unique_zero_arg_method(methods)) {
+    r.proc = method->decl.get();
+    r.is_parameterless = (method->param_count == 0);
+    r.accepts_zero_args = true;
+    r.default_arg_unit = method->defining_unit;
+  }
+  return true;
+}
 
 EmitLookup::EmitLookup(const TypeRegistry* registry, ScopeStateView& scope,
                        EmitAnalysis& analysis, EmitProperties& properties)
@@ -29,16 +89,9 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       if (uit != registry_->units.end()) {
         const UnitInfo& u = uit->second;
         const bool own_unit = qualifier == scope_.current_unit_name;
-        const ProcInfo* pi =
-            own_unit ? u.find_proc(name) : u.find_export_proc(name);
-        if (pi) {
-          r.kind = ResolvedKind::UnitProc;
-          r.proc = pi->decl.get();
-          r.is_callable = true;
-          r.is_parameterless = (pi->param_count == 0);
-          r.accepts_zero_args = pi->accepts_zero_args;
-          r.return_type_name = pi->return_type_name;
-          r.default_arg_unit = pi->defining_unit;
+        const std::vector<ProcInfo>* procs =
+            own_unit ? u.find_procs(name) : u.find_export_procs(name);
+        if (adopt_proc_overloads(r, procs, ResolvedKind::UnitProc, r.cxx)) {
           return r;
         }
         if (own_unit ? u.find_var(name) : u.find_export_var(name)) {
@@ -67,15 +120,12 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   }
   if (qk == QualifierKind::Class) {
     if (registry_) {
-      if (auto* m = registry_->lookup_class_method(
-              qualifier, name, scope_.current_unit_name)) {
-        r.kind = ResolvedKind::ClassMethod;
-        r.proc = m->decl.get();
-        r.is_callable = true;
-        r.is_parameterless = (m->param_count == 0);
-        r.accepts_zero_args = m->accepts_zero_args;
-        r.default_arg_unit = m->defining_unit;
-        r.cxx = mangle(name);  // caller emits the `base.` prefix
+      if (adopt_method_overloads(
+              r,
+              registry_->lookup_class_methods(qualifier, name,
+                                              scope_.current_unit_name),
+              ResolvedKind::ClassMethod,
+              mangle(name))) {
         return r;
       }
       if (registry_->lookup_class_field(
@@ -143,15 +193,12 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         return r;
       }
       if (!cls.empty()) {
-        if (auto* m = registry_->lookup_class_method(
-                cls, name, scope_.current_unit_name)) {
-          r.cxx = it->cxx_text + access + mangle(name);
-          r.kind = ResolvedKind::WithMethod;
-          r.proc = m->decl.get();
-          r.is_callable = true;
-          r.is_parameterless = (m->param_count == 0);
-          r.accepts_zero_args = m->accepts_zero_args;
-          r.default_arg_unit = m->defining_unit;
+        if (adopt_method_overloads(
+                r,
+                registry_->lookup_class_methods(cls, name,
+                                                scope_.current_unit_name),
+                ResolvedKind::WithMethod,
+                it->cxx_text + access + mangle(name))) {
           return r;
         }
         if (registry_->lookup_class_field(
@@ -223,16 +270,12 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       r.accepts_zero_args = true;
       return r;
     }
-    if (auto* m = registry_->lookup_class_method(scope_.current_class_name,
-                                                 name,
-                                                 scope_.current_unit_name)) {
-      r.cxx = mangle(name);
-      r.kind = ResolvedKind::ClassMethod;
-      r.proc = m->decl.get();
-      r.is_callable = true;
-      r.is_parameterless = (m->param_count == 0);
-      r.accepts_zero_args = m->accepts_zero_args;
-      r.default_arg_unit = m->defining_unit;
+    if (adopt_method_overloads(
+            r,
+            registry_->lookup_class_methods(scope_.current_class_name, name,
+                                            scope_.current_unit_name),
+            ResolvedKind::ClassMethod,
+            mangle(name))) {
       return r;
     }
     if (registry_->lookup_class_field(scope_.current_class_name, name,
@@ -254,7 +297,6 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     auto uit = registry_->units.find(scope_.current_unit_name);
     const UnitInfo* ui = (uit != registry_->units.end()) ? &uit->second
                                                           : nullptr;
-    bool own = ui && ui->has(name);
     const std::string own_prefix =
         (!scope_.default_arg_emission_unit_name.empty() &&
          scope_.default_arg_emission_unit_name != scope_.current_unit_name)
@@ -266,14 +308,9 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     // inserted at a caller in another unit, so declaration-unit symbols need
     // an explicit namespace prefix there.
     if (ui) {
-      if (auto* pi = ui->find_proc(name)) {
-        r.cxx = own_prefix + mangle(name);
-        r.kind = ResolvedKind::UnitProc;
-        r.proc = pi->decl.get();
-        r.is_callable = true;
-        r.is_parameterless = (pi->param_count == 0);
-        r.accepts_zero_args = pi->accepts_zero_args;
-        r.default_arg_unit = pi->defining_unit;
+      if (adopt_proc_overloads(r, ui->find_procs(name),
+                               ResolvedKind::UnitProc,
+                               own_prefix + mangle(name))) {
         return r;
       }
       if (ui->find_var(name)) {
@@ -311,16 +348,10 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       // ::rt;` for correctness.
       const std::string prefix = unit_namespace_prefix(un);
       // Other units contribute only their interface-exported names.
-      if (auto* pi = u.find_export_proc(name)) {
-        r.cxx = prefix + mangle(name);
-        r.kind = (un == "__rt__") ? ResolvedKind::RtBuiltin
-                                  : ResolvedKind::UnitProc;
-        r.proc = pi->decl.get();
-        r.is_callable = true;
-        r.is_parameterless = (pi->param_count == 0);
-        r.accepts_zero_args = pi->accepts_zero_args;
-        r.return_type_name = pi->return_type_name;
-        r.default_arg_unit = pi->defining_unit;
+      if (adopt_proc_overloads(r, u.find_export_procs(name),
+                               (un == "__rt__") ? ResolvedKind::RtBuiltin
+                                                : ResolvedKind::UnitProc,
+                               prefix + mangle(name))) {
         return true;
       }
       if (u.find_export_var(name)) {
@@ -358,7 +389,6 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         if (check_unit(*it)) return r;
       }
     }
-    (void)own;  // already handled by the per-unit lookup above.
   }
 
   // 7. Fallback: keep unresolved free names in Pascal identifier space.

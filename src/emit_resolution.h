@@ -36,12 +36,6 @@ class EmitResolution {
                  EmitAnalysis& analysis, ResolutionTypeOps& type_ops,
                  OverloadTypeProvider& overload_types);
 
-  // Resolve a callee designator to the specific ProcDecl metadata needed by
-  // later call lowering. This is the narrow "what declaration is this?" path
-  // used for parameter-mode/default-argument queries even when full overload
-  // picking is not required.
-  const ast::ProcDecl* resolve_call_decl(const ast::Expr& callee);
-
   // Pascal/FPC overload-resolution conversion ranks. Lower is better.
   // `NotViable` means no implicit conversion exists, so the candidate drops
   // out before the dominance check.

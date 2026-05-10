@@ -60,7 +60,8 @@ enum class SetConversionKind : uint8_t {
 class EmitAnalysis {
  public:
   EmitAnalysis(const TypeRegistry* registry, ScopeStateView& scope,
-               ResolveNameProvider& resolve_name_provider);
+               ResolveNameProvider& resolve_name_provider,
+               CallTypeProvider& call_type_provider);
 
   // Canonicalize Pascal type aliases/distinct wrappers to the underlying type
   // view the emitter should reason about for layout and conversion questions.
@@ -160,9 +161,10 @@ class EmitAnalysis {
   bool try_eval_ordinal_expr(const ast::Expr& e, int64_t* value,
                              OrdinalFamily* family, std::string* enum_key);
 
- const TypeRegistry* registry_;
+  const TypeRegistry* registry_;
   ScopeStateView& scope_;
   ResolveNameProvider& resolve_name_provider_;
+  CallTypeProvider& call_type_provider_;
   std::vector<std::shared_ptr<ast::TypeExpr>> synthesized_types_;
 };
 

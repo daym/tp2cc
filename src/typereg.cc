@@ -1271,16 +1271,6 @@ bool TypeRegistry::class_has_enum_member(
   return false;
 }
 
-const MethodSig* TypeRegistry::lookup_class_method(
-    const std::string& class_name_in, const std::string& member,
-    std::string_view current_unit) const {
-  if (auto* set = lookup_class_methods(class_name_in, member, current_unit);
-      set && !set->empty()) {
-    return &(*set)[0];
-  }
-  return nullptr;
-}
-
 const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
     const std::string& class_name_in, const std::string& member,
     std::string_view current_unit) const {

@@ -5,6 +5,7 @@
 #include <vector>
 
 namespace tp2cc::ast {
+struct Call;
 struct Expr;
 struct ProcDecl;
 struct TypeExpr;
@@ -66,6 +67,13 @@ class OverloadTypeProvider {
   // call/operator expression. That information belongs to expression lowering;
   // structural type deduction must not choose overloads.
   virtual const ast::TypeExpr* type_for_overload(const ast::Expr& e) = 0;
+};
+
+class CallTypeProvider {
+ public:
+  virtual ~CallTypeProvider() = default;
+  virtual const ast::TypeExpr* type_for_resolved_call(
+      const ast::Call& call) = 0;
 };
 
 // Pascal/FPC overload-resolution conversion ranks. Lower is better.
