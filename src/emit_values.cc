@@ -83,7 +83,6 @@ std::string EmitValues::set_literal_to_cxx(const SetLit& s,
       bool consistent_literal_type = true;
       for (const auto& el : s.elements) {
         const TypeExpr* literal_type = analysis_.deduce_type(*el);
-        literal_type = analysis_.canonicalize_type(literal_type);
         if (!literal_type) {
           consistent_literal_type = false;
           break;

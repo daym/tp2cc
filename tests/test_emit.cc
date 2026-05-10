@@ -4078,8 +4078,11 @@ void test_runtime_enum_members_resolve_explicitly() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "::rt::p_setexceptionmask("));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_Set<::rt::t_tfpuexception>::from_list"));
   CHECK(contains(out.impl, "::rt::p_exinvalidop"));
   CHECK(contains(out.impl, "::rt::p_exprecision"));
+  CHECK(!contains(out.impl, "tp2cc_Set<enum"));
 }
 
 void test_sysutils_executeprocess_accepts_execute_flags() {
