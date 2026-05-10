@@ -46,8 +46,9 @@ class EmitStmts {
             std::vector<std::string>& loop_continue_labels,
             EmitAnalysis& analysis, EmitTypes& types, EmitStorage& storage,
             ResolveNameProvider& resolve_name_provider,
-            EmitResolution& resolution, EmitCalls& calls,
-            EmitProperties& properties, EmitStmtOps& stmt_ops);
+            EmitResolution& resolution, OverloadTypeProvider& overload_types,
+            EmitCalls& calls, EmitProperties& properties,
+            EmitStmtOps& stmt_ops);
 
   void emit_raise_stmt(const ast::Raise& r);
   void emit_try_stmt(const ast::Try& t);
@@ -110,6 +111,7 @@ class EmitStmts {
   EmitStorage& storage_;
   ResolveNameProvider& resolve_name_provider_;
   EmitResolution& resolution_;
+  OverloadTypeProvider& overload_types_;
   EmitCalls& calls_;
   EmitProperties& properties_;
   EmitStmtOps& stmt_ops_;

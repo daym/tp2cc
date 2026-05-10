@@ -12,6 +12,7 @@ class EmitAnalysis;
 class EmitResolution;
 class EmitStorage;
 class EmitTypes;
+class OverloadTypeProvider;
 struct ConvertedConstInt;
 struct ConstIntExprInfo;
 struct TypeRegistry;
@@ -34,7 +35,8 @@ class EmitValues {
  public:
   EmitValues(const TypeRegistry* registry, ScopeStateView& scope,
              EmitAnalysis& analysis, EmitTypes& types, EmitStorage& storage,
-             EmitResolution& resolution, EmitValueExprOps& expr_ops);
+             EmitResolution& resolution, OverloadTypeProvider& overload_types,
+             EmitValueExprOps& expr_ops);
 
   std::string set_literal_to_cxx(const ast::SetLit& s,
                                  const ast::TypeExpr* target = nullptr);
@@ -58,6 +60,7 @@ class EmitValues {
   EmitTypes& types_;
   EmitStorage& storage_;
   EmitResolution& resolution_;
+  OverloadTypeProvider& overload_types_;
   EmitValueExprOps& expr_ops_;
 };
 

@@ -7,6 +7,7 @@
 #include <vector>
 
 namespace tp2cc::ast {
+enum class BinOp : uint8_t;
 struct ProcDecl;
 struct Param;
 struct TypeExpr;
@@ -50,6 +51,7 @@ bool is_pascal_result_ident(std::string_view name);
 std::string encode_helper_ident(std::string_view name);
 std::string encode_helper_type(const ast::TypeExpr& t);
 std::string encode_helper_params(const std::vector<ast::Param>& params);
+std::string binary_pascal_operator_token(ast::BinOp op);
 std::string pascal_operator_cxx_token(std::string_view op);
 bool pascal_operator_decl_uses_named_helper(const ast::ProcDecl& pd);
 std::string pascal_operator_named_helper_name(const ast::ProcDecl& pd);

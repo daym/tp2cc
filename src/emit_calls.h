@@ -14,6 +14,7 @@ class EmitAnalysis;
 class EmitResolution;
 class EmitStorage;
 class EmitTypes;
+class OverloadTypeProvider;
 struct TypeRegistry;
 
 enum class UntypedArgKind : uint8_t { None, Const, Mutable };
@@ -35,7 +36,8 @@ class EmitCalls {
  public:
   EmitCalls(const TypeRegistry* registry, ScopeStateView& scope,
             EmitAnalysis& analysis, EmitTypes& types, EmitStorage& storage,
-            EmitResolution& resolution, EmitCallExprOps& expr_ops);
+            EmitResolution& resolution, OverloadTypeProvider& overload_types,
+            EmitCallExprOps& expr_ops);
 
   bool proc_accepts_zero_args(const ast::ProcDecl& decl);
 
@@ -101,6 +103,7 @@ class EmitCalls {
   EmitTypes& types_;
   EmitStorage& storage_;
   EmitResolution& resolution_;
+  OverloadTypeProvider& overload_types_;
   EmitCallExprOps& expr_ops_;
 };
 

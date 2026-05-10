@@ -193,6 +193,7 @@ void mark_builtin_memory_helper_param_info(
 EmitCalls::EmitCalls(const TypeRegistry* registry, ScopeStateView& scope,
                      EmitAnalysis& analysis, EmitTypes& types,
                      EmitStorage& storage, EmitResolution& resolution,
+                     OverloadTypeProvider& overload_types,
                      EmitCallExprOps& expr_ops)
     : registry_(registry),
       scope_(scope),
@@ -200,6 +201,7 @@ EmitCalls::EmitCalls(const TypeRegistry* registry, ScopeStateView& scope,
       types_(types),
       storage_(storage),
       resolution_(resolution),
+      overload_types_(overload_types),
       expr_ops_(expr_ops) {}
 
 bool EmitCalls::proc_accepts_zero_args(const ProcDecl& decl) {
@@ -401,7 +403,7 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
   } storage_view_context(scope_.storage_view_context,
                          scope_.storage_view_context || mutable_ref_arg ||
                              untyped_arg != UntypedArgKind::None);
-  const TypeExpr* arg_type = analysis_.deduce_type(arg);
+  const TypeExpr* arg_type = overload_types_.type_for_overload(arg);
   if (arg_type) arg_type = analysis_.canonicalize_type(arg_type);
   const TypeExpr* canon_param_type = analysis_.canonicalize_type(param_type);
   if (mutable_ref_arg && (canon_param_type || untyped_arg == UntypedArgKind::None)) {

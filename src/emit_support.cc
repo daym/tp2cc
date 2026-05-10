@@ -250,6 +250,29 @@ std::string encode_helper_params(const std::vector<ast::Param>& params) {
   return out;
 }
 
+std::string binary_pascal_operator_token(ast::BinOp op) {
+  switch (op) {
+    case ast::BinOp::Add: return "+";
+    case ast::BinOp::Sub: return "-";
+    case ast::BinOp::Mul: return "*";
+    case ast::BinOp::RealDiv: return "/";
+    case ast::BinOp::IntDiv: return "div";
+    case ast::BinOp::Mod: return "mod";
+    case ast::BinOp::Shl: return "shl";
+    case ast::BinOp::Shr: return "shr";
+    case ast::BinOp::And: return "and";
+    case ast::BinOp::Or: return "or";
+    case ast::BinOp::Xor: return "xor";
+    case ast::BinOp::Eq: return "=";
+    case ast::BinOp::NotEq: return "<>";
+    case ast::BinOp::Lt: return "<";
+    case ast::BinOp::Gt: return ">";
+    case ast::BinOp::LtEq: return "<=";
+    case ast::BinOp::GtEq: return ">=";
+    default: return {};
+  }
+}
+
 std::string pascal_operator_cxx_token(std::string_view op) {
   if (op == "+") return "+";
   if (op == "-") return "-";

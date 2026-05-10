@@ -5,6 +5,7 @@
 #include <vector>
 
 namespace tp2cc::ast {
+struct Expr;
 struct ProcDecl;
 struct TypeExpr;
 }  // namespace tp2cc::ast
@@ -56,6 +57,15 @@ class ResolveNameProvider {
   virtual ResolveResult resolve_name(const std::string& name,
                                      QualifierKind qk = QualifierKind::None,
                                      const std::string& qualifier = {}) = 0;
+};
+
+class OverloadTypeProvider {
+ public:
+  virtual ~OverloadTypeProvider() = default;
+  // Overload ranking may need the selected result type of a nested
+  // call/operator expression. That information belongs to expression lowering;
+  // structural type deduction must not choose overloads.
+  virtual const ast::TypeExpr* type_for_overload(const ast::Expr& e) = 0;
 };
 
 // Pascal/FPC overload-resolution conversion ranks. Lower is better.
@@ -132,6 +142,9 @@ struct ResolvedCall {
   // Default parameter expressions are lowered at the call site, but
   // unqualified names inside them resolve in the declaration's unit.
   std::string default_arg_unit;
+  // Metadata-only runtime helpers have no ProcDecl but still have a Pascal
+  // result type visible to type analysis.
+  std::string return_type_name;
   // True iff the resolver had to pick among multiple arity-viable candidates
   // by Pascal conversion ranking. The call site then wraps each value arg in
   // `static_cast<param_type>(...)` so C++ overload resolution lands on the

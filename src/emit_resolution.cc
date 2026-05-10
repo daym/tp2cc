@@ -10,11 +10,13 @@ using namespace ast;
 
 EmitResolution::EmitResolution(const TypeRegistry* registry,
                                ScopeStateView& scope, EmitAnalysis& analysis,
-                               ResolutionTypeOps& type_ops)
+                               ResolutionTypeOps& type_ops,
+                               OverloadTypeProvider& overload_types)
     : registry_(registry),
       scope_(scope),
       analysis_(analysis),
-      type_ops_(type_ops) {}
+      type_ops_(type_ops),
+      overload_types_(overload_types) {}
 
 void EmitResolution::append_class_method_cands(
     const std::string& cls, const std::string& name,
@@ -26,7 +28,7 @@ void EmitResolution::append_class_method_cands(
   for (const auto& ms : *set) {
     if (!ms.decl) continue;
     cands.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args, {},
-                     ms.defining_unit});
+                     ms.defining_unit, {}});
   }
 }
 
@@ -42,7 +44,7 @@ void EmitResolution::append_unit_export_proc_cands(
   if (!v) return;
   for (const auto& pi : *v) {
     cands.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args, unit,
-                     pi.defining_unit});
+                     pi.defining_unit, pi.return_type_name});
   }
 }
 
@@ -64,7 +66,7 @@ void EmitResolution::gather_callable_in_pascal_scope(
     if (nit->second.decl) {
       cands.push_back(
           {nit->second.decl, nit->second.param_count,
-           nit->second.accepts_zero_args, {}, scope_.current_unit_name});
+           nit->second.accepts_zero_args, {}, scope_.current_unit_name, {}});
     }
     return;
   }
@@ -79,7 +81,7 @@ void EmitResolution::gather_callable_in_pascal_scope(
     for (const auto& pi : *local) {
       cands.push_back(
           {pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-           scope_.current_unit_name, pi.defining_unit});
+           scope_.current_unit_name, pi.defining_unit, pi.return_type_name});
     }
     return;
   }
@@ -98,7 +100,7 @@ void EmitResolution::gather_operator_in_pascal_scope(
     for (const auto& pi : *local) {
       cands.push_back(
           {pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-           scope_.current_unit_name, pi.defining_unit});
+           scope_.current_unit_name, pi.defining_unit, {}});
     }
     return;
   }
@@ -110,7 +112,7 @@ void EmitResolution::gather_operator_in_pascal_scope(
     if (!ops) continue;
     for (const auto& pi : *ops) {
       cands.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-                       *it, pi.defining_unit});
+                       *it, pi.defining_unit, {}});
     }
   }
 }
@@ -428,7 +430,7 @@ ConvScore EmitResolution::score_argument_conversion(
       static_cast<const SetLit&>(arg).elements.empty()) {
     return {ConvRank::Exact, 0};
   }
-  return score_conversion(analysis_.deduce_type(arg), param.type,
+  return score_conversion(overload_types_.type_for_overload(arg), param.type,
                           param.mutable_ref,
                           allow_assignment_operator_conversions);
 }
@@ -616,6 +618,7 @@ ResolvedCall EmitResolution::resolve_call(
     out.decl = chosen.decl ? chosen.decl : resolve_call_decl(callee);
     out.needs_arg_casts = ran_type_picker;
     out.default_arg_unit = chosen.declaration_unit;
+    out.return_type_name = chosen.return_type_name;
     if (!chosen.callee_unit.empty()) {
       out.callee_kind = ResolvedCalleeKind::FreeFunctionInUnit;
       out.defining_unit = chosen.callee_unit;
@@ -691,8 +694,8 @@ BinaryOperatorResult EmitResolution::find_binary_operator(
            t->kind == Kind::TyArray || t->kind == Kind::TyMetaclass;
   };
 
-  const TypeExpr* lhs_type = analysis_.deduce_type(lhs);
-  const TypeExpr* rhs_type = analysis_.deduce_type(rhs);
+  const TypeExpr* lhs_type = overload_types_.type_for_overload(lhs);
+  const TypeExpr* rhs_type = overload_types_.type_for_overload(rhs);
   const bool overloadable_context =
       operand_allows_operator_lookup(lhs_type) ||
       operand_allows_operator_lookup(rhs_type);

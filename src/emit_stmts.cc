@@ -34,7 +34,8 @@ EmitStmts::EmitStmts(const TypeRegistry* registry, ScopeStateView& scope,
                      EmitAnalysis& analysis, EmitTypes& types,
                      EmitStorage& storage,
                      ResolveNameProvider& resolve_name_provider,
-                     EmitResolution& resolution, EmitCalls& calls,
+                     EmitResolution& resolution,
+                     OverloadTypeProvider& overload_types, EmitCalls& calls,
                      EmitProperties& properties,
                      EmitStmtOps& stmt_ops)
     : registry_(registry),
@@ -49,6 +50,7 @@ EmitStmts::EmitStmts(const TypeRegistry* registry, ScopeStateView& scope,
       storage_(storage),
       resolve_name_provider_(resolve_name_provider),
       resolution_(resolution),
+      overload_types_(overload_types),
       calls_(calls),
       properties_(properties),
       stmt_ops_(stmt_ops) {}
@@ -244,7 +246,7 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
   if (auto target = storage_.storage_designator(*a.target);
       target && target->is_special()) {
     const TypeExpr* target_ty = analysis_.deduce_type(*a.target);
-    const TypeExpr* value_ty = analysis_.deduce_type(*a.value);
+    const TypeExpr* value_ty = overload_types_.type_for_overload(*a.value);
     std::string rhs_cxx;
     if (auto converted = assignment_operator_rhs(value_ty, target_ty)) {
       rhs_cxx = *converted;
@@ -341,7 +343,7 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
   scope_.lhs_outer_result_rewrite.clear();
   scope_.lhs_outer_result_rewrite_slot.clear();
   const TypeExpr* target_ty = analysis_.deduce_type(*a.target);
-  const TypeExpr* value_ty = analysis_.deduce_type(*a.value);
+  const TypeExpr* value_ty = overload_types_.type_for_overload(*a.value);
   if (auto converted = assignment_operator_rhs(value_ty, target_ty)) {
     stmt_ops_.emitln(target_cxx + " = " + *converted + ";");
     return;
@@ -366,7 +368,7 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
           primitive_info(ascii_lower(static_cast<const TyName&>(*tcanon).name));
       if (dst && (dst->int_kind == PrimitiveIntKind::Signed ||
                   dst->int_kind == PrimitiveIntKind::Unsigned)) {
-        const TypeExpr* src_ty = analysis_.deduce_type(*a.value);
+        const TypeExpr* src_ty = overload_types_.type_for_overload(*a.value);
         if (src_ty) src_ty = analysis_.canonicalize_type(src_ty);
         const PrimitiveInfo* src = nullptr;
         bool src_is_real = false;
@@ -415,7 +417,8 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
       }
     }
     rhs_cxx = storage_.coerce_pointer_like_text(
-        types_.type_to_cxx(*target_ty), target_ty, analysis_.deduce_type(*a.value), rhs_cxx,
+        types_.type_to_cxx(*target_ty), target_ty,
+        overload_types_.type_for_overload(*a.value), rhs_cxx,
         /*explicit_pascal_cast=*/false, source_is_const_storage);
   }
   stmt_ops_.emitln(target_cxx + " = " + rhs_cxx + ";");

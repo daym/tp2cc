@@ -33,7 +33,8 @@ struct UnaryOperatorResult {
 class EmitResolution {
  public:
   EmitResolution(const TypeRegistry* registry, ScopeStateView& scope,
-                 EmitAnalysis& analysis, ResolutionTypeOps& type_ops);
+                 EmitAnalysis& analysis, ResolutionTypeOps& type_ops,
+                 OverloadTypeProvider& overload_types);
 
   // Resolve a callee designator to the specific ProcDecl metadata needed by
   // later call lowering. This is the narrow "what declaration is this?" path
@@ -91,6 +92,7 @@ class EmitResolution {
     bool accepts_zero_args = false;
     std::string callee_unit;       // nonempty for namespace-spelled unit procs
     std::string declaration_unit;  // scope for default parameter expressions
+    std::string return_type_name;  // for decl-less runtime builtins
   };
 
   // Flatten Pascal formal parameters to call-site slots. Repeated names in one
@@ -131,6 +133,7 @@ class EmitResolution {
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;
   ResolutionTypeOps& type_ops_;
+  OverloadTypeProvider& overload_types_;
 };
 
 }  // namespace tp2cc

@@ -39,33 +39,11 @@ constexpr const char* kUnitFiniName = "tp2cc_unit_fini";
 constexpr const char* kPascalResultSlotName = "p_result";
 constexpr const char* kCtorStatusSlotName = "tp2cc_ctor_ok";
 
-std::string binary_pascal_operator_token(BinOp op) {
-  switch (op) {
-    case BinOp::Add: return "+";
-    case BinOp::Sub: return "-";
-    case BinOp::Mul: return "*";
-    case BinOp::RealDiv: return "/";
-    case BinOp::IntDiv: return "div";
-    case BinOp::Mod: return "mod";
-    case BinOp::Shl: return "shl";
-    case BinOp::Shr: return "shr";
-    case BinOp::And: return "and";
-    case BinOp::Or: return "or";
-    case BinOp::Xor: return "xor";
-    case BinOp::Eq: return "=";
-    case BinOp::NotEq: return "<>";
-    case BinOp::Lt: return "<";
-    case BinOp::Gt: return ">";
-    case BinOp::LtEq: return "<=";
-    case BinOp::GtEq: return ">=";
-    default: return {};
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Emitter state
 
 struct Emitter : ResolveNameProvider,
+                 OverloadTypeProvider,
                  ResolutionTypeOps,
                  EmitTypeConstRender,
                  EmitTypeDiagOps,
@@ -228,20 +206,20 @@ struct Emitter : ResolveNameProvider,
         analysis_(registry, scope_state_, *this),
         types_(registry, scope_state_, analysis_, *this, *this),
         storage_(registry, scope_state_, analysis_, types_, *this, *this),
-        resolution_(registry, scope_state_, analysis_, *this),
+        resolution_(registry, scope_state_, analysis_, *this, *this),
         calls_(registry, scope_state_, analysis_, types_, storage_,
-               resolution_, *this),
+               resolution_, *this, *this),
         properties_(registry, analysis_, *this),
         lookup_(registry, scope_state_, analysis_, properties_),
         values_(registry, scope_state_, analysis_, types_, storage_,
-                resolution_, *this),
+                resolution_, *this, *this),
         decls_(registry, scope_state_, analysis_, types_, storage_, values_,
                *this),
         procs_(scope_state_, block_depth, analysis_, types_, calls_, decls_,
                *this),
         stmts_(registry, scope_state_, except_handler_depth, try_stmt_counter,
                loop_label_counter, loop_break_labels, loop_continue_labels,
-               analysis_, types_, storage_, *this, resolution_, calls_,
+               analysis_, types_, storage_, *this, resolution_, *this, calls_,
                properties_, *this),
         units_(scope_state_, block_depth, unit_init_order, kUnitInitName,
                kUnitFiniName, *this) {}
@@ -399,6 +377,7 @@ struct Emitter : ResolveNameProvider,
   // expression has, or nullptr when unknown. Consults the TypeRegistry
   // for globals and the current scope tables for locals/self-class.
   const ast::TypeExpr* deduce_type(const ast::Expr& e);
+  const ast::TypeExpr* type_for_overload(const ast::Expr& e) override;
 
   bool type_is_packed_record(const ast::TypeExpr* t) {
     return storage_.type_is_packed_record(t);
@@ -509,7 +488,8 @@ struct Emitter : ResolveNameProvider,
   using ResolvedCalleeKind = tp2cc::ResolvedCalleeKind;
   using ResolvedCall = tp2cc::ResolvedCall;
   ResolvedCall resolve_call(
-      const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
+      const ast::Expr& callee,
+      const std::vector<const ast::Expr*>& args);
   std::string format_resolved_callee(const ResolvedCall& resolved,
                                      const ast::Expr& callee_ast);
   void append_defaulted_trailing_call_args(
@@ -640,6 +620,48 @@ struct Emitter : ResolveNameProvider,
 // from the actual type tree, not name-matching heuristics.
 
 const TypeExpr* Emitter::deduce_type(const Expr& e) {
+  return analysis_.deduce_type(e);
+}
+
+const TypeExpr* Emitter::type_for_overload(const Expr& e) {
+  if (e.kind == Kind::Call) {
+    const auto& c = static_cast<const Call&>(e);
+    std::vector<const Expr*> args;
+    args.reserve(c.args.size());
+    for (const auto& arg : c.args) args.push_back(arg.get());
+    ResolvedCall resolved = resolution_.resolve_call(*c.callee, args);
+    if (!resolved.ambiguous) {
+      if (resolved.decl && resolved.decl->return_type) {
+        return resolved.decl->return_type.get();
+      }
+      if (!resolved.return_type_name.empty()) {
+        if (const TypeExpr* named =
+                analysis_.lookup_named_type_expr(resolved.return_type_name)) {
+          return named;
+        }
+        const std::string low = ascii_lower(resolved.return_type_name);
+        if (const TyName* int_ty = builtin_integer_type(low)) return int_ty;
+        if (low == "boolean") return builtin_boolean_type();
+        if (primitive_name_is_charish(low)) return builtin_char_type();
+        if (low == "string" || low == "shortstring") {
+          return builtin_string_type();
+        }
+        if (low == "pchar" || low == "pansichar") return builtin_pchar_type();
+      }
+    }
+  } else if (e.kind == Kind::Binary) {
+    const auto& b = static_cast<const Binary&>(e);
+    if (std::string op = binary_pascal_operator_token(b.op); !op.empty()) {
+      BinaryOperatorResult resolved =
+          resolution_.find_binary_operator(op, *b.lhs, *b.rhs);
+      if (!resolved.decl && !resolved.ambiguous && b.op == BinOp::NotEq) {
+        resolved = resolution_.find_binary_operator("=", *b.lhs, *b.rhs);
+      }
+      if (!resolved.ambiguous && resolved.decl && resolved.decl->return_type) {
+        return resolved.decl->return_type.get();
+      }
+    }
+  }
   return analysis_.deduce_type(e);
 }
 
@@ -930,7 +952,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return is_bool(*static_cast<const Unary&>(x).operand);
         if (x.kind == Kind::BoolLit) return true;
         if (!registry) return false;
-        const TypeExpr* t = deduce_type(x);
+        const TypeExpr* t = type_for_overload(x);
         if (!t) return false;
         t = registry->canonicalize(t);
         if (!t || t->kind != Kind::TyName) return false;
@@ -944,7 +966,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                           is_bool(*n.lhs) && is_bool(*n.rhs);
       auto emit_operand = [&](const Expr& operand, const Expr& other) {
         if (operand.kind != Kind::SetLit) return expr_to_cxx(operand);
-        const TypeExpr* other_ty = deduce_type(other);
+        const TypeExpr* other_ty = type_for_overload(other);
         const TypeExpr* canon = canonicalize_type(other_ty);
         if (canon && canon->kind == Kind::TySet) {
           return set_literal_to_cxx(static_cast<const SetLit&>(operand),
@@ -957,7 +979,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // parser snapshotted Q+ active and both operands are integer-typed;
       // floats and sets stay on plain operators.
       auto operand_is_integer = [&](const Expr& x) {
-        const TypeExpr* t = deduce_type(x);
+        const TypeExpr* t = type_for_overload(x);
         if (!t) return false;
         t = canonicalize_type(t);
         if (!t || t->kind != Kind::TyName) return false;
@@ -967,7 +989,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                       pi->int_kind == PrimitiveIntKind::Unsigned);
       };
       auto operand_is_signed_integer = [&](const Expr& x) {
-        const TypeExpr* t = deduce_type(x);
+        const TypeExpr* t = type_for_overload(x);
         if (!t) return false;
         t = canonicalize_type(t);
         if (!t || t->kind != Kind::TyName) return false;
@@ -976,7 +998,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return pi && pi->int_kind == PrimitiveIntKind::Signed;
       };
       auto shift_carrier = [&](const Expr& x) -> const PrimitiveInfo* {
-        const TypeExpr* t = deduce_type(x);
+        const TypeExpr* t = type_for_overload(x);
         if (!t) return nullptr;
         t = canonicalize_type(t);
         if (!t || t->kind != Kind::TyName) return nullptr;
@@ -1124,7 +1146,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // through tp2cc_wrap_negate so plain `-INT_MIN` (UB in C++, but
       // silently wrapping on i386) doesn't trip UBSan.
       if (n.op == UnOp::Neg && n.operand) {
-        const TypeExpr* t = deduce_type(*n.operand);
+        const TypeExpr* t = type_for_overload(*n.operand);
         if (t) t = canonicalize_type(t);
         if (t && t->kind == Kind::TyName) {
           const PrimitiveInfo* pi = primitive_info(
@@ -1545,7 +1567,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               return rewrite;
             }
           }
-          if (const TypeExpr* at = deduce_type(*c.args[0])) {
+          if (const TypeExpr* at = type_for_overload(*c.args[0])) {
             if (std::string rewrite = low_high_expr_for_type(at, want_low);
                 !rewrite.empty()) {
               return rewrite;
@@ -1625,7 +1647,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               return rewrite;
             }
           }
-          const TypeExpr* at = deduce_type(*c.args[0]);
+          const TypeExpr* at = type_for_overload(*c.args[0]);
           if (at) {
             if (std::string rewrite = low_high_expr_for_type(at, want_low);
                 !rewrite.empty()) {
@@ -1724,7 +1746,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (const PrimitiveInfo* info = primitive_info(n);
               info && (info->int_kind == PrimitiveIntKind::Signed ||
                        info->int_kind == PrimitiveIntKind::Unsigned)) {
-            const TypeExpr* source_ty = canonicalize_type(deduce_type(*c.args[0]));
+            const TypeExpr* source_ty =
+                canonicalize_type(type_for_overload(*c.args[0]));
             bool source_is_set =
                 c.args[0]->kind == Kind::SetLit ||
                 (source_ty && source_ty->kind == Kind::TySet);
@@ -1737,7 +1760,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
           }
           if (const TypeExpr* source_ty =
-                  canonicalize_type(deduce_type(*c.args[0]));
+                  canonicalize_type(type_for_overload(*c.args[0]));
               source_ty &&
               (source_ty->kind == Kind::TyArray ||
                source_ty->kind == Kind::TyRecord ||
@@ -1762,7 +1785,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                     ? expr_to_cxx(*peeled)
                     : arg0();
             std::string coerced = coerce_pointer_like_text(
-                primitive_type_cxx(n), &cast_name, deduce_type(*c.args[0]),
+                primitive_type_cxx(n), &cast_name,
+                type_for_overload(*c.args[0]),
                 source,
                 /*explicit_pascal_cast=*/true,
                 arg_is_const_untyped_storage(*c.args[0]));
@@ -1779,7 +1803,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           TyName target;
           target.name = n;
           if (auto conv = resolution_.find_assignment_operator(
-                  deduce_type(*c.args[0]), &target);
+                  type_for_overload(*c.args[0]), &target);
               conv.decl) {
             std::string fn = pascal_assignment_operator_helper_name(*conv.decl);
             if (!conv.defining_unit.empty()) {
@@ -1800,7 +1824,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             cast_name.name = n;
             std::string coerced = coerce_pointer_like_text(
                 type_name_to_cxx(cast_name), &cast_name,
-                deduce_type(*c.args[0]), arg0(),
+                type_for_overload(*c.args[0]), arg0(),
                 /*explicit_pascal_cast=*/true);
             if (coerced != arg0()) return coerced;
             return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
@@ -1815,7 +1839,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               cast_name.name = n;
               std::string coerced = coerce_pointer_like_text(
                   type_name_to_cxx(cast_name), &cast_name,
-                  deduce_type(*c.args[0]), arg0(),
+                  type_for_overload(*c.args[0]), arg0(),
                   /*explicit_pascal_cast=*/true);
               if (coerced != arg0()) return coerced;
               return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
@@ -1827,7 +1851,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             std::string source = const_value_to_cxx(*c.args[0], cast_ty,
                                                     /*explicit_conversion=*/true);
             std::string coerced = coerce_pointer_like_text(
-                type_name_text_to_cxx(n), cast_ty, deduce_type(*c.args[0]),
+                type_name_text_to_cxx(n), cast_ty,
+                type_for_overload(*c.args[0]),
                 source,
                 /*explicit_pascal_cast=*/true);
             if (coerced != source) return coerced;
@@ -1840,7 +1865,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                     ? expr_to_cxx(*peeled)
                     : arg0();
             std::string coerced = coerce_pointer_like_text(
-                type_name_text_to_cxx(n), cast_ty, deduce_type(*c.args[0]),
+                type_name_text_to_cxx(n), cast_ty,
+                type_for_overload(*c.args[0]),
                 source,
                 /*explicit_pascal_cast=*/true,
                 arg_is_const_untyped_storage(*c.args[0]));
@@ -1855,7 +1881,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             TyName target;
             target.name = n;
             if (auto conv = resolution_.find_assignment_operator(
-                    deduce_type(*c.args[0]), &target);
+                    type_for_overload(*c.args[0]), &target);
                 conv.decl) {
               std::string fn =
                   pascal_assignment_operator_helper_name(*conv.decl);
@@ -1874,7 +1900,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             cast_name.name = n;
             std::string coerced = coerce_pointer_like_text(
                 type_name_to_cxx(cast_name), cast_ty,
-                deduce_type(*c.args[0]), arg0(),
+                type_for_overload(*c.args[0]), arg0(),
                 /*explicit_pascal_cast=*/true);
             if (coerced != arg0()) return coerced;
             return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
@@ -2083,7 +2109,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                   ? expr_to_cxx(*peeled)
                   : expr_to_cxx(*c.args[0]);
           std::string coerced = coerce_pointer_like_text(
-              cast_type_cxx, pointer_cast_ty, deduce_type(*c.args[0]), source,
+              cast_type_cxx, pointer_cast_ty,
+              type_for_overload(*c.args[0]), source,
               /*explicit_pascal_cast=*/true);
           if (coerced != source) return coerced;
           if (peeled && expr_is_storage_lvalue(*c.args[0])) {
@@ -2120,7 +2147,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                       : expr_to_cxx(*c.args[0]);
               std::string coerced = coerce_pointer_like_text(
                   type_name_text_to_cxx(qualified), cast_ty,
-                  deduce_type(*c.args[0]), source,
+                  type_for_overload(*c.args[0]), source,
                   /*explicit_pascal_cast=*/true);
               if (coerced != source) return coerced;
               if (peeled && expr_is_storage_lvalue(*c.args[0])) {

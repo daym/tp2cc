@@ -924,17 +924,6 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
                         name == "real" || name == "extended" ||
                         name == "comp");
         };
-        auto is_overloadable_value_type = [&](const TypeExpr* t) {
-          t = canonicalize_type(t);
-          if (!t) return false;
-          if (t->kind == Kind::TyName) {
-            const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
-            return !primitive_info(name) && !registry_->enums.count(name);
-          }
-          return t->kind == Kind::TyRecord || t->kind == Kind::TyObject ||
-                 t->kind == Kind::TyInterface || t->kind == Kind::TyPointer ||
-                 t->kind == Kind::TyArray || t->kind == Kind::TyMetaclass;
-        };
         auto is_comparison = [&] {
           return b.op == BinOp::Eq || b.op == BinOp::NotEq ||
                  b.op == BinOp::Lt || b.op == BinOp::Gt ||
@@ -950,12 +939,6 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         };
         if (is_arithmetic_like()) {
           if (same_type_ast(lt, rt)) return lt ? lt : rt;
-          if (is_overloadable_value_type(lt) && is_numeric_primitive(rt)) {
-            return lt;
-          }
-          if (is_numeric_primitive(lt) && is_overloadable_value_type(rt)) {
-            return rt;
-          }
           if (is_numeric_primitive(lt) && is_numeric_primitive(rt)) {
             const PrimitiveInfo* lp = prim_of(lt);
             const PrimitiveInfo* rp = prim_of(rt);
@@ -1321,24 +1304,19 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           return ait->second.target.get();
         }
         ResolveResult rr = resolve_name_provider_.resolve_name(id.name);
-        if (rr.proc && rr.proc->return_type) {
-          // Function call -> return type. Name resolution already obeyed
-          // Pascal lexical / unit visibility rules, so avoid any global
-          // last-wins fallback here.
-          return rr.proc->return_type.get();
-        }
+        if (rr.proc && rr.proc->return_type) return rr.proc->return_type.get();
         if (!rr.return_type_name.empty()) {
           return named_pascal_type(rr.return_type_name);
         }
       } else if (c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         if (auto unit_member = resolve_unit_qualified_member(mem)) {
-          const ResolveResult& rr = unit_member->resolved;
-          if (rr.proc && rr.proc->return_type) {
-            return rr.proc->return_type.get();
+          if (unit_member->resolved.proc &&
+              unit_member->resolved.proc->return_type) {
+            return unit_member->resolved.proc->return_type.get();
           }
-          if (!rr.return_type_name.empty()) {
-            return named_pascal_type(rr.return_type_name);
+          if (!unit_member->resolved.return_type_name.empty()) {
+            return named_pascal_type(unit_member->resolved.return_type_name);
           }
         }
         std::string cls;

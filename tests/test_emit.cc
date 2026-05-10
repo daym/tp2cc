@@ -2178,6 +2178,103 @@ void test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers
   CHECK(contains(out.impl, "p_i = ::p_ops::tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(p_b);"));
 }
 
+void test_overloaded_call_result_type_uses_selected_decl() {
+  auto out = compile_snippet_with_registry(
+      "unit ops;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = record\n"
+      "    v : longint;\n"
+      "  end;\n"
+      "operator * (const a,b : tbox) : tbox;\n"
+      "operator := (const n : longint) : tbox;\n"
+      "function pick(n : longint) : longint; overload;\n"
+      "function pick(b : tbox) : tbox; overload;\n"
+      "procedure test;\n"
+      "implementation\n"
+      "operator * (const a,b : tbox) : tbox;\n"
+      "begin\n"
+      "  result.v := a.v * b.v;\n"
+      "end;\n"
+      "operator := (const n : longint) : tbox;\n"
+      "begin\n"
+      "  result.v := n;\n"
+      "end;\n"
+      "function pick(n : longint) : longint;\n"
+      "begin\n"
+      "  result := n;\n"
+      "end;\n"
+      "function pick(b : tbox) : tbox;\n"
+      "begin\n"
+      "  result := b;\n"
+      "end;\n"
+      "procedure test;\n"
+      "var a,b : tbox;\n"
+      "begin\n"
+      "  a := pick(b);\n"
+      "  a := pick(b) * 2;\n"
+      "end;\n"
+      "end.\n");
+
+  CHECK(contains(out.impl, "p_a = ::p_ops::p_pick(static_cast<t_tbox>(p_b));"));
+  CHECK(contains(out.impl, "p_a = (::p_ops::p_pick(static_cast<t_tbox>(p_b)) * ::p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(2));"));
+  CHECK(!contains(out.impl, "::p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(p_pick(p_b))"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_wrap_mul(p_pick(p_b), 2)"));
+}
+
+void test_nested_overload_result_type_is_used_for_outer_overload() {
+  auto out = compile_snippet_with_registry(
+      "unit ops;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = record\n"
+      "    v : longint;\n"
+      "  end;\n"
+      "operator + (const a,b : tbox) : tbox;\n"
+      "operator := (const n : longint) : tbox;\n"
+      "function pick(n : longint) : longint; overload;\n"
+      "function pick(b : tbox) : tbox; overload;\n"
+      "procedure take(n : longint); overload;\n"
+      "procedure take(b : tbox); overload;\n"
+      "procedure test;\n"
+      "implementation\n"
+      "operator + (const a,b : tbox) : tbox;\n"
+      "begin\n"
+      "  result.v := a.v + b.v;\n"
+      "end;\n"
+      "operator := (const n : longint) : tbox;\n"
+      "begin\n"
+      "  result.v := n;\n"
+      "end;\n"
+      "function pick(n : longint) : longint;\n"
+      "begin\n"
+      "  result := n;\n"
+      "end;\n"
+      "function pick(b : tbox) : tbox;\n"
+      "begin\n"
+      "  result := b;\n"
+      "end;\n"
+      "procedure take(n : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure take(b : tbox);\n"
+      "begin\n"
+      "end;\n"
+      "procedure test;\n"
+      "var b : tbox;\n"
+      "begin\n"
+      "  take(pick(b));\n"
+      "  take(pick(b) + 1);\n"
+      "end;\n"
+      "end.\n");
+
+  CHECK(contains(out.impl,
+                 "p_take(static_cast<t_tbox>(::p_ops::p_pick(static_cast<t_tbox>(p_b))));"));
+  CHECK(contains(out.impl,
+                 "p_take(static_cast<t_tbox>((::p_ops::p_pick(static_cast<t_tbox>(p_b)) + ::p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(1))));"));
+  CHECK(!contains(out.impl, "p_take(static_cast<int32_t>(::p_ops::p_pick"));
+}
+
 void test_pchar_cast_argument_converts_to_string_value() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -8426,6 +8523,8 @@ int main() {
   RUN_TEST(test_var_ansistring_call_keeps_lvalue_storage);
   RUN_TEST(test_overloaded_string_and_bool_call_keeps_boolean_argument_raw);
   RUN_TEST(test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers);
+  RUN_TEST(test_overloaded_call_result_type_uses_selected_decl);
+  RUN_TEST(test_nested_overload_result_type_is_used_for_outer_overload);
   RUN_TEST(test_pchar_cast_argument_converts_to_string_value);
   RUN_TEST(test_integer_and_or_stays_bitwise);
   RUN_TEST(test_nested_boolean_function_and_short_circuits);

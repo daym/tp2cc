@@ -42,6 +42,7 @@ std::string string_literal_body_char_to_cxx(char c) {
 EmitValues::EmitValues(const TypeRegistry* registry, ScopeStateView& scope,
                        EmitAnalysis& analysis, EmitTypes& types,
                        EmitStorage& storage, EmitResolution& resolution,
+                       OverloadTypeProvider& overload_types,
                        EmitValueExprOps& expr_ops)
     : registry_(registry),
       scope_(scope),
@@ -49,6 +50,7 @@ EmitValues::EmitValues(const TypeRegistry* registry, ScopeStateView& scope,
       types_(types),
       storage_(storage),
       resolution_(resolution),
+      overload_types_(overload_types),
       expr_ops_(expr_ops) {}
 
 std::string EmitValues::set_literal_to_cxx(const SetLit& s,
@@ -293,7 +295,7 @@ std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target
     return *text;
   }
   std::string out = expr_ops_.expr_to_cxx(e);
-  const TypeExpr* source_type = analysis_.deduce_type(e);
+  const TypeExpr* source_type = overload_types_.type_for_overload(e);
   if (source_type) source_type = analysis_.canonicalize_type(source_type);
   if (source_type && canon_target) {
     if (auto conv = resolution_.find_assignment_operator(source_type, target);
