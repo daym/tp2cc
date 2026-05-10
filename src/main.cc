@@ -140,6 +140,7 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
         "t_hresult",
         "t_pansistring",
         "t_pdword",
+        "t_plongword",
         "t_pqword",
         "t_pshortstring",
     };

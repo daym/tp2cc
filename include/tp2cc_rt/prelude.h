@@ -1910,6 +1910,7 @@ using t_pcardinal = uint32_t*;
 using t_pcurrency = t_currency*;
 using t_pdword    = uint32_t*;
 using t_pint64    = int64_t*;
+using t_plongword = uint32_t*;
 using t_ppointer  = void**;
 using t_pqword    = uint64_t*;
 using t_pshortstring = tp2cc_ShortString<>*;

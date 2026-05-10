@@ -814,6 +814,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   add_rt_alias("pcurrency", make_pointer(make_typename("currency")));
   add_rt_alias("pdword", make_pointer(make_typename("dword")));
   add_rt_alias("pint64", make_pointer(make_typename("int64")));
+  add_rt_alias("plongword", make_pointer(make_typename("longword")));
   add_rt_alias("ppointer", make_pointer(make_typename("pointer")));
   add_rt_alias("pqword", make_pointer(make_typename("qword")));
   add_rt_alias("pshortstring", make_pointer(make_typename("shortstring")));
