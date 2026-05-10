@@ -3815,6 +3815,56 @@ void test_for_loop_uses_resolved_global_control_var() {
   CHECK(contains(out.impl, "::rt::p_inc(::p_globals::p_token);"));
 }
 
+void test_case_statement_lowers_to_if_chain() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo(var i : longint);\n"
+      "implementation\n"
+      "procedure demo(var i : longint);\n"
+      "begin\n"
+      "  case i of\n"
+      "    1 : i := 10;\n"
+      "    2, 3 : i := 20;\n"
+      "    4..6 : i := 30;\n"
+      "  else\n"
+      "    i := 99;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(!contains(out.impl, "switch ("));
+  CHECK(contains(out.impl, "auto tp2cc_case_1 = p_i;"));
+  CHECK(contains(out.impl, "if (((tp2cc_case_1) == (1))) {"));
+  CHECK(contains(out.impl,
+                 "else if (((tp2cc_case_1) == (2)) || ((tp2cc_case_1) == (3))) {"));
+  CHECK(contains(out.impl,
+                 "else if (((tp2cc_case_1) >= (4) && (tp2cc_case_1) <= (6))) {"));
+  CHECK(contains(out.impl, "else {"));
+}
+
+void test_string_case_statement_lowers_to_if_chain() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo(s : string; var i : longint);\n"
+      "implementation\n"
+      "procedure demo(s : string; var i : longint);\n"
+      "begin\n"
+      "  case s of\n"
+      "    'one' : i := 1;\n"
+      "    'two', 'dos' : i := 2;\n"
+      "  else\n"
+      "    i := 0;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(!contains(out.impl, "switch ("));
+  CHECK(contains(out.impl, "auto tp2cc_case_1 = p_s;"));
+  CHECK(contains(out.impl, "if (((tp2cc_case_1) == ("));
+  CHECK(contains(out.impl, "else if (((tp2cc_case_1) == ("));
+  CHECK(contains(out.impl, "|| ((tp2cc_case_1) == ("));
+}
+
 void test_const_object_param_uses_mutable_ref() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -8417,6 +8467,8 @@ int main() {
   RUN_TEST(test_unbound_method_address_uses_thunk_code);
   RUN_TEST(test_internal_helpers_avoid_double_underscores);
   RUN_TEST(test_for_loop_uses_resolved_global_control_var);
+  RUN_TEST(test_case_statement_lowers_to_if_chain);
+  RUN_TEST(test_string_case_statement_lowers_to_if_chain);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
   RUN_TEST(test_parameterless_procvar_stmt_autocalls);
   RUN_TEST(test_direct_procvar_var_decl_uses_named_function_pointer_syntax);

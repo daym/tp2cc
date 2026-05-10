@@ -92,12 +92,17 @@ class EmitStmts {
                                           const std::string& class_name,
                                           const std::string& method_name);
   std::string case_selector_expr(const ast::CaseStmt& cs, const ast::Expr& e);
+  std::string case_arm_condition(const ast::CaseStmt& cs,
+                                 const std::string& selector,
+                                 const ast::CaseArm& arm);
+  void emit_case_stmt(const ast::CaseStmt& cs);
 
   const TypeRegistry* registry_;
   ScopeStateView& scope_;
   int& except_handler_depth_;
   int& try_stmt_counter_;
   int& loop_label_counter_;
+  int case_stmt_counter_ = 0;
   std::vector<std::string>& loop_break_labels_;
   std::vector<std::string>& loop_continue_labels_;
   EmitAnalysis& analysis_;

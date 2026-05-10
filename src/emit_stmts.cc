@@ -639,6 +639,59 @@ std::string EmitStmts::case_selector_expr(const CaseStmt& cs, const Expr& e) {
   return selector_is_charish ? "::rt::p_ord(" + text + ")" : text;
 }
 
+std::string EmitStmts::case_arm_condition(const CaseStmt& cs,
+                                          const std::string& selector,
+                                          const CaseArm& arm) {
+  std::vector<std::string> parts;
+  for (const auto& lab : arm.labels) {
+    if (lab->kind == Kind::Range) {
+      const auto& r = static_cast<const Range&>(*lab);
+      parts.push_back("((" + selector + ") >= (" +
+                      case_selector_expr(cs, *r.lo) + ") && (" + selector +
+                      ") <= (" + case_selector_expr(cs, *r.hi) + "))");
+    } else {
+      parts.push_back("((" + selector + ") == (" +
+                      case_selector_expr(cs, *lab) + "))");
+    }
+  }
+  if (parts.empty()) return "false";
+  std::string out = parts.front();
+  for (size_t i = 1; i < parts.size(); ++i) out += " || " + parts[i];
+  return out;
+}
+
+void EmitStmts::emit_case_stmt(const CaseStmt& cs) {
+  const std::string selector =
+      "tp2cc_case_" + std::to_string(++case_stmt_counter_);
+  stmt_ops_.emitln("{");
+  stmt_ops_.indent();
+  stmt_ops_.emitln("auto " + selector + " = " +
+                   case_selector_expr(cs, *cs.selector) + ";");
+  bool first = true;
+  for (const auto& arm : cs.arms) {
+    stmt_ops_.emitln(std::string(first ? "if" : "else if") + " (" +
+                     case_arm_condition(cs, selector, arm) + ") {");
+    stmt_ops_.indent();
+    if (arm.body) emit_stmt(*arm.body);
+    stmt_ops_.dedent();
+    stmt_ops_.emitln("}");
+    first = false;
+  }
+  if (cs.else_branch) {
+    if (first) {
+      emit_stmt(*cs.else_branch);
+    } else {
+      stmt_ops_.emitln("else {");
+      stmt_ops_.indent();
+      emit_stmt(*cs.else_branch);
+      stmt_ops_.dedent();
+      stmt_ops_.emitln("}");
+    }
+  }
+  stmt_ops_.dedent();
+  stmt_ops_.emitln("}");
+}
+
 void EmitStmts::emit_ordinal_for_body(const For& f, const std::string& var,
                                       const std::string& from,
                                       const std::string& to, bool downto) {
@@ -1154,35 +1207,7 @@ void EmitStmts::emit_stmt(const Stmt& s) {
     }
     case Kind::CaseStmt: {
       const auto& cs = static_cast<const CaseStmt&>(s);
-      stmt_ops_.emitln("switch (" + case_selector_expr(cs, *cs.selector) + ") {");
-      stmt_ops_.indent();
-      for (const auto& arm : cs.arms) {
-        for (const auto& lab : arm.labels) {
-          if (lab->kind == Kind::Range) {
-            // GCC case-range extension: `case lo ... hi:`. Acceptable here;
-            // the gnu profile compiler supports it. TODO: iterate label
-            // values for strict standard C++.
-            const auto& r = static_cast<const Range&>(*lab);
-            stmt_ops_.emitln("case " + case_selector_expr(cs, *r.lo) + " ... " +
-                             case_selector_expr(cs, *r.hi) + ":");
-          } else {
-            stmt_ops_.emitln("case " + case_selector_expr(cs, *lab) + ":");
-          }
-        }
-        stmt_ops_.indent();
-        if (arm.body) emit_stmt(*arm.body);
-        stmt_ops_.emitln("break;");
-        stmt_ops_.dedent();
-      }
-      if (cs.else_branch) {
-        stmt_ops_.emitln("default:");
-        stmt_ops_.indent();
-        emit_stmt(*cs.else_branch);
-        stmt_ops_.emitln("break;");
-        stmt_ops_.dedent();
-      }
-      stmt_ops_.dedent();
-      stmt_ops_.emitln("}");
+      emit_case_stmt(cs);
       break;
     }
     case Kind::With: {
