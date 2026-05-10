@@ -69,13 +69,15 @@ class EmitCalls {
   std::string lower_call_arg(const ast::Expr& arg,
                              const ast::TypeExpr* param_type,
                              UntypedArgKind untyped_arg,
-                             bool mutable_ref_arg);
+                             bool mutable_ref_arg,
+                             std::string_view default_arg_unit = {});
 
   // Bare Pascal `foo;` / `obj.meth;` can still mean a call when omitted
   // trailing actuals all come from defaults. Rebuild that call here so those
   // implicit sites share the exact same lowering as explicit `Call`.
   std::string lower_implicit_zero_arg_call(const std::string& callee_text,
-                                           const ast::ProcDecl* decl);
+                                           const ast::ProcDecl* decl,
+                                           std::string_view default_arg_unit);
 
   // Pascal `obj.Free` is the null-safe TObject cleanup entrypoint, not a
   // normal instance call, and `TClass.Create` on a metaclass value allocates a
@@ -88,7 +90,9 @@ class EmitCalls {
       const std::vector<const ast::Expr*>& args,
       const std::vector<const ast::TypeExpr*>& param_types,
       const std::vector<UntypedArgKind>& untyped_arg,
-      const std::vector<bool>& mutable_ref_arg);
+      const std::vector<bool>& mutable_ref_arg,
+      size_t explicit_arg_count,
+      std::string_view default_arg_unit);
 
  private:
   const TypeRegistry* registry_;

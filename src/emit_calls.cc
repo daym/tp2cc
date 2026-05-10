@@ -1,5 +1,6 @@
 #include "emit_calls.h"
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -39,6 +40,28 @@ struct PackedScalarValueLoadSuppressor {
   }
 
   ~PackedScalarValueLoadSuppressor() { flag = saved; }
+};
+
+struct DefaultArgumentUnitScope {
+  // A default argument expression belongs to the declaration that introduced
+  // it, even though tp2cc lowers it while emitting a later call site.
+  std::string& current_unit;
+  std::string saved;
+  bool active = false;
+
+  DefaultArgumentUnitScope(std::string& current_unit_in,
+                           std::string_view default_arg_unit)
+      : current_unit(current_unit_in) {
+    if (!default_arg_unit.empty() && default_arg_unit != current_unit) {
+      saved = current_unit;
+      current_unit = std::string(default_arg_unit);
+      active = true;
+    }
+  }
+
+  ~DefaultArgumentUnitScope() {
+    if (active) current_unit = saved;
+  }
 };
 
 void mark_builtin_memory_helper_param_info(
@@ -258,7 +281,10 @@ void EmitCalls::collect_call_param_info(
 
 std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
                                       UntypedArgKind untyped_arg,
-                                      bool mutable_ref_arg) {
+                                      bool mutable_ref_arg,
+                                      std::string_view default_arg_unit) {
+  DefaultArgumentUnitScope default_scope(scope_.current_unit_name,
+                                         default_arg_unit);
   if (param_type && storage_.type_is_open_array(param_type) &&
       arg.kind == Kind::SetLit) {
     const auto& s = static_cast<const SetLit&>(arg);
@@ -435,7 +461,8 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
 }
 
 std::string EmitCalls::lower_implicit_zero_arg_call(
-    const std::string& callee_text, const ProcDecl* decl) {
+    const std::string& callee_text, const ProcDecl* decl,
+    std::string_view default_arg_unit) {
   if (!decl) return callee_text + "()";
 
   std::vector<const Expr*> args;
@@ -451,7 +478,7 @@ std::string EmitCalls::lower_implicit_zero_arg_call(
   for (size_t i = 0; i < args.size(); ++i) {
     if (i) out += ", ";
     out += lower_call_arg(*args[i], param_types[i], untyped_arg[i],
-                          mutable_ref_arg[i]);
+                          mutable_ref_arg[i], default_arg_unit);
   }
   out += ")";
   return out;
@@ -470,7 +497,9 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
     const std::vector<const Expr*>& args,
     const std::vector<const TypeExpr*>& param_types,
     const std::vector<UntypedArgKind>& untyped_arg,
-    const std::vector<bool>& mutable_ref_arg) {
+    const std::vector<bool>& mutable_ref_arg,
+    size_t explicit_arg_count,
+    std::string_view default_arg_unit) {
   if (!registry_) return std::nullopt;
   const ClassInfo* ci =
       analysis_.class_info_for_type_name(std::string(class_name));
@@ -488,6 +517,9 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
     }
     implicit_root_create = true;
   }
+  if (default_arg_unit.empty() && method) {
+    default_arg_unit = method->defining_unit;
+  }
   if (ci->is_abstract) {
     report_warning(where,
                    "instantiating abstract class `" +
@@ -501,6 +533,7 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
                                                     untyped_arg.end());
   std::vector<bool> effective_mutable_ref_arg(mutable_ref_arg.begin(),
                                               mutable_ref_arg.end());
+  explicit_arg_count = std::min(explicit_arg_count, effective_args.size());
   append_defaulted_trailing_call_args(method ? method->decl.get() : nullptr,
                                       effective_args);
   if (effective_param_types.size() < effective_args.size()) {
@@ -521,7 +554,9 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
     if (i) args_cxx += ", ";
     args_cxx += lower_call_arg(*effective_args[i], effective_param_types[i],
                                effective_untyped_arg[i],
-                               effective_mutable_ref_arg[i]);
+                               effective_mutable_ref_arg[i],
+                               i >= explicit_arg_count ? default_arg_unit
+                                                       : std::string_view{});
   }
   std::string struct_ty = types_.named_type_struct_cxx(class_name);
   return "([&]{ auto tp2cc_ptr = new " + struct_ty + "{}; tp2cc_ptr->" +

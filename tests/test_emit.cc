@@ -1199,6 +1199,40 @@ void test_unit_qualified_trailing_default_argument_is_lowered() {
   CHECK(contains(out.impl, "::p_u::p_note(1, 7);"));
 }
 
+void test_imported_default_argument_resolves_in_declaring_unit() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "uses api;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  note(1);\n"
+      "end;\n"
+      "end.\n",
+      {{"base.pas",
+        "unit base;\n"
+        "interface\n"
+        "type\n"
+        "  tsymkind = (at_none, at_data);\n"
+        "implementation\n"
+        "end.\n"},
+       {"api.pas",
+        "unit api;\n"
+        "interface\n"
+        "uses base;\n"
+        "procedure note(w : integer; kind : tsymkind = at_none);\n"
+        "implementation\n"
+        "procedure note(w : integer; kind : tsymkind);\n"
+        "begin\n"
+        "end;\n"
+        "end.\n"}});
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::p_api::p_note(1, ::p_base::p_at_none);"));
+}
+
 void test_unit_qualified_variable_assignment_is_storage_designator() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -7976,6 +8010,7 @@ int main() {
   RUN_TEST(test_free_function_trailing_default_argument_is_lowered);
   RUN_TEST(test_method_trailing_default_argument_is_lowered);
   RUN_TEST(test_unit_qualified_trailing_default_argument_is_lowered);
+  RUN_TEST(test_imported_default_argument_resolves_in_declaring_unit);
   RUN_TEST(test_unit_qualified_variable_assignment_is_storage_designator);
   RUN_TEST(test_external_used_unit_qualified_call_keeps_namespace_spelling);
   RUN_TEST(test_method_pointer_trailing_default_nil_is_lowered_as_empty_value);

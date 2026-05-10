@@ -89,7 +89,8 @@ class EmitResolution {
     const ast::ProcDecl* decl = nullptr;
     size_t param_count = 0;
     bool accepts_zero_args = false;
-    std::string unit;  // empty for class methods and nested procedures
+    std::string callee_unit;       // nonempty for namespace-spelled unit procs
+    std::string declaration_unit;  // scope for default parameter expressions
   };
 
   // Flatten Pascal formal parameters to call-site slots. Repeated names in one

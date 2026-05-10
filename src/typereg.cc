@@ -94,6 +94,7 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
     } else if (m.kind == ObjectMemberKind::Method && m.method) {
       const auto& pd = *m.method;
       MethodSig ms;
+      ms.defining_unit = ci.defining_unit;
       ms.decl = m.method;
       ms.is_virtual = pd.is_virtual || pd.is_abstract || pd.is_override;
       ms.is_final = pd.is_final;
@@ -124,6 +125,7 @@ void add_interface_members(InterfaceInfo& ii, const TyInterface& ti) {
     if (m.kind != ObjectMemberKind::Method || !m.method) continue;
     const auto& pd = *m.method;
     MethodSig ms;
+    ms.defining_unit = ii.defining_unit;
     ms.decl = m.method;
     ms.is_function = (pd.pkind == ProcKind::Function);
     ms.kind = SymKind::Method;
@@ -826,6 +828,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     pd->params = std::move(params);
     pd->return_type = std::move(return_type);
     MethodSig ms;
+    ms.defining_unit = "__rt__";
     ms.kind = (pkind == ast::ProcKind::Constructor) ? SymKind::Constructor
               : (pkind == ast::ProcKind::Destructor) ? SymKind::Destructor
               : class_method ? SymKind::ClassMethod

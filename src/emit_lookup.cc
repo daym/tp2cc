@@ -38,6 +38,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
           r.is_parameterless = (pi->param_count == 0);
           r.accepts_zero_args = pi->accepts_zero_args;
           r.return_type_name = pi->return_type_name;
+          r.default_arg_unit = pi->defining_unit;
           return r;
         }
         if (own_unit ? u.find_var(name) : u.find_export_var(name)) {
@@ -73,6 +74,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         r.is_callable = true;
         r.is_parameterless = (m->param_count == 0);
         r.accepts_zero_args = m->accepts_zero_args;
+        r.default_arg_unit = m->defining_unit;
         r.cxx = mangle(name);  // caller emits the `base.` prefix
         return r;
       }
@@ -149,6 +151,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
           r.is_callable = true;
           r.is_parameterless = (m->param_count == 0);
           r.accepts_zero_args = m->accepts_zero_args;
+          r.default_arg_unit = m->defining_unit;
           return r;
         }
         if (registry_->lookup_class_field(
@@ -177,6 +180,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       r.is_callable = true;
       r.is_parameterless = (nit->second.param_count == 0);
       r.accepts_zero_args = nit->second.accepts_zero_args;
+      r.default_arg_unit = scope_.current_unit_name;
       return r;
     }
   }
@@ -228,6 +232,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       r.is_callable = true;
       r.is_parameterless = (m->param_count == 0);
       r.accepts_zero_args = m->accepts_zero_args;
+      r.default_arg_unit = m->defining_unit;
       return r;
     }
     if (registry_->lookup_class_field(scope_.current_class_name, name,
@@ -264,6 +269,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         r.is_callable = true;
         r.is_parameterless = (pi->param_count == 0);
         r.accepts_zero_args = pi->accepts_zero_args;
+        r.default_arg_unit = pi->defining_unit;
         return r;
       }
       if (ui->find_var(name)) {
@@ -310,6 +316,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         r.is_parameterless = (pi->param_count == 0);
         r.accepts_zero_args = pi->accepts_zero_args;
         r.return_type_name = pi->return_type_name;
+        r.default_arg_unit = pi->defining_unit;
         return true;
       }
       if (u.find_export_var(name)) {

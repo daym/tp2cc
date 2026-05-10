@@ -43,6 +43,7 @@ enum class SymKind : uint8_t {
 
 struct MethodSig {
   SymKind kind = SymKind::Method;
+  std::string defining_unit;
   size_t param_count = 0;
   bool accepts_zero_args = false;
   bool is_function = false;       // returns a value

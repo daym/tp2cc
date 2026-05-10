@@ -25,7 +25,8 @@ void EmitResolution::append_class_method_cands(
   if (!set) return;
   for (const auto& ms : *set) {
     if (!ms.decl) continue;
-    cands.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args, {}});
+    cands.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args, {},
+                     ms.defining_unit});
   }
 }
 
@@ -40,7 +41,8 @@ void EmitResolution::append_unit_export_proc_cands(
                 : it->second.find_export_procs(name);
   if (!v) return;
   for (const auto& pi : *v) {
-    cands.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args, unit});
+    cands.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args, unit,
+                     pi.defining_unit});
   }
 }
 
@@ -62,7 +64,7 @@ void EmitResolution::gather_callable_in_pascal_scope(
     if (nit->second.decl) {
       cands.push_back(
           {nit->second.decl, nit->second.param_count,
-           nit->second.accepts_zero_args, {}});
+           nit->second.accepts_zero_args, {}, scope_.current_unit_name});
     }
     return;
   }
@@ -77,7 +79,7 @@ void EmitResolution::gather_callable_in_pascal_scope(
     for (const auto& pi : *local) {
       cands.push_back(
           {pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-           scope_.current_unit_name});
+           scope_.current_unit_name, pi.defining_unit});
     }
     return;
   }
@@ -96,7 +98,7 @@ void EmitResolution::gather_operator_in_pascal_scope(
     for (const auto& pi : *local) {
       cands.push_back(
           {pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-           scope_.current_unit_name});
+           scope_.current_unit_name, pi.defining_unit});
     }
     return;
   }
@@ -108,7 +110,7 @@ void EmitResolution::gather_operator_in_pascal_scope(
     if (!ops) continue;
     for (const auto& pi : *ops) {
       cands.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-                       *it});
+                       *it, pi.defining_unit});
     }
   }
 }
@@ -611,13 +613,12 @@ ResolvedCall EmitResolution::resolve_call(
   }
 
   auto adopt = [&](const AnyCand& chosen, bool ran_type_picker) {
-    // The chosen candidate's defining unit determines whether the printer must
-    // force `<unit_ns>::name` spelling to stay aligned with Pascal lookup.
     out.decl = chosen.decl ? chosen.decl : resolve_call_decl(callee);
     out.needs_arg_casts = ran_type_picker;
-    if (!chosen.unit.empty()) {
+    out.default_arg_unit = chosen.declaration_unit;
+    if (!chosen.callee_unit.empty()) {
       out.callee_kind = ResolvedCalleeKind::FreeFunctionInUnit;
-      out.defining_unit = chosen.unit;
+      out.defining_unit = chosen.callee_unit;
     }
   };
 
@@ -715,7 +716,7 @@ BinaryOperatorResult EmitResolution::find_binary_operator(
   if (pr.ambiguous) return {nullptr, {}, true};
   if (!pr.decl) return {};
   for (const auto& c : cands) {
-    if (c.decl == pr.decl) return {pr.decl, c.unit, false};
+    if (c.decl == pr.decl) return {pr.decl, c.callee_unit, false};
   }
   return {pr.decl, {}, false};
 }
@@ -742,7 +743,7 @@ UnaryOperatorResult EmitResolution::find_unary_operator(
   if (pr.ambiguous) return {nullptr, {}, true};
   if (!pr.decl) return {};
   for (const auto& c : cands) {
-    if (c.decl == pr.decl) return {pr.decl, c.unit, false};
+    if (c.decl == pr.decl) return {pr.decl, c.callee_unit, false};
   }
   return {pr.decl, {}, false};
 }
@@ -773,7 +774,7 @@ AssignmentOperatorResult EmitResolution::find_assignment_operator(
   if (viable.empty()) return {};
   if (viable.size() == 1) {
     for (const auto& c : cands) {
-      if (c.decl == viable.front()) return {viable.front(), c.unit};
+      if (c.decl == viable.front()) return {viable.front(), c.callee_unit};
     }
     return {viable.front(), {}};
   }
@@ -797,7 +798,7 @@ AssignmentOperatorResult EmitResolution::find_assignment_operator(
       best = pd;
       for (const auto& c : cands) {
         if (c.decl == pd) {
-          best_unit = c.unit;
+          best_unit = c.callee_unit;
           break;
         }
       }

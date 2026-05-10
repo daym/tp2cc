@@ -538,13 +538,16 @@ struct Emitter : ResolveNameProvider,
   std::string lower_call_arg(const ast::Expr& arg,
                              const ast::TypeExpr* param_type,
                              UntypedArgKind untyped_arg,
-                             bool mutable_ref_arg) {
+                             bool mutable_ref_arg,
+                             std::string_view default_arg_unit = {}) {
     return calls_.lower_call_arg(arg, param_type, untyped_arg,
-                                 mutable_ref_arg);
+                                 mutable_ref_arg, default_arg_unit);
   }
   std::string lower_implicit_zero_arg_call(const std::string& callee_text,
-                                           const ast::ProcDecl* decl) {
-    return calls_.lower_implicit_zero_arg_call(callee_text, decl);
+                                           const ast::ProcDecl* decl,
+                                           std::string_view default_arg_unit) {
+    return calls_.lower_implicit_zero_arg_call(callee_text, decl,
+                                               default_arg_unit);
   }
   std::string lower_property_read(Location where,
                                   const std::string& base_cxx,
@@ -582,10 +585,12 @@ struct Emitter : ResolveNameProvider,
       const std::vector<const ast::Expr*>& args,
       const std::vector<const ast::TypeExpr*>& param_types,
       const std::vector<UntypedArgKind>& untyped_arg,
-      const std::vector<bool>& mutable_ref_arg) {
+      const std::vector<bool>& mutable_ref_arg,
+      size_t explicit_arg_count,
+      std::string_view default_arg_unit) {
     return calls_.maybe_lower_class_constructor_call(
         where, class_name, member_name, args, param_types, untyped_arg,
-        mutable_ref_arg);
+        mutable_ref_arg, explicit_arg_count, default_arg_unit);
   }
   using ResolvedKind = tp2cc::ResolvedKind;
   using ResolveResult = tp2cc::ResolveResult;
@@ -820,7 +825,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // function names as procedural-pointer values.
       bool want_call = !is_callee_context_ && block_depth > 0 &&
                        rr.is_callable && rr.accepts_zero_args;
-      return want_call ? lower_implicit_zero_arg_call(rr.cxx, rr.proc) : rr.cxx;
+      return want_call ? lower_implicit_zero_arg_call(
+                             rr.cxx, rr.proc, rr.default_arg_unit)
+                       : rr.cxx;
     }
     case Kind::Binary: {
       const auto& n = static_cast<const Binary&>(e);
@@ -1232,7 +1239,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             std::vector<bool> no_mutable_ref_arg;
             if (auto ctor_call = maybe_lower_class_constructor_call(
                     m.loc, base_name, m.name, no_args, no_param_types,
-                    no_untyped_arg, no_mutable_ref_arg)) {
+                    no_untyped_arg, no_mutable_ref_arg, no_args.size(),
+                    {})) {
               return *ctor_call;
             }
           }
@@ -1243,14 +1251,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                                "()->" + mangle(m.name);
             bool want_call = !is_callee_context_ &&
                              rr.is_callable && rr.accepts_zero_args;
-            return want_call ? lower_implicit_zero_arg_call(text, rr.proc)
+            return want_call ? lower_implicit_zero_arg_call(
+                                   text, rr.proc, rr.default_arg_unit)
                              : text;
           }
           std::string text =
               named_type_struct_cxx(base_name) + "::" + mangle(m.name);
           bool want_call = !is_callee_context_ &&
                            rr.is_callable && rr.accepts_zero_args;
-          return want_call ? lower_implicit_zero_arg_call(text, rr.proc) : text;
+          return want_call ? lower_implicit_zero_arg_call(
+                                 text, rr.proc, rr.default_arg_unit)
+                           : text;
         }
       }
 
@@ -1279,7 +1290,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               bool want_call = !is_callee_context_ &&
                                method->accepts_zero_args;
               return want_call
-                         ? lower_implicit_zero_arg_call(text, method->decl.get())
+                         ? lower_implicit_zero_arg_call(
+                               text, method->decl.get(), method->defining_unit)
                          : text;
             }
           }
@@ -1341,7 +1353,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (const auto* method = registry->lookup_class_method(
               bcls, m.name, current_unit_name)) {
         if (method->accepts_zero_args) {
-          text = lower_implicit_zero_arg_call(text, method->decl.get());
+          text = lower_implicit_zero_arg_call(text, method->decl.get(),
+                                              method->defining_unit);
         }
       }
       return text;
@@ -1972,6 +1985,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               method = mangle(static_cast<const Ident&>(*cc.callee).name);
             }
             const ProcDecl* ctor_decl = nullptr;
+            std::string ctor_default_arg_unit;
             if (registry && c.args[0]->kind == Kind::Ident &&
                 cc.callee->kind == Kind::Ident) {
               TyName ptr_type;
@@ -1982,12 +1996,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                         pointee, static_cast<const Ident&>(*cc.callee).name,
                         current_unit_name)) {
                   ctor_decl = m->decl.get();
+                  ctor_default_arg_unit = m->defining_unit;
                 }
               }
             }
             std::vector<const Expr*> ctor_args;
             ctor_args.reserve(cc.args.size());
             for (const auto& arg : cc.args) ctor_args.push_back(arg.get());
+            const size_t explicit_ctor_arg_count = ctor_args.size();
             append_defaulted_trailing_call_args(ctor_decl, ctor_args);
             std::vector<UntypedArgKind> untyped_arg(ctor_args.size(),
                                                     UntypedArgKind::None);
@@ -1997,8 +2013,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                                  param_types);
             for (size_t i = 0; i < ctor_args.size(); ++i) {
               if (i) margs += ", ";
+              const std::string_view default_arg_unit =
+                  i >= explicit_ctor_arg_count
+                      ? std::string_view(ctor_default_arg_unit)
+                      : std::string_view{};
               margs += lower_call_arg(*ctor_args[i], param_types[i],
-                                      untyped_arg[i], mutable_ref_arg[i]);
+                                      untyped_arg[i], mutable_ref_arg[i],
+                                      default_arg_unit);
             }
           } else if (second.kind == Kind::Ident) {
             method = mangle(static_cast<const Ident&>(second).name);
@@ -2112,6 +2133,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       std::vector<const Expr*> call_args;
       call_args.reserve(c.args.size());
       for (const auto& arg : c.args) call_args.push_back(arg.get());
+      const size_t explicit_arg_count = call_args.size();
       ResolvedCall resolved = resolve_call(*c.callee, call_args);
       if (resolved.ambiguous) {
         // Pascal-level ambiguous call: two or more overloads were
@@ -2163,7 +2185,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               registry->has_class(id.name, current_unit_name)) {
             if (auto ctor_call = maybe_lower_class_constructor_call(
                     c.loc, id.name, mem.name, call_args, call_param_types,
-                    call_untyped_arg, call_mutable_ref_arg)) {
+                    call_untyped_arg, call_mutable_ref_arg, explicit_arg_count,
+                    resolved.default_arg_unit)) {
               return *ctor_call;
             }
           }
@@ -2193,9 +2216,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       std::string out = callee_text + "(";
       for (size_t i = 0; i < call_args.size(); ++i) {
         if (i) out += ", ";
+        const std::string_view default_arg_unit =
+            i >= explicit_arg_count ? std::string_view(resolved.default_arg_unit)
+                                    : std::string_view{};
         std::string arg_text = lower_call_arg(*call_args[i], call_param_types[i],
                                               call_untyped_arg[i],
-                                              call_mutable_ref_arg[i]);
+                                              call_mutable_ref_arg[i],
+                                              default_arg_unit);
         // For overloaded callees, force the C++ compiler onto the picked
         // overload by casting every value-arg to the picked param's type.
         // C++ ranks competing implicit conversions equally in many cases

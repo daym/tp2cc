@@ -40,6 +40,7 @@ struct ResolveResult {
   const ast::ProcDecl* proc = nullptr;   // declaration for call-site lowering
   bool accepts_zero_args = false;        // rt builtin or decl permits zero args
   std::string return_type_name;          // Pascal-facing return type alias/name
+  std::string default_arg_unit;          // declaration scope for defaults
 };
 
 // Empty qualifier means ordinary lexical lookup. Non-empty qualifiers are
@@ -128,6 +129,9 @@ struct ResolvedCall {
   // Pascal-side unmangled callee/member name. The printer uses this when it
   // needs to rebuild member or unit-qualified call spellings.
   std::string member_name;
+  // Default parameter expressions are lowered at the call site, but
+  // unqualified names inside them resolve in the declaration's unit.
+  std::string default_arg_unit;
   // True iff the resolver had to pick among multiple arity-viable candidates
   // by Pascal conversion ranking. The call site then wraps each value arg in
   // `static_cast<param_type>(...)` so C++ overload resolution lands on the
