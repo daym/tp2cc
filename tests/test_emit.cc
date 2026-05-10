@@ -4290,6 +4290,7 @@ void test_runtime_string_and_memory_helpers_resolve_explicitly() {
       "  s := inttostr(x);\n"
       "  setstring(s, p, x);\n"
       "  s := trim(s);\n"
+      "  p := reallocmem(p, x);\n"
       "  p := strrscan(p, c);\n"
       "end;\n"
       "end.\n");
@@ -4300,6 +4301,8 @@ void test_runtime_string_and_memory_helpers_resolve_explicitly() {
   CHECK(contains(out.impl, "::rt::p_inttostr("));
   CHECK(contains(out.impl, "::rt::p_setstring("));
   CHECK(contains(out.impl, "::rt::p_trim("));
+  CHECK(contains(out.impl,
+                 "p_p = static_cast<::rt::p_char*>(::rt::p_reallocmem(p_p, p_x));"));
   CHECK(contains(out.impl, "::rt::p_strrscan("));
 }
 

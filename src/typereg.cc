@@ -480,7 +480,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"getmem",     2, false, false, ""},
       {"freemem",    1, false, false, ""},
       {"freemem",    2, false, false, ""},
-      {"reallocmem", 2, false, false, ""},
+      {"reallocmem", 2, true,  false, "pointer"},
       {"allocmem",   1, true,  false, "pointer"},
       {"setlength",  2, false, false, ""},
       {"setstring",  3, false, false, ""},

@@ -4752,14 +4752,15 @@ inline void* p_allocmem(int size) {
 inline void p_freemem(void* p, int = 0) {
   std::free(p);
 }
-inline void p_reallocmem(void*& p, int size) {
+inline void* p_reallocmem(void*& p, int size) {
   if (size <= 0) {
     std::free(p);
     p = nullptr;
-    return;
+    return p;
   }
   void* q = std::realloc(p, static_cast<size_t>(size));
   if (q) p = q;
+  return p;
 }
 template <typename P>
 inline void p_getmem(P*& p, int size) {
@@ -4774,14 +4775,15 @@ inline void p_freemem(P* p, int = 0) {
   std::free(p);
 }
 template <typename P>
-inline void p_reallocmem(P*& p, int size) {
+inline P* p_reallocmem(P*& p, int size) {
   if (size <= 0) {
     std::free(static_cast<void*>(p));
     p = nullptr;
-    return;
+    return p;
   }
   void* q = std::realloc(static_cast<void*>(p), static_cast<size_t>(size));
   if (q) p = static_cast<P*>(q);
+  return p;
 }
 
 template <typename P>

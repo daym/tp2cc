@@ -702,11 +702,11 @@ Heap storage lives until you free it, or forever if you do not free it.  Pascal 
 - ~New(P)~ allocates storage for the type pointed to by typed pointer ~P~ and initializes that storage as a value of that type.  Free it with ~Dispose(P)~.
 - ~GetMem(P, Size)~ allocates exactly ~Size~ raw bytes and stores the address in pointer variable ~P~.  The bytes are not promised to be zero.  Free it with ~FreeMem(P)~ or ~FreeMem(P, Size)~.
 - ~AllocMem(Size)~ allocates exactly ~Size~ raw bytes, zero-fills them, and returns the address as a pointer value.  Free it with ~FreeMem(P)~ or ~FreeMem(P, Size)~.
-- ~ReallocMem(P, Size)~ resizes a raw heap block previously allocated by ~GetMem~, ~AllocMem~, or an earlier ~ReallocMem~ call.  It takes the pointer variable as a ~var~-style argument, so it can replace ~P~ with a new address if the block moves.  Release the final block with ~FreeMem(P)~ or ~FreeMem(P, Size)~.
+- ~ReallocMem(P, Size)~ resizes a raw heap block previously allocated by ~GetMem~, ~AllocMem~, or an earlier ~ReallocMem~ call.  It takes the pointer variable as a ~var~-style argument, so it can replace ~P~ with a new address if the block moves, and it also returns the resulting pointer value.  Release the final block with ~FreeMem(P)~ or ~FreeMem(P, Size)~.
 
 Do not mix these cleanup paths.  A class instance created by ~TFoo.Create~ is not a raw byte block.  A buffer returned by ~AllocMem~ is not a class instance.  A typed pointer allocated by ~New~ should normally be released by ~Dispose~ so the pointed-to value can be destroyed before the storage is freed.
 
-** AllocMem and FreeMem
+** AllocMem, ReallocMem, and FreeMem
 #+begin_src pascal
 program MemoryDemo;
 
@@ -764,18 +764,19 @@ end;
 
 ~PInteger = ^Integer~ declares a pointer type.  ~P^~ dereferences the pointer, meaning "the value that ~P~ points at".  ~New(P)~ here allocates enough space for one ~Integer~ and makes ~P~ point to it.  ~Dispose(P)~ destroys that pointed-to value and frees its storage.  As with normal Pascal, ~Dispose~ leaves the pointer variable holding its old now-invalid address, so set it to ~nil~ yourself if later code will test it.
 
-Use ~ReallocMem~ when a raw buffer needs to grow or shrink.  The pointer may change, so always keep using the variable passed to ~ReallocMem~, not a saved copy of the old address:
+Use ~ReallocMem~ when a raw buffer needs to grow or shrink.  The pointer may change, so always keep using the variable passed to ~ReallocMem~, not a saved copy of the old address.  ~ReallocMem~ also returns the resulting pointer, so these two forms are both valid:
 #+begin_src pascal
 var
   P: Pointer;
 begin
   GetMem(P, 16);
-  ReallocMem(P, 32); {the value of P, i.e. the pointer, may be changed by ReallocMem }
-  FreeMem(P, 32);
+  ReallocMem(P, 32);
+  P := ReallocMem(P, 64);
+  FreeMem(P, 64);
 end;
 #+end_src
 
-The allocation family is what matters.  A block from ~GetMem~ may be resized with ~ReallocMem~ and later freed with ~FreeMem~.  A block from ~AllocMem~ may also be resized with ~ReallocMem~ and later freed with ~FreeMem~.  Do not use ~ReallocMem~ on a class instance from ~TFoo.Create~.
+With ~Size = 0~, ~ReallocMem~ frees the block and stores ~nil~ in the pointer variable.  A block from ~GetMem~ or ~AllocMem~ can be resized with ~ReallocMem~ and freed with ~FreeMem~.  A class instance from ~TFoo.Create~ is not such a block; free it with ~Free~ or ~FreeAndNil~.
 
 ** FreeAndNil
 ~FreeAndNil(Obj)~ calls the null-safe object-free path and then stores ~nil~ in the variable.  Use it for class-instance variables when later code should be able to test ~Assigned(Obj)~ reliably. ~Assigned(Obj)~ does the check ~(Obj <> nil)~.
@@ -1074,7 +1075,7 @@ In the table, ~S~ denotes any tp2cc-supported string value (typically ~String~, 
 | ~GetMem~ | ~GetMem(var P, Size)~ | Allocates heap storage into a pointer variable. |
 | ~AllocMem~ | ~AllocMem(Size): Pointer~ | Allocates zero-filled heap storage. |
 | ~FreeMem~ | ~FreeMem(P[, Size])~ | Frees heap storage; it does not clear the caller's pointer. |
-| ~ReallocMem~ | ~ReallocMem(var P, Size)~ | Resizes heap storage and updates the pointer variable. |
+| ~ReallocMem~ | ~ReallocMem(var P, Size): Pointer~ | Resizes heap storage, updates the pointer variable, and returns the resulting pointer. |
 | ~Dispose~ | ~Dispose(P)~ | Frees typed-pointer storage allocated by ~New~ or compatible runtime allocation. |
 | ~FreeAndNil~ | ~FreeAndNil(var Obj)~ | Calls ~Obj.Free~ for a class instance pointer and clears the pointer. |
 | ~ParamCount~, ~ParamStr~ | ~ParamCount: LongInt~, ~ParamStr(I): ShortString~ | Program argument count and argument lookup. |

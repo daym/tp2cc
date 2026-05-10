@@ -483,6 +483,33 @@ void test_dispose_releases_plain_storage_grown_with_reallocmem() {
   p_dispose(p);
 }
 
+void test_reallocmem_returns_updated_pointer_slot() {
+  void* raw = nullptr;
+  void* raw_result = p_reallocmem(raw, 16);
+  CHECK(raw != nullptr);
+  CHECK(raw_result == raw);
+
+  int32_t* typed = nullptr;
+  int32_t* typed_result =
+      p_reallocmem(typed, static_cast<int>(2 * sizeof(int32_t)));
+  CHECK(typed != nullptr);
+  CHECK(typed_result == typed);
+  typed[0] = 11;
+  typed[1] = 22;
+
+  int32_t* grown =
+      p_reallocmem(typed, static_cast<int>(4 * sizeof(int32_t)));
+  CHECK(grown == typed);
+  CHECK_EQ(typed[0], int32_t{11});
+  CHECK_EQ(typed[1], int32_t{22});
+
+  int32_t* cleared = p_reallocmem(typed, 0);
+  CHECK(cleared == nullptr);
+  CHECK(typed == nullptr);
+
+  std::free(raw);
+}
+
 void test_ansistring_setlength_and_insert_delete_keep_bytes_stable() {
   tp2cc_AnsiString s = tp2cc_ansistring_of("ab");
 
@@ -1444,6 +1471,7 @@ int main() {
   RUN_TEST(test_ansistring_storage_slot_holds_payload_pointer);
   RUN_TEST(test_new_and_dispose_share_malloc_storage_family);
   RUN_TEST(test_dispose_releases_plain_storage_grown_with_reallocmem);
+  RUN_TEST(test_reallocmem_returns_updated_pointer_slot);
   RUN_TEST(test_ansistring_setlength_and_insert_delete_keep_bytes_stable);
   RUN_TEST(test_ansistring_compares_equal_to_single_char_pascal_style);
   RUN_TEST(test_ansistring_converts_to_shortstring_with_pascal_truncation);
