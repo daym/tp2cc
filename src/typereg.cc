@@ -190,6 +190,8 @@ void register_enum_type(TypeRegistry& r, UnitInfo* ui, bool is_interface,
                         const std::string& cxx_name, const TyEnum& te) {
   std::vector<std::string> members;
   for (const auto& m : te.members) members.push_back(lc(m.name));
+  auto& by_member = r.enum_members_by_unit[unit];
+  for (const auto& member : members) by_member[member] = &te;
   r.enums[key] = EnumInfoReg{.name = key,
                              .defining_unit = unit,
                              .type = &te,
@@ -946,8 +948,10 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     if (target && target->kind == Kind::TyEnum) {
       const auto* enum_type = static_cast<const TyEnum*>(target.get());
       std::vector<std::string> members;
+      auto& by_member = enum_members_by_unit["__rt__"];
       for (const auto& m : static_cast<const TyEnum&>(*target).members) {
         std::string lm = lc(m.name);
+        by_member[lm] = enum_type;
         members.push_back(lm);
         rt_exports.iface_enum_members.insert(lm);
       }
@@ -1235,6 +1239,14 @@ const EnumInfoReg* TypeRegistry::enum_info_for_type(
   if (kit == enum_type_names.end()) return nullptr;
   auto eit = enums.find(kit->second);
   return eit == enums.end() ? nullptr : &eit->second;
+}
+
+const TyEnum* TypeRegistry::lookup_enum_member_in_unit(
+    std::string_view unit, std::string_view member) const {
+  auto uit = enum_members_by_unit.find(lc(std::string(unit)));
+  if (uit == enum_members_by_unit.end()) return nullptr;
+  auto mit = uit->second.find(lc(std::string(member)));
+  return mit == uit->second.end() ? nullptr : mit->second;
 }
 
 const TypeExpr* TypeRegistry::canonicalize(const TypeExpr* te) const {

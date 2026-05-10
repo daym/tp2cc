@@ -271,11 +271,23 @@ struct TypeRegistry {
   std::unordered_map<std::string, RecordInfo> records;
   std::unordered_map<std::string, EnumInfoReg> enums;
   std::unordered_map<const ast::TyEnum*, std::string> enum_type_names;
+  // (unit, member) -> owning enum's AST node, populated from EnumInfoReg as
+  // each enum is registered. `EmitAnalysis::deduce_type` asks "is this Ident
+  // an enum member?" for nearly every identifier in the source; the answer
+  // is `no` for almost all of them. A direct hash lookup answers the common
+  // negative case in one probe instead of walking every enum's member list.
+  std::unordered_map<std::string,
+                     std::unordered_map<std::string, const ast::TyEnum*>>
+      enum_members_by_unit;
   std::unordered_map<std::string, AliasInfo> aliases;   // includes pointer aliases
 
   // Fill from all parsed UnitNodes.
   void build(const std::vector<const ast::UnitNode*>& units);
   const EnumInfoReg* enum_info_for_type(const ast::TyEnum* type) const;
+  // Constant-time "is `member` an enum member of an enum declared in
+  // `unit`?" Returns the owning TyEnum* or nullptr.
+  const ast::TyEnum* lookup_enum_member_in_unit(
+      std::string_view unit, std::string_view member) const;
 
   const ClassInfo* lookup_class(std::string_view name,
                                 std::string_view current_unit) const;

@@ -869,20 +869,15 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
 
 const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
   if (!registry_) return nullptr;
-  auto find_unit_enum_type = [&](const std::string& unit_name,
-                                 const std::string& member_name)
-      -> const TypeExpr* {
-    const std::string unit_low = ascii_lower(unit_name);
-    const std::string member_low = ascii_lower(member_name);
-    for (const auto& entry : registry_->enums) {
-      const auto& en = entry.second;
-      if (en.defining_unit != unit_low) continue;
-      for (const auto& member : en.members) {
-        if (member != member_low) continue;
-        return en.type;
-      }
-    }
-    return nullptr;
+  // Resolve "is `member` an enum member declared in `unit`?" via the
+  // registry's (unit, member) -> TyEnum* hash index. The vast majority of
+  // identifiers in any Pascal source are not enum members; the index
+  // answers the common no-match case in one hash probe instead of walking
+  // every registered enum's member list.
+  auto find_unit_enum_type =
+      [&](std::string_view unit_name,
+          std::string_view member_name) -> const TypeExpr* {
+    return registry_->lookup_enum_member_in_unit(unit_name, member_name);
   };
   switch (e.kind) {
     case Kind::IntLit:
