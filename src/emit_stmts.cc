@@ -633,7 +633,7 @@ std::string EmitStmts::case_selector_expr(const CaseStmt& cs, const Expr& e) {
   bool selector_is_charish = false;
   if (t) {
     t = analysis_.canonicalize_type(t);
-    selector_is_charish = tyname_is(t, "char");
+    selector_is_charish = tyname_is_charish(t);
   }
   std::string text = stmt_ops_.expr_to_cxx(e);
   return selector_is_charish ? "::rt::p_ord(" + text + ")" : text;

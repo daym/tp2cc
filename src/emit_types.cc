@@ -309,7 +309,7 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
   auto expr_is_char = [&](const Expr& e) -> bool {
     const TypeExpr* t = analysis_.deduce_type(e);
     if (t) t = analysis_.canonicalize_type(t);
-    return tyname_is(t, "char");
+    return tyname_is_charish(t);
   };
   auto ordinal_bound = [&](const Expr& e) -> std::string {
     std::string text = const_render_.const_value_to_cxx(e);
@@ -389,7 +389,7 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
     //   uchar/u8/u16/s8/s16/s32/bool*/widechar
     // and reject dword/cardinal/qword/int64 rather than silently decaying to
     // pointer semantics or inventing a wider-than-Pascal domain.
-    if (lowname == "char" || lowname == "byte") {
+    if (primitive_name_is_charish(lowname) || lowname == "byte") {
       *size_expr = "256";
       return true;
     }
@@ -548,7 +548,7 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
 
   const TypeExpr* lo_type = bound_type(r.lo.get());
   const TypeExpr* hi_type = bound_type(r.hi.get());
-  if ((tyname_is(lo_type, "char") && tyname_is(hi_type, "char")) ||
+  if ((tyname_is_charish(lo_type) && tyname_is_charish(hi_type)) ||
       (is_char_literal(r.lo.get()) && is_char_literal(r.hi.get()))) {
     return primitive_type_cxx("char");
   }

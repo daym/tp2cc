@@ -942,6 +942,43 @@ void test_widechar_builtin_maps_to_16bit_ordinal() {
   CHECK(!contains(out.header, "p_widechar"));
 }
 
+void test_ansichar_and_pansichar_builtin_maps_to_char_carriers() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  ta = ansichar;\n"
+      "  tpa = pansichar;\n"
+      "  tbuf = array[1..3] of ansichar;\n"
+      "var c : ansichar; p : pansichar; buf : tbuf;\n"
+      "procedure take(c : ansichar; p : pansichar);\n"
+      "implementation\n"
+      "procedure take(c : ansichar; p : pansichar);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  c := ansichar(65);\n"
+      "  p := pansichar(@c);\n"
+      "  c := p^;\n"
+      "  buf := 'ab';\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "using t_ta = ::rt::p_char;"));
+  CHECK(contains(out.header, "using t_tpa = ::rt::p_char*;"));
+  CHECK(contains(out.header, "extern ::rt::p_char p_c;"));
+  CHECK(contains(out.header, "extern ::rt::p_char* p_p;"));
+  CHECK(contains(out.header, "void p_take(::rt::p_char p_c, ::rt::p_char* p_p);"));
+  CHECK(contains(out.impl, "p_c = ::rt::p_chr(65);"));
+  CHECK(contains(out.impl, "p_p = ((::rt::p_char*)((&p_c)));"));
+  CHECK(contains(out.impl, "p_c = ::rt::tp2cc_deref(p_p);"));
+  CHECK(contains(out.impl, "p_buf = ::rt::tp2cc_array_literal<::rt::p_char"));
+  CHECK(!contains(out.header, "t_ansichar"));
+  CHECK(!contains(out.header, "t_pansichar"));
+  CHECK(!contains(out.impl, "t_ansichar"));
+  CHECK(!contains(out.impl, "t_pansichar"));
+}
+
 void test_set_type_alias() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -8141,6 +8178,7 @@ int main() {
   RUN_TEST(test_named_type_alias);
   RUN_TEST(test_ansistring_builtin_maps_to_runtime_type);
   RUN_TEST(test_widechar_builtin_maps_to_16bit_ordinal);
+  RUN_TEST(test_ansichar_and_pansichar_builtin_maps_to_char_carriers);
   RUN_TEST(test_set_type_alias);
   RUN_TEST(test_var_extern_in_header_and_def_in_impl);
   RUN_TEST(test_out_parameter_emits_like_var_reference);

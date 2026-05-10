@@ -333,6 +333,7 @@ const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
       {"shortint", {"int8_t", PrimitiveIntKind::Signed, 8}},
       {"byte", {"uint8_t", PrimitiveIntKind::Unsigned, 8}},
       {"char", {"::rt::p_char", PrimitiveIntKind::None, 0}},
+      {"ansichar", {"::rt::p_char", PrimitiveIntKind::None, 0}},
       {"widechar", {"uint16_t", PrimitiveIntKind::Unsigned, 16}},
       {"boolean", {"bool", PrimitiveIntKind::None, 0}},
       {"bytebool", {"uint8_t", PrimitiveIntKind::Unsigned, 8}},
@@ -345,6 +346,7 @@ const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
       {"comp", {"long double", PrimitiveIntKind::None, 0}},
       {"pointer", {"void*", PrimitiveIntKind::None, 0}},
       {"pchar", {"::rt::p_char*", PrimitiveIntKind::None, 0}},
+      {"pansichar", {"::rt::p_char*", PrimitiveIntKind::None, 0}},
       {"ppchar", {"::rt::p_char**", PrimitiveIntKind::None, 0}},
       {"text", {"::rt::tp2cc_TextFile", PrimitiveIntKind::None, 0}},
       {"int64", {"int64_t", PrimitiveIntKind::Signed, 64}},
@@ -481,7 +483,7 @@ std::string signed_bits_literal_text(uint64_t bits, const PrimitiveInfo& info) {
 }
 
 std::string primitive_low_high_expr(std::string_view lowname, bool want_low) {
-  if (lowname == "char") {
+  if (primitive_name_is_charish(lowname)) {
     return want_low ? "::rt::tp2cc_char_of(0)" : "::rt::tp2cc_char_of(255)";
   }
   if (lowname == "boolean" || lowname == "bytebool" ||
@@ -688,6 +690,16 @@ bool checked_pascal_shr_int64(int64_t a, const PrimitiveInfo* carrier,
 bool tyname_is(const ast::TypeExpr* t, std::string_view expected) {
   return t && t->kind == ast::Kind::TyName &&
          ascii_lower(static_cast<const ast::TyName&>(*t).name) == expected;
+}
+
+bool primitive_name_is_charish(std::string_view lowname) {
+  std::string low = ascii_lower(lowname);
+  return low == "char" || low == "ansichar";
+}
+
+bool tyname_is_charish(const ast::TypeExpr* t) {
+  return t && t->kind == ast::Kind::TyName &&
+         primitive_name_is_charish(static_cast<const ast::TyName&>(*t).name);
 }
 
 }  // namespace tp2cc

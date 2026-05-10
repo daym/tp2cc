@@ -623,8 +623,8 @@ bool EmitStorage::type_is_byte_aligned_packed_index_carrier(const TypeExpr* t) {
     }
     case Kind::TyName: {
       const std::string low = ascii_lower(static_cast<const TyName&>(*t).name);
-      return low == "char" || low == "byte" || low == "shortint" ||
-             low == "boolean";
+      return primitive_name_is_charish(low) || low == "byte" ||
+             low == "shortint" || low == "boolean";
     }
     default:
       return false;
@@ -795,17 +795,17 @@ bool EmitStorage::expr_is_charish(const Expr& e) {
   const TypeExpr* t = analysis_.deduce_type(e);
   if (!t) return false;
   t = analysis_.canonicalize_type(t);
-  return tyname_is(t, "char");
+  return tyname_is_charish(t);
 }
 
 bool EmitStorage::type_is_pcharish(const TypeExpr* t) {
   if (!t) return false;
-  if (tyname_is(t, "pchar")) return true;
+  if (tyname_is(t, "pchar") || tyname_is(t, "pansichar")) return true;
   t = analysis_.canonicalize_type(t);
   if (!t) return false;
-  if (tyname_is(t, "pchar")) return true;
+  if (tyname_is(t, "pchar") || tyname_is(t, "pansichar")) return true;
   return t->kind == Kind::TyPointer &&
-         tyname_is(static_cast<const TyPointer&>(*t).target.get(), "char");
+         tyname_is_charish(static_cast<const TyPointer&>(*t).target.get());
 }
 
 bool EmitStorage::type_is_metaclass(const TypeExpr* t) {
@@ -886,7 +886,7 @@ bool EmitStorage::type_is_pointerish(const TypeExpr* t) {
   if (analysis_.type_is_interface(t)) return true;
   if (t->kind == Kind::TyPointer) return true;
   return tyname_is(t, "pointer") || tyname_is(t, "pchar") ||
-         tyname_is(t, "ppchar");
+         tyname_is(t, "pansichar") || tyname_is(t, "ppchar");
 }
 
 bool EmitStorage::type_is_open_array(const TypeExpr* t) {

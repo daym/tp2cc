@@ -211,7 +211,7 @@ std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target
       std::string size_expr;
       if (arr.array_kind == ArrayKind::Fixed && arr.dims.size() == 1 && elem &&
           types_.array_dim_bounds_to_cxx(*arr.dims[0], &lo, &size_expr) &&
-          (tyname_is(elem, "char") || tyname_is(elem, "byte"))) {
+          (tyname_is_charish(elem) || tyname_is(elem, "byte"))) {
         return "::rt::tp2cc_array_literal<" + types_.type_to_cxx(*elem) + ", " +
                lo + ", " + size_expr + ">(" + expr_ops_.expr_to_cxx(e) + ")";
       }

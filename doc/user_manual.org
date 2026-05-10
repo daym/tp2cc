@@ -133,7 +133,7 @@ New syntax:
 - ~Name: String~ declares a string variable.
 - ~:=~ assigns a value.  Pascal uses ~=~ for comparison, not assignment.
 
-Common integer names accepted by tp2cc include ~ShortInt~, ~Byte~, ~SmallInt~, ~Word~, ~Integer~, ~LongInt~, ~LongWord~, ~Int64~, and ~QWord~.  String names include ~String~, ~ShortString~, sized strings such as ~String[40]~, and ~AnsiString~.
+Common integer names accepted by tp2cc include ~ShortInt~, ~Byte~, ~SmallInt~, ~Word~, ~Integer~, ~LongInt~, ~LongWord~, ~Int64~, and ~QWord~.  Character names include ~Char~, ~AnsiChar~, and ~WideChar~.  String names include ~String~, ~ShortString~, sized strings such as ~String[40]~, and ~AnsiString~.  Pointer names include ~Pointer~, ~PChar~, ~PAnsiChar~, and ~PPChar~.
 
 #+begin_src pascal
 program SizedString;

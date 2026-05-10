@@ -364,7 +364,7 @@ std::optional<EmitAnalysis::OrdinalDomain> EmitAnalysis::ordinal_domain_for_type
   if (low == "boolean") {
     return OrdinalDomain{OrdinalFamily::Boolean, 0, 1, {}};
   }
-  if (low == "char") {
+  if (primitive_name_is_charish(low)) {
     return OrdinalDomain{OrdinalFamily::Char, 0, 255, {}};
   }
   if (low == "widechar") {
@@ -1122,7 +1122,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       const TypeExpr* t = deduce_type(*d.operand);
       if (!t) return nullptr;
       t = canonicalize_type(t);
-      if (tyname_is(t, "pchar")) return builtin_char_type();
+      if (tyname_is(t, "pchar") || tyname_is(t, "pansichar")) {
+        return builtin_char_type();
+      }
       if (tyname_is(t, "ppchar")) return builtin_pchar_type();
       if (t && t->kind == Kind::TyPointer) {
         return static_cast<const TyPointer&>(*t).target.get();
@@ -1220,7 +1222,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           tyname_is(bt, "utf8string")) {
         return builtin_char_type();
       }
-      if (tyname_is(bt, "pchar")) return builtin_char_type();
+      if (tyname_is(bt, "pchar") || tyname_is(bt, "pansichar")) {
+        return builtin_char_type();
+      }
       if (tyname_is(bt, "ppchar")) return builtin_pchar_type();
       if (bt && bt->kind == Kind::TyArray) {
         return static_cast<const TyArray&>(*bt).element.get();
@@ -1249,7 +1253,8 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       }
       if (c.callee->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*c.callee);
-        if ((id.name == "char" || id.name == "chr") && c.args.size() == 1) {
+        if ((primitive_name_is_charish(id.name) || id.name == "chr") &&
+            c.args.size() == 1) {
           return builtin_char_type();
         }
         if ((id.name == "shortstring" || id.name == "ansistring" ||
@@ -1291,7 +1296,10 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         if (id.name == "pointer" && c.args.size() == 1) {
           return named_pascal_type("pointer");
         }
-        if (id.name == "pchar" && c.args.size() == 1) return builtin_pchar_type();
+        if ((id.name == "pchar" || id.name == "pansichar") &&
+            c.args.size() == 1) {
+          return builtin_pchar_type();
+        }
         if ((id.name == "succ" || id.name == "pred" || id.name == "upcase" ||
              id.name == "abs" || id.name == "sqr" ||
              id.name == "swapendian" || id.name == "beton" ||

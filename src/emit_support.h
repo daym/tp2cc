@@ -105,5 +105,7 @@ bool checked_pascal_shl_int64(int64_t a, const PrimitiveInfo* carrier,
 bool checked_pascal_shr_int64(int64_t a, const PrimitiveInfo* carrier,
                               int64_t shift, int64_t* out);
 bool tyname_is(const ast::TypeExpr* t, std::string_view expected);
+bool primitive_name_is_charish(std::string_view lowname);
+bool tyname_is_charish(const ast::TypeExpr* t);
 
 }  // namespace tp2cc

@@ -1743,10 +1743,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "::rt::tp2cc_reinterpret_copy<" + primitive_type_cxx(n) +
                    ">(" + arg0() + ")";
           }
-          if (n == "char") {
+          if (primitive_name_is_charish(n)) {
             return "::rt::p_chr(" + arg0() + ")";
           }
-          if (n == "pointer" || n == "pchar" || n == "ppchar") {
+          if (n == "pointer" || n == "pchar" || n == "pansichar" ||
+              n == "ppchar") {
             TyName cast_name;
             cast_name.name = n;
             std::string source =
@@ -1898,7 +1899,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             const TypeExpr* elem =
                 arr.element ? canonicalize_type(arr.element.get()) : nullptr;
             if (arr.dims.size() == 1 &&
-                (tyname_is(elem, "byte") || tyname_is(elem, "char"))) {
+                (tyname_is(elem, "byte") || tyname_is_charish(elem))) {
               // Array casts are value casts in expression context. Pascal
               // arrays are first-class values: assigning or passing one copies
               // the whole array, and there is no C-style array-to-pointer decay.
