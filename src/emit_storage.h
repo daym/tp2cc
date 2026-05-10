@@ -3,6 +3,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "ast.h"
 #include "emit_context.h"
@@ -36,6 +37,8 @@ struct EmitBytewiseStorage {
 struct EmitUntypedStorageIndexView {
   std::string elem_cxx;
   std::string ptr_cxx;
+  EmitUntypedStorageIndexView(std::string elem_cxx_in, std::string ptr_cxx_in)
+      : elem_cxx(std::move(elem_cxx_in)), ptr_cxx(std::move(ptr_cxx_in)) {}
 };
 
 struct EmitPackedAggregateFieldUse {
@@ -52,6 +55,9 @@ struct EmitAbsoluteTargetInfo {
   const ast::TypeExpr* type = nullptr;
   bool is_pointerish = false;
   bool is_const_storage = false;
+  static EmitAbsoluteTargetInfo untyped_param(std::string cxx_in) {
+    return EmitAbsoluteTargetInfo{std::move(cxx_in), nullptr, true, false};
+  }
 };
 
 struct EmitTypecastStorageView {
@@ -63,6 +69,22 @@ struct EmitTypecastStorageView {
   bool target_is_primitive = false;
   bool source_is_untyped_storage = false;
   bool pointee_view = false;
+  EmitTypecastStorageView(const ast::Expr* source_in,
+                          std::string source_cxx_in,
+                          std::string source_ptr_cxx_in,
+                          std::string target_cxx_in,
+                          const ast::TypeExpr* target_type_in,
+                          bool target_is_primitive_in,
+                          bool source_is_untyped_storage_in,
+                          bool pointee_view_in)
+      : source(source_in),
+        source_cxx(std::move(source_cxx_in)),
+        source_ptr_cxx(std::move(source_ptr_cxx_in)),
+        target_cxx(std::move(target_cxx_in)),
+        target_type(target_type_in),
+        target_is_primitive(target_is_primitive_in),
+        source_is_untyped_storage(source_is_untyped_storage_in),
+        pointee_view(pointee_view_in) {}
 };
 
 enum class EmitStorageAccess {

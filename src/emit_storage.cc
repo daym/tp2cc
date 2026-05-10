@@ -124,24 +124,24 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
   }
 
   const bool untyped_storage = expr_is_untyped_storage_ref(*source);
-  EmitTypecastStorageView view;
-  view.source = source;
-  view.source_cxx = expr_ops_.expr_to_cxx(*source);
-  view.target_cxx = target_cxx;
-  view.target_type = target_type;
-  view.target_is_primitive = target_is_primitive;
-  view.source_is_untyped_storage = untyped_storage;
-  if (untyped_storage) {
-    view.source_ptr_cxx = view.source_cxx;
-  } else if (auto storage = storage_designator(*source)) {
-    view.source_ptr_cxx = storage_designator_raw_address(*storage);
-  }
+  std::string source_cxx = expr_ops_.expr_to_cxx(*source);
+  std::string source_ptr_cxx =
+      [&]() -> std::string {
+        if (untyped_storage) return source_cxx;
+        if (auto storage = storage_designator(*source)) {
+          return storage_designator_raw_address(*storage);
+        }
+        return {};
+      }();
   // Pointee-view applies only to untyped-param storage (`procedure foo(var x)`
   // with `T(x) := y` meaning "write T at *x"). A typed pointer lvalue cast
   // like `ptaiprop(field) := y` is a storage alias of the slot itself;
   // emitting pointee-view there dereferences the slot's (often null) value.
-  view.pointee_view = untyped_storage;
-  return view;
+  return EmitTypecastStorageView(source, std::move(source_cxx),
+                                 std::move(source_ptr_cxx),
+                                 std::move(target_cxx), target_type,
+                                 target_is_primitive, untyped_storage,
+                                 untyped_storage);
 }
 
 std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
@@ -547,14 +547,14 @@ std::optional<EmitUntypedStorageIndexView> EmitStorage::untyped_storage_index_vi
   if (!types_.array_dim_bounds_to_cxx(*arr.dims[0], &lo, &size_expr)) {
     return std::nullopt;
   }
-  EmitUntypedStorageIndexView view;
-  view.elem_cxx = types_.type_to_cxx(*arr.element);
+  std::string elem_cxx = types_.type_to_cxx(*arr.element);
   const std::string index_cxx = expr_ops_.expr_to_cxx(*i.indices[0]);
   const std::string offset =
-      "((" + index_cxx + ") - (" + lo + ")) * sizeof(" + view.elem_cxx + ")";
-  view.ptr_cxx = "::rt::tp2cc_byte_offset(" +
-                 expr_ops_.expr_to_cxx(*cast.args[0]) + ", " + offset + ")";
-  return view;
+      "((" + index_cxx + ") - (" + lo + ")) * sizeof(" + elem_cxx + ")";
+  std::string ptr_cxx = "::rt::tp2cc_byte_offset(" +
+                        expr_ops_.expr_to_cxx(*cast.args[0]) + ", " + offset +
+                        ")";
+  return EmitUntypedStorageIndexView(std::move(elem_cxx), std::move(ptr_cxx));
 }
 
 bool EmitStorage::type_is_packed_record(const TypeExpr* t) {
@@ -985,12 +985,16 @@ std::string EmitStorage::reinterpret_ref_text(const std::string& ty_cxx,
 
 std::optional<EmitAbsoluteTargetInfo> EmitStorage::resolve_absolute_target(
     const VarDecl& vd) {
-  EmitAbsoluteTargetInfo info;
-  info.cxx = resolve_name_provider_.resolve_name(vd.absolute_target).cxx;
+  const std::string target_cxx =
+      resolve_name_provider_.resolve_name(vd.absolute_target).cxx;
+  auto target_info = [&](const TypeExpr* type,
+                         bool is_const_storage = false) {
+    return EmitAbsoluteTargetInfo{target_cxx, type, type_is_pointerish(type),
+                                  is_const_storage};
+  };
 
   if (scope_.local_untyped_params.count(vd.absolute_target)) {
-    info.is_pointerish = true;
-    return info;
+    return EmitAbsoluteTargetInfo::untyped_param(target_cxx);
   }
 
   auto lit = scope_.local_consts.find(vd.absolute_target);
@@ -1000,17 +1004,13 @@ std::optional<EmitAbsoluteTargetInfo> EmitStorage::resolve_absolute_target(
                              "absolute target must be a variable or typed const");
       return std::nullopt;
     }
-    info.type = lit->second->type.get();
-    info.is_pointerish = type_is_pointerish(info.type);
-    return info;
+    return target_info(lit->second->type.get());
   }
 
   auto tit = scope_.local_types.find(vd.absolute_target);
   if (tit != scope_.local_types.end()) {
-    info.type = tit->second;
-    info.is_pointerish = type_is_pointerish(info.type);
-    info.is_const_storage = scope_.local_const_params.count(vd.absolute_target) > 0;
-    return info;
+    return target_info(tit->second,
+                       scope_.local_const_params.count(vd.absolute_target) > 0);
   }
 
   ResolveResult rr = resolve_name_provider_.resolve_name(vd.absolute_target);
@@ -1019,16 +1019,12 @@ std::optional<EmitAbsoluteTargetInfo> EmitStorage::resolve_absolute_target(
     if (auto* f = registry_->lookup_class_field(scope_.current_class_name,
                                                 vd.absolute_target,
                                                 scope_.current_unit_name)) {
-      info.type = f->type.get();
-      info.is_pointerish = type_is_pointerish(info.type);
-      return info;
+      return target_info(f->type.get());
     }
   }
 
   if (const auto* v = analysis_.find_visible_unit_var(vd.absolute_target)) {
-    info.type = v->type.get();
-    info.is_pointerish = type_is_pointerish(info.type);
-    return info;
+    return target_info(v->type.get());
   }
 
   if (const auto* c = analysis_.find_visible_unit_const(vd.absolute_target)) {
@@ -1037,9 +1033,7 @@ std::optional<EmitAbsoluteTargetInfo> EmitStorage::resolve_absolute_target(
                              "absolute target must be a variable or typed const");
       return std::nullopt;
     }
-    info.type = c->type.get();
-    info.is_pointerish = type_is_pointerish(info.type);
-    return info;
+    return target_info(c->type.get());
   }
 
   expr_ops_.report_error(vd.loc,
