@@ -986,7 +986,7 @@ tp2cc resolves names using Pascal rules.  The order is:
 7. current class members
 8. current unit
 9. used units, searched from last to first
-10. runtime fallback for supported runtime names
+10. predefined ~System~ names
 
 Local declarations shadow imported declarations.  Instance fields and methods are also considered before unit-level imports while inside methods.
 
@@ -1017,6 +1017,188 @@ type
 #+end_src
 
 ~TChild = class(TBase);~ is a complete empty class body, equivalent to ~class(TBase) end~.  It is not a forward declaration.
+
+* Built-in units
+This chapter documents the units, types, variables, constants, and routines that tp2cc provides directly, with no corresponding Pascal source on the ~uses~ path.
+** System
+~System~ is implicitly available to every translated unit; the names below need no ~uses~ clause.
+In the table, ~S~ denotes any tp2cc-supported string value (typically ~String~, ~ShortString~, ~AnsiString~, or ~PChar~, depending on the overload).  ~var~ marks a parameter the routine writes back through.  Overload sets are collapsed into a single row.
+| Name | Interface | Use |
+| ~Assigned~ | ~Assigned(X): Boolean~ | Tests whether a pointer, method pointer, or dynamic array value is assigned. |
+| ~Odd~ | ~Odd(N): Boolean~ | Tests the low bit of an integer value. |
+| ~Ord~ | ~Ord(X): LongInt~ | Converts an ordinal value to its numeric ordinal. |
+| ~Chr~ | ~Chr(N): Char~ | Converts a byte-sized ordinal to a character. |
+| ~Hi~, ~Lo~ | ~Hi(X)~, ~Lo(X)~ | Returns the high or low half/byte of supported ordinal values. |
+| ~Abs~, ~Sqr~ | ~Abs(X)~, ~Sqr(X)~ | Absolute value and square. |
+| ~Sqrt~, ~Sin~, ~Cos~, ~Ln~, ~Exp~, ~ArcTan~ | one numeric argument, returns ~Double~ | Basic math wrappers. |
+| ~Round~, ~Trunc~, ~Int~, ~Frac~ | one real argument | Integer rounding/truncation and real integer/fractional parts. |
+| ~Pred~, ~Succ~ | ~Pred(X)~, ~Succ(X)~ | Previous or next ordinal value. |
+| ~Inc~, ~Dec~ | ~Inc(var X)~, ~Inc(var X, N)~, ~Dec(var X)~, ~Dec(var X, N)~ | Mutates an ordinal variable by one or by the supplied delta. |
+| ~Length~ | ~Length(S): LongInt~ | Length of a string, dynamic array, open array, or compatible runtime carrier. |
+| ~SetLength~ | ~SetLength(var S, N)~ or ~SetLength(var A, N)~ | Resizes a string or dynamic array. |
+| ~SetString~ | ~SetString(var S, P: PChar, Len: LongInt)~ | Sets a string from exactly ~Len~ bytes at ~P~; embedded NUL bytes are copied. |
+| ~Copy~ | ~Copy(S, Start, Count)~ | Copies a substring or dynamic array value. |
+| ~Delete~ | ~Delete(var S, Start, Count)~ | Removes characters from a string. |
+| ~Insert~ | ~Insert(Source, var Dest, Pos)~ | Inserts a character or string into a string. |
+| ~Pos~ | ~Pos(Needle, Haystack): LongInt~ | Finds a character or string in a string using Pascal one-based positions. |
+| ~UpCase~ | ~UpCase(C)~ or ~UpCase(S)~ | Uppercases one character, or uppercases the bytes of a string. |
+| ~Val~ | ~Val(S, var V, var Code)~ | Parses a string into an integer or real value and reports the error position in ~Code~. |
+| ~Str~ | ~Str(X, var S)~ | Formats an integer or real value into a string. |
+| ~IntToStr~ | ~IntToStr(N): ShortString~ | Formats an integer as a decimal string. |
+| ~StrToInt~ | ~StrToInt(S): LongInt~ | Parses a decimal or supported prefixed integer string. |
+| ~StringOfChar~ | ~StringOfChar(C, Count): AnsiString~ | Builds a string by repeating one character. |
+| ~Trim~ | ~Trim(S): AnsiString~ | Removes leading and trailing ASCII whitespace. |
+| ~StrLen~ | ~StrLen(P): LongInt~ | Length of a NUL-terminated character pointer or ansistring. |
+| ~StrPas~ | ~StrPas(P): ShortString~ | Converts a NUL-terminated character pointer to a short string. |
+| ~StrPCopy~ | ~StrPCopy(Dest, Source): PChar~ | Copies a Pascal string to a NUL-terminated character buffer. |
+| ~StrComp~ | ~StrComp(A, B): LongInt~ | Compares two NUL-terminated character pointers. |
+| ~StrRScan~ | ~StrRScan(P, C): PChar~ | Finds the last occurrence of character ~C~ in a NUL-terminated character pointer. |
+| ~StrNew~ | ~StrNew(P): PChar~ | Allocates a copy of a NUL-terminated character pointer. |
+| ~StrDispose~ | ~StrDispose(var P)~ | Frees a pointer allocated by ~StrNew~ and clears the caller's pointer. |
+| ~Write~, ~Writeln~ | ~Write([F,] Args...)~, ~Writeln([F,] Args...)~ | Writes values to stdout or to a ~Text~ file; ~Writeln~ appends a newline. |
+| ~Read~, ~ReadLn~ | ~ReadLn(F, var S)~ and no-file console forms | File line input into strings is implemented.  No-file console input is a stub: it is accepted and performs no input. |
+| ~Assign~ | ~Assign(var F, Name)~ | Associates a text, typed, or untyped file variable with a path. |
+| ~Reset~, ~Rewrite~, ~Append~, ~Close~ | file argument, optional record size on ~Reset~/~Rewrite~ | Opens, creates/appends, or closes supported file variables. |
+| ~Eof~, ~Eoln~ | ~Eof~ or ~Eof(F)~, ~Eoln~ or ~Eoln(F)~ | End-of-file and end-of-line tests for supported file use. |
+| ~IoResult~ | ~IoResult: LongInt~ | Returns and clears the last runtime I/O status. |
+| ~Flush~ | ~Flush(F)~ | Flushes a text file. |
+| ~Erase~, ~Rename~ | ~Erase(FOrPath)~, ~Rename(FOrPath, NewName)~ | Removes or renames a file by file variable or path where supported. |
+| ~BlockRead~, ~BlockWrite~ | ~BlockRead(F, var Buf, Count[, var Done])~, ~BlockWrite(F, Buf, Count[, var Done])~ | Byte-oriented block I/O. |
+| ~FilePos~, ~FileSize~, ~Seek~ | ~FilePos(F): LongInt~, ~FileSize(F): LongInt~, ~Seek(F, Pos)~ | File position, size, and seek for supported file carriers. |
+| ~SetTextBuf~ | ~SetTextBuf(F, Buf[, Size])~ | Stub: accepted as a no-op compatibility helper. |
+| ~FillChar~, ~FillByte~, ~FillWord~, ~FillDWord~ | ~Fill*(var Dest, Count, Value)~ | Writes repeated byte/word/dword values into caller storage. |
+| ~Move~ | ~Move(Source, var Dest, Count)~ | Byte-copy between caller storage locations. |
+| ~Initialize~ | ~Initialize(var X)~ | Value-initializes caller storage. |
+| ~IndexByte~, ~IndexWord~ | ~IndexByte(Data, Count, Needle): LongInt~ | Searches raw byte/word storage. |
+| ~CompareByte~, ~CompareChar~, ~CompareWord~ | ~Compare*(A, B, Count): LongInt~ | Compares raw byte/char/word storage. |
+| ~GetMem~ | ~GetMem(var P, Size)~ | Allocates heap storage into a pointer variable. |
+| ~AllocMem~ | ~AllocMem(Size): Pointer~ | Allocates zero-filled heap storage. |
+| ~FreeMem~ | ~FreeMem(P[, Size])~ | Frees heap storage; it does not clear the caller's pointer. |
+| ~ReallocMem~ | ~ReallocMem(var P, Size)~ | Resizes heap storage and updates the pointer variable. |
+| ~Dispose~ | ~Dispose(P)~ | Frees typed-pointer storage allocated by ~New~ or compatible runtime allocation. |
+| ~FreeAndNil~ | ~FreeAndNil(var Obj)~ | Calls ~Obj.Free~ for a class instance pointer and clears the pointer. |
+| ~ParamCount~, ~ParamStr~ | ~ParamCount: LongInt~, ~ParamStr(I): ShortString~ | Program argument count and argument lookup. |
+| ~Halt~, ~RunError~ | ~Halt([Code])~, ~RunError([Code])~ | Stops execution with an exit or runtime error code. |
+| ~Assert~ | ~Assert(Condition[, Message])~ | Raises a runtime assertion failure when the condition is false. |
+| ~MemAvail~, ~HeapAvail~, ~MaxAvail~ | no arguments, returns ~LongInt~ | Stub compatibility memory-availability functions; ~MemAvail~ returns a fixed large value. |
+| ~SwapVectors~ | no arguments | Stub: compatibility no-op. |
+| ~Dosexitcode~ | ~Dosexitcode: LongInt~ | Last process exit status recorded by Dos-style process helpers. |
+| ~Swap~ | ~Swap(X): LongInt~ or word-sized result | Byte-swaps 16-bit and 32-bit integer values. |
+| ~SwapEndian~ | ~SwapEndian(X)~ | Byte-swaps supported integer widths. |
+| ~BEToN~, ~LEToN~, ~NToBE~, ~NToLE~ | one integer argument | Endian conversion helpers. |
+| ~RorByte~, ~RorWord~, ~RorDWord~, ~RorQWord~ | ~Ror*(X[, Count])~ | Rotate right by one or by ~Count~. |
+| ~RolByte~, ~RolWord~, ~RolDWord~, ~RolQWord~ | ~Rol*(X[, Count])~ | Rotate left by one or by ~Count~. |
+| ~Include~, ~Exclude~ | ~Include(var SetValue, Elem)~, ~Exclude(var SetValue, Elem)~ | Adds or removes one element in a set. |
+| ~Prefetch~ | ~Prefetch(X)~ | Stub: accepted as a no-op compatibility intrinsic. |
+| ~GetExceptionMask~, ~SetExceptionMask~ | FPU exception-mask get/set | Runtime FPU exception mask helpers. |
+| ~Get8087CW~, ~Set8087CW~ | 8087 control-word get/set | Compatibility control-word helpers. |
+| ~HexStr~, ~OctStr~ | ~HexStr(X[, Digits])~, ~OctStr(X, Digits): ShortString~ | Formats integers in hexadecimal or octal. |
+| ~Date~, ~Time~, ~FileDateToDateTime~ | date/time value helpers | Date/time values used by SysUtils-compatible code. |
+| ~DecodeDate~, ~DecodeTime~, ~GetLocalTime~ | date/time decomposition procedures | Breaks runtime date/time values into fields. |
+| ~FileGetDate~, ~FileSetDate~, ~FileAge~, ~GetFileHandle~ | file timestamp/handle helpers | SysUtils-compatible file timestamp and handle operations. |
+| ~FileExists~, ~DeleteFile~, ~DirectoryExists~, ~RenameFile~ | path argument, boolean result | File and directory existence, removal, and rename helpers. |
+| ~ExtractFilePath~, ~ExtractFileDir~, ~ExtractFileName~, ~ExtractFileExt~ | path argument, returns ~AnsiString~ | Splits path strings. |
+| ~ChangeFileExt~, ~ExpandFileName~, ~IncludeTrailingPathDelimiter~ | path string helpers | Path normalization and extension/path delimiter helpers. |
+| ~GetEnvironmentVariable~ | ~GetEnvironmentVariable(Name): AnsiString~ | Reads an environment variable as a string. |
+| ~AnsiCompareFileName~, ~CompareText~ | ~(...A, B): LongInt~ | Case-insensitive string comparison used by file/path code. |
+| ~FindFirst~, ~FindNext~, ~FindClose~ | Dos search-record enumeration | Glob-backed file search for Dos-style directory scans. |
+| ~FSearch~, ~FSplit~, ~FExpand~ | Dos path-string helpers | Path splitting/expansion compatibility; ~FSearch~ is a stub and returns its name argument unchanged. |
+| ~GetFTime~, ~SetFTime~ | file timestamp compatibility procedures | Stub: accepted for compatibility; no timestamp is transferred. |
+| ~GetFAttr~ | ~GetFAttr(F, var Attr)~ | Reads a file attribute subset, currently the directory bit. |
+| ~MkDir~, ~RmDir~, ~GetDir~, ~ChDir~ | directory helpers | Directory creation/removal/current-directory helpers. |
+| ~GetDate~, ~GetTime~, ~PackTime~, ~UnpackTime~, ~EpochToLocal~ | Dos date/time procedures | Calendar/time conversion helpers for compiler-support code. |
+| ~GetEnv~ | ~GetEnv(Name): ShortString~ | Dos-style environment-variable lookup. |
+| ~Exec~ | ~Exec(Command, Params)~ | Runs a command and records Dos-style error/exit status. |
+| ~DiskSize~ | ~DiskSize(Drive): LongInt~ | Returns a positive current-filesystem size or -1 on failure. |
+| ~Chmod~, ~FpChmod~ | path and mode | Boolean chmod helper and POSIX-style chmod result helper. |
+| ~FStat~, ~FpFStat~ | path/file/handle and ~Stat~ record | File status subset used by compiler code. |
+| ~POpen~, ~PClose~ | text-file pipe helpers | Pipe open/close for command output where supported. |
+| ~ExecuteProcess~ | path plus command line or argument array | Runs a process and returns the exit status. |
+| ~Signal~, ~FpSignal~ | signal number and handler | Installs a signal handler through the C runtime signal API. |
+System implements these variables: ~DosError~, ~FileMode~, ~StdErr~, ~Output~, ~Input~, ~ExitProc~, ~ErrorAddr~, ~ExitCode~, and ~AllowDirectorySeparators~.
+System implements these constants: ~SigInt~, ~SigFpe~, ~SigSegv~, ~Pi~, ~MaxInt~, ~MaxLongInt~, ~ReadOnly~, ~Hidden~, ~Directory~, ~Archive~, ~FAReadOnly~, ~FAHidden~, ~FADirectory~, ~FAArchive~, ~AnyFile~, ~FAAnyFile~, ~fmShareDenyNone~, ~vtAnsiString~, ~varStrArg~, ~DirectorySeparator~, ~DriveSeparator~, and ~PathSeparator~.
+System implements these type names beyond the basic scalar/string/pointer types already described earlier: ~TObject~, ~TClass~, ~TMethod~, ~Currency~, ~DateTime~, ~TDateTime~, ~DirStr~, ~NameStr~, ~ExtStr~, ~PathStr~, ~ComStr~, ~HRESULT~, ~PAnsiString~, ~PCardinal~, ~PCurrency~, ~PDWord~, ~PInt64~, ~PPointer~, ~PQWord~, ~PShortString~, ~PtrInt~, ~PtrUInt~, ~SearchRec~, ~TSearchRec~, ~SignalHandler~, ~SizeInt~, ~SizeUInt~, ~Stat~, ~TFPUException~, ~TFPUExceptionMask~, and ~TSystemTime~.
+** SysUtils
+~SysUtils~ provides these names:
+| Name | Interface | Use |
+| ~Exception~ | class with ~Create(const Msg: String)~ and ~Message~ storage | Base exception class used by translated ~raise~ and ~try..except~ code. |
+| ~EExternal~, ~EIntError~, ~EIntOverflow~, ~ERangeError~, ~EDivByZero~ | exception classes | Exception classes thrown or caught by runtime checking helpers. |
+| ~EOSError~ | exception class with ~ErrorCode: LongInt~ | Exception class for code that catches or inspects OS errors. |
+| ~TDateTime~ | type alias | Date/time value, represented by the runtime as a floating value. |
+| ~TSystemTime~ | record alias | Year/month/day/hour/min/sec/millisecond fields for ~GetLocalTime~. |
+| ~HRESULT~ | integer alias | Windows-style result code type used by compiler support code. |
+| ~PAnsiString~, ~PDWord~, ~PQWord~, ~PShortString~ | pointer aliases | Pointer type aliases reached by translated compiler sources. |
+| ~ChangeFileExt(Path, Ext)~ | returns ~AnsiString~ | Replaces or adds a file extension. |
+| ~GetEnvironmentVariable(Name)~ | returns ~AnsiString~ | Reads an environment variable. |
+| ~ExpandFileName(Path)~ | returns ~AnsiString~ | Converts a path through the runtime expansion helper. |
+| ~ExecuteProcess(Path, CommandLine)~ | returns ~LongInt~ | Runs a child process and returns its exit status. |
+| ~GetLocalTime(var TSystemTime)~ | procedure | Fills local wall-clock time fields. |
+| ~DecodeTime(Value, var Hour, Minute, Second, Millisecond)~ | procedure | Splits a ~TDateTime~ time value. |
+| ~DecodeDate(Value, var Year, Month, Day)~ | procedure | Splits a ~TDateTime~ date value. |
+| ~FileDateToDateTime(FileDate)~ | returns ~TDateTime~ | Converts a packed file timestamp to a date/time value. |
+| ~Time~, ~Date~ | no-argument functions returning ~TDateTime~ | Current local time or date. |
+| ~FileExists(Name)~, ~DirectoryExists(Name)~ | return ~Boolean~ | Filesystem existence checks. |
+| ~Trim(S)~ | returns ~AnsiString~ | Strips leading and trailing ASCII whitespace. |
+| ~RenameFile(OldName, NewName)~ | returns ~Boolean~ | Renames a path. |
+| ~FileGetDate(Handle)~, ~FileSetDate(Handle, Age)~, ~FileAge(Name)~ | timestamp helpers | Reads or writes packed file timestamps where supported. |
+| ~GetFileHandle(F)~ | returns ~LongInt~ | Extracts the OS handle from a runtime file variable. |
+| ~IntToStr(N)~ | returns ~ShortString~ | Decimal integer formatting. |
+| ~StringOfChar(C, Count)~ | returns ~AnsiString~ | Builds a repeated-character string. |
+| ~CompareText(A, B)~, ~AnsiCompareFileName(A, B)~ | return ~LongInt~ | Case-insensitive text/file-name comparisons. |
+** Dos
+~Dos~ provides these names:
+| Name | Interface | Use |
+| ~DosError~ | global ~LongInt~ variable | Last Dos-style error code for search/process helpers. |
+| ~DosExitCode~ | function returning ~LongInt~ | Last child-process exit status recorded by ~Exec~ or process helpers. |
+| ~SearchRec~/~TSearchRec~ | record with ~Time~, ~Size~, ~Attr~, ~Name~ | Search state for ~FindFirst~ and ~FindNext~. |
+| ~DateTime~ | record with ~Year~, ~Month~, ~Day~, ~Hour~, ~Min~, ~Sec~ | Packed timestamp conversion record for ~PackTime~ and ~UnpackTime~. |
+| ~DirStr~, ~NameStr~, ~ExtStr~, ~PathStr~, ~ComStr~ | short-string aliases | Dos path component string types. |
+| ~ReadOnly~, ~Hidden~, ~SysFile~, ~VolumeID~, ~Directory~, ~Archive~, ~AnyFile~ | attribute constants | File attribute masks. |
+| ~FAReadOnly~, ~FAHidden~, ~FADirectory~, ~FAArchive~, ~FAAnyFile~ | attribute constants | File attribute masks using FPC-style names. |
+| ~FindFirst(Pattern, Attrs, var Rec)~ | returns ~LongInt~ | Starts a glob-backed file search and fills ~Rec~. |
+| ~FindNext(var Rec)~ | returns ~LongInt~ | Advances a search started by ~FindFirst~. |
+| ~FindClose(var Rec)~ | procedure | Clears runtime search state. |
+| ~FSearch(Name, Path)~ | returns ~ShortString~ | Stub compatibility helper; returns ~Name~ unchanged. |
+| ~FSplit(Input, var Dir, Name, Ext)~ | procedure | Splits a path into directory, base name, and extension strings. |
+| ~FExpand(S)~ | returns ~ShortString~ | Expands a path through the runtime helper. |
+| ~GetFAttr(F, var Attr)~ | procedure | Reads a supported attribute subset from a file variable. |
+| ~GetFTime(F, var Time)~, ~SetFTime(F, Time)~ | procedures | Stub: accepted for compatibility; no timestamp is transferred. |
+| ~MkDir(Path)~, ~RmDir(Path)~, ~ChDir(Path)~ | procedures | Directory creation, removal, and current-directory change. |
+| ~GetDir(Drive, var S)~ | procedure | Writes the current directory into a string. |
+| ~Erase(FOrPath)~, ~Rename(FOrPath, NewName)~ | procedures | Removes or renames a file. |
+| ~GetDate(var Year, Month, Day, DayOfWeek)~ | procedure | Reads local calendar date fields. |
+| ~GetTime(var Hour, Minute, Second[, Sec100OrMS])~ | procedure | Reads local time fields. |
+| ~PackTime(DateTime, var Packed)~ | procedure | Packs a Dos ~DateTime~ record into an integer timestamp. |
+| ~UnpackTime(Packed, var DateTime)~ | procedure | Unpacks an integer timestamp into a Dos ~DateTime~ record. |
+| ~EpochToLocal(Epoch, var Y, M, D, H, N, S)~ | procedure | Converts epoch seconds into local time fields. |
+| ~GetEnv(Name)~ | returns ~ShortString~ | Reads an environment variable. |
+| ~Exec(Command, Params)~ | procedure | Runs a child command and records ~DosError~ and ~DosExitCode~. |
+| ~DiskSize(Drive)~ | returns ~LongInt~ | Returns a positive size for the current filesystem, or -1 on failure. |
+| ~SwapVectors~ | procedure | Stub: compatibility no-op. |
+** Linux
+~Linux~ provides these names:
+| Name | Interface | Use |
+| ~Chmod(Path, Mode)~ | returns ~Boolean~ | Changes file permissions; returns true on success. |
+| ~FStat(Path, var Info)~, ~FStat(var F, var Info)~ | returns ~Boolean~ | Reads file status into a ~Stat~ record. |
+| ~GetEnv(Name)~ | returns ~PChar~ | Reads an environment variable as a NUL-terminated character pointer. |
+| ~Shell(Command)~ | returns ~LongInt~ | Runs ~Command~ through ~/bin/sh -c~ and returns the recorded process status. |
+| ~Signal(Sig, Handler)~ | returns ~SignalHandler~ | Installs a signal handler and returns the previous handler. |
+| ~POpen(var F, Command, Mode)~ | procedure | Opens a pipe for a ~Text~ file.  The generic ~File~ overload is a stub and does not open a pipe. |
+| ~PClose(var F)~ | returns ~LongInt~ | Closes a pipe-backed ~Text~ file and returns the process status.  The generic ~File~ overload is a stub returning 0. |
+** BaseUnix
+~BaseUnix~ provides these names:
+| Name | Interface | Use |
+| ~FpChmod(Path, Mode)~ | returns ~LongInt~ | POSIX-style chmod result: 0 on success, -1 on failure. |
+| ~FpFStat(Handle, var Info)~, ~FpFStat(var F, var Info)~ | returns ~LongInt~ | Reads file status into a ~Stat~ record; returns 0 on success for handle calls. |
+| ~FpGetEnv(Name)~ | returns ~PChar~ | Reads an environment variable as a NUL-terminated character pointer. |
+| ~FpSignal(Sig, Handler)~ | returns ~SignalHandler~ | Installs a signal handler and returns the previous handler. |
+** Unix
+~Unix~ provides these names:
+| Name | Interface | Use |
+| ~FpSystem(Command)~ | returns ~LongInt~ | Runs ~Command~ through the host shell and returns the recorded process status. |
+| ~POpen(var F, Command, Mode)~ | procedure | Opens a pipe for a ~Text~ file.  The generic ~File~ overload is a stub and does not open a pipe. |
+| ~PClose(var F)~ | returns ~LongInt~ | Closes a pipe-backed ~Text~ file and returns the process status.  The generic ~File~ overload is a stub returning 0. |
+The ~Stat~ record used by ~Linux~ and ~BaseUnix~ has exactly these fields: ~mtime~, ~st_mtime~, ~mode~, ~st_mode~, ~size~, and ~st_size~.
 
 * Known limitations worth remembering
 Some limitations are good to know:
