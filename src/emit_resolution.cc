@@ -486,13 +486,25 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
       return std::nullopt;
     }
   }
+  const Expr* method_base = member.base.get();
+  // Type-cast base like `t_obj(expr).method`: the cast target determines the
+  // method's owning class, but the receiver is still the cast argument.
+  if (cls.empty() && member.base->kind == Kind::Call) {
+    const auto& c = static_cast<const Call&>(*member.base);
+    if (c.args.size() == 1 && c.callee && c.callee->kind == Kind::Ident) {
+      cls = analysis_.deduce_class_alias(*member.base);
+      if (!cls.empty()) {
+        method_base = c.args[0].get();
+      }
+    }
+  }
   if (cls.empty()) cls = analysis_.deduce_class_alias(*member.base);
   if (cls.empty()) return std::nullopt;
 
   auto decl = pick_decl(cls, member.name);
   if (!decl) return std::nullopt;
   return MethodValueBinding::via_member(*decl, std::move(cls),
-                                        member.base.get());
+                                        method_base);
 }
 
 std::optional<ConvScore> EmitResolution::score_procedural_argument_conversion(
