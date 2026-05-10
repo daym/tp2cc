@@ -6792,6 +6792,51 @@ void test_overload_picks_empty_set_literal_against_typed_set_param() {
         contains(out.impl, "static_cast<bool>(true)"));
 }
 
+void test_overload_default_arg_through_inherited_field_receiver() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses base;\n"
+      "type\n"
+      "  tchild = class(texeoutput)\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tchild.run;\n"
+      "var s : tsection;\n"
+      "begin\n"
+      "  s := internaldata.createsection('.reloc', 0, [oso_data, oso_keep]);\n"
+      "end;\n"
+      "end.\n",
+      {{"base.pas",
+        "unit base;\n"
+        "interface\n"
+        "type\n"
+        "  topt = (oso_data, oso_keep);\n"
+        "  topts = set of topt;\n"
+        "  tkind = (sec_code, sec_data);\n"
+        "  tsection = class end;\n"
+        "  tobjdata = class\n"
+        "    function createsection(kind : tkind; name : shortstring = '') : tsection; overload;\n"
+        "    function createsection(name : shortstring; align : shortint;\n"
+        "      opts : topts; discard : boolean = true) : tsection; overload;\n"
+        "  end;\n"
+        "  texeoutput = class\n"
+        "  protected\n"
+        "    internaldata : tobjdata;\n"
+        "  end;\n"
+        "implementation\n"
+        "function tobjdata.createsection(kind : tkind; name : shortstring) : tsection;\n"
+        "begin createsection := nil; end;\n"
+        "function tobjdata.createsection(name : shortstring; align : shortint;\n"
+        "  opts : topts; discard : boolean) : tsection;\n"
+        "begin createsection := nil; end;\n"
+        "end.\n"}});
+  CHECK(contains(out.impl, "p_internaldata->p_createsection("));
+  CHECK(contains(out.impl, "::rt::tp2cc_Set<::p_base::t_topt>::from_list"));
+  CHECK(contains(out.impl, ", true)"));
+}
+
 void test_membership_in_empty_set_uses_shared_set_api() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -8716,6 +8761,7 @@ int main() {
   RUN_TEST(test_overload_resolves_through_with_block_bare_ident_call);
   RUN_TEST(test_overload_picks_string_concat_arg_against_string_param);
   RUN_TEST(test_overload_picks_empty_set_literal_against_typed_set_param);
+  RUN_TEST(test_overload_default_arg_through_inherited_field_receiver);
   RUN_TEST(test_membership_in_empty_set_uses_shared_set_api);
   RUN_TEST(test_set_for_in_lowers_to_ordered_membership_scan);
   RUN_TEST(test_type_for_in_lowers_to_ordinal_bounds_loop);

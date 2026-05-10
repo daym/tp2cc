@@ -293,10 +293,6 @@ void EmitCalls::collect_call_param_info(
     std::vector<const TypeExpr*>& param_types) {
   collect_builtin_helper_param_info(callee, untyped_arg, mutable_ref_arg,
                                     param_types);
-  const ProcDecl* decl = resolution_.resolve_call_decl(callee);
-  mark_call_param_info(decl, untyped_arg, mutable_ref_arg, param_types);
-  if (decl) return;
-
   const TypeExpr* callee_type = analysis_.deduce_type(callee);
   if (callee_type) callee_type = analysis_.canonicalize_type(callee_type);
   if (!callee_type || callee_type->kind != Kind::TyProcedural) return;
