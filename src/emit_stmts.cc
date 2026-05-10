@@ -610,30 +610,33 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
   stmt_ops_.emitln(text + ";");
 }
 
-std::string EmitStmts::case_selector_expr(const CaseStmt& cs, const Expr& e) {
-  const TypeExpr* t = overload_types_.type_for_overload(*cs.selector);
-  bool selector_is_charish = false;
-  if (t) {
-    t = analysis_.canonicalize_type(t);
-    selector_is_charish = tyname_is_charish(t);
-  }
+std::string EmitStmts::case_selector_expr(const Expr& e) {
   std::string text = stmt_ops_.expr_to_cxx(e);
-  return selector_is_charish ? "::rt::p_ord(" + text + ")" : text;
+  return text;
 }
 
-std::string EmitStmts::case_arm_condition(const CaseStmt& cs,
-                                          const std::string& selector,
-                                          const CaseArm& arm) {
+std::string EmitStmts::case_arm_condition(const ExprPtr& selector_expr,
+                                         const CaseArm& arm) {
+  auto emit_binary = [&](BinOp op, const ExprPtr& rhs) -> std::string {
+    std::string text =
+        stmt_ops_.expr_to_cxx(Binary(selector_expr->loc, op, selector_expr, rhs,
+                                     false));
+    if (text.empty()) return "false";
+    return text;
+  };
   std::vector<std::string> parts;
   for (const auto& lab : arm.labels) {
     if (lab->kind == Kind::Range) {
       const auto& r = static_cast<const Range&>(*lab);
-      parts.push_back("((" + selector + ") >= (" +
-                      case_selector_expr(cs, *r.lo) + ") && (" + selector +
-                      ") <= (" + case_selector_expr(cs, *r.hi) + "))");
+      auto lo = ExprPtr(const_cast<Expr*>(r.lo.get()),
+                        [](Expr*) {});
+      auto hi = ExprPtr(const_cast<Expr*>(r.hi.get()),
+                        [](Expr*) {});
+      parts.push_back("(" + emit_binary(BinOp::GtEq, lo) + " && " +
+                      emit_binary(BinOp::LtEq, hi) + ")");
     } else {
-      parts.push_back("((" + selector + ") == (" +
-                      case_selector_expr(cs, *lab) + "))");
+      auto rhs = ExprPtr(const_cast<Expr*>(lab.get()), [](Expr*) {});
+      parts.push_back(emit_binary(BinOp::Eq, rhs));
     }
   }
   if (parts.empty()) return "false";
@@ -643,16 +646,32 @@ std::string EmitStmts::case_arm_condition(const CaseStmt& cs,
 }
 
 void EmitStmts::emit_case_stmt(const CaseStmt& cs) {
-  const std::string selector =
-      "tp2cc_case_" + std::to_string(++case_stmt_counter_);
+  const std::string selector_id = "tp2cc_case_" +
+                                 std::to_string(++case_stmt_counter_);
+  std::string selector = selector_id;
+  while (scope_.local_scope.count(selector) > 0) {
+    selector += "_";
+  }
+
+  const TypeExpr* selector_type = analysis_.deduce_type(*cs.selector);
+  bool scope_inserted = scope_.local_scope.insert(selector).second;
+  bool type_inserted = false;
+  if (selector_type) {
+    scope_.local_types[selector] = selector_type;
+    type_inserted = true;
+  }
+
+  const ExprPtr selector_expr =
+      std::make_shared<Ident>(cs.loc, selector);
+
   stmt_ops_.emitln("{");
   stmt_ops_.indent();
-  stmt_ops_.emitln("auto " + selector + " = " +
-                   case_selector_expr(cs, *cs.selector) + ";");
+  stmt_ops_.emitln("auto " + mangle(selector) + " = " +
+                   case_selector_expr(*cs.selector) + ";");
   bool first = true;
   for (const auto& arm : cs.arms) {
     stmt_ops_.emitln(std::string(first ? "if" : "else if") + " (" +
-                     case_arm_condition(cs, selector, arm) + ") {");
+                     case_arm_condition(selector_expr, arm) + ") {");
     stmt_ops_.indent();
     if (arm.body) emit_stmt(*arm.body);
     stmt_ops_.dedent();
@@ -672,6 +691,13 @@ void EmitStmts::emit_case_stmt(const CaseStmt& cs) {
   }
   stmt_ops_.dedent();
   stmt_ops_.emitln("}");
+
+  if (type_inserted) {
+    scope_.local_types.erase(selector);
+  }
+  if (scope_inserted) {
+    scope_.local_scope.erase(selector);
+  }
 }
 
 void EmitStmts::emit_ordinal_for_body(const For& f, const std::string& var,

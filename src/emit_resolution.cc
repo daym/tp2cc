@@ -563,8 +563,17 @@ ConvScore EmitResolution::score_argument_conversion(
   // doesn't model this implicit narrowing, so the picker rejects e.g.
   // `foo(@s, ...)` against a `pointer` slot when there's a competing
   // overload. Score it Exact here so the picker sees the call as viable.
+  //
+  // `@expr` always yields a pointer in Pascal regardless of the operand
+  // shape, but deduce_type intentionally returns null for `@array` (the
+  // emitter chooses between pointer-to-array and pointer-to-first-element
+  // at the use site). Recognize the AddrOf shape directly so the picker
+  // doesn't reject `foo(@arr, ...)` against a pointer slot.
   if (canon_param && canon_param->kind == Kind::TyName &&
       static_cast<const TyName&>(*canon_param).name == "pointer") {
+    if (arg.kind == Kind::AddrOf) {
+      return {ConvRank::Exact, 0};
+    }
     if (const TypeExpr* arg_type =
             overload_types_.type_for_overload(arg)) {
       const TypeExpr* canon_arg = analysis_.canonicalize_type(arg_type);

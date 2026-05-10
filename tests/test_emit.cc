@@ -3954,12 +3954,12 @@ void test_case_statement_lowers_to_if_chain() {
       "end;\n"
       "end.\n");
   CHECK(!contains(out.impl, "switch ("));
-  CHECK(contains(out.impl, "auto tp2cc_case_1 = p_i;"));
-  CHECK(contains(out.impl, "if (((tp2cc_case_1) == (1))) {"));
+  CHECK(contains(out.impl, "auto p_tp2cc_case_1 = p_i;"));
+  CHECK(contains(out.impl, "if ((p_tp2cc_case_1 == 1)) {"));
   CHECK(contains(out.impl,
-                 "else if (((tp2cc_case_1) == (2)) || ((tp2cc_case_1) == (3))) {"));
+                 "else if ((p_tp2cc_case_1 == 2) || (p_tp2cc_case_1 == 3)) {"));
   CHECK(contains(out.impl,
-                 "else if (((tp2cc_case_1) >= (4) && (tp2cc_case_1) <= (6))) {"));
+                 "else if (((p_tp2cc_case_1 >= 4) && (p_tp2cc_case_1 <= 6))) {"));
   CHECK(contains(out.impl, "else {"));
 }
 
@@ -3980,10 +3980,199 @@ void test_string_case_statement_lowers_to_if_chain() {
       "end;\n"
       "end.\n");
   CHECK(!contains(out.impl, "switch ("));
-  CHECK(contains(out.impl, "auto tp2cc_case_1 = p_s;"));
-  CHECK(contains(out.impl, "if (((tp2cc_case_1) == ("));
-  CHECK(contains(out.impl, "else if (((tp2cc_case_1) == ("));
-  CHECK(contains(out.impl, "|| ((tp2cc_case_1) == ("));
+  CHECK(contains(out.impl, "auto p_tp2cc_case_1 = p_s;"));
+  CHECK(!contains(out.impl, "p_ord("));
+  CHECK(contains(
+      out.impl,
+      "if ((::rt::tp2cc_string_compare(p_tp2cc_case_1, ::rt::tp2cc_shortstring_literal<255>("));
+  CHECK(contains(out.impl,
+                 "== 0)) {"));
+  CHECK(contains(
+      out.impl,
+      "else if ((::rt::tp2cc_string_compare(p_tp2cc_case_1, ::rt::tp2cc_shortstring_literal<255>("));
+  CHECK(contains(out.impl, "|| (::rt::tp2cc_string_compare(p_tp2cc_case_1,"));
+}
+
+void test_string_case_statement_with_char_label_uses_string_compare() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo(s : string; var i : longint);\n"
+      "implementation\n"
+      "procedure demo(s : string; var i : longint);\n"
+      "begin\n"
+      "  case s of\n"
+      "    'a' : i := 1;\n"
+      "  else\n"
+      "    i := 0;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "auto p_tp2cc_case_1 = p_s;"));
+  CHECK(!contains(out.impl, "p_ord("));
+  CHECK(contains(out.impl,
+                 "if ((::rt::tp2cc_string_compare(p_tp2cc_case_1, ::rt::tp2cc_shortstring_of<255>(::rt::tp2cc_char_of('a'))) == 0)) {"));
+}
+
+void test_string_case_statement_with_upcase_selector() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo(s : string; var i : longint);\n"
+      "implementation\n"
+      "procedure demo(s : string; var i : longint);\n"
+      "function to_upper(s: string): string;\n"
+      "begin\n"
+      "  to_upper := s;\n"
+      "end;\n"
+      "begin\n"
+      "  case to_upper(s) of\n"
+      "    'CS': i := 1;\n"
+      "    'DS', 'ES': i := 2;\n"
+      "  else\n"
+      "    i := 0;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(!contains(out.impl, "switch ("));
+  CHECK(!contains(out.impl, "p_ord("));
+  CHECK(contains(out.impl, "::rt::tp2cc_string_compare"));
+  CHECK(contains(
+      out.impl,
+      "if ((::rt::tp2cc_string_compare(p_tp2cc_case_1,"));
+  CHECK(contains(
+      out.impl,
+      "else if ((::rt::tp2cc_string_compare(p_tp2cc_case_1,"));
+}
+
+void test_string_case_statement_with_builtin_upcase_selector() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo(s : string; var i : longint);\n"
+      "implementation\n"
+      "procedure demo(s : string; var i : longint);\n"
+      "begin\n"
+      "  case UpCase(s) of\n"
+      "    'CS': i := 1;\n"
+      "    'DS', 'ES': i := 2;\n"
+      "  else\n"
+      "    i := 0;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(!contains(out.impl, "switch ("));
+  CHECK(!contains(out.impl, "p_ord("));
+  CHECK(contains(out.impl, "auto p_tp2cc_case_1 = ::rt::p_upcase(p_s);"));
+  CHECK(contains(
+      out.impl,
+      "if ((::rt::tp2cc_string_compare(p_tp2cc_case_1,"));
+  CHECK(contains(
+      out.impl,
+      "else if ((::rt::tp2cc_string_compare(p_tp2cc_case_1,"));
+}
+
+void test_char_case_statement_uses_direct_comparison() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tchar = char;\n"
+      "  tcallback = procedure(p: tchar; arg: pointer) of object;\n"
+      "  tlist = class\n"
+      "    procedure foreachcall(cb : tcallback; arg : pointer);\n"
+      "  end;\n"
+      "  thost = class\n"
+      "    ch : tchar;\n"
+      "    list : tlist;\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tlist.foreachcall(cb : tcallback; arg : pointer); begin end;\n"
+      "procedure thost.run;\n"
+      "var c : tchar;\n"
+      "begin\n"
+      "  c := 'a';\n"
+      "  case ch of\n"
+      "    'a' : c := 'b';\n"
+      "    'b', 'c' : c := 'd';\n"
+      "  else\n"
+      "    c := 'z';\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(!contains(out.impl, "p_ord("));
+  CHECK(contains(out.impl, "auto p_tp2cc_case_1 = p_ch;"));
+  CHECK(contains(out.impl,
+                 "if ((p_tp2cc_case_1 == ::rt::tp2cc_char_of('a'))) {"));
+  CHECK(contains(out.impl, "else if ((p_tp2cc_case_1 == ::rt::tp2cc_char_of('b')) || (p_tp2cc_case_1 == ::rt::tp2cc_char_of('c'))) {"));
+}
+
+void test_method_value_typecast_base_uses_method_code_binding() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tobject = class end;\n"
+      "  tcallback = procedure(p:tobject; arg:pointer) of object;\n"
+      "  tlist = class\n"
+      "    procedure foreachcall(cb : tcallback; arg : pointer);\n"
+      "  end;\n"
+      "  tbase = class\n"
+      "  end;\n"
+      "  tcasted = class(tbase)\n"
+      "    procedure handler(p:tobject; arg:pointer);\n"
+      "  end;\n"
+      "  thost = class\n"
+      "    list : tlist;\n"
+      "    base : tbase;\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tlist.foreachcall(cb : tcallback; arg : pointer); begin end;\n"
+      "procedure tcasted.handler(p:tobject; arg:pointer); begin end;\n"
+      "procedure thost.run;\n"
+      "begin\n"
+      "  list.foreachcall(@tcasted(base).handler, nil);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "tp2cc_method_code"));
+  CHECK(!contains(out.impl, "tp2cc_byte_offset"));
+}
+
+void test_method_value_cast_base_field_expression() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tobject = class end;\n"
+      "  tcallback = procedure(p:tobject; arg:pointer) of object;\n"
+      "  tstoredsymtable = class\n"
+      "    procedure testfordefaultproperty(p:tobject; arg:pointer);\n"
+      "  end;\n"
+      "  tlist = class\n"
+      "    procedure foreachcall(cb : tcallback; arg : pointer);\n"
+      "  end;\n"
+      "  thelp = class\n"
+      "    symtable : tstoredsymtable;\n"
+      "  end;\n"
+      "var\n"
+      "  helperpd : thelp;\n"
+      "implementation\n"
+      "procedure tlist.foreachcall(cb : tcallback; arg : pointer); begin end;\n"
+      "procedure tstoredsymtable.testfordefaultproperty(p:tobject; arg:pointer); begin end;\n"
+      "procedure demo;\n"
+      "var\n"
+      "  list : tlist;\n"
+      "  host : thelp;\n"
+      "begin\n"
+      "  list.foreachcall(@tstoredsymtable(host.symtable).testfordefaultproperty, nil);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_foreachcall(t_tcallback(::rt::tp2cc_method_code"));
+  CHECK(contains(out.impl, "tp2cc_method_code"));
+  CHECK(contains(out.impl, "(void*)(p_host->p_symtable)"));
+  CHECK(!contains(out.impl, "tp2cc_byte_offset"));
 }
 
 void test_const_object_param_uses_mutable_ref() {
@@ -8691,6 +8880,10 @@ int main() {
   RUN_TEST(test_for_loop_uses_resolved_global_control_var);
   RUN_TEST(test_case_statement_lowers_to_if_chain);
   RUN_TEST(test_string_case_statement_lowers_to_if_chain);
+  RUN_TEST(test_string_case_statement_with_char_label_uses_string_compare);
+  RUN_TEST(test_string_case_statement_with_upcase_selector);
+  RUN_TEST(test_string_case_statement_with_builtin_upcase_selector);
+  RUN_TEST(test_char_case_statement_uses_direct_comparison);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
   RUN_TEST(test_parameterless_procvar_stmt_autocalls);
   RUN_TEST(test_direct_procvar_var_decl_uses_named_function_pointer_syntax);
@@ -8804,6 +8997,8 @@ int main() {
   RUN_TEST(test_overload_default_arg_extends_arity_disambiguates_cleanly);
   RUN_TEST(test_overload_picks_method_callback_for_current_method_address);
   RUN_TEST(test_class_field_shadows_unit_name_in_member_call);
+  RUN_TEST(test_method_value_typecast_base_uses_method_code_binding);
+  RUN_TEST(test_method_value_cast_base_field_expression);
   RUN_TEST(test_record_field_named_like_type_keeps_pascal_type_lookup);
   RUN_TEST(test_member_base_local_record_shadows_same_named_type);
   RUN_TEST(test_member_base_local_class_shadows_same_named_type);
