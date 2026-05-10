@@ -241,10 +241,6 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       r.kind = ResolvedKind::ClassField;
       return r;
     }
-    // Inline anonymous enum used as a class-field type contributes its
-    // members to the enclosing class scope. C++ resolves the bare name
-    // through the enclosing-class scope at the use site, so we emit
-    // unqualified.
     if (registry_->class_has_enum_member(scope_.current_class_name, name,
                                          scope_.current_unit_name)) {
       r.cxx = mangle(name);

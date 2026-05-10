@@ -4206,10 +4206,6 @@ void test_set_range_literal_uses_integer_ordinal_loop() {
 }
 
 void test_local_var_inline_anon_enum_resolves_members() {
-  // ncgrtti.pas declares `mode:(lookup,search);` as an inline anonymous
-  // enum on a function-local var. Without registering the enum's
-  // members in the proc's local scope, bare references to `lookup`
-  // fall through resolve_name to the unknown-fallback `::rt::p_lookup`.
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -4224,6 +4220,50 @@ void test_local_var_inline_anon_enum_resolves_members() {
       "end.\n");
   CHECK(!contains(out.impl, "::rt::p_lookup"));
   CHECK(contains(out.impl, "p_mode = p_lookup"));
+}
+
+void test_set_of_inline_enum_uses_named_carrier() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tflags = set of (red, green, blue);\n"
+      "var flags : tflags;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "begin\n"
+      "  flags := [red, blue];\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "enum t_tflags_enum0 :"));
+  CHECK(contains(out.header,
+                 "using t_tflags = ::rt::tp2cc_Set<t_tflags_enum0>;"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_Set<t_tflags_enum0>::from_list({p_red, p_blue})"));
+  CHECK(!contains(out.header, "::rt::tp2cc_Set<enum"));
+}
+
+void test_record_field_inline_enum_uses_unit_carrier() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    state : (idle, busy);\n"
+      "  end;\n"
+      "var r : trec;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "begin\n"
+      "  r.state := busy;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "enum t_trec_enum0 :"));
+  CHECK(contains(out.header, "t_trec_enum0 p_state;"));
+  CHECK(contains(out.impl, "p_r.p_state = p_busy;"));
+  CHECK(!contains(out.impl, "::rt::p_busy"));
 }
 
 void test_unresolved_free_identifier_reports_error_without_rt_fallback() {
@@ -5752,12 +5792,6 @@ void test_class_identifier_value_lowers_to_metaclass_descriptor() {
 }
 
 void test_inline_anonymous_enum_class_field_resolves_members() {
-  // `libctype : (libc5, glibc2, glibc21, uclibc);` declared as a class
-  // field type makes the four constants visible in the enclosing class
-  // scope. The emitter lowers the field type to a real C++ inline enum
-  // so the constants are accessible there, and `class_has_enum_member`
-  // makes the resolver emit them unqualified rather than falling
-  // through to the `::rt::p_<name>` unknown-fallback.
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -5772,12 +5806,10 @@ void test_inline_anonymous_enum_class_field_resolves_members() {
       "  libctype := glibc21;\n"
       "end;\n"
       "end.\n");
-  // Field type lowered to an inline enum, NOT stubbed as `int32_t`.
-  CHECK(contains(out.header, "enum : "));
+  CHECK(contains(out.header, "enum t_tlinker_enum0 :"));
+  CHECK(contains(out.header, "t_tlinker_enum0 p_libctype;"));
   CHECK(contains(out.header, "p_glibc21"));
   CHECK(!contains(out.header, "int32_t p_libctype;"));
-  // Bare `glibc21` in the method body resolves unqualified, not
-  // `::rt::p_glibc21`.
   CHECK(contains(out.impl, "p_libctype = p_glibc21;"));
   CHECK(!contains(out.impl, "::rt::p_glibc21"));
 }
@@ -7051,13 +7083,7 @@ void test_property_read_returning_class_then_default_index_chains_through_getter
   CHECK(!contains(out.impl, "p_o->p_inner["));
 }
 
-void test_inline_anon_enum_in_var_decl_bleeds_members_into_unit_scope() {
-  // Pascal: `var x : (a, b, c);` is an inline anonymous enum at a
-  // var-decl position. fpc accepts this and the enum members `a`, `b`,
-  // `c` are visible by bare name in the enclosing scope. Without
-  // registering them in the unit's enum-member set, the resolver
-  // treats them as unknown identifiers and falls through to a
-  // `::rt::p_a` prefix that the C++ compiler then rejects.
+void test_inline_anon_enum_in_var_decl_members_resolve_in_unit_scope() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -7070,11 +7096,70 @@ void test_inline_anon_enum_in_var_decl_bleeds_members_into_unit_scope() {
       "  if x = beta then ;\n"
       "end;\n"
       "end.\n");
-  // Bare name resolves through the current unit's `using namespace`.
   CHECK(contains(out.impl, "p_x = p_alpha"));
   CHECK(contains(out.impl, "(p_x == p_beta)"));
   CHECK(!contains(out.impl, "::rt::p_alpha"));
   CHECK(!contains(out.impl, "::rt::p_beta"));
+}
+
+void test_private_enum_type_name_prefers_current_unit() {
+  auto out = compile_snippet_with_registry(
+      "unit b;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "uses a;\n"
+      "type tasmtoken = (b0, b1);\n"
+      "var current : tasmtoken;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  current := b0;\n"
+      "end;\n"
+      "end.\n",
+      {{"a.pas",
+        "unit a;\n"
+        "interface\n"
+        "procedure touch;\n"
+        "implementation\n"
+        "type tasmtoken = (a0, a1);\n"
+        "var current : tasmtoken;\n"
+        "procedure touch;\n"
+        "begin\n"
+        "  current := a0;\n"
+        "end;\n"
+        "end.\n"}});
+  CHECK(contains(out.impl, "t_tasmtoken p_current;"));
+  CHECK(contains(out.impl, "p_current = p_b0;"));
+  CHECK(!contains(out.impl, "::p_a::t_tasmtoken"));
+}
+
+void test_inline_enum_labels_export_from_interface_field_types() {
+  auto out = compile_snippet_with_registry(
+      "program b;\n"
+      "uses a;\n"
+      "var r : TRec;\n"
+      "    x : TFoo;\n"
+      "begin\n"
+      "  r.state := busy;\n"
+      "  x := nil;\n"
+      "  x.f := cb;\n"
+      "end.\n",
+      {{"a.pas",
+        "unit a;\n"
+        "interface\n"
+        "type\n"
+        "  TRec = record\n"
+        "    state : (idle, busy);\n"
+        "  end;\n"
+        "  TFoo = class\n"
+        "    f : (ca, cb);\n"
+        "  end;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.impl, "p_r.p_state = ::p_a::p_busy;"));
+  CHECK(contains(out.impl, "p_x->p_f = ::p_a::p_cb;"));
+  CHECK(!contains(out.impl, "::rt::p_busy"));
+  CHECK(!contains(out.impl, "::rt::p_cb"));
 }
 
 void test_inherited_call_routes_through_pascal_picker() {
@@ -8325,6 +8410,8 @@ int main() {
   RUN_TEST(test_compatible_set_actual_stays_viable_in_overload_resolution);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
   RUN_TEST(test_local_var_inline_anon_enum_resolves_members);
+  RUN_TEST(test_set_of_inline_enum_uses_named_carrier);
+  RUN_TEST(test_record_field_inline_enum_uses_unit_carrier);
   RUN_TEST(test_unresolved_free_identifier_reports_error_without_rt_fallback);
   RUN_TEST(test_runtime_math_surface_resolves_explicitly);
   RUN_TEST(test_runtime_endian_helpers_resolve_explicitly);
@@ -8442,7 +8529,9 @@ int main() {
   RUN_TEST(test_addr_of_untyped_param_keeps_pointer_slot_semantics);
   RUN_TEST(test_addr_of_member_assignment_to_typed_pointer_slot_gets_explicit_cast);
   RUN_TEST(test_pointer_function_slot_assignment_uses_funptr_helpers);
-  RUN_TEST(test_inline_anon_enum_in_var_decl_bleeds_members_into_unit_scope);
+  RUN_TEST(test_inline_anon_enum_in_var_decl_members_resolve_in_unit_scope);
+  RUN_TEST(test_private_enum_type_name_prefers_current_unit);
+  RUN_TEST(test_inline_enum_labels_export_from_interface_field_types);
   RUN_TEST(test_inherited_call_routes_through_pascal_picker);
   RUN_TEST(test_inherited_exception_create_lowers_as_constructor_call);
   RUN_TEST(test_recursive_call_var_param_gets_param_info_for_reinterpret_ref);

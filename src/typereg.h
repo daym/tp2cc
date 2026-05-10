@@ -106,12 +106,9 @@ struct ClassInfo {
   // use `lookup_class_methods`.
   std::unordered_map<std::string, std::vector<MethodSig>> methods;
   std::unordered_map<std::string, PropertyInfo> properties;
-  // Names of enum constants contributed by inline anonymous enum types
-  // used as class field types (e.g. `libctype : (libc5, glibc2, ...);`).
-  // Pascal exposes those constants in the enclosing class scope; member
-  // bodies that reference them by bare identifier resolve through this
-  // set so the emitter does not fall through to an `::rt::p_<name>`
-  // unknown-fallback.
+  // Bare enum labels from class field types are visible while emitting member
+  // bodies. Keep the labels here so class and inherited-class lookup can
+  // resolve them before ordinary unit lookup.
   std::unordered_set<std::string> enum_members;
   std::string default_property_name;
 };
@@ -134,6 +131,8 @@ struct RecordInfo {
 struct EnumInfoReg {
   std::string name;
   std::string defining_unit;
+  const ast::TyEnum* type = nullptr;
+  std::string cxx_name;
   std::vector<std::string> members;      // lowercased
 };
 
@@ -289,10 +288,12 @@ struct TypeRegistry {
   std::unordered_map<std::string, InterfaceInfo> interfaces;
   std::unordered_map<std::string, RecordInfo> records;
   std::unordered_map<std::string, EnumInfoReg> enums;
+  std::unordered_map<const ast::TyEnum*, std::string> enum_type_names;
   std::unordered_map<std::string, AliasInfo> aliases;   // includes pointer aliases
 
   // Fill from all parsed UnitNodes.
   void build(const std::vector<const ast::UnitNode*>& units);
+  const EnumInfoReg* enum_info_for_type(const ast::TyEnum* type) const;
 
   const ClassInfo* lookup_class(std::string_view name,
                                 std::string_view current_unit) const;
@@ -323,8 +324,8 @@ struct TypeRegistry {
       const std::string& class_name, const std::string& member,
       std::string_view current_unit) const;
 
-  // True if `member` is a member of an inline anonymous enum used as
-  // a field type on `class_name` (or any of its ancestors).
+  // Class member bodies may resolve inherited field-type enum labels before
+  // unit-level lookup; this cache follows the class inheritance chain.
   bool class_has_enum_member(
       const std::string& class_name, const std::string& member,
       std::string_view current_unit) const;
@@ -352,5 +353,16 @@ struct TypeRegistry {
   const FieldInfo* lookup_record_field(
       const std::string& record_name, const std::string& member) const;
 };
+
+// A Pascal enum type contributes both labels for name lookup and a C++ carrier
+// type. The enum syntax can be nested inside set, array, record, and object
+// types, so registry and emitter setup walk the whole TypeExpr instead of
+// checking only the top-level type node.
+void collect_enum_types(const ast::TypeExpr& t,
+                        std::vector<const ast::TyEnum*>& out);
+void register_enum_types_for_owner(
+    std::unordered_map<std::string, const ast::TyEnum*>& out,
+    const ast::TypeExpr* type, std::string_view owner_name,
+    const ast::TyEnum* named_top_level = nullptr);
 
 }  // namespace tp2cc

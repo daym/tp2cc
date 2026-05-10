@@ -349,7 +349,8 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
   }
   if (dim->kind != Kind::TyName) return false;
   const auto& tn = static_cast<const TyName&>(*dim);
-  auto leit = scope_.local_enums.find(tn.name);
+  const std::string type_name = ascii_lower(tn.name);
+  auto leit = scope_.local_enums.find(type_name);
   if (leit != scope_.local_enums.end()) {
     if (!leit->second->members.empty() &&
         enum_has_explicit_values(*leit->second)) {
@@ -363,7 +364,7 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
     return true;
   }
   if (registry_) {
-    auto eit = registry_->enums.find(tn.name);
+    auto eit = registry_->enums.find(type_name);
     if (eit != registry_->enums.end()) {
       if (!eit->second.members.empty()) {
         std::string prefix;
@@ -455,7 +456,7 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
         info->defining_unit != scope_.current_unit_name) {
       prefix = unit_namespace_prefix(info->defining_unit);
     }
-    return prefix + type_mangle(info->name);
+    return prefix + info->cxx_name;
   };
 
   auto enum_type_for_type_name = [&](std::string_view name) -> std::string {
@@ -638,10 +639,31 @@ std::string EmitTypes::set_type_to_cxx(const TySet& s) {
   return "::rt::tp2cc_Set<" + type_to_cxx(*s.element) + ">";
 }
 
+std::optional<std::string> EmitTypes::enum_carrier_type_to_cxx(
+    const TyEnum& e) {
+  for (const auto& [name, type] : scope_.local_enums) {
+    if (type == &e) return type_mangle(name);
+  }
+  if (!registry_) return std::nullopt;
+  const EnumInfoReg* info = registry_->enum_info_for_type(&e);
+  if (!info || info->cxx_name.empty()) return std::nullopt;
+  if (info->defining_unit == "__rt__") {
+    if (std::string rt = runtime_named_type_cxx(info->name); !rt.empty()) {
+      return rt;
+    }
+    return std::string("::rt::") + info->cxx_name;
+  }
+  std::string prefix;
+  if (!info->defining_unit.empty() &&
+      info->defining_unit != scope_.current_unit_name) {
+    prefix = unit_namespace_prefix(info->defining_unit);
+  }
+  return prefix + info->cxx_name;
+}
+
 std::string EmitTypes::enum_type_to_cxx(const TyEnum& e,
                                         const std::string&) {
-  // Inline anonymous enums are emitted as inline anonymous C++ enums so the
-  // members stay usable in the enclosing scope.
+  if (auto carrier = enum_carrier_type_to_cxx(e)) return *carrier;
   if (e.members.empty()) return "int32_t";
   std::string out = "enum : ";
   out += enum_underlying_type_to_cxx(e);
@@ -966,7 +988,7 @@ std::string EmitTypes::low_high_expr_for_named_type(std::string_view name,
     return {};
   }
 
-  if (scope_.local_enums.count(std::string(name))) {
+  if (scope_.local_enums.count(ascii_lower(std::string(name)))) {
     return enum_bound_name(name, want_low ? "low" : "high");
   }
   if (registry_) {

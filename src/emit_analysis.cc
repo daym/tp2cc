@@ -840,14 +840,12 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       -> const TypeExpr* {
     const std::string unit_low = ascii_lower(unit_name);
     const std::string member_low = ascii_lower(member_name);
-    for (const auto& [enum_name, en] : registry_->enums) {
+    for (const auto& entry : registry_->enums) {
+      const auto& en = entry.second;
       if (en.defining_unit != unit_low) continue;
       for (const auto& member : en.members) {
         if (member != member_low) continue;
-        if (unit_low == scope_.current_unit_name) {
-          return named_pascal_type(enum_name);
-        }
-        return named_pascal_type(unit_low + "." + enum_name);
+        return en.type;
       }
     }
     return nullptr;

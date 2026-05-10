@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "emit_support.h"
+#include "typereg.h"
 
 namespace tp2cc {
 
@@ -226,11 +227,18 @@ void EmitUnits::seed_unit_type_scope(const std::vector<DeclPtr>& decls) {
     const auto& td = static_cast<const TypeDecl&>(*d);
     if (!td.type) continue;
     if (td.type->kind == Kind::TyEnum) {
-      scope_.local_enums[td.name] = static_cast<const TyEnum*>(td.type.get());
+      register_enum_types_for_owner(
+          scope_.local_enums, td.type.get(), td.name,
+          static_cast<const TyEnum*>(td.type.get()));
     } else if (td.type->kind != Kind::TyRecord &&
                td.type->kind != Kind::TyObject &&
                td.type->kind != Kind::TyInterface) {
       scope_.local_type_aliases_scoped[td.name] = td.type.get();
+      register_enum_types_for_owner(scope_.local_enums, td.type.get(),
+                                    td.name);
+    } else {
+      register_enum_types_for_owner(scope_.local_enums, td.type.get(),
+                                    td.name);
     }
   }
 }

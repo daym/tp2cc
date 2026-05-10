@@ -77,6 +77,11 @@ class EmitDecls {
       std::string_view class_name);
   std::optional<MetaclassCallableImpl> find_metaclass_callable_impl(
       std::string_view concrete_class, const MetaclassCallable& target);
+  void emit_enum_carrier(const ast::TyEnum& te, std::string_view cxx_name,
+                         std::string_view bound_name);
+  void emit_enum_carrier_decls(const ast::TypeExpr* t,
+                               const ast::TyEnum* skip = nullptr);
+  bool should_emit_var_type_helpers(const ast::VarDecl& vd, bool in_header);
 
   const TypeRegistry* registry_;
   ScopeStateView& scope_;

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <optional>
 #include <stdexcept>
+#include <unordered_set>
 
 #include "diag.h"
 #include "emit_support.h"
@@ -10,6 +11,117 @@
 namespace tp2cc {
 
 using namespace ast;
+
+void collect_enum_types(const TypeExpr& t,
+                        std::vector<const TyEnum*>& out) {
+  switch (t.kind) {
+    case Kind::TyEnum:
+      out.push_back(&static_cast<const TyEnum&>(t));
+      return;
+    case Kind::TyPointer:
+      if (static_cast<const TyPointer&>(t).target) {
+        collect_enum_types(*static_cast<const TyPointer&>(t).target, out);
+      }
+      return;
+    case Kind::TyArray: {
+      const auto& a = static_cast<const TyArray&>(t);
+      for (const auto& d : a.dims)
+        if (d) collect_enum_types(*d, out);
+      if (a.element) collect_enum_types(*a.element, out);
+      return;
+    }
+    case Kind::TySet:
+      if (static_cast<const TySet&>(t).element) {
+        collect_enum_types(*static_cast<const TySet&>(t).element, out);
+      }
+      return;
+    case Kind::TyFile:
+      if (static_cast<const TyFile&>(t).element) {
+        collect_enum_types(*static_cast<const TyFile&>(t).element, out);
+      }
+      return;
+    case Kind::TyRecord: {
+      const auto& r = static_cast<const TyRecord&>(t);
+      for (const auto& f : r.fields)
+        if (f.type) collect_enum_types(*f.type, out);
+      if (r.variant_tag_type) collect_enum_types(*r.variant_tag_type, out);
+      for (const auto& vc : r.variant_cases)
+        for (const auto& f : vc.fields)
+          if (f.type) collect_enum_types(*f.type, out);
+      return;
+    }
+    case Kind::TyObject: {
+      const auto& o = static_cast<const TyObject&>(t);
+      for (const auto& m : o.members) {
+        if (m.kind == ObjectMemberKind::Field && m.field_type) {
+          collect_enum_types(*m.field_type, out);
+        } else if (m.kind == ObjectMemberKind::Method && m.method) {
+          if (m.method->return_type) {
+            collect_enum_types(*m.method->return_type, out);
+          }
+          for (const auto& p : m.method->params)
+            if (p.type) collect_enum_types(*p.type, out);
+        } else if (m.kind == ObjectMemberKind::Property) {
+          if (m.property.type) collect_enum_types(*m.property.type, out);
+          for (const auto& p : m.property.params)
+            if (p.type) collect_enum_types(*p.type, out);
+        }
+      }
+      return;
+    }
+    case Kind::TyInterface: {
+      const auto& i = static_cast<const TyInterface&>(t);
+      for (const auto& m : i.members) {
+        if (m.kind != ObjectMemberKind::Method || !m.method) continue;
+        if (m.method->return_type) {
+          collect_enum_types(*m.method->return_type, out);
+        }
+        for (const auto& p : m.method->params)
+          if (p.type) collect_enum_types(*p.type, out);
+      }
+      return;
+    }
+    case Kind::TyProcedural: {
+      const auto& p = static_cast<const TyProcedural&>(t);
+      if (p.return_type) collect_enum_types(*p.return_type, out);
+      for (const auto& par : p.params)
+        if (par.type) collect_enum_types(*par.type, out);
+      return;
+    }
+    case Kind::TyDistinct:
+      if (static_cast<const TyDistinct&>(t).underlying) {
+        collect_enum_types(*static_cast<const TyDistinct&>(t).underlying, out);
+      }
+      return;
+    default:
+      return;
+  }
+}
+
+void register_enum_types_for_owner(
+    std::unordered_map<std::string, const TyEnum*>& out,
+    const TypeExpr* type, std::string_view owner_name,
+    const TyEnum* named_top_level) {
+  if (!type) return;
+  std::vector<const TyEnum*> enums;
+  collect_enum_types(*type, enums);
+  std::unordered_set<const TyEnum*> seen;
+  size_t anon_index = 0;
+  const std::string owner = ascii_lower(std::string(owner_name));
+  for (const TyEnum* te : enums) {
+    if (!te || !seen.insert(te).second) continue;
+    if (named_top_level && te == named_top_level) {
+      out[owner] = te;
+      continue;
+    }
+    const bool whole_type_is_enum = te == type && !named_top_level;
+    std::string key = whole_type_is_enum
+                          ? owner
+                          : owner + "_enum" + std::to_string(anon_index);
+    out[key] = te;
+    ++anon_index;
+  }
+}
 
 namespace {
 
@@ -54,6 +166,58 @@ ProcInfo make_proc_info(const std::string& unit,
   return p;
 }
 
+void add_unit_enum_members(UnitInfo* ui, bool is_interface,
+                           const TyEnum& te) {
+  if (!ui) return;
+  auto& members = is_interface ? ui->iface_enum_members
+                               : ui->impl_enum_members;
+  for (const auto& m : te.members) members.insert(lc(m.name));
+}
+
+void add_class_enum_members(ClassInfo& ci, const TypePtr& t) {
+  if (!t) return;
+  std::vector<const TyEnum*> enums;
+  collect_enum_types(*t, enums);
+  for (const TyEnum* te : enums)
+    for (const auto& em : te->members) ci.enum_members.insert(lc(em.name));
+}
+
+void register_enum_type(TypeRegistry& r, UnitInfo* ui, bool is_interface,
+                        const std::string& unit, const std::string& key,
+                        const std::string& cxx_name, const TyEnum& te) {
+  EnumInfoReg ei;
+  ei.name = key;
+  ei.defining_unit = unit;
+  ei.type = &te;
+  ei.cxx_name = cxx_name;
+  for (const auto& m : te.members) ei.members.push_back(lc(m.name));
+  r.enums[key] = std::move(ei);
+  r.enum_type_names[&te] = key;
+  add_unit_enum_members(ui, is_interface, te);
+}
+
+void register_enums_in_type(TypeRegistry& r, UnitInfo* ui, bool is_interface,
+                            const std::string& unit, const TypeExpr& t,
+                            std::string_view owner_name,
+                            const TyEnum* named_top_level) {
+  std::vector<const TyEnum*> enums;
+  collect_enum_types(t, enums);
+  std::unordered_set<const TyEnum*> seen;
+  size_t anon_index = 0;
+  for (const TyEnum* te : enums) {
+    if (!te) continue;
+    if (!seen.insert(te).second) continue;
+    if (named_top_level && te == named_top_level) continue;
+    const std::string owner = lc(std::string(owner_name));
+    const std::string key =
+        unit + "$" + owner + "$enum" + std::to_string(anon_index);
+    const std::string cxx_name =
+        type_mangle(owner) + "_enum" + std::to_string(anon_index);
+    register_enum_type(r, ui, is_interface, unit, key, cxx_name, *te);
+    ++anon_index;
+  }
+}
+
 void add_record_fields(RecordInfo& ri, const TyRecord& tr) {
   for (const auto& f : tr.fields) {
     FieldInfo fi;
@@ -83,14 +247,7 @@ void add_class_members(ClassInfo& ci, const TyObject& to) {
       fi.type = m.field_type;
       fi.is_class_var = m.is_class_var;
       for (const auto& n : m.field_names) ci.fields[lc(n)] = fi;
-      // Inline anonymous enum used as the field type contributes its
-      // members to the enclosing class scope -- they're visible by bare
-      // identifier inside the class's member functions, just like any
-      // class constant.
-      if (m.field_type && m.field_type->kind == Kind::TyEnum) {
-        const auto& te = static_cast<const TyEnum&>(*m.field_type);
-        for (const auto& em : te.members) ci.enum_members.insert(lc(em.name));
-      }
+      add_class_enum_members(ci, m.field_type);
     } else if (m.kind == ObjectMemberKind::Method && m.method) {
       const auto& pd = *m.method;
       MethodSig ms;
@@ -292,17 +449,9 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
           add_record_fields(ri, tr);
           r.records[nm] = std::move(ri);
         } else if (td.type->kind == Kind::TyEnum) {
-          EnumInfoReg ei;
-          ei.name = nm;
-          ei.defining_unit = unit;
-          for (const auto& m : static_cast<const TyEnum&>(*td.type).members) {
-            std::string lm = lc(m.name);
-            ei.members.push_back(lm);
-            if (ui)
-              (is_interface ? ui->iface_enum_members : ui->impl_enum_members)
-                  .insert(lm);
-          }
-          r.enums[nm] = std::move(ei);
+          const auto& te = static_cast<const TyEnum&>(*td.type);
+          register_enum_type(r, ui, is_interface, unit, nm, type_mangle(nm),
+                             te);
         } else {
           // Alias (possibly pointer / array / primitive).
           AliasInfo a;
@@ -310,6 +459,11 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
           a.target = td.type;
           r.aliases[nm] = a;
         }
+        register_enums_in_type(
+            r, ui, is_interface, unit, *td.type, nm,
+            td.type->kind == Kind::TyEnum
+                ? &static_cast<const TyEnum&>(*td.type)
+                : nullptr);
         break;
       }
       case Kind::ProcDecl: {
@@ -344,17 +498,9 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         for (const auto& n : vd.names) {
           if (ui) (is_interface ? ui->iface_vars : ui->impl_vars)[lc(n)] = v;
         }
-        // Pascal: an inline anonymous enum used as a var-decl type
-        // bleeds its members into the enclosing scope. Same rule as
-        // class-field inline enums; without this, the resolver can't
-        // find the members and falls through to the unknown-name
-        // ::rt:: prefix.
-        if (ui && vd.type && vd.type->kind == Kind::TyEnum) {
-          const auto& te = static_cast<const TyEnum&>(*vd.type);
-          for (const auto& em : te.members) {
-            (is_interface ? ui->iface_enum_members : ui->impl_enum_members)
-                .insert(lc(em.name));
-          }
+        if (vd.type && !vd.names.empty()) {
+          register_enums_in_type(r, ui, is_interface, unit, *vd.type,
+                                 lc(vd.names.front()), nullptr);
         }
         break;
       }
@@ -366,14 +512,9 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         c.value = cd.value;
         if (ui)
           (is_interface ? ui->iface_consts : ui->impl_consts)[lc(cd.name)] = c;
-        // Same rule for typed consts: `const x : (a, b) = a;` -- if this
-        // source construct lands in the source, the members must be visible.
-        if (ui && cd.type && cd.type->kind == Kind::TyEnum) {
-          const auto& te = static_cast<const TyEnum&>(*cd.type);
-          for (const auto& em : te.members) {
-            (is_interface ? ui->iface_enum_members : ui->impl_enum_members)
-                .insert(lc(em.name));
-          }
+        if (cd.type) {
+          register_enums_in_type(r, ui, is_interface, unit, *cd.type,
+                                 lc(cd.name), nullptr);
         }
         break;
       }
@@ -727,11 +868,14 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       EnumInfoReg ei;
       ei.name = low;
       ei.defining_unit = "__rt__";
+      ei.type = static_cast<const TyEnum*>(target.get());
+      ei.cxx_name = type_mangle(low);
       for (const auto& m : static_cast<const TyEnum&>(*target).members) {
         std::string lm = lc(m.name);
         ei.members.push_back(lm);
         rt_exports.iface_enum_members.insert(lm);
       }
+      enum_type_names[ei.type] = low;
       enums[low] = std::move(ei);
     }
     AliasInfo a;
@@ -981,6 +1125,15 @@ const ClassInfo* TypeRegistry::lookup_class(std::string_view name,
   if (it == classes.end() || it->second.empty()) return nullptr;
   if (it->second.size() == 1) return &it->second.front();
   return nullptr;
+}
+
+const EnumInfoReg* TypeRegistry::enum_info_for_type(
+    const TyEnum* type) const {
+  if (!type) return nullptr;
+  auto kit = enum_type_names.find(type);
+  if (kit == enum_type_names.end()) return nullptr;
+  auto eit = enums.find(kit->second);
+  return eit == enums.end() ? nullptr : &eit->second;
 }
 
 const TypeExpr* TypeRegistry::canonicalize(const TypeExpr* te) const {

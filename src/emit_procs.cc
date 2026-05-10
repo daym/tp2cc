@@ -7,6 +7,7 @@
 #include "emit_decls.h"
 #include "emit_support.h"
 #include "emit_types.h"
+#include "typereg.h"
 
 namespace tp2cc {
 
@@ -171,12 +172,9 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
         if (!insert_local_name(vd.loc, nm)) continue;
         if (vd.type) scope_.local_types[nm] = vd.type.get();
       }
-      // Inline anonymous enum used as a var type (`var m : (a, b);`)
-      // bleeds its members into the enclosing scope -- same rule as
-      // class fields and unit-level vars (see typereg.cc:177).
-      if (vd.type && vd.type->kind == Kind::TyEnum && !vd.names.empty()) {
-        scope_.local_enums[vd.names.front()] =
-            static_cast<const TyEnum*>(vd.type.get());
+      if (vd.type && !vd.names.empty()) {
+        register_enum_types_for_owner(scope_.local_enums, vd.type.get(),
+                                      vd.names.front());
       }
     } else if (l->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
@@ -185,21 +183,19 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
       if (const TypeExpr* ct = analysis_.deduce_const_decl_type(cd)) {
         scope_.local_types[cd.name] = ct;
       }
-      if (cd.type && cd.type->kind == Kind::TyEnum) {
-        scope_.local_enums[cd.name] =
-            static_cast<const TyEnum*>(cd.type.get());
-      }
+      register_enum_types_for_owner(scope_.local_enums, cd.type.get(),
+                                    cd.name);
     } else if (l->kind == Kind::TypeDecl) {
-      // Pascal's local `type` section is statically visible to the
-      // translator too -- record enums (for array-dim sizing and
-      // `low(T)`/`high(T)` rewrites) and aliases (for canonicalize).
       const auto& td = static_cast<const TypeDecl&>(*l);
       if (td.type) {
         if (td.type->kind == Kind::TyEnum) {
-          scope_.local_enums[td.name] =
-              static_cast<const TyEnum*>(td.type.get());
+          register_enum_types_for_owner(
+              scope_.local_enums, td.type.get(), td.name,
+              static_cast<const TyEnum*>(td.type.get()));
         } else {
           scope_.local_type_aliases_scoped[td.name] = td.type.get();
+          register_enum_types_for_owner(scope_.local_enums, td.type.get(),
+                                        td.name);
         }
       }
     } else if (l->kind == Kind::ProcDecl) {

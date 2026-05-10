@@ -31,6 +31,61 @@ EmitDecls::EmitDecls(const TypeRegistry* registry, ScopeStateView& scope,
       values_(values),
       emit_ops_(emit_ops) {}
 
+void EmitDecls::emit_enum_carrier(const TyEnum& te, std::string_view cxx_name,
+                                  std::string_view bound_name) {
+  emit_ops_.emitln("enum " + std::string(cxx_name) + " : " +
+                   types_.enum_underlying_type_to_cxx(te) + " {");
+  emit_ops_.indent();
+  for (size_t i = 0; i < te.members.size(); ++i) {
+    std::string m = mangle(te.members[i].name);
+    if (te.members[i].value) {
+      m += " = " + values_.const_value_to_cxx(*te.members[i].value);
+    }
+    if (i + 1 < te.members.size()) m += ",";
+    emit_ops_.emitln(m);
+  }
+  emit_ops_.dedent();
+  emit_ops_.emitln("};");
+  if (!bound_name.empty() && !te.members.empty()) {
+    const char* lin = emit_ops_.in_block_scope() ? "" : "inline ";
+    emit_ops_.emitln(std::string(lin) + "constexpr " +
+                     std::string(cxx_name) + " " +
+                     enum_bound_name(bound_name, "low") + " = " +
+                     mangle(te.members.front().name) + ";");
+    emit_ops_.emitln(std::string(lin) + "constexpr " +
+                     std::string(cxx_name) + " " +
+                     enum_bound_name(bound_name, "high") + " = " +
+                     mangle(te.members.back().name) + ";");
+  }
+}
+
+void EmitDecls::emit_enum_carrier_decls(const TypeExpr* t,
+                                        const TyEnum* skip) {
+  if (!t) return;
+  std::vector<const TyEnum*> enums;
+  collect_enum_types(*t, enums);
+  std::unordered_set<const TyEnum*> emitted;
+  for (const TyEnum* te : enums) {
+    if (!te || te == skip || !emitted.insert(te).second) continue;
+    auto cxx_name = types_.enum_carrier_type_to_cxx(*te);
+    // Imported enum carriers are declared by the included unit header; this
+    // declaration site only owns carriers whose name is local to the scope.
+    if (!cxx_name || cxx_name->find("::") != std::string::npos) continue;
+    emit_enum_carrier(*te, *cxx_name, {});
+  }
+}
+
+bool EmitDecls::should_emit_var_type_helpers(const VarDecl& vd,
+                                             bool in_header) {
+  if (in_header || emit_ops_.in_block_scope() || !registry_) return true;
+  auto uit = registry_->units.find(scope_.current_unit_name);
+  if (uit == registry_->units.end()) return true;
+  for (const auto& n : vd.names) {
+    if (!uit->second.iface_vars.count(ascii_lower(n))) return true;
+  }
+  return false;
+}
+
 void EmitDecls::emit_packed_record_asserts(
     const std::string& type_text,
     const std::vector<std::pair<std::string, std::string>>& field_offsets,
@@ -168,6 +223,7 @@ EmitDecls::find_metaclass_callable_impl(std::string_view concrete_class,
 void EmitDecls::emit_const_decl(const ConstDecl& cd, bool in_header) {
   (void)in_header;
   const std::string name = mangle(cd.name);
+  emit_enum_carrier_decls(cd.type.get());
   std::string val = values_.const_value_to_cxx(*cd.value, cd.type.get());
 
   // Two things drive the qualifiers:
@@ -242,39 +298,13 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
   (void)in_header;
   const std::string name = type_mangle(td.name);
 
-  // Pascal enums are unscoped: members leak into the enclosing namespace
-  // and are referenced directly. We emit a plain `enum` (not `enum class`)
-  // with an explicit underlying type so the members are usable bare.
-  //
-  // We also emit per-enum helper constants -- Pascal's
-  // `low(T)` / `high(T)` take a type name as argument; we rewrite those
-  // calls to the constants at emit time.
   if (td.type && td.type->kind == Kind::TyEnum) {
     const auto& te = static_cast<const TyEnum&>(*td.type);
-    emit_ops_.emitln("enum " + name + " : " +
-                     types_.enum_underlying_type_to_cxx(te) + " {");
-    emit_ops_.indent();
-    for (size_t i = 0; i < te.members.size(); ++i) {
-      std::string m = mangle(te.members[i].name);
-      if (te.members[i].value) {
-        m += " = " + values_.const_value_to_cxx(*te.members[i].value);
-      }
-      if (i + 1 < te.members.size()) m += ",";
-      emit_ops_.emitln(m);
-    }
-    emit_ops_.dedent();
-    emit_ops_.emitln("};");
-    if (!te.members.empty()) {
-      const char* lin = emit_ops_.in_block_scope() ? "" : "inline ";
-      emit_ops_.emitln(std::string(lin) + "constexpr " + name + " " +
-                       enum_bound_name(td.name, "low") + " = " +
-                       mangle(te.members.front().name) + ";");
-      emit_ops_.emitln(std::string(lin) + "constexpr " + name + " " +
-                       enum_bound_name(td.name, "high") + " = " +
-                       mangle(te.members.back().name) + ";");
-    }
+    emit_enum_carrier(te, name, td.name);
     return;
   }
+
+  emit_enum_carrier_decls(td.type.get());
 
   if (td.type && td.type->kind == Kind::TyRecord) {
     const auto& tr = static_cast<const TyRecord&>(*td.type);
@@ -872,6 +902,9 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
 }
 
 void EmitDecls::emit_var_decl(const VarDecl& vd, bool in_header) {
+  if (!vd.is_external && should_emit_var_type_helpers(vd, in_header)) {
+    emit_enum_carrier_decls(vd.type.get());
+  }
   if (vd.is_absolute) {
     auto target = storage_.resolve_absolute_target(vd);
     if (!target) return;
