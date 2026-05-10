@@ -113,7 +113,7 @@ class Parser {
   // Typed-constant value (on the RHS of `ident : type = ...`). Handles
   // scalar expressions, array constants `(a,b,c)`, and record constants
   // `(f:v;f:v)` including nesting.
-  ast::ExprPtr parse_const_value();
+  ast::ExprPtr parse_const_value(const ast::TypeExpr* target = nullptr);
 };
 
 }  // namespace tp2cc

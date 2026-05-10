@@ -859,7 +859,7 @@ void test_char_array_assignment_uses_explicit_array_literal_helper() {
                  "p_buf = ::rt::tp2cc_array_literal<::rt::p_char, 1, ((4) - (1) + 1)>(::rt::tp2cc_char_of('A'));"));
 }
 
-void test_nested_array_typed_const_braces_each_array_wrapper() {
+void test_nested_array_typed_const_initializes_each_array_data_member() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -873,8 +873,28 @@ void test_nested_array_typed_const_braces_each_array_wrapper() {
       "implementation\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "p_table = {{{{{{1, 2, 3, 4}}, {{5, 6, 7, 8}}}}, "
-                 "{{{{9, 10, 11, 12}}, {{13, 14, 15, 16}}}}}};"));
+                 "p_table = {.data = {{.data = {{.data = {1, 2, 3, 4}}, "
+                 "{.data = {5, 6, 7, 8}}}}, {.data = {{.data = {9, 10, "
+                 "11, 12}}, {.data = {13, 14, 15, 16}}}}}};"));
+}
+
+void test_single_record_array_typed_const_wraps_array_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tkey = (none);\n"
+      "  trec = record\n"
+      "    name : string[20];\n"
+      "    size : longint;\n"
+      "  end;\n"
+      "const\n"
+      "  items : array[tkey] of trec = ((name:''; size:0));\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "p_items = {.data = {{.p_name = "
+                 "::rt::tp2cc_shortstring_literal<20>(), .p_size = 0}}};"));
 }
 
 void test_named_type_alias() {
@@ -1303,7 +1323,7 @@ void test_singleton_typed_array_const() {
       "  only : array[1..1] of longint = (7);\n"
       "implementation\n"
       "end.\n");
-  CHECK(contains(out.header, "p_only = {7};"));
+  CHECK(contains(out.header, "p_only = {.data = {7}};"));
 }
 
 void test_nested_array_type() {
@@ -7993,7 +8013,8 @@ int main() {
   RUN_TEST(test_system_qualified_low_high_lowers_like_unqualified);
   RUN_TEST(test_char_array_typed_const_uses_explicit_array_literal_helper);
   RUN_TEST(test_char_array_assignment_uses_explicit_array_literal_helper);
-  RUN_TEST(test_nested_array_typed_const_braces_each_array_wrapper);
+  RUN_TEST(test_nested_array_typed_const_initializes_each_array_data_member);
+  RUN_TEST(test_single_record_array_typed_const_wraps_array_storage);
   RUN_TEST(test_typed_const_shortstring_literals_use_target_capacity);
   RUN_TEST(test_shortstring_length_literal_capacity_is_constant_folded);
   RUN_TEST(test_named_type_alias);

@@ -2106,8 +2106,8 @@ inline constexpr int tp2cc_ordinal_value(T x) {
 // which breaks brace-elision for designated initialisers of element
 // records (the fpc sources' typed consts use `(field: value; ...)` a
 // lot).  Holding a bare C-array as the single member keeps `tp2cc_Array` a
-// simple one-member aggregate, so `tp2cc_Array<R, Lo, N> a = {{.f=1},{.f=2}};`
-// initialises exactly as expected.
+// simple one-member aggregate, so emitted typed constants can initialize
+// `.data` directly, including record elements with designated initialisers.
 template <typename T, auto Lo, std::size_t N>
 struct tp2cc_Array {
   // `T data[N];` -- DELIBERATELY NOT `T data[N]{};`. A default member

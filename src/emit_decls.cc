@@ -206,12 +206,6 @@ void EmitDecls::emit_const_decl(const ConstDecl& cd, bool in_header) {
 generic_emit:;
 
   if (cd.type) {
-    if (typed_const_ty && typed_const_ty->kind == Kind::TyArray &&
-        cd.value->kind != Kind::StringLit) {
-      emit_ops_.emitln(linkage + types_.type_to_cxx(*cd.type) + " " + name +
-                       " = {" + val + "};");
-      return;
-    }
     emit_ops_.emitln(linkage + types_.type_to_cxx(*cd.type) + " " + name +
                      " = " + val + ";");
     return;

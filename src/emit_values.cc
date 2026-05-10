@@ -235,8 +235,9 @@ std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target
       return out;
     }
   }
+  const TypeExpr* canon_target = analysis_.canonicalize_type(target);
   if (e.kind == Kind::ArrayConst) {
-    const TypeExpr* canon = analysis_.canonicalize_type(target);
+    const TypeExpr* canon = canon_target;
     std::shared_ptr<TyArray> nested_array_target;
     const TypeExpr* elem_type = nullptr;
     if (canon && canon->kind == Kind::TyArray) {
@@ -260,9 +261,7 @@ std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target
                                 explicit_conversion);
     }
     out += "}";
-    if (canon && canon->kind == Kind::TyArray) {
-      return "{" + out + "}";
-    }
+    if (canon && canon->kind == Kind::TyArray) return "{.data = " + out + "}";
     return out;
   }
   if (e.kind == Kind::RecordConst) {
@@ -297,7 +296,6 @@ std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target
   std::string out = expr_ops_.expr_to_cxx(e);
   const TypeExpr* source_type = analysis_.deduce_type(e);
   if (source_type) source_type = analysis_.canonicalize_type(source_type);
-  const TypeExpr* canon_target = analysis_.canonicalize_type(target);
   if (source_type && canon_target) {
     if (auto conv = resolution_.find_assignment_operator(source_type, target);
         conv.decl) {

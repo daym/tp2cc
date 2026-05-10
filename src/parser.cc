@@ -364,7 +364,7 @@ void Parser::parse_const_section(std::vector<DeclPtr>& out) {
       typed = true;
     }
     expect(Tok::Eq, "const decl");
-    cd->value = typed ? parse_const_value() : parse_expr();
+    cd->value = typed ? parse_const_value(cd->type.get()) : parse_expr();
     while (is_directive("deprecated") || is_directive("platform") ||
            is_directive("library") || is_directive("experimental")) {
       advance();
@@ -380,9 +380,24 @@ void Parser::parse_const_section(std::vector<DeclPtr>& out) {
 //   (f1: v1; f2: v2; ...)          record constant
 //   any scalar expression (including set literals)
 // Disambiguate at `(` by looking one token past it.
-ast::ExprPtr Parser::parse_const_value() {
+ast::ExprPtr Parser::parse_const_value(const TypeExpr* target) {
   if (!check(Tok::LParen)) return parse_expr();
   Location loc = cur_.loc;
+  std::shared_ptr<TyArray> nested_array_target;
+  const TypeExpr* elem_target = nullptr;
+  if (target && target->kind == Kind::TyArray) {
+    const auto& arr = static_cast<const TyArray&>(*target);
+    elem_target = arr.element.get();
+    if (arr.dims.size() > 1) {
+      nested_array_target = std::make_shared<TyArray>();
+      nested_array_target->loc = arr.loc;
+      nested_array_target->dims.assign(arr.dims.begin() + 1, arr.dims.end());
+      nested_array_target->element = arr.element;
+      nested_array_target->is_packed = arr.is_packed;
+      nested_array_target->array_kind = arr.array_kind;
+      elem_target = nested_array_target.get();
+    }
+  }
   // Try to decide: advance past '(' and look at the first two inner tokens.
   // If we see `ident :` where `:` is the immediate next token, it's a record.
   advance();  // consume '('
@@ -411,13 +426,22 @@ ast::ExprPtr Parser::parse_const_value() {
     advance();
     return ac;
   }
-  auto first = parse_const_value();
+  auto first = parse_const_value(elem_target);
   if (accept(Tok::Comma)) {
     auto ac = std::make_shared<ArrayConst>();
     ac->loc = loc;
     ac->elements.push_back(std::move(first));
-    ac->elements.push_back(parse_const_value());
-    while (accept(Tok::Comma)) ac->elements.push_back(parse_const_value());
+    ac->elements.push_back(parse_const_value(elem_target));
+    while (accept(Tok::Comma)) {
+      ac->elements.push_back(parse_const_value(elem_target));
+    }
+    expect(Tok::RParen, "array constant");
+    return ac;
+  }
+  if (target && target->kind == Kind::TyArray) {
+    auto ac = std::make_shared<ArrayConst>();
+    ac->loc = loc;
+    ac->elements.push_back(std::move(first));
     expect(Tok::RParen, "array constant");
     return ac;
   }
@@ -469,7 +493,7 @@ void Parser::parse_var_section(std::vector<DeclPtr>& out) {
         report_error(cur_.loc, "expected identifier after 'absolute'");
       }
     } else if (accept(Tok::Eq)) {
-      vd->init = parse_const_value();
+      vd->init = parse_const_value(vd->type.get());
     } else if (is_directive("external")) {
       advance();
       vd->is_external = true;
