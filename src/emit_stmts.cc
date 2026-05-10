@@ -141,8 +141,7 @@ void EmitStmts::emit_try_stmt(const Try& t) {
       // translated `dynamic_cast` target must be a pointer type even when the
       // name comes from the `sysutils` stub alias and does not resolve through
       // the normal class registry.
-      TyName handler_type;
-      handler_type.name = h.class_name;
+      TyName handler_type(h.class_name);
       std::string handler_cxx = types_.type_to_cxx(handler_type);
       if (handler_cxx.empty() || handler_cxx.back() != '*') {
         handler_cxx += "*";
@@ -494,15 +493,25 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
         ctor_args.reserve(cc.args.size());
         for (const auto& arg : cc.args) ctor_args.push_back(arg.get());
         const size_t explicit_ctor_arg_count = ctor_args.size();
-        ResolvedCall ctor_resolved;
-        if (registry_ && ptr_arg_ty && cc.callee->kind == Kind::Ident) {
-          std::string pointee = registry_->pointer_target_type_name(ptr_arg_ty);
-          if (!pointee.empty()) {
-            Member member(std::make_shared<Ident>(pointee),
-                          static_cast<const Ident&>(*cc.callee).name);
-            ctor_resolved = resolution_.resolve_call(member, ctor_args);
+        ResolvedCall ctor_resolved = [&]() -> ResolvedCall {
+          if (registry_ && ptr_arg_ty && cc.callee->kind == Kind::Ident) {
+            std::string pointee =
+                registry_->pointer_target_type_name(ptr_arg_ty);
+            if (!pointee.empty()) {
+              Member member(std::make_shared<Ident>(pointee),
+                            static_cast<const Ident&>(*cc.callee).name);
+              return resolution_.resolve_call(member, ctor_args);
+            }
           }
-        }
+          return ResolvedCall{.decl = nullptr,
+                              .callee_kind = ResolvedCalleeKind::Default,
+                              .defining_unit = {},
+                              .member_name = {},
+                              .default_arg_unit = {},
+                              .return_type_name = {},
+                              .needs_arg_casts = false,
+                              .ambiguous = false};
+        }();
         calls_.append_defaulted_trailing_call_args(ctor_resolved.decl,
                                                    ctor_args);
         std::vector<UntypedArgKind> untyped_arg(ctor_args.size(),
@@ -1217,12 +1226,11 @@ void EmitStmts::emit_stmt(const Stmt& s) {
         // by value; only genuine lvalues can be safely aliased with `auto&`.
         stmt_ops_.emitln(std::string(bind_by_ref ? "auto& " : "auto ") + nm +
                          " = " + init + ";");
-        ScopeStateView::WithBind wb;
-        wb.cxx_text = nm;
-        wb.type = ty;
-        wb.class_name = analysis_.deduce_class_alias(with_expr);
-        wb.access_op = storage_.member_access_op(with_expr);
-        scope_.with_stack.push_back(std::move(wb));
+        scope_.with_stack.push_back(ScopeStateView::WithBind{
+            .cxx_text = nm,
+            .type = ty,
+            .class_name = analysis_.deduce_class_alias(with_expr),
+            .access_op = storage_.member_access_op(with_expr)});
         ++pushed;
       }
       if (w.body) emit_stmt(*w.body);
