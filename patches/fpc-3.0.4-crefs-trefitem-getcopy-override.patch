@@ -1,0 +1,23 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-10
+Subject: Make TRefItem.GetCopy an explicit override
+License: expat
+
+`TRefItem.GetCopy` has the same signature as inherited virtual
+`TLinkedListItem.GetCopy`.  The method body constructs a `TRefItem` copy
+from `refinfo`, so it is the implementation for that inherited virtual slot.
+
+Spell the declaration as `override`, matching the dispatch semantics that
+tp2cc can emit.
+
+--- a/compiler/crefs.pas
++++ b/compiler/crefs.pas
+@@ -34,7 +34,7 @@
+    TrefItem = class (TLinkedListItem)
+      refinfo  : tfileposinfo;
+      constructor create(const ARefInfo : tfileposinfo);
+-     Function GetCopy:TLinkedListItem;virtual;reintroduce;
++     Function GetCopy:TLinkedListItem;override;
+    end;
+ 
+    TRefLinkedList = class(TLinkedList)
