@@ -2077,17 +2077,27 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             ctor_args.reserve(cc.args.size());
             for (const auto& arg : cc.args) ctor_args.push_back(arg.get());
             const size_t explicit_ctor_arg_count = ctor_args.size();
-            ResolvedCall ctor_resolved;
-            if (registry && c.args[0]->kind == Kind::Ident &&
-                cc.callee->kind == Kind::Ident) {
-              TyName ptr_type(static_cast<const Ident&>(*c.args[0]).name);
-              std::string pointee = registry->pointer_target_type_name(&ptr_type);
-              if (!pointee.empty()) {
-                Member member(std::make_shared<Ident>(pointee),
-                              static_cast<const Ident&>(*cc.callee).name);
-                ctor_resolved = resolve_call(member, ctor_args);
+            ResolvedCall ctor_resolved = [&]() -> ResolvedCall {
+              if (registry && c.args[0]->kind == Kind::Ident &&
+                  cc.callee->kind == Kind::Ident) {
+                TyName ptr_type(static_cast<const Ident&>(*c.args[0]).name);
+                std::string pointee =
+                    registry->pointer_target_type_name(&ptr_type);
+                if (!pointee.empty()) {
+                  Member member(std::make_shared<Ident>(pointee),
+                                static_cast<const Ident&>(*cc.callee).name);
+                  return resolve_call(member, ctor_args);
+                }
               }
-            }
+              return ResolvedCall{.decl = nullptr,
+                                  .callee_kind = ResolvedCalleeKind::Default,
+                                  .defining_unit = {},
+                                  .member_name = {},
+                                  .default_arg_unit = {},
+                                  .return_type_name = {},
+                                  .needs_arg_casts = false,
+                                  .ambiguous = false};
+            }();
             append_defaulted_trailing_call_args(ctor_resolved.decl, ctor_args);
             std::vector<UntypedArgKind> untyped_arg(ctor_args.size(),
                                                     UntypedArgKind::None);

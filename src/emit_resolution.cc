@@ -476,13 +476,39 @@ PickResult EmitResolution::pick_overload(
 
 ResolvedCall EmitResolution::resolve_call(
     const Expr& callee, const std::vector<const Expr*>& args) {
-  ResolvedCall out;
-  if (callee.kind == Kind::Ident) {
-    out.member_name = static_cast<const Ident&>(callee).name;
-  } else if (callee.kind == Kind::Member) {
-    out.member_name = static_cast<const Member&>(callee).name;
-  }
-  if (!registry_) return out;
+  const std::string member_name = [&]() -> std::string {
+    if (callee.kind == Kind::Ident) {
+      return static_cast<const Ident&>(callee).name;
+    }
+    if (callee.kind == Kind::Member) {
+      return static_cast<const Member&>(callee).name;
+    }
+    return {};
+  }();
+  auto unresolved = [&]() {
+    return ResolvedCall{.decl = nullptr,
+                        .callee_kind = ResolvedCalleeKind::Default,
+                        .defining_unit = {},
+                        .member_name = member_name,
+                        .default_arg_unit = {},
+                        .return_type_name = {},
+                        .needs_arg_casts = false,
+                        .ambiguous = false};
+  };
+  auto resolved = [&](const AnyCand& chosen, bool ran_type_picker) {
+    const bool free_unit = !chosen.callee_unit.empty();
+    return ResolvedCall{
+        .decl = chosen.decl,
+        .callee_kind = free_unit ? ResolvedCalleeKind::FreeFunctionInUnit
+                                 : ResolvedCalleeKind::Default,
+        .defining_unit = chosen.callee_unit,
+        .member_name = member_name,
+        .default_arg_unit = chosen.declaration_unit,
+        .return_type_name = chosen.return_type_name,
+        .needs_arg_casts = ran_type_picker,
+        .ambiguous = false};
+  };
+  if (!registry_) return unresolved();
   // Method overloads and free-function overloads share the same picker.
   // Methods come from class-chain lookup; free functions come from the current
   // unit plus the visible uses chain. `inherited foo(...)` is still a separate
@@ -576,23 +602,11 @@ ResolvedCall EmitResolution::resolve_call(
     arity_ok.push_back(a);
   }
 
-  auto adopt = [&](const AnyCand& chosen, bool ran_type_picker) {
-    out.decl = chosen.decl;
-    out.needs_arg_casts = ran_type_picker;
-    out.default_arg_unit = chosen.declaration_unit;
-    out.return_type_name = chosen.return_type_name;
-    if (!chosen.callee_unit.empty()) {
-      out.callee_kind = ResolvedCalleeKind::FreeFunctionInUnit;
-      out.defining_unit = chosen.callee_unit;
-    }
-  };
-
   if (arity_ok.size() == 1) {
     // Single arity-viable candidate. C++ does not need help choosing the
     // overload, but we still record the defining unit so the printer spells
     // the callee through the same Pascal lookup path.
-    adopt(arity_ok[0], false);
-    return out;
+    return resolved(arity_ok[0], false);
   }
 
   if (arity_ok.size() > 1) {
@@ -604,33 +618,42 @@ ResolvedCall EmitResolution::resolve_call(
       if (a.decl) with_decl.push_back(a.decl);
     }
     if (with_decl.empty()) {
-      return out;
+      return unresolved();
     }
     PickResult pr = pick_overload(
         with_decl, args, /*allow_assignment_operator_conversions=*/true);
     if (pr.ambiguous) {
-      out.decl = nullptr;
-      out.ambiguous = true;
-      return out;
+      return ResolvedCall{.decl = nullptr,
+                          .callee_kind = ResolvedCalleeKind::Default,
+                          .defining_unit = {},
+                          .member_name = member_name,
+                          .default_arg_unit = {},
+                          .return_type_name = {},
+                          .needs_arg_casts = false,
+                          .ambiguous = true};
     }
     if (!pr.decl) {
-      return out;
+      return unresolved();
     }
     for (const auto& a : arity_ok) {
       if (a.decl == pr.decl) {
-        adopt(a, true);
-        return out;
+        return resolved(a, true);
       }
     }
     // Defensive fallback: `pr.decl` came from the arity-filtered set, so the
     // loop above should have found it. Keep the decl anyway if metadata got
     // out of sync so later emit-time diagnostics stay anchored.
-    out.decl = pr.decl;
-    out.needs_arg_casts = true;
-    return out;
+    return ResolvedCall{.decl = pr.decl,
+                        .callee_kind = ResolvedCalleeKind::Default,
+                        .defining_unit = {},
+                        .member_name = member_name,
+                        .default_arg_unit = {},
+                        .return_type_name = {},
+                        .needs_arg_casts = true,
+                        .ambiguous = false};
   }
 
-  return out;
+  return unresolved();
 }
 
 BinaryOperatorResult EmitResolution::find_binary_operator(
