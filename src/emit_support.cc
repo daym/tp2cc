@@ -71,45 +71,30 @@ const MethodSig* representative_method(const std::vector<MethodSig>& sigs) {
 }
 
 const ast::TyName* builtin_char_type() {
-  static const ast::TyName t = [] {
-    ast::TyName n;
-    n.name = "char";
-    return n;
-  }();
+  static const ast::TyName t("char");
   return &t;
 }
 
 const ast::TyName* builtin_string_type() {
-  static const ast::TyName t = [] {
-    ast::TyName n;
-    n.name = "shortstring";
-    return n;
-  }();
+  static const ast::TyName t("shortstring");
   return &t;
 }
 
 const ast::TyName* builtin_pchar_type() {
-  static const ast::TyName t = [] {
-    ast::TyName n;
-    n.name = "pchar";
-    return n;
-  }();
+  static const ast::TyName t("pchar");
   return &t;
 }
 
 const ast::TyName* builtin_boolean_type() {
-  static const ast::TyName t = [] {
-    ast::TyName n;
-    n.name = "boolean";
-    return n;
-  }();
+  static const ast::TyName t("boolean");
   return &t;
 }
 
 const ast::TyName* named_pascal_type(std::string_view name) {
   static std::unordered_map<std::string, ast::TyName> cache;
-  auto [it, inserted] = cache.emplace(std::string(name), ast::TyName{});
-  if (inserted) it->second.name = std::string(name);
+  std::string key(name);
+  auto [it, inserted] = cache.emplace(key, ast::TyName(key));
+  (void)inserted;
   return &it->second;
 }
 
@@ -531,9 +516,7 @@ std::string primitive_low_high_expr(std::string_view lowname, bool want_low) {
 
 const ast::TyName* builtin_integer_type(std::string_view lowname) {
   auto make = [](const char* name) {
-    ast::TyName n;
-    n.name = name;
-    return n;
+    return ast::TyName(name);
   };
   static const ast::TyName t_shortint = make("shortint");
   static const ast::TyName t_byte = make("byte");
