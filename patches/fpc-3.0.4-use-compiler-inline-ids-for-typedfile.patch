@@ -1,0 +1,34 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-10
+Subject: Use compiler inline IDs for typed-file internproc checks
+License: expat
+
+`ncal.pas` checks whether an internal procedure is one of the typed-file
+Reset/Rewrite builtins.  The source used the RTL/System unit names
+(`fpc_in_Reset_TypedFile`, `fpc_in_Rewrite_TypedFile`), which come from the
+RTL inline table.  The bootstrap translator does not import the RTL System
+unit while translating compiler units.
+
+Use the compiler-local inline ID constants from `compinnr.inc` instead,
+matching the way compiler code normally reasons about `tinlinenumber` values.
+
+--- a/compiler/ncal.pas
++++ b/compiler/ncal.pas
+@@ -284,6 +284,8 @@ implementation
+       procinfo,cpuinfo,
+       wpobase;
+ 
++    {$i compinnr.inc}
++
+     type
+      tobjectinfoitem = class(tlinkedlistitem)
+        objinfo : tobjectdef;
+@@ -3126,7 +3128,7 @@ implementation
+               begin
+                 { convert types to those of the prototype, this is required by functions like ror, rol, sar
+                   some use however a dummy type (Typedfile) so this would break them }
+-                if not(tprocdef(procdefinition).extnumber in [fpc_in_Reset_TypedFile,fpc_in_Rewrite_TypedFile]) then
++                if not(tprocdef(procdefinition).extnumber in [in_reset_typedfile,in_rewrite_typedfile]) then
+                   begin
+                     { bind parasyms to the callparanodes and insert hidden parameters }
+                     bind_parasym;
