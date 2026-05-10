@@ -3013,6 +3013,81 @@ inline void p_setlength(tp2cc_AnsiString& s, int new_len) {
   s.set_length(new_len);
 }
 
+// Pascal SetString uses an explicit character count. Copy that many bytes from
+// the pointer instead of assigning from PChar, which would stop at the first
+// NUL byte and lose data in compiler string-table slices.
+inline int32_t tp2cc_setstring_length(int len, int cap) {
+  if (len <= 0) return 0;
+  return len > cap ? cap : len;
+}
+
+inline void tp2cc_copy_counted_chars(p_char* dest, const p_char* src,
+                                     int32_t count) {
+  if (count > 0) {
+    std::memmove(dest, src, static_cast<size_t>(count) * sizeof(p_char));
+  }
+}
+
+inline void tp2cc_copy_counted_chars(p_char* dest, const char* src,
+                                     int32_t count) {
+  for (int32_t i = 0; i < count; ++i) dest[i] = tp2cc_char_of(src[i]);
+}
+
+template <int N, typename Src>
+inline void tp2cc_set_shortstring_from_counted_chars(
+    tp2cc_ShortString<N>& dest, const Src* src, int len) {
+  const int32_t count = src ? tp2cc_setstring_length(len, N) : 0;
+  dest.length = static_cast<uint8_t>(count);
+  tp2cc_copy_counted_chars(dest.data, src, count);
+}
+
+template <int N, typename Src>
+inline void tp2cc_set_shortstring_from_counted_chars(
+    tp2cc_ShortStringPtrRef<N> dest, const Src* src, int len) {
+  const int32_t count = src ? tp2cc_setstring_length(len, N) : 0;
+  *dest.storage = static_cast<uint8_t>(count);
+  tp2cc_copy_counted_chars(dest.bytes(), src, count);
+}
+
+template <typename Src>
+inline void tp2cc_set_ansistring_from_counted_chars(tp2cc_AnsiString& dest,
+                                                    const Src* src, int len) {
+  const int32_t count = src && len > 0 ? len : 0;
+  dest.set_length(count);
+  if (count > 0) tp2cc_copy_counted_chars(dest.mutable_bytes(), src, count);
+}
+
+template <int N>
+inline void p_setstring(tp2cc_ShortString<N>& dest, const p_char* src,
+                        int len) {
+  tp2cc_set_shortstring_from_counted_chars(dest, src, len);
+}
+
+template <int N>
+inline void p_setstring(tp2cc_ShortString<N>& dest, const char* src, int len) {
+  tp2cc_set_shortstring_from_counted_chars(dest, src, len);
+}
+
+template <int N>
+inline void p_setstring(tp2cc_ShortStringPtrRef<N> dest, const p_char* src,
+                        int len) {
+  tp2cc_set_shortstring_from_counted_chars(dest, src, len);
+}
+
+template <int N>
+inline void p_setstring(tp2cc_ShortStringPtrRef<N> dest, const char* src,
+                        int len) {
+  tp2cc_set_shortstring_from_counted_chars(dest, src, len);
+}
+
+inline void p_setstring(tp2cc_AnsiString& dest, const p_char* src, int len) {
+  tp2cc_set_ansistring_from_counted_chars(dest, src, len);
+}
+
+inline void p_setstring(tp2cc_AnsiString& dest, const char* src, int len) {
+  tp2cc_set_ansistring_from_counted_chars(dest, src, len);
+}
+
 template <typename T>
 inline void p_setlength(tp2cc_DynArray<T>& a, int new_len) {
   if (new_len <= 0) {

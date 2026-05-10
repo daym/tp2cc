@@ -75,6 +75,13 @@ void mark_builtin_memory_helper_param_info(
     mark(1, UntypedArgKind::Mutable, /*is_mutable=*/true);
     return;
   }
+  if (lower == "setstring") {
+    // System.SetString mutates the destination string variable. The source
+    // pointer is still an ordinary value because the third argument supplies
+    // the byte count to copy.
+    mark(0, UntypedArgKind::None, /*is_mutable=*/true);
+    return;
+  }
   if (lower == "blockread") {
     mark(1, UntypedArgKind::Mutable, /*is_mutable=*/true);
     return;

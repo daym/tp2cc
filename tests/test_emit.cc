@@ -4112,6 +4112,7 @@ void test_runtime_string_and_memory_helpers_resolve_explicitly() {
       "  initialize(x);\n"
       "  b := directoryexists(s);\n"
       "  s := inttostr(x);\n"
+      "  setstring(s, p, x);\n"
       "  s := trim(s);\n"
       "  p := strrscan(p, c);\n"
       "end;\n"
@@ -4121,6 +4122,7 @@ void test_runtime_string_and_memory_helpers_resolve_explicitly() {
   CHECK(contains(out.impl, "::rt::p_initialize("));
   CHECK(contains(out.impl, "::rt::p_directoryexists("));
   CHECK(contains(out.impl, "::rt::p_inttostr("));
+  CHECK(contains(out.impl, "::rt::p_setstring("));
   CHECK(contains(out.impl, "::rt::p_trim("));
   CHECK(contains(out.impl, "::rt::p_strrscan("));
 }

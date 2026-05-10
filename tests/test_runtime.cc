@@ -758,6 +758,33 @@ void test_inttostr_formats_integer_values() {
   CHECK_EQ(tp2cc_to_std_string(p_inttostr(uint32_t{42})), std::string("42"));
 }
 
+void test_setstring_copies_counted_bytes() {
+  const p_char raw[] = {tp2cc_char_of('A'), tp2cc_char_of('\0'),
+                        tp2cc_char_of('B'), tp2cc_char_of('C')};
+
+  tp2cc_ShortString<3> fixed{};
+  p_setstring(fixed, raw, 4);
+  CHECK_EQ(static_cast<int>(fixed.length), 3);
+  CHECK_EQ(tp2cc_char_to_c(fixed.data[0]), 'A');
+  CHECK_EQ(tp2cc_char_to_c(fixed.data[1]), '\0');
+  CHECK_EQ(tp2cc_char_to_c(fixed.data[2]), 'B');
+
+  tp2cc_AnsiString dynamic{};
+  p_setstring(dynamic, raw, 4);
+  CHECK_EQ(dynamic.length(), 4);
+  CHECK_EQ(tp2cc_char_to_c(dynamic.bytes()[0]), 'A');
+  CHECK_EQ(tp2cc_char_to_c(dynamic.bytes()[1]), '\0');
+  CHECK_EQ(tp2cc_char_to_c(dynamic.bytes()[2]), 'B');
+  CHECK_EQ(tp2cc_char_to_c(dynamic.bytes()[3]), 'C');
+
+  p_setstring(dynamic, "xy\0z", 4);
+  CHECK_EQ(dynamic.length(), 4);
+  CHECK_EQ(tp2cc_char_to_c(dynamic.bytes()[0]), 'x');
+  CHECK_EQ(tp2cc_char_to_c(dynamic.bytes()[1]), 'y');
+  CHECK_EQ(tp2cc_char_to_c(dynamic.bytes()[2]), '\0');
+  CHECK_EQ(tp2cc_char_to_c(dynamic.bytes()[3]), 'z');
+}
+
 void test_reinterpret_bytes_copies_raw_object_bytes() {
   long double v = 10.0L;
   auto bytes = tp2cc_reinterpret_bytes<tp2cc_Array<uint8_t, 0, sizeof(v)>>(v);
@@ -1437,6 +1464,7 @@ int main() {
   RUN_TEST(test_shortstring_assignment_from_char_array_matches_fpc);
   RUN_TEST(test_str_formats_real_values);
   RUN_TEST(test_inttostr_formats_integer_values);
+  RUN_TEST(test_setstring_copies_counted_bytes);
   RUN_TEST(test_reinterpret_bytes_copies_raw_object_bytes);
   RUN_TEST(test_reinterpret_copy_preserves_scalar_bit_pattern);
   RUN_TEST(test_reinterpret_load_store_and_inc_handle_misaligned_bytes);

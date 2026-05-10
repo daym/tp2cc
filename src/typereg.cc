@@ -481,6 +481,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"reallocmem", 2, false, false, ""},
       {"allocmem",   1, true,  false, "pointer"},
       {"setlength",  2, false, false, ""},
+      {"setstring",  3, false, false, ""},
       {"dispose",    1, false, false, ""},
       {"strdispose", 1, false, false, ""},
       {"val",        3, false, false, ""},
