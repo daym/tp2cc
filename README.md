@@ -2,6 +2,44 @@
 
 This is a small compiler for the Pascal language, written in C++.
 
+# Usage
+
+Create file `prog.pas` with the following content:
+
+```
+program prog;
+uses u1, u2;
+begin
+  Writeln('hello world')
+end.
+```
+
+Create file `u1.pas` with the following content:
+
+```
+unit u1;
+interface
+implementation
+end.
+```
+
+Create file `u2.pas` with the following content:
+
+```
+unit u2;
+interface
+implementation
+end.
+```
+
+```
+$ tp2cc emit-all -m prog.pas .
+$ make -j
+$ ./prog
+```
+
+# Bootstrap
+
 The aim is to bootstrap fpc 0.99.14, fpc 1.0.6, and FPC 2.x
 compilers up to FPC 2.6.0 with it.
 
