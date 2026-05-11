@@ -1081,7 +1081,7 @@ In the table, ~S~ denotes any tp2cc-supported string value (typically ~String~, 
 | ~ParamCount~, ~ParamStr~ | ~ParamCount: LongInt~, ~ParamStr(I): ShortString~ | Program argument count and argument lookup. |
 | ~Halt~, ~RunError~ | ~Halt([Code])~, ~RunError([Code])~ | Stops execution with an exit or runtime error code. |
 | ~Assert~ | ~Assert(Condition[, Message])~ | Raises a runtime assertion failure when the condition is false. |
-| ~MemAvail~, ~HeapAvail~, ~MaxAvail~ | no arguments, returns ~LongInt~ | Stub compatibility memory-availability functions; ~MemAvail~ returns a fixed large value. |
+| ~MemAvail~ | no arguments, returns ~LongInt~ | Stub compatibility memory-availability functions; ~MemAvail~ returns a fixed large value. |
 | ~SwapVectors~ | no arguments | Stub: compatibility no-op. |
 | ~Dosexitcode~ | ~Dosexitcode: LongInt~ | Last process exit status recorded by Dos-style process helpers. |
 | ~Swap~ | ~Swap(X): LongInt~ or word-sized result | Byte-swaps 16-bit and 32-bit integer values. |

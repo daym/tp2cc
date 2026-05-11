@@ -3310,8 +3310,6 @@ template <typename T, typename N> inline void tp2cc_reinterpret_dec(void* p, N n
 // --- Missing small RTL procedures ------------------------------------------
 
 inline int32_t p_memavail() { return 1 << 30; }   // stub: "lots of memory"
-//inline int32_t p_heapavail() { return 1 << 30; }
-//inline int32_t p_maxavail()  { return 1 << 30; }
 
 inline int32_t tp2cc_last_ioresult = 0;
 

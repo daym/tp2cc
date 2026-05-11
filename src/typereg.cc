@@ -674,8 +674,6 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"eoln",       1, true,  true,  "boolean"},
       {"ioresult",   0, true,  false, "longint"},
       {"memavail",   0, true,  false, "longint"},
-      {"heapavail",  0, true,  false, "longint"},
-      {"maxavail",   0, true,  false, "longint"},
       {"paramcount", 0, true,  false, "longint"},
       {"dosexitcode",0, true,  false, "longint"},
       {"date",       0, true,  false, "tdatetime"},
