@@ -504,7 +504,8 @@ struct tp2cc_ShortString {
   template <int M>
   friend constexpr auto operator+(const tp2cc_ShortString& a,
                                   const tp2cc_ShortString<M>& b) {
-    constexpr int R = (N > M ? N : M);
+    // Pascal `string[N] + string[M]` holds the full concatenation.
+    constexpr int R = (N + M > 255 ? 255 : N + M);
     tp2cc_ShortString<R> out{};
     int n = a.length + b.length;
     if (n > R) n = R;
