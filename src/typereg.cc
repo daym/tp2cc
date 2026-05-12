@@ -45,10 +45,16 @@ void collect_enum_types(const TypeExpr& t,
       const auto& r = static_cast<const TyRecord&>(t);
       for (const auto& f : r.fields)
         if (f.type) collect_enum_types(*f.type, out);
-      if (r.variant_tag_type) collect_enum_types(*r.variant_tag_type, out);
-      for (const auto& vc : r.variant_cases)
-        for (const auto& f : vc.fields)
-          if (f.type) collect_enum_types(*f.type, out);
+      auto collect_variant = [&](auto& self, const std::shared_ptr<ast::VariantPart>& vpart) -> void {
+        if (!vpart) return;
+        if (vpart->tag_type) collect_enum_types(*vpart->tag_type, out);
+        for (const auto& vc : vpart->cases) {
+          for (const auto& f : vc.fields)
+            if (f.type) collect_enum_types(*f.type, out);
+          self(self, vc.variant_part);
+        }
+      };
+      collect_variant(collect_variant, r.variant_part);
       return;
     }
     case Kind::TyObject: {
@@ -229,18 +235,21 @@ std::unordered_map<std::string, FieldInfo> record_fields(const TyRecord& tr) {
     const FieldInfo field{.type = f.type, .is_class_var = false};
     for (const auto& n : f.names) fields[lc(n)] = field;
   }
-  // Variant-record tag (`case typ : toptype of ...`) -- `typ` is an
-  // actual field in the emitted struct, so it must be indexed as one.
-  if (tr.has_variant && !tr.variant_tag_name.empty()) {
-    fields[lc(tr.variant_tag_name)] =
-        FieldInfo{.type = tr.variant_tag_type, .is_class_var = false};
-  }
-  for (const auto& vc : tr.variant_cases) {
-    for (const auto& f : vc.fields) {
-      const FieldInfo field{.type = f.type, .is_class_var = false};
-      for (const auto& n : f.names) fields[lc(n)] = field;
+  auto index_variants = [&](auto& self, const std::shared_ptr<ast::VariantPart>& vpart) -> void {
+    if (!vpart) return;
+    if (!vpart->tag_name.empty()) {
+      fields[lc(vpart->tag_name)] = 
+          FieldInfo{.type = vpart->tag_type, .is_class_var = false};
     }
-  }
+    for (const auto& vc : vpart->cases) {
+      for (const auto& f : vc.fields) {
+        const FieldInfo field{.type = f.type, .is_class_var = false};
+        for (const auto& n : f.names) fields[lc(n)] = field;
+      }
+      self(self, vc.variant_part);
+    }
+  };
+  index_variants(index_variants, tr.variant_part);
   return fields;
 }
 
@@ -904,8 +913,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   };
   auto make_record = [](std::vector<ast::RecordField> fields) {
     return std::make_shared<ast::TyRecord>(
-        Location{}, std::move(fields), false, std::string{}, nullptr,
-        std::vector<ast::VariantCase>{}, false);
+        Location{}, std::move(fields), nullptr, false);
   };
   auto make_set = [](ast::TypePtr element) {
     return std::make_shared<ast::TySet>(Location{}, std::move(element));

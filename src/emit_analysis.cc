@@ -1472,11 +1472,22 @@ const TypeExpr* EmitAnalysis::lookup_record_field_type_in_type(
   for (const auto& rf : rec.fields) {
     if (const TypeExpr* ft = match_field(rf)) return ft;
   }
-  for (const auto& vc : rec.variant_cases) {
-    for (const auto& rf : vc.fields) {
-      if (const TypeExpr* ft = match_field(rf)) return ft;
+  
+  auto match_variant = [&](auto& self, const std::shared_ptr<ast::VariantPart>& vpart) -> const TypeExpr* {
+    if (!vpart) return nullptr;
+    if (!vpart->tag_name.empty()) {
+      if (ascii_lower(vpart->tag_name) == ascii_lower(field_name)) return vpart->tag_type.get();
     }
-  }
+    for (const auto& vc : vpart->cases) {
+      for (const auto& rf : vc.fields) {
+        if (const TypeExpr* ft = match_field(rf)) return ft;
+      }
+      if (const TypeExpr* ft = self(self, vc.variant_part)) return ft;
+    }
+    return nullptr;
+  };
+  
+  if (const TypeExpr* ft = match_variant(match_variant, rec.variant_part)) return ft;
   return nullptr;
 }
 

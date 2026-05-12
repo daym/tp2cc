@@ -788,24 +788,24 @@ std::string EmitTypes::inline_record_type_to_cxx(const TyRecord& tr) {
   };
   append_fields(tr.fields);
 
-  auto append_variant = [&](auto& self, bool has_v, const std::string& tag_name, TypePtr tag_type, const std::vector<VariantCase>& cases, bool is_packed) -> void {
-    if (!has_v) return;
-    if (!tag_name.empty() && tag_type) {
-      append_fields({RecordField({tag_name}, tag_type)});
+  auto append_variant = [&](auto& self, const std::shared_ptr<ast::VariantPart>& vpart, bool is_packed) -> void {
+    if (!vpart) return;
+    if (!vpart->tag_name.empty() && vpart->tag_type) {
+      append_fields({RecordField({vpart->tag_name}, vpart->tag_type)});
     }
     out += "union { ";
-    for (const auto& vc : cases) {
-      if (vc.fields.empty() && !vc.has_variant) continue;
+    for (const auto& vc : vpart->cases) {
+      if (vc.fields.empty() && !vc.variant_part) continue;
       out += "struct ";
       if (is_packed) out += "[[gnu::packed]] ";
       out += "{ ";
       append_fields(vc.fields);
-      self(self, vc.has_variant, vc.variant_tag_name, vc.variant_tag_type, vc.variant_cases, is_packed);
+      self(self, vc.variant_part, is_packed);
       out += "}; ";
     }
     out += "}; ";
   };
-  append_variant(append_variant, tr.has_variant, tr.variant_tag_name, tr.variant_tag_type, tr.variant_cases, tr.is_packed);
+  append_variant(append_variant, tr.variant_part, tr.is_packed);
   
   out += "}";
   return out;
@@ -867,37 +867,35 @@ EmitPackedRecordLayout EmitTypes::compute_packed_record_layout(
   std::string size_expr = "0";
   append_run(tr.fields, "0", size_expr);
 
-  auto append_variant_run = [&](auto& self, bool has_v,
-                                const std::string& tag_name, TypePtr tag_type,
-                                const std::vector<VariantCase>& cases,
+  auto append_variant_run = [&](auto& self,
+                                const std::shared_ptr<ast::VariantPart>& vpart,
                                 const std::string& base_offset) -> std::string {
-    if (!has_v) return "0";
+    if (!vpart) return "0";
     std::string prefix_size = "0";
-    if (!tag_name.empty() && tag_type) {
-      append_run({RecordField({tag_name}, tag_type)}, base_offset, prefix_size);
+    if (!vpart->tag_name.empty() && vpart->tag_type) {
+      append_run({RecordField({vpart->tag_name}, vpart->tag_type)},
+                 base_offset, prefix_size);
     }
     std::vector<std::string> case_sizes;
     const std::string union_offset = add_offset(base_offset, prefix_size);
-    for (const auto& vc : cases) {
-      if (vc.fields.empty() && !vc.has_variant) continue;
+    for (const auto& vc : vpart->cases) {
+      if (vc.fields.empty() && !vc.variant_part) continue;
       std::string case_size_expr = "0";
       append_run(vc.fields, union_offset, case_size_expr);
-      if (vc.has_variant) {
+      if (vc.variant_part) {
         case_size_expr = add_size(
             case_size_expr,
-            self(self, vc.has_variant, vc.variant_tag_name, vc.variant_tag_type,
-                 vc.variant_cases, add_offset(union_offset, case_size_expr)));
+            self(self, vc.variant_part,
+                 add_offset(union_offset, case_size_expr)));
       }
       case_sizes.push_back(case_size_expr);
     }
     return add_size(prefix_size, max_size(case_sizes));
   };
-  
+
   size_expr = add_size(
       size_expr,
-      append_variant_run(append_variant_run, tr.has_variant,
-                         tr.variant_tag_name, tr.variant_tag_type,
-                         tr.variant_cases, size_expr));
+      append_variant_run(append_variant_run, tr.variant_part, size_expr));
   return {std::move(field_offsets), size_expr};
 }
 

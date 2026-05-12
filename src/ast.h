@@ -726,13 +726,18 @@ struct RecordField {
 };
 
 // Variant-record tail: `case Tag : T of lit,lit : (fields...); ...`
+struct VariantCase;
+
+struct VariantPart {
+  std::string tag_name;
+  TypePtr tag_type;
+  std::vector<VariantCase> cases;
+};
+
 struct VariantCase {
   std::vector<ExprPtr> labels;
   std::vector<RecordField> fields;
-  bool has_variant = false;
-  std::string variant_tag_name;
-  TypePtr variant_tag_type;
-  std::vector<VariantCase> variant_cases;
+  std::shared_ptr<VariantPart> variant_part;
   
   VariantCase() = default;
   VariantCase(std::vector<ExprPtr> labels_in,
@@ -740,33 +745,22 @@ struct VariantCase {
       : labels(std::move(labels_in)), fields(std::move(fields_in)) {}
   VariantCase(std::vector<ExprPtr> labels_in,
               std::vector<RecordField> fields_in,
-              bool has_variant_in, std::string variant_tag_name_in,
-              TypePtr variant_tag_type_in,
-              std::vector<VariantCase> variant_cases_in)
+              std::shared_ptr<VariantPart> variant_part_in)
       : labels(std::move(labels_in)), fields(std::move(fields_in)),
-        has_variant(has_variant_in), variant_tag_name(std::move(variant_tag_name_in)),
-        variant_tag_type(std::move(variant_tag_type_in)), variant_cases(std::move(variant_cases_in)) {}
+        variant_part(std::move(variant_part_in)) {}
 };
 
 struct TyRecord : TypeExpr {
   std::vector<RecordField> fields;
   // Optional variant part:
-  bool has_variant = false;
-  std::string variant_tag_name;    // may be empty when untagged: `case T of`
-  TypePtr variant_tag_type;
-  std::vector<VariantCase> variant_cases;
+  std::shared_ptr<VariantPart> variant_part;
   bool is_packed = false;
   TyRecord() : TypeExpr(Kind::TyRecord) {}
   TyRecord(Location loc_in, std::vector<RecordField> fields_in,
-           bool has_variant_in, std::string variant_tag_name_in,
-           TypePtr variant_tag_type_in,
-           std::vector<VariantCase> variant_cases_in, bool is_packed_in)
+           std::shared_ptr<VariantPart> variant_part_in, bool is_packed_in)
       : TypeExpr(Kind::TyRecord, loc_in),
         fields(std::move(fields_in)),
-        has_variant(has_variant_in),
-        variant_tag_name(std::move(variant_tag_name_in)),
-        variant_tag_type(std::move(variant_tag_type_in)),
-        variant_cases(std::move(variant_cases_in)),
+        variant_part(std::move(variant_part_in)),
         is_packed(is_packed_in) {}
 };
 

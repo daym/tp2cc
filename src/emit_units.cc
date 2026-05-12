@@ -81,9 +81,16 @@ void collect_type_refs(const TypeExpr& t, std::unordered_set<std::string>& out) 
       const auto& r = static_cast<const TyRecord&>(t);
       for (const auto& f : r.fields)
         if (f.type) collect_type_refs(*f.type, out);
-      for (const auto& vc : r.variant_cases)
-        for (const auto& f : vc.fields)
-          if (f.type) collect_type_refs(*f.type, out);
+      auto collect_variant = [&](auto& self, const std::shared_ptr<ast::VariantPart>& vpart) -> void {
+        if (!vpart) return;
+        if (vpart->tag_type) collect_type_refs(*vpart->tag_type, out);
+        for (const auto& vc : vpart->cases) {
+          for (const auto& f : vc.fields)
+            if (f.type) collect_type_refs(*f.type, out);
+          self(self, vc.variant_part);
+        }
+      };
+      collect_variant(collect_variant, r.variant_part);
       return;
     }
     case Kind::TyObject: {

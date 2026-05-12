@@ -1197,22 +1197,18 @@ TypePtr Parser::parse_record_type(bool packed) {
     if (!accept(Tok::Semi)) break;
   }
 
-  bool has_variant = false;
-  std::string variant_tag_name;
-  TypePtr variant_tag_type;
-  std::vector<VariantCase> variant_cases;
-
-  auto parse_variants = [&](auto& self, bool& has_var, std::string& tag_name, TypePtr& tag_type, std::vector<VariantCase>& cases) -> void {
+  auto parse_variants = [&](auto& self, std::shared_ptr<VariantPart>& vpart) -> void {
     if (!accept(Tok::KwCase)) return;
-    has_var = true;
+    std::string tag_name;
     if (cur_.kind == Tok::Ident && peek().kind == Tok::Colon) {
       tag_name = cur_.text;
       advance();
       advance();  // ':'
     }
-    tag_type = parse_type();
+    TypePtr tag_type = parse_type();
     expect(Tok::KwOf, "variant record");
 
+    std::vector<VariantCase> cases;
     while (!at_end() && !check(Tok::KwEnd) && !check(Tok::RParen)) {
       std::vector<ExprPtr> labels;
       labels.push_back(parse_expr());
@@ -1233,26 +1229,24 @@ TypePtr Parser::parse_record_type(bool packed) {
         if (!accept(Tok::Semi)) break;
       }
       
-      bool nested_has = false;
-      std::string nested_tag_name;
-      TypePtr nested_tag_type;
-      std::vector<VariantCase> nested_cases;
-      self(self, nested_has, nested_tag_name, nested_tag_type, nested_cases);
+      std::shared_ptr<VariantPart> nested_vpart;
+      self(self, nested_vpart);
 
       // printf removed
       expect(Tok::RParen, "variant case");
-      cases.emplace_back(std::move(labels), std::move(case_fields), (bool)nested_has, std::move(nested_tag_name), std::move(nested_tag_type), std::move(nested_cases));
+      cases.emplace_back(std::move(labels), std::move(case_fields), std::move(nested_vpart));
       if (!accept(Tok::Semi)) break;
     }
     // printf removed
+    vpart = std::make_shared<VariantPart>(VariantPart{std::move(tag_name), std::move(tag_type), std::move(cases)});
   };
   
-  parse_variants(parse_variants, has_variant, variant_tag_name, variant_tag_type, variant_cases);
+  std::shared_ptr<VariantPart> vpart;
+  parse_variants(parse_variants, vpart);
 
   expect(Tok::KwEnd, "record");
   return std::make_shared<TyRecord>(
-      loc, std::move(fields), has_variant, std::move(variant_tag_name),
-      std::move(variant_tag_type), std::move(variant_cases), packed);
+      loc, std::move(fields), std::move(vpart), packed);
 }
 
 TypePtr Parser::parse_object_type() {

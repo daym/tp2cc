@@ -320,25 +320,25 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
     };
     emit_field_decls(tr.fields);
 
-    auto emit_variant_decls = [&](auto& self, bool has_v, const std::string& tag_name, TypePtr tag_type, const std::vector<ast::VariantCase>& cases, bool is_packed) -> void {
-      if (!has_v) return;
-      if (!tag_name.empty() && tag_type) {
+    auto emit_variant_decls = [&](auto& self, const std::shared_ptr<ast::VariantPart>& vpart, bool is_packed) -> void {
+      if (!vpart) return;
+      if (!vpart->tag_name.empty() && vpart->tag_type) {
         RecordField tag_field;
-        tag_field.names.push_back(tag_name);
-        tag_field.type = tag_type;
+        tag_field.names.push_back(vpart->tag_name);
+        tag_field.type = vpart->tag_type;
         emit_field_decls({tag_field});
       }
       emit_ops_.emitln("union {");
       emit_ops_.indent();
-      for (const auto& vc : cases) {
-        if (vc.fields.empty() && !vc.has_variant) continue;
+      for (const auto& vc : vpart->cases) {
+        if (vc.fields.empty() && !vc.variant_part) continue;
         std::string case_open = "struct ";
         if (is_packed) case_open += "[[gnu::packed]] ";
         case_open += "{";
         emit_ops_.emitln(case_open);
         emit_ops_.indent();
         emit_field_decls(vc.fields);
-        self(self, vc.has_variant, vc.variant_tag_name, vc.variant_tag_type, vc.variant_cases, is_packed);
+        self(self, vc.variant_part, is_packed);
         emit_ops_.dedent();
         emit_ops_.emitln("};");
       }
@@ -346,7 +346,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
       emit_ops_.emitln("};");
     };
 
-    emit_variant_decls(emit_variant_decls, tr.has_variant, tr.variant_tag_name, tr.variant_tag_type, tr.variant_cases, tr.is_packed);
+    emit_variant_decls(emit_variant_decls, tr.variant_part, tr.is_packed);
 
     emit_ops_.dedent();
     emit_ops_.emitln("};");
