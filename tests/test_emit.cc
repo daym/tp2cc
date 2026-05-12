@@ -434,7 +434,7 @@ void test_packed_record_shortstring_field_emits_exact_layout_asserts() {
   CHECK(contains(out.header, "::rt::tp2cc_ShortString<30> p_name;"));
   CHECK(contains(out.header, "static_assert(offsetof(t_trec, p_name) == 0"));
   CHECK(contains(out.header,
-                 "static_assert(sizeof(t_trec) == (0 + sizeof(::rt::tp2cc_ShortString<30>))"));
+                 "static_assert(sizeof(t_trec) == sizeof(::rt::tp2cc_ShortString<30>)"));
 }
 
 void test_packed_record_array_field_keeps_array_wrapper_with_exact_layout_asserts() {
@@ -450,7 +450,43 @@ void test_packed_record_array_field_keeps_array_wrapper_with_exact_layout_assert
   CHECK(contains(out.header, "::rt::tp2cc_Array<int32_t, 0, ((2) - (0) + 1)> p_future;"));
   CHECK(contains(out.header, "static_assert(offsetof(t_trec, p_future) == 0"));
   CHECK(contains(out.header,
-                 "static_assert(sizeof(t_trec) == (0 + sizeof(::rt::tp2cc_Array<int32_t, 0, ((2) - (0) + 1)>))"));
+                 "static_assert(sizeof(t_trec) == sizeof(::rt::tp2cc_Array<int32_t, 0, ((2) - (0) + 1)>)"));
+}
+
+void test_nested_variant_record_preserves_inner_tag_and_recursively_emits_union() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    case outertag: integer of\n"
+      "      1: (\n"
+      "        case innertag: integer of\n"
+      "          0: (val: integer);\n"
+      "          1: (str: pansichar);\n"
+      "      );\n"
+      "      2: (other: integer);\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "int32_t p_outertag;"));
+  CHECK(contains(out.header, "int32_t p_innertag;"));
+  CHECK(contains(out.header, "  union {\n"
+                             "    struct {\n"
+                             "      int32_t p_innertag;\n"
+                             "      union {\n"
+                             "        struct {\n"
+                             "          int32_t p_val;\n"
+                             "        };\n"
+                             "        struct {\n"
+                             "          ::rt::p_char* p_str;\n"
+                             "        };\n"
+                             "      };\n"
+                             "    };\n"
+                             "    struct {\n"
+                             "      int32_t p_other;\n"
+                             "    };\n"
+                             "  };\n"));
 }
 
 void test_packed_variant_record_emits_packed_case_layout_asserts() {
@@ -469,11 +505,33 @@ void test_packed_variant_record_emits_packed_case_layout_asserts() {
   CHECK(contains(out.header, "struct [[gnu::packed]] {"));
   CHECK(contains(out.header, "static_assert(offsetof(t_trec, p_tag) == 0"));
   CHECK(contains(out.header,
-                 "static_assert(offsetof(t_trec, p_a) == ((0 + sizeof(uint8_t)) + 0)"));
+                 "static_assert(offsetof(t_trec, p_a) == sizeof(uint8_t)"));
   CHECK(contains(out.header,
-                 "static_assert(offsetof(t_trec, p_b) == ((0 + sizeof(uint8_t)) + (0 + sizeof(uint16_t)))"));
-  CHECK(contains(out.header,
-                 "static_assert(sizeof(t_trec) == ((0 + sizeof(uint8_t)) + ((((0 + sizeof(uint16_t)) + sizeof(int32_t))) < ((0 + sizeof(int32_t))) ? ((0 + sizeof(int32_t))) : (((0 + sizeof(uint16_t)) + sizeof(int32_t)))))"));
+                 "static_assert(offsetof(t_trec, p_b) == (sizeof(uint8_t) + sizeof(uint16_t))"));
+  CHECK(contains(out.header, "static_assert(sizeof(t_trec) == (sizeof(uint8_t) + ::std::max({"));
+  CHECK(!contains(out.header, " ? "));
+}
+
+void test_packed_variant_record_many_cases_uses_linear_size_max() {
+  std::string src =
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = packed record\n"
+      "    case byte of\n";
+  for (int i = 0; i < 96; ++i) {
+    src += "      " + std::to_string(i) + " : (f" + std::to_string(i) +
+           " : longint);\n";
+  }
+  src +=
+      "  end;\n"
+      "implementation\n"
+      "end.\n";
+  auto out = compile_snippet(std::move(src));
+  CHECK(contains(out.header, "static_assert(sizeof(t_trec) == ::std::max({"));
+  CHECK_EQ(count_substring(out.header, "::std::max({"), size_t{1});
+  CHECK(!contains(out.header, " ? "));
+  CHECK(out.header.size() < 50000);
 }
 
 void test_packed_record_array_index_reports_error() {
@@ -8703,6 +8761,23 @@ void test_cxx_reserved_word_identifiers() {
   CHECK(!contains(out.header, " template "));
 }
 
+void test_multiple_case_blocks_in_record_errors_out() {
+  int before = error_count();
+  (void)compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    case b: integer of\n"
+      "      0: (x: integer);\n"
+      "    case c: integer of\n"
+      "      1: (y: integer);\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
 }  // namespace
 
 int main() {
@@ -8728,7 +8803,10 @@ int main() {
   RUN_TEST(test_char_subrange_preserves_char_storage);
   RUN_TEST(test_packed_record_shortstring_field_emits_exact_layout_asserts);
   RUN_TEST(test_packed_record_array_field_keeps_array_wrapper_with_exact_layout_asserts);
+  RUN_TEST(test_nested_variant_record_preserves_inner_tag_and_recursively_emits_union);
   RUN_TEST(test_packed_variant_record_emits_packed_case_layout_asserts);
+  RUN_TEST(test_packed_variant_record_many_cases_uses_linear_size_max);
+  RUN_TEST(test_multiple_case_blocks_in_record_errors_out);
   RUN_TEST(test_packed_record_array_index_reports_error);
   RUN_TEST(test_packed_record_nested_scalar_value_uses_unaligned_load);
   RUN_TEST(test_packed_record_nested_scalar_assignment_reports_error);
@@ -9082,3 +9160,4 @@ int main() {
               (n == 1 ? "" : "s"));
   return n == 0 ? 0 : 1;
 }
+

@@ -285,9 +285,11 @@ void test_variant_record() {
       auto* tr = dynamic_cast<TyRecord*>(td->type.get());
       CHECK(tr);
       if (tr) {
-        CHECK(tr->has_variant);
-        CHECK_EQ(tr->variant_tag_name, std::string("k"));
-        CHECK_EQ(tr->variant_cases.size(), size_t{2});
+        CHECK(tr->variant_part != nullptr);
+        if (tr->variant_part) {
+          CHECK_EQ(tr->variant_part->tag_name, std::string("k"));
+          CHECK_EQ(tr->variant_part->cases.size(), size_t{2});
+        }
       }
     }
   }

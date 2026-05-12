@@ -783,28 +783,30 @@ std::string EmitTypes::inline_record_type_to_cxx(const TyRecord& tr) {
   out += "{ ";
   auto append_fields = [&](const std::vector<RecordField>& fields) {
     for (const auto& field : record_field_decls(fields)) {
-      out += field.decl + "; ";
+      out += field.type_cxx + " " + field.mangled_name + "; ";
     }
   };
-
   append_fields(tr.fields);
-  if (tr.has_variant) {
-    if (!tr.variant_tag_name.empty() && tr.variant_tag_type) {
-      append_fields({RecordField({tr.variant_tag_name}, tr.variant_tag_type)});
+
+  auto append_variant = [&](auto& self, bool has_v, const std::string& tag_name, TypePtr tag_type, const std::vector<VariantCase>& cases, bool is_packed) -> void {
+    if (!has_v) return;
+    if (!tag_name.empty() && tag_type) {
+      append_fields({RecordField({tag_name}, tag_type)});
     }
     out += "union { ";
-    for (const auto& vc : tr.variant_cases) {
-      if (vc.fields.empty()) continue;
-      // GNU C++ anonymous structs inside anonymous unions match Pascal's
-      // anonymous variant fields: `r.v.f` works without naming a case arm.
+    for (const auto& vc : cases) {
+      if (vc.fields.empty() && !vc.has_variant) continue;
       out += "struct ";
-      if (tr.is_packed) out += "[[gnu::packed]] ";
+      if (is_packed) out += "[[gnu::packed]] ";
       out += "{ ";
       append_fields(vc.fields);
+      self(self, vc.has_variant, vc.variant_tag_name, vc.variant_tag_type, vc.variant_cases, is_packed);
       out += "}; ";
     }
     out += "}; ";
-  }
+  };
+  append_variant(append_variant, tr.has_variant, tr.variant_tag_name, tr.variant_tag_type, tr.variant_cases, tr.is_packed);
+  
   out += "}";
   return out;
 }
@@ -828,45 +830,75 @@ std::vector<EmitRecordFieldDecl> EmitTypes::record_field_decls(
 EmitPackedRecordLayout EmitTypes::compute_packed_record_layout(
     const TyRecord& tr) {
   std::vector<std::pair<std::string, std::string>> field_offsets;
+
+  auto add_size = [](const std::string& left,
+                     const std::string& right) -> std::string {
+    if (left == "0") return right;
+    if (right == "0") return left;
+    return "(" + left + " + " + right + ")";
+  };
+  auto add_offset = [&](const std::string& base,
+                        const std::string& delta) -> std::string {
+    if (delta == "0") return base;
+    return add_size(base, delta);
+  };
+  auto max_size = [](const std::vector<std::string>& sizes) -> std::string {
+    if (sizes.empty()) return "0";
+    if (sizes.size() == 1) return sizes.front();
+    std::string out = "::std::max({";
+    for (size_t i = 0; i < sizes.size(); ++i) {
+      if (i) out += ", ";
+      out += "static_cast<::std::size_t>(" + sizes[i] + ")";
+    }
+    out += "})";
+    return out;
+  };
+
+  auto append_run = [&](const std::vector<RecordField>& fields,
+                        const std::string& base_offset,
+                        std::string& size_expr) {
+    for (const auto& field : record_field_decls(fields)) {
+      field_offsets.emplace_back(field.mangled_name,
+                                 add_offset(base_offset, size_expr));
+      size_expr = add_size(size_expr, "sizeof(" + field.type_cxx + ")");
+    }
+  };
+
   std::string size_expr = "0";
-  auto append_run =
-      [&](const std::vector<RecordField>& fields, std::string& size_expr) {
-        for (const auto& field : record_field_decls(fields)) {
-          field_offsets.emplace_back(field.mangled_name, size_expr);
-          size_expr = "(" + size_expr + " + sizeof(" + field.type_cxx + "))";
-        }
-      };
-  append_run(tr.fields, size_expr);
-  if (tr.has_variant) {
-    if (!tr.variant_tag_name.empty() && tr.variant_tag_type) {
-      append_run({RecordField({tr.variant_tag_name}, tr.variant_tag_type)},
-                 size_expr);
+  append_run(tr.fields, "0", size_expr);
+
+  auto append_variant_run = [&](auto& self, bool has_v,
+                                const std::string& tag_name, TypePtr tag_type,
+                                const std::vector<VariantCase>& cases,
+                                const std::string& base_offset) -> std::string {
+    if (!has_v) return "0";
+    std::string prefix_size = "0";
+    if (!tag_name.empty() && tag_type) {
+      append_run({RecordField({tag_name}, tag_type)}, base_offset, prefix_size);
     }
     std::vector<std::string> case_sizes;
-    for (const auto& vc : tr.variant_cases) {
-      if (vc.fields.empty()) continue;
+    const std::string union_offset = add_offset(base_offset, prefix_size);
+    for (const auto& vc : cases) {
+      if (vc.fields.empty() && !vc.has_variant) continue;
       std::string case_size_expr = "0";
-      for (const auto& field : record_field_decls(vc.fields)) {
-        // Variant-case fields share the same outer offset; the per-case base
-        // is `(packed_size_expr + case_size_so_far)`.
-        const std::string field_offset =
-            "(" + size_expr + " + " + case_size_expr + ")";
-        field_offsets.emplace_back(field.mangled_name, field_offset);
-        case_size_expr =
-            "(" + case_size_expr + " + sizeof(" + field.type_cxx + "))";
+      append_run(vc.fields, union_offset, case_size_expr);
+      if (vc.has_variant) {
+        case_size_expr = add_size(
+            case_size_expr,
+            self(self, vc.has_variant, vc.variant_tag_name, vc.variant_tag_type,
+                 vc.variant_cases, add_offset(union_offset, case_size_expr)));
       }
       case_sizes.push_back(case_size_expr);
     }
-    if (!case_sizes.empty()) {
-      std::string max_case = case_sizes.front();
-      for (size_t i = 1; i < case_sizes.size(); ++i) {
-        max_case = "((" + max_case + ") < (" + case_sizes[i] + ") ? (" +
-                   case_sizes[i] + ") : (" + max_case + "))";
-      }
-      size_expr = "(" + size_expr + " + " + max_case + ")";
-    }
-  }
-  return EmitPackedRecordLayout(std::move(field_offsets), std::move(size_expr));
+    return add_size(prefix_size, max_size(case_sizes));
+  };
+  
+  size_expr = add_size(
+      size_expr,
+      append_variant_run(append_variant_run, tr.has_variant,
+                         tr.variant_tag_name, tr.variant_tag_type,
+                         tr.variant_cases, size_expr));
+  return {std::move(field_offsets), size_expr};
 }
 
 std::string EmitTypes::named_type_to_cxx(const TypeExpr* t, std::string_view name,

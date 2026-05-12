@@ -1201,14 +1201,16 @@ TypePtr Parser::parse_record_type(bool packed) {
   std::string variant_tag_name;
   TypePtr variant_tag_type;
   std::vector<VariantCase> variant_cases;
-  if (accept(Tok::KwCase)) {
-    has_variant = true;
+
+  auto parse_variants = [&](auto& self, bool& has_var, std::string& tag_name, TypePtr& tag_type, std::vector<VariantCase>& cases) -> void {
+    if (!accept(Tok::KwCase)) return;
+    has_var = true;
     if (cur_.kind == Tok::Ident && peek().kind == Tok::Colon) {
-      variant_tag_name = cur_.text;
+      tag_name = cur_.text;
       advance();
       advance();  // ':'
     }
-    variant_tag_type = parse_type();
+    tag_type = parse_type();
     expect(Tok::KwOf, "variant record");
 
     while (!at_end() && !check(Tok::KwEnd) && !check(Tok::RParen)) {
@@ -1230,48 +1232,22 @@ TypePtr Parser::parse_record_type(bool packed) {
         case_fields.emplace_back(std::move(names), parse_type());
         if (!accept(Tok::Semi)) break;
       }
-      // Nested variant part inside this case body: `case [tag:] T of ...`
-      // We flatten nested variant sub-cases: each sub-case's fields become
-      // a standalone VariantCase on the outer record. Pascal lets you name
-      // the fields directly on the outer record regardless of which case
-      // is active, and the emitter already emits one struct-in-union per
-      // case -- so flattening preserves access semantics.
-      if (accept(Tok::KwCase)) {
-        if (cur_.kind == Tok::Ident && peek().kind == Tok::Colon) {
-          advance(); advance();
-        }
-        (void)parse_type();
-        expect(Tok::KwOf, "nested variant");
-        while (!at_end() && !check(Tok::RParen)) {
-          std::vector<ExprPtr> sub_labels;
-          sub_labels.push_back(parse_expr());
-          while (accept(Tok::Comma)) sub_labels.push_back(parse_expr());
-          expect(Tok::Colon, "nested variant case");
-          expect(Tok::LParen, "nested variant case");
-          std::vector<RecordField> sub_fields;
-          while (!at_end() && !check(Tok::RParen)) {
-            if (cur_.kind != Tok::Ident) break;
-            std::vector<std::string> names;
-            names.push_back(cur_.text); advance();
-            while (accept(Tok::Comma)) {
-              if (cur_.kind != Tok::Ident) break;
-              names.push_back(cur_.text); advance();
-            }
-            expect(Tok::Colon, "nested variant field");
-            sub_fields.emplace_back(std::move(names), parse_type());
-            if (!accept(Tok::Semi)) break;
-          }
-          expect(Tok::RParen, "nested variant case");
-          variant_cases.emplace_back(std::move(sub_labels),
-                                     std::move(sub_fields));
-          if (!accept(Tok::Semi)) break;
-        }
-      }
+      
+      bool nested_has = false;
+      std::string nested_tag_name;
+      TypePtr nested_tag_type;
+      std::vector<VariantCase> nested_cases;
+      self(self, nested_has, nested_tag_name, nested_tag_type, nested_cases);
+
+      // printf removed
       expect(Tok::RParen, "variant case");
-      variant_cases.emplace_back(std::move(labels), std::move(case_fields));
+      cases.emplace_back(std::move(labels), std::move(case_fields), (bool)nested_has, std::move(nested_tag_name), std::move(nested_tag_type), std::move(nested_cases));
       if (!accept(Tok::Semi)) break;
     }
-  }
+    // printf removed
+  };
+  
+  parse_variants(parse_variants, has_variant, variant_tag_name, variant_tag_type, variant_cases);
 
   expect(Tok::KwEnd, "record");
   return std::make_shared<TyRecord>(

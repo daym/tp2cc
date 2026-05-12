@@ -729,10 +729,23 @@ struct RecordField {
 struct VariantCase {
   std::vector<ExprPtr> labels;
   std::vector<RecordField> fields;
+  bool has_variant = false;
+  std::string variant_tag_name;
+  TypePtr variant_tag_type;
+  std::vector<VariantCase> variant_cases;
+  
   VariantCase() = default;
   VariantCase(std::vector<ExprPtr> labels_in,
               std::vector<RecordField> fields_in)
       : labels(std::move(labels_in)), fields(std::move(fields_in)) {}
+  VariantCase(std::vector<ExprPtr> labels_in,
+              std::vector<RecordField> fields_in,
+              bool has_variant_in, std::string variant_tag_name_in,
+              TypePtr variant_tag_type_in,
+              std::vector<VariantCase> variant_cases_in)
+      : labels(std::move(labels_in)), fields(std::move(fields_in)),
+        has_variant(has_variant_in), variant_tag_name(std::move(variant_tag_name_in)),
+        variant_tag_type(std::move(variant_tag_type_in)), variant_cases(std::move(variant_cases_in)) {}
 };
 
 struct TyRecord : TypeExpr {
