@@ -3569,7 +3569,91 @@ inline void tp2cc_spawn_process(const std::vector<std::string>& args) {
   tp2cc_store_wait_status(status);
 }
 
-// Dos/file procedures -- stubbed; real behaviour added as needed.
+// DOS packed file time:
+//   bits 31..25: year - 1980
+//   bits 24..21: month, 1..12
+//   bits 20..16: day, 1..31
+//   bits 15..11: hour, 0..23
+//   bits 10..5:  minute, 0..59
+//   bits 4..0:   second / 2
+// Unix file timestamps are epoch instants. DOS/FPC file timestamps are local
+// civil fields packed into this layout, so OS-boundary conversions go through
+// localtime_r/mktime.
+inline constexpr int32_t tp2cc_dos_filetime_year_base = 1980;
+// C struct tm stores years as calendar year - 1900.
+inline constexpr int32_t tp2cc_c_tm_year_base = 1900;
+inline constexpr int32_t tp2cc_dos_filetime_tm_year_base =
+    tp2cc_dos_filetime_year_base - tp2cc_c_tm_year_base;
+inline constexpr int32_t tp2cc_dos_filetime_second_quantum = 2;
+inline constexpr uint32_t tp2cc_dos_filetime_second2_mask = 0x1f;
+inline constexpr uint32_t tp2cc_dos_filetime_minute_mask = 0x3f;
+inline constexpr uint32_t tp2cc_dos_filetime_hour_mask = 0x1f;
+inline constexpr uint32_t tp2cc_dos_filetime_day_mask = 0x1f;
+inline constexpr uint32_t tp2cc_dos_filetime_month_mask = 0x0f;
+inline constexpr uint32_t tp2cc_dos_filetime_year_mask = 0x7f;
+inline constexpr int tp2cc_dos_filetime_second_shift = 0;
+inline constexpr int tp2cc_dos_filetime_minute_shift = 5;
+inline constexpr int tp2cc_dos_filetime_hour_shift = 11;
+inline constexpr int tp2cc_dos_filetime_day_shift = 16;
+inline constexpr int tp2cc_dos_filetime_month_shift = 21;
+inline constexpr int tp2cc_dos_filetime_year_shift = 25;
+
+inline int32_t tp2cc_pack_local_tm_as_dos_filetime(const std::tm& lt) {
+  return static_cast<int32_t>(
+      ((static_cast<uint32_t>(lt.tm_year - tp2cc_dos_filetime_tm_year_base) &
+        tp2cc_dos_filetime_year_mask)
+       << tp2cc_dos_filetime_year_shift) |
+      ((static_cast<uint32_t>(lt.tm_mon + 1) &
+        tp2cc_dos_filetime_month_mask)
+       << tp2cc_dos_filetime_month_shift) |
+      ((static_cast<uint32_t>(lt.tm_mday) & tp2cc_dos_filetime_day_mask)
+       << tp2cc_dos_filetime_day_shift) |
+      ((static_cast<uint32_t>(lt.tm_hour) & tp2cc_dos_filetime_hour_mask)
+       << tp2cc_dos_filetime_hour_shift) |
+      ((static_cast<uint32_t>(lt.tm_min) & tp2cc_dos_filetime_minute_mask)
+       << tp2cc_dos_filetime_minute_shift) |
+      ((static_cast<uint32_t>(lt.tm_sec / tp2cc_dos_filetime_second_quantum) &
+        tp2cc_dos_filetime_second2_mask)
+       << tp2cc_dos_filetime_second_shift));
+}
+
+inline bool tp2cc_unpack_dos_filetime_to_local_tm(int32_t packed,
+                                                  std::tm& out) {
+  const uint32_t value = static_cast<uint32_t>(packed);
+  out = {};
+  out.tm_isdst = -1;  // DOS timestamps do not store a DST bit; mktime decides.
+  out.tm_year =
+      static_cast<int>(((value >> tp2cc_dos_filetime_year_shift) &
+                        tp2cc_dos_filetime_year_mask) +
+                       tp2cc_dos_filetime_tm_year_base);
+  out.tm_mon =
+      static_cast<int>(((value >> tp2cc_dos_filetime_month_shift) &
+                        tp2cc_dos_filetime_month_mask) -
+                       1);
+  out.tm_mday = static_cast<int>((value >> tp2cc_dos_filetime_day_shift) &
+                                 tp2cc_dos_filetime_day_mask);
+  out.tm_hour = static_cast<int>((value >> tp2cc_dos_filetime_hour_shift) &
+                                 tp2cc_dos_filetime_hour_mask);
+  out.tm_min = static_cast<int>((value >> tp2cc_dos_filetime_minute_shift) &
+                                tp2cc_dos_filetime_minute_mask);
+  out.tm_sec = static_cast<int>((value >> tp2cc_dos_filetime_second_shift) &
+                                tp2cc_dos_filetime_second2_mask) *
+               tp2cc_dos_filetime_second_quantum;
+  return out.tm_mon >= 0 && out.tm_mon < 12 && out.tm_mday >= 1 &&
+         out.tm_mday <= 31 && out.tm_hour < 24 && out.tm_min < 60 &&
+         out.tm_sec < 60;
+}
+
+inline int32_t tp2cc_time_t_to_dos_filetime(std::time_t when) {
+  std::tm lt{};
+  return ::localtime_r(&when, &lt) ? tp2cc_pack_local_tm_as_dos_filetime(lt)
+                                  : -1;
+}
+
+inline int32_t tp2cc_stat_to_filedatetime(const struct stat& st) {
+  return tp2cc_time_t_to_dos_filetime(st.st_mtime);
+}
+
 struct t_searchrec { int32_t p_time = 0; int32_t p_size = 0;
                      uint8_t p_attr = 0; tp2cc_ShortString<> p_name{};
                      std::vector<std::string> tp2cc_matches;
@@ -3582,10 +3666,10 @@ inline constexpr int32_t p_faarchive = 0x20;
 inline void tp2cc_searchrec_fill(t_searchrec& rec, const std::string& path) {
   struct stat st{};
   if (::stat(path.c_str(), &st) != 0) return;
-  rec.p_time = static_cast<int32_t>(st.st_mtime);
+  rec.p_time = tp2cc_stat_to_filedatetime(st);
   rec.p_size = static_cast<int32_t>(st.st_size > INT32_MAX ? INT32_MAX : st.st_size);
   rec.p_attr = 0;
-  if (S_ISDIR(st.st_mode)) rec.p_attr |= 0x10;
+  if (S_ISDIR(st.st_mode)) rec.p_attr |= p_fadirectory;
   std::size_t sep = path.find_last_of("/\\");
   rec.p_name = tp2cc_shortstring_of<>((sep == std::string::npos ? path : path.substr(sep + 1)).c_str());
 }
@@ -3605,7 +3689,7 @@ inline int32_t p_findfirst(const tp2cc_ShortString<>& pattern, int attrs, t_sear
     const char* path = matches.gl_pathv[i];
     struct stat st{};
     if (::stat(path, &st) != 0) continue;
-    if (attrs == 0x10 && !S_ISDIR(st.st_mode)) continue;
+    if (attrs == p_fadirectory && !S_ISDIR(st.st_mode)) continue;
     rec.tp2cc_matches.emplace_back(path);
   }
   ::globfree(&matches);
@@ -3638,7 +3722,7 @@ inline void p_getfattr(tp2cc_TextFile& f, uint16_t& attr) {
     attr = 0;
     return;
   }
-  attr = static_cast<uint16_t>(S_ISDIR(st.st_mode) ? 0x10 : 0);
+  attr = static_cast<uint16_t>(S_ISDIR(st.st_mode) ? p_fadirectory : 0);
   p_doserror = 0;
 }
 template <typename T>
@@ -3649,7 +3733,7 @@ inline void p_getfattr(tp2cc_TypedFile<T>& f, uint16_t& attr) {
     attr = 0;
     return;
   }
-  attr = static_cast<uint16_t>(S_ISDIR(st.st_mode) ? 0x10 : 0);
+  attr = static_cast<uint16_t>(S_ISDIR(st.st_mode) ? p_fadirectory : 0);
   p_doserror = 0;
 }
 inline void p_mkdir(const tp2cc_ShortString<>& path) {
@@ -3926,7 +4010,16 @@ inline tp2cc_ShortString<> p_fexpand(const tp2cc_ShortString<>& s) {
   return tp2cc_shortstring_of<>(out.c_str());
 }
 
+// TDateTime day 1 is 1899-12-31; Unix epoch day 0 is 1970-01-01.
+// There are 25569 days between those origins.
 inline constexpr int64_t tp2cc_tdatetime_unix_epoch_days = 25569;
+inline constexpr uint64_t tp2cc_milliseconds_per_second = 1000;
+inline constexpr uint64_t tp2cc_milliseconds_per_minute =
+    60 * tp2cc_milliseconds_per_second;
+inline constexpr uint64_t tp2cc_milliseconds_per_hour =
+    60 * tp2cc_milliseconds_per_minute;
+inline constexpr uint64_t tp2cc_milliseconds_per_day =
+    24 * tp2cc_milliseconds_per_hour;
 
 inline int64_t tp2cc_days_from_civil(int32_t year, uint32_t month, uint32_t day) {
   year -= month <= 2;
@@ -3959,9 +4052,12 @@ inline t_tdatetime tp2cc_make_tdatetime(int32_t year, uint32_t month,
   const int64_t days =
       tp2cc_days_from_civil(year, month, day) + tp2cc_tdatetime_unix_epoch_days;
   const uint64_t msec =
-      ((static_cast<uint64_t>(hour) * 60 + minute) * 60 + second) * 1000 + millisecond;
+      ((static_cast<uint64_t>(hour) * 60 + minute) * 60 + second) *
+          tp2cc_milliseconds_per_second +
+      millisecond;
   return static_cast<t_tdatetime>(days) +
-         static_cast<t_tdatetime>(msec) / 86400000.0;
+         static_cast<t_tdatetime>(msec) /
+             static_cast<t_tdatetime>(tp2cc_milliseconds_per_day);
 }
 
 inline void tp2cc_decode_tdatetime(t_tdatetime value, int32_t& year,
@@ -3977,28 +4073,45 @@ inline void tp2cc_decode_tdatetime(t_tdatetime value, int32_t& year,
   int64_t days = static_cast<int64_t>(day_part) - tp2cc_tdatetime_unix_epoch_days;
   tp2cc_civil_from_days(days, year, month, day);
 
-  uint64_t total_msec = static_cast<uint64_t>(std::llround(frac * 86400000.0));
-  if (total_msec >= 86400000ull) {
+  uint64_t total_msec = static_cast<uint64_t>(
+      std::llround(frac * static_cast<double>(tp2cc_milliseconds_per_day)));
+  if (total_msec >= tp2cc_milliseconds_per_day) {
     total_msec = 0;
     tp2cc_civil_from_days(days + 1, year, month, day);
   }
-  hour = static_cast<uint32_t>(total_msec / 3600000ull);
-  total_msec %= 3600000ull;
-  minute = static_cast<uint32_t>(total_msec / 60000ull);
-  total_msec %= 60000ull;
-  second = static_cast<uint32_t>(total_msec / 1000ull);
-  millisecond = static_cast<uint32_t>(total_msec % 1000ull);
+  hour = static_cast<uint32_t>(total_msec / tp2cc_milliseconds_per_hour);
+  total_msec %= tp2cc_milliseconds_per_hour;
+  minute = static_cast<uint32_t>(total_msec / tp2cc_milliseconds_per_minute);
+  total_msec %= tp2cc_milliseconds_per_minute;
+  second = static_cast<uint32_t>(total_msec / tp2cc_milliseconds_per_second);
+  millisecond =
+      static_cast<uint32_t>(total_msec % tp2cc_milliseconds_per_second);
 }
 
 inline t_tdatetime p_filedatetodatetime(int32_t filedate) {
-  const uint32_t sec2 = static_cast<uint32_t>(filedate & 31u);
-  const uint32_t minute = static_cast<uint32_t>((filedate >> 5) & 63u);
-  const uint32_t hour = static_cast<uint32_t>((filedate >> 11) & 31u);
-  const uint32_t day = static_cast<uint32_t>((filedate >> 16) & 31u);
-  const uint32_t month = static_cast<uint32_t>((filedate >> 21) & 15u);
-  const uint32_t year = static_cast<uint32_t>(((filedate >> 25) & 127u) + 1980u);
+  const uint32_t packed = static_cast<uint32_t>(filedate);
+  const uint32_t sec2 =
+      (packed >> tp2cc_dos_filetime_second_shift) &
+      tp2cc_dos_filetime_second2_mask;
+  const uint32_t minute =
+      (packed >> tp2cc_dos_filetime_minute_shift) &
+      tp2cc_dos_filetime_minute_mask;
+  const uint32_t hour =
+      (packed >> tp2cc_dos_filetime_hour_shift) &
+      tp2cc_dos_filetime_hour_mask;
+  const uint32_t day =
+      (packed >> tp2cc_dos_filetime_day_shift) &
+      tp2cc_dos_filetime_day_mask;
+  const uint32_t month =
+      (packed >> tp2cc_dos_filetime_month_shift) &
+      tp2cc_dos_filetime_month_mask;
+  const uint32_t year =
+      ((packed >> tp2cc_dos_filetime_year_shift) &
+       tp2cc_dos_filetime_year_mask) +
+      tp2cc_dos_filetime_year_base;
   return tp2cc_make_tdatetime(static_cast<int32_t>(year), month, day, hour,
-                              minute, sec2 * 2u, 0);
+                              minute,
+                              sec2 * tp2cc_dos_filetime_second_quantum, 0);
 }
 
 inline void p_decodedate(t_tdatetime value, uint16_t& year, uint16_t& month,
@@ -4026,7 +4139,8 @@ inline t_tdatetime p_date() {
   std::time_t now = std::time(nullptr);
   std::tm lt{};
   ::localtime_r(&now, &lt);
-  return tp2cc_make_tdatetime(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
+  return tp2cc_make_tdatetime(lt.tm_year + tp2cc_c_tm_year_base, lt.tm_mon + 1,
+                              lt.tm_mday);
 }
 
 inline t_tdatetime p_time() {
@@ -4036,8 +4150,10 @@ inline t_tdatetime p_time() {
   std::time_t now = static_cast<std::time_t>(tv.tv_sec);
   ::localtime_r(&now, &lt);
   return static_cast<t_tdatetime>(
-      ((lt.tm_hour * 60 + lt.tm_min) * 60 + lt.tm_sec) * 1000 + tv.tv_usec / 1000) /
-         86400000.0;
+      ((lt.tm_hour * 60 + lt.tm_min) * 60 + lt.tm_sec) *
+              tp2cc_milliseconds_per_second +
+          tv.tv_usec / tp2cc_milliseconds_per_second) /
+         static_cast<t_tdatetime>(tp2cc_milliseconds_per_day);
 }
 
 inline void p_getlocaltime(t_tsystemtime& out) {
@@ -4049,27 +4165,15 @@ inline void p_getlocaltime(t_tsystemtime& out) {
     out = {};
     return;
   }
-  out.p_year = static_cast<uint16_t>(lt.tm_year + 1900);
+  out.p_year = static_cast<uint16_t>(lt.tm_year + tp2cc_c_tm_year_base);
   out.p_month = static_cast<uint16_t>(lt.tm_mon + 1);
   out.p_dayofweek = static_cast<uint16_t>(lt.tm_wday);
   out.p_day = static_cast<uint16_t>(lt.tm_mday);
   out.p_hour = static_cast<uint16_t>(lt.tm_hour);
   out.p_minute = static_cast<uint16_t>(lt.tm_min);
   out.p_second = static_cast<uint16_t>(lt.tm_sec);
-  out.p_milliseconds = static_cast<uint16_t>(tv.tv_usec / 1000);
-}
-
-inline int32_t tp2cc_stat_to_filedatetime(const struct stat& st) {
-  std::tm lt{};
-  std::time_t when = st.st_mtime;
-  if (!::localtime_r(&when, &lt)) return -1;
-  int32_t packed = ((lt.tm_year + 1900 - 1980) & 127);
-  packed = (packed << 4) | ((lt.tm_mon + 1) & 15);
-  packed = (packed << 5) | (lt.tm_mday & 31);
-  packed = (packed << 5) | (lt.tm_hour & 31);
-  packed = (packed << 6) | (lt.tm_min & 63);
-  packed = (packed << 5) | ((lt.tm_sec / 2) & 31);
-  return packed;
+  out.p_milliseconds =
+      static_cast<uint16_t>(tv.tv_usec / tp2cc_milliseconds_per_second);
 }
 
 inline int32_t p_filegetdate(t_thandle handle) {
@@ -4079,16 +4183,17 @@ inline int32_t p_filegetdate(t_thandle handle) {
 
 inline int32_t p_filesetdate(t_thandle handle, int32_t age) {
   std::tm tmv{};
-  tmv.tm_year = static_cast<int>(((age >> 25) & 127) + 80);
-  tmv.tm_mon = static_cast<int>(((age >> 21) & 15) - 1);
-  tmv.tm_mday = static_cast<int>((age >> 16) & 31);
-  tmv.tm_hour = static_cast<int>((age >> 11) & 31);
-  tmv.tm_min = static_cast<int>((age >> 5) & 63);
-  tmv.tm_sec = static_cast<int>(age & 31) * 2;
+  if (!tp2cc_unpack_dos_filetime_to_local_tm(age, tmv)) {
+    errno = EINVAL;
+    return -1;
+  }
   std::time_t when = std::mktime(&tmv);
-  if (when == static_cast<std::time_t>(-1)) return -1;
+  if (when == static_cast<std::time_t>(-1)) {
+    errno = EINVAL;
+    return -1;
+  }
   timespec ts[2]{};
-  ts[0].tv_sec = when;
+  ts[0].tv_nsec = UTIME_OMIT;
   ts[1].tv_sec = when;
   return ::futimens(handle, ts) == 0 ? 0 : -1;
 }
@@ -4200,7 +4305,7 @@ inline void p_epochtolocal(int32_t epoch, uint16_t& year, uint16_t& month,
     year = month = day = hour = minute = second = 0;
     return;
   }
-  year   = static_cast<uint16_t>(lt.tm_year + 1900);
+  year   = static_cast<uint16_t>(lt.tm_year + tp2cc_c_tm_year_base);
   month  = static_cast<uint16_t>(lt.tm_mon + 1);
   day    = static_cast<uint16_t>(lt.tm_mday);
   hour   = static_cast<uint16_t>(lt.tm_hour);
@@ -5735,8 +5840,8 @@ inline void p_gettime(uint16_t& hour, uint16_t& minute, uint16_t& second,
   hour   = static_cast<uint16_t>(lt.tm_hour);
   minute = static_cast<uint16_t>(lt.tm_min);
   second = static_cast<uint16_t>(lt.tm_sec);
-  msec   = static_cast<uint16_t>(tv.tv_usec / 1000);
-  usec   = static_cast<uint16_t>(tv.tv_usec % 1000);
+  msec   = static_cast<uint16_t>(tv.tv_usec / tp2cc_milliseconds_per_second);
+  usec   = static_cast<uint16_t>(tv.tv_usec % tp2cc_milliseconds_per_second);
 }
 inline void p_gettime(uint16_t& hour, uint16_t& minute, uint16_t& second,
                       uint16_t& sec100) {
@@ -5753,7 +5858,7 @@ inline void p_getdate(uint16_t& year, uint16_t& month, uint16_t& mday,
   std::time_t t = std::time(nullptr);
   std::tm lt{};
   ::localtime_r(&t, &lt);
-  year = static_cast<uint16_t>(lt.tm_year + 1900);
+  year = static_cast<uint16_t>(lt.tm_year + tp2cc_c_tm_year_base);
   month = static_cast<uint16_t>(lt.tm_mon + 1);
   mday = static_cast<uint16_t>(lt.tm_mday);
   wday = static_cast<uint16_t>(lt.tm_wday);
@@ -5769,27 +5874,40 @@ struct t_datetime {
   uint16_t p_sec = 0;
 };
 inline void p_unpacktime(int32_t p, t_datetime& t) {
-  t.p_sec = static_cast<uint16_t>((p & 31) * 2);
-  p >>= 5;
-  t.p_min = static_cast<uint16_t>(p & 63);
-  p >>= 6;
-  t.p_hour = static_cast<uint16_t>(p & 31);
-  p >>= 5;
-  t.p_day = static_cast<uint16_t>(p & 31);
-  p >>= 5;
-  t.p_month = static_cast<uint16_t>(p & 15);
-  p >>= 4;
-  t.p_year = static_cast<uint16_t>(p + 1980);
+  const uint32_t packed = static_cast<uint32_t>(p);
+  t.p_sec = static_cast<uint16_t>(
+      ((packed >> tp2cc_dos_filetime_second_shift) &
+       tp2cc_dos_filetime_second2_mask) *
+      tp2cc_dos_filetime_second_quantum);
+  t.p_min = static_cast<uint16_t>((packed >> tp2cc_dos_filetime_minute_shift) &
+                                  tp2cc_dos_filetime_minute_mask);
+  t.p_hour = static_cast<uint16_t>((packed >> tp2cc_dos_filetime_hour_shift) &
+                                   tp2cc_dos_filetime_hour_mask);
+  t.p_day = static_cast<uint16_t>((packed >> tp2cc_dos_filetime_day_shift) &
+                                  tp2cc_dos_filetime_day_mask);
+  t.p_month = static_cast<uint16_t>((packed >> tp2cc_dos_filetime_month_shift) &
+                                    tp2cc_dos_filetime_month_mask);
+  t.p_year = static_cast<uint16_t>(
+      ((packed >> tp2cc_dos_filetime_year_shift) &
+       tp2cc_dos_filetime_year_mask) +
+      tp2cc_dos_filetime_year_base);
 }
 inline void p_packtime(t_datetime& t, int32_t& p) {
-  int32_t zs = t.p_hour;
-  p = ((static_cast<int32_t>(t.p_year) - 1980) & 127);
-  p = (p << 4) + t.p_month;
-  p = (p << 5) + t.p_day;
-  p <<= 16;
-  zs = (zs << 6) + t.p_min;
-  zs = (zs << 5) + (t.p_sec / 2);
-  p += (zs & 0xffff);
+  p = static_cast<int32_t>(
+      ((static_cast<uint32_t>(t.p_year - tp2cc_dos_filetime_year_base) &
+        tp2cc_dos_filetime_year_mask)
+       << tp2cc_dos_filetime_year_shift) |
+      ((static_cast<uint32_t>(t.p_month) & tp2cc_dos_filetime_month_mask)
+       << tp2cc_dos_filetime_month_shift) |
+      ((static_cast<uint32_t>(t.p_day) & tp2cc_dos_filetime_day_mask)
+       << tp2cc_dos_filetime_day_shift) |
+      ((static_cast<uint32_t>(t.p_hour) & tp2cc_dos_filetime_hour_mask)
+       << tp2cc_dos_filetime_hour_shift) |
+      ((static_cast<uint32_t>(t.p_min) & tp2cc_dos_filetime_minute_mask)
+       << tp2cc_dos_filetime_minute_shift) |
+      ((static_cast<uint32_t>(t.p_sec / tp2cc_dos_filetime_second_quantum) &
+        tp2cc_dos_filetime_second2_mask)
+       << tp2cc_dos_filetime_second_shift));
 }
 inline constexpr p_char p_directoryseparator = tp2cc_char_of('/');
 inline constexpr p_char p_driveseparator = tp2cc_char_of(':');
@@ -5876,9 +5994,37 @@ inline int32_t p_pclose(tp2cc_TextFile& f) {
 }
 template <typename F>
 inline int32_t p_pclose(F&) { return 0; }
-// STUB: file timestamp get/set used by assembler/link bookkeeping.
-template <typename F, typename T> inline void p_getftime(F&&, T&) {}
-template <typename F, typename T> inline void p_setftime(F&&, T) {}
+template <typename File, typename T>
+inline void p_getftime(File& f, T& out) {
+  t_thandle handle = p_getfilehandle(f);
+  if (handle < 0) {
+    out = static_cast<T>(0);
+    p_doserror = EBADF;
+    return;
+  }
+  errno = 0;
+  int32_t packed = p_filegetdate(handle);
+  if (packed < 0) {
+    out = static_cast<T>(0);
+    p_doserror = errno ? errno : EINVAL;
+    return;
+  }
+  out = static_cast<T>(packed);
+  p_doserror = 0;
+}
+
+template <typename File, typename T>
+inline void p_setftime(File& f, T time) {
+  t_thandle handle = p_getfilehandle(f);
+  if (handle < 0) {
+    p_doserror = EBADF;
+    return;
+  }
+  errno = 0;
+  p_doserror = p_filesetdate(handle, static_cast<int32_t>(time)) == 0
+                   ? 0
+                   : (errno ? errno : EINVAL);
+}
 // STUB: stderr is the fpc standard error tp2cc_TextFile.
 inline tp2cc_TextFile p_stderr;
 inline tp2cc_TextFile p_output = [] {

@@ -256,6 +256,18 @@ void test_runtime_file_helpers_expose_real_sysutils_surface() {
   CHECK_EQ(p_filesetdate(fd, age), 0);
   CHECK_EQ(p_fileage(tp2cc_ansistring_of(path)), age);
 
+  int32_t getftime_age = 0;
+  p_getftime(tf, getftime_age);
+  CHECK_EQ(p_doserror, 0);
+  CHECK_EQ(getftime_age, age);
+  p_setftime(tf, getftime_age);
+  CHECK_EQ(p_doserror, 0);
+
+  t_searchrec rec{};
+  CHECK_EQ(p_findfirst(tp2cc_shortstring_of<>(path), 0, rec), 0);
+  CHECK_EQ(rec.p_time, age);
+  p_findclose(rec);
+
   std::fclose(f);
   CHECK(p_deletefile(tp2cc_ansistring_of(path)));
   CHECK(!p_fileexists(tp2cc_ansistring_of(path)));
@@ -1054,8 +1066,13 @@ void test_dos_pack_unpack_time_matches_bit_layout() {
   int32_t packed = 0;
   p_packtime(in, packed);
   CHECK_EQ(packed,
-           (((2004 - 1980) << 25) | (5 << 21) | (6 << 16) |
-            (7 << 11) | (8 << 5) | (10 / 2)));
+           (((2004 - tp2cc_dos_filetime_year_base)
+             << tp2cc_dos_filetime_year_shift) |
+            (5 << tp2cc_dos_filetime_month_shift) |
+            (6 << tp2cc_dos_filetime_day_shift) |
+            (7 << tp2cc_dos_filetime_hour_shift) |
+            (8 << tp2cc_dos_filetime_minute_shift) |
+            (10 / tp2cc_dos_filetime_second_quantum)));
 
   t_datetime out{};
   p_unpacktime(packed, out);

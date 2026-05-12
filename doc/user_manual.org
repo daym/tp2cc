@@ -1104,7 +1104,7 @@ In the table, ~S~ denotes any tp2cc-supported string value (typically ~String~, 
 | ~AnsiCompareFileName~, ~CompareText~ | ~(...A, B): LongInt~ | Case-insensitive string comparison used by file/path code. |
 | ~FindFirst~, ~FindNext~, ~FindClose~ | Dos search-record enumeration | Glob-backed file search for Dos-style directory scans. |
 | ~FSearch~, ~FSplit~, ~FExpand~ | Dos path-string helpers | Path splitting/expansion compatibility; ~FSearch~ is a stub and returns its name argument unchanged. |
-| ~GetFTime~, ~SetFTime~ | file timestamp compatibility procedures | Stub: accepted for compatibility; no timestamp is transferred. |
+| ~GetFTime~, ~SetFTime~ | file timestamp compatibility procedures | Reads or writes the packed Dos timestamp for an open file. |
 | ~GetFAttr~ | ~GetFAttr(F, var Attr)~ | Reads a file attribute subset, currently the directory bit. |
 | ~MkDir~, ~RmDir~, ~GetDir~, ~ChDir~ | directory helpers | Directory creation/removal/current-directory helpers. |
 | ~GetDate~, ~GetTime~, ~PackTime~, ~UnpackTime~, ~EpochToLocal~ | Dos date/time procedures | Calendar/time conversion helpers for compiler-support code. |
@@ -1168,7 +1168,7 @@ System implements these type names beyond the basic scalar/string/pointer types 
 | ~FSplit(Input, var Dir, Name, Ext)~ | procedure | Splits a path into directory, base name, and extension strings. |
 | ~FExpand(S)~ | returns ~ShortString~ | Expands a path through the runtime helper. |
 | ~GetFAttr(F, var Attr)~ | procedure | Reads a supported attribute subset from a file variable. |
-| ~GetFTime(F, var Time)~, ~SetFTime(F, Time)~ | procedures | Stub: accepted for compatibility; no timestamp is transferred. |
+| ~GetFTime(F, var Time)~, ~SetFTime(F, Time)~ | procedures | Reads or writes the packed Dos timestamp for an open file. |
 | ~MkDir(Path)~, ~RmDir(Path)~, ~ChDir(Path)~ | procedures | Directory creation, removal, and current-directory change. |
 | ~GetDir(Drive, var S)~ | procedure | Writes the current directory into a string. |
 | ~Erase(FOrPath)~, ~Rename(FOrPath, NewName)~ | procedures | Removes or renames a file. |
@@ -1177,6 +1177,8 @@ System implements these type names beyond the basic scalar/string/pointer types 
 | ~PackTime(DateTime, var Packed)~ | procedure | Packs a Dos ~DateTime~ record into an integer timestamp. |
 | ~UnpackTime(Packed, var DateTime)~ | procedure | Unpacks an integer timestamp into a Dos ~DateTime~ record. |
 | ~EpochToLocal(Epoch, var Y, M, D, H, N, S)~ | procedure | Converts epoch seconds into local time fields. |
+
+~FileAge~, ~FileGetDate~, ~FileSetDate~, ~SearchRec.Time~, ~PackTime~, and ~UnpackTime~ use the DOS packed timestamp format: year is stored as ~Year - 1980~, seconds are stored divided by two, and the remaining fields are local calendar fields.  Unix file timestamps read from the OS are epoch instants; tp2cc converts them to local time before packing and converts packed local fields back through the host timezone when setting file times.
 | ~GetEnv(Name)~ | returns ~ShortString~ | Reads an environment variable. |
 | ~Exec(Command, Params)~ | procedure | Runs a child command and records ~DosError~ and ~DosExitCode~. |
 | ~DiskSize(Drive)~ | returns ~LongInt~ | Returns a positive size for the current filesystem, or -1 on failure. |
