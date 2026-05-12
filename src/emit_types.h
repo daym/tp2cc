@@ -49,11 +49,18 @@ struct EmitPackedRecordLayout {
   // expression plus the total packed size expression.
   std::vector<std::pair<std::string, std::string>> field_offsets;
   std::string size_expr;
+  EmitPackedRecordLayout() = default;
   EmitPackedRecordLayout(
       std::vector<std::pair<std::string, std::string>> field_offsets_in,
       std::string size_expr_in)
       : field_offsets(std::move(field_offsets_in)),
         size_expr(std::move(size_expr_in)) {}
+};
+
+struct CxxRecordLayout {
+  std::vector<std::string> decl_lines;
+  std::string inline_text;
+  EmitPackedRecordLayout packed_layout;
 };
 
 // Central Pascal type/layout lowering. This module owns the rules for spelling
@@ -101,10 +108,9 @@ class EmitTypes {
       const std::vector<ast::Param>& params);
   std::string method_pointer_helper_name(const ast::ProcDecl& pd);
   std::string procedural_type_to_cxx(const ast::TyProcedural& p);
-  std::string inline_record_type_to_cxx(const ast::TyRecord& tr);
   std::vector<EmitRecordFieldDecl> record_field_decls(
       const std::vector<ast::RecordField>& fields);
-  EmitPackedRecordLayout compute_packed_record_layout(const ast::TyRecord& tr);
+  CxxRecordLayout compute_record_layout(const ast::TyRecord& tr);
   // Attach a declarator name to a lowered type, including the special procvar
   // case where the identifier must live inside the `(*)` declarator.
   std::string named_type_to_cxx(const ast::TypeExpr* t, std::string_view name,

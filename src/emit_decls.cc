@@ -308,51 +308,22 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
 
   if (td.type && td.type->kind == Kind::TyRecord) {
     const auto& tr = static_cast<const TyRecord&>(*td.type);
+    const auto layout = types_.compute_record_layout(tr);
     std::string open = "struct ";
     if (tr.is_packed) open += "[[gnu::packed]] ";
     emit_ops_.emitln(open + name + " {");
+    
     emit_ops_.indent();
-
-    auto emit_field_decls = [&](const std::vector<RecordField>& fs) {
-      for (const auto& field : types_.record_field_decls(fs)) {
-        emit_ops_.emitln(field.decl + ";");
-      }
-    };
-    emit_field_decls(tr.fields);
-
-    auto emit_variant_decls = [&](auto& self, const std::shared_ptr<ast::VariantPart>& vpart, bool is_packed) -> void {
-      if (!vpart) return;
-      if (!vpart->tag_name.empty() && vpart->tag_type) {
-        RecordField tag_field;
-        tag_field.names.push_back(vpart->tag_name);
-        tag_field.type = vpart->tag_type;
-        emit_field_decls({tag_field});
-      }
-      emit_ops_.emitln("union {");
-      emit_ops_.indent();
-      for (const auto& vc : vpart->cases) {
-        if (vc.fields.empty() && !vc.variant_part) continue;
-        std::string case_open = "struct ";
-        if (is_packed) case_open += "[[gnu::packed]] ";
-        case_open += "{";
-        emit_ops_.emitln(case_open);
-        emit_ops_.indent();
-        emit_field_decls(vc.fields);
-        self(self, vc.variant_part, is_packed);
-        emit_ops_.dedent();
-        emit_ops_.emitln("};");
-      }
-      emit_ops_.dedent();
-      emit_ops_.emitln("};");
-    };
-
-    emit_variant_decls(emit_variant_decls, tr.variant_part, tr.is_packed);
-
+    for (const auto& line : layout.decl_lines) {
+      if (line.find('}') != std::string::npos) emit_ops_.dedent();
+      emit_ops_.emitln(line);
+      if (line.find('{') != std::string::npos) emit_ops_.indent();
+    }
     emit_ops_.dedent();
+    
     emit_ops_.emitln("};");
     if (tr.is_packed) {
-      const auto layout = types_.compute_packed_record_layout(tr);
-      emit_packed_record_asserts(name, layout.field_offsets, layout.size_expr,
+      emit_packed_record_asserts(name, layout.packed_layout.field_offsets, layout.packed_layout.size_expr,
                                  name);
     }
     return;
@@ -956,9 +927,9 @@ void EmitDecls::emit_var_decl(const VarDecl& vd, bool in_header) {
       emit_ops_.emitln(decl + ";");
     }
     if (inline_packed_record) {
-      const auto layout = types_.compute_packed_record_layout(*inline_packed_record);
-      emit_packed_record_asserts("decltype(" + name + ")", layout.field_offsets,
-                                 layout.size_expr, n);
+      const auto layout = types_.compute_record_layout(*inline_packed_record);
+      emit_packed_record_asserts("decltype(" + name + ")", layout.packed_layout.field_offsets,
+                                 layout.packed_layout.size_expr, n);
     }
   }
 }
