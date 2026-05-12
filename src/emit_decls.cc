@@ -490,8 +490,8 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
                     : "duplicate class destructor");
           }
           seen = true;
-          if (pd.is_virtual || pd.is_abstract || pd.is_override ||
-              pd.is_final) {
+          if (pd.modifiers.is_virtual || pd.modifiers.is_abstract || pd.modifiers.is_override ||
+              pd.modifiers.is_final) {
             emit_ops_.report_error(
                 pd.loc,
                 "class constructors and destructors cannot be virtual");
@@ -499,7 +499,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         }
         const MethodSig* inherited_same_signature_virtual =
             inherited_virtual_with_same_cxx_signature(pd);
-        if (pd.is_final && !(pd.is_virtual || pd.is_abstract || pd.is_override)) {
+        if (pd.modifiers.is_final && !(pd.modifiers.is_virtual || pd.modifiers.is_abstract || pd.modifiers.is_override)) {
           emit_ops_.report_error(pd.loc, "only virtual methods can be final");
         }
         // FPC rejects `override` on old-style Pascal `object` methods; its
@@ -511,11 +511,11 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         // an implicit C++ override.
         const bool object_virtual_override =
             inherited_same_signature_virtual && !to.is_reference_type &&
-            pd.is_virtual;
+            pd.modifiers.is_virtual;
         if (inherited_same_signature_virtual &&
             inherited_same_signature_virtual->is_final) {
           emit_ops_.report_error(pd.loc, "cannot override final method");
-        } else if (!pd.is_override && !object_virtual_override &&
+        } else if (!pd.modifiers.is_override && !object_virtual_override &&
             inherited_same_signature_virtual) {
           emit_ops_.report_error(
               pd.loc,
@@ -526,20 +526,20 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         std::string prefix;
         if (pd.is_class_method) {
           prefix = "static ";
-        } else if (pd.is_virtual || pd.is_abstract || pd.is_override) {
+        } else if (pd.modifiers.is_virtual || pd.modifiers.is_abstract || pd.modifiers.is_override) {
           prefix = "virtual ";
           has_virtual = true;
         }
         std::string suffix;
         if (!pd.is_class_method) {
-          if (pd.is_override || object_virtual_override) suffix += " override";
-          if (pd.is_final &&
-              (pd.is_virtual || pd.is_abstract || pd.is_override ||
+          if (pd.modifiers.is_override || object_virtual_override) suffix += " override";
+          if (pd.modifiers.is_final &&
+              (pd.modifiers.is_virtual || pd.modifiers.is_abstract || pd.modifiers.is_override ||
                object_virtual_override)) {
             suffix += " final";
           }
         }
-        if (pd.is_abstract && !pd.is_class_method) {
+        if (pd.modifiers.is_abstract && !pd.is_class_method) {
           emit_ops_.emitln(proc_attributes_to_cxx(pd) + prefix + ret + " " +
                            mangle(pd.name) + "(" +
                            param_list_to_cxx(pd.params) + ")" + suffix +
@@ -596,7 +596,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         }
         const auto& pd = *callable.sig->decl;
         return callable.sig->kind == SymKind::ClassMethod &&
-               (pd.is_virtual || pd.is_abstract || pd.is_override);
+               (pd.modifiers.is_virtual || pd.modifiers.is_abstract || pd.modifiers.is_override);
       };
       std::unordered_map<std::string, MetaclassCallable> parent_surface;
       for (const auto& callable : parent_callables) {
@@ -678,7 +678,7 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
                            callable_param_list(callable) + ") const";
         if (has_same_parent_slot) decl += " override";
         decl += " { ";
-        if (pd.is_abstract && !pd.body) {
+        if (pd.modifiers.is_abstract && !pd.body) {
           decl += "::std::abort();";
           if (ret != "void") decl += " return {};";
         } else {
@@ -1033,7 +1033,7 @@ std::string EmitDecls::proc_return_type_to_cxx(const ProcDecl& pd) {
 }
 
 std::string EmitDecls::proc_attributes_to_cxx(const ProcDecl& pd) {
-  return pd.is_noreturn ? "[[noreturn]] " : "";
+  return pd.modifiers.is_noreturn ? "[[noreturn]] " : "";
 }
 
 void EmitDecls::emit_method_pointer_thunk(const std::string& owner_name,
@@ -1103,7 +1103,7 @@ void EmitDecls::emit_method_pointer_thunk(const std::string& owner_name,
 }
 
 void EmitDecls::emit_proc_decl_signature(const ProcDecl& pd) {
-  if (pd.is_external) {
+  if (pd.modifiers.is_external) {
     emit_ops_.report_error(pd.loc, "external routines are unsupported");
     return;
   }
@@ -1133,9 +1133,9 @@ void EmitDecls::emit_decl(const Decl& d, bool in_header) {
       const auto& pd = static_cast<const ProcDecl&>(d);
       if (in_header) {
         emit_proc_decl_signature(pd);
-      } else if (pd.is_external) {
+      } else if (pd.modifiers.is_external) {
         emit_ops_.report_error(pd.loc, "external routines are unsupported");
-      } else if (pd.is_forward) {
+      } else if (pd.modifiers.is_forward) {
         if (emit_ops_.in_block_scope()) {
           std::string ret =
               (pd.pkind == ProcKind::Function && pd.return_type)
@@ -1182,7 +1182,7 @@ void EmitDecls::emit_decl(const Decl& d, bool in_header) {
         } else {
           emit_proc_decl_signature(pd);
         }
-      } else if (!pd.is_external && (pd.body || pd.is_abstract)) {
+      } else if (!pd.modifiers.is_external && (pd.body || pd.modifiers.is_abstract)) {
         if (emit_ops_.in_block_scope()) {
           emit_ops_.emit_nested_proc_lambda(pd);
         } else {

@@ -268,8 +268,8 @@ MethodSig method_sig_for(std::string defining_unit,
                    .param_count = proc_param_count(pd.params),
                    .accepts_zero_args = proc_accepts_zero_args(pd),
                    .is_function = (pd.pkind == ProcKind::Function),
-                   .is_virtual = pd.is_virtual || pd.is_abstract || pd.is_override,
-                   .is_final = pd.is_final,
+                   .is_virtual = pd.modifiers.is_virtual || pd.modifiers.is_abstract || pd.modifiers.is_override,
+                   .is_final = pd.modifiers.is_final,
                    .decl = std::move(method)};
 }
 
@@ -560,7 +560,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         const auto& pd = *pd_sp;
         if (!pd.of_type.empty()) continue;  // method body -- class handles it
         if (pd.is_operator) {
-          if (pd.is_forward) break;
+          if (pd.modifiers.is_forward) break;
           if (ui) {
             auto& ops = is_interface ? ui->iface_operators
                                      : ui->impl_operators;
@@ -573,7 +573,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         // overload resolution see two identically-typed candidates and
         // (correctly) flag the call ambiguous. Skip the forward stub --
         // the implementation pass will register the real one.
-        if (pd.is_forward) break;
+        if (pd.modifiers.is_forward) break;
         if (ui) (is_interface ? ui->iface_procs : ui->impl_procs)[lc(pd.name)]
                     .push_back(make_proc_info(unit, pd_sp));
         break;
@@ -889,8 +889,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
             Location{}, pkind, std::move(name), is_operator,
             std::move(operator_token), intrinsic_operator, std::string{},
             class_method, std::move(params), std::move(return_type),
-            false, false, false, false, false, false, false, false, false,
-            false, std::string{}, std::string{}, std::vector<ast::DeclPtr>{},
+            ast::ProcModifiers{}, std::vector<ast::DeclPtr>{},
             nullptr);
   };
   auto add_rt_string_compare_operator =

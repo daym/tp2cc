@@ -588,10 +588,10 @@ void test_virtual_class_method_modifiers_are_recorded() {
       auto* base = to->members[0].method.get();
       auto* classy = to->members[1].method.get();
       CHECK(base && base->is_class_method);
-      CHECK(base && base->is_virtual);
-      CHECK(base && base->is_abstract);
+      CHECK(base && base->modifiers.is_virtual);
+      CHECK(base && base->modifiers.is_abstract);
       CHECK(classy && classy->is_class_method);
-      CHECK(classy && classy->is_override);
+      CHECK(classy && classy->modifiers.is_override);
     }
   }
 }
@@ -615,8 +615,8 @@ void test_final_method_modifier_is_recorded() {
     CHECK(to);
     if (to && !to->members.empty()) {
       auto* seal = to->members[0].method.get();
-      CHECK(seal && seal->is_virtual);
-      CHECK(seal && seal->is_final);
+      CHECK(seal && seal->modifiers.is_virtual);
+      CHECK(seal && seal->modifiers.is_final);
     }
   }
 }
@@ -642,22 +642,22 @@ void test_proc_directives_may_follow_header_without_semicolon() {
     auto* ext = dynamic_cast<ProcDecl*>(u->interface_decls[0].get());
     CHECK(ext);
     if (ext) {
-      CHECK(ext->is_cdecl);
-      CHECK(ext->is_external);
-      CHECK_EQ(ext->external_lib, std::string("libc"));
-      CHECK_EQ(ext->external_name, std::string("ext"));
+      CHECK(ext->modifiers.is_cdecl);
+      CHECK(ext->modifiers.is_external);
+      CHECK_EQ(ext->modifiers.external_lib, std::string("libc"));
+      CHECK_EQ(ext->modifiers.external_name, std::string("ext"));
     }
     auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[1].get());
     auto* to = td ? dynamic_cast<TyObject*>(td->type.get()) : nullptr;
     CHECK(to);
     if (to && to->members.size() >= 4) {
-      CHECK(to->members[0].method->is_override);
-      CHECK(to->members[1].method->is_virtual);
-      CHECK(to->members[1].method->is_abstract);
-      CHECK(to->members[2].method->is_virtual);
-      CHECK(to->members[2].method->is_abstract);
-      CHECK(to->members[3].method->is_virtual);
-      CHECK(to->members[3].method->is_abstract);
+      CHECK(to->members[0].method->modifiers.is_override);
+      CHECK(to->members[1].method->modifiers.is_virtual);
+      CHECK(to->members[1].method->modifiers.is_abstract);
+      CHECK(to->members[2].method->modifiers.is_virtual);
+      CHECK(to->members[2].method->modifiers.is_abstract);
+      CHECK(to->members[3].method->modifiers.is_virtual);
+      CHECK(to->members[3].method->modifiers.is_abstract);
     }
   }
 }
@@ -702,7 +702,7 @@ void test_class_method_tail_stops_before_next_member() {
 
       CHECK(to->members[2].kind == ObjectMemberKind::Method);
       CHECK(to->members[2].vis == Visibility::Public);
-      CHECK(to->members[2].method->is_virtual);
+      CHECK(to->members[2].method->modifiers.is_virtual);
 
       CHECK(to->members[3].kind == ObjectMemberKind::Field);
       CHECK(to->members[3].vis == Visibility::Public);
@@ -1178,12 +1178,12 @@ void test_proc_modifiers_forward_external() {
     auto* pa = dynamic_cast<ProcDecl*>(u->interface_decls[0].get());
     auto* pb = dynamic_cast<ProcDecl*>(u->interface_decls[1].get());
     auto* pc = dynamic_cast<ProcDecl*>(u->interface_decls[2].get());
-    CHECK(pa && pa->is_forward);
-    CHECK(pb && pb->is_external && pb->is_cdecl);
-    CHECK(pc && pc->is_noreturn);
+    CHECK(pa && pa->modifiers.is_forward);
+    CHECK(pb && pb->modifiers.is_external && pb->modifiers.is_cdecl);
+    CHECK(pc && pc->modifiers.is_noreturn);
     if (pb) {
-      CHECK_EQ(pb->external_lib, std::string("libc"));
-      CHECK_EQ(pb->external_name, std::string("b"));
+      CHECK_EQ(pb->modifiers.external_lib, std::string("libc"));
+      CHECK_EQ(pb->modifiers.external_name, std::string("b"));
     }
   }
 }

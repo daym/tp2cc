@@ -229,7 +229,7 @@ void EmitProcs::emit_proc_body(const ProcDecl& pd) {
                    "(" + decls_.param_list_to_cxx(pd.params) + ") {");
   emit_ops_.indent();
 
-  if (pd.is_abstract && !pd.body) {
+  if (pd.modifiers.is_abstract && !pd.body) {
     // Pascal's abstract methods are often placeholder hooks on classes that
     // native FPC still instantiates. Emit a fail-fast body instead of a pure
     // virtual so the translated class layout stays constructible while any

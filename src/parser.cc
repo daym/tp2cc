@@ -117,7 +117,7 @@ std::string operator_decl_token_text(const Token& token) {
 
 }  // namespace
 
-Parser::ProcModifiers Parser::combine_proc_modifiers(ProcModifiers base,
+ast::ProcModifiers Parser::combine_proc_modifiers(ProcModifiers base,
                                                      ProcModifiers delta) {
   return ProcModifiers{
       base.is_virtual || delta.is_virtual,
@@ -136,7 +136,7 @@ Parser::ProcModifiers Parser::combine_proc_modifiers(ProcModifiers base,
                                   : std::move(delta.external_name)};
 }
 
-Parser::ProcModifiers Parser::proc_modifier(ProcModifierFlag flag) {
+ast::ProcModifiers Parser::proc_modifier(ProcModifierFlag flag) {
   switch (flag) {
     case ProcModifierFlag::Virtual:
       return ProcModifiers{true, false, false, false, false, false,
@@ -169,7 +169,7 @@ Parser::ProcModifiers Parser::proc_modifier(ProcModifierFlag flag) {
   return ProcModifiers{};
 }
 
-Parser::ProcModifiers Parser::external_proc_modifier(
+ast::ProcModifiers Parser::external_proc_modifier(
     std::string external_lib, std::string external_name) {
   return ProcModifiers{false,
                        false,
@@ -673,7 +673,7 @@ void Parser::parse_label_section(std::vector<DeclPtr>& out) {
 // ---------------------------------------------------------------------------
 // Procedure/function declarations
 
-std::optional<Parser::ProcModifiers> Parser::parse_proc_modifier(
+std::optional<ast::ProcModifiers> Parser::parse_proc_modifier(
     bool in_type_member) {
   if (in_type_member) {
     // After a method semicolon, tokens that start the next class/object member
@@ -800,7 +800,7 @@ std::optional<Parser::ProcModifiers> Parser::parse_proc_modifier(
   return ProcModifiers{};
 }
 
-Parser::ProcModifiers Parser::parse_proc_modifiers(ProcModifiers modifiers,
+ast::ProcModifiers Parser::parse_proc_modifiers(ProcModifiers modifiers,
                                                    bool in_type_member) {
   auto delta = parse_proc_modifier(in_type_member);
   if (!delta) return modifiers;
@@ -810,7 +810,7 @@ Parser::ProcModifiers Parser::parse_proc_modifiers(ProcModifiers modifiers,
       in_type_member);
 }
 
-Parser::ProcModifiers Parser::parse_proc_header_tail(const char* ctx,
+ast::ProcModifiers Parser::parse_proc_header_tail(const char* ctx,
                                                      bool in_type_member) {
   // FPC allows the semicolon between a routine header and the first routine
   // directive to be omitted, but only when that next token is actually one of
@@ -892,11 +892,7 @@ std::shared_ptr<ProcDecl> Parser::parse_proc_decl(
   return std::make_shared<ProcDecl>(
       loc, pk, std::move(name), false, "",
       ProcDecl::IntrinsicOperator::None, std::move(of_type), is_class_method,
-      std::move(params), std::move(return_type), modifiers.is_virtual,
-      modifiers.is_abstract, modifiers.is_override, modifiers.is_final,
-      modifiers.is_forward, modifiers.is_inline, modifiers.is_cdecl,
-      modifiers.is_noreturn, modifiers.is_external, modifiers.is_assembler,
-      std::move(modifiers.external_lib), std::move(modifiers.external_name),
+      std::move(params), std::move(return_type), std::move(modifiers),
       std::move(locals), std::move(body));
 }
 
@@ -937,11 +933,7 @@ std::shared_ptr<ProcDecl> Parser::parse_operator_decl(bool in_interface) {
   return std::make_shared<ProcDecl>(
       loc, ProcKind::Function, "operator_" + op_text, true, std::move(op_text),
       ProcDecl::IntrinsicOperator::None, "", false, std::move(params),
-      std::move(return_type), modifiers.is_virtual, modifiers.is_abstract,
-      modifiers.is_override, modifiers.is_final, modifiers.is_forward,
-      modifiers.is_inline, modifiers.is_cdecl, modifiers.is_noreturn,
-      modifiers.is_external, modifiers.is_assembler,
-      std::move(modifiers.external_lib), std::move(modifiers.external_name),
+      std::move(return_type), std::move(modifiers),
       std::move(locals), std::move(body));
 }
 

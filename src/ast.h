@@ -604,6 +604,21 @@ struct Param {
 };
 
 enum class ProcKind : uint8_t { Procedure, Function, Constructor, Destructor };
+struct ProcModifiers {
+  bool is_virtual = false;
+  bool is_abstract = false;
+  bool is_override = false;
+  bool is_final = false;
+  bool is_forward = false;
+  bool is_inline = false;
+  bool is_cdecl = false;
+  bool is_noreturn = false;
+  bool is_external = false;
+  bool is_assembler = false;
+  std::string external_lib;
+  std::string external_name;
+};
+
 
 struct ProcDecl : Decl {
   ProcKind pkind = ProcKind::Procedure;
@@ -622,18 +637,7 @@ struct ProcDecl : Decl {
   std::vector<Param> params;
   TypePtr return_type;  // only for Function/Constructor; null otherwise
   // Modifiers (unordered list in source; we capture the important ones):
-  bool is_virtual = false;
-  bool is_abstract = false;
-  bool is_override = false;
-  bool is_final = false;
-  bool is_forward = false;
-  bool is_inline = false;
-  bool is_cdecl = false;
-  bool is_noreturn = false;
-  bool is_external = false;
-  bool is_assembler = false;
-  std::string external_lib;    // when is_external
-  std::string external_name;   // when is_external; may be empty
+  ProcModifiers modifiers;
   // Body (present only for the implementation-side definition):
   std::vector<DeclPtr> locals;
   StmtPtr body;                // null for forward / abstract / external
@@ -643,11 +647,7 @@ struct ProcDecl : Decl {
            bool is_operator_in, std::string operator_token_in,
            IntrinsicOperator intrinsic_operator_in, std::string of_type_in,
            bool is_class_method_in, std::vector<Param> params_in,
-           TypePtr return_type_in, bool is_virtual_in, bool is_abstract_in,
-           bool is_override_in, bool is_final_in, bool is_forward_in,
-           bool is_inline_in, bool is_cdecl_in, bool is_noreturn_in,
-           bool is_external_in, bool is_assembler_in,
-           std::string external_lib_in, std::string external_name_in,
+           TypePtr return_type_in, ProcModifiers modifiers_in,
            std::vector<DeclPtr> locals_in, StmtPtr body_in)
       : Decl(Kind::ProcDecl, loc_in),
         pkind(pkind_in),
@@ -659,18 +659,7 @@ struct ProcDecl : Decl {
         is_class_method(is_class_method_in),
         params(std::move(params_in)),
         return_type(std::move(return_type_in)),
-        is_virtual(is_virtual_in),
-        is_abstract(is_abstract_in),
-        is_override(is_override_in),
-        is_final(is_final_in),
-        is_forward(is_forward_in),
-        is_inline(is_inline_in),
-        is_cdecl(is_cdecl_in),
-        is_noreturn(is_noreturn_in),
-        is_external(is_external_in),
-        is_assembler(is_assembler_in),
-        external_lib(std::move(external_lib_in)),
-        external_name(std::move(external_name_in)),
+        modifiers(std::move(modifiers_in)),
         locals(std::move(locals_in)),
         body(std::move(body_in)) {}
 };

@@ -19,20 +19,6 @@ class Parser {
   std::shared_ptr<ast::UnitNode> parse();
 
  private:
-  struct ProcModifiers {
-    bool is_virtual = false;
-    bool is_abstract = false;
-    bool is_override = false;
-    bool is_final = false;
-    bool is_forward = false;
-    bool is_inline = false;
-    bool is_cdecl = false;
-    bool is_noreturn = false;
-    bool is_external = false;
-    bool is_assembler = false;
-    std::string external_lib;
-    std::string external_name;
-  };
   enum class ProcModifierFlag {
     Virtual,
     Abstract,
@@ -78,14 +64,14 @@ class Parser {
                                                  bool is_class_method,
                                                  bool in_type_member);
   std::shared_ptr<ast::ProcDecl> parse_operator_decl(bool in_interface);
-  std::optional<ProcModifiers> parse_proc_modifier(bool in_type_member);
-  ProcModifiers parse_proc_modifiers(ProcModifiers modifiers,
+  std::optional<ast::ProcModifiers> parse_proc_modifier(bool in_type_member);
+  ast::ProcModifiers parse_proc_modifiers(ast::ProcModifiers modifiers,
                                      bool in_type_member);
-  ProcModifiers parse_proc_header_tail(const char* ctx, bool in_type_member);
-  static ProcModifiers combine_proc_modifiers(ProcModifiers base,
-                                              ProcModifiers delta);
-  static ProcModifiers proc_modifier(ProcModifierFlag flag);
-  static ProcModifiers external_proc_modifier(std::string external_lib,
+  ast::ProcModifiers parse_proc_header_tail(const char* ctx, bool in_type_member);
+  static ast::ProcModifiers combine_proc_modifiers(ast::ProcModifiers base,
+                                              ast::ProcModifiers delta);
+  static ast::ProcModifiers proc_modifier(ProcModifierFlag flag);
+  static ast::ProcModifiers external_proc_modifier(std::string external_lib,
                                               std::string external_name);
 
   // Pascal "directives" are position-dependent keywords spelled as ordinary
