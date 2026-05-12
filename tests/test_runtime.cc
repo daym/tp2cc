@@ -1435,7 +1435,7 @@ void test_textfile_reset_closes_previous_handle() {
 
 void test_exec_tracks_exit_status() {
   p_doserror = -1;
-  p_exec(tp2cc_shortstring_of<>("sh"), tp2cc_shortstring_of<>("-c 'exit 9'"));
+  p_exec(tp2cc_shortstring_of<>("/bin/sh"), tp2cc_shortstring_of<>("-c 'exit 9'"));
   CHECK_EQ(p_doserror, 0);
   CHECK_EQ(p_dosexitcode(), 9);
 }
