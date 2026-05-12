@@ -3232,8 +3232,8 @@ template <typename T> inline T p_sqr(T x) {
 // Pascal `sqrt` coerces integer args via the float overload; express
 // that with a generic template so `sqrt(int)` resolves without
 // ambiguity between `double` and `long double` overloads.
-template <typename T> inline long double p_sqrt(T x) {
-  return std::sqrt(static_cast<long double>(x));
+template <typename T> inline double p_sqrt(T x) {
+  return std::sqrt(static_cast<double>(x));
 }
 inline double      p_sin(double x)          { return std::sin(x); }
 inline double      p_cos(double x)          { return std::cos(x); }
