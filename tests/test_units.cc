@@ -40,6 +40,16 @@ void write_file(const fs::path& p, std::string_view text) {
   f << text;
 }
 
+struct CurrentPathGuard {
+  fs::path old;
+
+  explicit CurrentPathGuard(const fs::path& next) : old(fs::current_path()) {
+    fs::current_path(next);
+  }
+
+  ~CurrentPathGuard() { fs::current_path(old); }
+};
+
 void write_unit(const fs::path& dir, const std::string& name,
                 const std::string& uses) {
   std::string body = "unit " + name + ";\n";
@@ -190,6 +200,65 @@ void test_discover_from_entry_only_reachable_units() {
   fs::remove_all(d);
 }
 
+void test_current_directory_is_implicit_unit_search_root() {
+  auto d = make_tmpdir("implicit-cwd");
+  fs::path cwd = d / "cwd";
+  fs::path main_dir = d / "main";
+  fs::create_directories(cwd);
+  fs::create_directories(main_dir);
+  write_unit(cwd, "foo", "");
+  auto prog = write_program(main_dir, "main", "foo");
+
+  {
+    CurrentPathGuard guard(cwd);
+    UnitGraph g;
+    CHECK_EQ(g.discover_from_entry(prog), 0);
+    const ParsedUnit* foo = g.lookup("foo");
+    CHECK(foo != nullptr);
+    if (foo) CHECK(fs::equivalent(foo->path, cwd / "foo.pas"));
+  }
+
+  fs::remove_all(d);
+}
+
+void test_entry_directory_is_implicit_unit_search_root() {
+  auto d = make_tmpdir("implicit-entry");
+  write_unit(d, "foo", "");
+  auto prog = write_program(d, "main", "foo");
+  UnitGraph g;
+  CHECK_EQ(g.discover_from_entry(prog), 0);
+  const ParsedUnit* foo = g.lookup("foo");
+  CHECK(foo != nullptr);
+  if (foo) CHECK(fs::equivalent(foo->path, d / "foo.pas"));
+  fs::remove_all(d);
+}
+
+void test_current_directory_precedes_entry_directory_and_unit_paths() {
+  auto d = make_tmpdir("implicit-order");
+  fs::path cwd = d / "cwd";
+  fs::path main_dir = d / "main";
+  fs::path fu_dir = d / "fu";
+  fs::create_directories(cwd);
+  fs::create_directories(main_dir);
+  fs::create_directories(fu_dir);
+  write_unit(cwd, "foo", "");
+  write_unit(main_dir, "foo", "");
+  write_unit(fu_dir, "foo", "");
+  auto prog = write_program(main_dir, "main", "foo");
+
+  {
+    CurrentPathGuard guard(cwd);
+    UnitGraph g;
+    g.add_search_root(fu_dir);
+    CHECK_EQ(g.discover_from_entry(prog), 0);
+    const ParsedUnit* foo = g.lookup("foo");
+    CHECK(foo != nullptr);
+    if (foo) CHECK(fs::equivalent(foo->path, cwd / "foo.pas"));
+  }
+
+  fs::remove_all(d);
+}
+
 void test_real_fpc_compiler_acyclic() {
   // Optional rpm/compiler fixture: walking pp.pas with the bootstrap defines
   // should not find a unit cycle.
@@ -224,6 +293,9 @@ int main() {
   RUN_TEST(test_external_uses_ignored);
   RUN_TEST(test_cycle_detected);
   RUN_TEST(test_discover_from_entry_only_reachable_units);
+  RUN_TEST(test_current_directory_is_implicit_unit_search_root);
+  RUN_TEST(test_entry_directory_is_implicit_unit_search_root);
+  RUN_TEST(test_current_directory_precedes_entry_directory_and_unit_paths);
   RUN_TEST(test_real_fpc_compiler_acyclic);
 
   int n = tp2cc_test::failures();

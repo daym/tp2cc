@@ -3,7 +3,7 @@
 // Multi-unit compilation context.
 //
 // `UnitGraph` is responsible for:
-//   - finding all `.pas`/`.pp` files under a set of root directories
+//   - finding `.pas`/`.pp` units in cwd, entry dir, then explicit roots
 //   - parsing each as a Pascal compilation unit
 //   - collecting their `uses` dependencies (interface + implementation)
 //   - producing a topological order for emission
@@ -33,8 +33,8 @@ class UnitGraph {
  public:
   UnitGraph();
 
-  // Add a unit search path (equivalent of FPC's -Fu<dir>). Non-recursive;
-  // first-match-wins across paths in insertion order.
+  // Add an explicit unit search path (equivalent of FPC's -Fu<dir>).
+  // Non-recursive; first-match-wins across paths in search order.
   void add_search_root(std::filesystem::path p);
 
   // Add an include search path (equivalent of FPC's -Fi<dir>) for {$I}
@@ -50,8 +50,8 @@ class UnitGraph {
   void set_range_check_default(bool on) { range_check_default_ = on; }
 
   // Parse a single program/unit file and recursively discover only the units
-  // reachable through its `uses` graph. Search roots are still used to locate
-  // referenced units by filename.
+  // reachable through its `uses` graph. Implicit and explicit search roots
+  // locate referenced units by filename.
   int discover_from_entry(std::filesystem::path entry_path);
 
   // After discover(), compute a topological order so that each unit's
@@ -77,6 +77,8 @@ class UnitGraph {
   std::vector<std::string> defines_;
   bool overflow_check_default_ = false;
   bool range_check_default_ = false;
+  std::filesystem::path current_dir_;
+  std::filesystem::path entry_dir_;
 
   // Map lowercased unit name -> ParsedUnit.
   std::unordered_map<std::string, ParsedUnit> units_;

@@ -33,10 +33,16 @@ std::string UnitGraph::to_lower(std::string_view s) {
 void UnitGraph::build_unit_path_index() {
   if (unit_path_index_ready_) return;
   unit_path_index_.clear();
-  // Non-recursive, first-match-wins: roots are probed in insertion order,
-  // and the first file discovered for a given unit name is kept.
-  for (const auto& root : roots_) {
-    if (!fs::exists(root)) continue;
+
+  std::vector<fs::path> indexed_roots;
+  auto index_root = [&](const fs::path& root) {
+    if (root.empty()) return;
+    if (std::find(indexed_roots.begin(), indexed_roots.end(), root) !=
+        indexed_roots.end()) {
+      return;
+    }
+    indexed_roots.push_back(root);
+    if (!fs::exists(root)) return;
     for (auto& e : fs::directory_iterator(root)) {
       if (!e.is_regular_file()) continue;
       auto ext = e.path().extension();
@@ -44,7 +50,10 @@ void UnitGraph::build_unit_path_index() {
       std::string stem = to_lower(e.path().stem().string());
       unit_path_index_.try_emplace(stem, e.path());
     }
-  }
+  };
+  index_root(current_dir_);
+  index_root(entry_dir_);
+  for (const auto& root : roots_) index_root(root);
   unit_path_index_ready_ = true;
 }
 
@@ -116,6 +125,8 @@ int UnitGraph::discover_from_entry(fs::path entry_path) {
   unit_path_index_.clear();
   unit_path_index_ready_ = false;
   if (!entry_path.is_absolute()) entry_path = fs::absolute(entry_path);
+  current_dir_ = fs::current_path();
+  entry_dir_ = entry_path.parent_path();
   return parse_recursive(entry_path);
 }
 
