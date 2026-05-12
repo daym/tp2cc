@@ -36,12 +36,10 @@ void EmitDecls::emit_enum_carrier(const TyEnum& te, std::string_view cxx_name,
   emit_ops_.emitln("enum " + std::string(cxx_name) + " : " +
                    types_.enum_underlying_type_to_cxx(te) + " {");
   emit_ops_.indent();
-  for (size_t i = 0; i < te.members.size(); ++i) {
-    std::string m = mangle(te.members[i].name);
-    if (te.members[i].value) {
-      m += " = " + values_.const_value_to_cxx(*te.members[i].value);
-    }
-    if (i + 1 < te.members.size()) m += ",";
+  auto members = types_.enum_members_to_cxx(te);
+  for (size_t i = 0; i < members.size(); ++i) {
+    std::string m = members[i];
+    if (i + 1 < members.size()) m += ",";
     emit_ops_.emitln(m);
   }
   emit_ops_.dedent();

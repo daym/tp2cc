@@ -667,14 +667,24 @@ std::string EmitTypes::enum_type_to_cxx(const TyEnum& e,
   std::string out = "enum : ";
   out += enum_underlying_type_to_cxx(e);
   out += " { ";
-  for (size_t i = 0; i < e.members.size(); ++i) {
+  auto members = enum_members_to_cxx(e);
+  for (size_t i = 0; i < members.size(); ++i) {
     if (i) out += ", ";
-    out += mangle(e.members[i].name);
-    if (e.members[i].value) {
-      out += " = " + const_render_.const_value_to_cxx(*e.members[i].value);
-    }
+    out += members[i];
   }
   out += " }";
+  return out;
+}
+
+std::vector<std::string> EmitTypes::enum_members_to_cxx(const TyEnum& e) {
+  std::vector<std::string> out;
+  for (size_t i = 0; i < e.members.size(); ++i) {
+    std::string m = mangle(e.members[i].name);
+    if (e.members[i].value) {
+      m += " = " + const_render_.const_value_to_cxx(*e.members[i].value);
+    }
+    out.push_back(std::move(m));
+  }
   return out;
 }
 

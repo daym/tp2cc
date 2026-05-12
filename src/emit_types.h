@@ -98,6 +98,7 @@ class EmitTypes {
   std::string set_type_to_cxx(const ast::TySet& s);
   std::optional<std::string> enum_carrier_type_to_cxx(
       const ast::TyEnum& e);
+  std::vector<std::string> enum_members_to_cxx(const ast::TyEnum& e);
   std::string enum_type_to_cxx(const ast::TyEnum& e,
                                const std::string& context);
   // Pascal fixed arrays keep their source bounds in the type, so successful
