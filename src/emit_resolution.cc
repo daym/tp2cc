@@ -45,113 +45,118 @@ EmitResolution::EmitResolution(const TypeRegistry* registry,
       type_ops_(type_ops),
       overload_types_(overload_types) {}
 
-EmitResolution::CandidateSet EmitResolution::class_method_cands(
+std::vector<EmitResolution::AnyCand> EmitResolution::class_method_cands(
     const std::string& cls, const std::string& name) {
-  CandidateSet cands;
-  if (!registry_ || cls.empty()) return cands;
+  std::vector<AnyCand> candidates;
+  if (!registry_ || cls.empty()) return candidates;
   auto* set = registry_->lookup_class_methods(
       cls, name, scope_.current_unit_name);
-  if (!set) return cands;
+  if (!set) return candidates;
   for (const auto& ms : *set) {
     if (!ms.decl) continue;
-    cands.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args, {},
-                     ms.defining_unit, {}});
+    candidates.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args,
+                          {}, ms.defining_unit, {}});
   }
-  return cands;
+  return candidates;
 }
 
-EmitResolution::CandidateSet EmitResolution::metaclass_method_cands(
+std::vector<EmitResolution::AnyCand> EmitResolution::metaclass_method_cands(
     const std::string& cls, const std::string& name) {
-  CandidateSet cands;
-  if (!registry_ || cls.empty()) return cands;
+  std::vector<AnyCand> candidates;
+  if (!registry_ || cls.empty()) return candidates;
   auto* set = registry_->lookup_class_methods(
       cls, name, scope_.current_unit_name);
-  if (!set) return cands;
+  if (!set) return candidates;
   for (const auto& ms : *set) {
     if (!ms.decl) continue;
     if (ms.kind != SymKind::Constructor && ms.kind != SymKind::ClassMethod) {
       continue;
     }
-    cands.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args, {},
-                     ms.defining_unit, {}});
+    candidates.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args,
+                          {}, ms.defining_unit, {}});
   }
-  return cands;
+  return candidates;
 }
 
-EmitResolution::CandidateSet EmitResolution::unit_export_proc_cands(
+std::vector<EmitResolution::AnyCand> EmitResolution::unit_export_proc_cands(
     const std::string& unit, const std::string& name) {
-  CandidateSet cands;
-  if (!registry_) return cands;
+  std::vector<AnyCand> candidates;
+  if (!registry_) return candidates;
   auto it = registry_->units.find(unit);
-  if (it == registry_->units.end()) return cands;
+  if (it == registry_->units.end()) return candidates;
   auto* v = (unit == scope_.current_unit_name)
                 ? it->second.find_procs(name)
                 : it->second.find_export_procs(name);
-  if (!v) return cands;
+  if (!v) return candidates;
   for (const auto& pi : *v) {
-    cands.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args, unit,
-                     pi.defining_unit, pi.return_type_name});
+    candidates.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args,
+                          unit, pi.defining_unit, pi.return_type_name});
   }
-  return cands;
+  return candidates;
 }
 
-EmitResolution::CandidateSet EmitResolution::gather_callable_in_pascal_scope(
+std::vector<EmitResolution::AnyCand>
+EmitResolution::gather_callable_in_pascal_scope(
     const std::string& name) {
-  CandidateSet cands;
-  if (!registry_) return cands;
+  std::vector<AnyCand> candidates;
+  if (!registry_) return candidates;
 
   for (auto wit = scope_.with_stack.rbegin(); wit != scope_.with_stack.rend();
        ++wit) {
-    CandidateSet with_cands = class_method_cands(wit->class_name, name);
-    if (!with_cands.empty()) return with_cands;
+    std::vector<AnyCand> with_candidates =
+        class_method_cands(wit->class_name, name);
+    if (!with_candidates.empty()) return with_candidates;
   }
   if (auto nit = scope_.local_nested_fns.find(name);
       nit != scope_.local_nested_fns.end()) {
     if (nit->second.decl) {
-      cands.push_back(
+      candidates.push_back(
           {nit->second.decl, nit->second.param_count,
            nit->second.accepts_zero_args, {}, scope_.current_unit_name, {}});
     }
-    return cands;
+    return candidates;
   }
-  CandidateSet class_cands = class_method_cands(scope_.current_class_name, name);
-  if (!class_cands.empty()) return class_cands;
+  std::vector<AnyCand> class_candidates =
+      class_method_cands(scope_.current_class_name, name);
+  if (!class_candidates.empty()) return class_candidates;
   auto cur = registry_->units.find(scope_.current_unit_name);
-  if (cur == registry_->units.end()) return cands;
+  if (cur == registry_->units.end()) return candidates;
   // A decl in the current unit shadows same-named decls reached through
   // `uses`. Without this stop, local overload sets and imported overload sets
   // would get merged even though Pascal lexical lookup never reaches the
   // imports once the current unit contributes the name.
   if (auto* local = cur->second.find_procs(name); local && !local->empty()) {
     for (const auto& pi : *local) {
-      cands.push_back(
+      candidates.push_back(
           {pi.decl.get(), pi.param_count, pi.accepts_zero_args,
            scope_.current_unit_name, pi.defining_unit, pi.return_type_name});
     }
-    return cands;
+    return candidates;
   }
   for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
        ++it) {
-    CandidateSet unit_cands = unit_export_proc_cands(*it, name);
-    cands.insert(cands.end(), std::make_move_iterator(unit_cands.begin()),
-                 std::make_move_iterator(unit_cands.end()));
+    std::vector<AnyCand> unit_candidates = unit_export_proc_cands(*it, name);
+    candidates.insert(candidates.end(),
+                      std::make_move_iterator(unit_candidates.begin()),
+                      std::make_move_iterator(unit_candidates.end()));
   }
-  return cands;
+  return candidates;
 }
 
-EmitResolution::CandidateSet EmitResolution::gather_operator_in_pascal_scope(
+std::vector<EmitResolution::AnyCand>
+EmitResolution::gather_operator_in_pascal_scope(
     const std::string& op) {
-  CandidateSet cands;
-  if (!registry_) return cands;
+  std::vector<AnyCand> candidates;
+  if (!registry_) return candidates;
   auto cur = registry_->units.find(scope_.current_unit_name);
-  if (cur == registry_->units.end()) return cands;
+  if (cur == registry_->units.end()) return candidates;
   if (auto* local = cur->second.find_operators(op); local && !local->empty()) {
     for (const auto& pi : *local) {
-      cands.push_back(
+      candidates.push_back(
           {pi.decl.get(), pi.param_count, pi.accepts_zero_args,
            scope_.current_unit_name, pi.defining_unit, {}});
     }
-    return cands;
+    return candidates;
   }
   for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
        ++it) {
@@ -160,11 +165,11 @@ EmitResolution::CandidateSet EmitResolution::gather_operator_in_pascal_scope(
     auto* ops = uit->second.find_export_operators(op);
     if (!ops) continue;
     for (const auto& pi : *ops) {
-      cands.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-                       *it, pi.defining_unit, {}});
+      candidates.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args,
+                            *it, pi.defining_unit, {}});
     }
   }
-  return cands;
+  return candidates;
 }
 
 std::vector<FlatCallParamInfo> EmitResolution::flatten_call_param_info(
