@@ -72,6 +72,7 @@ class EmitProcs {
   SavedProcState save_proc_state() const;
   void restore_proc_state(SavedProcState&& saved);
   void setup_proc_frame(const ast::ProcDecl& pd, bool nested_lambda);
+  bool insert_proc_local_name(Location where, const std::string& name);
   void seed_proc_scope(const ast::ProcDecl& pd);
   std::string nested_proc_signature_types(const ast::ProcDecl& pd);
 

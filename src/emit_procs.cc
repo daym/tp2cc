@@ -132,21 +132,22 @@ void EmitProcs::setup_proc_frame(const ProcDecl& pd, bool nested_lambda) {
   ++block_depth_;
 }
 
-void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
-  auto insert_local_name = [&](Location where, const std::string& name) {
-    // Pascal functions already own an implicit `Result` variable, so any
-    // local/parameter/const nested in that body may not reuse the name.
-    if (scope_.bare_result_type && is_pascal_result_ident(name)) {
-      emit_ops_.report_error(where, "duplicate identifier `Result`");
-      return false;
-    }
-    scope_.local_scope.insert(name);
-    return true;
-  };
+bool EmitProcs::insert_proc_local_name(Location where,
+                                       const std::string& name) {
+  // Pascal functions already own an implicit `Result` variable, so any
+  // local/parameter/const nested in that body may not reuse the name.
+  if (scope_.bare_result_type && is_pascal_result_ident(name)) {
+    emit_ops_.report_error(where, "duplicate identifier `Result`");
+    return false;
+  }
+  scope_.local_scope.insert(name);
+  return true;
+}
 
+void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
   for (const auto& p : pd.params) {
     for (const auto& nm : p.names) {
-      if (!insert_local_name(pd.loc, nm)) continue;
+      if (!insert_proc_local_name(pd.loc, nm)) continue;
       if (p.type) {
         scope_.local_types[nm] = p.type.get();
         if (p.mode == Param::Const || p.mode == Param::ConstRef) {
@@ -168,7 +169,7 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
     if (l->kind == Kind::VarDecl) {
       const auto& vd = static_cast<const VarDecl&>(*l);
       for (const auto& nm : vd.names) {
-        if (!insert_local_name(vd.loc, nm)) continue;
+        if (!insert_proc_local_name(vd.loc, nm)) continue;
         if (vd.type) scope_.local_types[nm] = vd.type.get();
       }
       if (vd.type && !vd.names.empty()) {
@@ -177,7 +178,7 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
       }
     } else if (l->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
-      if (!insert_local_name(cd.loc, cd.name)) continue;
+      if (!insert_proc_local_name(cd.loc, cd.name)) continue;
       scope_.local_consts[cd.name] = &cd;
       if (const TypeExpr* ct = analysis_.deduce_const_decl_type(cd)) {
         scope_.local_types[cd.name] = ct;
@@ -199,7 +200,7 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
       }
     } else if (l->kind == Kind::ProcDecl) {
       const auto& npd = static_cast<const ProcDecl&>(*l);
-      if (!insert_local_name(npd.loc, npd.name)) continue;
+      if (!insert_proc_local_name(npd.loc, npd.name)) continue;
       size_t param_count = 0;
       for (const auto& p : npd.params) param_count += p.names.size();
       scope_.local_nested_fns[npd.name] = ScopeStateView::NestedFn{
