@@ -492,27 +492,17 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
         std::vector<const Expr*> ctor_args;
         ctor_args.reserve(cc.args.size());
         for (const auto& arg : cc.args) ctor_args.push_back(arg.get());
-        const size_t explicit_ctor_arg_count = ctor_args.size();
         ResolvedCall ctor_resolved =
             resolution_.resolve_pointer_target_constructor(
                 ptr_arg_ty, *cc.callee, ctor_args);
-        calls_.append_defaulted_trailing_call_args(ctor_resolved.decl,
-                                                   ctor_args);
-        std::vector<UntypedArgKind> untyped_arg(ctor_args.size(),
-                                                UntypedArgKind::None);
-        std::vector<bool> mutable_ref_arg(ctor_args.size(), false);
-        std::vector<const TypeExpr*> param_types(ctor_args.size(), nullptr);
-        calls_.mark_call_param_info(ctor_resolved.decl, untyped_arg,
-                                    mutable_ref_arg, param_types);
-        for (size_t i = 0; i < ctor_args.size(); ++i) {
+        CallArgumentPlan ctor_plan =
+            calls_.plan_call_arguments(ctor_resolved.decl, cc.callee.get(),
+                                       ctor_args,
+                                       ctor_resolved.default_arg_unit);
+        for (size_t i = 0; i < ctor_plan.slots.size(); ++i) {
           if (i) args += ", ";
-          const std::string_view default_arg_unit =
-              i >= explicit_ctor_arg_count
-                  ? std::string_view(ctor_resolved.default_arg_unit)
-                  : std::string_view{};
-          args += calls_.lower_call_arg(*ctor_args[i], param_types[i],
-                                        untyped_arg[i], mutable_ref_arg[i],
-                                        default_arg_unit);
+          args += calls_.lower_call_arg(ctor_plan.slots[i],
+                                        ctor_plan.default_arg_unit);
         }
       } else if (second.kind == Kind::Ident) {
         method = mangle(static_cast<const Ident&>(second).name);
@@ -824,19 +814,15 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_operator_enumerator(
   }
   if (!op.decl) return ForInEmitResult::NotMatched;
 
-  std::vector<UntypedArgKind> untyped_arg(1, UntypedArgKind::None);
-  std::vector<bool> mutable_ref_arg(1, false);
-  std::vector<const TypeExpr*> param_types(1, nullptr);
-  calls_.mark_call_param_info(op.decl, untyped_arg, mutable_ref_arg,
-                              param_types);
+  std::vector<const Expr*> op_args{f.in_expr.get()};
+  CallArgumentPlan op_plan =
+      calls_.plan_call_arguments(op.decl, nullptr, op_args);
   std::string fn = pascal_operator_decl_name_to_cxx(*op.decl);
   if (!op.defining_unit.empty()) {
     fn = unit_namespace_prefix(op.defining_unit) + fn;
   }
   ForInEnumeratorProvider provider(
-      fn + "(" + calls_.lower_call_arg(*f.in_expr, param_types[0],
-                                       untyped_arg[0], mutable_ref_arg[0]) +
-          ")",
+      fn + "(" + calls_.lower_call_arg(op_plan.slots[0]) + ")",
       op.decl->return_type.get(), f.loc);
   return emit_for_in_enumerator_provider(f, var, provider);
 }

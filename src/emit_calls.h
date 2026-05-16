@@ -19,6 +19,19 @@ struct TypeRegistry;
 
 enum class UntypedArgKind : uint8_t { None, Const, Mutable };
 
+struct CallArgumentSlot {
+  const ast::Expr* expr = nullptr;
+  const ast::TypeExpr* param_type = nullptr;
+  UntypedArgKind untyped_arg = UntypedArgKind::None;
+  bool mutable_ref_arg = false;
+  bool defaulted = false;
+};
+
+struct CallArgumentPlan {
+  std::vector<CallArgumentSlot> slots;
+  std::string default_arg_unit;
+};
+
 class EmitCallExprOps {
  public:
   virtual ~EmitCallExprOps() = default;
@@ -41,29 +54,12 @@ class EmitCalls {
 
   bool proc_accepts_zero_args(const ast::ProcDecl& decl);
 
-  // Populate call-site metadata in argument order. The three output vectors are
-  // a single logical table keyed by actual-argument slot: untyped storage kind,
-  // mutable-reference requirement, and chosen Pascal formal type. Keeping the
-  // table construction here avoids independent call paths reclassifying the
-  // same parameter slots differently.
-  void mark_call_param_info(const ast::ProcDecl* decl,
-                            std::vector<UntypedArgKind>& untyped_arg,
-                            std::vector<bool>& mutable_ref_arg,
-                            std::vector<const ast::TypeExpr*>& param_types);
-  void collect_builtin_helper_param_info(
-      const ast::Expr& callee, std::vector<UntypedArgKind>& untyped_arg,
-      std::vector<bool>& mutable_ref_arg,
-      std::vector<const ast::TypeExpr*>& param_types);
-  void collect_call_param_info(const ast::Expr& callee,
-                               std::vector<UntypedArgKind>& untyped_arg,
-                               std::vector<bool>& mutable_ref_arg,
-                               std::vector<const ast::TypeExpr*>& param_types);
-
-  // Pascal trailing default parameters are compile-time sugar. After overload
-  // resolution has chosen a declaration, omitted suffix actuals are appended so
-  // argument lowering sees the same complete slot table as an explicit call.
-  void append_defaulted_trailing_call_args(
-      const ast::ProcDecl* decl, std::vector<const ast::Expr*>& args);
+  // Build the complete call-site slot table after overload resolution. The plan
+  // is short-lived and contains only AST/type pointers plus lowering flags.
+  CallArgumentPlan plan_call_arguments(
+      const ast::ProcDecl* decl, const ast::Expr* callee,
+      const std::vector<const ast::Expr*>& explicit_args,
+      std::string_view default_arg_unit = {});
 
   // Lower one Pascal actual argument into the C++ form required by the
   // chosen formal parameter slot: open-array constructors, typed/mutable
@@ -73,6 +69,8 @@ class EmitCalls {
                              const ast::TypeExpr* param_type,
                              UntypedArgKind untyped_arg,
                              bool mutable_ref_arg,
+                             std::string_view default_arg_unit = {});
+  std::string lower_call_arg(const CallArgumentSlot& slot,
                              std::string_view default_arg_unit = {});
 
   // Bare Pascal `foo;` / `obj.meth;` can still mean a call when omitted
@@ -90,15 +88,15 @@ class EmitCalls {
       const ast::Expr& base, std::string_view member_name);
   std::optional<std::string> maybe_lower_class_constructor_call(
       Location where, std::string_view class_name, std::string_view member_name,
-      const std::vector<const ast::Expr*>& args,
-      const std::vector<const ast::TypeExpr*>& param_types,
-      const std::vector<UntypedArgKind>& untyped_arg,
-      const std::vector<bool>& mutable_ref_arg,
-      size_t explicit_arg_count,
-      const ast::ProcDecl* selected_decl,
-      std::string_view default_arg_unit);
+      const CallArgumentPlan& plan, const ast::ProcDecl* selected_decl);
 
  private:
+  void mark_call_param_info(const ast::ProcDecl* decl, CallArgumentPlan& plan);
+  void collect_builtin_helper_param_info(const ast::Expr& callee,
+                                         CallArgumentPlan& plan);
+  void collect_procedural_callee_param_info(const ast::Expr& callee,
+                                            CallArgumentPlan& plan);
+
   const TypeRegistry* registry_;
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;

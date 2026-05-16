@@ -100,20 +100,19 @@ std::string visible_type_unit_from(std::string_view type_name,
   return {};
 }
 
-void mark_builtin_memory_helper_param_info(
-    std::string_view name, std::vector<UntypedArgKind>& untyped_arg,
-    std::vector<bool>& mutable_ref_arg,
-    std::vector<const ast::TypeExpr*>& param_types) {
+void mark_builtin_memory_helper_param_info(std::string_view name,
+                                           CallArgumentPlan& plan) {
   const std::string lower = ascii_lower(name);
 
   auto mark = [&](size_t index, UntypedArgKind untyped_kind, bool is_mutable,
                   const ast::TypeExpr* type = nullptr) {
-    if (index < untyped_arg.size() &&
-        untyped_kind != UntypedArgKind::None) {
-      untyped_arg[index] = untyped_kind;
+    if (index >= plan.slots.size()) return;
+    CallArgumentSlot& slot = plan.slots[index];
+    if (untyped_kind != UntypedArgKind::None) {
+      slot.untyped_arg = untyped_kind;
     }
-    if (index < mutable_ref_arg.size() && is_mutable) mutable_ref_arg[index] = true;
-    if (index < param_types.size()) param_types[index] = type;
+    if (is_mutable) slot.mutable_ref_arg = true;
+    slot.param_type = type;
   };
 
   // Pascal's raw memory helpers all operate on caller storage, not on the
@@ -205,73 +204,47 @@ bool EmitCalls::proc_accepts_zero_args(const ProcDecl& decl) {
   return true;
 }
 
-void EmitCalls::mark_call_param_info(
-    const ProcDecl* decl, std::vector<UntypedArgKind>& untyped_arg,
-    std::vector<bool>& mutable_ref_arg,
-    std::vector<const TypeExpr*>& param_types) {
+void EmitCalls::mark_call_param_info(const ProcDecl* decl,
+                                     CallArgumentPlan& plan) {
   if (!decl) return;
   size_t ai = 0;
   for (const auto& p : decl->params) {
-    for (size_t k = 0; k < p.names.size(); ++k) {
-      if (ai < untyped_arg.size() && !p.type) {
-        untyped_arg[ai] =
-            (p.mode == Param::Var || p.mode == Param::Out)
-                ? UntypedArgKind::Mutable
-                : UntypedArgKind::Const;
+    const size_t count = p.names.empty() ? 1 : p.names.size();
+    for (size_t k = 0; k < count; ++k) {
+      if (ai >= plan.slots.size()) return;
+      CallArgumentSlot& slot = plan.slots[ai];
+      if (!p.type) {
+        slot.untyped_arg = (p.mode == Param::Var || p.mode == Param::Out)
+                               ? UntypedArgKind::Mutable
+                               : UntypedArgKind::Const;
       }
-      if (ai < mutable_ref_arg.size()) {
-        mutable_ref_arg[ai] =
-            p.mode == Param::Var || p.mode == Param::Out ||
-            (p.mode == Param::Const &&
-             analysis_.const_param_needs_mutable_ref(p.type.get()));
-      }
-      if (ai < param_types.size()) param_types[ai] = p.type.get();
+      slot.mutable_ref_arg =
+          p.mode == Param::Var || p.mode == Param::Out ||
+          (p.mode == Param::Const &&
+           analysis_.const_param_needs_mutable_ref(p.type.get()));
+      slot.param_type = p.type.get();
       ++ai;
     }
   }
 }
 
-void EmitCalls::append_defaulted_trailing_call_args(
-    const ProcDecl* decl, std::vector<const Expr*>& args) {
-  if (!decl) return;
-  std::vector<FlatCallParamInfo> flat_params =
-      resolution_.flatten_call_param_info(decl);
-  if (args.size() >= flat_params.size()) return;
-
-  for (size_t i = args.size(); i < flat_params.size(); ++i) {
-    if (!flat_params[i].default_value) return;
-  }
-  args.reserve(flat_params.size());
-  for (size_t i = args.size(); i < flat_params.size(); ++i) {
-    args.push_back(flat_params[i].default_value);
-  }
-}
-
-void EmitCalls::collect_builtin_helper_param_info(
-    const Expr& callee, std::vector<UntypedArgKind>& untyped_arg,
-    std::vector<bool>& mutable_ref_arg,
-    std::vector<const TypeExpr*>& param_types) {
+void EmitCalls::collect_builtin_helper_param_info(const Expr& callee,
+                                                  CallArgumentPlan& plan) {
   if (callee.kind == Kind::Ident) {
     mark_builtin_memory_helper_param_info(
-        static_cast<const Ident&>(callee).name, untyped_arg, mutable_ref_arg,
-        param_types);
+        static_cast<const Ident&>(callee).name, plan);
     return;
   }
   if (callee.kind != Kind::Member) return;
   const auto& mem = static_cast<const Member&>(callee);
   if (mem.base->kind == Kind::Ident &&
       ascii_lower(static_cast<const Ident&>(*mem.base).name) == "system") {
-    mark_builtin_memory_helper_param_info(mem.name, untyped_arg,
-                                          mutable_ref_arg, param_types);
+    mark_builtin_memory_helper_param_info(mem.name, plan);
   }
 }
 
-void EmitCalls::collect_call_param_info(
-    const Expr& callee, std::vector<UntypedArgKind>& untyped_arg,
-    std::vector<bool>& mutable_ref_arg,
-    std::vector<const TypeExpr*>& param_types) {
-  collect_builtin_helper_param_info(callee, untyped_arg, mutable_ref_arg,
-                                    param_types);
+void EmitCalls::collect_procedural_callee_param_info(const Expr& callee,
+                                                     CallArgumentPlan& plan) {
   const TypeExpr* callee_type = analysis_.deduce_type(callee);
   if (callee_type) callee_type = analysis_.canonicalize_type(callee_type);
   if (!callee_type || callee_type->kind != Kind::TyProcedural) return;
@@ -281,22 +254,63 @@ void EmitCalls::collect_call_param_info(
   for (const auto& p : proc.params) {
     const size_t count = p.names.empty() ? 1 : p.names.size();
     for (size_t k = 0; k < count; ++k) {
-      if (ai < untyped_arg.size() && !p.type) {
-        untyped_arg[ai] =
-            (p.mode == Param::Var || p.mode == Param::Out)
-                ? UntypedArgKind::Mutable
-                : UntypedArgKind::Const;
+      if (ai >= plan.slots.size()) return;
+      CallArgumentSlot& slot = plan.slots[ai];
+      if (!p.type) {
+        slot.untyped_arg = (p.mode == Param::Var || p.mode == Param::Out)
+                               ? UntypedArgKind::Mutable
+                               : UntypedArgKind::Const;
       }
-      if (ai < mutable_ref_arg.size()) {
-        mutable_ref_arg[ai] =
-            p.mode == Param::Var || p.mode == Param::Out ||
-            (p.mode == Param::Const &&
-             analysis_.const_param_needs_mutable_ref(p.type.get()));
-      }
-      if (ai < param_types.size()) param_types[ai] = p.type.get();
+      slot.mutable_ref_arg =
+          p.mode == Param::Var || p.mode == Param::Out ||
+          (p.mode == Param::Const &&
+           analysis_.const_param_needs_mutable_ref(p.type.get()));
+      slot.param_type = p.type.get();
       ++ai;
     }
   }
+}
+
+CallArgumentPlan EmitCalls::plan_call_arguments(
+    const ProcDecl* decl, const Expr* callee,
+    const std::vector<const Expr*>& explicit_args,
+    std::string_view default_arg_unit) {
+  CallArgumentPlan plan;
+  plan.default_arg_unit = std::string(default_arg_unit);
+  plan.slots.reserve(explicit_args.size());
+  for (const Expr* arg : explicit_args) {
+    plan.slots.push_back(CallArgumentSlot{.expr = arg});
+  }
+
+  if (decl) {
+    const std::vector<FlatCallParamInfo> flat_params =
+        resolution_.flatten_call_param_info(decl);
+    if (plan.slots.size() < flat_params.size()) {
+      bool all_defaults_present = true;
+      for (size_t i = plan.slots.size(); i < flat_params.size(); ++i) {
+        if (!flat_params[i].default_value) {
+          all_defaults_present = false;
+          break;
+        }
+      }
+      if (all_defaults_present) {
+        plan.slots.reserve(flat_params.size());
+        for (size_t i = plan.slots.size(); i < flat_params.size(); ++i) {
+          plan.slots.push_back(
+              CallArgumentSlot{.expr = flat_params[i].default_value,
+                               .defaulted = true});
+        }
+      }
+    }
+  }
+
+  if (callee) collect_builtin_helper_param_info(*callee, plan);
+  if (decl) {
+    mark_call_param_info(decl, plan);
+  } else if (callee) {
+    collect_procedural_callee_param_info(*callee, plan);
+  }
+  return plan;
 }
 
 std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
@@ -502,25 +516,28 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
   return "((" + std::string(ptr_cast) + ")&(" + arg_text + "))";
 }
 
+std::string EmitCalls::lower_call_arg(const CallArgumentSlot& slot,
+                                      std::string_view default_arg_unit) {
+  if (!slot.expr) return {};
+  return lower_call_arg(*slot.expr, slot.param_type, slot.untyped_arg,
+                        slot.mutable_ref_arg,
+                        slot.defaulted ? default_arg_unit : std::string_view{});
+}
+
 std::string EmitCalls::lower_implicit_zero_arg_call(
     const std::string& callee_text, const ProcDecl* decl,
     std::string_view default_arg_unit) {
   if (!decl) return callee_text + "()";
 
   std::vector<const Expr*> args;
-  append_defaulted_trailing_call_args(decl, args);
-  if (args.empty()) return callee_text + "()";
-
-  std::vector<UntypedArgKind> untyped_arg(args.size(), UntypedArgKind::None);
-  std::vector<bool> mutable_ref_arg(args.size(), false);
-  std::vector<const TypeExpr*> param_types(args.size(), nullptr);
-  mark_call_param_info(decl, untyped_arg, mutable_ref_arg, param_types);
+  CallArgumentPlan plan =
+      plan_call_arguments(decl, nullptr, args, default_arg_unit);
+  if (plan.slots.empty()) return callee_text + "()";
 
   std::string out = callee_text + "(";
-  for (size_t i = 0; i < args.size(); ++i) {
+  for (size_t i = 0; i < plan.slots.size(); ++i) {
     if (i) out += ", ";
-    out += lower_call_arg(*args[i], param_types[i], untyped_arg[i],
-                          mutable_ref_arg[i], default_arg_unit);
+    out += lower_call_arg(plan.slots[i], plan.default_arg_unit);
   }
   out += ")";
   return out;
@@ -536,13 +553,7 @@ std::optional<std::string> EmitCalls::maybe_lower_class_free_member(
 
 std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
     Location where, std::string_view class_name, std::string_view member_name,
-    const std::vector<const Expr*>& args,
-    const std::vector<const TypeExpr*>& param_types,
-    const std::vector<UntypedArgKind>& untyped_arg,
-    const std::vector<bool>& mutable_ref_arg,
-    size_t explicit_arg_count,
-    const ProcDecl* selected_decl,
-    std::string_view default_arg_unit) {
+    const CallArgumentPlan& plan, const ProcDecl* selected_decl) {
   if (!registry_) return std::nullopt;
   const ClassInfo* ci =
       analysis_.class_info_for_type_name(std::string(class_name));
@@ -564,11 +575,13 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
   }
   bool implicit_root_create = false;
   if (!method || method->kind != SymKind::Constructor) {
-    if (ascii_lower(std::string(member_name)) != "create" || !args.empty()) {
+    if (ascii_lower(std::string(member_name)) != "create" ||
+        !plan.slots.empty()) {
       return std::nullopt;
     }
     implicit_root_create = true;
   }
+  std::string_view default_arg_unit = plan.default_arg_unit;
   if (default_arg_unit.empty() && method) {
     default_arg_unit = method->defining_unit;
   }
@@ -578,37 +591,14 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
                        std::string(class_name) + "`");
   }
 
-  std::vector<const Expr*> effective_args(args.begin(), args.end());
-  std::vector<const TypeExpr*> effective_param_types(param_types.begin(),
-                                                     param_types.end());
-  std::vector<UntypedArgKind> effective_untyped_arg(untyped_arg.begin(),
-                                                    untyped_arg.end());
-  std::vector<bool> effective_mutable_ref_arg(mutable_ref_arg.begin(),
-                                              mutable_ref_arg.end());
-  explicit_arg_count = std::min(explicit_arg_count, effective_args.size());
-  append_defaulted_trailing_call_args(method ? method->decl.get() : nullptr,
-                                      effective_args);
-  if (effective_param_types.size() < effective_args.size()) {
-    effective_param_types.resize(effective_args.size(), nullptr);
-    effective_untyped_arg.resize(effective_args.size(), UntypedArgKind::None);
-    effective_mutable_ref_arg.resize(effective_args.size(), false);
-    mark_call_param_info(method ? method->decl.get() : nullptr,
-                         effective_untyped_arg, effective_mutable_ref_arg,
-                         effective_param_types);
-  }
-
   // Pascal constructor calls on a class value (`TNode.Create`) allocate a
   // fresh instance and then run the constructor body on that instance. They
   // are not plain static method calls, even though the emitted C++ helper
   // itself lives on the struct type.
   std::string args_cxx;
-  for (size_t i = 0; i < effective_args.size(); ++i) {
+  for (size_t i = 0; i < plan.slots.size(); ++i) {
     if (i) args_cxx += ", ";
-    args_cxx += lower_call_arg(*effective_args[i], effective_param_types[i],
-                               effective_untyped_arg[i],
-                               effective_mutable_ref_arg[i],
-                               i >= explicit_arg_count ? default_arg_unit
-                                                       : std::string_view{});
+    args_cxx += lower_call_arg(plan.slots[i], default_arg_unit);
   }
   std::string struct_ty = types_.named_type_struct_cxx(class_name);
   return "([&]{ auto tp2cc_ptr = new " + struct_ty + "{}; tp2cc_ptr->" +

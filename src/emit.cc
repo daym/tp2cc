@@ -501,30 +501,12 @@ struct Emitter : ResolveNameProvider,
       const std::vector<const ast::Expr*>& args);
   std::string format_resolved_callee(const ResolvedCall& resolved,
                                      const ast::Expr& callee_ast);
-  void append_defaulted_trailing_call_args(
-      const ast::ProcDecl* decl, std::vector<const ast::Expr*>& args) {
-    calls_.append_defaulted_trailing_call_args(decl, args);
-  }
-  void mark_call_param_info(const ast::ProcDecl* decl,
-                            std::vector<UntypedArgKind>& untyped_arg,
-                            std::vector<bool>& mutable_ref_arg,
-                            std::vector<const ast::TypeExpr*>& param_types) {
-    calls_.mark_call_param_info(decl, untyped_arg, mutable_ref_arg,
-                                param_types);
-  }
-  void collect_builtin_helper_param_info(
-      const ast::Expr& callee, std::vector<UntypedArgKind>& untyped_arg,
-      std::vector<bool>& mutable_ref_arg,
-      std::vector<const ast::TypeExpr*>& param_types) {
-    calls_.collect_builtin_helper_param_info(callee, untyped_arg,
-                                             mutable_ref_arg, param_types);
-  }
-  void collect_call_param_info(const ast::Expr& callee,
-                               std::vector<UntypedArgKind>& untyped_arg,
-                               std::vector<bool>& mutable_ref_arg,
-                               std::vector<const ast::TypeExpr*>& param_types) {
-    calls_.collect_call_param_info(callee, untyped_arg, mutable_ref_arg,
-                                   param_types);
+  CallArgumentPlan plan_call_arguments(
+      const ast::ProcDecl* decl, const ast::Expr* callee,
+      const std::vector<const ast::Expr*>& explicit_args,
+      std::string_view default_arg_unit = {}) {
+    return calls_.plan_call_arguments(decl, callee, explicit_args,
+                                      default_arg_unit);
   }
   std::string lower_call_arg(const ast::Expr& arg,
                              const ast::TypeExpr* param_type,
@@ -533,6 +515,10 @@ struct Emitter : ResolveNameProvider,
                              std::string_view default_arg_unit = {}) {
     return calls_.lower_call_arg(arg, param_type, untyped_arg,
                                  mutable_ref_arg, default_arg_unit);
+  }
+  std::string lower_call_arg(const CallArgumentSlot& slot,
+                             std::string_view default_arg_unit = {}) {
+    return calls_.lower_call_arg(slot, default_arg_unit);
   }
   std::string lower_implicit_zero_arg_call(const std::string& callee_text,
                                            const ast::ProcDecl* decl,
@@ -573,16 +559,9 @@ struct Emitter : ResolveNameProvider,
   }
   std::optional<std::string> maybe_lower_class_constructor_call(
       Location where, std::string_view class_name, std::string_view member_name,
-      const std::vector<const ast::Expr*>& args,
-      const std::vector<const ast::TypeExpr*>& param_types,
-      const std::vector<UntypedArgKind>& untyped_arg,
-      const std::vector<bool>& mutable_ref_arg,
-      size_t explicit_arg_count,
-      const ast::ProcDecl* selected_decl,
-      std::string_view default_arg_unit) {
+      const CallArgumentPlan& plan, const ast::ProcDecl* selected_decl) {
     return calls_.maybe_lower_class_constructor_call(
-        where, class_name, member_name, args, param_types, untyped_arg,
-        mutable_ref_arg, explicit_arg_count, selected_decl, default_arg_unit);
+        where, class_name, member_name, plan, selected_decl);
   }
   using ResolvedKind = tp2cc::ResolvedKind;
   using ResolveResult = tp2cc::ResolveResult;
@@ -749,7 +728,7 @@ tp2cc::ResolvedCall Emitter::resolve_new_constructor_call(
 // allow implicit conversion through a var/out alias).
 //
 // A defaulted-trailing-arg fill is rank 1 and handled at the call-site
-// expansion (`append_defaulted_trailing_call_args`), not here.
+// expansion (CallArgumentPlan construction), not here.
 Emitter::ResolvedCall Emitter::resolve_call(
     const Expr& callee, const std::vector<const Expr*>& args) {
   return resolution_.resolve_call(callee, args);
@@ -1052,17 +1031,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return "/* ambiguous overloaded operator */";
         }
         if (resolved.decl) {
-          std::vector<UntypedArgKind> untyped_arg(2, UntypedArgKind::None);
-          std::vector<bool> mutable_ref_arg(2, false);
-          std::vector<const TypeExpr*> param_types(2, nullptr);
-          mark_call_param_info(resolved.decl, untyped_arg, mutable_ref_arg,
-                               param_types);
-          std::string lhs =
-              lower_call_arg(*n.lhs, param_types[0], untyped_arg[0],
-                             mutable_ref_arg[0]);
-          std::string rhs =
-              lower_call_arg(*n.rhs, param_types[1], untyped_arg[1],
-                             mutable_ref_arg[1]);
+          std::vector<const Expr*> op_args{n.lhs.get(), n.rhs.get()};
+          CallArgumentPlan op_plan =
+              plan_call_arguments(resolved.decl, nullptr, op_args);
+          std::string lhs = lower_call_arg(op_plan.slots[0]);
+          std::string rhs = lower_call_arg(op_plan.slots[1]);
           if (resolved.decl->intrinsic_operator ==
               ProcDecl::IntrinsicOperator::StringCompare) {
             std::string cmp =
@@ -1297,14 +1270,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
              registry->records.count(base_name))) {
           if (!is_callee_context_) {
             std::vector<const Expr*> no_args;
-            std::vector<const TypeExpr*> no_param_types;
-            std::vector<UntypedArgKind> no_untyped_arg;
-            std::vector<bool> no_mutable_ref_arg;
             ResolvedCall ctor_resolved = resolve_call(m, no_args);
+            CallArgumentPlan ctor_plan = plan_call_arguments(
+                ctor_resolved.decl, &m, no_args, ctor_resolved.default_arg_unit);
             if (auto ctor_call = maybe_lower_class_constructor_call(
-                    m.loc, base_name, m.name, no_args, no_param_types,
-                    no_untyped_arg, no_mutable_ref_arg, no_args.size(),
-                    ctor_resolved.decl, ctor_resolved.default_arg_unit)) {
+                    m.loc, base_name, m.name, ctor_plan, ctor_resolved.decl)) {
               return *ctor_call;
             }
           }
@@ -2089,26 +2059,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             std::vector<const Expr*> ctor_args;
             ctor_args.reserve(cc.args.size());
             for (const auto& arg : cc.args) ctor_args.push_back(arg.get());
-            const size_t explicit_ctor_arg_count = ctor_args.size();
             ResolvedCall ctor_resolved =
                 resolve_new_constructor_call(*c.args[0], *cc.callee,
                                              ctor_args);
-            append_defaulted_trailing_call_args(ctor_resolved.decl, ctor_args);
-            std::vector<UntypedArgKind> untyped_arg(ctor_args.size(),
-                                                    UntypedArgKind::None);
-            std::vector<bool> mutable_ref_arg(ctor_args.size(), false);
-            std::vector<const TypeExpr*> param_types(ctor_args.size(), nullptr);
-            mark_call_param_info(ctor_resolved.decl, untyped_arg,
-                                 mutable_ref_arg, param_types);
-            for (size_t i = 0; i < ctor_args.size(); ++i) {
+            CallArgumentPlan ctor_plan =
+                plan_call_arguments(ctor_resolved.decl, cc.callee.get(),
+                                    ctor_args, ctor_resolved.default_arg_unit);
+            for (size_t i = 0; i < ctor_plan.slots.size(); ++i) {
               if (i) margs += ", ";
-              const std::string_view default_arg_unit =
-                  i >= explicit_ctor_arg_count
-                      ? std::string_view(ctor_resolved.default_arg_unit)
-                      : std::string_view{};
-              margs += lower_call_arg(*ctor_args[i], param_types[i],
-                                      untyped_arg[i], mutable_ref_arg[i],
-                                      default_arg_unit);
+              margs += lower_call_arg(ctor_plan.slots[i],
+                                      ctor_plan.default_arg_unit);
             }
           } else if (second.kind == Kind::Ident) {
             method = mangle(static_cast<const Ident&>(second).name);
@@ -2222,7 +2182,6 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       std::vector<const Expr*> call_args;
       call_args.reserve(c.args.size());
       for (const auto& arg : c.args) call_args.push_back(arg.get());
-      const size_t explicit_arg_count = call_args.size();
       ResolvedCall resolved = resolve_call(*c.callee, call_args);
       if (resolved.ambiguous) {
         // Pascal-level ambiguous call: two or more overloads were
@@ -2241,25 +2200,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return "/* ambiguous call to '" + name + "' */";
       }
       const ProcDecl* call_decl = resolved.decl;
-      append_defaulted_trailing_call_args(call_decl, call_args);
-      std::vector<UntypedArgKind> call_untyped_arg(call_args.size(),
-                                                   UntypedArgKind::None);
-      std::vector<bool> call_mutable_ref_arg(call_args.size(), false);
-      std::vector<const TypeExpr*> call_param_types(call_args.size(), nullptr);
-      if (call_decl) {
-        // Use the resolver's picked decl directly so per-arg types match
-        // exactly the overload we are landing on. The builtin-helper hook
-        // (move/fillchar/etc.) still runs because it overrides specific
-        // slots that the decl-based path leaves null.
-        collect_builtin_helper_param_info(*c.callee, call_untyped_arg,
-                                          call_mutable_ref_arg,
-                                          call_param_types);
-        mark_call_param_info(call_decl, call_untyped_arg,
-                             call_mutable_ref_arg, call_param_types);
-      } else {
-        collect_call_param_info(*c.callee, call_untyped_arg,
-                                call_mutable_ref_arg, call_param_types);
-      }
+      CallArgumentPlan call_plan = plan_call_arguments(
+          call_decl, c.callee.get(), call_args, resolved.default_arg_unit);
       if (c.args.empty() && c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         if (auto free_call = maybe_lower_class_free_member(*mem.base, mem.name)) {
@@ -2273,9 +2215,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (!analysis_.identifier_is_shadowed_value(id.name) &&
               registry->has_class(id.name, current_unit_name)) {
             if (auto ctor_call = maybe_lower_class_constructor_call(
-                    c.loc, id.name, mem.name, call_args, call_param_types,
-                    call_untyped_arg, call_mutable_ref_arg, explicit_arg_count,
-                    resolved.decl, resolved.default_arg_unit)) {
+                    c.loc, id.name, mem.name, call_plan, resolved.decl)) {
               return *ctor_call;
             }
           }
@@ -2303,15 +2243,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                expr_to_cxx(*c.args[0]) + ")).p_env)";
       }
       std::string out = callee_text + "(";
-      for (size_t i = 0; i < call_args.size(); ++i) {
+      for (size_t i = 0; i < call_plan.slots.size(); ++i) {
         if (i) out += ", ";
-        const std::string_view default_arg_unit =
-            i >= explicit_arg_count ? std::string_view(resolved.default_arg_unit)
-                                    : std::string_view{};
-        std::string arg_text = lower_call_arg(*call_args[i], call_param_types[i],
-                                              call_untyped_arg[i],
-                                              call_mutable_ref_arg[i],
-                                              default_arg_unit);
+        const CallArgumentSlot& slot = call_plan.slots[i];
+        std::string arg_text = lower_call_arg(slot, call_plan.default_arg_unit);
         // For overloaded callees, force the C++ compiler onto the picked
         // overload by casting every value-arg to the picked param's type.
         // C++ ranks competing implicit conversions equally in many cases
@@ -2323,12 +2258,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         // procedural-type params (`static_cast<funcptr>(value)` is
         // ill-formed and overload resolution against a function-pointer
         // slot does not produce ambiguity with value-type overloads).
-        if (resolved.needs_arg_casts && call_param_types[i] &&
-            !call_mutable_ref_arg[i] &&
-            call_untyped_arg[i] == UntypedArgKind::None) {
-          const TypeExpr* canon_pt = canonicalize_type(call_param_types[i]);
+        if (resolved.needs_arg_casts && slot.param_type &&
+            !slot.mutable_ref_arg &&
+            slot.untyped_arg == UntypedArgKind::None) {
+          const TypeExpr* canon_pt = canonicalize_type(slot.param_type);
           if (!canon_pt || canon_pt->kind != Kind::TyProcedural) {
-            arg_text = "static_cast<" + type_to_cxx(*call_param_types[i]) +
+            arg_text = "static_cast<" + type_to_cxx(*slot.param_type) +
                        ">(" + arg_text + ")";
           }
         }
