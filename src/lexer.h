@@ -18,16 +18,18 @@ enum class InterfaceMode {
   Corba,
 };
 
-// A Lexer that owns a stack of input sources (so {$include FOO} can push a new
-// file) and a conditional-compilation state (IfdefStack).
+// Lexing owns source inclusion and conditional compilation. The parser only
+// sees tokens from accepted branches plus snapshots of live mode switches, so
+// directive state must be resolved before tokens leave this layer.
 class Lexer {
  public:
   explicit Lexer(std::shared_ptr<SourceFile> root,
                  std::vector<std::filesystem::path> include_dirs = {});
 
-  // Predefine a symbol for {$ifdef}. If the spelling is NAME:=TEXT,
-  // TEXT is kept as macro text and typed only when a {$if} expression
-  // reads NAME.
+  // Predefine a conditional-compilation symbol. NAME defines a symbol-only
+  // macro for {$ifdef}; NAME:=TEXT also preserves TEXT for {$if} expressions,
+  // where it is interpreted only as the integer/boolean subset that tp2cc
+  // evaluates.
   void define(std::string name);
   void undefine(const std::string& name);
 
@@ -116,8 +118,9 @@ class Lexer {
   // release_sources().
   std::vector<std::unique_ptr<SourceFile>> retired_;
   std::vector<IfdefFrame> ifdef_stack_;
-  std::unordered_map<std::string, std::optional<std::string>>
-      defines_;  // lowercased names
+  // Lowercased conditional symbols. nullopt means symbol-only; a string value
+  // is unexpanded source text from `-dNAME:=TEXT` or `{$define NAME:=TEXT}`.
+  std::unordered_map<std::string, std::optional<std::string>> defines_;
   std::unordered_map<std::string, Tok> keywords_;     // lowercased -> kind
   std::vector<std::filesystem::path> include_dirs_;
 

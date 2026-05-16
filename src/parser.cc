@@ -777,9 +777,8 @@ std::optional<ast::ProcModifiers> Parser::parse_proc_modifier(
     if (cur_.kind == Tok::StringLit) advance();
   }
   else if (is_directive("overload")) {
-    // Delphi-style method overloading.  Emit-time handling: drop the
-    // directive; C++ overload resolution picks the right signature
-    // from the emitted `p_<Method>(...)' candidates automatically.
+    // `overload` is declarative: it permits a same-name overload set, but the
+    // chosen declaration is still selected later by Pascal overload ranking.
     advance();
   }
   else if (is_directive("reintroduce")) {
@@ -812,10 +811,10 @@ ast::ProcModifiers Parser::parse_proc_modifiers(ProcModifiers modifiers,
 
 ast::ProcModifiers Parser::parse_proc_header_tail(const char* ctx,
                                                      bool in_type_member) {
-  // FPC allows the semicolon between a routine header and the first routine
-  // directive to be omitted, but only when that next token is actually one of
-  // the routine directives. Use the same consumer as the modifier loop so the
-  // header exception cannot drift from the directive list.
+  // The semicolon between a routine header and the first routine directive may
+  // be omitted only when that next token is actually a routine directive. Use
+  // the same consumer as the modifier loop so this header exception cannot drift
+  // from the directive list.
   if (accept(Tok::Semi)) {
     return parse_proc_modifiers(ProcModifiers{}, in_type_member);
   }

@@ -3,7 +3,8 @@
 // Multi-unit compilation context.
 //
 // `UnitGraph` is responsible for:
-//   - finding `.pas`/`.pp` units in cwd, entry dir, then explicit roots
+//   - finding `.pas`/`.pp` units in Pascal's implicit current-directory search
+//     positions, then explicit roots
 //   - parsing each as a Pascal compilation unit
 //   - collecting their `uses` dependencies (interface + implementation)
 //   - producing a topological order for emission
@@ -33,12 +34,13 @@ class UnitGraph {
  public:
   UnitGraph();
 
-  // Add an explicit unit search path (equivalent of FPC's -Fu<dir>).
-  // Non-recursive; first-match-wins across paths in search order.
+  // Add an explicit unit search path (`-Fu<dir>`). Search is non-recursive and
+  // first-match-wins after the implicit current and entry directories.
   void add_search_root(std::filesystem::path p);
 
-  // Add an include search path (equivalent of FPC's -Fi<dir>) for {$I}
-  // directives encountered while parsing units.
+  // Add an include search path (`-Fi<dir>`) for {$I} directives. Includes use a
+  // separate path list from unit lookup because Pascal treats source inclusion
+  // and unit discovery as different mechanisms.
   void add_include_path(std::filesystem::path p);
 
   // Predefine a preprocessor symbol used when parsing each unit.

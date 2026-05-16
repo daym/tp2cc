@@ -64,6 +64,9 @@ class Parser {
                                                  bool is_class_method,
                                                  bool in_type_member);
   std::shared_ptr<ast::ProcDecl> parse_operator_decl(bool in_interface);
+  // Routine directives are parsed as one ProcModifiers value before the ProcDecl
+  // is built, so method flags, calling convention, external name, and lifecycle
+  // markers cross the parser/emitter boundary as one complete fact.
   std::optional<ast::ProcModifiers> parse_proc_modifier(bool in_type_member);
   ast::ProcModifiers parse_proc_modifiers(ast::ProcModifiers modifiers,
                                      bool in_type_member);
@@ -74,9 +77,9 @@ class Parser {
   static ast::ProcModifiers external_proc_modifier(std::string external_lib,
                                               std::string external_name);
 
-  // Pascal "directives" are position-dependent keywords spelled as ordinary
-  // identifiers (e.g. `name`, `alias`, `read`, `write`, `stored`,
-  // `default`, `message`, `index`, `result`, `operator`, `cvar`, `on`).
+  // Pascal "directives" are position-dependent words spelled as identifiers
+  // (e.g. `name`, `alias`, `read`, `write`, `stored`, `default`, `message`,
+  // `index`, `result`, `operator`, `cvar`, `on`).
   // The lexer delivers them as Tok::Ident; we recognize them by text at
   // the points where they're meaningful.
   bool is_directive(const char* name) const;
