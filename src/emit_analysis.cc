@@ -564,7 +564,7 @@ EmitAnalysis::ordinal_domain_for_set_type(const TypeExpr* t) {
 
 std::optional<EmitAnalysis::SetLiteralOrdinalSummary>
 EmitAnalysis::extend_set_literal_ordinal_summary(
-    SetLiteralOrdinalSummary summary, const Expr& e) {
+    std::optional<SetLiteralOrdinalSummary> summary, const Expr& e) {
   int64_t value = 0;
   OrdinalFamily expr_family = OrdinalFamily::Invalid;
   const TyEnum* expr_key = nullptr;
@@ -575,35 +575,37 @@ EmitAnalysis::extend_set_literal_ordinal_summary(
   // Every element of one Pascal set literal belongs to one ordinal domain.
   // Keep that identity together with the bounds so later synthesis creates a
   // real set type instead of treating each element expression independently.
-  if (summary.family == OrdinalFamily::Invalid) {
-    summary.family = expr_family;
-    summary.enum_key = expr_key;
-    if (expr_family == OrdinalFamily::Enum && !summary.enum_type) {
-      summary.enum_type = deduce_type(e);
-    }
-  } else if (summary.family != expr_family || summary.enum_key != expr_key) {
+  if (!summary) {
+    return SetLiteralOrdinalSummary{
+        expr_family,
+        expr_key,
+        expr_family == OrdinalFamily::Enum ? deduce_type(e) : nullptr,
+        value,
+        value,
+    };
+  }
+  if (summary->family != expr_family || summary->enum_key != expr_key) {
     return std::nullopt;
   }
 
-  if (!summary.have_bounds) {
-    summary.low = summary.high = value;
-    summary.have_bounds = true;
-  } else {
-    summary.low = std::min(summary.low, value);
-    summary.high = std::max(summary.high, value);
-  }
-  return summary;
+  return SetLiteralOrdinalSummary{
+      summary->family,
+      summary->enum_key,
+      summary->enum_type,
+      std::min(summary->low, value),
+      std::max(summary->high, value),
+  };
 }
 
 std::optional<EmitAnalysis::SetLiteralOrdinalSummary>
 EmitAnalysis::summarize_set_literal_ordinals(const SetLit& s) {
-  SetLiteralOrdinalSummary summary;
+  std::optional<SetLiteralOrdinalSummary> summary;
   for (const auto& el : s.elements) {
     if (el->kind == Kind::Range) {
       const auto& r = static_cast<const Range&>(*el);
       auto next = extend_set_literal_ordinal_summary(summary, *r.lo);
       if (!next) return std::nullopt;
-      next = extend_set_literal_ordinal_summary(*next, *r.hi);
+      next = extend_set_literal_ordinal_summary(next, *r.hi);
       if (!next) return std::nullopt;
       summary = *next;
     } else {
@@ -612,8 +614,7 @@ EmitAnalysis::summarize_set_literal_ordinals(const SetLit& s) {
       summary = *next;
     }
   }
-  return summary.have_bounds ? std::optional<SetLiteralOrdinalSummary>{summary}
-                             : std::nullopt;
+  return summary;
 }
 
 const TypeExpr* EmitAnalysis::deduce_set_literal_type(const SetLit& s,

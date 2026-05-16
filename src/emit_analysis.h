@@ -163,12 +163,11 @@ class EmitAnalysis {
   };
 
   struct SetLiteralOrdinalSummary {
-    OrdinalFamily family = OrdinalFamily::Invalid;
-    const ast::TyEnum* enum_key = nullptr;
-    const ast::TypeExpr* enum_type = nullptr;
-    int64_t low = 0;
-    int64_t high = 0;
-    bool have_bounds = false;
+    OrdinalFamily family;
+    const ast::TyEnum* enum_key;
+    const ast::TypeExpr* enum_type;
+    int64_t low;
+    int64_t high;
   };
 
   std::string implicit_self_cxx();
@@ -185,8 +184,8 @@ class EmitAnalysis {
                              OrdinalFamily* family,
                              const ast::TyEnum** enum_key);
   std::optional<SetLiteralOrdinalSummary>
-  extend_set_literal_ordinal_summary(SetLiteralOrdinalSummary summary,
-                                     const ast::Expr& e);
+  extend_set_literal_ordinal_summary(
+      std::optional<SetLiteralOrdinalSummary> summary, const ast::Expr& e);
   std::optional<SetLiteralOrdinalSummary> summarize_set_literal_ordinals(
       const ast::SetLit& s);
   const ast::TypeExpr* const_intrinsic_type_arg(const ast::Expr& arg);
