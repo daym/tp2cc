@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 
 #include "emit_context.h"
@@ -32,6 +33,9 @@ class EmitLookup {
                              const std::string& qualifier = {});
 
  private:
+  std::optional<ResolveResult> resolve_exported_unit_name(
+      const std::string& unit_name, const std::string& name);
+
   const TypeRegistry* registry_;
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;

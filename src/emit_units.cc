@@ -265,25 +265,26 @@ void EmitUnits::seed_unit_const_scope(const std::vector<DeclPtr>& decls) {
   }
 }
 
+void EmitUnits::emit_ordered_type_decls(
+    const std::vector<const Decl*>& decls, bool in_header) {
+  for (const auto* td : ordered_type_decls(decls)) {
+    ops_.emit_decl(*td, in_header);
+  }
+}
+
 void EmitUnits::emit_type_decl_run(const std::vector<DeclPtr>& decls,
                                    bool in_header) {
   std::vector<const Decl*> run;
-  auto flush = [&] {
-    if (run.empty()) return;
-    for (const auto* td : ordered_type_decls(run)) {
-      ops_.emit_decl(*td, in_header);
-    }
-    run.clear();
-  };
   for (const auto& d : decls) {
     if (d->kind == Kind::TypeDecl) {
       run.push_back(d.get());
     } else {
-      flush();
+      emit_ordered_type_decls(run, in_header);
+      run.clear();
       ops_.emit_decl(*d, in_header);
     }
   }
-  flush();
+  emit_ordered_type_decls(run, in_header);
 }
 
 void EmitUnits::emit_unit_hook(

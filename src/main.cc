@@ -213,6 +213,16 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
   h << "namespace p_" << unit_name << " = ::rt;\n";
 }
 
+std::vector<std::string> external_unit_refs_in_uses(
+    const UnitGraph& g, const std::vector<std::string>& uses) {
+  std::vector<std::string> refs;
+  for (const auto& unit_name : uses) {
+    std::string canonical = to_lower(unit_name);
+    if (!g.lookup(canonical)) refs.push_back(std::move(canonical));
+  }
+  return refs;
+}
+
 std::optional<fs::path> resolve_tp2cc_program(std::string_view invoked_as) {
   if (invoked_as.empty()) return std::nullopt;
   std::error_code ec;
@@ -473,14 +483,12 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
     if (pu->ast->is_program && program_name.empty()) {
       program_name = name;
     }
-    auto scan = [&](const std::vector<std::string>& uses) {
-      for (const auto& u : uses) {
-        std::string lu = to_lower(u);
-        if (!g.lookup(lu)) rtl_refs.insert(lu);
-      }
-    };
-    scan(pu->ast->interface_uses);
-    scan(pu->ast->impl_uses);
+    for (auto ref : external_unit_refs_in_uses(g, pu->ast->interface_uses)) {
+      rtl_refs.insert(std::move(ref));
+    }
+    for (auto ref : external_unit_refs_in_uses(g, pu->ast->impl_uses)) {
+      rtl_refs.insert(std::move(ref));
+    }
     ++emitted;
   }
   for (const auto& u : rtl_refs) {

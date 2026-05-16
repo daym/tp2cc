@@ -515,17 +515,14 @@ std::string primitive_low_high_expr(std::string_view lowname, bool want_low) {
 }
 
 const ast::TyName* builtin_integer_type(std::string_view lowname) {
-  auto make = [](const char* name) {
-    return ast::TyName(name);
-  };
-  static const ast::TyName t_shortint = make("shortint");
-  static const ast::TyName t_byte = make("byte");
-  static const ast::TyName t_smallint = make("smallint");
-  static const ast::TyName t_word = make("word");
-  static const ast::TyName t_longint = make("longint");
-  static const ast::TyName t_cardinal = make("cardinal");
-  static const ast::TyName t_int64 = make("int64");
-  static const ast::TyName t_qword = make("qword");
+  static const ast::TyName t_shortint("shortint");
+  static const ast::TyName t_byte("byte");
+  static const ast::TyName t_smallint("smallint");
+  static const ast::TyName t_word("word");
+  static const ast::TyName t_longint("longint");
+  static const ast::TyName t_cardinal("cardinal");
+  static const ast::TyName t_int64("int64");
+  static const ast::TyName t_qword("qword");
 
   if (lowname == "shortint") return &t_shortint;
   if (lowname == "byte") return &t_byte;

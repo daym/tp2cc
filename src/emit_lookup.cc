@@ -111,6 +111,36 @@ EmitLookup::EmitLookup(const TypeRegistry* registry, ScopeStateView& scope,
       analysis_(analysis),
       properties_(properties) {}
 
+std::optional<ResolveResult> EmitLookup::resolve_exported_unit_name(
+    const std::string& unit_name, const std::string& name) {
+  auto it = registry_->units.find(unit_name);
+  if (it == registry_->units.end()) return std::nullopt;
+  const UnitInfo& unit = it->second;
+  // Synthetic `__rt__` unit holds runtime builtins. Emit them fully qualified
+  // so translated units do not depend on `using namespace ::rt;`.
+  const std::string prefix = unit_namespace_prefix(unit_name);
+  if (auto result = resolve_proc_overloads(
+          unit.find_export_procs(name),
+          (unit_name == "__rt__") ? ResolvedKind::RtBuiltin
+                                  : ResolvedKind::UnitProc,
+          prefix + mangle(name))) {
+    return result;
+  }
+  if (unit.find_export_var(name)) {
+    return resolved_value(ResolvedKind::UnitVar, prefix + mangle(name));
+  }
+  if (unit.find_export_const(name)) {
+    return resolved_value(ResolvedKind::UnitConst, prefix + mangle(name));
+  }
+  if (unit.has_export_enum_member(name)) {
+    return resolved_value(ResolvedKind::EnumMember, prefix + mangle(name));
+  }
+  if (unit.has_export_type(name)) {
+    return resolved_value(ResolvedKind::UnitType, prefix + mangle(name));
+  }
+  return std::nullopt;
+}
+
 ResolveResult EmitLookup::resolve_name(const std::string& name,
                                        QualifierKind qk,
                                        const std::string& qualifier) {
@@ -326,51 +356,17 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       }
     }
 
-    // Cross-unit lookup: walk the current unit's `uses` list and pick
-    // the first match in a unit that actually exports this name.
-    // Ambiguity between same-named symbols in two `using namespace`'d
-    // units is resolved by emitting the fully-qualified form.
-    auto check_unit = [&](const std::string& un) -> std::optional<ResolveResult> {
-      auto it = registry_->units.find(un);
-      if (it == registry_->units.end()) return std::nullopt;
-      const UnitInfo& u = it->second;
-      // Synthetic `__rt__` unit holds runtime builtins. Emit them fully
-      // qualified so translated units do not depend on `using namespace
-      // ::rt;` for correctness.
-      const std::string prefix = unit_namespace_prefix(un);
-      // Other units contribute only their interface-exported names.
-      if (auto result = resolve_proc_overloads(
-              u.find_export_procs(name),
-              (un == "__rt__") ? ResolvedKind::RtBuiltin
-                               : ResolvedKind::UnitProc,
-              prefix + mangle(name))) {
-        return result;
-      }
-      if (u.find_export_var(name)) {
-        return resolved_value(ResolvedKind::UnitVar, prefix + mangle(name));
-      }
-      if (u.find_export_const(name)) {
-        return resolved_value(ResolvedKind::UnitConst, prefix + mangle(name));
-      }
-      if (u.has_export_enum_member(name)) {
-        return resolved_value(ResolvedKind::EnumMember, prefix + mangle(name));
-      }
-      if (u.has_export_type(name)) {
-        return resolved_value(ResolvedKind::UnitType, prefix + mangle(name));
-      }
-      return std::nullopt;
-    };
     if (ui) {
       // Right-to-left is Pascal's uses resolution order. Keep the synthetic
       // `__rt__` unit as the last resort so real imported units can shadow
       // runtime builtin names such as FPU exception enum members.
       for (auto it = ui->uses.rbegin(); it != ui->uses.rend(); ++it) {
         if (*it == "__rt__") continue;
-        if (auto result = check_unit(*it)) return *result;
+        if (auto result = resolve_exported_unit_name(*it, name)) return *result;
       }
       for (auto it = ui->uses.rbegin(); it != ui->uses.rend(); ++it) {
         if (*it != "__rt__") continue;
-        if (auto result = check_unit(*it)) return *result;
+        if (auto result = resolve_exported_unit_name(*it, name)) return *result;
       }
     }
   }
