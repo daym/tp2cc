@@ -132,24 +132,20 @@ class EmitResolution {
     std::string declaration_unit;  // scope for default parameter expressions
     std::string return_type_name;  // for decl-less runtime builtins
   };
+  using CandidateSet = std::vector<AnyCand>;
 
   // Pascal lookup order for an unqualified callable name:
   // `with` stack -> nested procs -> current class chain -> current unit ->
   // uses chain. The first contributing non-uses scope wins; the uses chain
   // aggregates so same-name overloads across imports compete together.
-  void append_class_method_cands(const std::string& cls,
-                                 const std::string& name,
-                                 std::vector<AnyCand>& cands);
-  void append_metaclass_method_cands(const std::string& cls,
-                                     const std::string& name,
-                                     std::vector<AnyCand>& cands);
-  void append_unit_export_proc_cands(const std::string& unit,
-                                     const std::string& name,
-                                     std::vector<AnyCand>& cands);
-  void gather_callable_in_pascal_scope(const std::string& name,
-                                       std::vector<AnyCand>& cands);
-  void gather_operator_in_pascal_scope(const std::string& op,
-                                       std::vector<AnyCand>& cands);
+  CandidateSet class_method_cands(const std::string& cls,
+                                  const std::string& name);
+  CandidateSet metaclass_method_cands(const std::string& cls,
+                                      const std::string& name);
+  CandidateSet unit_export_proc_cands(const std::string& unit,
+                                      const std::string& name);
+  CandidateSet gather_callable_in_pascal_scope(const std::string& name);
+  CandidateSet gather_operator_in_pascal_scope(const std::string& op);
   ConvScore score_conversion(const ast::TypeExpr* arg,
                              const ast::TypeExpr* param,
                              bool var_param,

@@ -45,27 +45,28 @@ EmitResolution::EmitResolution(const TypeRegistry* registry,
       type_ops_(type_ops),
       overload_types_(overload_types) {}
 
-void EmitResolution::append_class_method_cands(
-    const std::string& cls, const std::string& name,
-    std::vector<AnyCand>& cands) {
-  if (!registry_ || cls.empty()) return;
+EmitResolution::CandidateSet EmitResolution::class_method_cands(
+    const std::string& cls, const std::string& name) {
+  CandidateSet cands;
+  if (!registry_ || cls.empty()) return cands;
   auto* set = registry_->lookup_class_methods(
       cls, name, scope_.current_unit_name);
-  if (!set) return;
+  if (!set) return cands;
   for (const auto& ms : *set) {
     if (!ms.decl) continue;
     cands.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args, {},
                      ms.defining_unit, {}});
   }
+  return cands;
 }
 
-void EmitResolution::append_metaclass_method_cands(
-    const std::string& cls, const std::string& name,
-    std::vector<AnyCand>& cands) {
-  if (!registry_ || cls.empty()) return;
+EmitResolution::CandidateSet EmitResolution::metaclass_method_cands(
+    const std::string& cls, const std::string& name) {
+  CandidateSet cands;
+  if (!registry_ || cls.empty()) return cands;
   auto* set = registry_->lookup_class_methods(
       cls, name, scope_.current_unit_name);
-  if (!set) return;
+  if (!set) return cands;
   for (const auto& ms : *set) {
     if (!ms.decl) continue;
     if (ms.kind != SymKind::Constructor && ms.kind != SymKind::ClassMethod) {
@@ -74,36 +75,35 @@ void EmitResolution::append_metaclass_method_cands(
     cands.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args, {},
                      ms.defining_unit, {}});
   }
+  return cands;
 }
 
-void EmitResolution::append_unit_export_proc_cands(
-    const std::string& unit, const std::string& name,
-    std::vector<AnyCand>& cands) {
-  if (!registry_) return;
+EmitResolution::CandidateSet EmitResolution::unit_export_proc_cands(
+    const std::string& unit, const std::string& name) {
+  CandidateSet cands;
+  if (!registry_) return cands;
   auto it = registry_->units.find(unit);
-  if (it == registry_->units.end()) return;
+  if (it == registry_->units.end()) return cands;
   auto* v = (unit == scope_.current_unit_name)
                 ? it->second.find_procs(name)
                 : it->second.find_export_procs(name);
-  if (!v) return;
+  if (!v) return cands;
   for (const auto& pi : *v) {
     cands.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args, unit,
                      pi.defining_unit, pi.return_type_name});
   }
+  return cands;
 }
 
-void EmitResolution::gather_callable_in_pascal_scope(
-    const std::string& name, std::vector<AnyCand>& cands) {
-  if (!registry_) return;
-  auto try_class = [&](const std::string& cls) -> bool {
-    size_t before = cands.size();
-    append_class_method_cands(cls, name, cands);
-    return cands.size() != before;
-  };
+EmitResolution::CandidateSet EmitResolution::gather_callable_in_pascal_scope(
+    const std::string& name) {
+  CandidateSet cands;
+  if (!registry_) return cands;
 
   for (auto wit = scope_.with_stack.rbegin(); wit != scope_.with_stack.rend();
        ++wit) {
-    if (try_class(wit->class_name)) return;
+    CandidateSet with_cands = class_method_cands(wit->class_name, name);
+    if (!with_cands.empty()) return with_cands;
   }
   if (auto nit = scope_.local_nested_fns.find(name);
       nit != scope_.local_nested_fns.end()) {
@@ -112,11 +112,12 @@ void EmitResolution::gather_callable_in_pascal_scope(
           {nit->second.decl, nit->second.param_count,
            nit->second.accepts_zero_args, {}, scope_.current_unit_name, {}});
     }
-    return;
+    return cands;
   }
-  if (try_class(scope_.current_class_name)) return;
+  CandidateSet class_cands = class_method_cands(scope_.current_class_name, name);
+  if (!class_cands.empty()) return class_cands;
   auto cur = registry_->units.find(scope_.current_unit_name);
-  if (cur == registry_->units.end()) return;
+  if (cur == registry_->units.end()) return cands;
   // A decl in the current unit shadows same-named decls reached through
   // `uses`. Without this stop, local overload sets and imported overload sets
   // would get merged even though Pascal lexical lookup never reaches the
@@ -127,26 +128,30 @@ void EmitResolution::gather_callable_in_pascal_scope(
           {pi.decl.get(), pi.param_count, pi.accepts_zero_args,
            scope_.current_unit_name, pi.defining_unit, pi.return_type_name});
     }
-    return;
+    return cands;
   }
   for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
        ++it) {
-    append_unit_export_proc_cands(*it, name, cands);
+    CandidateSet unit_cands = unit_export_proc_cands(*it, name);
+    cands.insert(cands.end(), std::make_move_iterator(unit_cands.begin()),
+                 std::make_move_iterator(unit_cands.end()));
   }
+  return cands;
 }
 
-void EmitResolution::gather_operator_in_pascal_scope(
-    const std::string& op, std::vector<AnyCand>& cands) {
-  if (!registry_) return;
+EmitResolution::CandidateSet EmitResolution::gather_operator_in_pascal_scope(
+    const std::string& op) {
+  CandidateSet cands;
+  if (!registry_) return cands;
   auto cur = registry_->units.find(scope_.current_unit_name);
-  if (cur == registry_->units.end()) return;
+  if (cur == registry_->units.end()) return cands;
   if (auto* local = cur->second.find_operators(op); local && !local->empty()) {
     for (const auto& pi : *local) {
       cands.push_back(
           {pi.decl.get(), pi.param_count, pi.accepts_zero_args,
            scope_.current_unit_name, pi.defining_unit, {}});
     }
-    return;
+    return cands;
   }
   for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
        ++it) {
@@ -159,6 +164,7 @@ void EmitResolution::gather_operator_in_pascal_scope(
                        *it, pi.defining_unit, {}});
     }
   }
+  return cands;
 }
 
 std::vector<FlatCallParamInfo> EmitResolution::flatten_call_param_info(
@@ -696,7 +702,7 @@ ResolvedCall EmitResolution::resolve_call(
   std::vector<AnyCand> all_cands;
   if (callee.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(callee);
-    gather_callable_in_pascal_scope(id.name, all_cands);
+    all_cands = gather_callable_in_pascal_scope(id.name);
   } else if (callee.kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(callee);
     auto receiver_class = [&](const Expr& c) -> std::string {
@@ -731,7 +737,7 @@ ResolvedCall EmitResolution::resolve_call(
           if (parent.empty() && ci->is_reference_type) {
             parent = "tobject";
           }
-          append_class_method_cands(parent, mem.name, all_cands);
+          all_cands = class_method_cands(parent, mem.name);
         }
       }
       if (!inherited_call) {
@@ -741,8 +747,8 @@ ResolvedCall EmitResolution::resolve_call(
         // shadowing/uses checks.
         if (auto unit_member = analysis_.resolve_unit_qualified_member(mem)) {
           unit_qualified = true;
-          append_unit_export_proc_cands(unit_member->unit_name, mem.name,
-                                        all_cands);
+          all_cands =
+              unit_export_proc_cands(unit_member->unit_name, mem.name);
         }
       }
     }
@@ -750,10 +756,10 @@ ResolvedCall EmitResolution::resolve_call(
       const std::string metaclass =
           analysis_.metaclass_target_name(analysis_.deduce_type(*mem.base));
       if (!metaclass.empty()) {
-        append_metaclass_method_cands(metaclass, mem.name, all_cands);
+        all_cands = metaclass_method_cands(metaclass, mem.name);
       } else {
         std::string cls = receiver_class(callee);
-        if (!cls.empty()) append_class_method_cands(cls, mem.name, all_cands);
+        if (!cls.empty()) all_cands = class_method_cands(cls, mem.name);
       }
     }
   }
@@ -877,8 +883,7 @@ BinaryOperatorResult EmitResolution::find_binary_operator(
       operand_allows_operator_lookup(rhs_type);
   if (!overloadable_context) return {};
 
-  std::vector<AnyCand> cands;
-  gather_operator_in_pascal_scope(op, cands);
+  std::vector<AnyCand> cands = gather_operator_in_pascal_scope(op);
   if (cands.empty()) return {};
 
   std::vector<const ProcDecl*> arity_ok;
@@ -903,8 +908,7 @@ BinaryOperatorResult EmitResolution::find_binary_operator(
 UnaryOperatorResult EmitResolution::find_unary_operator(
     const std::string& op, const Expr& operand) {
   if (!registry_) return {};
-  std::vector<AnyCand> cands;
-  gather_operator_in_pascal_scope(op, cands);
+  std::vector<AnyCand> cands = gather_operator_in_pascal_scope(op);
   if (cands.empty()) return {};
 
   std::vector<const ProcDecl*> arity_ok;
@@ -934,8 +938,7 @@ AssignmentOperatorResult EmitResolution::find_assignment_operator(
   std::string target_cxx = type_ops_.type_to_cxx(*canon_target);
   if (target_cxx.empty()) return {};
 
-  std::vector<AnyCand> cands;
-  gather_operator_in_pascal_scope(":=", cands);
+  std::vector<AnyCand> cands = gather_operator_in_pascal_scope(":=");
   std::vector<const ProcDecl*> viable;
   for (const auto& c : cands) {
     const ProcDecl* pd = c.decl;
