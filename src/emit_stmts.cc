@@ -52,6 +52,24 @@ class LoopLabelScope {
   std::vector<std::string>& continue_labels_;
 };
 
+// A `with` statement opens temporary member lookup bases while its body is
+// emitted. Restoring by saved depth keeps nested `with` statements independent
+// of how many receiver expressions the outer statement contains.
+class WithStackScope {
+ public:
+  explicit WithStackScope(std::vector<ScopeStateView::WithBind>& stack)
+      : stack_(stack), size_(stack.size()) {}
+
+  WithStackScope(const WithStackScope&) = delete;
+  WithStackScope& operator=(const WithStackScope&) = delete;
+
+  ~WithStackScope() { stack_.resize(size_); }
+
+ private:
+  std::vector<ScopeStateView::WithBind>& stack_;
+  size_t size_;
+};
+
 }  // namespace
 
 EmitStmts::EmitStmts(const TypeRegistry* registry, ScopeStateView& scope,
@@ -1237,7 +1255,7 @@ void EmitStmts::emit_stmt(const Stmt& s) {
       const auto& w = static_cast<const With&>(s);
       stmt_ops_.emitln("{");
       stmt_ops_.indent();
-      size_t pushed = 0;
+      WithStackScope with_scope(scope_.with_stack);
       for (size_t i = 0; i < w.exprs.size(); ++i) {
         const Expr& with_expr = *w.exprs[i];
         const TypeExpr* ty = analysis_.deduce_type(with_expr);
@@ -1255,10 +1273,8 @@ void EmitStmts::emit_stmt(const Stmt& s) {
             .type = ty,
             .class_name = analysis_.deduce_class_alias(with_expr),
             .access_op = storage_.member_access_op(with_expr)});
-        ++pushed;
       }
       if (w.body) emit_stmt(*w.body);
-      for (size_t i = 0; i < pushed; ++i) scope_.with_stack.pop_back();
       stmt_ops_.dedent();
       stmt_ops_.emitln("}");
       break;
