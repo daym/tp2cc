@@ -847,8 +847,8 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"get8087cw",  0, true,  false, "word"},
       {"set8087cw",  1, false, false, ""},
   };
-  // Synthetic unit "rt::" holds the builtins so lookups that walk
-  // the uses chain can find them as an always-available fallback.
+  // Synthetic unit "rt::" holds the builtins so lookups that walk the uses
+  // chain find the implicit System/runtime names in one place.
   std::unordered_map<std::string, std::vector<ProcInfo>> rt_iface_procs;
   for (const auto& b : rt_builtins) {
     rt_iface_procs[b.name].push_back(
@@ -1156,8 +1156,8 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     std::vector<std::string> uses;
     for (const auto& nm : u->interface_uses) uses.push_back(lc(nm));
     for (const auto& nm : u->impl_uses) uses.push_back(lc(nm));
-    // Every Pascal unit implicitly uses `System` -- we model rt as
-    // that implicit last fallback on the uses chain.
+    // Every Pascal unit implicitly uses `System`; model the runtime helpers as
+    // the last unit in that uses chain.
     uses.push_back("__rt__");
     units[lc(u->name)] = unit_info_for(lc(u->name), std::move(uses));
 
@@ -1277,7 +1277,7 @@ const TypeExpr* TypeRegistry::canonicalize(const TypeExpr* te) const {
         }
       }
     }
-    if (it == aliases.end()) return te;  // unknown alias; leave as-is
+    if (it == aliases.end()) return te;  // no registered alias target
     te = it->second.target.get();
   }
   return te;

@@ -666,7 +666,7 @@ bool EmitStorage::type_is_byte_aligned_packed_index_carrier(const TypeExpr* t) {
 std::optional<EmitPackedScalarValueLoad> EmitStorage::packed_scalar_value_load(
     const Expr& e) {
   // This is deliberately not implemented in terms of `bytewise_storage_ref`.
-  // That helper is for storage contexts and its fallback takes `&(expr)`.
+  // That helper is for storage contexts and may take `&(expr)`.
   // For `packed_record.aggregate.scalar`, `&(expr)` would already have formed
   // the forbidden intermediate aggregate lvalue. Here we instead build
   // `offsetof` sums over the member chain and byte-load from the base object.

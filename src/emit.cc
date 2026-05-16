@@ -391,9 +391,9 @@ struct Emitter : ResolveNameProvider,
   void emit_forward_struct_decls(
       const std::vector<ast::DeclPtr>& decls) override;
 
-  // Expression-type deduction. Returns the Pascal TypeExpr that the
-  // expression has, or nullptr when unknown. Consults the TypeRegistry
-  // for globals and the current scope tables for locals/self-class.
+  // Expression-type deduction. Returns the Pascal TypeExpr when this analysis
+  // layer has enough context; otherwise nullptr. Consults the TypeRegistry for
+  // globals and the current scope tables for locals/self-class.
   const ast::TypeExpr* deduce_type(const ast::Expr& e);
   const ast::TypeExpr* type_for_overload(const ast::Expr& e) override;
   const ast::TypeExpr* type_for_resolved_call(
@@ -491,22 +491,9 @@ struct Emitter : ResolveNameProvider,
   bool proc_accepts_zero_args(const ast::ProcDecl& decl) {
     return calls_.proc_accepts_zero_args(decl);
   }
-  // Single entry point for resolving a Pascal call expression. Returns
-  // both the picked decl AND the information needed to emit the C++ callee
-  // text. `format_resolved_callee` is the only place the call branch
-  // turns this into text -- the call branch never calls `expr_to_cxx`
-  // directly on the callee, so resolution and emitted text cannot disagree.
-  //
-  // `callee_kind` records whether the callee needs special C++ output.
-  // `FreeFunctionInUnit` is
-  // the only case that overrides default expression
-  // formatting; otherwise
-  // the callee text comes from `expr_to_cxx(callee)`.
-  // (This refactor is deliberately scoped to free-function output --
-  // class-method/instance-receiver spelling still flows through the
-  // existing expr_to_cxx logic. Per-overload mangling would let us
-  // drop the per-arg `static_cast` workaround entirely; that is a
-  // larger follow-up, intentionally not done here.)
+  // Single entry point for resolving a Pascal call expression. The result
+  // contains the chosen declaration and the callee spelling policy, so call
+  // printing consumes a resolved fact instead of re-running lookup.
   using ResolvedCalleeKind = tp2cc::ResolvedCalleeKind;
   using ResolvedCall = tp2cc::ResolvedCall;
   ResolvedCall resolve_call(
@@ -1230,8 +1217,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       //   - `expr.name` where   -> class-qualified on deduced type
       //     expr's type is a
       //     named class/record
-      //   - otherwise           -> unknown: emit `base.name` and let
-      //                            C++ member lookup do its thing.
+      //   - otherwise           -> ordinary emitted C++ member access after
+      //                            Pascal-specific meanings are ruled out.
       auto base_is_ident = [&](std::string& out) -> bool {
         if (m.base->kind != Kind::Ident) return false;
         out = static_cast<const Ident&>(*m.base).name;
@@ -1342,11 +1329,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
       }
 
-      // A `class of T` value is a pointer to a metaclass descriptor, so its
-      // callable surface is the descriptor's constructor/class-method thunks
-      // rather than instance fields. Emit `klass->p_create` / `klass->p_load`
-      // here so ordinary call lowering can treat the result like any other
-      // function pointer expression.
+      // A `class of T` value is a pointer to a metaclass descriptor. Constructor
+      // and class-method members are stored as descriptor function slots, not as
+      // fields of an instance.
       if (registry) {
         const std::string metaclass = metaclass_target_name(deduce_type(*m.base));
         if (!metaclass.empty()) {
@@ -1544,9 +1529,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // layout types.
       //
       // When the field itself is an array, keep the emitted address as a
-      // runtime proxy rather than guessing "whole array" vs "first
-      // element" here. Native FPC accepts both contexts for the same
-      // source `@arrfield`; the use site decides.
+      // runtime proxy. The use site decides whether Pascal `@arrfield` means
+      // pointer-to-array or pointer-to-first-element.
       if (registry && a.operand && a.operand->kind == Kind::Member) {
         const auto& m = static_cast<const Member&>(*a.operand);
         if (m.base && m.base->kind == Kind::Deref) {
@@ -1628,7 +1612,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // emitter handling because they are type-sensitive or lower to C++
       // syntax instead of a normal function call.
       //
-      // Special cases below:
+      // Compiler intrinsics handled here:
       //   * `low(T)` / `high(T)` when T is a type name  -> emitted constant
       //   * `ord(x)`                                    -> ordinal value
       //   * `sizeof(x)`                                 -> C++ `sizeof`

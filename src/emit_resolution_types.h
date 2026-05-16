@@ -176,8 +176,8 @@ struct ResolvedCall {
   // same overload Pascal picked.
   bool needs_arg_casts = false;
   // Set when two or more arity-viable candidates were mutually incomparable.
-  // Call emission must surface a Pascal ambiguity instead of silently picking
-  // one candidate.
+  // Call emission must report a Pascal ambiguity instead of silently picking one
+  // candidate.
   bool ambiguous = false;
 };
 

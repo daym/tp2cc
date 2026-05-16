@@ -73,7 +73,7 @@ std::string EmitTypes::type_name_text_to_cxx(std::string_view name) {
 }
 
 std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
-  // Same registry-first / rt-fallback ordering as type_name_to_cxx.
+  // Same registry-first, then runtime-name ordering as type_name_to_cxx.
   if (!registry_knows_translated_type(name)) {
     if (std::string rt = runtime_named_type_cxx(name); !rt.empty()) {
       return rt;

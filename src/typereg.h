@@ -67,7 +67,7 @@ enum class PropertyAccessorKind : uint8_t {
 struct PropertyAccessorInfo {
   // Set after class member registration. A Pascal property accessor is a
   // field designator or a method name, and later emit code must use that
-  // resolved kind instead of guessing from the original token text.
+  // resolved kind instead of inferring it from the original token text.
   PropertyAccessorKind kind = PropertyAccessorKind::None;
   std::vector<std::string> path;
   std::string cxx_path;

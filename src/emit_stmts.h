@@ -37,7 +37,7 @@ class EmitStmtOps {
 // Pascal statement lowering. This module owns control-flow emission,
 // statement-context auto-calls, property writes, range-checked assignments,
 // and loop/exception scaffolding. Keeping those rules together avoids growing
-// more ad hoc statement-only semantics inside `emit.cc`.
+// separate statement-only semantics inside `emit.cc`.
 class EmitStmts {
  public:
   EmitStmts(const TypeRegistry* registry, ScopeStateView& scope,

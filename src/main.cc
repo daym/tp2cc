@@ -131,7 +131,7 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
     h << "  return ::rt::tp2cc_metaclass_value_t_exception();\n";
     h << "}\n";
     h << "\n";
-    h << "// Re-export the Pascal-visible SysUtils surface that the compiler\n";
+    h << "// Re-export the Pascal-visible SysUtils declarations that the compiler\n";
     h << "// reaches through qualified unit names when SysUtils itself stays an\n";
     h << "// external RTL stub.\n";
     static constexpr const char* kSysutilsTypeAliases[] = {

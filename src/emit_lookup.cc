@@ -375,9 +375,9 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     }
   }
 
-  // 7. Fallback: keep unresolved free names in Pascal identifier space.
+  // 7. Unresolved free name: keep it in Pascal identifier space.
   // Known runtime helpers already resolve through the synthetic `__rt__`
-  // unit on every unit's uses-chain; reaching this fallback therefore means
+  // unit on every unit's uses-chain; reaching this branch therefore means
   // "lookup failed", not "implicit runtime builtin".
   return resolved_value(ResolvedKind::Unknown, mangle(name));
 }

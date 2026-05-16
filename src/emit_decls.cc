@@ -614,11 +614,9 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         }
         if (callable.implicit_root_create ||
             (callable.sig && callable.sig->kind == SymKind::Constructor)) {
-          // Constructors are special: even when a derived class keeps the same
-          // Pascal parameter surface as its parent, the metaclass slot still
-          // needs a concrete return type (`TChild*`, not `TBase*`). Keep the
-          // derived slot visible so the generated metaclass does not erase the
-          // return type back to the parent's class pointer.
+          // Constructors return the allocated class type. Even when a derived
+          // class keeps the same Pascal parameter list as its parent, the
+          // metaclass slot needs `TChild*`, not the parent's return type.
           own_callables.push_back(callable);
         }
       }
@@ -780,6 +778,8 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
                  "*>(tp2cc_ptr)->" + std::string(method_name) + "(" + args +
                  ")";
         };
+        // Build a metaclass value for target_class, filling every inherited
+        // callable slot with the implementation visible on concrete_class.
         std::string out = types_.metaclass_struct_cxx(target_class) + "(";
         bool first = true;
         if (has_parent && !parent_visible.empty()) {
@@ -796,11 +796,9 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
                    callable.sig->kind == SymKind::Constructor))) {
               continue;
             }
-            // Keep same-signature constructors visible in the constructed
-            // metaclass value too. Otherwise the static metaclass descriptor
-            // erases `TChild.Create` back to the parent's create slot even
-            // though the metaclass struct still exposes the derived return
-            // type and constructor pointer member.
+            // Same-parameter constructors still need their own value entry
+            // because the function pointer return type is part of the
+            // metaclass slot type.
           }
           if (!first) out += ", ";
           const auto concrete_impl =

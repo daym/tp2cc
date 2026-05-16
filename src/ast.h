@@ -876,8 +876,7 @@ struct TySet : TypeExpr {
   // type (`set of byte` -> 0..255). Untyped set constants may carry a
   // narrower actual element range (`[rs_r0..rs_r3]` -> 0..3). Keep those
   // explicit bounds here so later compatibility checks can follow Pascal's
-  // setbase/setmax rules instead of guessing from the emitted C++ element
-  // type alone.
+  // setbase/setmax rules from the source-level range.
   bool has_explicit_bounds = false;
   int64_t explicit_low = 0;
   int64_t explicit_high = 0;

@@ -37,7 +37,7 @@ struct ConvertedConstInt {
 // Result of implicit class-property lookup in the current Pascal scope.
 // `base_cxx` is the already-resolved receiver expression (`self`, a `with`
 // binding, etc.), so callers can lower reads/writes without rediscovering the
-// access path ad hoc.
+// access path.
 struct ImplicitPropertyLookup {
   const PropertyInfo* prop = nullptr;
   std::string class_name;

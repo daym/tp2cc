@@ -544,9 +544,9 @@ ConvScore EmitResolution::score_argument_conversion(
   }
   // `nil` has no standalone type; deduce_type(NilLit) returns null, so
   // rank_conversion bails with Not-Viable. Without this case the picker
-  // would reject `nil` for every pointer-shaped slot, killing overload
+  // would reject `nil` for every pointer-compatible slot, killing overload
   // resolution on calls like `foo(@method, nil)`. Pascal accepts `nil`
-  // wherever a pointer-shaped value goes - typed pointers, procedural
+  // wherever a pointer-compatible value goes - typed pointers, procedural
   // variables (including procedure-of-object), reference-class instances,
   // pchar-family aliases - so reuse the same `type_is_pointerish` predicate
   // the storage layer uses to classify those targets, instead of
@@ -791,7 +791,7 @@ ResolvedCall EmitResolution::resolve_call(
   if (arity_ok.size() > 1) {
     // Multiple arity-viable candidates: run the Pascal conversion-rank picker
     // on the decl-backed subset. We do not silently pick among tied
-    // incomparables; ambiguity is surfaced to the caller as a Pascal error.
+    // incomparables; the caller reports the ambiguity as a Pascal error.
     std::vector<const ProcDecl*> with_decl;
     for (const auto& a : arity_ok) {
       if (a.decl) with_decl.push_back(a.decl);
@@ -959,7 +959,7 @@ AssignmentOperatorResult EmitResolution::find_assignment_operator(
   // Reuse the normal picker by synthesizing the source type as an expression
   // is not possible here, so choose only exact/equal-ranked matches. This is
   // enough for the FPC compiler's explicit one-parameter conversion operators
-  // and avoids guessing among lossy numeric conversions.
+  // and avoids selecting among lossy numeric conversions.
   const ProcDecl* best = nullptr;
   std::string best_unit;
   ConvScore best_score{};

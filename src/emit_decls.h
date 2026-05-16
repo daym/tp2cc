@@ -32,8 +32,8 @@ class EmitDeclOps {
 
 // Pascal declaration emission. This module owns how const/type/var/proc
 // declarations spell as C++, including packed-record layout asserts, object
-// method declarations, metaclass descriptor surfaces, and forward/prototype
-// handling for nested and top-level routines.
+// method declarations, metaclass descriptor slots, and forward/prototype handling
+// for nested and top-level routines.
 class EmitDecls {
  public:
   EmitDecls(const TypeRegistry* registry, ScopeStateView& scope,
@@ -53,12 +53,16 @@ class EmitDecls {
 
  private:
   struct MetaclassCallable {
+    // A constructor or class method visible through a `class of T` value. This
+    // records the Pascal slot; implementation lookup is separate because a
+    // derived metaclass value may fill an inherited slot from the concrete class.
     std::string name;
     const MethodSig* sig = nullptr;
     bool implicit_root_create = false;
   };
 
   struct MetaclassCallableImpl {
+    // Concrete method that fills one metaclass callable slot.
     std::string owner_class;
     const MethodSig* sig = nullptr;
     bool implicit_root_create = false;

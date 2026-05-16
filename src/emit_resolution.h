@@ -84,8 +84,8 @@ class EmitResolution {
 
   // Resolve a Pascal call expression all the way to the chosen declaration
   // plus the spelling policy the emitter should use for the callee. This is
-  // the single semantic entry point for call resolution; printing should not
-  // redo any of this logic ad hoc.
+  // the single semantic entry point for call resolution; printing consumes the
+  // resolved result.
   ResolvedCall resolve_call(
       const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
   ResolvedCall resolve_pointer_target_constructor(
