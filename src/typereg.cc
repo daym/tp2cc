@@ -175,6 +175,14 @@ size_t proc_param_count(const std::vector<Param>& params) {
   return count;
 }
 
+template <typename Map>
+void insert_map_keys(std::unordered_set<std::string>& out, const Map& map) {
+  for (const auto& [name, value] : map) {
+    (void)value;
+    out.insert(name);
+  }
+}
+
 ProcInfo make_proc_info(const std::string& unit,
                         std::shared_ptr<const ProcDecl> pd_sp) {
   const auto& pd = *pd_sp;
@@ -412,6 +420,189 @@ UnitInfo unit_info_for(
                   .impl_enum_members = {}};
 }
 
+TypePtr runtime_type_name(std::string name) {
+  return std::make_shared<TyName>(std::move(name));
+}
+
+Param runtime_const_param(std::string name, TypePtr type) {
+  return Param(Param::Const, {std::move(name)}, std::move(type));
+}
+
+std::shared_ptr<ProcDecl> runtime_proc_decl(
+    ProcKind pkind, std::string name, std::vector<Param> params,
+    TypePtr return_type = nullptr, bool class_method = false,
+    bool is_operator = false, std::string operator_token = {},
+    ProcDecl::IntrinsicOperator intrinsic_operator =
+        ProcDecl::IntrinsicOperator::None) {
+  return std::make_shared<ProcDecl>(
+      Location{}, pkind, std::move(name), is_operator,
+      std::move(operator_token), intrinsic_operator, std::string{},
+      class_method, std::move(params), std::move(return_type), ProcModifiers{},
+      std::vector<DeclPtr>{}, nullptr);
+}
+
+TypePtr runtime_pointer_type(TypePtr target = nullptr) {
+  return std::make_shared<TyPointer>(Location{}, std::move(target));
+}
+
+RecordField runtime_record_field(std::string name, TypePtr type) {
+  return RecordField({std::move(name)}, std::move(type));
+}
+
+TypePtr runtime_record_type(std::vector<RecordField> fields) {
+  return std::make_shared<TyRecord>(Location{}, std::move(fields), nullptr,
+                                    false);
+}
+
+TypePtr runtime_set_type(TypePtr element) {
+  return std::make_shared<TySet>(Location{}, std::move(element));
+}
+
+TypePtr runtime_procedural_type(bool is_function, std::vector<Param> params,
+                                TypePtr return_type = nullptr) {
+  return std::make_shared<TyProcedural>(Location{}, is_function,
+                                        std::move(params),
+                                        std::move(return_type), false, false);
+}
+
+TypePtr runtime_enum_type(std::vector<std::string> names) {
+  std::vector<EnumMember> members;
+  for (auto& name : names) {
+    members.push_back(EnumMember(std::move(name)));
+  }
+  return std::make_shared<TyEnum>(Location{}, 4, std::move(members));
+}
+
+ExprPtr runtime_int_literal(int64_t value) {
+  return std::make_shared<IntLit>(static_cast<uint64_t>(value));
+}
+
+void register_runtime_var(UnitInfo& rt_exports, std::string name,
+                          std::shared_ptr<const TypeExpr> type) {
+  rt_exports.iface_vars[lc(std::move(name))] =
+      VarInfo{.defining_unit = "__rt__", .type = std::move(type)};
+}
+
+void register_runtime_const(UnitInfo& rt_exports, std::string name,
+                            std::shared_ptr<const TypeExpr> type,
+                            std::shared_ptr<const Expr> value) {
+  rt_exports.iface_consts[lc(std::move(name))] =
+      ConstInfo{.defining_unit = "__rt__",
+                .type = std::move(type),
+                .value = std::move(value)};
+}
+
+void register_runtime_alias(TypeRegistry& r, UnitInfo& rt_exports,
+                            std::string name,
+                            std::shared_ptr<const TypeExpr> target) {
+  const std::string low = lc(std::move(name));
+  rt_exports.iface_types.insert(low);
+  if (target && target->kind == Kind::TyEnum) {
+    const auto* enum_type = static_cast<const TyEnum*>(target.get());
+    std::vector<std::string> members;
+    auto& by_member = r.enum_members_by_unit["__rt__"];
+    for (const auto& m : enum_type->members) {
+      std::string lm = lc(m.name);
+      by_member[lm] = enum_type;
+      members.push_back(lm);
+      rt_exports.iface_enum_members.insert(lm);
+    }
+    r.enum_type_names[enum_type] = low;
+    r.enums[low] = EnumInfoReg{.name = low,
+                               .defining_unit = "__rt__",
+                               .type = enum_type,
+                               .cxx_name = type_mangle(low),
+                               .members = std::move(members)};
+  }
+  r.aliases[low] =
+      AliasInfo{.defining_unit = "__rt__", .target = std::move(target)};
+}
+
+void register_runtime_string_compare_operator(UnitInfo& rt_exports,
+                                              std::string op,
+                                              TypePtr lhs_type,
+                                              TypePtr rhs_type,
+                                              TypePtr return_type) {
+  auto pd = runtime_proc_decl(
+      ProcKind::Function, "operator_" + op,
+      {runtime_const_param("a", std::move(lhs_type)),
+       runtime_const_param("b", std::move(rhs_type))},
+      std::move(return_type), false, true, op,
+      ProcDecl::IntrinsicOperator::StringCompare);
+  rt_exports.iface_operators[op].push_back(make_proc_info("__rt__", pd));
+}
+
+MethodSig runtime_method_sig(std::string name, ProcKind pkind,
+                             std::vector<Param> params,
+                             TypePtr return_type = nullptr,
+                             bool class_method = false) {
+  auto pd = runtime_proc_decl(pkind, std::move(name), std::move(params),
+                              std::move(return_type), class_method);
+  const size_t param_count = proc_param_count(pd->params);
+  return MethodSig{
+      .kind = (pkind == ProcKind::Constructor) ? SymKind::Constructor
+              : (pkind == ProcKind::Destructor) ? SymKind::Destructor
+              : class_method ? SymKind::ClassMethod
+                             : SymKind::Method,
+      .defining_unit = "__rt__",
+      .param_count = param_count,
+      .accepts_zero_args = (param_count == 0),
+      .is_function = (pkind == ProcKind::Function),
+      .is_virtual = false,
+      .is_final = false,
+      .decl = std::move(pd)};
+}
+
+void register_runtime_class(TypeRegistry& r, std::string name,
+                            std::string parent,
+                            std::vector<MethodSig> methods) {
+  std::unordered_map<std::string, std::vector<MethodSig>> method_map;
+  for (auto& m : methods) {
+    const std::string method_name = m.decl->name;
+    method_map[method_name].push_back(std::move(m));
+  }
+  const std::string key = name;
+  r.rt_classes[key] =
+      ClassInfo{.name = std::move(name),
+                .parent = std::move(parent),
+                .defining_unit = "__rt__",
+                .is_reference_type = true,
+                .is_abstract = false,
+                .is_forward = false,
+                .fields = {},
+                .methods = std::move(method_map),
+                .properties = {},
+                .enum_members = {},
+                .default_property_name = {}};
+}
+
+void register_external_stub_unit(TypeRegistry& r, std::string used_name) {
+  const std::string low = lc(std::move(used_name));
+  if (low == "__rt__" || r.units.count(low) > 0) return;
+  // UnitGraph/main.cc emits empty headers for missing RTL-style `uses` entries.
+  // The registry needs matching no-export units so qualified `Unit.Name`
+  // expressions can still lower to the generated stub namespace.
+  r.units[low] = unit_info_for(low);
+}
+
+struct RuntimeMethodLookupStep {
+  const std::vector<MethodSig>* methods = nullptr;
+  std::string parent;
+};
+
+RuntimeMethodLookupStep lookup_runtime_method_step(
+    const std::unordered_map<std::string, ClassInfo>& store,
+    const std::string& class_name, const std::string& method_name) {
+  auto cit = store.find(class_name);
+  if (cit == store.end()) return {};
+  auto mit = cit->second.methods.find(method_name);
+  if (mit != cit->second.methods.end()) {
+    return RuntimeMethodLookupStep{.methods = &mit->second, .parent = {}};
+  }
+  return RuntimeMethodLookupStep{.methods = nullptr,
+                                 .parent = cit->second.parent};
+}
+
 ClassInfo* lookup_class_exact_mut(TypeRegistry& r, std::string_view unit,
                                   std::string_view name) {
   const std::string target_unit = lc(std::string(unit));
@@ -628,18 +819,12 @@ void report_type_value_collisions(const UnitInfo& ui) {
   type_names.insert(ui.impl_types.begin(), ui.impl_types.end());
 
   std::unordered_set<std::string> value_names;
-  auto add_keys = [&](const auto& map) {
-    for (const auto& [name, _] : map) {
-      (void)_;
-      value_names.insert(name);
-    }
-  };
-  add_keys(ui.iface_vars);
-  add_keys(ui.impl_vars);
-  add_keys(ui.iface_consts);
-  add_keys(ui.impl_consts);
-  add_keys(ui.iface_procs);
-  add_keys(ui.impl_procs);
+  insert_map_keys(value_names, ui.iface_vars);
+  insert_map_keys(value_names, ui.impl_vars);
+  insert_map_keys(value_names, ui.iface_consts);
+  insert_map_keys(value_names, ui.impl_consts);
+  insert_map_keys(value_names, ui.iface_procs);
+  insert_map_keys(value_names, ui.impl_procs);
   value_names.insert(ui.iface_enum_members.begin(), ui.iface_enum_members.end());
   value_names.insert(ui.impl_enum_members.begin(), ui.impl_enum_members.end());
 
@@ -875,294 +1060,212 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   units["__rt__"] = unit_info_for("__rt__", {}, std::move(rt_iface_procs));
   UnitInfo& rt_exports = units["__rt__"];
 
-  // Register the rt-side reference classes (tobject, exception, ...) so
-  // the normal class-method lookup walks Pascal's parent chain into
-  // them. Without this, a translated class that inherits Create from these
-  // (e.g. `EListError = class(Exception)` calling
-  // `EListError.Create(msg)`) doesn't resolve to a constructor -- the
-  // constructor-call lowering falls back to a plain method call, which
-  // fails because the rt method is non-static.
-  //
-  // Each MethodSig carries a synthesized ProcDecl with real params. Emit code
-  // reads `decl->params` through the same path used for Pascal declarations.
-  auto make_typename = [](const std::string& n) {
-    return std::make_shared<ast::TyName>(n);
-  };
-  auto make_proc_param = [&](const std::string& name, ast::TypePtr type) {
-    return ast::Param(ast::Param::Const, {name}, std::move(type));
-  };
-  auto make_rt_proc_decl =
-      [](ast::ProcKind pkind, std::string name, std::vector<ast::Param> params,
-         ast::TypePtr return_type = nullptr, bool class_method = false,
-         bool is_operator = false, std::string operator_token = {},
-         ast::ProcDecl::IntrinsicOperator intrinsic_operator =
-             ast::ProcDecl::IntrinsicOperator::None) {
-        return std::make_shared<ast::ProcDecl>(
-            Location{}, pkind, std::move(name), is_operator,
-            std::move(operator_token), intrinsic_operator, std::string{},
-            class_method, std::move(params), std::move(return_type),
-            ast::ProcModifiers{}, std::vector<ast::DeclPtr>{},
-            nullptr);
-  };
-  auto add_rt_string_compare_operator =
-      [&](const std::string& op, ast::TypePtr lhs_type, ast::TypePtr rhs_type,
-          ast::TypePtr return_type) {
-        auto pd = make_rt_proc_decl(
-            ast::ProcKind::Function, "operator_" + op,
-            {make_proc_param("a", std::move(lhs_type)),
-             make_proc_param("b", std::move(rhs_type))},
-            std::move(return_type), false, true, op,
-            ast::ProcDecl::IntrinsicOperator::StringCompare);
-        rt_exports.iface_operators[op].push_back(make_proc_info("__rt__", pd));
-      };
-  auto make_pointer = [](ast::TypePtr target = nullptr) {
-    return std::make_shared<ast::TyPointer>(Location{}, std::move(target));
-  };
-  auto make_field = [](const std::string& name,
-                       ast::TypePtr type) {
-    return ast::RecordField({name}, std::move(type));
-  };
-  auto make_record = [](std::vector<ast::RecordField> fields) {
-    return std::make_shared<ast::TyRecord>(
-        Location{}, std::move(fields), nullptr, false);
-  };
-  auto make_set = [](ast::TypePtr element) {
-    return std::make_shared<ast::TySet>(Location{}, std::move(element));
-  };
-  auto make_procedural = [](bool is_function, std::vector<ast::Param> params,
-                            ast::TypePtr return_type = nullptr) {
-    return std::make_shared<ast::TyProcedural>(
-        Location{}, is_function, std::move(params), std::move(return_type),
-        false, false);
-  };
-  auto make_enum = [](std::vector<std::string> names) {
-    std::vector<ast::EnumMember> members;
-    for (auto& name : names) {
-      members.push_back(ast::EnumMember(std::move(name)));
-    }
-    return std::make_shared<ast::TyEnum>(Location{}, 4, std::move(members));
-  };
-  auto make_int_lit = [](int64_t value) {
-    return std::make_shared<ast::IntLit>(static_cast<uint64_t>(value));
-  };
-  auto add_rt_var = [&](const std::string& name,
-                        std::shared_ptr<const ast::TypeExpr> type) {
-    rt_exports.iface_vars[lc(name)] =
-        VarInfo{.defining_unit = "__rt__", .type = std::move(type)};
-  };
-  auto add_rt_const = [&](const std::string& name,
-                          std::shared_ptr<const ast::TypeExpr> type,
-                          std::shared_ptr<const ast::Expr> value) {
-    rt_exports.iface_consts[lc(name)] =
-        ConstInfo{.defining_unit = "__rt__",
-                  .type = std::move(type),
-                  .value = std::move(value)};
-  };
-  auto add_rt_alias = [&](const std::string& name,
-                          std::shared_ptr<const ast::TypeExpr> target) {
-    std::string low = lc(name);
-    rt_exports.iface_types.insert(low);
-    if (target && target->kind == Kind::TyEnum) {
-      const auto* enum_type = static_cast<const TyEnum*>(target.get());
-      std::vector<std::string> members;
-      auto& by_member = enum_members_by_unit["__rt__"];
-      for (const auto& m : static_cast<const TyEnum&>(*target).members) {
-        std::string lm = lc(m.name);
-        by_member[lm] = enum_type;
-        members.push_back(lm);
-        rt_exports.iface_enum_members.insert(lm);
-      }
-      enum_type_names[enum_type] = low;
-      enums[low] = EnumInfoReg{.name = low,
-                               .defining_unit = "__rt__",
-                               .type = enum_type,
-                               .cxx_name = type_mangle(low),
-                               .members = std::move(members)};
-    }
-    aliases[low] =
-        AliasInfo{.defining_unit = "__rt__", .target = std::move(target)};
-  };
+  // Runtime MethodSigs below carry synthesized ProcDecls so overload
+  // resolution sees the same parameter data for runtime classes as for
+  // Pascal declarations.
 
   // Runtime globals/constants that old compiler trees refer to directly.
-  add_rt_var("doserror", make_typename("longint"));
-  add_rt_var("filemode", make_typename("longint"));
-  add_rt_var("stderr", make_typename("text"));
-  add_rt_var("output", make_typename("text"));
-  add_rt_var("input", make_typename("text"));
-  add_rt_var("exitproc", make_procedural(false, {}));
-  add_rt_var("erroraddr", make_typename("pointer"));
-  add_rt_var("exitcode", make_typename("longint"));
+  register_runtime_var(rt_exports, "doserror", runtime_type_name("longint"));
+  register_runtime_var(rt_exports, "filemode", runtime_type_name("longint"));
+  register_runtime_var(rt_exports, "stderr", runtime_type_name("text"));
+  register_runtime_var(rt_exports, "output", runtime_type_name("text"));
+  register_runtime_var(rt_exports, "input", runtime_type_name("text"));
+  register_runtime_var(rt_exports, "exitproc",
+                       runtime_procedural_type(false, {}));
+  register_runtime_var(rt_exports, "erroraddr", runtime_type_name("pointer"));
+  register_runtime_var(rt_exports, "exitcode", runtime_type_name("longint"));
 
-  add_rt_const("sigint", make_typename("longint"), make_int_lit(2));
-  add_rt_const("sigfpe", make_typename("longint"), make_int_lit(8));
-  add_rt_const("sigsegv", make_typename("longint"), make_int_lit(11));
-  add_rt_const("pi", make_typename("double"), nullptr);
-  add_rt_const("maxint", make_typename("longint"), make_int_lit(2147483647));
-  add_rt_const("readonly", make_typename("longint"), make_int_lit(0x01));
-  add_rt_const("hidden", make_typename("longint"), make_int_lit(0x02));
-  add_rt_const("directory", make_typename("longint"), make_int_lit(0x10));
-  add_rt_const("archive", make_typename("longint"), make_int_lit(0x20));
-  add_rt_const("fareadonly", make_typename("longint"), make_int_lit(0x01));
-  add_rt_const("fahidden", make_typename("longint"), make_int_lit(0x02));
-  add_rt_const("fadirectory", make_typename("longint"), make_int_lit(0x10));
-  add_rt_const("faarchive", make_typename("longint"), make_int_lit(0x20));
-  add_rt_const("anyfile", make_typename("longint"), make_int_lit(0x3F));
-  add_rt_const("faanyfile", make_typename("longint"), make_int_lit(0x3F));
-  add_rt_const("fmsharedenynone", make_typename("longint"), make_int_lit(0x40));
-  add_rt_const("vtansistring", make_typename("longint"), make_int_lit(11));
-  add_rt_const("varstrarg", make_typename("longint"), make_int_lit(0x48));
-  add_rt_const("directoryseparator", make_typename("char"), nullptr);
-  add_rt_const("driveseparator", make_typename("char"), nullptr);
-  add_rt_const("pathseparator", make_typename("char"), nullptr);
-  add_rt_const("maxlongint", make_typename("longint"),
-               make_int_lit(2147483647));
+  register_runtime_const(rt_exports, "sigint", runtime_type_name("longint"),
+                         runtime_int_literal(2));
+  register_runtime_const(rt_exports, "sigfpe", runtime_type_name("longint"),
+                         runtime_int_literal(8));
+  register_runtime_const(rt_exports, "sigsegv", runtime_type_name("longint"),
+                         runtime_int_literal(11));
+  register_runtime_const(rt_exports, "pi", runtime_type_name("double"),
+                         nullptr);
+  register_runtime_const(rt_exports, "maxint", runtime_type_name("longint"),
+                         runtime_int_literal(2147483647));
+  register_runtime_const(rt_exports, "readonly", runtime_type_name("longint"),
+                         runtime_int_literal(0x01));
+  register_runtime_const(rt_exports, "hidden", runtime_type_name("longint"),
+                         runtime_int_literal(0x02));
+  register_runtime_const(rt_exports, "directory",
+                         runtime_type_name("longint"),
+                         runtime_int_literal(0x10));
+  register_runtime_const(rt_exports, "archive", runtime_type_name("longint"),
+                         runtime_int_literal(0x20));
+  register_runtime_const(rt_exports, "fareadonly",
+                         runtime_type_name("longint"),
+                         runtime_int_literal(0x01));
+  register_runtime_const(rt_exports, "fahidden", runtime_type_name("longint"),
+                         runtime_int_literal(0x02));
+  register_runtime_const(rt_exports, "fadirectory",
+                         runtime_type_name("longint"),
+                         runtime_int_literal(0x10));
+  register_runtime_const(rt_exports, "faarchive",
+                         runtime_type_name("longint"),
+                         runtime_int_literal(0x20));
+  register_runtime_const(rt_exports, "anyfile", runtime_type_name("longint"),
+                         runtime_int_literal(0x3F));
+  register_runtime_const(rt_exports, "faanyfile",
+                         runtime_type_name("longint"),
+                         runtime_int_literal(0x3F));
+  register_runtime_const(rt_exports, "fmsharedenynone",
+                         runtime_type_name("longint"),
+                         runtime_int_literal(0x40));
+  register_runtime_const(rt_exports, "vtansistring",
+                         runtime_type_name("longint"), runtime_int_literal(11));
+  register_runtime_const(rt_exports, "varstrarg",
+                         runtime_type_name("longint"),
+                         runtime_int_literal(0x48));
+  register_runtime_const(rt_exports, "directoryseparator",
+                         runtime_type_name("char"), nullptr);
+  register_runtime_const(rt_exports, "driveseparator",
+                         runtime_type_name("char"), nullptr);
+  register_runtime_const(rt_exports, "pathseparator", runtime_type_name("char"),
+                         nullptr);
+  register_runtime_const(rt_exports, "maxlongint",
+                         runtime_type_name("longint"),
+                         runtime_int_literal(2147483647));
 
   // Runtime type names that Pascal code can mention directly are registered as
   // aliases so casts and member lookups go through normal type analysis.
-  add_rt_alias("signalhandler", make_pointer());
-  add_rt_alias("tfpuexception",
-               make_enum({"exinvalidop", "exdenormalized", "exzerodivide",
-                          "exoverflow", "exunderflow", "exprecision"}));
-  add_rt_alias("searchrec", make_record({
-      make_field("time", make_typename("longint")),
-      make_field("size", make_typename("longint")),
-      make_field("attr", make_typename("byte")),
-      make_field("name", make_typename("shortstring")),
+  register_runtime_alias(*this, rt_exports, "signalhandler",
+                         runtime_pointer_type());
+  register_runtime_alias(
+      *this, rt_exports, "tfpuexception",
+      runtime_enum_type({"exinvalidop", "exdenormalized", "exzerodivide",
+                         "exoverflow", "exunderflow", "exprecision"}));
+  register_runtime_alias(*this, rt_exports, "searchrec", runtime_record_type({
+      runtime_record_field("time", runtime_type_name("longint")),
+      runtime_record_field("size", runtime_type_name("longint")),
+      runtime_record_field("attr", runtime_type_name("byte")),
+      runtime_record_field("name", runtime_type_name("shortstring")),
   }));
-  add_rt_alias("stat", make_record({
-      make_field("mtime", make_typename("longint")),
-      make_field("st_mtime", make_typename("longint")),
-      make_field("mode", make_typename("longint")),
-      make_field("st_mode", make_typename("longint")),
-      make_field("size", make_typename("longint")),
-      make_field("st_size", make_typename("longint")),
+  register_runtime_alias(*this, rt_exports, "stat", runtime_record_type({
+      runtime_record_field("mtime", runtime_type_name("longint")),
+      runtime_record_field("st_mtime", runtime_type_name("longint")),
+      runtime_record_field("mode", runtime_type_name("longint")),
+      runtime_record_field("st_mode", runtime_type_name("longint")),
+      runtime_record_field("size", runtime_type_name("longint")),
+      runtime_record_field("st_size", runtime_type_name("longint")),
   }));
-  add_rt_alias("datetime", make_record({
-      make_field("year", make_typename("word")),
-      make_field("month", make_typename("word")),
-      make_field("day", make_typename("word")),
-      make_field("hour", make_typename("word")),
-      make_field("min", make_typename("word")),
-      make_field("sec", make_typename("word")),
+  register_runtime_alias(*this, rt_exports, "datetime", runtime_record_type({
+      runtime_record_field("year", runtime_type_name("word")),
+      runtime_record_field("month", runtime_type_name("word")),
+      runtime_record_field("day", runtime_type_name("word")),
+      runtime_record_field("hour", runtime_type_name("word")),
+      runtime_record_field("min", runtime_type_name("word")),
+      runtime_record_field("sec", runtime_type_name("word")),
   }));
-  add_rt_alias("tdatetime", make_typename("double"));
-  add_rt_alias("dirstr", make_typename("shortstring"));
-  add_rt_alias("namestr", make_typename("shortstring"));
-  add_rt_alias("extstr", make_typename("shortstring"));
-  add_rt_alias("pathstr", make_typename("shortstring"));
-  add_rt_alias("comstr", make_typename("shortstring"));
-  add_rt_alias("texecuteflag", make_enum({"execinheritshandles"}));
-  add_rt_alias("texecuteflags", make_set(make_typename("texecuteflag")));
-  add_rt_alias("tfpuexceptionmask", make_set(make_typename("tfpuexception")));
-  add_rt_alias("tsyscharset", make_set(make_typename("char")));
-  add_rt_alias("hresult", make_typename("longint"));
-  add_rt_alias("ansichar", make_typename("char"));
-  add_rt_alias("pansichar", make_pointer(make_typename("ansichar")));
-  add_rt_alias("pcardinal", make_pointer(make_typename("cardinal")));
-  add_rt_alias("pcurrency", make_pointer(make_typename("currency")));
-  add_rt_alias("pdword", make_pointer(make_typename("dword")));
-  add_rt_alias("pint64", make_pointer(make_typename("int64")));
-  add_rt_alias("plongword", make_pointer(make_typename("longword")));
-  add_rt_alias("ppointer", make_pointer(make_typename("pointer")));
-  add_rt_alias("pqword", make_pointer(make_typename("qword")));
-  add_rt_alias("pshortstring", make_pointer(make_typename("shortstring")));
+  register_runtime_alias(*this, rt_exports, "tdatetime",
+                         runtime_type_name("double"));
+  register_runtime_alias(*this, rt_exports, "dirstr",
+                         runtime_type_name("shortstring"));
+  register_runtime_alias(*this, rt_exports, "namestr",
+                         runtime_type_name("shortstring"));
+  register_runtime_alias(*this, rt_exports, "extstr",
+                         runtime_type_name("shortstring"));
+  register_runtime_alias(*this, rt_exports, "pathstr",
+                         runtime_type_name("shortstring"));
+  register_runtime_alias(*this, rt_exports, "comstr",
+                         runtime_type_name("shortstring"));
+  register_runtime_alias(*this, rt_exports, "texecuteflag",
+                         runtime_enum_type({"execinheritshandles"}));
+  register_runtime_alias(
+      *this, rt_exports, "texecuteflags",
+      runtime_set_type(runtime_type_name("texecuteflag")));
+  register_runtime_alias(
+      *this, rt_exports, "tfpuexceptionmask",
+      runtime_set_type(runtime_type_name("tfpuexception")));
+  register_runtime_alias(*this, rt_exports, "tsyscharset",
+                         runtime_set_type(runtime_type_name("char")));
+  register_runtime_alias(*this, rt_exports, "hresult",
+                         runtime_type_name("longint"));
+  register_runtime_alias(*this, rt_exports, "ansichar",
+                         runtime_type_name("char"));
+  register_runtime_alias(
+      *this, rt_exports, "pansichar",
+      runtime_pointer_type(runtime_type_name("ansichar")));
+  register_runtime_alias(
+      *this, rt_exports, "pcardinal",
+      runtime_pointer_type(runtime_type_name("cardinal")));
+  register_runtime_alias(
+      *this, rt_exports, "pcurrency",
+      runtime_pointer_type(runtime_type_name("currency")));
+  register_runtime_alias(*this, rt_exports, "pdword",
+                         runtime_pointer_type(runtime_type_name("dword")));
+  register_runtime_alias(*this, rt_exports, "pint64",
+                         runtime_pointer_type(runtime_type_name("int64")));
+  register_runtime_alias(
+      *this, rt_exports, "plongword",
+      runtime_pointer_type(runtime_type_name("longword")));
+  register_runtime_alias(*this, rt_exports, "ppointer",
+                         runtime_pointer_type(runtime_type_name("pointer")));
+  register_runtime_alias(*this, rt_exports, "pqword",
+                         runtime_pointer_type(runtime_type_name("qword")));
+  register_runtime_alias(
+      *this, rt_exports, "pshortstring",
+      runtime_pointer_type(runtime_type_name("shortstring")));
   const std::array<const char*, 6> string_compare_ops{
       "=", "<>", "<", ">", "<=", ">="};
   for (const char* op : string_compare_ops) {
-    add_rt_string_compare_operator(op, make_typename("shortstring"),
-                                   make_typename("shortstring"),
-                                   make_typename("boolean"));
-    add_rt_string_compare_operator(op, make_typename("shortstring"),
-                                   make_typename("ansistring"),
-                                   make_typename("boolean"));
-    add_rt_string_compare_operator(op, make_typename("ansistring"),
-                                   make_typename("shortstring"),
-                                   make_typename("boolean"));
-    add_rt_string_compare_operator(op, make_typename("ansistring"),
-                                   make_typename("ansistring"),
-                                   make_typename("boolean"));
+    register_runtime_string_compare_operator(
+        rt_exports, op, runtime_type_name("shortstring"),
+        runtime_type_name("shortstring"), runtime_type_name("boolean"));
+    register_runtime_string_compare_operator(
+        rt_exports, op, runtime_type_name("shortstring"),
+        runtime_type_name("ansistring"), runtime_type_name("boolean"));
+    register_runtime_string_compare_operator(
+        rt_exports, op, runtime_type_name("ansistring"),
+        runtime_type_name("shortstring"), runtime_type_name("boolean"));
+    register_runtime_string_compare_operator(
+        rt_exports, op, runtime_type_name("ansistring"),
+        runtime_type_name("ansistring"), runtime_type_name("boolean"));
   }
-  add_rt_var("allowdirectoryseparators", make_set(make_typename("char")));
-  auto make_method = [&](const std::string& name, ast::ProcKind pkind,
-                         std::vector<ast::Param> params,
-                         ast::TypePtr return_type = nullptr,
-                         bool class_method = false) {
-    auto pd = make_rt_proc_decl(pkind, name, std::move(params),
-                                std::move(return_type), class_method);
-    const size_t param_count = proc_param_count(pd->params);
-    return MethodSig{
-        .kind = (pkind == ast::ProcKind::Constructor) ? SymKind::Constructor
-                : (pkind == ast::ProcKind::Destructor) ? SymKind::Destructor
-                : class_method ? SymKind::ClassMethod
-                               : SymKind::Method,
-        .defining_unit = "__rt__",
-        .param_count = param_count,
-        .accepts_zero_args = (param_count == 0),
-        .is_function = (pkind == ast::ProcKind::Function),
-        .is_virtual = false,
-        .is_final = false,
-        .decl = std::move(pd)};
-  };
-  auto add_rt_class = [&](const std::string& name, const std::string& parent,
-                          std::vector<MethodSig> methods) {
-    std::unordered_map<std::string, std::vector<MethodSig>> method_map;
-    for (auto& m : methods) {
-      const std::string mname = m.decl->name;
-      method_map[mname].push_back(std::move(m));
-    }
-    rt_classes[name] =
-        ClassInfo{.name = name,
-                  .parent = parent,
-                  .defining_unit = "__rt__",
-                  .is_reference_type = true,
-                  .is_abstract = false,
-                  .is_forward = false,
-                  .fields = {},
-                  .methods = std::move(method_map),
-                  .properties = {},
-                  .enum_members = {},
-                  .default_property_name = {}};
-  };
+  register_runtime_var(rt_exports, "allowdirectoryseparators",
+                       runtime_set_type(runtime_type_name("char")));
 
-  const ast::Param inh_aclass =
-      make_proc_param("aclass", make_typename("tclass"));
-  add_rt_class("tobject", "",
-               {make_method("create",  ast::ProcKind::Constructor, {}),
-                make_method("destroy", ast::ProcKind::Destructor,  {}),
-                make_method("free",    ast::ProcKind::Procedure,   {}),
-                make_method("classname", ast::ProcKind::Function, {},
-                            make_typename("shortstring"),
-                            /*class_method=*/true),
-                // Pascal RTL declares these as `class function`. They live in
-                // the runtime header (t_tobject::p_inheritsfrom etc.); register
-                // them so the resolver/deduce path treats them like any other
-                // method instead of needing a separate
-                // `builtin_reference_class_member_type` shim.
-                make_method("classtype", ast::ProcKind::Function, {},
-                            make_typename("tclass"),
-                            /*class_method=*/true),
-                make_method("instancesize", ast::ProcKind::Function, {},
-                            make_typename("longint"),
-                            /*class_method=*/true),
-                make_method("inheritsfrom", ast::ProcKind::Function,
-                            {inh_aclass},
-                            make_typename("boolean"),
-                            /*class_method=*/true)});
+  // Runtime reference classes participate in Pascal parent-chain lookup; a
+  // translated `class(Exception)` must inherit the synthesized constructor
+  // signature for `Exception.Create`.
+  // TObject's class functions are registered as ordinary MethodSigs so the
+  // resolver and result-type deduction use the same path as translated methods.
+  const Param inh_aclass =
+      runtime_const_param("aclass", runtime_type_name("tclass"));
+  register_runtime_class(
+      *this, "tobject", "",
+      {runtime_method_sig("create", ProcKind::Constructor, {}),
+       runtime_method_sig("destroy", ProcKind::Destructor, {}),
+       runtime_method_sig("free", ProcKind::Procedure, {}),
+       runtime_method_sig("classname", ProcKind::Function, {},
+                          runtime_type_name("shortstring"),
+                          /*class_method=*/true),
+       runtime_method_sig("classtype", ProcKind::Function, {},
+                          runtime_type_name("tclass"),
+                          /*class_method=*/true),
+       runtime_method_sig("instancesize", ProcKind::Function, {},
+                          runtime_type_name("longint"),
+                          /*class_method=*/true),
+       runtime_method_sig("inheritsfrom", ProcKind::Function, {inh_aclass},
+                          runtime_type_name("boolean"),
+                          /*class_method=*/true)});
 
-  const ast::Param exc_msg = make_proc_param("msg", make_typename("shortstring"));
-  add_rt_class("exception", "tobject",
-               {make_method("create", ast::ProcKind::Constructor,
-                            {exc_msg})});
-  add_rt_class("eexternal", "exception", {});
-  add_rt_class("einterror", "eexternal", {});
-  add_rt_class("einouterror", "exception", {});
-  add_rt_class("eheapmemoryerror", "exception", {});
-  add_rt_class("eheapexception", "eheapmemoryerror", {});
-  add_rt_class("eoutofmemory", "eheapmemoryerror", {});
-  add_rt_class("eintoverflow", "einterror", {});
-  add_rt_class("erangeerror", "einterror", {});
-  add_rt_class("edivbyzero", "einterror", {});
-  add_rt_class("eoserror", "exception", {});
+  const Param exc_msg =
+      runtime_const_param("msg", runtime_type_name("shortstring"));
+  register_runtime_class(
+      *this, "exception", "tobject",
+      {runtime_method_sig("create", ProcKind::Constructor, {exc_msg})});
+  register_runtime_class(*this, "eexternal", "exception", {});
+  register_runtime_class(*this, "einterror", "eexternal", {});
+  register_runtime_class(*this, "einouterror", "exception", {});
+  register_runtime_class(*this, "eheapmemoryerror", "exception", {});
+  register_runtime_class(*this, "eheapexception", "eheapmemoryerror", {});
+  register_runtime_class(*this, "eoutofmemory", "eheapmemoryerror", {});
+  register_runtime_class(*this, "eintoverflow", "einterror", {});
+  register_runtime_class(*this, "erangeerror", "einterror", {});
+  register_runtime_class(*this, "edivbyzero", "einterror", {});
+  register_runtime_class(*this, "eoserror", "exception", {});
 
   for (const auto* u : us) {
     if (!u) continue;
@@ -1183,17 +1286,12 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
 
   for (const auto* u : us) {
     if (!u) continue;
-    auto add_external_stub = [&](const std::string& used_name) {
-      const std::string low = lc(used_name);
-      if (low == "__rt__" || units.count(low) > 0) return;
-      // UnitGraph/main.cc already treat missing `uses` entries as external RTL
-      // units and emit `p_<unit>.h` via write_external_stub. Register the same
-      // unit name here with no exports so `Unit.name` can still fall back to the
-      // generated stub namespace.
-      units[low] = unit_info_for(low);
-    };
-    for (const auto& nm : u->interface_uses) add_external_stub(nm);
-    for (const auto& nm : u->impl_uses) add_external_stub(nm);
+    for (const auto& nm : u->interface_uses) {
+      register_external_stub_unit(*this, nm);
+    }
+    for (const auto& nm : u->impl_uses) {
+      register_external_stub_unit(*this, nm);
+    }
   }
 
   for (const auto* u : us) {
@@ -1373,17 +1471,6 @@ const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
     return mit == iit->second.methods.end() ? nullptr : &mit->second;
   }
   std::unordered_set<std::string> seen;
-  auto step = [&](const std::string& class_name,
-                  const std::unordered_map<std::string, ClassInfo>& store)
-      -> std::pair<const std::vector<MethodSig>*, std::string> {
-    auto cit = store.find(class_name);
-    if (cit == store.end()) return {nullptr, std::string{}};
-    auto mit = cit->second.methods.find(key);
-    if (mit != cit->second.methods.end()) {
-      return {&mit->second, std::string{}};
-    }
-    return {nullptr, cit->second.parent};
-  };
   std::string rt_name;
   while (ci) {
     const std::string identity = ci->defining_unit + "." + ci->name;
@@ -1404,9 +1491,10 @@ const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
   }
   while (!rt_name.empty() && !seen.count("__rt__." + rt_name)) {
     seen.insert("__rt__." + rt_name);
-    auto [rt_hit, rt_parent] = step(rt_name, rt_classes);
-    if (rt_hit) return rt_hit;
-    rt_name = rt_parent;
+    RuntimeMethodLookupStep rt_step =
+        lookup_runtime_method_step(rt_classes, rt_name, key);
+    if (rt_step.methods) return rt_step.methods;
+    rt_name = std::move(rt_step.parent);
   }
   return nullptr;
 }
