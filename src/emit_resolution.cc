@@ -414,6 +414,38 @@ ConvScore EmitResolution::score_conversion(
   return {};
 }
 
+bool EmitResolution::procedural_signatures_match(const ProcDecl& decl,
+                                                 const TyProcedural& proc) {
+  if ((decl.pkind == ProcKind::Function) != proc.is_function) return false;
+  if (proc.is_function) {
+    if (!proc.return_type || !decl.return_type) return false;
+    if (type_ops_.type_to_cxx(*proc.return_type) !=
+        type_ops_.type_to_cxx(*decl.return_type)) {
+      return false;
+    }
+  }
+  return type_ops_.procedural_param_types_to_cxx(decl.params) ==
+         type_ops_.procedural_param_types_to_cxx(proc.params);
+}
+
+std::optional<const ProcDecl*> EmitResolution::pick_instance_method_decl(
+    const std::string& cls, const std::string& name,
+    const TyProcedural& proc) {
+  const auto* methods =
+      registry_->lookup_class_methods(cls, name, scope_.current_unit_name);
+  if (!methods) return std::nullopt;
+  bool saw_instance = false;
+  for (const auto& method : *methods) {
+    if (!method.decl || method.decl->is_class_method) continue;
+    saw_instance = true;
+    if (procedural_signatures_match(*method.decl, proc)) {
+      return method.decl.get();
+    }
+  }
+  if (saw_instance) return static_cast<const ProcDecl*>(nullptr);
+  return std::nullopt;
+}
+
 std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
     const Expr& arg, const TyProcedural& proc) {
   if (!proc.is_method || !registry_) return std::nullopt;
@@ -427,45 +459,11 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
     value = addr.operand.get();
   }
 
-  auto signatures_match = [&](const ProcDecl& decl) {
-    if ((decl.pkind == ProcKind::Function) != proc.is_function) return false;
-    if (proc.is_function) {
-      if (!proc.return_type || !decl.return_type) return false;
-      if (type_ops_.type_to_cxx(*proc.return_type) !=
-          type_ops_.type_to_cxx(*decl.return_type)) {
-        return false;
-      }
-    }
-    return type_ops_.procedural_param_types_to_cxx(decl.params) ==
-           type_ops_.procedural_param_types_to_cxx(proc.params);
-  };
-
-  // Look up `name` on `cls`'s instance methods. Return:
-  //   nullopt           - no instance method by that name (caller falls back).
-  //   binding(decl=...) - first signature-matching method.
-  //   binding(decl=nil) - methods exist by that name but none match `proc`.
-  auto pick_decl =
-      [&](const std::string& cls,
-          const std::string& name) -> std::optional<const ProcDecl*> {
-    const auto* methods =
-        registry_->lookup_class_methods(cls, name, scope_.current_unit_name);
-    if (!methods) return std::nullopt;
-    bool saw_instance = false;
-    for (const auto& method : *methods) {
-      if (!method.decl || method.decl->is_class_method) continue;
-      saw_instance = true;
-      if (signatures_match(*method.decl)) {
-        return method.decl.get();
-      }
-    }
-    if (saw_instance) return static_cast<const ProcDecl*>(nullptr);
-    return std::nullopt;
-  };
-
   if (value->kind == Kind::Ident) {
     if (scope_.current_class_name.empty()) return std::nullopt;
-    auto decl = pick_decl(scope_.current_class_name,
-                          static_cast<const Ident&>(*value).name);
+    auto decl = pick_instance_method_decl(
+        scope_.current_class_name, static_cast<const Ident&>(*value).name,
+        proc);
     if (!decl) return std::nullopt;
     return MethodValueBinding::via_self(*decl, scope_.current_class_name);
   }
@@ -510,7 +508,7 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
   if (cls.empty()) cls = analysis_.deduce_class_alias(*member.base);
   if (cls.empty()) return std::nullopt;
 
-  auto decl = pick_decl(cls, member.name);
+  auto decl = pick_instance_method_decl(cls, member.name, proc);
   if (!decl) return std::nullopt;
   return MethodValueBinding::via_member(*decl, std::move(cls),
                                         method_base);
@@ -599,17 +597,35 @@ ConvScore EmitResolution::score_argument_conversion(
                           allow_assignment_operator_conversions);
 }
 
+bool EmitResolution::conversion_score_less(const ConvScore& a,
+                                           const ConvScore& b) const {
+  // Lexicographic compare on (rank, distance): better rank wins; inside one
+  // rank, the smaller distance is the tighter Pascal fit.
+  if (a.rank != b.rank) return a.rank < b.rank;
+  return a.distance < b.distance;
+}
+
+bool EmitResolution::conversion_candidate_dominates(
+    const ScoredCandidate& a, const ScoredCandidate& b) const {
+  // A candidate dominates another iff it is no worse at every explicit arg
+  // position and strictly better at least once. Incomparable overload
+  // candidates stay ambiguous.
+  size_t n = std::min(a.scores.size(), b.scores.size());
+  bool any_strict = false;
+  for (size_t i = 0; i < n; ++i) {
+    if (conversion_score_less(b.scores[i], a.scores[i])) return false;
+    if (conversion_score_less(a.scores[i], b.scores[i])) any_strict = true;
+  }
+  return any_strict;
+}
+
 PickResult EmitResolution::pick_overload(
     const std::vector<const ProcDecl*>& candidates,
     const std::vector<const Expr*>& args,
     bool allow_assignment_operator_conversions) {
   if (candidates.empty()) return {};
 
-  struct Scored {
-    const ProcDecl* decl;
-    std::vector<ConvScore> scores;
-  };
-  std::vector<Scored> viable;
+  std::vector<ScoredCandidate> viable;
   for (const ProcDecl* decl : candidates) {
     if (!decl) continue;
     std::vector<FlatCallParamInfo> flat = flatten_call_param_info(decl);
@@ -624,7 +640,7 @@ PickResult EmitResolution::pick_overload(
     }
     if (!ok) continue;
 
-    Scored s{decl, {}};
+    ScoredCandidate s{decl, {}};
     s.scores.reserve(args.size());
     for (size_t i = 0; i < args.size(); ++i) {
       ConvScore r = score_argument_conversion(
@@ -640,34 +656,13 @@ PickResult EmitResolution::pick_overload(
   if (viable.empty()) return {};
   if (viable.size() == 1) return {viable[0].decl, false};
 
-  auto score_less = [](const ConvScore& a, const ConvScore& b) {
-    // Lexicographic compare on (rank, distance): better rank wins; inside one
-    // rank, the smaller distance is the tighter Pascal fit.
-    if (a.rank != b.rank) return a.rank < b.rank;
-    return a.distance < b.distance;
-  };
-  auto score_greater = [&](const ConvScore& a, const ConvScore& b) {
-    return score_less(b, a);
-  };
-  auto dominates = [&](const Scored& a, const Scored& b) {
-    // A candidate dominates another iff it is no worse at every explicit arg
-    // position and strictly better at least once. Incomparable overload
-    // candidates stay ambiguous.
-    size_t n = std::min(a.scores.size(), b.scores.size());
-    bool any_strict = false;
-    for (size_t i = 0; i < n; ++i) {
-      if (score_greater(a.scores[i], b.scores[i])) return false;
-      if (score_less(a.scores[i], b.scores[i])) any_strict = true;
-    }
-    return any_strict;
-  };
   size_t best = 0;
   for (size_t i = 1; i < viable.size(); ++i) {
-    if (dominates(viable[i], viable[best])) best = i;
+    if (conversion_candidate_dominates(viable[i], viable[best])) best = i;
   }
   for (size_t i = 0; i < viable.size(); ++i) {
     if (i == best) continue;
-    if (!dominates(viable[best], viable[i])) {
+    if (!conversion_candidate_dominates(viable[best], viable[i])) {
       // No strict winner: keep this as a Pascal ambiguity instead of silently
       // letting C++ overload resolution pick whichever conversion sequence it
       // prefers.
@@ -677,26 +672,42 @@ PickResult EmitResolution::pick_overload(
   return {viable[best].decl, false};
 }
 
+ResolvedCall EmitResolution::resolved_call_from_candidate(
+    const std::string& member_name, const AnyCand& chosen,
+    bool ran_type_picker) const {
+  const bool free_unit = !chosen.callee_unit.empty();
+  return ResolvedCall{
+      .decl = chosen.decl,
+      .callee_kind = free_unit ? ResolvedCalleeKind::FreeFunctionInUnit
+                               : ResolvedCalleeKind::Default,
+      .defining_unit = chosen.callee_unit,
+      .member_name = member_name,
+      .default_arg_unit = chosen.declaration_unit,
+      .return_type_name = chosen.return_type_name,
+      .needs_arg_casts = ran_type_picker,
+      .ambiguous = false};
+}
+
+std::string EmitResolution::receiver_class_for_member_call(const Expr& callee) {
+  if (callee.kind != Kind::Member) return {};
+  const auto& member = static_cast<const Member&>(callee);
+  if (member.base->kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(*member.base);
+    if (id.name == "self") return scope_.current_class_name;
+    if (!analysis_.identifier_is_shadowed_value(id.name) &&
+        (registry_->has_class(id.name, scope_.current_unit_name) ||
+         registry_->records.count(id.name))) {
+      return id.name;
+    }
+    return analysis_.deduce_class_alias(*member.base);
+  }
+  return analysis_.deduce_class_alias(*member.base);
+}
+
 ResolvedCall EmitResolution::resolve_call(
     const Expr& callee, const std::vector<const Expr*>& args) {
   const std::string member_name = callable_member_name(callee);
-  auto unresolved = [&]() {
-    return unresolved_call(member_name);
-  };
-  auto resolved = [&](const AnyCand& chosen, bool ran_type_picker) {
-    const bool free_unit = !chosen.callee_unit.empty();
-    return ResolvedCall{
-        .decl = chosen.decl,
-        .callee_kind = free_unit ? ResolvedCalleeKind::FreeFunctionInUnit
-                                 : ResolvedCalleeKind::Default,
-        .defining_unit = chosen.callee_unit,
-        .member_name = member_name,
-        .default_arg_unit = chosen.declaration_unit,
-        .return_type_name = chosen.return_type_name,
-        .needs_arg_casts = ran_type_picker,
-        .ambiguous = false};
-  };
-  if (!registry_) return unresolved();
+  if (!registry_) return unresolved_call(member_name);
   // Method overloads and free-function overloads share the same picker.
   // Methods come from class-chain lookup; free functions come from the current
   // unit plus the visible uses chain. `inherited foo(...)` is still a separate
@@ -708,21 +719,6 @@ ResolvedCall EmitResolution::resolve_call(
     all_cands = gather_callable_in_pascal_scope(id.name);
   } else if (callee.kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(callee);
-    auto receiver_class = [&](const Expr& c) -> std::string {
-      if (c.kind != Kind::Member) return {};
-      const auto& member = static_cast<const Member&>(c);
-      if (member.base->kind == Kind::Ident) {
-        const auto& id = static_cast<const Ident&>(*member.base);
-        if (id.name == "self") return scope_.current_class_name;
-        if (!analysis_.identifier_is_shadowed_value(id.name) &&
-            (registry_->has_class(id.name, scope_.current_unit_name) ||
-             registry_->records.count(id.name))) {
-          return id.name;
-        }
-        return analysis_.deduce_class_alias(*member.base);
-      }
-      return analysis_.deduce_class_alias(*member.base);
-    };
     bool unit_qualified = false;
     bool inherited_call = false;
     if (mem.base->kind == Kind::Ident) {
@@ -761,7 +757,7 @@ ResolvedCall EmitResolution::resolve_call(
       if (!metaclass.empty()) {
         all_cands = metaclass_method_cands(metaclass, mem.name);
       } else {
-        std::string cls = receiver_class(callee);
+        std::string cls = receiver_class_for_member_call(callee);
         if (!cls.empty()) all_cands = class_method_cands(cls, mem.name);
       }
     }
@@ -794,7 +790,7 @@ ResolvedCall EmitResolution::resolve_call(
     // Single arity-viable candidate. C++ does not need help choosing the
     // overload, but we still record the defining unit so the printer spells
     // the callee through the same Pascal lookup path.
-    return resolved(arity_ok[0], false);
+    return resolved_call_from_candidate(member_name, arity_ok[0], false);
   }
 
   if (arity_ok.size() > 1) {
@@ -806,7 +802,7 @@ ResolvedCall EmitResolution::resolve_call(
       if (a.decl) with_decl.push_back(a.decl);
     }
     if (with_decl.empty()) {
-      return unresolved();
+      return unresolved_call(member_name);
     }
     PickResult pr = pick_overload(
         with_decl, args, /*allow_assignment_operator_conversions=*/true);
@@ -821,11 +817,11 @@ ResolvedCall EmitResolution::resolve_call(
                           .ambiguous = true};
     }
     if (!pr.decl) {
-      return unresolved();
+      return unresolved_call(member_name);
     }
     for (const auto& a : arity_ok) {
       if (a.decl == pr.decl) {
-        return resolved(a, true);
+        return resolved_call_from_candidate(member_name, a, true);
       }
     }
     // `pr.decl` came from the arity-filtered set, so reaching this path means
@@ -841,7 +837,7 @@ ResolvedCall EmitResolution::resolve_call(
                         .ambiguous = false};
   }
 
-  return unresolved();
+  return unresolved_call(member_name);
 }
 
 ResolvedCall EmitResolution::resolve_pointer_target_constructor(
@@ -859,31 +855,32 @@ ResolvedCall EmitResolution::resolve_pointer_target_constructor(
   return resolve_call(member, args);
 }
 
+bool EmitResolution::operand_type_allows_operator_lookup(const TypeExpr* t) {
+  t = analysis_.canonicalize_type(t);
+  if (!t) return false;
+  if (type_ops_.type_is_stringish(t)) return true;
+  if (t->kind == Kind::TyName) {
+    const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
+    if (primitive_info(name)) return false;
+    if (registry_->enums.count(name)) return false;
+    return registry_->records.count(name) ||
+           registry_->has_class(name, scope_.current_unit_name) ||
+           registry_->aliases.count(name);
+  }
+  return t->kind == Kind::TyRecord || t->kind == Kind::TyObject ||
+         t->kind == Kind::TyInterface || t->kind == Kind::TyPointer ||
+         t->kind == Kind::TyArray || t->kind == Kind::TyMetaclass;
+}
+
 BinaryOperatorResult EmitResolution::find_binary_operator(
     const std::string& op, const Expr& lhs, const Expr& rhs) {
   if (!registry_) return {};
-  auto operand_allows_operator_lookup = [&](const TypeExpr* t) {
-    t = analysis_.canonicalize_type(t);
-    if (!t) return false;
-    if (type_ops_.type_is_stringish(t)) return true;
-    if (t->kind == Kind::TyName) {
-      const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
-      if (primitive_info(name)) return false;
-      if (registry_->enums.count(name)) return false;
-      return registry_->records.count(name) ||
-             registry_->has_class(name, scope_.current_unit_name) ||
-             registry_->aliases.count(name);
-    }
-    return t->kind == Kind::TyRecord || t->kind == Kind::TyObject ||
-           t->kind == Kind::TyInterface || t->kind == Kind::TyPointer ||
-           t->kind == Kind::TyArray || t->kind == Kind::TyMetaclass;
-  };
 
   const TypeExpr* lhs_type = overload_types_.type_for_overload(lhs);
   const TypeExpr* rhs_type = overload_types_.type_for_overload(rhs);
   const bool overloadable_context =
-      operand_allows_operator_lookup(lhs_type) ||
-      operand_allows_operator_lookup(rhs_type);
+      operand_type_allows_operator_lookup(lhs_type) ||
+      operand_type_allows_operator_lookup(rhs_type);
   if (!overloadable_context) return {};
 
   std::vector<AnyCand> cands = gather_operator_in_pascal_scope(op);

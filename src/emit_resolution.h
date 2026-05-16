@@ -133,6 +133,10 @@ class EmitResolution {
     std::string declaration_unit;  // scope for default parameter expressions
     std::string return_type_name;  // for decl-less runtime builtins
   };
+  struct ScoredCandidate {
+    const ast::ProcDecl* decl = nullptr;
+    std::vector<ConvScore> scores;
+  };
   // Pascal lookup order for an unqualified callable name:
   // `with` stack -> nested procs -> current class chain -> current unit ->
   // uses chain. The first contributing non-uses scope wins; the uses chain
@@ -155,6 +159,21 @@ class EmitResolution {
   bool type_is_shortstring_family(const ast::TypeExpr* t) const;
   bool type_is_ansistring(const ast::TypeExpr* t) const;
   bool type_is_char_type(const ast::TypeExpr* t) const;
+  bool procedural_signatures_match(const ast::ProcDecl& decl,
+                                   const ast::TyProcedural& proc);
+  // empty optional: no instance method by that name; optional nullptr:
+  // instance methods exist but none match the procedural target signature.
+  std::optional<const ast::ProcDecl*> pick_instance_method_decl(
+      const std::string& cls, const std::string& name,
+      const ast::TyProcedural& proc);
+  bool conversion_score_less(const ConvScore& a, const ConvScore& b) const;
+  bool conversion_candidate_dominates(const ScoredCandidate& a,
+                                      const ScoredCandidate& b) const;
+  ResolvedCall resolved_call_from_candidate(const std::string& member_name,
+                                            const AnyCand& chosen,
+                                            bool ran_type_picker) const;
+  std::string receiver_class_for_member_call(const ast::Expr& callee);
+  bool operand_type_allows_operator_lookup(const ast::TypeExpr* t);
   ConvScore score_conversion(const ast::TypeExpr* arg,
                              const ast::TypeExpr* param,
                              bool var_param,
