@@ -60,8 +60,7 @@ void EmitDecls::emit_enum_carrier(const TyEnum& te, std::string_view cxx_name,
 void EmitDecls::emit_enum_carrier_decls(const TypeExpr* t,
                                         const TyEnum* skip) {
   if (!t) return;
-  std::vector<const TyEnum*> enums;
-  collect_enum_types(*t, enums);
+  std::vector<const TyEnum*> enums = collect_enum_types(*t);
   std::unordered_set<const TyEnum*> emitted;
   for (const TyEnum* te : enums) {
     if (!te || te == skip || !emitted.insert(te).second) continue;

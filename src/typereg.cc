@@ -13,44 +13,44 @@ namespace tp2cc {
 
 using namespace ast;
 
-void collect_enum_types(const TypeExpr& t,
-                        std::vector<const TyEnum*>& out) {
+static void append_enum_types(const TypeExpr& t,
+                              std::vector<const TyEnum*>& out) {
   switch (t.kind) {
     case Kind::TyEnum:
       out.push_back(&static_cast<const TyEnum&>(t));
       return;
     case Kind::TyPointer:
       if (static_cast<const TyPointer&>(t).target) {
-        collect_enum_types(*static_cast<const TyPointer&>(t).target, out);
+        append_enum_types(*static_cast<const TyPointer&>(t).target, out);
       }
       return;
     case Kind::TyArray: {
       const auto& a = static_cast<const TyArray&>(t);
       for (const auto& d : a.dims)
-        if (d) collect_enum_types(*d, out);
-      if (a.element) collect_enum_types(*a.element, out);
+        if (d) append_enum_types(*d, out);
+      if (a.element) append_enum_types(*a.element, out);
       return;
     }
     case Kind::TySet:
       if (static_cast<const TySet&>(t).element) {
-        collect_enum_types(*static_cast<const TySet&>(t).element, out);
+        append_enum_types(*static_cast<const TySet&>(t).element, out);
       }
       return;
     case Kind::TyFile:
       if (static_cast<const TyFile&>(t).element) {
-        collect_enum_types(*static_cast<const TyFile&>(t).element, out);
+        append_enum_types(*static_cast<const TyFile&>(t).element, out);
       }
       return;
     case Kind::TyRecord: {
       const auto& r = static_cast<const TyRecord&>(t);
       for (const auto& f : r.fields)
-        if (f.type) collect_enum_types(*f.type, out);
+        if (f.type) append_enum_types(*f.type, out);
       auto collect_variant = [&](auto& self, const std::shared_ptr<ast::VariantPart>& vpart) -> void {
         if (!vpart) return;
-        if (vpart->tag_type) collect_enum_types(*vpart->tag_type, out);
+        if (vpart->tag_type) append_enum_types(*vpart->tag_type, out);
         for (const auto& vc : vpart->cases) {
           for (const auto& f : vc.fields)
-            if (f.type) collect_enum_types(*f.type, out);
+            if (f.type) append_enum_types(*f.type, out);
           self(self, vc.variant_part);
         }
       };
@@ -61,17 +61,17 @@ void collect_enum_types(const TypeExpr& t,
       const auto& o = static_cast<const TyObject&>(t);
       for (const auto& m : o.members) {
         if (m.kind == ObjectMemberKind::Field && m.field_type) {
-          collect_enum_types(*m.field_type, out);
+          append_enum_types(*m.field_type, out);
         } else if (m.kind == ObjectMemberKind::Method && m.method) {
           if (m.method->return_type) {
-            collect_enum_types(*m.method->return_type, out);
+            append_enum_types(*m.method->return_type, out);
           }
           for (const auto& p : m.method->params)
-            if (p.type) collect_enum_types(*p.type, out);
+            if (p.type) append_enum_types(*p.type, out);
         } else if (m.kind == ObjectMemberKind::Property) {
-          if (m.property.type) collect_enum_types(*m.property.type, out);
+          if (m.property.type) append_enum_types(*m.property.type, out);
           for (const auto& p : m.property.params)
-            if (p.type) collect_enum_types(*p.type, out);
+            if (p.type) append_enum_types(*p.type, out);
         }
       }
       return;
@@ -81,23 +81,23 @@ void collect_enum_types(const TypeExpr& t,
       for (const auto& m : i.members) {
         if (m.kind != ObjectMemberKind::Method || !m.method) continue;
         if (m.method->return_type) {
-          collect_enum_types(*m.method->return_type, out);
+          append_enum_types(*m.method->return_type, out);
         }
         for (const auto& p : m.method->params)
-          if (p.type) collect_enum_types(*p.type, out);
+          if (p.type) append_enum_types(*p.type, out);
       }
       return;
     }
     case Kind::TyProcedural: {
       const auto& p = static_cast<const TyProcedural&>(t);
-      if (p.return_type) collect_enum_types(*p.return_type, out);
+      if (p.return_type) append_enum_types(*p.return_type, out);
       for (const auto& par : p.params)
-        if (par.type) collect_enum_types(*par.type, out);
+        if (par.type) append_enum_types(*par.type, out);
       return;
     }
     case Kind::TyDistinct:
       if (static_cast<const TyDistinct&>(t).underlying) {
-        collect_enum_types(*static_cast<const TyDistinct&>(t).underlying, out);
+        append_enum_types(*static_cast<const TyDistinct&>(t).underlying, out);
       }
       return;
     default:
@@ -105,13 +105,18 @@ void collect_enum_types(const TypeExpr& t,
   }
 }
 
+std::vector<const TyEnum*> collect_enum_types(const TypeExpr& t) {
+  std::vector<const TyEnum*> out;
+  append_enum_types(t, out);
+  return out;
+}
+
 void register_enum_types_for_owner(
     std::unordered_map<std::string, const TyEnum*>& out,
     const TypeExpr* type, std::string_view owner_name,
     const TyEnum* named_top_level) {
   if (!type) return;
-  std::vector<const TyEnum*> enums;
-  collect_enum_types(*type, enums);
+  std::vector<const TyEnum*> enums = collect_enum_types(*type);
   std::unordered_set<const TyEnum*> seen;
   size_t anon_index = 0;
   const std::string owner = ascii_lower(std::string(owner_name));
@@ -185,8 +190,7 @@ void add_unit_enum_members(UnitInfo* ui, bool is_interface,
 void add_enum_members(std::unordered_set<std::string>& members,
                       const TypePtr& t) {
   if (!t) return;
-  std::vector<const TyEnum*> enums;
-  collect_enum_types(*t, enums);
+  std::vector<const TyEnum*> enums = collect_enum_types(*t);
   for (const TyEnum* te : enums)
     for (const auto& em : te->members) members.insert(lc(em.name));
 }
@@ -211,8 +215,7 @@ void register_enums_in_type(TypeRegistry& r, UnitInfo* ui, bool is_interface,
                             const std::string& unit, const TypeExpr& t,
                             std::string_view owner_name,
                             const TyEnum* named_top_level) {
-  std::vector<const TyEnum*> enums;
-  collect_enum_types(t, enums);
+  std::vector<const TyEnum*> enums = collect_enum_types(t);
   std::unordered_set<const TyEnum*> seen;
   size_t anon_index = 0;
   for (const TyEnum* te : enums) {

@@ -344,8 +344,7 @@ struct TypeRegistry {
 // type. The enum syntax can be nested inside set, array, record, and object
 // types, so registry and emitter setup walk the whole TypeExpr instead of
 // checking only the top-level type node.
-void collect_enum_types(const ast::TypeExpr& t,
-                        std::vector<const ast::TyEnum*>& out);
+std::vector<const ast::TyEnum*> collect_enum_types(const ast::TypeExpr& t);
 void register_enum_types_for_owner(
     std::unordered_map<std::string, const ast::TyEnum*>& out,
     const ast::TypeExpr* type, std::string_view owner_name,
