@@ -853,6 +853,7 @@ bool EmitAnalysis::type_is_ansistring(const TypeExpr* t) {
 
 const TypeExpr* EmitAnalysis::deduce_binary_expr_type(const Binary& b) {
   if (b.op == BinOp::Is) return builtin_boolean_type();
+  if (b.op == BinOp::In) return builtin_boolean_type();
   if (b.op == BinOp::As) {
     if (b.rhs->kind == Kind::Ident) {
       const auto& id = static_cast<const Ident&>(*b.rhs);

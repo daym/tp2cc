@@ -835,10 +835,11 @@ void test_low_high_on_set_type_uses_element_bounds() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "inline const int32_t p_lastflag = tp2cc_enum_high_tflag;"));
+                 "inline const int32_t p_lastflag = static_cast<int32_t>(tp2cc_enum_high_tflag);"));
   CHECK(contains(out.header, "const auto p_firstsmall = 2;"));
   CHECK(contains(out.header, "const auto p_lastsmall = 5;"));
-  CHECK(contains(out.impl, "if ((tp2cc_enum_high_tflag > 31))"));
+  CHECK(contains(out.impl,
+                 "if ((static_cast<int32_t>(tp2cc_enum_high_tflag) > 31))"));
   CHECK(!contains(out.header, "::rt::p_high("));
   CHECK(!contains(out.impl, "::rt::p_high("));
   CHECK(!contains(out.header, "::rt::p_ord("));
@@ -1212,6 +1213,29 @@ void test_ord_value_result_type_follows_ordinal_operand() {
                  "p_b = ::p_u::p_pick_smallint(static_cast<int16_t>(p_wb));"));
   CHECK(contains(out.impl,
                  "p_b = ::p_u::p_pick_longint(static_cast<int32_t>(p_c));"));
+  CHECK(!contains(out.impl, "::rt::p_ord("));
+}
+
+void test_ord_boolean_expression_lowers_to_numeric_value() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tflag = (a, b);\n"
+      "type tflags = set of tflag;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "var s : tflags;\n"
+      "procedure take(x : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  take(ord(a in s));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_take(static_cast<uint8_t>("));
+  CHECK(contains(out.impl, "(p_s).contains(p_a)"));
+  CHECK(!contains(out.impl, "p_take((p_s).contains(p_a));"));
   CHECK(!contains(out.impl, "::rt::p_ord("));
 }
 
@@ -9017,6 +9041,7 @@ int main() {
   RUN_TEST(test_ord_char_value_has_byte_result_type);
   RUN_TEST(test_ord_pchar_offset_deref_uses_char_byte_value);
   RUN_TEST(test_ord_value_result_type_follows_ordinal_operand);
+  RUN_TEST(test_ord_boolean_expression_lowers_to_numeric_value);
   RUN_TEST(test_set_type_alias);
   RUN_TEST(test_var_extern_in_header_and_def_in_impl);
   RUN_TEST(test_out_parameter_emits_like_var_reference);

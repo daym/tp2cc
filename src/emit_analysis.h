@@ -109,6 +109,7 @@ class EmitAnalysis {
   // follows the operand's ordinal domain so `Ord(Char)` stays byte-sized while
   // enums and integer subranges keep their own storage width.
   const ast::TypeExpr* ord_result_type_for_operand(const ast::Expr& operand);
+  const ast::TypeExpr* ord_result_type_for_type(const ast::TypeExpr* t);
   std::string deduce_class_alias(const ast::Expr& e);
   std::string canonical_method_owner_type_name(std::string_view owner);
   const ast::TypeExpr* lookup_record_field_type_in_type(
@@ -182,7 +183,6 @@ class EmitAnalysis {
       const ast::TypeExpr* element,
       std::optional<std::pair<int64_t, int64_t>> explicit_bounds);
   bool same_type_ast(const ast::TypeExpr* a, const ast::TypeExpr* b);
-  const ast::TypeExpr* ord_result_type_for_type(const ast::TypeExpr* t);
   std::optional<OrdinalDomain> ordinal_domain_for_type(const ast::TypeExpr* t);
   std::optional<OrdinalDomain> ordinal_domain_for_set_type(
       const ast::TypeExpr* t);

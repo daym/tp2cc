@@ -372,6 +372,9 @@ struct Emitter : ResolveNameProvider,
   std::string class_cast_rhs_type_cxx(const ast::Expr& rhs);
   std::string char_concat_operand_cxx(const ast::Expr& x, bool wrap_as_string);
   bool expr_is_boolean_value(const ast::Expr& x);
+  bool ordinal_value_needs_explicit_cast(const ast::Expr& operand);
+  bool call_arg_already_pins_formal_type(const ast::Expr& arg,
+                                         const ast::TypeExpr* formal_type);
   std::string binary_operand_to_cxx(const ast::Expr& operand,
                                     const ast::Expr& other);
   const PrimitiveInfo* integer_primitive_for_expr(const ast::Expr& x);
@@ -627,10 +630,14 @@ std::string Emitter::ordinal_value_to_cxx(const Expr& e,
                                           std::string value_cxx) {
   if (value_cxx.empty()) value_cxx = expr_to_cxx(e);
   const TypeExpr* operand_type = canonicalize_type(type_for_overload(e));
+  const TypeExpr* result_type =
+      analysis_.ord_result_type_for_type(operand_type);
+  if (!result_type) return value_cxx;
   if (tyname_is_charish(operand_type)) {
     return "::rt::tp2cc_char_byte(" + value_cxx + ")";
   }
-  return value_cxx;
+  if (!ordinal_value_needs_explicit_cast(e)) return value_cxx;
+  return "static_cast<" + type_to_cxx(*result_type) + ">(" + value_cxx + ")";
 }
 
 const TypeExpr* Emitter::type_for_resolved_call(const Call& c) {
@@ -748,6 +755,30 @@ bool Emitter::expr_is_boolean_value(const Expr& x) {
   std::string nm = ascii_lower(static_cast<const TyName&>(*t).name);
   return nm == "boolean" || nm == "bytebool" || nm == "wordbool" ||
          nm == "longbool";
+}
+
+bool Emitter::ordinal_value_needs_explicit_cast(const Expr& operand) {
+  const TypeExpr* operand_type = canonicalize_type(type_for_overload(operand));
+  const TypeExpr* result_type =
+      analysis_.ord_result_type_for_type(operand_type);
+  if (!operand_type || !result_type) return false;
+  if (tyname_is_charish(operand_type)) return false;
+  const std::string operand_cxx = type_to_cxx(*operand_type);
+  const std::string result_cxx = type_to_cxx(*result_type);
+  return !operand_cxx.empty() && !result_cxx.empty() &&
+         operand_cxx != result_cxx;
+}
+
+bool Emitter::call_arg_already_pins_formal_type(const Expr& arg,
+                                                const TypeExpr* formal_type) {
+  if (!formal_type || arg.kind != Kind::Call) return false;
+  const auto& call = static_cast<const Call&>(arg);
+  if (call.callee->kind != Kind::Ident || call.args.size() != 1) return false;
+  if (static_cast<const Ident&>(*call.callee).name != "ord") return false;
+  if (!ordinal_value_needs_explicit_cast(*call.args[0])) return false;
+  const TypeExpr* arg_type = type_for_overload(arg);
+  if (!arg_type) return false;
+  return type_to_cxx(*arg_type) == type_to_cxx(*formal_type);
 }
 
 std::string Emitter::binary_operand_to_cxx(const Expr& operand,
@@ -1731,6 +1762,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
 
         if (n == "ord" && c.args.size() == 1) {
+          // `Ord` is a value intrinsic: the emitted expression needs the
+          // Pascal numeric result type even without a target-typed context.
           return ordinal_value_to_cxx(*c.args[0], single_call_arg_cxx(c));
         }
 
@@ -2294,8 +2327,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             slot.untyped_arg == UntypedArgKind::None) {
           const TypeExpr* canon_pt = canonicalize_type(slot.param_type);
           if (!canon_pt || canon_pt->kind != Kind::TyProcedural) {
-            arg_text = "static_cast<" + type_to_cxx(*slot.param_type) +
-                       ">(" + arg_text + ")";
+            // `Ord` may already emit the cast that gives the expression its
+            // Pascal result type, e.g. enum->LongInt or Boolean->Byte. If that
+            // type is the selected formal, the generic overload guard would
+            // duplicate the same cast.
+            if (!call_arg_already_pins_formal_type(*slot.expr,
+                                                   slot.param_type)) {
+              arg_text = "static_cast<" + type_to_cxx(*slot.param_type) +
+                         ">(" + arg_text + ")";
+            }
           }
         }
         out += arg_text;
