@@ -13,6 +13,10 @@ namespace tp2cc {
 
 using namespace ast;
 
+static void append_variant_part_enum_types(
+    const std::shared_ptr<ast::VariantPart>& vpart,
+    std::vector<const TyEnum*>& out);
+
 static void append_enum_types(const TypeExpr& t,
                               std::vector<const TyEnum*>& out) {
   switch (t.kind) {
@@ -45,16 +49,7 @@ static void append_enum_types(const TypeExpr& t,
       const auto& r = static_cast<const TyRecord&>(t);
       for (const auto& f : r.fields)
         if (f.type) append_enum_types(*f.type, out);
-      auto collect_variant = [&](auto& self, const std::shared_ptr<ast::VariantPart>& vpart) -> void {
-        if (!vpart) return;
-        if (vpart->tag_type) append_enum_types(*vpart->tag_type, out);
-        for (const auto& vc : vpart->cases) {
-          for (const auto& f : vc.fields)
-            if (f.type) append_enum_types(*f.type, out);
-          self(self, vc.variant_part);
-        }
-      };
-      collect_variant(collect_variant, r.variant_part);
+      append_variant_part_enum_types(r.variant_part, out);
       return;
     }
     case Kind::TyObject: {
@@ -102,6 +97,18 @@ static void append_enum_types(const TypeExpr& t,
       return;
     default:
       return;
+  }
+}
+
+static void append_variant_part_enum_types(
+    const std::shared_ptr<ast::VariantPart>& vpart,
+    std::vector<const TyEnum*>& out) {
+  if (!vpart) return;
+  if (vpart->tag_type) append_enum_types(*vpart->tag_type, out);
+  for (const auto& vc : vpart->cases) {
+    for (const auto& f : vc.fields)
+      if (f.type) append_enum_types(*f.type, out);
+    append_variant_part_enum_types(vc.variant_part, out);
   }
 }
 
@@ -232,27 +239,30 @@ void register_enums_in_type(TypeRegistry& r, UnitInfo* ui, bool is_interface,
   }
 }
 
+void append_record_variant_fields(
+    const std::shared_ptr<ast::VariantPart>& vpart,
+    std::unordered_map<std::string, FieldInfo>& fields) {
+  if (!vpart) return;
+  if (!vpart->tag_name.empty()) {
+    fields[lc(vpart->tag_name)] =
+        FieldInfo{.type = vpart->tag_type, .is_class_var = false};
+  }
+  for (const auto& vc : vpart->cases) {
+    for (const auto& f : vc.fields) {
+      const FieldInfo field{.type = f.type, .is_class_var = false};
+      for (const auto& n : f.names) fields[lc(n)] = field;
+    }
+    append_record_variant_fields(vc.variant_part, fields);
+  }
+}
+
 std::unordered_map<std::string, FieldInfo> record_fields(const TyRecord& tr) {
   std::unordered_map<std::string, FieldInfo> fields;
   for (const auto& f : tr.fields) {
     const FieldInfo field{.type = f.type, .is_class_var = false};
     for (const auto& n : f.names) fields[lc(n)] = field;
   }
-  auto index_variants = [&](auto& self, const std::shared_ptr<ast::VariantPart>& vpart) -> void {
-    if (!vpart) return;
-    if (!vpart->tag_name.empty()) {
-      fields[lc(vpart->tag_name)] = 
-          FieldInfo{.type = vpart->tag_type, .is_class_var = false};
-    }
-    for (const auto& vc : vpart->cases) {
-      for (const auto& f : vc.fields) {
-        const FieldInfo field{.type = f.type, .is_class_var = false};
-        for (const auto& n : f.names) fields[lc(n)] = field;
-      }
-      self(self, vc.variant_part);
-    }
-  };
-  index_variants(index_variants, tr.variant_part);
+  append_record_variant_fields(tr.variant_part, fields);
   return fields;
 }
 
