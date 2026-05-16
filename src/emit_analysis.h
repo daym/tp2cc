@@ -170,6 +170,12 @@ class EmitAnalysis {
     int64_t high;
   };
 
+  struct OrdinalExprValue {
+    int64_t value;
+    OrdinalFamily family;
+    const ast::TyEnum* enum_key;
+  };
+
   std::string implicit_self_cxx();
   bool is_visible_unit_qualifier(std::string_view name);
   const ast::TySet* synthesize_set_type(
@@ -180,9 +186,7 @@ class EmitAnalysis {
   std::optional<OrdinalDomain> ordinal_domain_for_type(const ast::TypeExpr* t);
   std::optional<OrdinalDomain> ordinal_domain_for_set_type(
       const ast::TypeExpr* t);
-  bool try_eval_ordinal_expr(const ast::Expr& e, int64_t* value,
-                             OrdinalFamily* family,
-                             const ast::TyEnum** enum_key);
+  std::optional<OrdinalExprValue> eval_ordinal_expr(const ast::Expr& e);
   std::optional<SetLiteralOrdinalSummary>
   extend_set_literal_ordinal_summary(
       std::optional<SetLiteralOrdinalSummary> summary, const ast::Expr& e);

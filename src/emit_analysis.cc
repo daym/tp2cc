@@ -379,16 +379,15 @@ bool EmitAnalysis::same_type_ast(const TypeExpr* a, const TypeExpr* b) {
     case Kind::TySubrange: {
       const auto& as = static_cast<const TySubrange&>(*a);
       const auto& bs = static_cast<const TySubrange&>(*b);
-      int64_t alo = 0, ahi = 0, blo = 0, bhi = 0;
-      OrdinalFamily af = OrdinalFamily::Invalid;
-      OrdinalFamily bf = OrdinalFamily::Invalid;
-      const TyEnum* akey = nullptr;
-      const TyEnum* bkey = nullptr;
-      return try_eval_ordinal_expr(*as.lo, &alo, &af, &akey) &&
-             try_eval_ordinal_expr(*as.hi, &ahi, &af, &akey) &&
-             try_eval_ordinal_expr(*bs.lo, &blo, &bf, &bkey) &&
-             try_eval_ordinal_expr(*bs.hi, &bhi, &bf, &bkey) && af == bf &&
-             akey == bkey && alo == blo && ahi == bhi;
+      auto alo = eval_ordinal_expr(*as.lo);
+      auto ahi = eval_ordinal_expr(*as.hi);
+      auto blo = eval_ordinal_expr(*bs.lo);
+      auto bhi = eval_ordinal_expr(*bs.hi);
+      return alo && ahi && blo && bhi && alo->family == ahi->family &&
+             alo->family == blo->family && blo->family == bhi->family &&
+             alo->enum_key == ahi->enum_key && alo->enum_key == blo->enum_key &&
+             blo->enum_key == bhi->enum_key && alo->value == blo->value &&
+             ahi->value == bhi->value;
     }
     case Kind::TyEnum:
       return false;
@@ -397,33 +396,26 @@ bool EmitAnalysis::same_type_ast(const TypeExpr* a, const TypeExpr* b) {
   }
 }
 
-bool EmitAnalysis::try_eval_ordinal_expr(const Expr& e, int64_t* value,
-                                         OrdinalFamily* family,
-                                         const TyEnum** enum_key) {
-  if (!value || !family || !enum_key) return false;
-  *enum_key = nullptr;
+std::optional<EmitAnalysis::OrdinalExprValue>
+EmitAnalysis::eval_ordinal_expr(const Expr& e) {
   if (e.kind == Kind::StringLit) {
     const auto& sl = static_cast<const StringLit&>(e);
     if (sl.value.size() == 1) {
-      *value = static_cast<unsigned char>(sl.value[0]);
-      *family = OrdinalFamily::Char;
-      return true;
+      return OrdinalExprValue{static_cast<unsigned char>(sl.value[0]),
+                              OrdinalFamily::Char, nullptr};
     }
   }
   if (e.kind == Kind::Ident) {
     const std::string low = ascii_lower(static_cast<const Ident&>(e).name);
     if (low == "false" || low == "true") {
-      *value = (low == "true") ? 1 : 0;
-      *family = OrdinalFamily::Boolean;
-      return true;
+      return OrdinalExprValue{(low == "true") ? 1 : 0,
+                              OrdinalFamily::Boolean, nullptr};
     }
     if (const auto* info = find_visible_enum_info_for_member(low)) {
       for (size_t i = 0; i < info->members.size(); ++i) {
         if (info->members[i] == low) {
-          *value = static_cast<int64_t>(i);
-          *family = OrdinalFamily::Enum;
-          *enum_key = info->type;
-          return true;
+          return OrdinalExprValue{static_cast<int64_t>(i), OrdinalFamily::Enum,
+                                  info->type};
         }
       }
     }
@@ -438,21 +430,17 @@ bool EmitAnalysis::try_eval_ordinal_expr(const Expr& e, int64_t* value,
         if (info.defining_unit != unit) continue;
         for (size_t i = 0; i < info.members.size(); ++i) {
           if (info.members[i] == member) {
-            *value = static_cast<int64_t>(i);
-            *family = OrdinalFamily::Enum;
-            *enum_key = info.type;
-            return true;
+            return OrdinalExprValue{static_cast<int64_t>(i),
+                                    OrdinalFamily::Enum, info.type};
           }
         }
       }
     }
   }
   if (auto info = eval_const_int_expr(e)) {
-    *value = info->value;
-    *family = OrdinalFamily::Integer;
-    return true;
+    return OrdinalExprValue{info->value, OrdinalFamily::Integer, nullptr};
   }
-  return false;
+  return std::nullopt;
 }
 
 std::optional<EmitAnalysis::OrdinalDomain> EmitAnalysis::ordinal_domain_for_type(
@@ -465,21 +453,16 @@ std::optional<EmitAnalysis::OrdinalDomain> EmitAnalysis::ordinal_domain_for_type
   }
   if (t->kind == Kind::TySubrange) {
     const auto& sr = static_cast<const TySubrange&>(*t);
-    int64_t lo = 0;
-    int64_t hi = 0;
-    OrdinalFamily lo_family = OrdinalFamily::Invalid;
-    OrdinalFamily hi_family = OrdinalFamily::Invalid;
-    const TyEnum* lo_key = nullptr;
-    const TyEnum* hi_key = nullptr;
-    if (!try_eval_ordinal_expr(*sr.lo, &lo, &lo_family, &lo_key) ||
-        !try_eval_ordinal_expr(*sr.hi, &hi, &hi_family, &hi_key) ||
-        lo_family != hi_family || lo_key != hi_key) {
+    auto lo = eval_ordinal_expr(*sr.lo);
+    auto hi = eval_ordinal_expr(*sr.hi);
+    if (!lo || !hi || lo->family != hi->family ||
+        lo->enum_key != hi->enum_key) {
       return std::nullopt;
     }
-    return OrdinalDomain{.family = lo_family,
-                         .low = std::min(lo, hi),
-                         .high = std::max(lo, hi),
-                         .enum_key = lo_key};
+    return OrdinalDomain{.family = lo->family,
+                         .low = std::min(lo->value, hi->value),
+                         .high = std::max(lo->value, hi->value),
+                         .enum_key = lo->enum_key};
   }
   if (t->kind == Kind::TyEnum) {
     const auto& en = static_cast<const TyEnum&>(*t);
@@ -565,10 +548,8 @@ EmitAnalysis::ordinal_domain_for_set_type(const TypeExpr* t) {
 std::optional<EmitAnalysis::SetLiteralOrdinalSummary>
 EmitAnalysis::extend_set_literal_ordinal_summary(
     std::optional<SetLiteralOrdinalSummary> summary, const Expr& e) {
-  int64_t value = 0;
-  OrdinalFamily expr_family = OrdinalFamily::Invalid;
-  const TyEnum* expr_key = nullptr;
-  if (!try_eval_ordinal_expr(e, &value, &expr_family, &expr_key)) {
+  auto ordinal = eval_ordinal_expr(e);
+  if (!ordinal) {
     return std::nullopt;
   }
 
@@ -577,14 +558,15 @@ EmitAnalysis::extend_set_literal_ordinal_summary(
   // real set type instead of treating each element expression independently.
   if (!summary) {
     return SetLiteralOrdinalSummary{
-        expr_family,
-        expr_key,
-        expr_family == OrdinalFamily::Enum ? deduce_type(e) : nullptr,
-        value,
-        value,
+        ordinal->family,
+        ordinal->enum_key,
+        ordinal->family == OrdinalFamily::Enum ? deduce_type(e) : nullptr,
+        ordinal->value,
+        ordinal->value,
     };
   }
-  if (summary->family != expr_family || summary->enum_key != expr_key) {
+  if (summary->family != ordinal->family ||
+      summary->enum_key != ordinal->enum_key) {
     return std::nullopt;
   }
 
@@ -592,8 +574,8 @@ EmitAnalysis::extend_set_literal_ordinal_summary(
       summary->family,
       summary->enum_key,
       summary->enum_type,
-      std::min(summary->low, value),
-      std::max(summary->high, value),
+      std::min(summary->low, ordinal->value),
+      std::max(summary->high, ordinal->value),
   };
 }
 
@@ -1064,10 +1046,8 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
           }
         }
         if ((callee_name == "pred" || callee_name == "succ") && c.args[0]) {
-          int64_t value = 0;
-          OrdinalFamily family = OrdinalFamily::Invalid;
-          const TyEnum* enum_key = nullptr;
-          if (try_eval_ordinal_expr(*c.args[0], &value, &family, &enum_key)) {
+          if (auto ordinal = eval_ordinal_expr(*c.args[0])) {
+            int64_t value = ordinal->value;
             if (callee_name == "pred") {
               if (!checked_sub_int64(value, 1, &value)) return std::nullopt;
             } else if (!checked_add_int64(value, 1, &value)) {
@@ -1099,11 +1079,9 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
               }
             }
           }
-          int64_t value = 0;
-          OrdinalFamily family = OrdinalFamily::Invalid;
-          const TyEnum* enum_key = nullptr;
-          if (try_eval_ordinal_expr(*c.args[0], &value, &family, &enum_key)) {
-            return ConstIntExprInfo{value, primitive_info_for_value(value)};
+          if (auto ordinal = eval_ordinal_expr(*c.args[0])) {
+            return ConstIntExprInfo{ordinal->value,
+                                    primitive_info_for_value(ordinal->value)};
           }
         }
       }
