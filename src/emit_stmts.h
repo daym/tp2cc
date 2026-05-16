@@ -73,6 +73,9 @@ class EmitStmts {
   void emit_ordinal_for_body(const ast::For& f, const std::string& var,
                              const std::string& from, const std::string& to,
                              bool downto);
+  // Pascal `for x in rhs` has a fixed dispatch order. Type RHS iterates
+  // Low(T)..High(T). Expression RHS first checks operator enumerators, then
+  // GetEnumerator providers, then built-in string/array/set iteration.
   void emit_for_in_stmt(const ast::For& f, const std::string& var);
   ForInEmitResult emit_for_in_type_rhs(const ast::For& f,
                                        const std::string& var);

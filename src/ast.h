@@ -14,9 +14,9 @@
 //     so shared ownership removes the implicit "AST must outlive its
 //     consumers" invariant.
 //
-// We grow this file feature-by-feature. The current cut covers what's
-// needed to parse a trivial program and a simple unit; parser tests pin
-// each added AST node.
+// AST nodes store parsed syntax plus mode snapshots that are fixed at parse
+// time. Name binding, overload selection, storage classification, and emitted
+// C++ spelling are deliberately represented by later semantic result objects.
 
 #include <cstdint>
 #include <memory>

@@ -787,6 +787,9 @@ std::string EmitTypes::procedural_type_to_cxx(const TyProcedural& p) {
 CxxRecordLayout EmitTypes::compute_record_layout(const TyRecord& tr) {
   CxxRecordLayout layout;
 
+  // This routine builds two products from the same field walk: the C++ type
+  // text and the packed-layout expressions. Keeping them together prevents the
+  // static_assert metadata from drifting away from the emitted declaration.
   layout.inline_text = "struct ";
   if (tr.is_packed) layout.inline_text += "[[gnu::packed]] ";
   layout.inline_text += "{ ";

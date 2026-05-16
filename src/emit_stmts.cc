@@ -845,6 +845,9 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_helper_get_enumerator(
     const For& f, const std::string& var) {
   (void)f;
   (void)var;
+  // Helpers can add GetEnumerator to a type without changing the type's own
+  // declaration. tp2cc does not yet model helper method lookup here, so the
+  // dispatch continues to the type's own GetEnumerator and built-in forms.
   return ForInEmitResult::NotMatched;
 }
 
@@ -1114,6 +1117,9 @@ void EmitStmts::emit_for_in_stmt(const For& f, const std::string& var) {
   auto done = [](ForInEmitResult r) {
     return r != ForInEmitResult::NotMatched;
   };
+  // Keep this order aligned with Pascal for-in lookup: type iteration is not an
+  // expression lookup, expression enumerators precede built-in carriers, and a
+  // successful provider owns the MoveNext/Current contract.
   if (done(emit_for_in_type_rhs(f, var))) return;
   if (done(emit_for_in_operator_enumerator(f, var))) return;
   if (done(emit_for_in_helper_get_enumerator(f, var))) return;

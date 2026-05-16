@@ -208,9 +208,9 @@ std::vector<const Decl*> ordered_type_decls(const std::vector<const Decl*>& in) 
       if (--indeg[i] == 0) ready.push_back(i);
     }
   }
-  // Anything left has a cycle among non-pointer aliases. Emit in source
-  // order as a fallback -- probably won't compile, but we don't silently
-  // drop declarations.
+  // Anything left has a cycle among non-pointer aliases. Emit the remaining
+  // declarations in source order so the generated C++ reports the invalid type
+  // cycle instead of omitting declarations from the translation.
   for (int i = 0; i < static_cast<int>(type_decls.size()); ++i) {
     if (!emitted_set.count(i)) out.push_back(type_decls[i]);
   }

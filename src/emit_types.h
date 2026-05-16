@@ -93,6 +93,9 @@ class EmitTypes {
                                                  size_t index);
   std::string enum_member_value_to_cxx(const ast::TyEnum& e, size_t index);
   std::string enum_underlying_type_to_cxx(const ast::TyEnum& e);
+  // Lower one fixed-array dimension to Pascal low bound plus element count.
+  // The low bound is part of the generated array type because Pascal indexing
+  // preserves source bounds.
   bool array_dim_bounds_to_cxx(const ast::TypeExpr& dim, std::string* lo,
                                std::string* size_expr);
   std::string subrange_type_to_cxx(const ast::TySubrange& r);
@@ -119,6 +122,9 @@ class EmitTypes {
   std::string procedural_type_to_cxx(const ast::TyProcedural& p);
   std::vector<EmitRecordFieldDecl> record_field_decls(
       const std::vector<ast::RecordField>& fields);
+  // Compute both the printable C++ record declaration and the Pascal packed
+  // byte layout metadata used by static_asserts. Variant records contribute the
+  // maximum case size at the variant offset, matching Pascal union storage.
   CxxRecordLayout compute_record_layout(const ast::TyRecord& tr);
   // Attach a declarator name to a lowered type, including the special procvar
   // case where the identifier must live inside the `(*)` declarator.
