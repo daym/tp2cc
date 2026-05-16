@@ -1037,6 +1037,99 @@ void test_ansichar_and_pansichar_builtin_maps_to_char_carriers() {
   CHECK(!contains(out.impl, "t_pansichar"));
 }
 
+void test_ord_storage_view_for_char_assignment_inc_and_address() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type pbyte = ^byte;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var c : char; p : pbyte;\n"
+      "begin\n"
+      "  c := 'A';\n"
+      "  inc(ord(c));\n"
+      "  ord(c) := 66;\n"
+      "  p := @ord(c);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::p_inc(::rt::tp2cc_reinterpret_storage_ref<uint8_t>(p_c))"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_storage_ref<uint8_t>(p_c) = 66;"));
+  CHECK(contains(out.impl, "reinterpret_cast<uint8_t*>((&p_c))"));
+}
+
+void test_ord_storage_view_for_shortstring_length_byte() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var s : string[10];\n"
+      "begin\n"
+      "  s := 'abc';\n"
+      "  dec(ord(s[0]));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::p_dec(::rt::tp2cc_reinterpret_storage_ref<uint8_t>(p_s[0]))"));
+}
+
+void test_chr_storage_view_for_byte_assignment_inc_and_var_arg() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure take(var c : char);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run;\n"
+      "var b : byte;\n"
+      "begin\n"
+      "  chr(b) := 'B';\n"
+      "  inc(chr(b));\n"
+      "  take(chr(b));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(
+      out.impl,
+      "::rt::tp2cc_reinterpret_storage_ref<::rt::p_char>(p_b) = ::rt::tp2cc_char_of('B');"));
+  CHECK(contains(
+      out.impl,
+      "::rt::p_inc(::rt::tp2cc_reinterpret_storage_ref<::rt::p_char>(p_b))"));
+  CHECK(contains(
+      out.impl,
+      "p_take(::rt::tp2cc_reinterpret_storage_ref<::rt::p_char>(p_b));"));
+}
+
+void test_ord_char_value_has_byte_result_type() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run(c : char);\n"
+      "implementation\n"
+      "function pick(x : byte) : byte;\n"
+      "begin\n"
+      "  pick := x;\n"
+      "end;\n"
+      "function pick(x : longint) : byte;\n"
+      "begin\n"
+      "  pick := 0;\n"
+      "end;\n"
+      "procedure run(c : char);\n"
+      "var b : byte;\n"
+      "begin\n"
+      "  b := pick(ord(c));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_b = ::p_u::p_pick(static_cast<uint8_t>(::rt::p_ord(p_c)));"));
+  CHECK(!contains(out.impl, "static_cast<int32_t>(::rt::p_ord(p_c))"));
+}
+
 void test_set_type_alias() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -8833,6 +8926,10 @@ int main() {
   RUN_TEST(test_ansistring_builtin_maps_to_runtime_type);
   RUN_TEST(test_widechar_builtin_maps_to_16bit_ordinal);
   RUN_TEST(test_ansichar_and_pansichar_builtin_maps_to_char_carriers);
+  RUN_TEST(test_ord_storage_view_for_char_assignment_inc_and_address);
+  RUN_TEST(test_ord_storage_view_for_shortstring_length_byte);
+  RUN_TEST(test_chr_storage_view_for_byte_assignment_inc_and_var_arg);
+  RUN_TEST(test_ord_char_value_has_byte_result_type);
   RUN_TEST(test_set_type_alias);
   RUN_TEST(test_var_extern_in_header_and_def_in_impl);
   RUN_TEST(test_out_parameter_emits_like_var_reference);
@@ -9160,4 +9257,3 @@ int main() {
               (n == 1 ? "" : "s"));
   return n == 0 ? 0 : 1;
 }
-

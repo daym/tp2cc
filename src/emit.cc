@@ -668,8 +668,12 @@ const TypeExpr* Emitter::type_for_resolved_call(const Call& c) {
 
 const TypeExpr* Emitter::type_for_overload(const Expr& e) {
   if (e.kind == Kind::Call) {
-    if (const TypeExpr* t =
-            type_for_resolved_call(static_cast<const Call&>(e))) {
+    const auto& c = static_cast<const Call&>(e);
+    if (c.callee->kind == Kind::Ident &&
+        static_cast<const Ident&>(*c.callee).name == "ord") {
+      if (const TypeExpr* t = analysis_.deduce_type(e)) return t;
+    }
+    if (const TypeExpr* t = type_for_resolved_call(c)) {
       return t;
     }
   } else if (e.kind == Kind::Binary) {

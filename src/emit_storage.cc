@@ -15,6 +15,12 @@ using namespace ast;
 
 namespace {
 
+struct StorageCastTarget {
+  std::string cxx;
+  const TypeExpr* type = nullptr;
+  bool primitive = false;
+};
+
 bool is_nonmethod_procedural_type(const TypeExpr* t) {
   if (!t) return false;
   t = static_cast<const TypeExpr*>(t);
@@ -71,44 +77,92 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
     return std::nullopt;
   }
 
-  auto typecast_target = [&](const Ident& id, const TypeExpr** target_type,
-                             bool* target_is_primitive) -> std::string {
-    const std::string lower = ascii_lower(id.name);
-    *target_type = nullptr;
-    *target_is_primitive = false;
-    if (is_primitive_type(lower)) {
-      *target_is_primitive = true;
-      return primitive_type_cxx(lower);
+  auto ord_storage_target = [&](const Expr& source) -> std::string {
+    const TypeExpr* source_type =
+        analysis_.canonicalize_type(analysis_.deduce_type(source));
+    if (!source_type) return {};
+    if (source_type->kind == Kind::TyName) {
+      const std::string lower =
+          ascii_lower(static_cast<const TyName&>(*source_type).name);
+      if (primitive_name_is_charish(lower)) return "uint8_t";
+      if (lower == "boolean") return "bool";
+      if (const PrimitiveInfo* info = primitive_info(lower);
+          info && info->int_kind != PrimitiveIntKind::None) {
+        return primitive_type_cxx(lower);
+      }
     }
-    if (const TypeExpr* named = analysis_.lookup_named_type_expr(lower)) {
-      *target_type = named;
-      return types_.type_name_text_to_cxx(id.name);
+    if (source_type->kind == Kind::TyEnum) {
+      const std::string underlying =
+          types_.enum_underlying_type_to_cxx(
+              static_cast<const TyEnum&>(*source_type));
+      if (underlying == "int32_t" || underlying == "uint32_t") {
+        return "int32_t";
+      }
+      return {};
     }
-    if (registry_ &&
-        (registry_->records.count(lower) ||
-         registry_->has_class(lower, scope_.current_unit_name))) {
-      return types_.type_name_text_to_cxx(id.name);
+    if (source_type->kind == Kind::TySubrange) {
+      return types_.type_to_cxx(*source_type);
     }
     return {};
   };
 
+  auto chr_source_has_byte_storage = [&](const Expr& source) {
+    const TypeExpr* source_type =
+        analysis_.canonicalize_type(analysis_.deduce_type(source));
+    if (!source_type) return false;
+    if (source_type->kind == Kind::TyName) {
+      const std::string lower =
+          ascii_lower(static_cast<const TyName&>(*source_type).name);
+      if (lower == "byte" || lower == "shortint") return true;
+    }
+    if (source_type->kind == Kind::TySubrange) {
+      const std::string cxx = types_.type_to_cxx(*source_type);
+      return cxx == "uint8_t" || cxx == "int8_t";
+    }
+    return false;
+  };
+
+  auto typecast_target = [&](const Ident& id, const Expr& source)
+      -> std::optional<StorageCastTarget> {
+    const std::string lower = ascii_lower(id.name);
+    if (lower == "ord") {
+      if (std::string target = ord_storage_target(source); !target.empty()) {
+        return StorageCastTarget{std::move(target), nullptr, true};
+      }
+      return std::nullopt;
+    }
+    if (lower == "chr") {
+      if (chr_source_has_byte_storage(source)) {
+        return StorageCastTarget{"::rt::p_char", builtin_char_type(), true};
+      }
+      return std::nullopt;
+    }
+    if (is_primitive_type(lower)) {
+      return StorageCastTarget{primitive_type_cxx(lower), nullptr, true};
+    }
+    if (const TypeExpr* named = analysis_.lookup_named_type_expr(lower)) {
+      return StorageCastTarget{types_.type_name_text_to_cxx(id.name), named,
+                               false};
+    }
+    if (registry_ &&
+        (registry_->records.count(lower) ||
+         registry_->has_class(lower, scope_.current_unit_name))) {
+      return StorageCastTarget{types_.type_name_text_to_cxx(id.name), nullptr,
+                               false};
+    }
+    return std::nullopt;
+  };
+
   const auto& target_id = static_cast<const Ident&>(*outer.callee);
-  const TypeExpr* target_type = nullptr;
-  bool target_is_primitive = false;
-  std::string target_cxx =
-      typecast_target(target_id, &target_type, &target_is_primitive);
-  if (target_cxx.empty()) return std::nullopt;
+  auto target = typecast_target(target_id, *outer.args[0]);
+  if (!target) return std::nullopt;
 
   const Expr* source = outer.args[0].get();
   while (source && source->kind == Kind::Call) {
     const auto& nested = static_cast<const Call&>(*source);
     if (nested.args.size() != 1 || nested.callee->kind != Kind::Ident) break;
     const auto& nested_id = static_cast<const Ident&>(*nested.callee);
-    const TypeExpr* ignored_type = nullptr;
-    bool ignored_primitive = false;
-    if (typecast_target(nested_id, &ignored_type, &ignored_primitive).empty()) {
-      break;
-    }
+    if (!typecast_target(nested_id, *nested.args[0])) break;
     source = nested.args[0].get();
   }
   if (!source || !expr_is_storage_lvalue(*source)) return std::nullopt;
@@ -139,8 +193,8 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
   // emitting pointee-view there dereferences the slot's (often null) value.
   return EmitTypecastStorageView(source, std::move(source_cxx),
                                  std::move(source_ptr_cxx),
-                                 std::move(target_cxx), target_type,
-                                 target_is_primitive, untyped_storage,
+                                 std::move(target->cxx), target->type,
+                                 target->primitive, untyped_storage,
                                  untyped_storage);
 }
 

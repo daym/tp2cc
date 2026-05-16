@@ -3128,8 +3128,8 @@ inline void p_setlength(tp2cc_DynArray<T>& a, int new_len) {
 
 template <typename T>
 requires std::is_convertible_v<T, p_char>
-inline constexpr int32_t p_ord(T x) {
-  return static_cast<int32_t>(tp2cc_char_byte(static_cast<p_char>(x)));
+inline constexpr uint8_t p_ord(T x) {
+  return tp2cc_char_byte(static_cast<p_char>(x));
 }
 template <typename T>
 requires (!std::is_convertible_v<T, p_char>)

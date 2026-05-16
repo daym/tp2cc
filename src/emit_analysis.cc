@@ -1254,6 +1254,17 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
     }
     case Kind::Call: {
       const auto& c = static_cast<const Call&>(e);
+      if (c.callee->kind == Kind::Ident) {
+        const auto& id = static_cast<const Ident&>(*c.callee);
+        if ((primitive_name_is_charish(id.name) || id.name == "chr") &&
+            c.args.size() == 1) {
+          return builtin_char_type();
+        }
+        if (id.name == "ord" && c.args.size() == 1) {
+          const TypeExpr* arg_type = canonicalize_type(deduce_type(*c.args[0]));
+          if (tyname_is_charish(arg_type)) return builtin_integer_type("byte");
+        }
+      }
       const TypeExpr* callee_type = deduce_type(*c.callee);
       if (callee_type) callee_type = canonicalize_type(callee_type);
       if (callee_type && callee_type->kind == Kind::TyProcedural) {
@@ -1262,10 +1273,6 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       }
       if (c.callee->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*c.callee);
-        if ((primitive_name_is_charish(id.name) || id.name == "chr") &&
-            c.args.size() == 1) {
-          return builtin_char_type();
-        }
         if ((id.name == "shortstring" || id.name == "ansistring" ||
              id.name == "utf8string") && c.args.size() == 1) {
           return named_pascal_type(id.name);
