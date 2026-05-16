@@ -413,13 +413,14 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
   // binding, format the `tp2cc_MethodPtr` constructor; otherwise nullopt
   // and the caller falls back to plain expr_to_cxx.
   auto bind = resolution_.resolve_method_value_binding(e, proc);
-  if (!bind || !bind->decl) return std::nullopt;
+  if (!bind || !bind->has_matching_decl()) return std::nullopt;
+  const ast::ProcDecl& method_decl = bind->matching_decl();
 
   const std::string target_cxx = types_.type_to_cxx(*target);
   const std::string code_text = "::rt::tp2cc_method_code<&" +
                                 types_.named_type_struct_cxx(bind->class_name) +
                                 "::" +
-                                types_.method_pointer_helper_name(*bind->decl) +
+                                types_.method_pointer_helper_name(method_decl) +
                                 ">()";
   std::string self_expr;
   if (!bind->member_base) {

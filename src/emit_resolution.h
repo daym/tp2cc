@@ -40,23 +40,30 @@ struct UnaryOperatorResult {
 //
 // `member_base == nullptr` means the receiver is the current method's
 // `Self`; nonnull means the receiver is the Pascal expression `*member_base`
-// and the emitter decides reference-class-ness from that. A nullptr `decl`
-// means a method with the given name was found on `class_name` but its
-// signature does not match the requested procedural type - picker scores
-// that Not-Viable, and the emitter must not bind.
+// and the emitter decides reference-class-ness from that.
 struct MethodValueBinding {
-  const ast::ProcDecl* decl;
+  enum class Kind { Bound, SignatureMismatch };
+
+  Kind kind;
+  const ast::ProcDecl* decl = nullptr;
   std::string class_name;
-  const ast::Expr* member_base;
+  const ast::Expr* member_base = nullptr;
+
+  bool has_matching_decl() const { return kind == Kind::Bound; }
+  const ast::ProcDecl& matching_decl() const { return *decl; }
 
   static MethodValueBinding via_self(const ast::ProcDecl* decl,
                                      std::string class_name) {
-    return {decl, std::move(class_name), nullptr};
+    return {Kind::Bound, decl, std::move(class_name), nullptr};
   }
   static MethodValueBinding via_member(const ast::ProcDecl* decl,
                                        std::string class_name,
                                        const ast::Expr* base) {
-    return {decl, std::move(class_name), base};
+    return {Kind::Bound, decl, std::move(class_name), base};
+  }
+  static MethodValueBinding signature_mismatch(std::string class_name,
+                                               const ast::Expr* base) {
+    return {Kind::SignatureMismatch, nullptr, std::move(class_name), base};
   }
 };
 
@@ -137,6 +144,20 @@ class EmitResolution {
     const ast::ProcDecl* decl = nullptr;
     std::vector<ConvScore> scores;
   };
+  struct InstanceMethodLookup {
+    enum class Kind { NoInstanceMethod, SignatureMismatch, Match };
+
+    Kind kind = Kind::NoInstanceMethod;
+    const ast::ProcDecl* decl = nullptr;
+
+    static InstanceMethodLookup no_instance_method() { return {}; }
+    static InstanceMethodLookup signature_mismatch() {
+      return {Kind::SignatureMismatch, nullptr};
+    }
+    static InstanceMethodLookup match(const ast::ProcDecl* decl) {
+      return {Kind::Match, decl};
+    }
+  };
   // Pascal lookup order for an unqualified callable name:
   // `with` stack -> nested procs -> current class chain -> current unit ->
   // uses chain. The first contributing non-uses scope wins; the uses chain
@@ -161,9 +182,10 @@ class EmitResolution {
   bool type_is_char_type(const ast::TypeExpr* t) const;
   bool procedural_signatures_match(const ast::ProcDecl& decl,
                                    const ast::TyProcedural& proc);
-  // empty optional: no instance method by that name; optional nullptr:
-  // instance methods exist but none match the procedural target signature.
-  std::optional<const ast::ProcDecl*> pick_instance_method_decl(
+  // NoInstanceMethod means ordinary expression lowering may still apply;
+  // SignatureMismatch means the Pascal method name exists but is not viable for
+  // this procedural target type.
+  InstanceMethodLookup pick_instance_method_decl(
       const std::string& cls, const std::string& name,
       const ast::TyProcedural& proc);
   bool conversion_score_less(const ConvScore& a, const ConvScore& b) const;

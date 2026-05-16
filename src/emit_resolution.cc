@@ -428,22 +428,23 @@ bool EmitResolution::procedural_signatures_match(const ProcDecl& decl,
          type_ops_.procedural_param_types_to_cxx(proc.params);
 }
 
-std::optional<const ProcDecl*> EmitResolution::pick_instance_method_decl(
+EmitResolution::InstanceMethodLookup
+EmitResolution::pick_instance_method_decl(
     const std::string& cls, const std::string& name,
     const TyProcedural& proc) {
   const auto* methods =
       registry_->lookup_class_methods(cls, name, scope_.current_unit_name);
-  if (!methods) return std::nullopt;
+  if (!methods) return InstanceMethodLookup::no_instance_method();
   bool saw_instance = false;
   for (const auto& method : *methods) {
     if (!method.decl || method.decl->is_class_method) continue;
     saw_instance = true;
     if (procedural_signatures_match(*method.decl, proc)) {
-      return method.decl.get();
+      return InstanceMethodLookup::match(method.decl.get());
     }
   }
-  if (saw_instance) return static_cast<const ProcDecl*>(nullptr);
-  return std::nullopt;
+  if (saw_instance) return InstanceMethodLookup::signature_mismatch();
+  return InstanceMethodLookup::no_instance_method();
 }
 
 std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
@@ -461,11 +462,17 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
 
   if (value->kind == Kind::Ident) {
     if (scope_.current_class_name.empty()) return std::nullopt;
-    auto decl = pick_instance_method_decl(
+    InstanceMethodLookup lookup = pick_instance_method_decl(
         scope_.current_class_name, static_cast<const Ident&>(*value).name,
         proc);
-    if (!decl) return std::nullopt;
-    return MethodValueBinding::via_self(*decl, scope_.current_class_name);
+    if (lookup.kind == InstanceMethodLookup::Kind::NoInstanceMethod) {
+      return std::nullopt;
+    }
+    if (lookup.kind == InstanceMethodLookup::Kind::SignatureMismatch) {
+      return MethodValueBinding::signature_mismatch(scope_.current_class_name,
+                                                    nullptr);
+    }
+    return MethodValueBinding::via_self(lookup.decl, scope_.current_class_name);
   }
 
   if (value->kind != Kind::Member) return std::nullopt;
@@ -508,9 +515,14 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
   if (cls.empty()) cls = analysis_.deduce_class_alias(*member.base);
   if (cls.empty()) return std::nullopt;
 
-  auto decl = pick_instance_method_decl(cls, member.name, proc);
-  if (!decl) return std::nullopt;
-  return MethodValueBinding::via_member(*decl, std::move(cls),
+  InstanceMethodLookup lookup = pick_instance_method_decl(cls, member.name, proc);
+  if (lookup.kind == InstanceMethodLookup::Kind::NoInstanceMethod) {
+    return std::nullopt;
+  }
+  if (lookup.kind == InstanceMethodLookup::Kind::SignatureMismatch) {
+    return MethodValueBinding::signature_mismatch(std::move(cls), method_base);
+  }
+  return MethodValueBinding::via_member(lookup.decl, std::move(cls),
                                         method_base);
 }
 
@@ -522,7 +534,8 @@ std::optional<ConvScore> EmitResolution::score_procedural_argument_conversion(
   if (proc.is_method) {
     auto bind = resolve_method_value_binding(arg, proc);
     if (!bind) return std::nullopt;
-    return bind->decl ? ConvScore{ConvRank::Exact, 0} : ConvScore{};
+    return bind->has_matching_decl() ? ConvScore{ConvRank::Exact, 0}
+                                     : ConvScore{};
   }
   // Plain `procedure(...)` slot: an instance-method value is not admissible
   // because it needs a `Self` pointer. Reuse the method-value resolver with a

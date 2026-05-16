@@ -380,7 +380,7 @@ struct Emitter : ResolveNameProvider,
   bool expr_is_signed_integer_operand(const ast::Expr& x);
   const PrimitiveInfo* shift_carrier_for_expr(const ast::Expr& x);
   std::optional<std::string> member_base_ident(const ast::Member& m);
-  std::string call_first_arg_or_zero(const ast::Call& c);
+  std::string single_call_arg_cxx(const ast::Call& c);
   bool expr_is_const_untyped_storage_arg(const ast::Expr& e);
   bool visible_type_name_for_intrinsic(std::string_view type_name);
   std::optional<std::string> unit_qualified_type_name(const ast::Expr& expr);
@@ -797,8 +797,9 @@ std::optional<std::string> Emitter::member_base_ident(const Member& m) {
   return static_cast<const Ident&>(*m.base).name;
 }
 
-std::string Emitter::call_first_arg_or_zero(const Call& c) {
-  if (c.args.empty()) return "0";
+std::string Emitter::single_call_arg_cxx(const Call& c) {
+  // Callers only use this in one-argument intrinsic/typecast branches; a
+  // fallback value would hide a violated parser/emitter invariant.
   return expr_to_cxx(*c.args[0]);
 }
 
@@ -1731,7 +1732,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
 
         if (n == "ord" && c.args.size() == 1) {
-          return ordinal_value_to_cxx(*c.args[0], call_first_arg_or_zero(c));
+          return ordinal_value_to_cxx(*c.args[0], single_call_arg_cxx(c));
         }
 
         if (n == "sizeof" && c.args.size() == 1) {
@@ -1764,7 +1765,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "::rt::tp2cc_unaligned_load<" + storage->elem_cxx + ">(" +
                    storage->void_ptr_text + ")";
           }
-          return "::rt::p_unaligned(" + call_first_arg_or_zero(c) + ")";
+          return "::rt::p_unaligned(" + single_call_arg_cxx(c) + ")";
         } else if (n == "typeof" && c.args.size() == 1 &&
                    c.args[0]->kind == Kind::Ident && registry) {
           // Pascal `typeof(T)` takes a TYPE NAME, not a value. In C++
@@ -1789,11 +1790,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           if (n == "shortstring") {
             return "::rt::tp2cc_shortstring_of<>(" +
-                   call_first_arg_or_zero(c) + ")";
+                   single_call_arg_cxx(c) + ")";
           }
           if (n == "ansistring" || n == "utf8string") {
             return "::rt::tp2cc_ansistring_of(" +
-                   call_first_arg_or_zero(c) + ")";
+                   single_call_arg_cxx(c) + ")";
           }
           if (n == "text") {
             if (auto view = storage_.typecast_storage_view(c)) {
@@ -1822,7 +1823,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               // an integer (element i -> bit i). The set source can be
               // an rvalue literal `[a,b,c]`, so don't gate on lvalue.
               return "::rt::tp2cc_set_to_int<" + primitive_type_cxx(n) +
-                     ">(" + call_first_arg_or_zero(c) + ")";
+                     ">(" + single_call_arg_cxx(c) + ")";
             }
           }
           if (const TypeExpr* source_ty =
@@ -1837,10 +1838,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             // source value, then copy its bytes into the scalar target; storage
             // contexts request storage views before reaching this branch.
             return "::rt::tp2cc_reinterpret_copy<" + primitive_type_cxx(n) +
-                   ">(" + call_first_arg_or_zero(c) + ")";
+                   ">(" + single_call_arg_cxx(c) + ")";
           }
           if (primitive_name_is_charish(n)) {
-            return "::rt::p_chr(" + call_first_arg_or_zero(c) + ")";
+            return "::rt::p_chr(" + single_call_arg_cxx(c) + ")";
           }
           if (n == "pointer" || n == "pchar" || n == "pansichar" ||
               n == "ppchar") {
@@ -1848,7 +1849,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             std::string source =
                 (peeled && expr_is_storage_lvalue(*c.args[0]))
                     ? expr_to_cxx(*peeled)
-                    : call_first_arg_or_zero(c);
+                    : single_call_arg_cxx(c);
             std::string coerced = coerce_pointer_like_text(
                 primitive_type_cxx(n), &cast_name,
                 type_for_overload(*c.args[0]),
@@ -1864,7 +1865,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (expr_is_charish(*c.args[0])) {
             return "((" + primitive_type_cxx(n) + ")(" +
                    ordinal_value_to_cxx(*c.args[0],
-                                        call_first_arg_or_zero(c)) + "))";
+                                        single_call_arg_cxx(c)) + "))";
           }
           TyName target(n);
           if (auto conv = resolution_.find_assignment_operator(
@@ -1874,14 +1875,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (!conv.defining_unit.empty()) {
               fn = unit_namespace_prefix(conv.defining_unit) + fn;
             }
-            return fn + "(" + call_first_arg_or_zero(c) + ")";
+            return fn + "(" + single_call_arg_cxx(c) + ")";
           }
           if (auto lit =
                   maybe_convert_const_int_expr(*c.args[0], &target, true)) {
             return *lit;
           }
           return "((" + primitive_type_cxx(n) + ")(" +
-                 call_first_arg_or_zero(c) + "))";
+                 single_call_arg_cxx(c) + "))";
         } else if (c.args.size() == 1 && n != "inc" && n != "dec") {
           if (is_builtin_reference_class_name(n)) {
             // `TObject(expr)` is a pointer cast even though `TObject` itself
@@ -1889,11 +1890,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             TyName cast_name(n);
             std::string coerced = coerce_pointer_like_text(
                 type_name_to_cxx(cast_name), &cast_name,
-                type_for_overload(*c.args[0]), call_first_arg_or_zero(c),
+                type_for_overload(*c.args[0]), single_call_arg_cxx(c),
                 /*explicit_pascal_cast=*/true);
-            if (coerced != call_first_arg_or_zero(c)) return coerced;
+            if (coerced != single_call_arg_cxx(c)) return coerced;
             return "((" + type_name_to_cxx(cast_name) + ")(" +
-                   call_first_arg_or_zero(c) + "))";
+                   single_call_arg_cxx(c) + "))";
           }
           if (registry) {
             const ClassInfo* ci = class_info_for_type_name(n);
@@ -1904,11 +1905,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               TyName cast_name(n);
               std::string coerced = coerce_pointer_like_text(
                   type_name_to_cxx(cast_name), &cast_name,
-                  type_for_overload(*c.args[0]), call_first_arg_or_zero(c),
+                  type_for_overload(*c.args[0]), single_call_arg_cxx(c),
                   /*explicit_pascal_cast=*/true);
-              if (coerced != call_first_arg_or_zero(c)) return coerced;
+              if (coerced != single_call_arg_cxx(c)) return coerced;
               return "((" + type_name_to_cxx(cast_name) + ")(" +
-                     call_first_arg_or_zero(c) + "))";
+                     single_call_arg_cxx(c) + "))";
             }
           }
           const TypeExpr* cast_ty = lookup_named_type_expr(n);
@@ -1929,7 +1930,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             std::string source =
                 (peeled && expr_is_storage_lvalue(*c.args[0]))
                     ? expr_to_cxx(*peeled)
-                    : call_first_arg_or_zero(c);
+                    : single_call_arg_cxx(c);
             std::string coerced = coerce_pointer_like_text(
                 type_name_text_to_cxx(n), cast_ty,
                 type_for_overload(*c.args[0]),
@@ -1941,7 +1942,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           if (cast_ty && cast_ty->kind == Kind::TySet) {
             return "::rt::tp2cc_set_cast<" + type_to_cxx(*cast_ty) + ">(" +
-                   call_first_arg_or_zero(c) + ")";
+                   single_call_arg_cxx(c) + ")";
           }
           {
             TyName target(n);
@@ -1953,7 +1954,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               if (!conv.defining_unit.empty()) {
                 fn = unit_namespace_prefix(conv.defining_unit) + fn;
               }
-              return fn + "(" + call_first_arg_or_zero(c) + ")";
+              return fn + "(" + single_call_arg_cxx(c) + ")";
             }
           }
           if (cast_ty && type_is_reference_class(cast_ty)) {
@@ -1964,11 +1965,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             TyName cast_name(n);
             std::string coerced = coerce_pointer_like_text(
                 type_name_to_cxx(cast_name), cast_ty,
-                type_for_overload(*c.args[0]), call_first_arg_or_zero(c),
+                type_for_overload(*c.args[0]), single_call_arg_cxx(c),
                 /*explicit_pascal_cast=*/true);
-            if (coerced != call_first_arg_or_zero(c)) return coerced;
+            if (coerced != single_call_arg_cxx(c)) return coerced;
             return "((" + type_name_to_cxx(cast_name) + ")(" +
-                   call_first_arg_or_zero(c) + "))";
+                   single_call_arg_cxx(c) + "))";
           }
           bool named_storage_view_type =
               registry &&
@@ -2010,7 +2011,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               }
               return "::rt::tp2cc_reinterpret_bytes<" +
                      type_name_text_to_cxx(n) + ">(" +
-                     call_first_arg_or_zero(c) + ")";
+                     single_call_arg_cxx(c) + ")";
             }
           }
           if (aggregate_alias || named_storage_view_type) {
@@ -2023,11 +2024,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                      storage_view->source_cxx + ")";
             }
             return "::rt::tp2cc_reinterpret_copy<" + type_name_text_to_cxx(n) +
-                   ">(" + call_first_arg_or_zero(c) + ")";
+                   ">(" + single_call_arg_cxx(c) + ")";
           }
           if (cast_ty) {
             return "((" + type_name_text_to_cxx(n) + ")(" +
-                   call_first_arg_or_zero(c) + "))";
+                   single_call_arg_cxx(c) + "))";
           }
         } else if ((n == "inc" || n == "dec") &&
                    (c.args.size() == 1 || c.args.size() == 2)) {
