@@ -1,7 +1,6 @@
 #include "emit_types.h"
 
 #include <algorithm>
-#include <functional>
 #include <limits>
 #include <string>
 #include <unordered_set>
@@ -38,6 +37,15 @@ std::string record_layout_max_size(const std::vector<std::string>& sizes) {
   }
   out += "})";
   return out;
+}
+
+std::string ordinal_value_text(std::string text) {
+  return "::rt::tp2cc_ordinal_value(" + text + ")";
+}
+
+bool is_single_char_string_literal(const Expr* e) {
+  return e && e->kind == Kind::StringLit &&
+         static_cast<const StringLit&>(*e).value.size() == 1;
 }
 
 }  // namespace
@@ -439,13 +447,6 @@ std::string EmitTypes::enum_underlying_type_to_cxx(const TyEnum& e) {
 bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
                                         std::string* lo,
                                         std::string* size_expr) {
-  auto ordinal_bound = [&](const Expr& e) -> std::string {
-    return ordinal_ops_.ordinal_value_to_cxx(
-        e, const_render_.const_value_to_cxx(e));
-  };
-  auto ordinal_text = [&](std::string text) -> std::string {
-    return "::rt::tp2cc_ordinal_value(" + text + ")";
-  };
   const TypeExpr* dim = analysis_.canonicalize_type(&dim_in);
   if (!dim) return false;
   if (dim->kind == Kind::TyDistinct) {
@@ -459,8 +460,8 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
   if (dim->kind == Kind::TySubrange) {
     const auto& sr = static_cast<const TySubrange&>(*dim);
     *lo = const_render_.const_value_to_cxx(*sr.lo);
-    *size_expr = "((" + ordinal_bound(*sr.hi) + ") - (" +
-                 ordinal_bound(*sr.lo) + ") + 1)";
+    *size_expr = "((" + array_bound_ordinal_to_cxx(*sr.hi) + ") - (" +
+                 array_bound_ordinal_to_cxx(*sr.lo) + ") + 1)";
     return true;
   }
   if (dim->kind == Kind::TyEnum) {
@@ -470,8 +471,8 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
     } else if (!en.members.empty()) {
       *lo = enum_member_value_to_cxx(en, 0);
       std::string hi = enum_member_value_to_cxx(en, en.members.size() - 1);
-      *size_expr = "((" + ordinal_text(hi) + ") - (" +
-                   ordinal_text(*lo) + ") + 1)";
+      *size_expr = "((" + ordinal_value_text(hi) + ") - (" +
+                   ordinal_value_text(*lo) + ") + 1)";
     }
     return true;
   }
@@ -484,8 +485,9 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
         enum_has_explicit_values(*leit->second)) {
       *lo = mangle(leit->second->members.front().name);
       *size_expr = "((" +
-                   ordinal_text(mangle(leit->second->members.back().name)) +
-                   ") - (" + ordinal_text(*lo) + ") + 1)";
+                   ordinal_value_text(
+                       mangle(leit->second->members.back().name)) +
+                   ") - (" + ordinal_value_text(*lo) + ") + 1)";
     } else {
       *size_expr = std::to_string(leit->second->members.size());
     }
@@ -502,8 +504,8 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
         auto first = prefix + mangle(eit->second.members.front());
         auto last = prefix + mangle(eit->second.members.back());
         *lo = first;
-        *size_expr = "((" + ordinal_text(last) + ") - (" +
-                     ordinal_text(*lo) + ") + 1)";
+        *size_expr = "((" + ordinal_value_text(last) + ") - (" +
+                     ordinal_value_text(*lo) + ") + 1)";
       }
       return true;
     }
@@ -539,9 +541,10 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
     if (lowname == "longint" || lowname == "integer") {
       *lo = "::std::numeric_limits<int32_t>::min()";
       *size_expr =
-          "((" + ordinal_text("::std::numeric_limits<int32_t>::max()") +
+          "((" +
+          ordinal_value_text("::std::numeric_limits<int32_t>::max()") +
           ") - (" +
-          ordinal_text("::std::numeric_limits<int32_t>::min()") +
+          ordinal_value_text("::std::numeric_limits<int32_t>::min()") +
           ") + 1)";
       return true;
     }
@@ -559,126 +562,130 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
   return false;
 }
 
-std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
-  auto bound_type = [&](const Expr* e) -> const TypeExpr* {
-    if (!e) return nullptr;
-    const TypeExpr* t = analysis_.deduce_type(*e);
-    return t ? analysis_.canonicalize_type(t) : nullptr;
-  };
-  auto is_char_literal = [&](const Expr* e) -> bool {
-    return e && e->kind == Kind::StringLit &&
-           static_cast<const StringLit&>(*e).value.size() == 1;
-  };
-  auto visible_enum_type_for_member = [&](std::string_view name) -> std::string {
-    const std::string member = ascii_lower(name);
-    for (const auto& [enum_name, en] : scope_.local_enums) {
-      for (const auto& em : en->members) {
-        if (ascii_lower(em.name) == member) return type_mangle(enum_name);
-      }
-    }
-    if (!registry_) return {};
-    const auto* info = analysis_.find_visible_enum_info_for_member(member);
-    if (!info) return {};
-    std::string prefix;
-    if (!info->defining_unit.empty() &&
-        info->defining_unit != scope_.current_unit_name) {
-      prefix = unit_namespace_prefix(info->defining_unit);
-    }
-    return prefix + info->cxx_name;
-  };
+std::string EmitTypes::array_bound_ordinal_to_cxx(const Expr& e) {
+  return ordinal_ops_.ordinal_value_to_cxx(
+      e, const_render_.const_value_to_cxx(e));
+}
 
-  auto enum_type_for_type_name = [&](std::string_view name) -> std::string {
-    const std::string low = ascii_lower(name);
-    if (scope_.local_enums.count(low)) return type_name_text_to_cxx(low);
-    if (!registry_) return {};
-    auto dot = low.find('.');
-    if (dot != std::string::npos) {
-      const std::string unit = low.substr(0, dot);
-      const std::string tail = low.substr(dot + 1);
-      auto eit = registry_->enums.find(tail);
-      if (eit != registry_->enums.end() && eit->second.defining_unit == unit) {
-        return type_name_text_to_cxx(low);
-      }
-      return {};
-    }
-    auto eit = registry_->enums.find(low);
-    if (eit == registry_->enums.end()) return {};
-    if (!eit->second.defining_unit.empty() &&
-        eit->second.defining_unit != scope_.current_unit_name) {
-      auto cur = registry_->units.find(scope_.current_unit_name);
-      if (cur == registry_->units.end()) return {};
-      bool visible = false;
-      for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend(); ++it) {
-        if (*it == eit->second.defining_unit) {
-          visible = true;
-          break;
-        }
-      }
-      if (!visible) return {};
-    }
-    return type_name_text_to_cxx(low);
-  };
+const TypeExpr* EmitTypes::subrange_bound_canonical_type(const Expr* e) {
+  if (!e) return nullptr;
+  const TypeExpr* t = analysis_.deduce_type(*e);
+  return t ? analysis_.canonicalize_type(t) : nullptr;
+}
 
-  // If both bounds denote values from the same enum, preserve that enum carrier
-  // so scalar subranges remain assignment-compatible with the parent enum.
-  std::function<std::string(const Expr*)> bound_enum;
-  bound_enum = [&](const Expr* e) -> std::string {
-    if (!e) return {};
-    if (e->kind == Kind::Ident) {
-      return visible_enum_type_for_member(static_cast<const Ident&>(*e).name);
+std::string EmitTypes::visible_enum_type_for_member(std::string_view name) {
+  const std::string member = ascii_lower(name);
+  for (const auto& [enum_name, en] : scope_.local_enums) {
+    for (const auto& em : en->members) {
+      if (ascii_lower(em.name) == member) return type_mangle(enum_name);
     }
-    if (e->kind == Kind::Member) {
-      const auto& mem = static_cast<const Member&>(*e);
-      if (mem.base && mem.base->kind == Kind::Ident) {
-        const std::string unit =
-            ascii_lower(static_cast<const Ident&>(*mem.base).name);
-        if (registry_) {
-          const std::string member = ascii_lower(mem.name);
-          for (const auto& [_, info] : registry_->enums) {
-            if (info.defining_unit != unit) continue;
-            if (std::find(info.members.begin(), info.members.end(), member) !=
-                info.members.end()) {
-              return unit_namespace_prefix(unit) + type_mangle(info.name);
-            }
-          }
-        }
-      }
-      return {};
-    }
-    if (e->kind == Kind::Call) {
-      const auto& call = static_cast<const Call&>(*e);
-      if (!call.callee || call.callee->kind != Kind::Ident ||
-          call.args.size() != 1 || !call.args[0]) {
-        return {};
-      }
-      const std::string callee =
-          ascii_lower(static_cast<const Ident&>(*call.callee).name);
-      if (callee == "low" || callee == "high") {
-        if (call.args[0]->kind == Kind::Ident) {
-          return enum_type_for_type_name(
-              static_cast<const Ident&>(*call.args[0]).name);
-        }
-        if (call.args[0]->kind == Kind::Member) {
-          const auto& mem = static_cast<const Member&>(*call.args[0]);
-          if (mem.base && mem.base->kind == Kind::Ident) {
-            return enum_type_for_type_name(
-                static_cast<const Ident&>(*mem.base).name + "." + mem.name);
-          }
-        }
-        return {};
-      }
-      if (callee == "pred" || callee == "succ") return bound_enum(call.args[0].get());
+  }
+  if (!registry_) return {};
+  const auto* info = analysis_.find_visible_enum_info_for_member(member);
+  if (!info) return {};
+  std::string prefix;
+  if (!info->defining_unit.empty() &&
+      info->defining_unit != scope_.current_unit_name) {
+    prefix = unit_namespace_prefix(info->defining_unit);
+  }
+  return prefix + info->cxx_name;
+}
+
+std::string EmitTypes::visible_enum_type_for_type_name(std::string_view name) {
+  const std::string low = ascii_lower(name);
+  if (scope_.local_enums.count(low)) return type_name_text_to_cxx(low);
+  if (!registry_) return {};
+  auto dot = low.find('.');
+  if (dot != std::string::npos) {
+    const std::string unit = low.substr(0, dot);
+    const std::string tail = low.substr(dot + 1);
+    auto eit = registry_->enums.find(tail);
+    if (eit != registry_->enums.end() && eit->second.defining_unit == unit) {
+      return type_name_text_to_cxx(low);
     }
     return {};
-  };
-  std::string le = bound_enum(r.lo.get());
-  std::string he = bound_enum(r.hi.get());
+  }
+  auto eit = registry_->enums.find(low);
+  if (eit == registry_->enums.end()) return {};
+  if (!eit->second.defining_unit.empty() &&
+      eit->second.defining_unit != scope_.current_unit_name) {
+    auto cur = registry_->units.find(scope_.current_unit_name);
+    if (cur == registry_->units.end()) return {};
+    bool visible = false;
+    for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
+         ++it) {
+      if (*it == eit->second.defining_unit) {
+        visible = true;
+        break;
+      }
+    }
+    if (!visible) return {};
+  }
+  return type_name_text_to_cxx(low);
+}
+
+std::string EmitTypes::subrange_bound_enum_cxx_type(const Expr* e) {
+  if (!e) return {};
+  if (e->kind == Kind::Ident) {
+    return visible_enum_type_for_member(static_cast<const Ident&>(*e).name);
+  }
+  if (e->kind == Kind::Member) {
+    const auto& mem = static_cast<const Member&>(*e);
+    if (mem.base && mem.base->kind == Kind::Ident && registry_) {
+      const std::string unit =
+          ascii_lower(static_cast<const Ident&>(*mem.base).name);
+      const std::string member = ascii_lower(mem.name);
+      for (const auto& [_, info] : registry_->enums) {
+        if (info.defining_unit != unit) continue;
+        if (std::find(info.members.begin(), info.members.end(), member) !=
+            info.members.end()) {
+          return unit_namespace_prefix(unit) + type_mangle(info.name);
+        }
+      }
+    }
+    return {};
+  }
+  if (e->kind == Kind::Call) {
+    const auto& call = static_cast<const Call&>(*e);
+    if (!call.callee || call.callee->kind != Kind::Ident ||
+        call.args.size() != 1 || !call.args[0]) {
+      return {};
+    }
+    const std::string callee =
+        ascii_lower(static_cast<const Ident&>(*call.callee).name);
+    if (callee == "low" || callee == "high") {
+      if (call.args[0]->kind == Kind::Ident) {
+        return visible_enum_type_for_type_name(
+            static_cast<const Ident&>(*call.args[0]).name);
+      }
+      if (call.args[0]->kind == Kind::Member) {
+        const auto& mem = static_cast<const Member&>(*call.args[0]);
+        if (mem.base && mem.base->kind == Kind::Ident) {
+          return visible_enum_type_for_type_name(
+              static_cast<const Ident&>(*mem.base).name + "." + mem.name);
+        }
+      }
+      return {};
+    }
+    if (callee == "pred" || callee == "succ") {
+      return subrange_bound_enum_cxx_type(call.args[0].get());
+    }
+  }
+  return {};
+}
+
+std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
+  // If both bounds denote values from the same enum, preserve that enum carrier
+  // so scalar subranges remain assignment-compatible with the parent enum.
+  std::string le = subrange_bound_enum_cxx_type(r.lo.get());
+  std::string he = subrange_bound_enum_cxx_type(r.hi.get());
   if (!le.empty() && le == he) return le;
 
-  const TypeExpr* lo_type = bound_type(r.lo.get());
-  const TypeExpr* hi_type = bound_type(r.hi.get());
+  const TypeExpr* lo_type = subrange_bound_canonical_type(r.lo.get());
+  const TypeExpr* hi_type = subrange_bound_canonical_type(r.hi.get());
   if ((tyname_is_charish(lo_type) && tyname_is_charish(hi_type)) ||
-      (is_char_literal(r.lo.get()) && is_char_literal(r.hi.get()))) {
+      (is_single_char_string_literal(r.lo.get()) &&
+       is_single_char_string_literal(r.hi.get()))) {
     return primitive_type_cxx("char");
   }
   if (tyname_is(lo_type, "widechar") && tyname_is(hi_type, "widechar")) {
@@ -716,6 +723,16 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
   }
   if (lo >= INT32_MIN && hi <= INT32_MAX) return primitive_type_cxx("longint");
   return primitive_type_cxx("int64");
+}
+
+std::string EmitTypes::enum_bound_cxx_name(std::string_view enum_name,
+                                           std::string_view defining_unit,
+                                           bool want_low) {
+  std::string bound = enum_bound_name(enum_name, want_low ? "low" : "high");
+  if (defining_unit.empty() || defining_unit == scope_.current_unit_name) {
+    return bound;
+  }
+  return unit_namespace_prefix(defining_unit) + bound;
 }
 
 std::string EmitTypes::string_type_to_cxx(const TyString& s) {
@@ -1028,15 +1045,6 @@ std::string EmitTypes::low_high_expr_for_named_type(std::string_view name,
     return primitive;
   }
 
-  auto emit_enum_bound = [&](std::string_view enum_name,
-                             std::string_view defining_unit) -> std::string {
-    if (defining_unit.empty() || defining_unit == scope_.current_unit_name) {
-      return enum_bound_name(enum_name, want_low ? "low" : "high");
-    }
-    return unit_namespace_prefix(defining_unit) +
-           enum_bound_name(enum_name, want_low ? "low" : "high");
-  };
-
   auto dot = name.find('.');
   if (dot != std::string_view::npos) {
     std::string unit(name.substr(0, dot));
@@ -1044,7 +1052,7 @@ std::string EmitTypes::low_high_expr_for_named_type(std::string_view name,
     if (registry_) {
       auto eit = registry_->enums.find(ascii_lower(tail));
       if (eit != registry_->enums.end() && eit->second.defining_unit == unit) {
-        return emit_enum_bound(tail, unit);
+        return enum_bound_cxx_name(tail, unit, want_low);
       }
       auto ait = registry_->aliases.find(ascii_lower(tail));
       if (ait != registry_->aliases.end() && ait->second.defining_unit == unit &&
@@ -1056,12 +1064,12 @@ std::string EmitTypes::low_high_expr_for_named_type(std::string_view name,
   }
 
   if (scope_.local_enums.count(ascii_lower(std::string(name)))) {
-    return enum_bound_name(name, want_low ? "low" : "high");
+    return enum_bound_cxx_name(name, {}, want_low);
   }
   if (registry_) {
     auto eit = registry_->enums.find(ascii_lower(std::string(name)));
     if (eit != registry_->enums.end()) {
-      return emit_enum_bound(name, eit->second.defining_unit);
+      return enum_bound_cxx_name(name, eit->second.defining_unit, want_low);
     }
   }
 
