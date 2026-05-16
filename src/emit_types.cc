@@ -16,11 +16,13 @@ using namespace ast;
 EmitTypes::EmitTypes(const TypeRegistry* registry, ScopeStateView& scope,
                      EmitAnalysis& analysis,
                      EmitTypeConstRender& const_render,
+                     EmitTypeOrdinalOps& ordinal_ops,
                      EmitTypeDiagOps& diag_ops)
     : registry_(registry),
       scope_(scope),
       analysis_(analysis),
       const_render_(const_render),
+      ordinal_ops_(ordinal_ops),
       diag_ops_(diag_ops) {}
 
 std::string EmitTypes::type_name_to_cxx(const TyName& n) {
@@ -305,14 +307,9 @@ std::string EmitTypes::enum_underlying_type_to_cxx(const TyEnum& e) {
 bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
                                         std::string* lo,
                                         std::string* size_expr) {
-  auto expr_is_char = [&](const Expr& e) -> bool {
-    const TypeExpr* t = analysis_.deduce_type(e);
-    if (t) t = analysis_.canonicalize_type(t);
-    return tyname_is_charish(t);
-  };
   auto ordinal_bound = [&](const Expr& e) -> std::string {
-    std::string text = const_render_.const_value_to_cxx(e);
-    return expr_is_char(e) ? "::rt::p_ord(" + text + ")" : text;
+    return ordinal_ops_.ordinal_value_to_cxx(
+        e, const_render_.const_value_to_cxx(e));
   };
   auto ordinal_text = [&](std::string text) -> std::string {
     return "::rt::tp2cc_ordinal_value(" + text + ")";

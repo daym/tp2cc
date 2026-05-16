@@ -1027,7 +1027,7 @@ In the table, ~S~ denotes any tp2cc-supported string value (typically ~String~, 
 | Name | Interface | Use |
 | ~Assigned~ | ~Assigned(X): Boolean~ | Tests whether a pointer, method pointer, or dynamic array value is assigned. |
 | ~Odd~ | ~Odd(N): Boolean~ | Tests the low bit of an integer value. |
-| ~Ord~ | ~Ord(X): LongInt~ | Converts an ordinal value to its numeric ordinal. |
+| ~Ord~ | ~Ord(X): Byte, Word, LongInt, or X's integer type~ | Returns X as an integer value. ~Char~ and ~Boolean~ return ~Byte~, ~WideChar~ returns ~Word~, enumeration values return ~LongInt~, and integer operands keep their integer type. |
 | ~Chr~ | ~Chr(N): Char~ | Converts a byte-sized ordinal to a character. |
 | ~Hi~, ~Lo~ | ~Hi(X)~, ~Lo(X)~ | Returns the high or low half/byte of supported ordinal values. |
 | ~Abs~, ~Sqr~ | ~Abs(X)~, ~Sqr(X)~ | Absolute value and square. |

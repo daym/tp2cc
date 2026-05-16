@@ -58,6 +58,22 @@ static const TypeExpr* method_result_type(const MethodSig* method) {
   return method->decl->return_type.get();
 }
 
+static bool type_is_pointer_arithmetic_operand(const TypeExpr* t) {
+  if (!t) return false;
+  if (t->kind == Kind::TyPointer) return true;
+  if (t->kind != Kind::TyName) return false;
+  const std::string name = ascii_lower(static_cast<const TyName&>(*t).name);
+  return name == "pointer" || name == "pchar" || name == "pansichar" ||
+         name == "ppchar";
+}
+
+static bool type_is_integer_arithmetic_operand(const TypeExpr* t) {
+  if (!t || t->kind != Kind::TyName) return false;
+  const PrimitiveInfo* pi =
+      primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
+  return pi && pi->int_kind != PrimitiveIntKind::None;
+}
+
 const TypeExpr* EmitAnalysis::canonicalize_type(const TypeExpr* t) {
   int hops = 0;
   while (t && t->kind == Kind::TyName) {
@@ -102,6 +118,18 @@ const TypeExpr* EmitAnalysis::ord_result_type_for_type(const TypeExpr* t) {
     if (const PrimitiveInfo* info = primitive_info(lower);
         info && info->int_kind != PrimitiveIntKind::None) {
       return builtin_integer_type(info);
+    }
+    if (scope_.local_enums.count(lower)) return builtin_integer_type("longint");
+    if (registry_) {
+      if (registry_->enums.count(lower)) return builtin_integer_type("longint");
+      if (auto dot = lower.find('.'); dot != std::string::npos) {
+        const std::string unit = lower.substr(0, dot);
+        const std::string tail = lower.substr(dot + 1);
+        auto it = registry_->enums.find(tail);
+        if (it != registry_->enums.end() && it->second.defining_unit == unit) {
+          return builtin_integer_type("longint");
+        }
+      }
     }
     return nullptr;
   }
@@ -968,6 +996,8 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         };
         const TypeExpr* lt = deduce_type(*b.lhs);
         const TypeExpr* rt = deduce_type(*b.rhs);
+        const TypeExpr* ltc = canonicalize_type(lt);
+        const TypeExpr* rtc = canonicalize_type(rt);
         auto prim_of = [&](const TypeExpr* t) -> const PrimitiveInfo* {
           t = canonicalize_type(t);
           if (!t || t->kind != Kind::TyName) return nullptr;
@@ -997,6 +1027,25 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
                  b.op == BinOp::Or || b.op == BinOp::Xor;
         };
         if (is_arithmetic_like()) {
+          // Pascal pointer arithmetic preserves the pointer type for `p+n`,
+          // `n+p`, and `p-n`. Type deduction must keep that fact here because
+          // a later dereference (`(p+n)^`) needs the pointee type; without it,
+          // value intrinsics such as `Ord` cannot tell that a `pchar` element is
+          // a `char`.
+          const bool lptr = type_is_pointer_arithmetic_operand(ltc);
+          const bool rptr = type_is_pointer_arithmetic_operand(rtc);
+          const bool lint = type_is_integer_arithmetic_operand(ltc);
+          const bool rint = type_is_integer_arithmetic_operand(rtc);
+          if (b.op == BinOp::Add) {
+            if (lptr && rint) return lt;
+            if (rptr && lint) return rt;
+            if (lptr || rptr) return nullptr;
+          }
+          if (b.op == BinOp::Sub) {
+            if (lptr && rint) return lt;
+            if (lptr && rptr) return named_pascal_type("ptrint");
+            if (lptr || rptr) return nullptr;
+          }
           if (same_type_ast(lt, rt)) return lt ? lt : rt;
           if (is_numeric_primitive(lt) && is_numeric_primitive(rt)) {
             const PrimitiveInfo* lp = prim_of(lt);

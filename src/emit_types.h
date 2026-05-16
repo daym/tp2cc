@@ -29,6 +29,13 @@ class EmitTypeDiagOps {
   virtual void report_error(Location where, const std::string& msg) = 0;
 };
 
+class EmitTypeOrdinalOps {
+ public:
+  virtual ~EmitTypeOrdinalOps() = default;
+  virtual std::string ordinal_value_to_cxx(const ast::Expr& e,
+                                           std::string value_cxx) = 0;
+};
+
 struct EmitRecordFieldDecl {
   // Field declaration metadata shared by named-record emission, inline record
   // spelling, and packed-layout computation.
@@ -71,6 +78,7 @@ class EmitTypes {
  public:
   EmitTypes(const TypeRegistry* registry, ScopeStateView& scope,
             EmitAnalysis& analysis, EmitTypeConstRender& const_render,
+            EmitTypeOrdinalOps& ordinal_ops,
             EmitTypeDiagOps& diag_ops);
 
   std::string type_to_cxx(const ast::TypeExpr& t);
@@ -126,6 +134,7 @@ class EmitTypes {
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;
   EmitTypeConstRender& const_render_;
+  EmitTypeOrdinalOps& ordinal_ops_;
   EmitTypeDiagOps& diag_ops_;
 
   // Did any non-runtime translated unit declare this type? Runtime aliases are

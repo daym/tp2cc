@@ -407,7 +407,8 @@ void test_subrange_bound_folds_ord_high_enum_type() {
   CHECK(contains(out.header, "using t_tindex = uint8_t;"));
   CHECK(contains(out.header,
                  "using t_tmap = ::rt::tp2cc_Array<uint8_t, 1, "
-                 "((::rt::p_ord(tp2cc_enum_high_tdefoption)) - (1) + 1)>;"));
+                 "((tp2cc_enum_high_tdefoption) - (1) + 1)>;"));
+  CHECK(!contains(out.header, "::rt::p_ord("));
 }
 
 void test_char_subrange_preserves_char_storage() {
@@ -834,12 +835,14 @@ void test_low_high_on_set_type_uses_element_bounds() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "inline const auto p_lastflag = ::rt::p_ord(tp2cc_enum_high_tflag);"));
+                 "inline const int32_t p_lastflag = tp2cc_enum_high_tflag;"));
   CHECK(contains(out.header, "const auto p_firstsmall = 2;"));
   CHECK(contains(out.header, "const auto p_lastsmall = 5;"));
-  CHECK(contains(out.impl, "if ((::rt::p_ord(tp2cc_enum_high_tflag) > 31))"));
+  CHECK(contains(out.impl, "if ((tp2cc_enum_high_tflag > 31))"));
   CHECK(!contains(out.header, "::rt::p_high("));
   CHECK(!contains(out.impl, "::rt::p_high("));
+  CHECK(!contains(out.header, "::rt::p_ord("));
+  CHECK(!contains(out.impl, "::rt::p_ord("));
 }
 
 void test_low_high_on_local_array_type_lowers_to_index_bounds() {
@@ -1126,8 +1129,28 @@ void test_ord_char_value_has_byte_result_type() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_b = ::p_u::p_pick(static_cast<uint8_t>(::rt::p_ord(p_c)));"));
-  CHECK(!contains(out.impl, "static_cast<int32_t>(::rt::p_ord(p_c))"));
+                 "p_b = ::p_u::p_pick(static_cast<uint8_t>(::rt::tp2cc_char_byte(p_c)));"));
+  CHECK(!contains(out.impl, "::rt::p_ord("));
+}
+
+void test_ord_pchar_offset_deref_uses_char_byte_value() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run(p : pchar);\n"
+      "implementation\n"
+      "procedure run(p : pchar);\n"
+      "begin\n"
+      "  if (ord((p+1)^)=187) and (ord((p+2)^)=191) then begin end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_char_byte(::rt::tp2cc_deref((p_p + 1))) == 187"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_char_byte(::rt::tp2cc_deref((p_p + 2))) == 191"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_deref((p_p + 1)) == 187"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_deref((p_p + 2)) == 191"));
+  CHECK(!contains(out.impl, "::rt::p_ord("));
 }
 
 void test_ord_value_result_type_follows_ordinal_operand() {
@@ -1180,14 +1203,16 @@ void test_ord_value_result_type_follows_ordinal_operand() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_b = ::p_u::p_pick_word(static_cast<uint16_t>(::rt::p_ord(p_w)));"));
+                 "p_b = ::p_u::p_pick_word(static_cast<uint16_t>(p_w));"));
   CHECK(contains(out.impl,
-                 "p_b = ::p_u::p_pick_word(static_cast<uint16_t>(::rt::p_ord(p_wc)));"));
+                 "p_b = ::p_u::p_pick_word(static_cast<uint16_t>(p_wc));"));
   CHECK(contains(out.impl,
-                 "p_b = ::p_u::p_pick_shortint(static_cast<int8_t>(::rt::p_ord(p_bb)));"));
+                 "p_b = ::p_u::p_pick_shortint(static_cast<int8_t>(p_bb));"));
   CHECK(contains(out.impl,
-                 "p_b = ::p_u::p_pick_smallint(static_cast<int16_t>(::rt::p_ord(p_wb)));"));
-  CHECK(contains(out.impl, "p_b = p_pick_longint(::rt::p_ord(p_c));"));
+                 "p_b = ::p_u::p_pick_smallint(static_cast<int16_t>(p_wb));"));
+  CHECK(contains(out.impl,
+                 "p_b = ::p_u::p_pick_longint(static_cast<int32_t>(p_c));"));
+  CHECK(!contains(out.impl, "::rt::p_ord("));
 }
 
 void test_set_type_alias() {
@@ -8990,6 +9015,7 @@ int main() {
   RUN_TEST(test_ord_storage_view_for_shortstring_length_byte);
   RUN_TEST(test_chr_storage_view_for_byte_assignment_inc_and_var_arg);
   RUN_TEST(test_ord_char_value_has_byte_result_type);
+  RUN_TEST(test_ord_pchar_offset_deref_uses_char_byte_value);
   RUN_TEST(test_ord_value_result_type_follows_ordinal_operand);
   RUN_TEST(test_set_type_alias);
   RUN_TEST(test_var_extern_in_header_and_def_in_impl);

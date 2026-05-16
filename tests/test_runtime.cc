@@ -1294,23 +1294,6 @@ void test_hi_lo_split_ordinal_halves() {
   CHECK_EQ(p_hi(uint64_t{0x1122334455667788ull}), uint32_t{0x11223344u});
 }
 
-void test_ord_char_returns_byte() {
-  static_assert(std::is_same_v<decltype(p_ord(tp2cc_char_of('A'))), uint8_t>);
-  CHECK_EQ(p_ord(tp2cc_char_of('A')), static_cast<uint8_t>(65));
-}
-
-void test_ord_preserves_integral_width_and_maps_bool_and_enum() {
-  enum class SmallEnum : uint8_t { A = 7 };
-  static_assert(std::is_same_v<decltype(p_ord(uint16_t{9})), uint16_t>);
-  static_assert(std::is_same_v<decltype(p_ord(int16_t{-3})), int16_t>);
-  static_assert(std::is_same_v<decltype(p_ord(true)), uint8_t>);
-  static_assert(std::is_same_v<decltype(p_ord(SmallEnum::A)), int32_t>);
-  CHECK_EQ(p_ord(uint16_t{9}), uint16_t{9});
-  CHECK_EQ(p_ord(int16_t{-3}), int16_t{-3});
-  CHECK_EQ(p_ord(true), uint8_t{1});
-  CHECK_EQ(p_ord(SmallEnum::A), int32_t{7});
-}
-
 void test_fillword_and_compareword_operate_on_word_counts() {
   uint16_t words[4] = {0, 0, 0, 0};
   uint16_t same[4] = {0x1234, 0x1234, 0x1234, 0x1234};
@@ -1329,6 +1312,9 @@ void test_fillbyte_initialize_trim_and_strrscan_helpers() {
   p_fillbyte(static_cast<void*>(bytes), 4, 0x5a);
   CHECK_EQ(bytes[0], static_cast<uint8_t>(0x5a));
   CHECK_EQ(bytes[3], static_cast<uint8_t>(0x5a));
+  p_fillchar(static_cast<void*>(bytes), 4, tp2cc_char_of('A'));
+  CHECK_EQ(bytes[0], static_cast<uint8_t>('A'));
+  CHECK_EQ(bytes[3], static_cast<uint8_t>('A'));
 
   int32_t value = 17;
   p_initialize(value);
@@ -1575,8 +1561,6 @@ int main() {
   RUN_TEST(test_sysutils_exception_runtime_classes);
   RUN_TEST(test_exception_metaclass_accepts_concrete_root_create_thunk);
   RUN_TEST(test_hi_lo_split_ordinal_halves);
-  RUN_TEST(test_ord_char_returns_byte);
-  RUN_TEST(test_ord_preserves_integral_width_and_maps_bool_and_enum);
   RUN_TEST(test_fillword_and_compareword_operate_on_word_counts);
   RUN_TEST(test_fillbyte_initialize_trim_and_strrscan_helpers);
   RUN_TEST(test_indexword_searches_prefix_only);

@@ -11,6 +11,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "emit_analysis.h"
@@ -56,6 +57,7 @@ struct Emitter : ResolveNameProvider,
                  CallTypeProvider,
                  ResolutionTypeOps,
                  EmitTypeConstRender,
+                 EmitTypeOrdinalOps,
                  EmitTypeDiagOps,
                  EmitStorageExprOps,
                  EmitCallExprOps,
@@ -214,7 +216,7 @@ struct Emitter : ResolveNameProvider,
                      outer_result_slot_name,
                      outer_result_type},
         analysis_(registry, scope_state_, *this, *this),
-        types_(registry, scope_state_, analysis_, *this, *this),
+        types_(registry, scope_state_, analysis_, *this, *this, *this),
         storage_(registry, scope_state_, analysis_, types_, *this, *this),
         resolution_(registry, scope_state_, analysis_, *this, *this),
         calls_(registry, scope_state_, analysis_, types_, storage_,
@@ -333,6 +335,8 @@ struct Emitter : ResolveNameProvider,
 
   // Expressions -> C++ expression.
   std::string expr_to_cxx(const Expr& e);
+  std::string ordinal_value_to_cxx(const Expr& e,
+                                   std::string value_cxx) override;
   std::string expr_to_cxx_no_autocall(const Expr& e) override {
     bool saved = is_callee_context_;
     is_callee_context_ = true;
@@ -640,6 +644,16 @@ struct Emitter : ResolveNameProvider,
 
 const TypeExpr* Emitter::deduce_type(const Expr& e) {
   return analysis_.deduce_type(e);
+}
+
+std::string Emitter::ordinal_value_to_cxx(const Expr& e,
+                                          std::string value_cxx) {
+  if (value_cxx.empty()) value_cxx = expr_to_cxx(e);
+  const TypeExpr* operand_type = canonicalize_type(type_for_overload(e));
+  if (tyname_is_charish(operand_type)) {
+    return "::rt::tp2cc_char_byte(" + value_cxx + ")";
+  }
+  return value_cxx;
 }
 
 const TypeExpr* Emitter::type_for_resolved_call(const Call& c) {
@@ -1616,8 +1630,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       //
       // Special cases below:
       //   * `low(T)` / `high(T)` when T is a type name  -> emitted constant
-      //   * `ord(x)`                                    -> runtime ordinal
-      //                                                   helper
+      //   * `ord(x)`                                    -> ordinal value
       //   * `sizeof(x)`                                 -> C++ `sizeof`
       //   * `TypeName(expr)` function-style cast        -> paren-cast when
       //                                                   the C++ type is
@@ -1742,7 +1755,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
 
         if (n == "ord" && c.args.size() == 1) {
-          return "::rt::p_ord(" + arg0() + ")";
+          return ordinal_value_to_cxx(*c.args[0], arg0());
         }
 
         if (n == "sizeof" && c.args.size() == 1) {
@@ -1871,8 +1884,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
           }
           if (expr_is_charish(*c.args[0])) {
-            return "((" + primitive_type_cxx(n) + ")(::rt::p_ord(" +
-                   arg0() + ")))";
+            return "((" + primitive_type_cxx(n) + ")(" +
+                   ordinal_value_to_cxx(*c.args[0], arg0()) + "))";
           }
           TyName target(n);
           if (auto conv = resolution_.find_assignment_operator(

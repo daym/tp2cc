@@ -664,7 +664,6 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   static const RtBuiltin rt_builtins[] = {
       {"assigned",   1, true,  false, "boolean"},
       {"odd",        1, true,  false, "boolean"},
-      {"ord",        1, true,  false, ""},
       {"chr",        1, true,  false, "char"},
       {"hi",         1, true,  false, ""},
       {"lo",         1, true,  false, ""},

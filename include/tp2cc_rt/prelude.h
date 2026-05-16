@@ -3126,31 +3126,6 @@ inline void p_setlength(tp2cc_DynArray<T>& a, int new_len) {
   a.count = new_len;
 }
 
-template <typename T>
-requires std::is_convertible_v<T, p_char>
-inline constexpr uint8_t p_ord(T x) {
-  return tp2cc_char_byte(static_cast<p_char>(x));
-}
-template <typename T>
-requires (!std::is_convertible_v<T, p_char> &&
-          std::is_same_v<std::remove_cvref_t<T>, bool>)
-inline constexpr uint8_t p_ord(T x) {
-  return static_cast<uint8_t>(x);
-}
-template <typename T>
-requires (!std::is_convertible_v<T, p_char> &&
-          std::is_enum_v<std::remove_cvref_t<T>>)
-inline constexpr int32_t p_ord(T x) {
-  return static_cast<int32_t>(x);
-}
-template <typename T>
-requires (!std::is_convertible_v<T, p_char> &&
-          !std::is_same_v<std::remove_cvref_t<T>, bool> &&
-          !std::is_enum_v<std::remove_cvref_t<T>> &&
-          std::is_integral_v<std::remove_cvref_t<T>>)
-inline constexpr T p_ord(T x) {
-  return x;
-}
 inline constexpr p_char p_chr(int x) { return tp2cc_char_of(static_cast<uint8_t>(x)); }
 
 // Pascal `Lo` / `Hi` return the lower / upper half of an ordinal value's
@@ -4779,7 +4754,7 @@ inline void p_fillchar(void* dest, int count, int value) {
   std::memset(dest, value & 0xff, static_cast<size_t>(count));
 }
 inline void p_fillchar(void* dest, int count, p_char value) {
-  p_fillchar(dest, count, p_ord(value));
+  p_fillchar(dest, count, tp2cc_char_byte(value));
 }
 inline void p_fillbyte(void* dest, int count, uint8_t value) {
   std::memset(dest, value, static_cast<size_t>(count));
@@ -4788,7 +4763,7 @@ inline void p_fillchar(tp2cc_ShortStringCharRef dest, int count, int value) {
   std::memset(dest.byte, value & 0xff, static_cast<size_t>(count));
 }
 inline void p_fillchar(tp2cc_ShortStringCharRef dest, int count, p_char value) {
-  p_fillchar(dest, count, p_ord(value));
+  p_fillchar(dest, count, tp2cc_char_byte(value));
 }
 inline void p_fillbyte(tp2cc_ShortStringCharRef dest, int count, uint8_t value) {
   std::memset(dest.byte, value, static_cast<size_t>(count));
@@ -4797,7 +4772,7 @@ inline void p_fillchar(tp2cc_AnsiStringCharRef dest, int count, int value) {
   std::memset(&dest, value & 0xff, static_cast<size_t>(count));
 }
 inline void p_fillchar(tp2cc_AnsiStringCharRef dest, int count, p_char value) {
-  p_fillchar(dest, count, p_ord(value));
+  p_fillchar(dest, count, tp2cc_char_byte(value));
 }
 inline void p_fillbyte(tp2cc_AnsiStringCharRef dest, int count, uint8_t value) {
   std::memset(&dest, value, static_cast<size_t>(count));
@@ -4810,7 +4785,7 @@ inline void p_fillchar(T& dest, int count, int value) {
 template <typename T>
 requires (!std::is_pointer_v<T>)
 inline void p_fillchar(T& dest, int count, p_char value) {
-  p_fillchar(dest, count, p_ord(value));
+  p_fillchar(dest, count, tp2cc_char_byte(value));
 }
 template <typename T>
 requires (!std::is_pointer_v<T>)
