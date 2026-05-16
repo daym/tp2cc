@@ -517,12 +517,10 @@ std::optional<ConvScore> EmitResolution::score_procedural_argument_conversion(
     if (!bind) return std::nullopt;
     return bind->decl ? ConvScore{ConvRank::Exact, 0} : ConvScore{};
   }
-  // Plain `procedure(...)` slot: an `@instance_method` is not a viable value
-  // here. Reuse the same resolver against a synthetic of-object view to ask
-  // "does this @-shape name an instance method in scope?" - one lookup-and-
-  // shadow walker for both this rejection and the bind path. If yes, score
-  // Not-Viable so the picker prefers the of-object overload; otherwise fall
-  // through to the default rank-conversion path.
+  // Plain `procedure(...)` slot: an instance-method value is not admissible
+  // because it needs a `Self` pointer. Reuse the method-value resolver with a
+  // temporary of-object target so this rejection and the successful binding path
+  // use the same Pascal lookup and shadowing rules.
   TyProcedural method_view = proc;
   method_view.is_method = true;
   if (resolve_method_value_binding(arg, method_view)) {
@@ -564,11 +562,10 @@ ConvScore EmitResolution::score_argument_conversion(
   // `foo(@s, ...)` against a `pointer` slot when there's a competing
   // overload. Score it Exact here so the picker sees the call as viable.
   //
-  // `@expr` always yields a pointer in Pascal regardless of the operand
-  // shape, but deduce_type intentionally returns null for `@array` (the
-  // emitter chooses between pointer-to-array and pointer-to-first-element
-  // at the use site). Recognize the AddrOf shape directly so the picker
-  // doesn't reject `foo(@arr, ...)` against a pointer slot.
+  // `@expr` always yields a pointer in Pascal, but deduce_type intentionally
+  // returns null for `@array`: the emitter chooses pointer-to-array versus
+  // pointer-to-first-element at the use site. Recognize AddrOf directly so the
+  // picker doesn't reject `foo(@arr, ...)` against a pointer slot.
   if (canon_param && canon_param->kind == Kind::TyName &&
       static_cast<const TyName&>(*canon_param).name == "pointer") {
     if (arg.kind == Kind::AddrOf) {
@@ -822,9 +819,9 @@ ResolvedCall EmitResolution::resolve_call(
         return resolved(a, true);
       }
     }
-    // Defensive fallback: `pr.decl` came from the arity-filtered set, so the
-    // loop above should have found it. Keep the decl anyway if metadata got
-    // out of sync so later emit-time diagnostics stay anchored.
+    // `pr.decl` came from the arity-filtered set, so reaching this path means
+    // the ranking result and candidate metadata disagree. Keep the declaration
+    // attached so the later diagnostic names the chosen Pascal callable.
     return ResolvedCall{.decl = pr.decl,
                         .callee_kind = ResolvedCalleeKind::Default,
                         .defining_unit = {},

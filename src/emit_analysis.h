@@ -99,9 +99,14 @@ class EmitAnalysis {
   SetConversionKind classify_set_conversion(const ast::TypeExpr* source,
                                             const ast::TypeExpr* target);
 
-  // Expression/type/name analysis used by emit-time semantic decisions such as
-  // member access, overload picking, and `with` lowering.
+  // Best-effort Pascal static type for an expression. A null result means this
+  // analysis layer does not have enough context to type the expression; it is
+  // not by itself a diagnostic, and callers that need an error must own that
+  // language rule explicitly.
   const ast::TypeExpr* deduce_type(const ast::Expr& e);
+  // `Ord` is lowered by the compiler, not by a runtime helper. Its result type
+  // follows the operand's ordinal domain so `Ord(Char)` stays byte-sized while
+  // enums and integer subranges keep their own storage width.
   const ast::TypeExpr* ord_result_type_for_operand(const ast::Expr& operand);
   std::string deduce_class_alias(const ast::Expr& e);
   std::string canonical_method_owner_type_name(std::string_view owner);

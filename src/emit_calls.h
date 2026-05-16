@@ -41,10 +41,11 @@ class EmitCalls {
 
   bool proc_accepts_zero_args(const ast::ProcDecl& decl);
 
-  // Populate call-site metadata in argument order. This is the single place
-  // that answers "is slot i untyped storage?", "does slot i alias mutable
-  // caller state?", and "what Pascal type was chosen for slot i?" so explicit
-  // calls and implicit zero-arg calls stay aligned.
+  // Populate call-site metadata in argument order. The three output vectors are
+  // a single logical table keyed by actual-argument slot: untyped storage kind,
+  // mutable-reference requirement, and chosen Pascal formal type. Keeping the
+  // table construction here avoids independent call paths reclassifying the
+  // same parameter slots differently.
   void mark_call_param_info(const ast::ProcDecl* decl,
                             std::vector<UntypedArgKind>& untyped_arg,
                             std::vector<bool>& mutable_ref_arg,
@@ -58,9 +59,9 @@ class EmitCalls {
                                std::vector<bool>& mutable_ref_arg,
                                std::vector<const ast::TypeExpr*>& param_types);
 
-  // Pascal trailing default parameters are compile-time sugar: before the call
-  // reaches C++ overload resolution, omitted suffix actuals must be expanded
-  // into an ordinary full argument list.
+  // Pascal trailing default parameters are compile-time sugar. After overload
+  // resolution has chosen a declaration, omitted suffix actuals are appended so
+  // argument lowering sees the same complete slot table as an explicit call.
   void append_defaulted_trailing_call_args(
       const ast::ProcDecl* decl, std::vector<const ast::Expr*>& args);
 

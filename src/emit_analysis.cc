@@ -1058,9 +1058,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           }
         }
         // String / set binary ops. Pascal's `+`/`-`/`*` are overloaded on
-        // string concatenation and set operations. Typing them here keeps
-        // overload ranking and later emit-time lowering anchored to Pascal
-        // semantics instead of falling through as "unknown binary expr".
+        // string concatenation and set operations. Typing them here gives
+        // overload ranking and later lowering one Pascal result type instead
+        // of leaving each call site to rediscover the operator family.
         if (b.op == BinOp::Add &&
             (is_string_like(lt) || is_string_like(rt) ||
              b.lhs->kind == Kind::StringLit || b.rhs->kind == Kind::StringLit)) {

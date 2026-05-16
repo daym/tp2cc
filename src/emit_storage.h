@@ -211,7 +211,7 @@ class EmitStorage {
   //   - `pointer`/`void*` <-> typed data pointers
   //   - raw data-pointer reinterpretation
   //   - function pointer <-> `pointer`
-  // so funnel those through one helper instead of sprinkling ad hoc casts.
+  // so all pointer-like assignments and arguments share one coercion rule.
   std::string coerce_pointer_like_text(std::string_view dst_cxx,
                                        const ast::TypeExpr* dst_type,
                                        const ast::TypeExpr* src_type,

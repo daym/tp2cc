@@ -26,11 +26,9 @@ class EmitValueExprOps {
   virtual bool in_block_scope() const = 0;
 };
 
-// Pascal value lowering. This module owns the rules for spelling set literals,
-// typed aggregate constants, explicit integer constant conversions, procedural
-// values, and metaclass values. Those are value-semantics decisions,
-// so they belong together rather than being spread through `expr_to_cxx` and
-// declaration emission ad hoc.
+// Pascal value lowering owns the rules for spelling set literals, typed
+// aggregate constants, explicit integer constant conversions, procedural
+// values, and metaclass values.
 class EmitValues {
  public:
   EmitValues(const TypeRegistry* registry, ScopeStateView& scope,

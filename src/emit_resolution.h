@@ -113,12 +113,10 @@ class EmitResolution {
   AssignmentOperatorResult find_assignment_operator(
       const ast::TypeExpr* source, const ast::TypeExpr* target);
 
-  // Resolve an `@method` / `Ident` / `Member` expression against a
-  // `procedure of object` target. Returns nullopt when the expression is
-  // not @method-shaped, or when `proc.is_method` is false (no method-pointer
-  // value is admissible into a non-method-of-object slot). Otherwise
-  // returns a binding describing which method is bound and how to spell
-  // `Self`. See `MethodValueBinding`.
+  // Resolve a method-value expression against a `procedure of object` target.
+  // Pascal admits `@method`, a bare method name, or `receiver.method` here.
+  // Returns nullopt when the expression is not one of those forms, or when the
+  // target is an ordinary procedural type that cannot carry `Self`.
   std::optional<MethodValueBinding> resolve_method_value_binding(
       const ast::Expr& arg, const ast::TyProcedural& proc);
 
