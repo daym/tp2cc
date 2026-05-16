@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ast.h"
@@ -12,6 +13,7 @@
 namespace tp2cc {
 
 struct ProcInfo;
+struct PrimitiveInfo;
 struct TypeRegistry;
 
 struct AssignmentOperatorResult {
@@ -144,6 +146,15 @@ class EmitResolution {
   std::vector<AnyCand> gather_callable_in_pascal_scope(
       const std::string& name);
   std::vector<AnyCand> gather_operator_in_pascal_scope(const std::string& op);
+  std::string type_cxx_or_empty(const ast::TypeExpr* t);
+  const ast::TypeExpr* strip_conversion_wrapper(const ast::TypeExpr* t);
+  ConvScore class_hierarchy_conversion_score(const ast::TypeExpr* arg,
+                                             const ast::TypeExpr* param);
+  const PrimitiveInfo* primitive_for_type(const ast::TypeExpr* t);
+  int real_conversion_rank(std::string_view name) const;
+  bool type_is_shortstring_family(const ast::TypeExpr* t) const;
+  bool type_is_ansistring(const ast::TypeExpr* t) const;
+  bool type_is_char_type(const ast::TypeExpr* t) const;
   ConvScore score_conversion(const ast::TypeExpr* arg,
                              const ast::TypeExpr* param,
                              bool var_param,

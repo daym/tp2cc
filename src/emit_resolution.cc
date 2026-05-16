@@ -190,6 +190,84 @@ std::vector<FlatCallParamInfo> EmitResolution::flatten_call_param_info(
   return flat_params;
 }
 
+std::string EmitResolution::type_cxx_or_empty(const TypeExpr* t) {
+  return t ? type_ops_.type_to_cxx(*t) : std::string{};
+}
+
+const TypeExpr* EmitResolution::strip_conversion_wrapper(const TypeExpr* t) {
+  while (t && (t->kind == Kind::TyDistinct || t->kind == Kind::TySubrange)) {
+    if (t->kind == Kind::TyDistinct) {
+      t = analysis_.canonicalize_type(
+          static_cast<const TyDistinct&>(*t).underlying.get());
+    } else {
+      return builtin_integer_type("longint");
+    }
+  }
+  return t;
+}
+
+ConvScore EmitResolution::class_hierarchy_conversion_score(
+    const TypeExpr* arg, const TypeExpr* param) {
+  if (!registry_) return {};
+  if (!arg || !param || arg->kind != Kind::TyName ||
+      param->kind != Kind::TyName) {
+    return {};
+  }
+  const auto& arg_name = static_cast<const TyName&>(*arg).name;
+  const auto& param_name = static_cast<const TyName&>(*param).name;
+  const auto* arg_class = analysis_.class_info_for_type_name(arg_name);
+  const auto* param_class = analysis_.class_info_for_type_name(param_name);
+  if (!arg_class || !param_class) return {};
+
+  std::unordered_set<std::string> seen;
+  const ClassInfo* cur = arg_class;
+  int depth = 0;
+  while (cur) {
+    const std::string identity = cur->defining_unit + "." + cur->name;
+    if (seen.count(identity)) break;
+    if (cur->name == param_class->name &&
+        cur->defining_unit == param_class->defining_unit) {
+      return {ConvRank::ClassHierarchy, depth};
+    }
+    seen.insert(identity);
+    cur = cur->parent.empty()
+              ? nullptr
+              : registry_->lookup_class(cur->parent, cur->defining_unit);
+    ++depth;
+  }
+  return {};
+}
+
+const PrimitiveInfo* EmitResolution::primitive_for_type(const TypeExpr* t) {
+  if (!t || t->kind != Kind::TyName) return nullptr;
+  return primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
+}
+
+int EmitResolution::real_conversion_rank(std::string_view name) const {
+  if (name == "single") return 1;
+  if (name == "double" || name == "real") return 2;
+  if (name == "extended" || name == "comp") return 3;
+  return 0;
+}
+
+bool EmitResolution::type_is_shortstring_family(const TypeExpr* t) const {
+  if (!t) return false;
+  if (t->kind == Kind::TyString) return true;
+  if (t->kind != Kind::TyName) return false;
+  const auto& n = ascii_lower(static_cast<const TyName&>(*t).name);
+  return n == "shortstring";
+}
+
+bool EmitResolution::type_is_ansistring(const TypeExpr* t) const {
+  return t && t->kind == Kind::TyName &&
+         ascii_lower(static_cast<const TyName&>(*t).name) == "ansistring";
+}
+
+bool EmitResolution::type_is_char_type(const TypeExpr* t) const {
+  return t && t->kind == Kind::TyName &&
+         ascii_lower(static_cast<const TyName&>(*t).name) == "char";
+}
+
 ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
                                           const TypeExpr* param,
                                           bool var_param) {
@@ -197,10 +275,6 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
   const TypeExpr* a = analysis_.canonicalize_type(arg);
   const TypeExpr* p = analysis_.canonicalize_type(param);
   if (!a || !p) return {};
-
-  auto type_text = [&](const TypeExpr* t) {
-    return t ? type_ops_.type_to_cxx(*t) : std::string{};
-  };
 
   if (a->kind == Kind::TySet || p->kind == Kind::TySet) {
     switch (analysis_.classify_set_conversion(a, p)) {
@@ -213,29 +287,18 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
     }
   }
 
-  std::string a_cxx = type_text(a);
-  std::string p_cxx = type_text(p);
+  std::string a_cxx = type_cxx_or_empty(a);
+  std::string p_cxx = type_cxx_or_empty(p);
   // 1. Exact identity after canonicalization.
   if (!a_cxx.empty() && a_cxx == p_cxx) return {ConvRank::Exact, 0};
 
-  auto strip_wrap = [&](const TypeExpr* t) {
-    while (t && (t->kind == Kind::TyDistinct || t->kind == Kind::TySubrange)) {
-      if (t->kind == Kind::TyDistinct) {
-        t = analysis_.canonicalize_type(
-            static_cast<const TyDistinct&>(*t).underlying.get());
-      } else {
-        t = builtin_integer_type("longint");
-        break;
-      }
-    }
-    return t;
-  };
-  const TypeExpr* a_under = strip_wrap(a);
-  const TypeExpr* p_under = strip_wrap(p);
+  const TypeExpr* a_under = strip_conversion_wrapper(a);
+  const TypeExpr* p_under = strip_conversion_wrapper(p);
   // 2. Equal modulo distinct/subrange wrappers. Distinct types still lower to
   // the same underlying storage for overload ranking, and subranges adopt
   // their base integer type here.
-  if (a_under && p_under && type_text(a_under) == type_text(p_under)) {
+  if (a_under && p_under &&
+      type_cxx_or_empty(a_under) == type_cxx_or_empty(p_under)) {
     return {ConvRank::Equal, 0};
   }
 
@@ -243,69 +306,24 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
     // `var`/`out` params only accept identity/equal-or-wrapper matches, plus
     // class-hierarchy aliasing for reference types. Anything else would pass a
     // temporary or layout-incompatible slot by reference.
-    if (a->kind == Kind::TyName && p->kind == Kind::TyName) {
-      const auto& an = static_cast<const TyName&>(*a).name;
-      const auto& pn = static_cast<const TyName&>(*p).name;
-      const auto* aci = analysis_.class_info_for_type_name(an);
-      const auto* pci = analysis_.class_info_for_type_name(pn);
-      if (aci && pci) {
-        std::unordered_set<std::string> seen;
-        const ClassInfo* cur = aci;
-        int depth = 0;
-        while (cur) {
-          const std::string identity = cur->defining_unit + "." + cur->name;
-          if (seen.count(identity)) break;
-          if (cur->name == pci->name &&
-              cur->defining_unit == pci->defining_unit) {
-            return {ConvRank::ClassHierarchy, depth};
-          }
-          seen.insert(identity);
-          cur = cur->parent.empty()
-                    ? nullptr
-                    : registry_->lookup_class(cur->parent, cur->defining_unit);
-          ++depth;
-        }
-      }
+    if (ConvScore score = class_hierarchy_conversion_score(a, p);
+        score.viable()) {
+      return score;
     }
     return {};
   }
 
-  if (a->kind == Kind::TyName && p->kind == Kind::TyName) {
-    const auto* aci =
-        analysis_.class_info_for_type_name(static_cast<const TyName&>(*a).name);
-    const auto* pci =
-        analysis_.class_info_for_type_name(static_cast<const TyName&>(*p).name);
-    // 3. Class hierarchy: a derived class may pass where an ancestor is
-    // expected. Fewer parent hops means the closer Pascal match.
-    if (aci && pci) {
-      std::unordered_set<std::string> seen;
-      const ClassInfo* cur = aci;
-      int depth = 0;
-      while (cur) {
-        const std::string identity = cur->defining_unit + "." + cur->name;
-        if (seen.count(identity)) break;
-        if (cur->name == pci->name &&
-            cur->defining_unit == pci->defining_unit) {
-          return {ConvRank::ClassHierarchy, depth};
-        }
-        seen.insert(identity);
-        cur = cur->parent.empty()
-                  ? nullptr
-                  : registry_->lookup_class(cur->parent, cur->defining_unit);
-        ++depth;
-      }
-    }
+  // 3. Class hierarchy: a derived class may pass where an ancestor is expected.
+  // Fewer parent hops means the closer Pascal match.
+  if (ConvScore score = class_hierarchy_conversion_score(a, p); score.viable()) {
+    return score;
   }
-
-  auto prim_of = [&](const TypeExpr* t) -> const PrimitiveInfo* {
-    if (!t || t->kind != Kind::TyName) return nullptr;
-    return primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
-  };
 
   // 4. Integer widening with unchanged signedness. Prefer the smallest target
   // that still contains the source by using the bit-width gap as distance.
-  if (const auto* ai = prim_of(a); ai && ai->int_kind != PrimitiveIntKind::None) {
-    if (const auto* pi = prim_of(p);
+  if (const auto* ai = primitive_for_type(a);
+      ai && ai->int_kind != PrimitiveIntKind::None) {
+    if (const auto* pi = primitive_for_type(p);
         pi && pi->int_kind == ai->int_kind && pi->bits >= ai->bits &&
         pi->bits != 0 && ai->bits != 0) {
       return {ConvRank::IntWideningSameSign,
@@ -313,52 +331,32 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
     }
   }
 
-  auto real_rank = [](std::string_view name) -> int {
-    if (name == "single") return 1;
-    if (name == "double" || name == "real") return 2;
-    if (name == "extended" || name == "comp") return 3;
-    return 0;
-  };
   // 5. Real widening follows Pascal's precision ladder. Again, smaller rank
   // gaps are better fits.
   if (a->kind == Kind::TyName && p->kind == Kind::TyName) {
-    int ar = real_rank(ascii_lower(static_cast<const TyName&>(*a).name));
-    int pr = real_rank(ascii_lower(static_cast<const TyName&>(*p).name));
+    int ar =
+        real_conversion_rank(ascii_lower(static_cast<const TyName&>(*a).name));
+    int pr =
+        real_conversion_rank(ascii_lower(static_cast<const TyName&>(*p).name));
     if (ar > 0 && pr > 0 && pr >= ar) return {ConvRank::RealWidening, pr - ar};
   }
 
-  auto is_shortstring_param = [&](const TypeExpr* t) {
-    if (!t) return false;
-    if (t->kind == Kind::TyString) return true;
-    if (t->kind != Kind::TyName) return false;
-    const auto& n = ascii_lower(static_cast<const TyName&>(*t).name);
-    return n == "shortstring";
-  };
-  auto is_ansistring = [&](const TypeExpr* t) {
-    return t && t->kind == Kind::TyName &&
-           ascii_lower(static_cast<const TyName&>(*t).name) == "ansistring";
-  };
-  auto is_char = [&](const TypeExpr* t) {
-    return t && t->kind == Kind::TyName &&
-           ascii_lower(static_cast<const TyName&>(*t).name) == "char";
-  };
-
   // 6. Same-family ShortString widening.
-  if (is_shortstring_param(a) && is_shortstring_param(p)) {
+  if (type_is_shortstring_family(a) && type_is_shortstring_family(p)) {
     return {ConvRank::StringSameTagWiden, 0};
   }
 
-  const bool param_is_shortstring = is_shortstring_param(p);
-  const bool param_is_ansistring = is_ansistring(p);
-  const bool arg_is_shortstring = is_shortstring_param(a);
-  const bool arg_is_ansistring = is_ansistring(a);
+  const bool param_is_shortstring = type_is_shortstring_family(p);
+  const bool param_is_ansistring = type_is_ansistring(p);
+  const bool arg_is_shortstring = type_is_shortstring_family(a);
+  const bool arg_is_ansistring = type_is_ansistring(a);
   // 7-8. Cross-family string conversions stay split because under `{$H-}`
   // Pascal prefers ShortString-targeted overloads over AnsiString-targeted
   // ones when both otherwise accept the same source.
   if (arg_is_ansistring && param_is_shortstring) {
     return {ConvRank::StringToShortString, 0};
   }
-  if (is_char(a) && param_is_shortstring) {
+  if (type_is_char_type(a) && param_is_shortstring) {
     return {ConvRank::StringToShortString, 0};
   }
   if (type_ops_.type_is_pcharish(a) && param_is_shortstring) {
@@ -367,7 +365,7 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
   if (arg_is_shortstring && param_is_ansistring) {
     return {ConvRank::StringToAnsiString, 0};
   }
-  if (is_char(a) && param_is_ansistring) {
+  if (type_is_char_type(a) && param_is_ansistring) {
     return {ConvRank::StringToAnsiString, 0};
   }
   if (type_ops_.type_is_pcharish(a) && param_is_ansistring) {
@@ -378,9 +376,9 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
   }
 
   // 9. Signedness change with sufficient width.
-  if (const auto* ai = prim_of(a);
+  if (const auto* ai = primitive_for_type(a);
       ai && ai->int_kind != PrimitiveIntKind::None) {
-    if (const auto* pi = prim_of(p);
+    if (const auto* pi = primitive_for_type(p);
         pi && pi->int_kind != PrimitiveIntKind::None && pi->bits >= ai->bits &&
         pi->bits != 0 && ai->bits != 0) {
       return {ConvRank::OrdinalSignChange,
@@ -388,12 +386,12 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
     }
   }
 
-  if (const auto* ai = prim_of(a);
+  if (const auto* ai = primitive_for_type(a);
       ai && ai->int_kind != PrimitiveIntKind::None) {
     // 10. Integer narrowing. Pascal still permits this for value/const params
     // with range checking; the picker must rank it as viable but worse than
     // widening or sign-preserving matches.
-    if (const auto* pi = prim_of(p);
+    if (const auto* pi = primitive_for_type(p);
         pi && pi->int_kind != PrimitiveIntKind::None &&
         pi->bits != 0 && ai->bits != 0 && pi->bits < ai->bits) {
       return {ConvRank::IntNarrowing,
