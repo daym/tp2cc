@@ -91,11 +91,14 @@ class EmitCalls {
       const CallArgumentPlan& plan, const ast::ProcDecl* selected_decl);
 
  private:
-  void mark_call_param_info(const ast::ProcDecl* decl, CallArgumentPlan& plan);
-  void collect_builtin_helper_param_info(const ast::Expr& callee,
-                                         CallArgumentPlan& plan);
-  void collect_procedural_callee_param_info(const ast::Expr& callee,
-                                            CallArgumentPlan& plan);
+  std::vector<CallArgumentSlot> append_default_call_slots(
+      const ast::ProcDecl* decl, std::vector<CallArgumentSlot> slots);
+  std::vector<CallArgumentSlot> call_slots_with_decl_param_info(
+      const ast::ProcDecl* decl, std::vector<CallArgumentSlot> slots);
+  std::vector<CallArgumentSlot> call_slots_with_builtin_helper_param_info(
+      const ast::Expr& callee, std::vector<CallArgumentSlot> slots);
+  std::vector<CallArgumentSlot> call_slots_with_procedural_callee_param_info(
+      const ast::Expr& callee, std::vector<CallArgumentSlot> slots);
 
   const TypeRegistry* registry_;
   ScopeStateView& scope_;

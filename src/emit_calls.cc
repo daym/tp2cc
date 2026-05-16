@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "diag.h"
@@ -100,14 +101,14 @@ std::string visible_type_unit_from(std::string_view type_name,
   return {};
 }
 
-void mark_builtin_memory_helper_param_info(std::string_view name,
-                                           CallArgumentPlan& plan) {
+std::vector<CallArgumentSlot> call_slots_with_builtin_memory_helper_info(
+    std::string_view name, std::vector<CallArgumentSlot> slots) {
   const std::string lower = ascii_lower(name);
 
   auto mark = [&](size_t index, UntypedArgKind untyped_kind, bool is_mutable,
                   const ast::TypeExpr* type = nullptr) {
-    if (index >= plan.slots.size()) return;
-    CallArgumentSlot& slot = plan.slots[index];
+    if (index >= slots.size()) return;
+    CallArgumentSlot& slot = slots[index];
     if (untyped_kind != UntypedArgKind::None) {
       slot.untyped_arg = untyped_kind;
     }
@@ -122,41 +123,41 @@ void mark_builtin_memory_helper_param_info(std::string_view name,
   if (lower == "fillchar" || lower == "fillbyte" ||
       lower == "fillword" || lower == "filldword") {
     mark(0, UntypedArgKind::Mutable, /*is_mutable=*/true);
-    return;
+    return slots;
   }
   if (lower == "initialize") {
     mark(0, UntypedArgKind::None, /*is_mutable=*/true);
-    return;
+    return slots;
   }
   if (lower == "move") {
     mark(0, UntypedArgKind::Const, /*is_mutable=*/false);
     mark(1, UntypedArgKind::Mutable, /*is_mutable=*/true);
-    return;
+    return slots;
   }
   if (lower == "setstring") {
     // System.SetString mutates the destination string variable. The source
     // pointer is still an ordinary value because the third argument supplies
     // the byte count to copy.
     mark(0, UntypedArgKind::None, /*is_mutable=*/true);
-    return;
+    return slots;
   }
   if (lower == "blockread") {
     mark(1, UntypedArgKind::Mutable, /*is_mutable=*/true);
-    return;
+    return slots;
   }
   if (lower == "blockwrite") {
     mark(1, UntypedArgKind::Const, /*is_mutable=*/false);
-    return;
+    return slots;
   }
   if (lower == "indexbyte" || lower == "indexword") {
     mark(0, UntypedArgKind::Const, /*is_mutable=*/false);
-    return;
+    return slots;
   }
   if (lower == "comparebyte" || lower == "comparechar" ||
       lower == "compareword") {
     mark(0, UntypedArgKind::Const, /*is_mutable=*/false);
     mark(1, UntypedArgKind::Const, /*is_mutable=*/false);
-    return;
+    return slots;
   }
   if (lower == "getmem" || lower == "reallocmem" ||
       lower == "dispose" || lower == "strdispose") {
@@ -172,12 +173,13 @@ void mark_builtin_memory_helper_param_info(std::string_view name,
   if (lower == "val") {
     mark(1, UntypedArgKind::None, /*is_mutable=*/true);
     mark(2, UntypedArgKind::None, /*is_mutable=*/true);
-    return;
+    return slots;
   }
   if (lower == "str") {
     mark(1, UntypedArgKind::None, /*is_mutable=*/true);
-    return;
+    return slots;
   }
+  return slots;
 }
 
 }  // namespace
@@ -204,15 +206,39 @@ bool EmitCalls::proc_accepts_zero_args(const ProcDecl& decl) {
   return true;
 }
 
-void EmitCalls::mark_call_param_info(const ProcDecl* decl,
-                                     CallArgumentPlan& plan) {
-  if (!decl) return;
+std::vector<CallArgumentSlot> EmitCalls::append_default_call_slots(
+    const ProcDecl* decl, std::vector<CallArgumentSlot> slots) {
+  if (!decl) return slots;
+  const std::vector<FlatCallParamInfo> flat_params =
+      resolution_.flatten_call_param_info(decl);
+  if (slots.size() >= flat_params.size()) return slots;
+
+  bool all_defaults_present = true;
+  for (size_t i = slots.size(); i < flat_params.size(); ++i) {
+    if (!flat_params[i].default_value) {
+      all_defaults_present = false;
+      break;
+    }
+  }
+  if (!all_defaults_present) return slots;
+
+  slots.reserve(flat_params.size());
+  for (size_t i = slots.size(); i < flat_params.size(); ++i) {
+    slots.push_back(CallArgumentSlot{.expr = flat_params[i].default_value,
+                                     .defaulted = true});
+  }
+  return slots;
+}
+
+std::vector<CallArgumentSlot> EmitCalls::call_slots_with_decl_param_info(
+    const ProcDecl* decl, std::vector<CallArgumentSlot> slots) {
+  if (!decl) return slots;
   size_t ai = 0;
   for (const auto& p : decl->params) {
     const size_t count = p.names.empty() ? 1 : p.names.size();
     for (size_t k = 0; k < count; ++k) {
-      if (ai >= plan.slots.size()) return;
-      CallArgumentSlot& slot = plan.slots[ai];
+      if (ai >= slots.size()) return slots;
+      CallArgumentSlot& slot = slots[ai];
       if (!p.type) {
         slot.untyped_arg = (p.mode == Param::Var || p.mode == Param::Out)
                                ? UntypedArgKind::Mutable
@@ -226,36 +252,40 @@ void EmitCalls::mark_call_param_info(const ProcDecl* decl,
       ++ai;
     }
   }
+  return slots;
 }
 
-void EmitCalls::collect_builtin_helper_param_info(const Expr& callee,
-                                                  CallArgumentPlan& plan) {
+std::vector<CallArgumentSlot>
+EmitCalls::call_slots_with_builtin_helper_param_info(
+    const Expr& callee, std::vector<CallArgumentSlot> slots) {
   if (callee.kind == Kind::Ident) {
-    mark_builtin_memory_helper_param_info(
-        static_cast<const Ident&>(callee).name, plan);
-    return;
+    return call_slots_with_builtin_memory_helper_info(
+        static_cast<const Ident&>(callee).name, std::move(slots));
   }
-  if (callee.kind != Kind::Member) return;
+  if (callee.kind != Kind::Member) return slots;
   const auto& mem = static_cast<const Member&>(callee);
   if (mem.base->kind == Kind::Ident &&
       ascii_lower(static_cast<const Ident&>(*mem.base).name) == "system") {
-    mark_builtin_memory_helper_param_info(mem.name, plan);
+    return call_slots_with_builtin_memory_helper_info(mem.name,
+                                                     std::move(slots));
   }
+  return slots;
 }
 
-void EmitCalls::collect_procedural_callee_param_info(const Expr& callee,
-                                                     CallArgumentPlan& plan) {
+std::vector<CallArgumentSlot>
+EmitCalls::call_slots_with_procedural_callee_param_info(
+    const Expr& callee, std::vector<CallArgumentSlot> slots) {
   const TypeExpr* callee_type = analysis_.deduce_type(callee);
   if (callee_type) callee_type = analysis_.canonicalize_type(callee_type);
-  if (!callee_type || callee_type->kind != Kind::TyProcedural) return;
+  if (!callee_type || callee_type->kind != Kind::TyProcedural) return slots;
 
   const auto& proc = static_cast<const TyProcedural&>(*callee_type);
   size_t ai = 0;
   for (const auto& p : proc.params) {
     const size_t count = p.names.empty() ? 1 : p.names.size();
     for (size_t k = 0; k < count; ++k) {
-      if (ai >= plan.slots.size()) return;
-      CallArgumentSlot& slot = plan.slots[ai];
+      if (ai >= slots.size()) return slots;
+      CallArgumentSlot& slot = slots[ai];
       if (!p.type) {
         slot.untyped_arg = (p.mode == Param::Var || p.mode == Param::Out)
                                ? UntypedArgKind::Mutable
@@ -269,48 +299,32 @@ void EmitCalls::collect_procedural_callee_param_info(const Expr& callee,
       ++ai;
     }
   }
+  return slots;
 }
 
 CallArgumentPlan EmitCalls::plan_call_arguments(
     const ProcDecl* decl, const Expr* callee,
     const std::vector<const Expr*>& explicit_args,
     std::string_view default_arg_unit) {
-  CallArgumentPlan plan;
-  plan.default_arg_unit = std::string(default_arg_unit);
-  plan.slots.reserve(explicit_args.size());
+  std::vector<CallArgumentSlot> slots;
+  slots.reserve(explicit_args.size());
   for (const Expr* arg : explicit_args) {
-    plan.slots.push_back(CallArgumentSlot{.expr = arg});
+    slots.push_back(CallArgumentSlot{.expr = arg});
   }
 
-  if (decl) {
-    const std::vector<FlatCallParamInfo> flat_params =
-        resolution_.flatten_call_param_info(decl);
-    if (plan.slots.size() < flat_params.size()) {
-      bool all_defaults_present = true;
-      for (size_t i = plan.slots.size(); i < flat_params.size(); ++i) {
-        if (!flat_params[i].default_value) {
-          all_defaults_present = false;
-          break;
-        }
-      }
-      if (all_defaults_present) {
-        plan.slots.reserve(flat_params.size());
-        for (size_t i = plan.slots.size(); i < flat_params.size(); ++i) {
-          plan.slots.push_back(
-              CallArgumentSlot{.expr = flat_params[i].default_value,
-                               .defaulted = true});
-        }
-      }
-    }
-  }
+  slots = append_default_call_slots(decl, std::move(slots));
 
-  if (callee) collect_builtin_helper_param_info(*callee, plan);
+  if (callee) {
+    slots = call_slots_with_builtin_helper_param_info(*callee, std::move(slots));
+  }
   if (decl) {
-    mark_call_param_info(decl, plan);
+    slots = call_slots_with_decl_param_info(decl, std::move(slots));
   } else if (callee) {
-    collect_procedural_callee_param_info(*callee, plan);
+    slots =
+        call_slots_with_procedural_callee_param_info(*callee, std::move(slots));
   }
-  return plan;
+  return CallArgumentPlan{.slots = std::move(slots),
+                          .default_arg_unit = std::string(default_arg_unit)};
 }
 
 std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
