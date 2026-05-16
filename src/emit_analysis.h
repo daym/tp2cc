@@ -190,6 +190,19 @@ class EmitAnalysis {
   std::optional<SetLiteralOrdinalSummary> summarize_set_literal_ordinals(
       const ast::SetLit& s);
   const ast::TypeExpr* const_intrinsic_type_arg(const ast::Expr& arg);
+  bool type_is_string_like(const ast::TypeExpr* t);
+  const ast::TypeExpr* canonical_set_type(const ast::TypeExpr* t);
+  const PrimitiveInfo* primitive_info_for_type(const ast::TypeExpr* t);
+  bool type_is_numeric_primitive(const ast::TypeExpr* t);
+  static bool binop_is_comparison(ast::BinOp op);
+  static bool binop_is_arithmetic_like(ast::BinOp op);
+  bool type_is_ansistring(const ast::TypeExpr* t);
+  const ast::TypeExpr* deduce_binary_expr_type(const ast::Binary& b);
+  const ast::TypeExpr* deduce_low_high_result_type(const ast::TypeExpr* t);
+  const ast::TypeExpr* deduce_own_unit_value_type(const UnitInfo& u,
+                                                  const std::string& name);
+  const ast::TypeExpr* deduce_exported_unit_value_type(
+      const UnitInfo& u, const std::string& name);
   std::optional<ConstIntExprInfo> fold_untyped_const_decl(
       const ast::ConstDecl& cd,
       std::unordered_set<std::string>* visiting_const_names);
@@ -199,6 +212,8 @@ class EmitAnalysis {
   const ConstInfo* find_const_for_fold_in_unit(const UnitInfo& u,
                                                const std::string& name,
                                                bool export_only) const;
+  const EnumInfoReg* find_enum_info_in_unit(std::string_view unit_name,
+                                            std::string_view member_name);
 
   const TypeRegistry* registry_;
   ScopeStateView& scope_;

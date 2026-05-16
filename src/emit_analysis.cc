@@ -819,6 +819,169 @@ const ConstInfo* EmitAnalysis::find_const_for_fold_in_unit(
   return export_only ? u.find_export_const(name) : u.find_const(name);
 }
 
+bool EmitAnalysis::type_is_string_like(const TypeExpr* t) {
+  if (!t) return false;
+  if (t->kind == Kind::TyString) return true;
+  if (t->kind == Kind::TyName) {
+    const auto& nm = ascii_lower(static_cast<const TyName&>(*t).name);
+    return nm == "string" || nm == "shortstring" || nm == "ansistring";
+  }
+  return false;
+}
+
+const TypeExpr* EmitAnalysis::canonical_set_type(const TypeExpr* t) {
+  if (!t) return nullptr;
+  const TypeExpr* c = canonicalize_type(t);
+  return (c && c->kind == Kind::TySet) ? c : nullptr;
+}
+
+const PrimitiveInfo* EmitAnalysis::primitive_info_for_type(const TypeExpr* t) {
+  t = canonicalize_type(t);
+  if (!t || t->kind != Kind::TyName) return nullptr;
+  return primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
+}
+
+bool EmitAnalysis::type_is_numeric_primitive(const TypeExpr* t) {
+  t = canonicalize_type(t);
+  if (!t || t->kind != Kind::TyName) return false;
+  const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
+  const PrimitiveInfo* pi = primitive_info(name);
+  return pi && (pi->int_kind != PrimitiveIntKind::None || name == "single" ||
+                name == "double" || name == "real" || name == "extended" ||
+                name == "comp");
+}
+
+bool EmitAnalysis::binop_is_comparison(BinOp op) {
+  return op == BinOp::Eq || op == BinOp::NotEq || op == BinOp::Lt ||
+         op == BinOp::Gt || op == BinOp::LtEq || op == BinOp::GtEq;
+}
+
+bool EmitAnalysis::binop_is_arithmetic_like(BinOp op) {
+  return op == BinOp::Add || op == BinOp::Sub || op == BinOp::Mul ||
+         op == BinOp::IntDiv || op == BinOp::Mod || op == BinOp::Shl ||
+         op == BinOp::Shr || op == BinOp::And || op == BinOp::Or ||
+         op == BinOp::Xor;
+}
+
+bool EmitAnalysis::type_is_ansistring(const TypeExpr* t) {
+  return t && t->kind == Kind::TyName &&
+         ascii_lower(static_cast<const TyName&>(*t).name) == "ansistring";
+}
+
+const TypeExpr* EmitAnalysis::deduce_binary_expr_type(const Binary& b) {
+  if (b.op == BinOp::Is) return builtin_boolean_type();
+  if (b.op == BinOp::As) {
+    if (b.rhs->kind == Kind::Ident) {
+      const auto& id = static_cast<const Ident&>(*b.rhs);
+      auto ait = registry_->aliases.find(id.name);
+      if (ait != registry_->aliases.end()) return ait->second.target.get();
+      if (class_info_for_type_name(id.name)) return named_pascal_type(id.name);
+    }
+    return nullptr;
+  }
+
+  const TypeExpr* lt = deduce_type(*b.lhs);
+  const TypeExpr* rt = deduce_type(*b.rhs);
+  const TypeExpr* ltc = canonicalize_type(lt);
+  const TypeExpr* rtc = canonicalize_type(rt);
+
+  if (binop_is_comparison(b.op)) return builtin_boolean_type();
+  if (binop_is_arithmetic_like(b.op)) {
+    // Pascal pointer arithmetic preserves the pointer type for `p+n`,
+    // `n+p`, and `p-n`. Type deduction must keep that fact here because
+    // a later dereference (`(p+n)^`) needs the pointee type; without it,
+    // value intrinsics such as `Ord` cannot tell that a `pchar` element is
+    // a `char`.
+    const bool lptr = type_is_pointer_arithmetic_operand(ltc);
+    const bool rptr = type_is_pointer_arithmetic_operand(rtc);
+    const bool lint = type_is_integer_arithmetic_operand(ltc);
+    const bool rint = type_is_integer_arithmetic_operand(rtc);
+    if (b.op == BinOp::Add) {
+      if (lptr && rint) return lt;
+      if (rptr && lint) return rt;
+      if (lptr || rptr) return nullptr;
+    }
+    if (b.op == BinOp::Sub) {
+      if (lptr && rint) return lt;
+      if (lptr && rptr) return named_pascal_type("ptrint");
+      if (lptr || rptr) return nullptr;
+    }
+    if (same_type_ast(lt, rt)) return lt ? lt : rt;
+    if (type_is_numeric_primitive(lt) && type_is_numeric_primitive(rt)) {
+      const PrimitiveInfo* lp = primitive_info_for_type(lt);
+      const PrimitiveInfo* rp = primitive_info_for_type(rt);
+      if (lp && rp && lp->int_kind != PrimitiveIntKind::None &&
+          rp->int_kind != PrimitiveIntKind::None) {
+        return (lp->bits >= rp->bits) ? lt : rt;
+      }
+      return lt ? lt : rt;
+    }
+  }
+
+  // String / set binary ops. Pascal's `+`/`-`/`*` are overloaded on
+  // string concatenation and set operations. Typing them here gives
+  // overload ranking and later lowering one Pascal result type instead
+  // of leaving each call site to rediscover the operator family.
+  if (b.op == BinOp::Add &&
+      (type_is_string_like(lt) || type_is_string_like(rt) ||
+       b.lhs->kind == Kind::StringLit || b.rhs->kind == Kind::StringLit)) {
+    if (type_is_ansistring(lt) || type_is_ansistring(rt)) {
+      return named_pascal_type("ansistring");
+    }
+    return named_pascal_type("shortstring");
+  }
+  if (b.op == BinOp::Add || b.op == BinOp::Sub || b.op == BinOp::Mul) {
+    // Set union (+) / difference (-) / intersection (*). Pascal forbids
+    // mixing element types, so either typed operand anchors the whole
+    // expression. The other side may be a bare `[...]` literal with no
+    // type of its own; once one side is a set, we still know the result.
+    if (const TypeExpr* lset = canonical_set_type(lt)) {
+      return b.lhs->kind == Kind::SetLit ? lset : lt;
+    }
+    if (const TypeExpr* rset = canonical_set_type(rt)) {
+      return b.rhs->kind == Kind::SetLit ? rset : rt;
+    }
+  }
+  return nullptr;
+}
+
+const TypeExpr* EmitAnalysis::deduce_low_high_result_type(const TypeExpr* t) {
+  const TypeExpr* canon = canonicalize_type(t);
+  if (!canon) return t;
+  if (canon->kind == Kind::TySet) {
+    return static_cast<const TySet&>(*canon).element.get();
+  }
+  if (canon->kind == Kind::TyArray) {
+    const auto& arr = static_cast<const TyArray&>(*canon);
+    if (arr.array_kind == ArrayKind::Fixed && !arr.dims.empty()) {
+      return arr.dims.front().get();
+    }
+  }
+  return t;
+}
+
+const TypeExpr* EmitAnalysis::deduce_own_unit_value_type(
+    const UnitInfo& u, const std::string& name) {
+  if (auto* v = u.find_var(name)) return v->type.get();
+  if (auto* c = u.find_const(name)) return deduce_const_info_type(*c);
+  if (const TypeExpr* pt =
+          proc_result_type(unique_zero_arg_proc(u.find_procs(name)))) {
+    return pt;
+  }
+  return nullptr;
+}
+
+const TypeExpr* EmitAnalysis::deduce_exported_unit_value_type(
+    const UnitInfo& u, const std::string& name) {
+  if (auto* v = u.find_export_var(name)) return v->type.get();
+  if (auto* c = u.find_export_const(name)) return deduce_const_info_type(*c);
+  if (const TypeExpr* pt =
+          proc_result_type(unique_zero_arg_proc(u.find_export_procs(name)))) {
+    return pt;
+  }
+  return nullptr;
+}
+
 std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
     const Expr& e, std::unordered_set<std::string>* visiting_const_names) {
   switch (e.kind) {
@@ -987,16 +1150,6 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
 
 const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
   if (!registry_) return nullptr;
-  // Resolve "is `member` an enum member declared in `unit`?" via the
-  // registry's (unit, member) -> TyEnum* hash index. The vast majority of
-  // identifiers in any Pascal source are not enum members; the index
-  // answers the common no-match case in one hash probe instead of walking
-  // every registered enum's member list.
-  auto find_unit_enum_type =
-      [&](std::string_view unit_name,
-          std::string_view member_name) -> const TypeExpr* {
-    return registry_->lookup_enum_member_in_unit(unit_name, member_name);
-  };
   switch (e.kind) {
     case Kind::IntLit:
       if (auto info = eval_const_int_expr(e); info && info->type) {
@@ -1024,126 +1177,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       if (auto info = eval_const_int_expr(e); info && info->type) {
         return builtin_integer_type(info->type);
       }
-      if (e.kind != Kind::Binary) return nullptr;
-      {
-        if (b.op == BinOp::Is) return builtin_boolean_type();
-        if (b.op == BinOp::As) {
-          if (b.rhs->kind == Kind::Ident) {
-            const auto& id = static_cast<const Ident&>(*b.rhs);
-            auto ait = registry_->aliases.find(id.name);
-            if (ait != registry_->aliases.end()) return ait->second.target.get();
-            if (class_info_for_type_name(id.name)) return named_pascal_type(id.name);
-          }
-          return nullptr;
-        }
-        auto is_string_like = [&](const TypeExpr* t) {
-          if (!t) return false;
-          if (t->kind == Kind::TyString) return true;
-          if (t->kind == Kind::TyName) {
-            const auto& nm = ascii_lower(static_cast<const TyName&>(*t).name);
-            return nm == "string" || nm == "shortstring" || nm == "ansistring";
-          }
-          return false;
-        };
-        auto canon_set = [&](const TypeExpr* t) -> const TypeExpr* {
-          if (!t) return nullptr;
-          const TypeExpr* c = canonicalize_type(t);
-          return (c && c->kind == Kind::TySet) ? c : nullptr;
-        };
-        const TypeExpr* lt = deduce_type(*b.lhs);
-        const TypeExpr* rt = deduce_type(*b.rhs);
-        const TypeExpr* ltc = canonicalize_type(lt);
-        const TypeExpr* rtc = canonicalize_type(rt);
-        auto prim_of = [&](const TypeExpr* t) -> const PrimitiveInfo* {
-          t = canonicalize_type(t);
-          if (!t || t->kind != Kind::TyName) return nullptr;
-          return primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
-        };
-        auto is_numeric_primitive = [&](const TypeExpr* t) {
-          t = canonicalize_type(t);
-          if (!t || t->kind != Kind::TyName) return false;
-          const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
-          const PrimitiveInfo* pi = primitive_info(name);
-          return pi && (pi->int_kind != PrimitiveIntKind::None ||
-                        name == "single" || name == "double" ||
-                        name == "real" || name == "extended" ||
-                        name == "comp");
-        };
-        auto is_comparison = [&] {
-          return b.op == BinOp::Eq || b.op == BinOp::NotEq ||
-                 b.op == BinOp::Lt || b.op == BinOp::Gt ||
-                 b.op == BinOp::LtEq || b.op == BinOp::GtEq;
-        };
-        if (is_comparison()) return builtin_boolean_type();
-        auto is_arithmetic_like = [&] {
-          return b.op == BinOp::Add || b.op == BinOp::Sub ||
-                 b.op == BinOp::Mul || b.op == BinOp::IntDiv ||
-                 b.op == BinOp::Mod || b.op == BinOp::Shl ||
-                 b.op == BinOp::Shr || b.op == BinOp::And ||
-                 b.op == BinOp::Or || b.op == BinOp::Xor;
-        };
-        if (is_arithmetic_like()) {
-          // Pascal pointer arithmetic preserves the pointer type for `p+n`,
-          // `n+p`, and `p-n`. Type deduction must keep that fact here because
-          // a later dereference (`(p+n)^`) needs the pointee type; without it,
-          // value intrinsics such as `Ord` cannot tell that a `pchar` element is
-          // a `char`.
-          const bool lptr = type_is_pointer_arithmetic_operand(ltc);
-          const bool rptr = type_is_pointer_arithmetic_operand(rtc);
-          const bool lint = type_is_integer_arithmetic_operand(ltc);
-          const bool rint = type_is_integer_arithmetic_operand(rtc);
-          if (b.op == BinOp::Add) {
-            if (lptr && rint) return lt;
-            if (rptr && lint) return rt;
-            if (lptr || rptr) return nullptr;
-          }
-          if (b.op == BinOp::Sub) {
-            if (lptr && rint) return lt;
-            if (lptr && rptr) return named_pascal_type("ptrint");
-            if (lptr || rptr) return nullptr;
-          }
-          if (same_type_ast(lt, rt)) return lt ? lt : rt;
-          if (is_numeric_primitive(lt) && is_numeric_primitive(rt)) {
-            const PrimitiveInfo* lp = prim_of(lt);
-            const PrimitiveInfo* rp = prim_of(rt);
-            if (lp && rp && lp->int_kind != PrimitiveIntKind::None &&
-                rp->int_kind != PrimitiveIntKind::None) {
-              return (lp->bits >= rp->bits) ? lt : rt;
-            }
-            return lt ? lt : rt;
-          }
-        }
-        // String / set binary ops. Pascal's `+`/`-`/`*` are overloaded on
-        // string concatenation and set operations. Typing them here gives
-        // overload ranking and later lowering one Pascal result type instead
-        // of leaving each call site to rediscover the operator family.
-        if (b.op == BinOp::Add &&
-            (is_string_like(lt) || is_string_like(rt) ||
-             b.lhs->kind == Kind::StringLit || b.rhs->kind == Kind::StringLit)) {
-          auto is_ansistring = [&](const TypeExpr* t) {
-            return t && t->kind == Kind::TyName &&
-                   ascii_lower(static_cast<const TyName&>(*t).name) ==
-                       "ansistring";
-          };
-          if (is_ansistring(lt) || is_ansistring(rt)) {
-            return named_pascal_type("ansistring");
-          }
-          return named_pascal_type("shortstring");
-        }
-        if (b.op == BinOp::Add || b.op == BinOp::Sub || b.op == BinOp::Mul) {
-          // Set union (+) / difference (-) / intersection (*). Pascal forbids
-          // mixing element types, so either typed operand anchors the whole
-          // expression. The other side may be a bare `[...]` literal with no
-          // type of its own; once one side is a set, we still know the result.
-          if (const TypeExpr* lset = canon_set(lt)) {
-            return b.lhs->kind == Kind::SetLit ? lset : lt;
-          }
-          if (const TypeExpr* rset = canon_set(rt)) {
-            return b.rhs->kind == Kind::SetLit ? rset : rt;
-          }
-        }
-      }
-      break;
+      return deduce_binary_expr_type(b);
     }
     case Kind::Ident: {
       const auto& id = static_cast<const Ident&>(e);
@@ -1226,24 +1260,6 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           return rf;
         }
       }
-      auto lookup_own = [&](const UnitInfo& u) -> const TypeExpr* {
-        if (auto* v = u.find_var(id.name)) return v->type.get();
-        if (auto* c = u.find_const(id.name)) return deduce_const_info_type(*c);
-        if (const TypeExpr* pt =
-                proc_result_type(unique_zero_arg_proc(u.find_procs(id.name)))) {
-          return pt;
-        }
-        return nullptr;
-      };
-      auto lookup_export = [&](const UnitInfo& u) -> const TypeExpr* {
-        if (auto* v = u.find_export_var(id.name)) return v->type.get();
-        if (auto* c = u.find_export_const(id.name)) return deduce_const_info_type(*c);
-        if (const TypeExpr* pt = proc_result_type(
-                unique_zero_arg_proc(u.find_export_procs(id.name)))) {
-          return pt;
-        }
-        return nullptr;
-      };
       // Own-unit: both interface and implementation are visible. Other units:
       // only interface exports reached through the actual `uses` chain count.
       // Do not consult the registry's global last-wins maps here; two units
@@ -1251,16 +1267,25 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       // the units actually imported by the current unit.
       auto cur = registry_->units.find(scope_.current_unit_name);
       if (cur != registry_->units.end()) {
-        if (const auto* t = lookup_own(cur->second)) return t;
-        if (const auto* t = find_unit_enum_type(cur->second.name, id.name)) {
+        if (const auto* t = deduce_own_unit_value_type(cur->second, id.name)) {
+          return t;
+        }
+        if (const auto* t =
+                registry_->lookup_enum_member_in_unit(cur->second.name,
+                                                       id.name)) {
           return t;
         }
         for (auto it = cur->second.uses.rbegin();
              it != cur->second.uses.rend(); ++it) {
           auto uit = registry_->units.find(*it);
           if (uit == registry_->units.end()) continue;
-          if (const auto* t = lookup_export(uit->second)) return t;
-          if (const auto* t = find_unit_enum_type(uit->second.name, id.name)) {
+          if (const auto* t =
+                  deduce_exported_unit_value_type(uit->second, id.name)) {
+            return t;
+          }
+          if (const auto* t =
+                  registry_->lookup_enum_member_in_unit(uit->second.name,
+                                                        id.name)) {
             return t;
           }
         }
@@ -1285,7 +1310,8 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       const auto& m = static_cast<const Member&>(e);
       if (auto unit_member = resolve_unit_qualified_member(m)) {
         if (unit_member->resolved.kind == ResolvedKind::EnumMember) {
-          return find_unit_enum_type(unit_member->unit_name, m.name);
+          return registry_->lookup_enum_member_in_unit(unit_member->unit_name,
+                                                       m.name);
         }
       }
       std::string cls;
@@ -1433,30 +1459,16 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           }
         }
         if ((id.name == "low" || id.name == "high") && c.args.size() == 1) {
-          auto bound_result_type = [&](const TypeExpr* t) -> const TypeExpr* {
-            const TypeExpr* canon = canonicalize_type(t);
-            if (!canon) return t;
-            if (canon->kind == Kind::TySet) {
-              return static_cast<const TySet&>(*canon).element.get();
-            }
-            if (canon->kind == Kind::TyArray) {
-              const auto& arr = static_cast<const TyArray&>(*canon);
-              if (arr.array_kind == ArrayKind::Fixed && !arr.dims.empty()) {
-                return arr.dims.front().get();
-              }
-            }
-            return t;
-          };
           if (c.args[0]->kind == Kind::Ident) {
             const auto& arg_id = static_cast<const Ident&>(*c.args[0]);
             if (const TypeExpr* named = lookup_named_type_expr(arg_id.name)) {
-              return bound_result_type(named);
+              return deduce_low_high_result_type(named);
             }
             if (const TyName* int_ty = builtin_integer_type(arg_id.name)) {
               return int_ty;
             }
           }
-          return bound_result_type(deduce_type(*c.args[0]));
+          return deduce_low_high_result_type(deduce_type(*c.args[0]));
         }
         if (id.name == "sizeof" && c.args.size() == 1) {
           return builtin_integer_type("longint");
@@ -1754,26 +1766,30 @@ const ConstInfo* EmitAnalysis::find_visible_unit_const(const std::string& name) 
   return nullptr;
 }
 
+const EnumInfoReg* EmitAnalysis::find_enum_info_in_unit(
+    std::string_view unit_name, std::string_view member_name) {
+  if (!registry_) return nullptr;
+  for (const auto& [enum_name, info] : registry_->enums) {
+    (void)enum_name;
+    if (info.defining_unit != unit_name) continue;
+    for (const auto& member : info.members) {
+      if (member == member_name) return &info;
+    }
+  }
+  return nullptr;
+}
+
 const EnumInfoReg* EmitAnalysis::find_visible_enum_info_for_member(
     const std::string& name) {
   if (!registry_) return nullptr;
 
-  auto find_in_unit = [&](const std::string& unit_name) -> const EnumInfoReg* {
-    for (const auto& [enum_name, info] : registry_->enums) {
-      (void)enum_name;
-      if (info.defining_unit != unit_name) continue;
-      for (const auto& member : info.members) {
-        if (member == name) return &info;
-      }
-    }
-    return nullptr;
-  };
-
-  if (const auto* info = find_in_unit(scope_.current_unit_name)) return info;
+  if (const auto* info = find_enum_info_in_unit(scope_.current_unit_name, name)) {
+    return info;
+  }
   auto cur = registry_->units.find(scope_.current_unit_name);
   if (cur == registry_->units.end()) return nullptr;
   for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend(); ++it) {
-    if (const auto* info = find_in_unit(*it)) return info;
+    if (const auto* info = find_enum_info_in_unit(*it, name)) return info;
   }
   return nullptr;
 }
