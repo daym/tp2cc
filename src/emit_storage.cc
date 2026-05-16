@@ -946,8 +946,8 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
   const std::string dst_cxx =
       dst_cxx_text.empty() ? canonical_dst_cxx : std::string(dst_cxx_text);
   const std::string src_cxx = types_.type_to_cxx(*src);
-  // Compare canonical spellings here. Use-site casts may request an alias
-  // spelling (`p_tchildclass`) even when both sides already canonicalize to
+  // Compare canonical C++ type names here. Use-site casts may request an alias
+  // type name (`p_tchildclass`) even when both sides already canonicalize to
   // the same underlying metaclass/pointer type; emitting another cast around
   // an already-correct explicit Pascal cast only creates review-noise.
   if (canonical_dst_cxx == src_cxx || dst_cxx == src_cxx) return source_cxx;

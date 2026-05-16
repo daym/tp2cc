@@ -1610,7 +1610,7 @@ void test_unit_qualified_variable_assignment_is_storage_designator() {
   CHECK(contains(out.impl, "::p_dep::p_internalerror = (&p_internalerror);"));
 }
 
-void test_external_used_unit_qualified_call_keeps_namespace_spelling() {
+void test_external_used_unit_qualified_call_keeps_namespace_cxx_name() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -2915,7 +2915,7 @@ void test_text_typecast_over_pointer_deref_keeps_file_lvalue() {
   CHECK(!contains(out.impl, "((::rt::tp2cc_TextFile)(::rt::tp2cc_deref(p_arg)))"));
 }
 
-void test_visible_pointer_alias_cast_uses_qualified_type_spelling() {
+void test_visible_pointer_alias_cast_uses_qualified_type_name() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -2946,7 +2946,7 @@ void test_visible_pointer_alias_cast_uses_qualified_type_spelling() {
                   "((p_pcompilerwidestring)(p_raw))"));
 }
 
-void test_local_pointer_alias_cast_uses_local_type_spelling() {
+void test_local_pointer_alias_cast_uses_local_type_name() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -3222,7 +3222,7 @@ void test_local_enum_members_do_not_fall_back_to_runtime() {
   CHECK(!contains(out.impl, "::rt::p_left"));
 }
 
-void test_sizeof_visible_type_uses_type_spelling_not_identifier_lookup() {
+void test_sizeof_visible_type_uses_type_name_not_identifier_lookup() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -3239,7 +3239,7 @@ void test_sizeof_visible_type_uses_type_spelling_not_identifier_lookup() {
   CHECK(!contains(out.impl, "sizeof(::rt::p_aint)"));
 }
 
-void test_sizeof_qualified_type_uses_type_spelling_not_value_namespace() {
+void test_sizeof_qualified_type_uses_type_name_not_value_namespace() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -6930,8 +6930,8 @@ void test_class_field_shadows_unit_name_in_member_call() {
 
 void test_record_field_named_like_type_keeps_pascal_type_lookup() {
   // Pascal resolves the RHS of `fvmlib: fvmlib` in type context and the LHS
-  // as a field/value symbol. C++ gets separate spellings: `t_` for the type,
-  // `p_` for the field.
+  // as a field/value symbol. Generated C++ uses `t_` for the type and `p_` for
+  // the field.
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -9036,7 +9036,7 @@ int main() {
   RUN_TEST(test_imported_nil_default_argument_qualifies_procedural_type);
   RUN_TEST(test_imported_default_argument_qualifies_declaring_unit_const);
   RUN_TEST(test_unit_qualified_variable_assignment_is_storage_designator);
-  RUN_TEST(test_external_used_unit_qualified_call_keeps_namespace_spelling);
+  RUN_TEST(test_external_used_unit_qualified_call_keeps_namespace_cxx_name);
   RUN_TEST(test_method_pointer_trailing_default_nil_is_lowered_as_empty_value);
   RUN_TEST(test_singleton_typed_array_const);
   RUN_TEST(test_nested_array_type);
@@ -9094,16 +9094,16 @@ int main() {
   RUN_TEST(test_untyped_array_value_cast_copies_caller_storage);
   RUN_TEST(test_untyped_record_value_cast_copies_caller_storage);
   RUN_TEST(test_text_typecast_over_pointer_deref_keeps_file_lvalue);
-  RUN_TEST(test_visible_pointer_alias_cast_uses_qualified_type_spelling);
-  RUN_TEST(test_local_pointer_alias_cast_uses_local_type_spelling);
+  RUN_TEST(test_visible_pointer_alias_cast_uses_qualified_type_name);
+  RUN_TEST(test_local_pointer_alias_cast_uses_local_type_name);
   RUN_TEST(test_runtime_alias_type_names_are_explicitly_qualified);
   RUN_TEST(test_tdatetime_and_runtime_date_time_lower_through_rt);
   RUN_TEST(test_runtime_aliases_cover_currency_systemtime_and_pansistring);
   RUN_TEST(test_string_comparison_uses_runtime_operator_resolution);
   RUN_TEST(test_tmethod_type_name_is_explicitly_qualified);
   RUN_TEST(test_local_enum_members_do_not_fall_back_to_runtime);
-  RUN_TEST(test_sizeof_visible_type_uses_type_spelling_not_identifier_lookup);
-  RUN_TEST(test_sizeof_qualified_type_uses_type_spelling_not_value_namespace);
+  RUN_TEST(test_sizeof_visible_type_uses_type_name_not_identifier_lookup);
+  RUN_TEST(test_sizeof_qualified_type_uses_type_name_not_value_namespace);
   RUN_TEST(test_unit_type_value_duplicates_across_sections_report_error);
   RUN_TEST(test_sizeof_own_implementation_private_qualified_names);
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);

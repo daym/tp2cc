@@ -722,11 +722,11 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
         if (pd.modifiers.is_final && !(pd.modifiers.is_virtual || pd.modifiers.is_abstract || pd.modifiers.is_override)) {
           emit_ops_.report_error(pd.loc, "only virtual methods can be final");
         }
-        // FPC rejects `override` on old-style Pascal `object` methods; its
-        // documented spelling for overriding an inherited object virtual is to
-        // redeclare the derived method as `virtual`. That still becomes a C++
-        // override, so emit the C++ `override` specifier for this accepted
-        // object case. For `class`, keep requiring the Pascal `override`
+        // FPC rejects `override` on old-style Pascal `object` methods; the
+        // accepted Pascal source syntax for overriding an inherited object
+        // virtual is to redeclare the derived method as `virtual`. That still
+        // becomes a C++ override, so emit the C++ `override` specifier for this
+        // accepted object case. For `class`, keep requiring the Pascal `override`
         // directive so a source-level hide/reintroduce does not silently become
         // an implicit C++ override.
         const bool object_virtual_override =

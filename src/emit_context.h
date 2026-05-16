@@ -29,7 +29,7 @@ struct ScopeStateView {
     const ast::ProcDecl* decl = nullptr;
   };
 
-  // `with X do` contributes an already-spelled receiver expression plus the
+  // `with X do` contributes an already-lowered receiver expression plus the
   // Pascal type/class information needed to resolve bare members through it.
   struct WithBind {
     std::string cxx_text;
@@ -60,8 +60,8 @@ struct ScopeStateView {
   // expression context, `TArray(x)` produces an array value; Pascal arrays are
   // first-class values and do not decay to pointers. In storage contexts, such
   // as assignment targets, `@x`, var/out/untyped-var actual arguments, and
-  // mutation helpers like `Inc(T(x))`, the same spelling is a typed view of the
-  // original storage.
+  // mutation helpers like `Inc(T(x))`, the same source expression denotes a
+  // typed view of the original storage.
   bool& storage_view_context;
 
   // Current lexical scope.

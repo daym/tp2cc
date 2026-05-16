@@ -1187,10 +1187,9 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       const std::string low = lc(used_name);
       if (low == "__rt__" || units.count(low) > 0) return;
       // UnitGraph/main.cc already treat missing `uses` entries as external RTL
-      // units and emit `p_<unit>.h` via write_external_stub. Mirror that fact
-      // in the semantic registry with an empty UnitInfo: the unit has no parsed
-      // exports, but `Unit.name` is still a valid qualified spelling and
-      // EmitLookup can fall back to the generated stub namespace.
+      // units and emit `p_<unit>.h` via write_external_stub. Register the same
+      // unit name here with no exports so `Unit.name` can still fall back to the
+      // generated stub namespace.
       units[low] = unit_info_for(low);
     };
     for (const auto& nm : u->interface_uses) add_external_stub(nm);

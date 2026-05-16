@@ -155,10 +155,9 @@ class EmitAnalysis {
     // Enum identity for `OrdinalFamily::Enum`. The TyEnum AST node IS the
     // enum's identity: there's one per Pascal `type T = (...)` declaration,
     // and the registry stores it (EnumInfoReg::type). Using the pointer
-    // directly removes the "what spelling did this come from" question that
-    // a string key invites - every path to the same enum (raw TyEnum from
-    // deduce_type of an enum-member ident, or TyName canonicalised through
-    // the registry) ends at the same pointer.
+    // directly avoids string-key aliasing: every path to the same enum (raw
+    // TyEnum from deduce_type of an enum-member ident, or TyName canonicalised
+    // through the registry) ends at the same pointer.
     const ast::TyEnum* enum_key = nullptr;
   };
 

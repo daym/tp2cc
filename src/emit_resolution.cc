@@ -775,7 +775,7 @@ ResolvedCall EmitResolution::resolve_call(
     // builtins do not carry AST ProcDecls, so they must still participate
     // here through the cached `param_count` / `accepts_zero_args` metadata;
     // otherwise a visible imported decl with the same name but wrong arity
-    // can steal the final callee spelling.
+    // can steal the final emitted callee text.
     if (args.size() > a.param_count) continue;
     if (args.size() < a.param_count && !a.accepts_zero_args) {
       if (!a.decl) continue;

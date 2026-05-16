@@ -38,7 +38,7 @@ class EmitTypeOrdinalOps {
 
 struct EmitRecordFieldDecl {
   // Field declaration metadata shared by named-record emission, inline record
-  // spelling, and packed-layout computation.
+  // text generation, and packed-layout computation.
   const ast::TypeExpr* type = nullptr;
   std::string type_cxx;
   std::string mangled_name;
@@ -70,8 +70,8 @@ struct CxxRecordLayout {
   EmitPackedRecordLayout packed_layout;
 };
 
-// Central Pascal type/layout lowering. This module owns the rules for spelling
-// Pascal types in C++, keeping registry-defined types ahead of runtime stubs,
+// Central Pascal type/layout lowering. This module owns the rules for producing
+// C++ type text, keeping registry-defined types ahead of runtime stubs,
 // preserving enum/subrange/array layout decisions, and computing packed-record
 // layout metadata for later static_asserts.
 class EmitTypes {
@@ -146,7 +146,7 @@ class EmitTypes {
   EmitTypeDiagOps& diag_ops_;
 
   // Did any non-runtime translated unit declare this type? Runtime aliases are
-  // present in the registry for analysis/member lookup, but their C++ spelling
+  // present in the registry for analysis/member lookup, but their C++ type name
   // remains the explicit ::rt::t_* names from runtime_named_type_cxx().
   bool registry_knows_translated_type(std::string_view name);
   EmitRecordFieldDecl record_field_decl(const ast::TypeExpr* type,

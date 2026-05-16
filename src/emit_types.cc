@@ -174,7 +174,7 @@ std::string EmitTypes::type_name_to_cxx(const TyName& n) {
   }
   // Runtime aliases are also registered for analysis, but their emitted names
   // are fixed by the runtime. Only non-runtime translated declarations use
-  // generated `t_*` type spelling.
+  // generated `t_*` C++ type names.
   if (registry_knows_translated_type(n.name)) {
     auto lookup_name = ascii_lower(n.name);
     if (registry_) {
@@ -894,7 +894,7 @@ std::string EmitTypes::procedural_param_types_to_cxx(
 
 std::string EmitTypes::method_pointer_helper_name(const ProcDecl& pd) {
   // Overloaded methods need distinct helper thunks, but the helper itself must
-  // still be an ordinary C++ identifier with no reserved spelling.
+  // still be an ordinary C++ identifier with no reserved prefix.
   std::string out = "tp2cc_methodptr_";
   out += encode_helper_ident(pd.name);
   out += "_";

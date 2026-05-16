@@ -492,8 +492,8 @@ struct Emitter : ResolveNameProvider,
     return calls_.proc_accepts_zero_args(decl);
   }
   // Single entry point for resolving a Pascal call expression. The result
-  // contains the chosen declaration and the callee spelling policy, so call
-  // printing consumes a resolved fact instead of re-running lookup.
+  // contains the chosen declaration and callee emission policy, so call printing
+  // consumes a resolved fact instead of re-running lookup.
   using ResolvedCalleeKind = tp2cc::ResolvedCalleeKind;
   using ResolvedCall = tp2cc::ResolvedCall;
   ResolvedCall resolve_call(
@@ -2010,8 +2010,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         } else if (n == "new" && !c.args.empty()) {
           // Expression-form `new(T)` or `new(T, Ctor(args))`. The first
           // argument is a pointer type name, not a value expression; lowering
-          // it through type spelling keeps Pascal's type/value namespaces
-          // separate in generated C++.
+          // it as type text keeps Pascal's type/value namespaces separate in
+          // generated C++.
           // STUB: if the type is one of our stub target-back-end
           // aliases (t_win32 / t_os2 / t_go32v* classes that got
           // skipped), emit `nullptr` -- the call site is inside an
@@ -2144,8 +2144,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               // Pointer casts are still Pascal value conversions, but their
               // source may be a typed storage view such as `T(x)`. Peel only
               // primitive storage-view casts before the pointer coercion so the
-              // emitted C++ casts the original storage expression, not a
-              // temporary/reference spelling built for another target type.
+              // emitted C++ casts the original storage expression, not
+              // temporary/reference text built for another target type.
               const Expr* peeled = peel_primitive_casts(c.args[0].get());
               std::string source =
                   (peeled && expr_is_storage_lvalue(*c.args[0]))

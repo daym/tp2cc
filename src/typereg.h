@@ -310,8 +310,8 @@ struct TypeRegistry {
   std::string direct_type_name(const ast::TypeExpr* te) const;
 
   // Pascal resolves type names and value names in different contexts. C++
-  // class/struct scopes do not, so all field declarations and references go
-  // through value spelling, while named Pascal types use type spelling.
+  // class/struct scopes do not, so fields use value identifiers (`p_*`) while
+  // named Pascal types use type identifiers (`t_*`).
   std::string field_cxx_name(std::string_view name) const;
 
   const FieldInfo* lookup_class_field(

@@ -226,7 +226,7 @@ class EmitStorage {
       const ast::VarDecl& vd);
 
  private:
-  // Return the C++ type spelling to use as `offsetof(TYPE, field)`. Named
+  // Return the C++ type text to use as `offsetof(TYPE, field)`. Named
   // Pascal record/object types use their generated struct name; anonymous local
   // aggregates use `decltype(base_expr_cxx)` because there is no named Pascal
   // type to ask the registry for.

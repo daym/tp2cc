@@ -14,8 +14,8 @@ struct TypeExpr;
 
 namespace tp2cc {
 
-// Result of Pascal identifier lookup. The emitter uses this both for spelling
-// (`cxx`) and for semantic questions like "is this a zero-arg callable?".
+// Result of Pascal identifier lookup. The emitter uses this both for C++ access
+// text (`cxx`) and for semantic questions like "is this a zero-arg callable?".
 enum class ResolvedKind {
   Unknown,      // emit the mangled name; let later lowering decide
   ResultSlot,   // Pascal function name used as its implicit result variable
@@ -37,7 +37,7 @@ enum class ResolvedKind {
 
 struct ResolveResult {
   ResolvedKind kind = ResolvedKind::Unknown;
-  std::string cxx;              // fully spelled C++ access text
+  std::string cxx;              // complete C++ access expression text
   bool is_parameterless = false;         // callable with zero explicit args
   bool is_callable = false;              // name denotes something invocable
   const ast::ProcDecl* proc = nullptr;   // declaration for call-site lowering
@@ -162,7 +162,7 @@ struct ResolvedCall {
   // namespace prefix in the final emitted C++ callee text.
   std::string defining_unit;
   // Pascal-side unmangled callee/member name. The printer uses this when it
-  // needs to rebuild member or unit-qualified call spellings.
+  // needs to rebuild member or unit-qualified call text.
   std::string member_name;
   // Default parameter expressions are lowered at the call site, but
   // unqualified names inside them resolve in the declaration's unit.
@@ -197,7 +197,7 @@ class ResolutionTypeOps {
   // The procedure-of-object signature comparison must agree byte-for-byte
   // between the picker (scoring `@method` against the of-object slot) and
   // the emitter (binding `@method` to a `tp2cc_MethodPtr` constructor).
-  // Routing both through this one shared spelling avoids the dual-source
+  // Routing both through this one shared C++ text form avoids the dual-source
   // definitions diverging on edge cases like var/const mode adornments.
   virtual std::string procedural_param_types_to_cxx(
       const std::vector<ast::Param>& params) = 0;

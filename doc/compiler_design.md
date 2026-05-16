@@ -7,10 +7,10 @@ It is intentionally written from a user's perspective:
 - what Pascal constructs are accepted
 - what they lower to in generated C++
 - which conversions are implicit vs explicit
-- which workarounds and limitations still exist
+- which limitations still exist
 - what the prelude runtime library provides
 
-Examples show the shape of the generated code, not exact whitespace or every helper name in every context.
+Examples show representative generated code, not exact whitespace or every helper name in every context.
 
 ## 1. Lowering Model
 
@@ -249,7 +249,7 @@ Today this means:
 - instance-side `ClassType` and `InstanceSize` are supported on translated classes
 - instance-side `InheritsFrom(TClassVar)` is supported through the metaclass parent chain
 
-Representative shape:
+Representative C++:
 
 ```cpp
 using p_tbaseclass = const tp2cc_metaclass_p_tbase *;
@@ -291,7 +291,7 @@ Method pointers are represented as code-plus-self pairs. The emitter generates t
 
 ### 1.13 Properties
 
-Properties are not magical storage in the generated code. They lower to:
+Properties lower according to their accessor declarations:
 
 - direct field access
 - getter calls
@@ -556,7 +556,7 @@ The prelude still contains some stubbed or placeholder functionality, especially
 
 ## 4. The Prelude Runtime Library
 
-`tp2cc_rt/prelude.h` is the runtime layer that makes the generated C++ look Pascal-shaped. It is not just a bag of helper functions; it defines the core carrier types the emitter targets.
+`tp2cc_rt/prelude.h` is the runtime layer that gives generated C++ the Pascal carrier types and helper routines the emitter targets.
 
 ### 4.1 Core carrier types
 
@@ -676,7 +676,7 @@ If you want to understand a generated translation, the most useful mental model 
 
 In practice, the most important files are:
 
-- `src/parser.cc` and `src/ast.h`: what syntax and AST shapes exist
+- `src/parser.cc` and `src/ast.h`: accepted syntax and AST node types
 - `src/typereg.cc`: what cross-unit/type information is remembered
 - `src/emit.cc`: how actual lowering is done
 - `tp2cc_rt/prelude.h`: what generated code is allowed to target

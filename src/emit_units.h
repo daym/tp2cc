@@ -27,7 +27,7 @@ class EmitUnitOps {
 
 // Whole-unit / whole-program emission. This module owns type-section ordering,
 // header-vs-impl orchestration, lifecycle hook emission, and the `tpexcept`
-// special case. Those are top-level translation concerns, separate from
+// wrapper path. Those are top-level translation concerns, separate from
 // expression/statement/procedure semantics.
 class EmitUnits {
  public:

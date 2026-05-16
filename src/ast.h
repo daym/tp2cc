@@ -15,8 +15,8 @@
 //     consumers" invariant.
 //
 // AST nodes store parsed syntax plus mode snapshots that are fixed at parse
-// time. Name binding, overload selection, storage classification, and emitted
-// C++ spelling are deliberately represented by later semantic result objects.
+// time. Name binding, overload selection, storage classification, and generated
+// C++ text are deliberately represented by later semantic result objects.
 
 #include <cstdint>
 #include <memory>

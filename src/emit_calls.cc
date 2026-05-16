@@ -345,7 +345,7 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
         // Default argument expressions are resolved as if they were still in
         // the declaring unit. The generated argument text is inserted at the
         // caller, so a named formal type from that declaration must keep its
-        // defining unit in the emitted C++ spelling.
+        // defining unit in the emitted C++ type name.
         qualified_default_param_type = std::make_shared<TyName>(tn);
         qualified_default_param_type->name = unit + "." + tn.name;
         param_type = qualified_default_param_type.get();
@@ -393,8 +393,8 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
       mutable_ref_arg || untyped_arg != UntypedArgKind::None);
   // `var`, `out`, and untyped actuals require a Pascal variable designator.
   // Mark that context before emitting the argument so `T(x)` is treated as a
-  // storage view there, while the same spelling in a value argument still
-  // builds a converted/copied value.
+  // storage view there, while the same source expression in a value argument
+  // still builds a converted/copied value.
   struct StorageViewContextScope {
     bool& slot;
     bool saved;

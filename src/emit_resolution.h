@@ -83,9 +83,8 @@ class EmitResolution {
       bool allow_assignment_operator_conversions = false);
 
   // Resolve a Pascal call expression all the way to the chosen declaration
-  // plus the spelling policy the emitter should use for the callee. This is
-  // the single semantic entry point for call resolution; printing consumes the
-  // resolved result.
+  // plus the callee emission policy. This is the single semantic entry point
+  // for call resolution; printing consumes the resolved result.
   ResolvedCall resolve_call(
       const ast::Expr& callee, const std::vector<const ast::Expr*>& args);
   ResolvedCall resolve_pointer_target_constructor(
@@ -100,7 +99,7 @@ class EmitResolution {
 
   // Resolve a Pascal binary operator overload by Pascal operator token and
   // operand expressions. The caller decides whether the chosen declaration is
-  // spelled as C++ infix operator syntax or as a named helper.
+  // emitted as C++ infix operator syntax or as a named helper.
   BinaryOperatorResult find_binary_operator(
       const std::string& op, const ast::Expr& lhs, const ast::Expr& rhs);
 

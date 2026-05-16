@@ -37,7 +37,7 @@ const MethodSig* representative_method(const std::vector<MethodSig>& sigs);
 
 // Canonical AST nodes for frequently synthesized builtin Pascal types. These
 // are intentionally shared singletons so emit-time comparisons and helper
-// synthesis stay anchored to one spelling per Pascal builtin.
+// synthesis use the same TyName instance for each builtin.
 const ast::TyName* builtin_char_type();
 const ast::TyName* builtin_string_type();
 const ast::TyName* builtin_pchar_type();
@@ -64,7 +64,7 @@ enum class PrimitiveIntKind : uint8_t { None, Signed, Unsigned };
 
 struct PrimitiveInfo {
   // Pascal primitive-type table. Single source of truth for every property
-  // callers need: the C++ spelling plus, for ordinal primitives, the
+  // callers need: the C++ type text plus, for ordinal primitives, the
   // signedness and width the emitter must use when reproducing Pascal
   // overflow and range semantics.
   const char* cxx = nullptr;

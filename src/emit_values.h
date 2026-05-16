@@ -26,7 +26,7 @@ class EmitValueExprOps {
   virtual bool in_block_scope() const = 0;
 };
 
-// Pascal value lowering owns the rules for spelling set literals, typed
+// Pascal value lowering owns the rules for emitting set literals, typed
 // aggregate constants, explicit integer constant conversions, procedural
 // values, and metaclass values.
 class EmitValues {

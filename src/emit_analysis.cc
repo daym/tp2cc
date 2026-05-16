@@ -1461,7 +1461,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         auto ait = registry_->aliases.find(id.name);
         if (ait != registry_->aliases.end() && c.args.size() == 1) {
           // Type cast `T(expr)` -- the call expression has the alias's own
-          // Pascal type even before later emit-time cast spelling happens.
+          // Pascal type before emit-time casts choose their generated C++ text.
           return ait->second.target.get();
         }
       }
@@ -1556,7 +1556,7 @@ std::string EmitAnalysis::canonical_method_owner_type_name(
 
     // Pascal permits method implementations to name a class type alias:
     // `TAlias = TReal; procedure TAlias.M;`.  C++ cannot define methods on
-    // a `using`/typedef alias, so canonicalize only the owner spelling of
+    // a `using`/typedef alias, so canonicalize only the owner type name of
     // out-of-class method definitions to the underlying Pascal class.
     std::string next = ascii_lower(static_cast<const TyName&>(*target).name);
     if (auto dot = next.find('.'); dot != std::string::npos) {
