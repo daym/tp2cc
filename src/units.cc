@@ -30,30 +30,32 @@ std::string UnitGraph::to_lower(std::string_view s) {
   return r;
 }
 
+void UnitGraph::index_unit_search_root(
+    const fs::path& root, std::vector<fs::path>& indexed_roots) {
+  if (root.empty()) return;
+  if (std::find(indexed_roots.begin(), indexed_roots.end(), root) !=
+      indexed_roots.end()) {
+    return;
+  }
+  indexed_roots.push_back(root);
+  if (!fs::exists(root)) return;
+  for (auto& e : fs::directory_iterator(root)) {
+    if (!e.is_regular_file()) continue;
+    auto ext = e.path().extension();
+    if (ext != ".pas" && ext != ".pp") continue;
+    std::string stem = to_lower(e.path().stem().string());
+    unit_path_index_.try_emplace(stem, e.path());
+  }
+}
+
 void UnitGraph::build_unit_path_index() {
   if (unit_path_index_ready_) return;
   unit_path_index_.clear();
 
   std::vector<fs::path> indexed_roots;
-  auto index_root = [&](const fs::path& root) {
-    if (root.empty()) return;
-    if (std::find(indexed_roots.begin(), indexed_roots.end(), root) !=
-        indexed_roots.end()) {
-      return;
-    }
-    indexed_roots.push_back(root);
-    if (!fs::exists(root)) return;
-    for (auto& e : fs::directory_iterator(root)) {
-      if (!e.is_regular_file()) continue;
-      auto ext = e.path().extension();
-      if (ext != ".pas" && ext != ".pp") continue;
-      std::string stem = to_lower(e.path().stem().string());
-      unit_path_index_.try_emplace(stem, e.path());
-    }
-  };
-  index_root(current_dir_);
-  index_root(entry_dir_);
-  for (const auto& root : roots_) index_root(root);
+  index_unit_search_root(current_dir_, indexed_roots);
+  index_unit_search_root(entry_dir_, indexed_roots);
+  for (const auto& root : roots_) index_unit_search_root(root, indexed_roots);
   unit_path_index_ready_ = true;
 }
 
@@ -62,6 +64,19 @@ fs::path UnitGraph::find_unit_path(std::string_view name) {
   auto it = unit_path_index_.find(to_lower(name));
   if (it == unit_path_index_.end()) return {};
   return it->second;
+}
+
+std::vector<fs::path> UnitGraph::unit_paths_to_discover(
+    const std::vector<std::string>& uses) {
+  std::vector<fs::path> paths;
+  for (const auto& dep : uses) {
+    std::string dep_name = to_lower(dep);
+    if (units_.count(dep_name)) continue;
+    fs::path dep_path = find_unit_path(dep_name);
+    if (dep_path.empty()) continue;  // external RTL / unavailable unit
+    paths.push_back(std::move(dep_path));
+  }
+  return paths;
 }
 
 int UnitGraph::parse_recursive(const fs::path& path) {
@@ -106,17 +121,14 @@ int UnitGraph::parse_recursive(const fs::path& path) {
     return errors > 0 ? errors : 1;
   }
 
-  auto recurse_uses = [&](const std::vector<std::string>& uses) {
-    for (const auto& dep : uses) {
-      std::string dep_name = to_lower(dep);
-      if (units_.count(dep_name)) continue;
-      fs::path dep_path = find_unit_path(dep_name);
-      if (dep_path.empty()) continue;  // external RTL / unavailable unit
-      errors += parse_recursive(dep_path);
-    }
-  };
-  recurse_uses(key_it->second.ast->interface_uses);
-  recurse_uses(key_it->second.ast->impl_uses);
+  for (const auto& dep_path :
+       unit_paths_to_discover(key_it->second.ast->interface_uses)) {
+    errors += parse_recursive(dep_path);
+  }
+  for (const auto& dep_path :
+       unit_paths_to_discover(key_it->second.ast->impl_uses)) {
+    errors += parse_recursive(dep_path);
+  }
   return errors;
 }
 
@@ -128,6 +140,20 @@ int UnitGraph::discover_from_entry(fs::path entry_path) {
   current_dir_ = fs::current_path();
   entry_dir_ = entry_path.parent_path();
   return parse_recursive(entry_path);
+}
+
+void UnitGraph::add_topo_dependency(
+    const std::unordered_map<std::string, ParsedUnit>& units,
+    std::unordered_map<std::string, std::unordered_set<std::string>>& deps,
+    std::unordered_map<std::string, int>& indeg, const std::string& from,
+    std::string_view to) {
+  std::string canonical_to = to_lower(to);
+  // Topology is only for units parsed from source; external RTL/runtime units
+  // are resolved during type registration and emission.
+  if (!units.count(canonical_to)) return;
+  if (deps[from].insert(canonical_to).second) {
+    indeg[from] += 1;
+  }
 }
 
 UnitGraph::TopoResult UnitGraph::topo_sort() const {
@@ -142,16 +168,6 @@ UnitGraph::TopoResult UnitGraph::topo_sort() const {
   for (const auto& [name, pu] : units_) {
     indeg[name] = 0;
   }
-  auto add_dep = [&](const std::string& from, const std::string& to) {
-    if (!units_.count(to)) {
-      // External unit (e.g. "dos", "linux", "strings" from RTL). Not in our
-      // graph; we'll link it via the hand-written runtime. Skip.
-      return;
-    }
-    if (deps[from].insert(to).second) {
-      indeg[from] += 1;
-    }
-  };
 
   // Pascal semantics: only `interface uses` lists form the unit compile-order
   // graph (and must be acyclic). `implementation uses` may form cycles
@@ -160,9 +176,13 @@ UnitGraph::TopoResult UnitGraph::topo_sort() const {
   // their `uses` list lives in `impl_uses`, and those dependencies are real.
   for (const auto& [name, pu] : units_) {
     if (!pu.ast) continue;
-    for (const auto& u : pu.ast->interface_uses) add_dep(name, to_lower(u));
+    for (const auto& u : pu.ast->interface_uses) {
+      add_topo_dependency(units_, deps, indeg, name, u);
+    }
     if (pu.ast->is_program) {
-      for (const auto& u : pu.ast->impl_uses) add_dep(name, to_lower(u));
+      for (const auto& u : pu.ast->impl_uses) {
+        add_topo_dependency(units_, deps, indeg, name, u);
+      }
     }
   }
 

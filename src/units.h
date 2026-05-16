@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ast.h"
@@ -88,9 +89,19 @@ class UnitGraph {
   bool unit_path_index_ready_ = false;
 
   static std::string to_lower(std::string_view s);
+  void index_unit_search_root(
+      const std::filesystem::path& root,
+      std::vector<std::filesystem::path>& indexed_roots);
   void build_unit_path_index();
   std::filesystem::path find_unit_path(std::string_view name);
+  std::vector<std::filesystem::path> unit_paths_to_discover(
+      const std::vector<std::string>& uses);
   int parse_recursive(const std::filesystem::path& path);
+  static void add_topo_dependency(
+      const std::unordered_map<std::string, ParsedUnit>& units,
+      std::unordered_map<std::string, std::unordered_set<std::string>>& deps,
+      std::unordered_map<std::string, int>& indeg, const std::string& from,
+      std::string_view to);
 };
 
 }  // namespace tp2cc
