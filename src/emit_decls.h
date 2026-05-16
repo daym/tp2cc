@@ -68,12 +68,21 @@ class EmitDecls {
     bool implicit_root_create = false;
   };
 
+  struct MethodPointerThunkParam {
+    std::string type;
+    std::string name;
+  };
+
   void emit_packed_record_asserts(const std::string& type_text,
                                   const std::vector<std::pair<std::string,
                                                               std::string>>&
                                       field_offsets,
                                   std::string_view size_expr,
                                   std::string_view label);
+  std::string cxx_access_for_pascal_visibility(ast::Visibility vis);
+  std::string method_pointer_thunk_param_type(const ast::Param& param);
+  std::vector<MethodPointerThunkParam> method_pointer_thunk_params(
+      const ast::ProcDecl& pd);
   void emit_method_pointer_thunk(const std::string& owner_name,
                                  const ast::ProcDecl& pd,
                                  const std::string& ret);
@@ -81,6 +90,8 @@ class EmitDecls {
       std::string_view class_name);
   std::optional<MetaclassCallableImpl> find_metaclass_callable_impl(
       std::string_view concrete_class, const MetaclassCallable& target);
+  bool metaclass_callable_matches_impl(const MetaclassCallable& target,
+                                       const MethodSig& candidate);
   std::string metaclass_callable_param_types(
       const MetaclassCallable& callable);
   bool same_metaclass_callable_surface(const MetaclassCallable& lhs,

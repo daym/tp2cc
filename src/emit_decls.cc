@@ -30,6 +30,23 @@ EmitDecls::EmitDecls(const TypeRegistry* registry, ScopeStateView& scope,
       values_(values),
       emit_ops_(emit_ops) {}
 
+std::string EmitDecls::cxx_access_for_pascal_visibility(Visibility vis) {
+  switch (vis) {
+    case Visibility::StrictPrivate:
+      return "private";
+    case Visibility::StrictProtected:
+      return "protected";
+    case Visibility::Public:
+    case Visibility::Private:
+    case Visibility::Protected:
+      // Non-strict Pascal private/protected members remain public in C++:
+      // Pascal still permits same-unit access, and those accesses are emitted
+      // as ordinary namespace-level C++ code.
+      return "public";
+  }
+  return "public";
+}
+
 void EmitDecls::emit_enum_carrier(const TyEnum& te, std::string_view cxx_name,
                                   std::string_view bound_name) {
   emit_ops_.emitln("enum " + std::string(cxx_name) + " : " +
@@ -173,18 +190,6 @@ EmitDecls::find_metaclass_callable_impl(std::string_view concrete_class,
                                         const MetaclassCallable& target) {
   if (!registry_) return std::nullopt;
 
-  auto matches_target = [&](const MethodSig& candidate) {
-    if (!candidate.decl) return false;
-    if (target.implicit_root_create) {
-      return candidate.kind == SymKind::Constructor &&
-             candidate.param_count == 0;
-    }
-    if (!target.sig || !target.sig->decl) return false;
-    return candidate.kind == target.sig->kind &&
-           types_.procedural_param_types_to_cxx(candidate.decl->params) ==
-               types_.procedural_param_types_to_cxx(target.sig->decl->params);
-  };
-
   std::string cls = ascii_lower(std::string(concrete_class));
   std::unordered_set<std::string> seen;
   const ClassInfo* ci = analysis_.class_info_for_type_name(cls);
@@ -195,7 +200,7 @@ EmitDecls::find_metaclass_callable_impl(std::string_view concrete_class,
     auto mit = ci->methods.find(target.name);
     if (mit != ci->methods.end()) {
       for (const auto& sig : mit->second) {
-        if (matches_target(sig)) {
+        if (metaclass_callable_matches_impl(target, sig)) {
           return MetaclassCallableImpl{identity, &sig, false};
         }
       }
@@ -214,6 +219,18 @@ EmitDecls::find_metaclass_callable_impl(std::string_view concrete_class,
     return MetaclassCallableImpl{"tobject", nullptr, true};
   }
   return std::nullopt;
+}
+
+bool EmitDecls::metaclass_callable_matches_impl(
+    const MetaclassCallable& target, const MethodSig& candidate) {
+  if (!candidate.decl) return false;
+  if (target.implicit_root_create) {
+    return candidate.kind == SymKind::Constructor && candidate.param_count == 0;
+  }
+  if (!target.sig || !target.sig->decl) return false;
+  return candidate.kind == target.sig->kind &&
+         types_.procedural_param_types_to_cxx(candidate.decl->params) ==
+             types_.procedural_param_types_to_cxx(target.sig->decl->params);
 }
 
 std::string EmitDecls::metaclass_callable_param_types(
@@ -648,33 +665,14 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
     }
     bool has_virtual = false;
     std::string current_access = "public";
-    auto cxx_access = [](Visibility vis) {
-      switch (vis) {
-        case Visibility::StrictPrivate:
-          return "private";
-        case Visibility::StrictProtected:
-          return "protected";
-        case Visibility::Public:
-        case Visibility::Private:
-        case Visibility::Protected:
-          // Non-strict Pascal private/protected members remain public in C++:
-          // Pascal still permits same-unit access, and those accesses are
-          // emitted as ordinary namespace-level C++ code.
-          return "public";
-      }
-      return "public";
-    };
-    auto ensure_access = [&](Visibility vis) {
-      std::string wanted = cxx_access(vis);
-      if (wanted != current_access) {
-        emit_ops_.emitln(wanted + ":");
-        current_access = std::move(wanted);
-      }
-    };
     bool seen_class_constructor = false;
     bool seen_class_destructor = false;
     for (const auto& m : to.members) {
-      ensure_access(m.vis);
+      std::string wanted_access = cxx_access_for_pascal_visibility(m.vis);
+      if (wanted_access != current_access) {
+        emit_ops_.emitln(wanted_access + ":");
+        current_access = std::move(wanted_access);
+      }
       if (m.kind == ObjectMemberKind::Field) {
         for (const auto& fn : m.field_names) {
           // FPC rejects a field or class var that reuses an inherited field
@@ -773,7 +771,12 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
       }
     }
     if (has_virtual) {
-      ensure_access(Visibility::Public);
+      std::string wanted_access =
+          cxx_access_for_pascal_visibility(Visibility::Public);
+      if (wanted_access != current_access) {
+        emit_ops_.emitln(wanted_access + ":");
+        current_access = std::move(wanted_access);
+      }
       emit_ops_.emitln("virtual ~" + name + "() = default;");
     }
     emit_ops_.dedent();
@@ -1044,6 +1047,57 @@ std::string EmitDecls::proc_attributes_to_cxx(const ProcDecl& pd) {
   return pd.modifiers.is_noreturn ? "[[noreturn]] " : "";
 }
 
+std::string EmitDecls::method_pointer_thunk_param_type(const Param& par) {
+  if (!par.type) {
+    return (par.mode == Param::Const || par.mode == Param::ConstRef)
+               ? "const void*"
+               : "void*";
+  }
+
+  std::string pt;
+  if (storage_.type_is_open_array(par.type.get())) {
+    pt = types_.open_array_type_to_cxx(*par.type);
+  } else if (types_.param_uses_shortstring_ref(par.type.get(), par.mode)) {
+    pt = types_.shortstring_ref_type_to_cxx(par.type.get());
+  } else {
+    pt = types_.type_to_cxx(*par.type);
+  }
+
+  if (types_.param_uses_shortstring_ref(par.type.get(), par.mode)) {
+    return pt;
+  }
+  if (par.mode == Param::ConstRef) return "const " + pt + "&";
+  if (par.mode == Param::Var || par.mode == Param::Out) return pt + "&";
+  if (par.mode == Param::Const &&
+      analysis_.const_param_needs_mutable_ref(par.type.get())) {
+    return pt + "&";
+  }
+  if (par.mode == Param::Const &&
+      analysis_.const_param_needs_const_ref(par.type.get())) {
+    return "const " + pt + "&";
+  }
+  return pt;
+}
+
+std::vector<EmitDecls::MethodPointerThunkParam>
+EmitDecls::method_pointer_thunk_params(const ProcDecl& pd) {
+  std::vector<MethodPointerThunkParam> out;
+  int unnamed_index = 0;
+  for (const auto& par : pd.params) {
+    std::string pt = method_pointer_thunk_param_type(par);
+    if (par.names.empty()) {
+      out.push_back(MethodPointerThunkParam{
+          .type = pt,
+          .name = "tp2cc_arg" + std::to_string(++unnamed_index)});
+      continue;
+    }
+    for (const auto& pn : par.names) {
+      out.push_back(MethodPointerThunkParam{.type = pt, .name = mangle(pn)});
+    }
+  }
+  return out;
+}
+
 void EmitDecls::emit_method_pointer_thunk(const std::string& owner_name,
                                           const ProcDecl& pd,
                                           const std::string& ret) {
@@ -1054,48 +1108,13 @@ void EmitDecls::emit_method_pointer_thunk(const std::string& owner_name,
 
   std::string helper_params = "void* tp2cc_self";
   std::string helper_args;
-  bool first_arg = true;
-  int unnamed_index = 0;
-  auto append_arg = [&](const std::string& pt, const std::string& name) {
-    helper_params += ", " + pt + " " + name;
-    if (!first_arg) helper_args += ", ";
-    first_arg = false;
-    helper_args += name;
-  };
-
-  for (const auto& par : pd.params) {
-    std::string pt;
-    if (!par.type) {
-      pt = (par.mode == Param::Const || par.mode == Param::ConstRef)
-               ? "const void*"
-               : "void*";
-    } else if (storage_.type_is_open_array(par.type.get())) {
-      pt = types_.open_array_type_to_cxx(*par.type);
-    } else if (types_.param_uses_shortstring_ref(par.type.get(), par.mode)) {
-      pt = types_.shortstring_ref_type_to_cxx(par.type.get());
-    } else {
-      pt = types_.type_to_cxx(*par.type);
-    }
-    if (par.type) {
-      if (types_.param_uses_shortstring_ref(par.type.get(), par.mode)) {
-        // Already a mutable storage proxy value.
-      } else if (par.mode == Param::ConstRef) {
-        pt = "const " + pt + "&";
-      } else if (par.mode == Param::Var || par.mode == Param::Out) pt += "&";
-      else if (par.mode == Param::Const &&
-               analysis_.const_param_needs_mutable_ref(par.type.get()))
-        pt += "&";
-      else if (par.mode == Param::Const &&
-               analysis_.const_param_needs_const_ref(par.type.get()))
-        pt = "const " + pt + "&";
-    }
-    if (par.names.empty()) {
-      append_arg(pt, "tp2cc_arg" + std::to_string(++unnamed_index));
-      continue;
-    }
-    for (const auto& pn : par.names) {
-      append_arg(pt, mangle(pn));
-    }
+  std::vector<MethodPointerThunkParam> thunk_params =
+      method_pointer_thunk_params(pd);
+  for (size_t i = 0; i < thunk_params.size(); ++i) {
+    const auto& param = thunk_params[i];
+    helper_params += ", " + param.type + " " + param.name;
+    if (i != 0) helper_args += ", ";
+    helper_args += param.name;
   }
 
   std::string call = "static_cast<" + owner_name + "*>(tp2cc_self)->" +
