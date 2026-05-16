@@ -60,6 +60,36 @@ static TypePtr borrowed_ast_type(const TypeExpr* type) {
   return TypePtr(const_cast<TypeExpr*>(type), [](TypeExpr*) {});
 }
 
+static const TypeExpr* record_field_type(const RecordField& field,
+                                         std::string_view lower_field_name) {
+  for (const auto& name : field.names) {
+    if (ascii_lower(name) == lower_field_name) return field.type.get();
+  }
+  return nullptr;
+}
+
+static const TypeExpr* variant_part_field_type(
+    const std::shared_ptr<ast::VariantPart>& vpart,
+    std::string_view lower_field_name) {
+  if (!vpart) return nullptr;
+  if (!vpart->tag_name.empty() &&
+      ascii_lower(vpart->tag_name) == lower_field_name) {
+    return vpart->tag_type.get();
+  }
+  for (const auto& vc : vpart->cases) {
+    for (const auto& field : vc.fields) {
+      if (const TypeExpr* ft = record_field_type(field, lower_field_name)) {
+        return ft;
+      }
+    }
+    if (const TypeExpr* ft =
+            variant_part_field_type(vc.variant_part, lower_field_name)) {
+      return ft;
+    }
+  }
+  return nullptr;
+}
+
 static const TypeExpr* method_result_type(const MethodSig* method) {
   if (!method || !method->decl || !method->decl->return_type) return nullptr;
   return method->decl->return_type.get();
@@ -1566,33 +1596,15 @@ const TypeExpr* EmitAnalysis::lookup_record_field_type_in_type(
   if (type->kind != Kind::TyRecord) return nullptr;
 
   const auto& rec = static_cast<const TyRecord&>(*type);
-  auto match_field = [&](const RecordField& rf) -> const TypeExpr* {
-    for (const auto& name : rf.names) {
-      if (ascii_lower(name) == ascii_lower(field_name)) return rf.type.get();
-    }
-    return nullptr;
-  };
+  const std::string lower_field_name = ascii_lower(std::string(field_name));
 
   for (const auto& rf : rec.fields) {
-    if (const TypeExpr* ft = match_field(rf)) return ft;
+    if (const TypeExpr* ft = record_field_type(rf, lower_field_name)) {
+      return ft;
+    }
   }
-  
-  auto match_variant = [&](auto& self, const std::shared_ptr<ast::VariantPart>& vpart) -> const TypeExpr* {
-    if (!vpart) return nullptr;
-    if (!vpart->tag_name.empty()) {
-      if (ascii_lower(vpart->tag_name) == ascii_lower(field_name)) return vpart->tag_type.get();
-    }
-    for (const auto& vc : vpart->cases) {
-      for (const auto& rf : vc.fields) {
-        if (const TypeExpr* ft = match_field(rf)) return ft;
-      }
-      if (const TypeExpr* ft = self(self, vc.variant_part)) return ft;
-    }
-    return nullptr;
-  };
-  
-  if (const TypeExpr* ft = match_variant(match_variant, rec.variant_part)) return ft;
-  return nullptr;
+
+  return variant_part_field_type(rec.variant_part, lower_field_name);
 }
 
 const TypeExpr* EmitAnalysis::lookup_record_field_type_in_with(
