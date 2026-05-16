@@ -70,6 +70,13 @@ struct CxxRecordLayout {
   EmitPackedRecordLayout packed_layout;
 };
 
+struct ArrayDimBounds {
+  std::string low;
+  std::string size_expr;
+  ArrayDimBounds(std::string low_in, std::string size_expr_in)
+      : low(std::move(low_in)), size_expr(std::move(size_expr_in)) {}
+};
+
 // Central Pascal type/layout lowering. This module owns the rules for producing
 // C++ type text, keeping registry-defined types ahead of runtime stubs,
 // preserving enum/subrange/array layout decisions, and computing packed-record
@@ -96,8 +103,8 @@ class EmitTypes {
   // Lower one fixed-array dimension to Pascal low bound plus element count.
   // The low bound is part of the generated array type because Pascal indexing
   // preserves source bounds.
-  bool array_dim_bounds_to_cxx(const ast::TypeExpr& dim, std::string* lo,
-                               std::string* size_expr);
+  std::optional<ArrayDimBounds> array_dim_bounds_to_cxx(
+      const ast::TypeExpr& dim);
   std::string subrange_type_to_cxx(const ast::TySubrange& r);
   std::string string_type_to_cxx(const ast::TyString& s);
   std::optional<std::string> shortstring_capacity_to_cxx(

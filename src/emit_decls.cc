@@ -484,11 +484,12 @@ void EmitDecls::emit_const_decl(const ConstDecl& cd, bool in_header) {
       std::string ty =
           arr.element ? types_.type_to_cxx(*arr.element) : std::string("int32_t");
       for (auto it = arr.dims.rbegin(); it != arr.dims.rend(); ++it) {
-        std::string lo, size_expr;
-        if (!types_.array_dim_bounds_to_cxx(**it, &lo, &size_expr)) {
+        auto bounds = types_.array_dim_bounds_to_cxx(**it);
+        if (!bounds) {
           goto generic_emit;
         }
-        ty = "::rt::tp2cc_Array<" + ty + ", " + lo + ", " + size_expr + ">";
+        ty = "::rt::tp2cc_Array<" + ty + ", " + bounds->low + ", " +
+             bounds->size_expr + ">";
       }
       emit_ops_.emitln(linkage + ty + " " + name + " = " + val + ";");
       return;

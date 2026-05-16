@@ -444,54 +444,52 @@ std::string EmitTypes::enum_underlying_type_to_cxx(const TyEnum& e) {
   }
 }
 
-bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
-                                        std::string* lo,
-                                        std::string* size_expr) {
+std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
+    const TypeExpr& dim_in) {
   const TypeExpr* dim = analysis_.canonicalize_type(&dim_in);
-  if (!dim) return false;
+  if (!dim) return std::nullopt;
   if (dim->kind == Kind::TyDistinct) {
     // Distinct ordinal wrappers keep assignment-compatibility differences, but
     // their index range is still the underlying ordinal range.
-    return array_dim_bounds_to_cxx(
-        *static_cast<const TyDistinct&>(*dim).underlying, lo, size_expr);
+    const auto& distinct = static_cast<const TyDistinct&>(*dim);
+    return array_dim_bounds_to_cxx(*distinct.underlying);
   }
-  *lo = "0";
-  size_expr->clear();
+  std::string lo = "0";
+  std::string size_expr;
   if (dim->kind == Kind::TySubrange) {
     const auto& sr = static_cast<const TySubrange&>(*dim);
-    *lo = const_render_.const_value_to_cxx(*sr.lo);
-    *size_expr = "((" + array_bound_ordinal_to_cxx(*sr.hi) + ") - (" +
-                 array_bound_ordinal_to_cxx(*sr.lo) + ") + 1)";
-    return true;
+    lo = const_render_.const_value_to_cxx(*sr.lo);
+    size_expr = "((" + array_bound_ordinal_to_cxx(*sr.hi) + ") - (" +
+                array_bound_ordinal_to_cxx(*sr.lo) + ") + 1)";
+    return ArrayDimBounds(std::move(lo), std::move(size_expr));
   }
   if (dim->kind == Kind::TyEnum) {
     const auto& en = static_cast<const TyEnum&>(*dim);
     if (!enum_has_explicit_values(en)) {
-      *size_expr = std::to_string(en.members.size());
+      size_expr = std::to_string(en.members.size());
     } else if (!en.members.empty()) {
-      *lo = enum_member_value_to_cxx(en, 0);
+      lo = enum_member_value_to_cxx(en, 0);
       std::string hi = enum_member_value_to_cxx(en, en.members.size() - 1);
-      *size_expr = "((" + ordinal_value_text(hi) + ") - (" +
-                   ordinal_value_text(*lo) + ") + 1)";
+      size_expr = "((" + ordinal_value_text(hi) + ") - (" +
+                  ordinal_value_text(lo) + ") + 1)";
     }
-    return true;
+    return ArrayDimBounds(std::move(lo), std::move(size_expr));
   }
-  if (dim->kind != Kind::TyName) return false;
+  if (dim->kind != Kind::TyName) return std::nullopt;
   const auto& tn = static_cast<const TyName&>(*dim);
   const std::string type_name = ascii_lower(tn.name);
   auto leit = scope_.local_enums.find(type_name);
   if (leit != scope_.local_enums.end()) {
     if (!leit->second->members.empty() &&
         enum_has_explicit_values(*leit->second)) {
-      *lo = mangle(leit->second->members.front().name);
-      *size_expr = "((" +
-                   ordinal_value_text(
-                       mangle(leit->second->members.back().name)) +
-                   ") - (" + ordinal_value_text(*lo) + ") + 1)";
+      lo = mangle(leit->second->members.front().name);
+      size_expr =
+          "((" + ordinal_value_text(mangle(leit->second->members.back().name)) +
+          ") - (" + ordinal_value_text(lo) + ") + 1)";
     } else {
-      *size_expr = std::to_string(leit->second->members.size());
+      size_expr = std::to_string(leit->second->members.size());
     }
-    return true;
+    return ArrayDimBounds(std::move(lo), std::move(size_expr));
   }
   if (registry_) {
     auto eit = registry_->enums.find(type_name);
@@ -503,17 +501,15 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
         }
         auto first = prefix + mangle(eit->second.members.front());
         auto last = prefix + mangle(eit->second.members.back());
-        *lo = first;
-        *size_expr = "((" + ordinal_value_text(last) + ") - (" +
-                     ordinal_value_text(*lo) + ") + 1)";
+        lo = first;
+        size_expr = "((" + ordinal_value_text(last) + ") - (" +
+                    ordinal_value_text(lo) + ") + 1)";
       }
-      return true;
+      return ArrayDimBounds(std::move(lo), std::move(size_expr));
     }
   }
   if (tn.name == "boolean" || tn.name == "bytebool") {
-    *lo = "false";
-    *size_expr = "2";
-    return true;
+    return ArrayDimBounds("false", "2");
   }
   if (std::string lowname = ascii_lower(tn.name); is_primitive_type(lowname)) {
     // Match the old i386 FPC parser's fixed-array index whitelist:
@@ -521,45 +517,36 @@ bool EmitTypes::array_dim_bounds_to_cxx(const TypeExpr& dim_in,
     // and reject dword/cardinal/qword/int64 rather than silently decaying to
     // pointer semantics or inventing a wider-than-Pascal domain.
     if (primitive_name_is_charish(lowname) || lowname == "byte") {
-      *size_expr = "256";
-      return true;
+      return ArrayDimBounds(std::move(lo), "256");
     }
     if (lowname == "shortint") {
-      *lo = "::std::numeric_limits<int8_t>::min()";
-      *size_expr = "256";
-      return true;
+      return ArrayDimBounds("::std::numeric_limits<int8_t>::min()", "256");
     }
     if (lowname == "word") {
-      *size_expr = "65536";
-      return true;
+      return ArrayDimBounds(std::move(lo), "65536");
     }
     if (lowname == "smallint") {
-      *lo = "::std::numeric_limits<int16_t>::min()";
-      *size_expr = "65536";
-      return true;
+      return ArrayDimBounds("::std::numeric_limits<int16_t>::min()", "65536");
     }
     if (lowname == "longint" || lowname == "integer") {
-      *lo = "::std::numeric_limits<int32_t>::min()";
-      *size_expr =
+      lo = "::std::numeric_limits<int32_t>::min()";
+      size_expr =
           "((" +
           ordinal_value_text("::std::numeric_limits<int32_t>::max()") +
           ") - (" +
           ordinal_value_text("::std::numeric_limits<int32_t>::min()") +
           ") + 1)";
-      return true;
+      return ArrayDimBounds(std::move(lo), std::move(size_expr));
     }
     if (lowname == "widechar") {
-      *size_expr = "65536";
-      return true;
+      return ArrayDimBounds(std::move(lo), "65536");
     }
     if (lowname == "wordbool" || lowname == "longbool" ||
         lowname == "qwordbool") {
-      *lo = "false";
-      *size_expr = "2";
-      return true;
+      return ArrayDimBounds("false", "2");
     }
   }
-  return false;
+  return std::nullopt;
 }
 
 std::string EmitTypes::array_bound_ordinal_to_cxx(const Expr& e) {
@@ -852,8 +839,8 @@ std::string EmitTypes::array_type_to_cxx(const TyArray& a) {
   // `tp2cc_Array<T, Lo, N>` wrappers from innermost to outermost.
   std::string ty = type_to_cxx(*a.element);
   for (auto it = a.dims.rbegin(); it != a.dims.rend(); ++it) {
-    std::string lo, size_expr;
-    if (!array_dim_bounds_to_cxx(**it, &lo, &size_expr)) {
+    auto bounds = array_dim_bounds_to_cxx(**it);
+    if (!bounds) {
       // Keep unsupported fixed arrays as array wrappers so later emit paths do not
       // silently change aliasing/value semantics to pointer semantics.
       diag_ops_.report_error(
@@ -861,7 +848,8 @@ std::string EmitTypes::array_type_to_cxx(const TyArray& a) {
           "unsupported fixed array index type; exact Pascal bounds are required");
       return "::rt::tp2cc_Array<" + ty + ", 0, 1>";
     }
-    ty = "::rt::tp2cc_Array<" + ty + ", " + lo + ", " + size_expr + ">";
+    ty = "::rt::tp2cc_Array<" + ty + ", " + bounds->low + ", " +
+         bounds->size_expr + ">";
   }
   return ty;
 }

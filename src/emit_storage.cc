@@ -568,15 +568,15 @@ std::optional<EmitUntypedStorageIndexView> EmitStorage::untyped_storage_index_vi
       !arr.element) {
     return std::nullopt;
   }
-  std::string lo;
-  std::string size_expr;
-  if (!types_.array_dim_bounds_to_cxx(*arr.dims[0], &lo, &size_expr)) {
+  auto bounds = types_.array_dim_bounds_to_cxx(*arr.dims[0]);
+  if (!bounds) {
     return std::nullopt;
   }
   std::string elem_cxx = types_.type_to_cxx(*arr.element);
   const std::string index_cxx = expr_ops_.expr_to_cxx(*i.indices[0]);
   const std::string offset =
-      "((" + index_cxx + ") - (" + lo + ")) * sizeof(" + elem_cxx + ")";
+      "((" + index_cxx + ") - (" + bounds->low + ")) * sizeof(" + elem_cxx +
+      ")";
   std::string ptr_cxx = "::rt::tp2cc_byte_offset(" +
                         expr_ops_.expr_to_cxx(*cast.args[0]) + ", " + offset +
                         ")";

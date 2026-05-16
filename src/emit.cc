@@ -286,10 +286,9 @@ struct Emitter : ResolveNameProvider,
   std::string enum_underlying_type_to_cxx(const TyEnum& e) {
     return types_.enum_underlying_type_to_cxx(e);
   }
-  bool array_dim_bounds_to_cxx(const ast::TypeExpr& dim,
-                               std::string* lo,
-                               std::string* size_expr) {
-    return types_.array_dim_bounds_to_cxx(dim, lo, size_expr);
+  std::optional<ArrayDimBounds> array_dim_bounds_to_cxx(
+      const ast::TypeExpr& dim) {
+    return types_.array_dim_bounds_to_cxx(dim);
   }
   std::string set_type_to_cxx(const TySet& s) {
     return types_.set_type_to_cxx(s);
