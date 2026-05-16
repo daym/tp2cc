@@ -248,9 +248,9 @@ struct tp2cc_metaclass_t_exception : public tp2cc_metaclass_t_tobject {
 
 inline tp2cc_metaclass_t_exception* tp2cc_metaclass_value_t_exception();
 
-// Delphi/FPC `class` types are references to heap objects whose base
-// contract is `TObject`. Keep the runtime base explicit rather than
-// letting each translated unit invent its own ad-hoc root.
+// Delphi/FPC `class` values are object references whose common base is
+// TObject. The runtime defines that base once so translated classes share one
+// metaclass and destruction contract.
 struct t_tobject {
   // Pascal class construction starts at TObject.Create. The default root
   // implementation just succeeds; translated derived constructors chain to
@@ -2117,12 +2117,10 @@ inline constexpr int tp2cc_ordinal_value(T x) {
 // Pascal `array[Lo..Hi] of T`. Value-semantics (copied on pass, like
 // Pascal), arbitrary lower bound, 1- or 0-based or whatever Pascal said.
 //
-// We DO NOT inherit from std::array: that adds an extra aggregate layer
-// which breaks brace-elision for designated initialisers of element
-// records (the fpc sources' typed consts use `(field: value; ...)` a
-// lot).  Holding a bare C-array as the single member keeps `tp2cc_Array` a
-// simple one-member aggregate, so emitted typed constants can initialize
-// `.data` directly, including record elements with designated initialisers.
+// std::array adds an extra aggregate layer that breaks brace-elision for
+// designated initialisers of element records. A single bare C-array member
+// keeps tp2cc_Array initializable as `.data = {...}`, including record elements
+// with designated initialisers.
 template <typename T, auto Lo, std::size_t N>
 struct tp2cc_Array {
   // `T data[N];` -- DELIBERATELY NOT `T data[N]{};`. A default member

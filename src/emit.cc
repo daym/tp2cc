@@ -736,20 +736,14 @@ Emitter::ResolvedCall Emitter::resolve_call(
 
 std::string Emitter::format_resolved_callee(
     const ResolvedCall& resolved, const Expr& callee_ast) {
-  // The single source of truth for C++ callee text. Every Call branch
-  // emit path goes through this -- do NOT add a parallel
-  // `expr_to_cxx(callee)` call elsewhere; the two would diverge.
+  // FreeFunctionInUnit is the only resolved call kind that overrides normal
+  // expression formatting. Receiver/member/with semantics stay in
+  // expr_to_cxx(callee_ast), where the matching value lookup state lives.
   if (resolved.callee_kind == ResolvedCalleeKind::FreeFunctionInUnit &&
       !resolved.defining_unit.empty()) {
     return unit_namespace_prefix(resolved.defining_unit) +
            mangle(resolved.member_name);
   }
-  // Fallback: receivers, class-qualified static calls, and anything
-  // the resolver classified as `Unknown` flow through the existing
-  // expression formatter, which already handles
-  // `instance->method`/`Class::method`/`unit::name`/with-binding. We
-  // keep that path here rather than reimplementing it because it is
-  // tied to the emitter's deduce_class_alias / with-stack state.
   bool prev_callee_ctx = is_callee_context_;
   is_callee_context_ = true;
   std::string text = expr_to_cxx(callee_ast);
@@ -2367,10 +2361,10 @@ std::string Emitter::const_value_to_cxx(const Expr& e,
   return values_.const_value_to_cxx(e, target, explicit_conversion);
 }
 
-// FPC constant conversions first evaluate the integer constant
-// expression, then convert that value to the destination type. Keep
-// the same split here so assignments/calls/typed consts all share one
-// checked path instead of ad-hoc literal special cases.
+// FPC constant conversions first evaluate the integer constant expression,
+// then convert that value to the destination type. Assignments, calls, and
+// typed consts must share this path so range checks and wrapping stay
+// identical.
 std::optional<std::string> Emitter::maybe_convert_const_int_expr(
     const Expr& e, const TypeExpr* target, bool explicit_conversion) {
   return values_.maybe_convert_const_int_expr(e, target, explicit_conversion);
