@@ -53,6 +53,13 @@ static const TypeExpr* proc_result_type(const ProcInfo* proc) {
   return nullptr;
 }
 
+// Types synthesized during analysis are cached in `synthesized_types_`; their
+// child type nodes are borrowed from the parsed AST, so the aliasing deleter
+// leaves ownership with the original AST.
+static TypePtr borrowed_ast_type(const TypeExpr* type) {
+  return TypePtr(const_cast<TypeExpr*>(type), [](TypeExpr*) {});
+}
+
 static const TypeExpr* method_result_type(const MethodSig* method) {
   if (!method || !method->decl || !method->decl->return_type) return nullptr;
   return method->decl->return_type.get();
@@ -313,17 +320,14 @@ const TySet* EmitAnalysis::synthesize_set_type(
     const TypeExpr* element,
     std::optional<std::pair<int64_t, int64_t>> explicit_bounds) {
   if (!element) return nullptr;
-  auto tp = std::make_shared<TySet>();
-  // The synthesized set view borrows the existing element type; it is only an
-  // emit-time compatibility/type-inference artifact and does not own or mutate
-  // the underlying type node.
-  tp->element = std::shared_ptr<TypeExpr>(const_cast<TypeExpr*>(element),
-                                          [](TypeExpr*) {});
-  if (explicit_bounds) {
-    tp->has_explicit_bounds = true;
-    tp->explicit_low = explicit_bounds->first;
-    tp->explicit_high = explicit_bounds->second;
-  }
+  const bool has_explicit_bounds = explicit_bounds.has_value();
+  const int64_t explicit_low =
+      has_explicit_bounds ? explicit_bounds->first : 0;
+  const int64_t explicit_high =
+      has_explicit_bounds ? explicit_bounds->second : 0;
+  auto tp = std::make_shared<TySet>(
+      element->loc, borrowed_ast_type(element), has_explicit_bounds,
+      explicit_low, explicit_high);
   synthesized_types_.push_back(tp);
   return tp.get();
 }
@@ -1455,11 +1459,8 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         const TypeExpr* operand_ty = deduce_type(*a.operand);
         const TypeExpr* canon = canonicalize_type(operand_ty);
         if (operand_ty && canon && canon->kind != Kind::TyArray) {
-          auto tp = std::make_shared<TyPointer>();
-          // The synthesized pointer type borrows the existing operand type; it
-          // is only an emit-time view and does not own or mutate the pointee.
-          tp->target = std::shared_ptr<TypeExpr>(
-              const_cast<TypeExpr*>(operand_ty), [](TypeExpr*) {});
+          auto tp = std::make_shared<TyPointer>(
+              operand_ty->loc, borrowed_ast_type(operand_ty));
           synthesized_types_.push_back(tp);
           return tp.get();
         }
