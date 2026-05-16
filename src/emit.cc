@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -372,6 +371,19 @@ struct Emitter : ResolveNameProvider,
     return analysis_.class_info_for_type_name(name);
   }
   std::string class_cast_rhs_type_cxx(const ast::Expr& rhs);
+  std::string char_concat_operand_cxx(const ast::Expr& x, bool wrap_as_string);
+  bool expr_is_boolean_value(const ast::Expr& x);
+  std::string binary_operand_to_cxx(const ast::Expr& operand,
+                                    const ast::Expr& other);
+  const PrimitiveInfo* integer_primitive_for_expr(const ast::Expr& x);
+  bool expr_is_integer_operand(const ast::Expr& x);
+  bool expr_is_signed_integer_operand(const ast::Expr& x);
+  const PrimitiveInfo* shift_carrier_for_expr(const ast::Expr& x);
+  std::optional<std::string> member_base_ident(const ast::Member& m);
+  std::string call_first_arg_or_zero(const ast::Call& c);
+  bool expr_is_const_untyped_storage_arg(const ast::Expr& e);
+  bool visible_type_name_for_intrinsic(std::string_view type_name);
+  std::optional<std::string> unit_qualified_type_name(const ast::Expr& expr);
   tp2cc::ResolvedCall resolve_new_constructor_call(
       const ast::Expr& pointer_type_expr, const ast::Expr& ctor_callee,
       const std::vector<const ast::Expr*>& args);
@@ -687,6 +699,156 @@ std::string Emitter::class_cast_rhs_type_cxx(const Expr& rhs) {
   return expr_to_cxx(rhs);
 }
 
+std::string Emitter::char_concat_operand_cxx(const Expr& x,
+                                             bool wrap_as_string) {
+  std::string text = expr_to_cxx(x);
+  if (!wrap_as_string) return text;
+  return "::rt::tp2cc_shortstring_of<>(" + text + ")";
+}
+
+bool Emitter::expr_is_boolean_value(const Expr& x) {
+  if (x.kind == Kind::Call && registry) {
+    const auto& c = static_cast<const Call&>(x);
+    if (c.callee->kind == Kind::Ident) {
+      const std::string& nm = static_cast<const Ident&>(*c.callee).name;
+      ResolveResult rr = resolve_name(nm);
+      if (rr.return_type_name == "boolean") return true;
+    }
+  }
+  if (x.kind == Kind::Binary) {
+    const auto& bx = static_cast<const Binary&>(x);
+    switch (bx.op) {
+      case BinOp::Eq:
+      case BinOp::NotEq:
+      case BinOp::Lt:
+      case BinOp::Gt:
+      case BinOp::LtEq:
+      case BinOp::GtEq:
+      case BinOp::In:
+      case BinOp::Is:
+        return true;
+      case BinOp::And:
+      case BinOp::Or:
+      case BinOp::Xor:
+        return expr_is_boolean_value(*bx.lhs) &&
+               expr_is_boolean_value(*bx.rhs);
+      default:
+        break;
+    }
+  }
+  if (x.kind == Kind::Unary &&
+      static_cast<const Unary&>(x).op == UnOp::Not) {
+    return expr_is_boolean_value(*static_cast<const Unary&>(x).operand);
+  }
+  if (x.kind == Kind::BoolLit) return true;
+  if (!registry) return false;
+  const TypeExpr* t = type_for_overload(x);
+  if (!t) return false;
+  t = registry->canonicalize(t);
+  if (!t || t->kind != Kind::TyName) return false;
+  std::string nm = ascii_lower(static_cast<const TyName&>(*t).name);
+  return nm == "boolean" || nm == "bytebool" || nm == "wordbool" ||
+         nm == "longbool";
+}
+
+std::string Emitter::binary_operand_to_cxx(const Expr& operand,
+                                           const Expr& other) {
+  // A Pascal set literal is target-typed. In binary expressions the other
+  // operand supplies that target when it is a set type.
+  if (operand.kind != Kind::SetLit) return expr_to_cxx(operand);
+  const TypeExpr* other_ty = type_for_overload(other);
+  const TypeExpr* canon = canonicalize_type(other_ty);
+  if (canon && canon->kind == Kind::TySet) {
+    return set_literal_to_cxx(static_cast<const SetLit&>(operand), other_ty);
+  }
+  return expr_to_cxx(operand);
+}
+
+const PrimitiveInfo* Emitter::integer_primitive_for_expr(const Expr& x) {
+  const TypeExpr* t = type_for_overload(x);
+  if (!t) return nullptr;
+  t = canonicalize_type(t);
+  if (!t || t->kind != Kind::TyName) return nullptr;
+  const PrimitiveInfo* pi =
+      primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
+  if (!pi) return nullptr;
+  if (pi->int_kind == PrimitiveIntKind::Signed ||
+      pi->int_kind == PrimitiveIntKind::Unsigned) {
+    return pi;
+  }
+  return nullptr;
+}
+
+bool Emitter::expr_is_integer_operand(const Expr& x) {
+  return integer_primitive_for_expr(x) != nullptr;
+}
+
+bool Emitter::expr_is_signed_integer_operand(const Expr& x) {
+  const PrimitiveInfo* pi = integer_primitive_for_expr(x);
+  return pi && pi->int_kind == PrimitiveIntKind::Signed;
+}
+
+const PrimitiveInfo* Emitter::shift_carrier_for_expr(const Expr& x) {
+  return shift_carrier_primitive(integer_primitive_for_expr(x));
+}
+
+std::optional<std::string> Emitter::member_base_ident(const Member& m) {
+  if (m.base->kind != Kind::Ident) return std::nullopt;
+  return static_cast<const Ident&>(*m.base).name;
+}
+
+std::string Emitter::call_first_arg_or_zero(const Call& c) {
+  if (c.args.empty()) return "0";
+  return expr_to_cxx(*c.args[0]);
+}
+
+bool Emitter::expr_is_const_untyped_storage_arg(const Expr& e) {
+  if (e.kind == Kind::Ident) {
+    const auto& arg_id = static_cast<const Ident&>(e);
+    return local_untyped_params.count(arg_id.name) &&
+           local_const_params.count(arg_id.name);
+  }
+  if (e.kind == Kind::AddrOf) {
+    const auto& a = static_cast<const AddrOf&>(e);
+    if (a.operand && a.operand->kind == Kind::Ident) {
+      const auto& arg_id = static_cast<const Ident&>(*a.operand);
+      return local_untyped_params.count(arg_id.name) &&
+             local_const_params.count(arg_id.name);
+    }
+  }
+  return false;
+}
+
+bool Emitter::visible_type_name_for_intrinsic(std::string_view type_name) {
+  const std::string low = ascii_lower(type_name);
+  if (is_primitive_type(low)) return true;
+  if (!runtime_named_type_cxx(low).empty()) return true;
+  if (!builtin_reference_class_struct_cxx(low).empty()) return true;
+  if (local_type_aliases_scoped.count(low) || local_enums.count(low)) {
+    return true;
+  }
+  if (ResolveResult rr = resolve_name(std::string(type_name));
+      rr.kind == ResolvedKind::UnitType) {
+    return true;
+  }
+  if (registry) {
+    return registry->has_class(low, current_unit_name) ||
+           registry->records.count(low) || registry->enums.count(low) ||
+           registry->aliases.count(low);
+  }
+  return false;
+}
+
+std::optional<std::string> Emitter::unit_qualified_type_name(const Expr& expr) {
+  if (!registry || expr.kind != Kind::Member) return std::nullopt;
+  const auto& mem = static_cast<const Member&>(expr);
+  auto unit_member = analysis_.resolve_unit_qualified_member(mem);
+  if (!unit_member || unit_member->resolved.kind != ResolvedKind::UnitType) {
+    return std::nullopt;
+  }
+  return unit_member->unit_name + "." + mem.name;
+}
+
 tp2cc::ResolvedCall Emitter::resolve_new_constructor_call(
     const Expr& pointer_type_expr, const Expr& ctor_callee,
     const std::vector<const Expr*>& args) {
@@ -914,11 +1076,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         bool l_char = expr_is_charish(*n.lhs);
         bool r_char = expr_is_charish(*n.rhs);
         if (l_char || r_char) {
-          auto wrap = [&](const Expr& x, bool want) {
-            return want ? "::rt::tp2cc_shortstring_of<>(" + expr_to_cxx(x) + ")"
-                        : expr_to_cxx(x);
-          };
-          return "(" + wrap(*n.lhs, l_char) + " + " + wrap(*n.rhs, r_char) + ")";
+          return "(" + char_concat_operand_cxx(*n.lhs, l_char) + " + " +
+                 char_concat_operand_cxx(*n.rhs, r_char) + ")";
         }
       }
       // Pascal `and` / `or` are polymorphic: bool operands get
@@ -927,90 +1086,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // `|`. Be strict here: treating a nested flag expression like
       // `(IF_SM or IF_SM2)` as "boolean because it is an `or`" silently
       // miscompiles bitmask code into `&&`/`||`.
-      std::function<bool(const Expr&)> is_bool = [&](const Expr& x) -> bool {
-        // Calls to rt:: builtins and source procs: consult the resolved proc's
-        // recorded return type instead of a global last-wins name map.
-        if (x.kind == Kind::Call && registry) {
-          const auto& c = static_cast<const Call&>(x);
-          if (c.callee->kind == Kind::Ident) {
-            const std::string& nm =
-                static_cast<const Ident&>(*c.callee).name;
-            ResolveResult rr = resolve_name(nm);
-            if (rr.return_type_name == "boolean")
-              return true;
-          }
-        }
-        // Comparisons always yield bool.
-        if (x.kind == Kind::Binary) {
-          const auto& bx = static_cast<const Binary&>(x);
-          auto bop = bx.op;
-          if (bop == BinOp::Eq || bop == BinOp::NotEq ||
-              bop == BinOp::Lt || bop == BinOp::Gt ||
-              bop == BinOp::LtEq || bop == BinOp::GtEq ||
-              bop == BinOp::In || bop == BinOp::Is)
-            return true;
-          if (bop == BinOp::And || bop == BinOp::Or || bop == BinOp::Xor)
-            return is_bool(*bx.lhs) && is_bool(*bx.rhs);
-        }
-        if (x.kind == Kind::Unary &&
-            static_cast<const Unary&>(x).op == UnOp::Not)
-          return is_bool(*static_cast<const Unary&>(x).operand);
-        if (x.kind == Kind::BoolLit) return true;
-        if (!registry) return false;
-        const TypeExpr* t = type_for_overload(x);
-        if (!t) return false;
-        t = registry->canonicalize(t);
-        if (!t || t->kind != Kind::TyName) return false;
-        std::string nm = static_cast<const TyName&>(*t).name;
-        for (auto& c : nm)
-          if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-        return nm == "boolean" || nm == "bytebool" ||
-               nm == "wordbool" || nm == "longbool";
-      };
       bool logical_bool = (n.op == BinOp::And || n.op == BinOp::Or) &&
-                          is_bool(*n.lhs) && is_bool(*n.rhs);
-      auto emit_operand = [&](const Expr& operand, const Expr& other) {
-        if (operand.kind != Kind::SetLit) return expr_to_cxx(operand);
-        const TypeExpr* other_ty = type_for_overload(other);
-        const TypeExpr* canon = canonicalize_type(other_ty);
-        if (canon && canon->kind == Kind::TySet) {
-          return set_literal_to_cxx(static_cast<const SetLit&>(operand),
-                                    other_ty);
-        }
-        return expr_to_cxx(operand);
-      };
+                          expr_is_boolean_value(*n.lhs) &&
+                          expr_is_boolean_value(*n.rhs);
       // Pascal `{$Q+}` makes integer add/sub/mul/inc/dec raise
       // EIntOverflow on overflow. Route through a checked helper when the
       // parser snapshotted Q+ active and both operands are integer-typed;
       // floats and sets stay on plain operators.
-      auto operand_is_integer = [&](const Expr& x) {
-        const TypeExpr* t = type_for_overload(x);
-        if (!t) return false;
-        t = canonicalize_type(t);
-        if (!t || t->kind != Kind::TyName) return false;
-        const PrimitiveInfo* pi = primitive_info(
-            ascii_lower(static_cast<const TyName&>(*t).name));
-        return pi && (pi->int_kind == PrimitiveIntKind::Signed ||
-                      pi->int_kind == PrimitiveIntKind::Unsigned);
-      };
-      auto operand_is_signed_integer = [&](const Expr& x) {
-        const TypeExpr* t = type_for_overload(x);
-        if (!t) return false;
-        t = canonicalize_type(t);
-        if (!t || t->kind != Kind::TyName) return false;
-        const PrimitiveInfo* pi = primitive_info(
-            ascii_lower(static_cast<const TyName&>(*t).name));
-        return pi && pi->int_kind == PrimitiveIntKind::Signed;
-      };
-      auto shift_carrier = [&](const Expr& x) -> const PrimitiveInfo* {
-        const TypeExpr* t = type_for_overload(x);
-        if (!t) return nullptr;
-        t = canonicalize_type(t);
-        if (!t || t->kind != Kind::TyName) return nullptr;
-        const PrimitiveInfo* pi = primitive_info(
-            ascii_lower(static_cast<const TyName&>(*t).name));
-        return shift_carrier_primitive(pi);
-      };
       if (std::string pas_op = binary_pascal_operator_token(n.op);
           !pas_op.empty()) {
         BinaryOperatorResult resolved =
@@ -1056,23 +1138,25 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       if (n.q_check &&
           (n.op == BinOp::Add || n.op == BinOp::Sub || n.op == BinOp::Mul) &&
-          operand_is_integer(*n.lhs) && operand_is_integer(*n.rhs)) {
+          expr_is_integer_operand(*n.lhs) && expr_is_integer_operand(*n.rhs)) {
         const char* fn = (n.op == BinOp::Add) ? "tp2cc_add_checked"
                        : (n.op == BinOp::Sub) ? "tp2cc_sub_checked"
                                               : "tp2cc_mul_checked";
-        return std::string("::rt::") + fn + "(" + emit_operand(*n.lhs, *n.rhs) +
-               ", " + emit_operand(*n.rhs, *n.lhs) + ")";
+        return std::string("::rt::") + fn + "(" +
+               binary_operand_to_cxx(*n.lhs, *n.rhs) + ", " +
+               binary_operand_to_cxx(*n.rhs, *n.lhs) + ")";
       }
       if (!n.q_check &&
           (n.op == BinOp::Add || n.op == BinOp::Sub || n.op == BinOp::Mul) &&
-          operand_is_integer(*n.lhs) && operand_is_integer(*n.rhs) &&
-          (operand_is_signed_integer(*n.lhs) ||
-           operand_is_signed_integer(*n.rhs))) {
+          expr_is_integer_operand(*n.lhs) && expr_is_integer_operand(*n.rhs) &&
+          (expr_is_signed_integer_operand(*n.lhs) ||
+           expr_is_signed_integer_operand(*n.rhs))) {
         const char* fn = (n.op == BinOp::Add) ? "tp2cc_wrap_add"
                        : (n.op == BinOp::Sub) ? "tp2cc_wrap_sub"
                                               : "tp2cc_wrap_mul";
-        return std::string("::rt::") + fn + "(" + emit_operand(*n.lhs, *n.rhs) +
-               ", " + emit_operand(*n.rhs, *n.lhs) + ")";
+        return std::string("::rt::") + fn + "(" +
+               binary_operand_to_cxx(*n.lhs, *n.rhs) + ", " +
+               binary_operand_to_cxx(*n.rhs, *n.lhs) + ")";
       }
       // Keep the shift/rotate vocabulary precise here:
       // - shl: shift left, zeros come in on the right, high bits are discarded
@@ -1088,20 +1172,21 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // count to the carrier width and `shr` stays logical even for signed
       // integers.
       if ((n.op == BinOp::Shl || n.op == BinOp::Shr) &&
-          operand_is_integer(*n.lhs)) {
-        if (const PrimitiveInfo* carrier = shift_carrier(*n.lhs)) {
+          expr_is_integer_operand(*n.lhs)) {
+        if (const PrimitiveInfo* carrier = shift_carrier_for_expr(*n.lhs)) {
           const char* fn = (n.op == BinOp::Shl) ? "p_shl" : "p_shr";
           return std::string("::rt::") + fn + "<" + carrier->cxx + ">(" +
-                 emit_operand(*n.lhs, *n.rhs) + ", " +
-                 emit_operand(*n.rhs, *n.lhs) + ")";
+                 binary_operand_to_cxx(*n.lhs, *n.rhs) + ", " +
+                 binary_operand_to_cxx(*n.rhs, *n.lhs) + ")";
         }
       }
       if ((n.op == BinOp::IntDiv || n.op == BinOp::Mod) &&
-          operand_is_integer(*n.lhs) && operand_is_integer(*n.rhs)) {
+          expr_is_integer_operand(*n.lhs) && expr_is_integer_operand(*n.rhs)) {
         const char* fn = (n.op == BinOp::IntDiv) ? "tp2cc_int_div"
                                                  : "tp2cc_int_mod";
-        return std::string("::rt::") + fn + "(" + emit_operand(*n.lhs, *n.rhs) +
-               ", " + emit_operand(*n.rhs, *n.lhs) + ")";
+        return std::string("::rt::") + fn + "(" +
+               binary_operand_to_cxx(*n.lhs, *n.rhs) + ", " +
+               binary_operand_to_cxx(*n.rhs, *n.lhs) + ")";
       }
       const char* op = "?";
       switch (n.op) {
@@ -1124,8 +1209,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         case BinOp::GtEq:   op = ">="; break;
         default:            op = "/*?*/"; break;
       }
-      return "(" + emit_operand(*n.lhs, *n.rhs) + " " + op + " " +
-             emit_operand(*n.rhs, *n.lhs) + ")";
+      return "(" + binary_operand_to_cxx(*n.lhs, *n.rhs) + " " + op + " " +
+             binary_operand_to_cxx(*n.rhs, *n.lhs) + ")";
     }
     case Kind::Unary: {
       const auto& n = static_cast<const Unary&>(e);
@@ -1186,17 +1271,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       //     named class/record
       //   - otherwise           -> ordinary emitted C++ member access after
       //                            Pascal-specific meanings are ruled out.
-      auto base_is_ident = [&](std::string& out) -> bool {
-        if (m.base->kind != Kind::Ident) return false;
-        out = static_cast<const Ident&>(*m.base).name;
-        return true;
-      };
-
-      std::string base_name;
+      std::optional<std::string> base_ident = member_base_ident(m);
       // `inherited.foo` -- treat as class-qualified on the parent
       // alias (C++ `inherited::foo` via the in-struct `using
       // inherited = Parent;` alias).
-      if (base_is_ident(base_name) && base_name == "inherited") {
+      if (base_ident && *base_ident == "inherited") {
         std::string parent;
         if (registry && !current_class_name.empty()) {
           const ClassInfo* ci = registry->lookup_class(current_class_name,
@@ -1232,7 +1311,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // `System.x` straight to `::rt::x` so every builtin (delete,
       // length, copy, pos, ...) resolves without a per-method stub
       // on some `p_system` object.
-      if (base_is_ident(base_name) && base_name == "system") {
+      if (base_ident && *base_ident == "system") {
         return "::rt::" + mangle(m.name);
       }
       // `Unit.name` is not member access on a value named `Unit`. The shared
@@ -1252,7 +1331,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             !is_callee_context_ && rr.is_callable && rr.accepts_zero_args;
         return want_call ? rr.cxx + "()" : rr.cxx;
       }
-      if (registry && base_is_ident(base_name)) {
+      if (registry && base_ident) {
+        const std::string& base_name = *base_ident;
         // `TClass.method` -- Pascal's way to call a specific
         // class's method (typically the parent's version from
         // inside an override). Emit `TClass::method`. This is a
@@ -1614,58 +1694,6 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (c.callee->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*c.callee);
         const std::string& n = id.name;
-        auto arg0 = [&] {
-          return c.args.empty() ? std::string("0") : expr_to_cxx(*c.args[0]);
-        };
-        auto arg_is_const_untyped_storage = [&](const Expr& e) {
-          if (e.kind == Kind::Ident) {
-            const auto& arg_id = static_cast<const Ident&>(e);
-            return local_untyped_params.count(arg_id.name) &&
-                   local_const_params.count(arg_id.name);
-          }
-          if (e.kind == Kind::AddrOf) {
-            const auto& a = static_cast<const AddrOf&>(e);
-            if (a.operand && a.operand->kind == Kind::Ident) {
-              const auto& arg_id = static_cast<const Ident&>(*a.operand);
-              return local_untyped_params.count(arg_id.name) &&
-                     local_const_params.count(arg_id.name);
-            }
-          }
-          return false;
-        };
-        auto is_visible_type_name = [&](const std::string& type_name) {
-          const std::string low = ascii_lower(type_name);
-          if (is_primitive_type(low)) return true;
-          if (!runtime_named_type_cxx(low).empty()) return true;
-          if (!builtin_reference_class_struct_cxx(low).empty()) {
-            return true;
-          }
-          if (local_type_aliases_scoped.count(low) || local_enums.count(low)) {
-            return true;
-          }
-          if (ResolveResult rr = resolve_name(type_name);
-              rr.kind == ResolvedKind::UnitType) {
-            return true;
-          }
-          if (registry) {
-            return registry->has_class(low, current_unit_name) ||
-                   registry->records.count(low) ||
-                   registry->enums.count(low) ||
-                   registry->aliases.count(low);
-          }
-          return false;
-        };
-        auto unit_qualified_type_name =
-            [&](const Expr& expr) -> std::optional<std::string> {
-          if (!registry || expr.kind != Kind::Member) return std::nullopt;
-          const auto& mem = static_cast<const Member&>(expr);
-          auto unit_member = analysis_.resolve_unit_qualified_member(mem);
-          if (!unit_member ||
-              unit_member->resolved.kind != ResolvedKind::UnitType) {
-            return std::nullopt;
-          }
-          return unit_member->unit_name + "." + mem.name;
-        };
 
         // Pascal `low` / `high` are type-driven:
         //   `high(longint)`   -> max value of the type
@@ -1703,7 +1731,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
 
         if (n == "ord" && c.args.size() == 1) {
-          return ordinal_value_to_cxx(*c.args[0], arg0());
+          return ordinal_value_to_cxx(*c.args[0], call_first_arg_or_zero(c));
         }
 
         if (n == "sizeof" && c.args.size() == 1) {
@@ -1716,7 +1744,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           std::string inner;
           if (c.args[0]->kind == Kind::Ident) {
             const auto& tn = static_cast<const Ident&>(*c.args[0]);
-            if (is_visible_type_name(tn.name)) {
+            if (visible_type_name_for_intrinsic(tn.name)) {
               inner = "sizeof(" + type_name_text_to_cxx(tn.name) + ")";
             }
           }
@@ -1736,7 +1764,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "::rt::tp2cc_unaligned_load<" + storage->elem_cxx + ">(" +
                    storage->void_ptr_text + ")";
           }
-          return "::rt::p_unaligned(" + arg0() + ")";
+          return "::rt::p_unaligned(" + call_first_arg_or_zero(c) + ")";
         } else if (n == "typeof" && c.args.size() == 1 &&
                    c.args[0]->kind == Kind::Ident && registry) {
           // Pascal `typeof(T)` takes a TYPE NAME, not a value. In C++
@@ -1760,10 +1788,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "/* unresolved string typecast */";
           }
           if (n == "shortstring") {
-            return "::rt::tp2cc_shortstring_of<>(" + arg0() + ")";
+            return "::rt::tp2cc_shortstring_of<>(" +
+                   call_first_arg_or_zero(c) + ")";
           }
           if (n == "ansistring" || n == "utf8string") {
-            return "::rt::tp2cc_ansistring_of(" + arg0() + ")";
+            return "::rt::tp2cc_ansistring_of(" +
+                   call_first_arg_or_zero(c) + ")";
           }
           if (n == "text") {
             if (auto view = storage_.typecast_storage_view(c)) {
@@ -1792,7 +1822,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               // an integer (element i -> bit i). The set source can be
               // an rvalue literal `[a,b,c]`, so don't gate on lvalue.
               return "::rt::tp2cc_set_to_int<" + primitive_type_cxx(n) +
-                     ">(" + arg0() + ")";
+                     ">(" + call_first_arg_or_zero(c) + ")";
             }
           }
           if (const TypeExpr* source_ty =
@@ -1807,10 +1837,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             // source value, then copy its bytes into the scalar target; storage
             // contexts request storage views before reaching this branch.
             return "::rt::tp2cc_reinterpret_copy<" + primitive_type_cxx(n) +
-                   ">(" + arg0() + ")";
+                   ">(" + call_first_arg_or_zero(c) + ")";
           }
           if (primitive_name_is_charish(n)) {
-            return "::rt::p_chr(" + arg0() + ")";
+            return "::rt::p_chr(" + call_first_arg_or_zero(c) + ")";
           }
           if (n == "pointer" || n == "pchar" || n == "pansichar" ||
               n == "ppchar") {
@@ -1818,13 +1848,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             std::string source =
                 (peeled && expr_is_storage_lvalue(*c.args[0]))
                     ? expr_to_cxx(*peeled)
-                    : arg0();
+                    : call_first_arg_or_zero(c);
             std::string coerced = coerce_pointer_like_text(
                 primitive_type_cxx(n), &cast_name,
                 type_for_overload(*c.args[0]),
                 source,
                 /*explicit_pascal_cast=*/true,
-                arg_is_const_untyped_storage(*c.args[0]));
+                expr_is_const_untyped_storage_arg(*c.args[0]));
             if (coerced != source) return coerced;
             if (peeled && expr_is_storage_lvalue(*c.args[0])) {
               return "((" + primitive_type_cxx(n) + ")(" +
@@ -1833,7 +1863,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           if (expr_is_charish(*c.args[0])) {
             return "((" + primitive_type_cxx(n) + ")(" +
-                   ordinal_value_to_cxx(*c.args[0], arg0()) + "))";
+                   ordinal_value_to_cxx(*c.args[0],
+                                        call_first_arg_or_zero(c)) + "))";
           }
           TyName target(n);
           if (auto conv = resolution_.find_assignment_operator(
@@ -1843,13 +1874,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (!conv.defining_unit.empty()) {
               fn = unit_namespace_prefix(conv.defining_unit) + fn;
             }
-            return fn + "(" + arg0() + ")";
+            return fn + "(" + call_first_arg_or_zero(c) + ")";
           }
           if (auto lit =
                   maybe_convert_const_int_expr(*c.args[0], &target, true)) {
             return *lit;
           }
-          return "((" + primitive_type_cxx(n) + ")(" + arg0() + "))";
+          return "((" + primitive_type_cxx(n) + ")(" +
+                 call_first_arg_or_zero(c) + "))";
         } else if (c.args.size() == 1 && n != "inc" && n != "dec") {
           if (is_builtin_reference_class_name(n)) {
             // `TObject(expr)` is a pointer cast even though `TObject` itself
@@ -1857,10 +1889,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             TyName cast_name(n);
             std::string coerced = coerce_pointer_like_text(
                 type_name_to_cxx(cast_name), &cast_name,
-                type_for_overload(*c.args[0]), arg0(),
+                type_for_overload(*c.args[0]), call_first_arg_or_zero(c),
                 /*explicit_pascal_cast=*/true);
-            if (coerced != arg0()) return coerced;
-            return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
+            if (coerced != call_first_arg_or_zero(c)) return coerced;
+            return "((" + type_name_to_cxx(cast_name) + ")(" +
+                   call_first_arg_or_zero(c) + "))";
           }
           if (registry) {
             const ClassInfo* ci = class_info_for_type_name(n);
@@ -1871,10 +1904,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               TyName cast_name(n);
               std::string coerced = coerce_pointer_like_text(
                   type_name_to_cxx(cast_name), &cast_name,
-                  type_for_overload(*c.args[0]), arg0(),
+                  type_for_overload(*c.args[0]), call_first_arg_or_zero(c),
                   /*explicit_pascal_cast=*/true);
-              if (coerced != arg0()) return coerced;
-              return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
+              if (coerced != call_first_arg_or_zero(c)) return coerced;
+              return "((" + type_name_to_cxx(cast_name) + ")(" +
+                     call_first_arg_or_zero(c) + "))";
             }
           }
           const TypeExpr* cast_ty = lookup_named_type_expr(n);
@@ -1895,19 +1929,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             std::string source =
                 (peeled && expr_is_storage_lvalue(*c.args[0]))
                     ? expr_to_cxx(*peeled)
-                    : arg0();
+                    : call_first_arg_or_zero(c);
             std::string coerced = coerce_pointer_like_text(
                 type_name_text_to_cxx(n), cast_ty,
                 type_for_overload(*c.args[0]),
                 source,
                 /*explicit_pascal_cast=*/true,
-                arg_is_const_untyped_storage(*c.args[0]));
+                expr_is_const_untyped_storage_arg(*c.args[0]));
             if (coerced != source) return coerced;
             return "((" + type_name_text_to_cxx(n) + ")(" + source + "))";
           }
           if (cast_ty && cast_ty->kind == Kind::TySet) {
             return "::rt::tp2cc_set_cast<" + type_to_cxx(*cast_ty) + ">(" +
-                   arg0() + ")";
+                   call_first_arg_or_zero(c) + ")";
           }
           {
             TyName target(n);
@@ -1919,7 +1953,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               if (!conv.defining_unit.empty()) {
                 fn = unit_namespace_prefix(conv.defining_unit) + fn;
               }
-              return fn + "(" + arg0() + ")";
+              return fn + "(" + call_first_arg_or_zero(c) + ")";
             }
           }
           if (cast_ty && type_is_reference_class(cast_ty)) {
@@ -1930,10 +1964,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             TyName cast_name(n);
             std::string coerced = coerce_pointer_like_text(
                 type_name_to_cxx(cast_name), cast_ty,
-                type_for_overload(*c.args[0]), arg0(),
+                type_for_overload(*c.args[0]), call_first_arg_or_zero(c),
                 /*explicit_pascal_cast=*/true);
-            if (coerced != arg0()) return coerced;
-            return "((" + type_name_to_cxx(cast_name) + ")(" + arg0() + "))";
+            if (coerced != call_first_arg_or_zero(c)) return coerced;
+            return "((" + type_name_to_cxx(cast_name) + ")(" +
+                   call_first_arg_or_zero(c) + "))";
           }
           bool named_storage_view_type =
               registry &&
@@ -1974,7 +2009,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                        storage_view->source_cxx + ")";
               }
               return "::rt::tp2cc_reinterpret_bytes<" +
-                     type_name_text_to_cxx(n) + ">(" + arg0() + ")";
+                     type_name_text_to_cxx(n) + ">(" +
+                     call_first_arg_or_zero(c) + ")";
             }
           }
           if (aggregate_alias || named_storage_view_type) {
@@ -1987,10 +2023,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                      storage_view->source_cxx + ")";
             }
             return "::rt::tp2cc_reinterpret_copy<" + type_name_text_to_cxx(n) +
-                   ">(" + arg0() + ")";
+                   ">(" + call_first_arg_or_zero(c) + ")";
           }
           if (cast_ty) {
-            return "((" + type_name_text_to_cxx(n) + ")(" + arg0() + "))";
+            return "((" + type_name_text_to_cxx(n) + ")(" +
+                   call_first_arg_or_zero(c) + "))";
           }
         } else if ((n == "inc" || n == "dec") &&
                    (c.args.size() == 1 || c.args.size() == 2)) {
