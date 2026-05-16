@@ -136,6 +136,8 @@ class EmitTypes {
   std::string open_array_type_to_cxx(const ast::TypeExpr& t);
 
  private:
+  class RecordLayoutBuilder;
+
   const TypeRegistry* registry_;
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;
@@ -147,6 +149,8 @@ class EmitTypes {
   // present in the registry for analysis/member lookup, but their C++ spelling
   // remains the explicit ::rt::t_* names from runtime_named_type_cxx().
   bool registry_knows_translated_type(std::string_view name);
+  EmitRecordFieldDecl record_field_decl(const ast::TypeExpr* type,
+                                        std::string_view name);
 };
 
 }  // namespace tp2cc

@@ -13,6 +13,138 @@ namespace tp2cc {
 
 using namespace ast;
 
+namespace {
+
+std::string record_layout_add_size(const std::string& left,
+                                   const std::string& right) {
+  if (left == "0") return right;
+  if (right == "0") return left;
+  return "(" + left + " + " + right + ")";
+}
+
+std::string record_layout_add_offset(const std::string& base,
+                                     const std::string& delta) {
+  if (delta == "0") return base;
+  return record_layout_add_size(base, delta);
+}
+
+std::string record_layout_max_size(const std::vector<std::string>& sizes) {
+  if (sizes.empty()) return "0";
+  if (sizes.size() == 1) return sizes.front();
+  std::string out = "::std::max({";
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    if (i) out += ", ";
+    out += "static_cast<::std::size_t>(" + sizes[i] + ")";
+  }
+  out += "})";
+  return out;
+}
+
+}  // namespace
+
+class EmitTypes::RecordLayoutBuilder {
+ public:
+  RecordLayoutBuilder(EmitTypes& types, bool is_packed)
+      : types_(types), is_packed_(is_packed) {
+    inline_text_ = "struct ";
+    if (is_packed_) inline_text_ += "[[gnu::packed]] ";
+    inline_text_ += "{ ";
+  }
+
+  void append_root_fields(const std::vector<RecordField>& fields) {
+    append_fields(fields, "0", size_expr_);
+  }
+
+  void append_root_variant_part(
+      const std::shared_ptr<ast::VariantPart>& vpart) {
+    const std::string variant_base = size_expr_;
+    size_expr_ = record_layout_add_size(
+        size_expr_, append_variant_part(vpart, variant_base));
+  }
+
+  CxxRecordLayout finish() && {
+    inline_text_ += "}";
+    return {std::move(decl_lines_), std::move(inline_text_),
+            EmitPackedRecordLayout(std::move(field_offsets_),
+                                   std::move(size_expr_))};
+  }
+
+ private:
+  void append_field(const EmitRecordFieldDecl& field,
+                    const std::string& base_offset, std::string& size_expr) {
+    decl_lines_.push_back(field.decl + ";");
+    inline_text_ += field.type_cxx + " " + field.mangled_name + "; ";
+
+    field_offsets_.emplace_back(
+        field.mangled_name, record_layout_add_offset(base_offset, size_expr));
+    size_expr = record_layout_add_size(size_expr,
+                                       "sizeof(" + field.type_cxx + ")");
+  }
+
+  void append_fields(const std::vector<RecordField>& fields,
+                     const std::string& base_offset,
+                     std::string& size_expr) {
+    for (const auto& field : types_.record_field_decls(fields)) {
+      append_field(field, base_offset, size_expr);
+    }
+  }
+
+  std::string append_variant_part(
+      const std::shared_ptr<ast::VariantPart>& vpart,
+      const std::string& base_offset) {
+    if (!vpart) return "0";
+    std::string prefix_size = "0";
+    if (!vpart->tag_name.empty() && vpart->tag_type) {
+      append_field(types_.record_field_decl(vpart->tag_type.get(),
+                                            vpart->tag_name),
+                   base_offset, prefix_size);
+    }
+
+    decl_lines_.push_back("union {");
+    inline_text_ += "union { ";
+
+    std::vector<std::string> case_sizes;
+    const std::string union_offset =
+        record_layout_add_offset(base_offset, prefix_size);
+    for (const auto& vc : vpart->cases) {
+      if (vc.fields.empty() && !vc.variant_part) continue;
+
+      std::string case_open = "struct ";
+      if (is_packed_) case_open += "[[gnu::packed]] ";
+
+      decl_lines_.push_back(case_open + "{");
+      inline_text_ += case_open + "{ ";
+
+      std::string case_size_expr = "0";
+      append_fields(vc.fields, union_offset, case_size_expr);
+
+      if (vc.variant_part) {
+        const std::string nested_base =
+            record_layout_add_offset(union_offset, case_size_expr);
+        case_size_expr = record_layout_add_size(
+            case_size_expr, append_variant_part(vc.variant_part, nested_base));
+      }
+
+      decl_lines_.push_back("};");
+      inline_text_ += "}; ";
+
+      case_sizes.push_back(case_size_expr);
+    }
+
+    decl_lines_.push_back("};");
+    inline_text_ += "}; ";
+    return record_layout_add_size(prefix_size,
+                                  record_layout_max_size(case_sizes));
+  }
+
+  EmitTypes& types_;
+  bool is_packed_;
+  std::vector<std::string> decl_lines_;
+  std::string inline_text_;
+  std::vector<std::pair<std::string, std::string>> field_offsets_;
+  std::string size_expr_ = "0";
+};
+
 EmitTypes::EmitTypes(const TypeRegistry* registry, ScopeStateView& scope,
                      EmitAnalysis& analysis,
                      EmitTypeConstRender& const_render,
@@ -785,120 +917,29 @@ std::string EmitTypes::procedural_type_to_cxx(const TyProcedural& p) {
 }
 
 CxxRecordLayout EmitTypes::compute_record_layout(const TyRecord& tr) {
-  CxxRecordLayout layout;
+  // Packed-record offset assertions must be computed from the same traversal
+  // that prints the C++ fields; variant-record nesting changes both products.
+  RecordLayoutBuilder builder(*this, tr.is_packed);
+  builder.append_root_fields(tr.fields);
+  builder.append_root_variant_part(tr.variant_part);
+  return std::move(builder).finish();
+}
 
-  // This routine builds two products from the same field walk: the C++ type
-  // text and the packed-layout expressions. Keeping them together prevents the
-  // static_assert metadata from drifting away from the emitted declaration.
-  layout.inline_text = "struct ";
-  if (tr.is_packed) layout.inline_text += "[[gnu::packed]] ";
-  layout.inline_text += "{ ";
-
-  auto add_size = [](const std::string& left,
-                     const std::string& right) -> std::string {
-    if (left == "0") return right;
-    if (right == "0") return left;
-    return "(" + left + " + " + right + ")";
-  };
-  auto add_offset = [&](const std::string& base,
-                        const std::string& delta) -> std::string {
-    if (delta == "0") return base;
-    return add_size(base, delta);
-  };
-  auto max_size = [](const std::vector<std::string>& sizes) -> std::string {
-    if (sizes.empty()) return "0";
-    if (sizes.size() == 1) return sizes.front();
-    std::string out = "::std::max({";
-    for (size_t i = 0; i < sizes.size(); ++i) {
-      if (i) out += ", ";
-      out += "static_cast<::std::size_t>(" + sizes[i] + ")";
-    }
-    out += "})";
-    return out;
-  };
-
-  auto process_fields = [&](const std::vector<RecordField>& fields,
-                            const std::string& base_offset,
-                            std::string& size_expr) {
-    for (const auto& field : record_field_decls(fields)) {
-      layout.decl_lines.push_back(field.decl + ";");
-      layout.inline_text += field.type_cxx + " " + field.mangled_name + "; ";
-
-      layout.packed_layout.field_offsets.emplace_back(
-          field.mangled_name, add_offset(base_offset, size_expr));
-      size_expr = add_size(size_expr, "sizeof(" + field.type_cxx + ")");
-    }
-  };
-
-  layout.packed_layout.size_expr = "0";
-  process_fields(tr.fields, "0", layout.packed_layout.size_expr);
-
-  auto process_variants = [&](auto& self,
-                              const std::shared_ptr<ast::VariantPart>& vpart,
-                              const std::string& base_offset,
-                              bool is_packed) -> std::string {
-    if (!vpart) return "0";
-    std::string prefix_size = "0";
-    if (!vpart->tag_name.empty() && vpart->tag_type) {
-      process_fields({RecordField({vpart->tag_name}, vpart->tag_type)},
-                     base_offset, prefix_size);
-    }
-
-    layout.decl_lines.push_back("union {");
-    layout.inline_text += "union { ";
-
-    std::vector<std::string> case_sizes;
-    const std::string union_offset = add_offset(base_offset, prefix_size);
-    for (const auto& vc : vpart->cases) {
-      if (vc.fields.empty() && !vc.variant_part) continue;
-
-      std::string case_open = "struct ";
-      if (is_packed) case_open += "[[gnu::packed]] ";
-
-      layout.decl_lines.push_back(case_open + "{");
-      layout.inline_text += case_open + "{ ";
-
-      std::string case_size_expr = "0";
-      process_fields(vc.fields, union_offset, case_size_expr);
-
-      if (vc.variant_part) {
-        case_size_expr = add_size(
-            case_size_expr,
-            self(self, vc.variant_part,
-                 add_offset(union_offset, case_size_expr), is_packed));
-      }
-
-      layout.decl_lines.push_back("};");
-      layout.inline_text += "}; ";
-
-      case_sizes.push_back(case_size_expr);
-    }
-
-    layout.decl_lines.push_back("};");
-    layout.inline_text += "}; ";
-    return add_size(prefix_size, max_size(case_sizes));
-  };
-
-  layout.packed_layout.size_expr = add_size(
-      layout.packed_layout.size_expr,
-      process_variants(process_variants, tr.variant_part,
-                       layout.packed_layout.size_expr, tr.is_packed));
-
-  layout.inline_text += "}";
-  return layout;
+EmitRecordFieldDecl EmitTypes::record_field_decl(const TypeExpr* type,
+                                                 std::string_view name) {
+  std::string type_cxx = type ? type_to_cxx(*type) : std::string("int32_t");
+  std::string mangled_name =
+      registry_ ? registry_->field_cxx_name(name) : mangle(name);
+  return EmitRecordFieldDecl(type, type_cxx, mangled_name,
+                             named_type_to_cxx(type, mangled_name));
 }
 
 std::vector<EmitRecordFieldDecl> EmitTypes::record_field_decls(
     const std::vector<RecordField>& fields) {
   std::vector<EmitRecordFieldDecl> out;
   for (const auto& f : fields) {
-    std::string type_cxx =
-        f.type ? type_to_cxx(*f.type) : std::string("int32_t");
     for (const auto& fn : f.names) {
-      std::string mangled_name =
-          registry_ ? registry_->field_cxx_name(fn) : mangle(fn);
-      out.emplace_back(f.type.get(), type_cxx, mangled_name,
-                       named_type_to_cxx(f.type.get(), mangled_name));
+      out.push_back(record_field_decl(f.type.get(), fn));
     }
   }
   return out;
