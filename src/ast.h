@@ -721,6 +721,13 @@ struct VariantPart {
   std::string tag_name;
   TypePtr tag_type;
   std::vector<VariantCase> cases;
+
+  VariantPart() = default;
+  VariantPart(std::string tag_name_in, TypePtr tag_type_in,
+              std::vector<VariantCase> cases_in)
+      : tag_name(std::move(tag_name_in)),
+        tag_type(std::move(tag_type_in)),
+        cases(std::move(cases_in)) {}
 };
 
 struct VariantCase {

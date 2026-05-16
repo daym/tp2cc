@@ -1185,71 +1185,73 @@ TypePtr Parser::parse_array_type(bool packed) {
                                    array_kind);
 }
 
+std::shared_ptr<VariantPart> Parser::parse_variant_part() {
+  if (!accept(Tok::KwCase)) return nullptr;
+
+  std::string tag_name;
+  if (cur_.kind == Tok::Ident && peek().kind == Tok::Colon) {
+    tag_name = cur_.text;
+    advance();
+    advance();  // ':'
+  }
+  TypePtr tag_type = parse_type();
+  expect(Tok::KwOf, "variant record");
+
+  std::vector<VariantCase> cases;
+  while (!at_end() && !check(Tok::KwEnd) && !check(Tok::RParen)) {
+    std::vector<ExprPtr> labels;
+    labels.push_back(parse_expr());
+    while (accept(Tok::Comma)) labels.push_back(parse_expr());
+    expect(Tok::Colon, "variant case");
+    expect(Tok::LParen, "variant case");
+    std::vector<RecordField> case_fields;
+    while (!at_end() && !check(Tok::RParen) && !check(Tok::KwCase)) {
+      if (cur_.kind != Tok::Ident) break;
+      std::vector<std::string> names;
+      names.push_back(cur_.text);
+      advance();
+      while (accept(Tok::Comma)) {
+        if (cur_.kind != Tok::Ident) break;
+        names.push_back(cur_.text);
+        advance();
+      }
+      expect(Tok::Colon, "variant field");
+      case_fields.emplace_back(std::move(names), parse_type());
+      if (!accept(Tok::Semi)) break;
+    }
+
+    auto nested_vpart = parse_variant_part();
+
+    expect(Tok::RParen, "variant case");
+    cases.emplace_back(std::move(labels), std::move(case_fields),
+                       std::move(nested_vpart));
+    if (!accept(Tok::Semi)) break;
+  }
+  return std::make_shared<VariantPart>(
+      std::move(tag_name), std::move(tag_type), std::move(cases));
+}
+
 TypePtr Parser::parse_record_type(bool packed) {
   Location loc = cur_.loc;
   expect(Tok::KwRecord, "record");
   std::vector<RecordField> fields;
 
-  // Plain fields until `end` or `case`.
   while (!at_end() && !check(Tok::KwEnd) && !check(Tok::KwCase)) {
     if (cur_.kind != Tok::Ident) break;
     std::vector<std::string> names;
-    names.push_back(cur_.text); advance();
+    names.push_back(cur_.text);
+    advance();
     while (accept(Tok::Comma)) {
       if (cur_.kind != Tok::Ident) break;
-      names.push_back(cur_.text); advance();
+      names.push_back(cur_.text);
+      advance();
     }
     expect(Tok::Colon, "record field");
     fields.emplace_back(std::move(names), parse_type());
     if (!accept(Tok::Semi)) break;
   }
 
-  auto parse_variants = [&](auto& self, std::shared_ptr<VariantPart>& vpart) -> void {
-    if (!accept(Tok::KwCase)) return;
-    std::string tag_name;
-    if (cur_.kind == Tok::Ident && peek().kind == Tok::Colon) {
-      tag_name = cur_.text;
-      advance();
-      advance();  // ':'
-    }
-    TypePtr tag_type = parse_type();
-    expect(Tok::KwOf, "variant record");
-
-    std::vector<VariantCase> cases;
-    while (!at_end() && !check(Tok::KwEnd) && !check(Tok::RParen)) {
-      std::vector<ExprPtr> labels;
-      labels.push_back(parse_expr());
-      while (accept(Tok::Comma)) labels.push_back(parse_expr());
-      expect(Tok::Colon, "variant case");
-      expect(Tok::LParen, "variant case");
-      std::vector<RecordField> case_fields;
-      while (!at_end() && !check(Tok::RParen) && !check(Tok::KwCase)) {
-        if (cur_.kind != Tok::Ident) break;
-        std::vector<std::string> names;
-        names.push_back(cur_.text); advance();
-        while (accept(Tok::Comma)) {
-          if (cur_.kind != Tok::Ident) break;
-          names.push_back(cur_.text); advance();
-        }
-        expect(Tok::Colon, "variant field");
-        case_fields.emplace_back(std::move(names), parse_type());
-        if (!accept(Tok::Semi)) break;
-      }
-      
-      std::shared_ptr<VariantPart> nested_vpart;
-      self(self, nested_vpart);
-
-      // printf removed
-      expect(Tok::RParen, "variant case");
-      cases.emplace_back(std::move(labels), std::move(case_fields), std::move(nested_vpart));
-      if (!accept(Tok::Semi)) break;
-    }
-    // printf removed
-    vpart = std::make_shared<VariantPart>(VariantPart{std::move(tag_name), std::move(tag_type), std::move(cases)});
-  };
-  
-  std::shared_ptr<VariantPart> vpart;
-  parse_variants(parse_variants, vpart);
+  std::shared_ptr<VariantPart> vpart = parse_variant_part();
 
   expect(Tok::KwEnd, "record");
   return std::make_shared<TyRecord>(

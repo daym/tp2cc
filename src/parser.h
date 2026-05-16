@@ -88,6 +88,7 @@ class Parser {
   ast::TypePtr parse_type();
   ast::TypePtr parse_simple_type();  // enum, subrange, name, string[N]
   ast::TypePtr parse_record_type(bool is_packed);
+  std::shared_ptr<ast::VariantPart> parse_variant_part();
   ast::TypePtr parse_object_type();
   ast::TypePtr parse_interface_type();
   ast::TypePtr parse_array_type(bool is_packed);
