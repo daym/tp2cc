@@ -1,5 +1,6 @@
 #include "emit_analysis.h"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <unordered_set>
@@ -561,54 +562,71 @@ EmitAnalysis::ordinal_domain_for_set_type(const TypeExpr* t) {
   return dom;
 }
 
+std::optional<EmitAnalysis::SetLiteralOrdinalSummary>
+EmitAnalysis::extend_set_literal_ordinal_summary(
+    SetLiteralOrdinalSummary summary, const Expr& e) {
+  int64_t value = 0;
+  OrdinalFamily expr_family = OrdinalFamily::Invalid;
+  const TyEnum* expr_key = nullptr;
+  if (!try_eval_ordinal_expr(e, &value, &expr_family, &expr_key)) {
+    return std::nullopt;
+  }
+
+  // Every element of one Pascal set literal belongs to one ordinal domain.
+  // Keep that identity together with the bounds so later synthesis creates a
+  // real set type instead of treating each element expression independently.
+  if (summary.family == OrdinalFamily::Invalid) {
+    summary.family = expr_family;
+    summary.enum_key = expr_key;
+    if (expr_family == OrdinalFamily::Enum && !summary.enum_type) {
+      summary.enum_type = deduce_type(e);
+    }
+  } else if (summary.family != expr_family || summary.enum_key != expr_key) {
+    return std::nullopt;
+  }
+
+  if (!summary.have_bounds) {
+    summary.low = summary.high = value;
+    summary.have_bounds = true;
+  } else {
+    summary.low = std::min(summary.low, value);
+    summary.high = std::max(summary.high, value);
+  }
+  return summary;
+}
+
+std::optional<EmitAnalysis::SetLiteralOrdinalSummary>
+EmitAnalysis::summarize_set_literal_ordinals(const SetLit& s) {
+  SetLiteralOrdinalSummary summary;
+  for (const auto& el : s.elements) {
+    if (el->kind == Kind::Range) {
+      const auto& r = static_cast<const Range&>(*el);
+      auto next = extend_set_literal_ordinal_summary(summary, *r.lo);
+      if (!next) return std::nullopt;
+      next = extend_set_literal_ordinal_summary(*next, *r.hi);
+      if (!next) return std::nullopt;
+      summary = *next;
+    } else {
+      auto next = extend_set_literal_ordinal_summary(summary, *el);
+      if (!next) return std::nullopt;
+      summary = *next;
+    }
+  }
+  return summary.have_bounds ? std::optional<SetLiteralOrdinalSummary>{summary}
+                             : std::nullopt;
+}
+
 const TypeExpr* EmitAnalysis::deduce_set_literal_type(const SetLit& s,
                                                       const TypeExpr* target) {
   const TypeExpr* canon_target = canonicalize_type(target);
   if (canon_target && canon_target->kind == Kind::TySet) return canon_target;
   if (s.elements.empty()) return nullptr;
 
-  OrdinalFamily family = OrdinalFamily::Invalid;
-  const TyEnum* enum_key = nullptr;
-  const TypeExpr* enum_type = nullptr;
-  int64_t low = 0;
-  int64_t high = 0;
-  bool have_bounds = false;
-
-  auto absorb = [&](const Expr& e) -> bool {
-    int64_t value = 0;
-    OrdinalFamily expr_family = OrdinalFamily::Invalid;
-    const TyEnum* expr_key = nullptr;
-    if (!try_eval_ordinal_expr(e, &value, &expr_family, &expr_key)) return false;
-    if (family == OrdinalFamily::Invalid) {
-      family = expr_family;
-      enum_key = expr_key;
-      if (expr_family == OrdinalFamily::Enum && !enum_type) {
-        enum_type = deduce_type(e);
-      }
-    } else if (family != expr_family || enum_key != expr_key) {
-      return false;
-    }
-    if (!have_bounds) {
-      low = high = value;
-      have_bounds = true;
-    } else {
-      low = std::min(low, value);
-      high = std::max(high, value);
-    }
-    return true;
-  };
-
-  for (const auto& el : s.elements) {
-    if (el->kind == Kind::Range) {
-      const auto& r = static_cast<const Range&>(*el);
-      if (!absorb(*r.lo) || !absorb(*r.hi)) return nullptr;
-    } else if (!absorb(*el)) {
-      return nullptr;
-    }
-  }
+  auto summary = summarize_set_literal_ordinals(s);
+  if (!summary) return nullptr;
 
   const TypeExpr* element_type = nullptr;
-  switch (family) {
+  switch (summary->family) {
     case OrdinalFamily::Integer:
       // Untyped integer set literals should not inherit the accidental
       // narrow C++ type of their first constant/member. Keep the Pascal
@@ -625,13 +643,14 @@ const TypeExpr* EmitAnalysis::deduce_set_literal_type(const SetLit& s,
       element_type = named_pascal_type("widechar");
       break;
     case OrdinalFamily::Enum:
-      element_type = enum_type;
+      element_type = summary->enum_type;
       break;
     case OrdinalFamily::Invalid:
       return nullptr;
   }
   if (!element_type) return nullptr;
-  return synthesize_set_type(element_type, std::make_pair(low, high));
+  return synthesize_set_type(element_type,
+                             std::make_pair(summary->low, summary->high));
 }
 
 SetConversionKind EmitAnalysis::classify_set_conversion(
@@ -751,6 +770,55 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_cast(
   return ConstIntExprInfo{converted->value, converted->type};
 }
 
+const TypeExpr* EmitAnalysis::const_intrinsic_type_arg(const Expr& arg) {
+  // Constant intrinsics such as `Ord(High(T))` receive their type operand
+  // through expression syntax. Resolve only the Pascal type forms accepted in
+  // that context; ordinary value identifiers are folded elsewhere.
+  if (arg.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(arg);
+    const std::string low = ascii_lower(id.name);
+    if (auto it = scope_.local_enums.find(low);
+        it != scope_.local_enums.end()) {
+      return it->second;
+    }
+    if (auto it = scope_.local_type_aliases_scoped.find(low);
+        it != scope_.local_type_aliases_scoped.end()) {
+      return it->second;
+    }
+    return lookup_named_type_expr(id.name);
+  }
+  if (arg.kind == Kind::Member) {
+    const auto& mem = static_cast<const Member&>(arg);
+    if (mem.base && mem.base->kind == Kind::Ident) {
+      const auto& unit = static_cast<const Ident&>(*mem.base);
+      return lookup_named_type_expr(unit.name + "." + mem.name);
+    }
+  }
+  return nullptr;
+}
+
+std::optional<ConstIntExprInfo> EmitAnalysis::fold_untyped_const_decl(
+    const ConstDecl& cd,
+    std::unordered_set<std::string>* visiting_const_names) {
+  // Untyped `const X = ...` is a compile-time constant. Typed
+  // `const X: T = ...` has storage identity, so folding later references
+  // through the initializer would erase aliasing/address semantics.
+  if (cd.type || !cd.value) return std::nullopt;
+  return eval_const_int_expr(*cd.value, visiting_const_names);
+}
+
+std::optional<ConstIntExprInfo> EmitAnalysis::fold_untyped_const_info(
+    const ConstInfo& c,
+    std::unordered_set<std::string>* visiting_const_names) {
+  if (c.type || !c.value) return std::nullopt;
+  return eval_const_int_expr(*c.value, visiting_const_names);
+}
+
+const ConstInfo* EmitAnalysis::find_const_for_fold_in_unit(
+    const UnitInfo& u, const std::string& name, bool export_only) const {
+  return export_only ? u.find_export_const(name) : u.find_const(name);
+}
+
 std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
     const Expr& e, std::unordered_set<std::string>* visiting_const_names) {
   switch (e.kind) {
@@ -831,29 +899,6 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
             return ConstIntExprInfo{value, primitive_info_for_value(value)};
           }
         }
-        auto type_arg = [&](const Expr& arg) -> const TypeExpr* {
-          if (arg.kind == Kind::Ident) {
-            const auto& id = static_cast<const Ident&>(arg);
-            const std::string low = ascii_lower(id.name);
-            if (auto it = scope_.local_enums.find(low);
-                it != scope_.local_enums.end()) {
-              return it->second;
-            }
-            if (auto it = scope_.local_type_aliases_scoped.find(low);
-                it != scope_.local_type_aliases_scoped.end()) {
-              return it->second;
-            }
-            return lookup_named_type_expr(id.name);
-          }
-          if (arg.kind == Kind::Member) {
-            const auto& mem = static_cast<const Member&>(arg);
-            if (mem.base && mem.base->kind == Kind::Ident) {
-              const auto& unit = static_cast<const Ident&>(*mem.base);
-              return lookup_named_type_expr(unit.name + "." + mem.name);
-            }
-          }
-          return nullptr;
-        };
         if ((callee_name == "pred" || callee_name == "succ") && c.args[0]) {
           int64_t value = 0;
           OrdinalFamily family = OrdinalFamily::Invalid;
@@ -878,7 +923,8 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
                 // `high(T)` normally lowers to an emitted enum-bound helper.
                 // Inside `ord(...)` in a type bound, the integer folder needs
                 // the ordinal value instead of that helper expression.
-                if (const TypeExpr* t = type_arg(*inner.args[0])) {
+                if (const TypeExpr* t =
+                        const_intrinsic_type_arg(*inner.args[0])) {
                   if (auto dom = ordinal_domain_for_type(t)) {
                     int64_t value =
                         (inner_name == "low") ? dom->low : dom->high;
@@ -906,57 +952,33 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
         return eval_const_int_expr(e, &local_visiting);
       }
       if (!visiting_const_names->insert(id.name).second) return std::nullopt;
-      auto pop = [&]() { visiting_const_names->erase(id.name); };
-
-      auto maybe_fold_const_decl =
-          [&](const ConstDecl& cd) -> std::optional<ConstIntExprInfo> {
-        // Untyped `const X = ...` is a compile-time constant. Typed
-        // `const X: T = ...` is writable storage in this dialect and must not
-        // be folded back through its initializer.
-        if (cd.type || !cd.value) return std::nullopt;
-        return eval_const_int_expr(*cd.value, visiting_const_names);
-      };
-
-      auto maybe_fold_const_info =
-          [&](const ConstInfo& c) -> std::optional<ConstIntExprInfo> {
-        if (c.type || !c.value) return std::nullopt;
-        return eval_const_int_expr(*c.value, visiting_const_names);
-      };
+      std::optional<ConstIntExprInfo> out;
 
       auto lit = scope_.local_consts.find(id.name);
       if (lit != scope_.local_consts.end() && lit->second && lit->second->value) {
-        auto out = maybe_fold_const_decl(*lit->second);
-        pop();
-        return out;
-      }
-
-      auto lookup_const = [&](const UnitInfo& u, bool export_only)
-          -> const ConstInfo* {
-        return export_only ? u.find_export_const(id.name) : u.find_const(id.name);
-      };
-
-      if (registry_) {
+        out = fold_untyped_const_decl(*lit->second, visiting_const_names);
+      } else if (registry_) {
         auto cur = registry_->units.find(scope_.current_unit_name);
         if (cur != registry_->units.end()) {
-          if (const auto* c = lookup_const(cur->second, false)) {
-            auto out = maybe_fold_const_info(*c);
-            pop();
-            return out;
-          }
-          for (auto it = cur->second.uses.rbegin();
-               it != cur->second.uses.rend(); ++it) {
-            auto uit = registry_->units.find(*it);
-            if (uit == registry_->units.end()) continue;
-            if (const auto* c = lookup_const(uit->second, true)) {
-              auto out = maybe_fold_const_info(*c);
-              pop();
-              return out;
+          if (const auto* c =
+                  find_const_for_fold_in_unit(cur->second, id.name, false)) {
+            out = fold_untyped_const_info(*c, visiting_const_names);
+          } else {
+            for (auto it = cur->second.uses.rbegin();
+                 it != cur->second.uses.rend(); ++it) {
+              auto uit = registry_->units.find(*it);
+              if (uit == registry_->units.end()) continue;
+              if (const auto* c =
+                      find_const_for_fold_in_unit(uit->second, id.name, true)) {
+                out = fold_untyped_const_info(*c, visiting_const_names);
+                break;
+              }
             }
           }
         }
       }
-      pop();
-      return std::nullopt;
+      visiting_const_names->erase(id.name);
+      return out;
     }
     default:
       return std::nullopt;

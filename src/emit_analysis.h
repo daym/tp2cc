@@ -18,6 +18,7 @@ struct ConstInfo;
 struct EnumInfoReg;
 struct PropertyInfo;
 struct TypeRegistry;
+struct UnitInfo;
 struct VarInfo;
 
 struct ConstIntExprInfo {
@@ -161,6 +162,15 @@ class EmitAnalysis {
     const ast::TyEnum* enum_key = nullptr;
   };
 
+  struct SetLiteralOrdinalSummary {
+    OrdinalFamily family = OrdinalFamily::Invalid;
+    const ast::TyEnum* enum_key = nullptr;
+    const ast::TypeExpr* enum_type = nullptr;
+    int64_t low = 0;
+    int64_t high = 0;
+    bool have_bounds = false;
+  };
+
   std::string implicit_self_cxx();
   bool is_visible_unit_qualifier(std::string_view name);
   const ast::TySet* synthesize_set_type(
@@ -174,6 +184,21 @@ class EmitAnalysis {
   bool try_eval_ordinal_expr(const ast::Expr& e, int64_t* value,
                              OrdinalFamily* family,
                              const ast::TyEnum** enum_key);
+  std::optional<SetLiteralOrdinalSummary>
+  extend_set_literal_ordinal_summary(SetLiteralOrdinalSummary summary,
+                                     const ast::Expr& e);
+  std::optional<SetLiteralOrdinalSummary> summarize_set_literal_ordinals(
+      const ast::SetLit& s);
+  const ast::TypeExpr* const_intrinsic_type_arg(const ast::Expr& arg);
+  std::optional<ConstIntExprInfo> fold_untyped_const_decl(
+      const ast::ConstDecl& cd,
+      std::unordered_set<std::string>* visiting_const_names);
+  std::optional<ConstIntExprInfo> fold_untyped_const_info(
+      const ConstInfo& c,
+      std::unordered_set<std::string>* visiting_const_names);
+  const ConstInfo* find_const_for_fold_in_unit(const UnitInfo& u,
+                                               const std::string& name,
+                                               bool export_only) const;
 
   const TypeRegistry* registry_;
   ScopeStateView& scope_;
