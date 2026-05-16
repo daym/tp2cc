@@ -25,6 +25,33 @@ namespace {
 
 constexpr const char* kCtorStatusSlotName = "tp2cc_ctor_ok";
 
+// `break` and `continue` resolve to the innermost loop currently being
+// emitted. Recursive statement emission therefore needs a scoped label stack
+// entry around exactly the Pascal loop body.
+class LoopLabelScope {
+ public:
+  LoopLabelScope(std::vector<std::string>& break_labels,
+                 std::vector<std::string>& continue_labels,
+                 const std::string& break_label,
+                 const std::string& continue_label)
+      : break_labels_(break_labels), continue_labels_(continue_labels) {
+    break_labels_.push_back(break_label);
+    continue_labels_.push_back(continue_label);
+  }
+
+  LoopLabelScope(const LoopLabelScope&) = delete;
+  LoopLabelScope& operator=(const LoopLabelScope&) = delete;
+
+  ~LoopLabelScope() {
+    continue_labels_.pop_back();
+    break_labels_.pop_back();
+  }
+
+ private:
+  std::vector<std::string>& break_labels_;
+  std::vector<std::string>& continue_labels_;
+};
+
 }  // namespace
 
 EmitStmts::EmitStmts(const TypeRegistry* registry, ScopeStateView& scope,
@@ -707,12 +734,11 @@ void EmitStmts::emit_ordinal_for_body(const For& f, const std::string& var,
   stmt_ops_.emitln(var + " = tp2cc_from;");
   stmt_ops_.emitln("while (true) {");
   stmt_ops_.indent();
-  loop_break_labels_.push_back(brk);
-  loop_continue_labels_.push_back(cont);
-  if (f.body) emit_stmt(*f.body);
-  stmt_ops_.emitln(cont + ":;");
-  loop_continue_labels_.pop_back();
-  loop_break_labels_.pop_back();
+  {
+    LoopLabelScope labels(loop_break_labels_, loop_continue_labels_, brk, cont);
+    if (f.body) emit_stmt(*f.body);
+    stmt_ops_.emitln(cont + ":;");
+  }
   stmt_ops_.emitln("if (" + var + " == tp2cc_to) break;");
   stmt_ops_.emitln(std::string(step) + "(" + var + ");");
   stmt_ops_.dedent();
@@ -917,12 +943,11 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
                        provider.loc, enum_var, enum_class, *current,
                        no_indices) +
                    ";");
-  loop_break_labels_.push_back(brk);
-  loop_continue_labels_.push_back(cont);
-  if (f.body) emit_stmt(*f.body);
-  stmt_ops_.emitln(cont + ":;");
-  loop_continue_labels_.pop_back();
-  loop_break_labels_.pop_back();
+  {
+    LoopLabelScope labels(loop_break_labels_, loop_continue_labels_, brk, cont);
+    if (f.body) emit_stmt(*f.body);
+    stmt_ops_.emitln(cont + ":;");
+  }
   stmt_ops_.dedent();
   stmt_ops_.emitln("}");
   if (enum_is_reference) {
@@ -966,12 +991,11 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_string(
   stmt_ops_.emitln("while (true) {");
   stmt_ops_.indent();
   stmt_ops_.emitln(var + " = " + str + "[" + idx + "];");
-  loop_break_labels_.push_back(brk);
-  loop_continue_labels_.push_back(cont);
-  if (f.body) emit_stmt(*f.body);
-  stmt_ops_.emitln(cont + ":;");
-  loop_continue_labels_.pop_back();
-  loop_break_labels_.pop_back();
+  {
+    LoopLabelScope labels(loop_break_labels_, loop_continue_labels_, brk, cont);
+    if (f.body) emit_stmt(*f.body);
+    stmt_ops_.emitln(cont + ":;");
+  }
   stmt_ops_.emitln("if (" + idx + " == tp2cc_high_" + n + ") break;");
   stmt_ops_.emitln("::rt::p_inc(" + idx + ");");
   stmt_ops_.dedent();
@@ -1022,12 +1046,11 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_array(
   stmt_ops_.emitln("while (true) {");
   stmt_ops_.indent();
   stmt_ops_.emitln(var + " = " + arr + "[" + idx + "];");
-  loop_break_labels_.push_back(brk);
-  loop_continue_labels_.push_back(cont);
-  if (f.body) emit_stmt(*f.body);
-  stmt_ops_.emitln(cont + ":;");
-  loop_continue_labels_.pop_back();
-  loop_break_labels_.pop_back();
+  {
+    LoopLabelScope labels(loop_break_labels_, loop_continue_labels_, brk, cont);
+    if (f.body) emit_stmt(*f.body);
+    stmt_ops_.emitln(cont + ":;");
+  }
   stmt_ops_.emitln("if (" + idx + " == tp2cc_high_" + n + ") break;");
   stmt_ops_.emitln("::rt::p_inc(" + idx + ");");
   stmt_ops_.dedent();
@@ -1081,12 +1104,11 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_set(
   stmt_ops_.emitln("if (" + set + ".contains(" + item + ")) {");
   stmt_ops_.indent();
   stmt_ops_.emitln(var + " = " + item + ";");
-  loop_break_labels_.push_back(brk);
-  loop_continue_labels_.push_back(cont);
-  if (f.body) emit_stmt(*f.body);
-  stmt_ops_.emitln(cont + ":;");
-  loop_continue_labels_.pop_back();
-  loop_break_labels_.pop_back();
+  {
+    LoopLabelScope labels(loop_break_labels_, loop_continue_labels_, brk, cont);
+    if (f.body) emit_stmt(*f.body);
+    stmt_ops_.emitln(cont + ":;");
+  }
   stmt_ops_.dedent();
   stmt_ops_.emitln("}");
   stmt_ops_.emitln("if (" + item + " == " + high + ") break;");
@@ -1158,12 +1180,12 @@ void EmitStmts::emit_stmt(const Stmt& s) {
       std::string cont = "tp2cc_loop_continue_" + n;
       stmt_ops_.emitln("while (" + stmt_ops_.expr_to_cxx(*w.cond) + ") {");
       stmt_ops_.indent();
-      loop_break_labels_.push_back(brk);
-      loop_continue_labels_.push_back(cont);
-      if (w.body) emit_stmt(*w.body);
-      stmt_ops_.emitln(cont + ":;");
-      loop_continue_labels_.pop_back();
-      loop_break_labels_.pop_back();
+      {
+        LoopLabelScope labels(loop_break_labels_, loop_continue_labels_, brk,
+                              cont);
+        if (w.body) emit_stmt(*w.body);
+        stmt_ops_.emitln(cont + ":;");
+      }
       stmt_ops_.dedent();
       stmt_ops_.emitln("}");
       stmt_ops_.emitln(brk + ":;");
@@ -1176,12 +1198,12 @@ void EmitStmts::emit_stmt(const Stmt& s) {
       std::string cont = "tp2cc_loop_continue_" + n;
       stmt_ops_.emitln("do {");
       stmt_ops_.indent();
-      loop_break_labels_.push_back(brk);
-      loop_continue_labels_.push_back(cont);
-      for (const auto& sub : r.body) emit_stmt(*sub);
-      stmt_ops_.emitln(cont + ":;");
-      loop_continue_labels_.pop_back();
-      loop_break_labels_.pop_back();
+      {
+        LoopLabelScope labels(loop_break_labels_, loop_continue_labels_, brk,
+                              cont);
+        for (const auto& sub : r.body) emit_stmt(*sub);
+        stmt_ops_.emitln(cont + ":;");
+      }
       stmt_ops_.dedent();
       stmt_ops_.emitln("} while (!(" + stmt_ops_.expr_to_cxx(*r.cond) + "));");
       stmt_ops_.emitln(brk + ":;");
