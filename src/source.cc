@@ -11,10 +11,7 @@ std::shared_ptr<SourceFile> SourceFile::load(const std::filesystem::path& p) {
   if (!f) return nullptr;
   std::ostringstream ss;
   ss << f.rdbuf();
-  auto sf = std::make_shared<SourceFile>();
-  sf->path = p.string();
-  sf->contents = ss.str();
-  return sf;
+  return std::make_shared<SourceFile>(p.string(), ss.str());
 }
 
 std::string Location::to_string() const {

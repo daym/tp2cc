@@ -244,11 +244,11 @@ std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target
     if (canon && canon->kind == Kind::TyArray) {
       const auto& arr = static_cast<const TyArray&>(*canon);
       if (arr.dims.size() > 1) {
-        nested_array_target = std::make_shared<TyArray>();
-        nested_array_target->dims.assign(arr.dims.begin() + 1, arr.dims.end());
-        nested_array_target->element = arr.element;
-        nested_array_target->is_packed = arr.is_packed;
-        nested_array_target->array_kind = arr.array_kind;
+        std::vector<TypePtr> nested_dims(arr.dims.begin() + 1,
+                                         arr.dims.end());
+        nested_array_target = std::make_shared<TyArray>(
+            arr.loc, std::move(nested_dims), arr.element, arr.is_packed,
+            arr.array_kind);
         elem_type = nested_array_target.get();
       } else {
         elem_type = arr.element.get();

@@ -812,9 +812,8 @@ void Lexer::do_include(std::string_view arg, Location where) {
       report_error(where, "unsupported builtin include-macro {$I " + a + "}");
       return;
     }
-    auto sf = std::make_shared<SourceFile>();
-    sf->path = stack_.back().file->path + ":{$I " + a + "}";
-    sf->contents = std::move(contents);
+    auto sf = std::make_shared<SourceFile>(
+        stack_.back().file->path + ":{$I " + a + "}", std::move(contents));
     const size_t pos = initial_input_pos(*sf);
     stack_.push_back(Input{.file = std::move(sf),
                            .pos = pos,
