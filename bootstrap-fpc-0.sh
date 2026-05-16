@@ -39,7 +39,7 @@ RPM_DIR="$ROOT/../rpm"
 # the latent UB that `tp2cc` inherits from decades-old FPC sources. Keep
 # these on by default; `SAN=` disables for profiling or release runs.
 SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=address,undefined}"
-CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -Wno-narrowing $SAN"
+CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -Wno-narrowing -Wno-invalid-offsetof $SAN"
 export CXXFLAGS
 
 # FPC relies on process-lifetime cleanup: option parsing, symbol tables,

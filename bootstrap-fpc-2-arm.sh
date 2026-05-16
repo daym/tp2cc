@@ -35,7 +35,7 @@ fpc_source_version() {
 echo "FPC source: $SOURCE_DIR (version $(fpc_source_version))"
 
 SAN="${SAN:--fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=address,undefined}"
-CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -Wno-narrowing $SAN"
+CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -Wno-narrowing -Wno-invalid-offsetof $SAN"
 CFLAGS="-std=gnu11 -O0 -g -pipe $SAN"
 export CXXFLAGS
 export CFLAGS
