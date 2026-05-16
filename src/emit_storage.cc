@@ -15,12 +15,6 @@ using namespace ast;
 
 namespace {
 
-struct StorageCastTarget {
-  std::string cxx;
-  const TypeExpr* type = nullptr;
-  bool primitive = false;
-};
-
 bool is_nonmethod_procedural_type(const TypeExpr* t) {
   if (!t) return false;
   t = static_cast<const TypeExpr*>(t);
@@ -77,62 +71,8 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
     return std::nullopt;
   }
 
-  auto ord_storage_target = [&](const Expr& source) -> std::string {
-    if (const TypeExpr* target = analysis_.ord_result_type_for_operand(source)) {
-      return types_.type_to_cxx(*target);
-    }
-    return {};
-  };
-
-  auto chr_source_has_byte_storage = [&](const Expr& source) {
-    const TypeExpr* source_type =
-        analysis_.canonicalize_type(analysis_.deduce_type(source));
-    if (!source_type) return false;
-    if (source_type->kind == Kind::TyName) {
-      const std::string lower =
-          ascii_lower(static_cast<const TyName&>(*source_type).name);
-      if (lower == "byte" || lower == "shortint") return true;
-    }
-    if (source_type->kind == Kind::TySubrange) {
-      const std::string cxx = types_.type_to_cxx(*source_type);
-      return cxx == "uint8_t" || cxx == "int8_t";
-    }
-    return false;
-  };
-
-  auto typecast_target = [&](const Ident& id, const Expr& source)
-      -> std::optional<StorageCastTarget> {
-    const std::string lower = ascii_lower(id.name);
-    if (lower == "ord") {
-      if (std::string target = ord_storage_target(source); !target.empty()) {
-        return StorageCastTarget{std::move(target), nullptr, true};
-      }
-      return std::nullopt;
-    }
-    if (lower == "chr") {
-      if (chr_source_has_byte_storage(source)) {
-        return StorageCastTarget{"::rt::p_char", builtin_char_type(), true};
-      }
-      return std::nullopt;
-    }
-    if (is_primitive_type(lower)) {
-      return StorageCastTarget{primitive_type_cxx(lower), nullptr, true};
-    }
-    if (const TypeExpr* named = analysis_.lookup_named_type_expr(lower)) {
-      return StorageCastTarget{types_.type_name_text_to_cxx(id.name), named,
-                               false};
-    }
-    if (registry_ &&
-        (registry_->records.count(lower) ||
-         registry_->has_class(lower, scope_.current_unit_name))) {
-      return StorageCastTarget{types_.type_name_text_to_cxx(id.name), nullptr,
-                               false};
-    }
-    return std::nullopt;
-  };
-
   const auto& target_id = static_cast<const Ident&>(*outer.callee);
-  auto target = typecast_target(target_id, *outer.args[0]);
+  auto target = storage_typecast_target(target_id, *outer.args[0]);
   if (!target) return std::nullopt;
 
   const Expr* source = outer.args[0].get();
@@ -140,7 +80,7 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
     const auto& nested = static_cast<const Call&>(*source);
     if (nested.args.size() != 1 || nested.callee->kind != Kind::Ident) break;
     const auto& nested_id = static_cast<const Ident&>(*nested.callee);
-    if (!typecast_target(nested_id, *nested.args[0])) break;
+    if (!storage_typecast_target(nested_id, *nested.args[0])) break;
     source = nested.args[0].get();
   }
   if (!source || !expr_is_storage_lvalue(*source)) return std::nullopt;
@@ -158,13 +98,7 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
   const bool untyped_storage = expr_is_untyped_storage_ref(*source);
   std::string source_cxx = expr_ops_.expr_to_cxx(*source);
   std::string source_ptr_cxx =
-      [&]() -> std::string {
-        if (untyped_storage) return source_cxx;
-        if (auto storage = storage_designator(*source)) {
-          return storage_designator_raw_address(*storage);
-        }
-        return {};
-      }();
+      typecast_source_raw_pointer(*source, source_cxx, untyped_storage);
   // Pointee-view applies only to untyped-param storage (`procedure foo(var x)`
   // with `T(x) := y` meaning "write T at *x"). A typed pointer lvalue cast
   // like `ptaiprop(field) := y` is a storage alias of the slot itself;
@@ -176,24 +110,87 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
                                  untyped_storage);
 }
 
+std::string EmitStorage::ord_storage_target_cxx(const Expr& source) {
+  if (const TypeExpr* target = analysis_.ord_result_type_for_operand(source)) {
+    return types_.type_to_cxx(*target);
+  }
+  return {};
+}
+
+bool EmitStorage::chr_source_has_byte_storage(const Expr& source) {
+  const TypeExpr* source_type =
+      analysis_.canonicalize_type(analysis_.deduce_type(source));
+  if (!source_type) return false;
+  if (source_type->kind == Kind::TyName) {
+    const std::string lower =
+        ascii_lower(static_cast<const TyName&>(*source_type).name);
+    if (lower == "byte" || lower == "shortint") return true;
+  }
+  if (source_type->kind == Kind::TySubrange) {
+    const std::string cxx = types_.type_to_cxx(*source_type);
+    return cxx == "uint8_t" || cxx == "int8_t";
+  }
+  return false;
+}
+
+std::optional<EmitStorage::StorageCastTarget>
+EmitStorage::storage_typecast_target(const Ident& id, const Expr& source) {
+  const std::string lower = ascii_lower(id.name);
+  if (lower == "ord") {
+    if (std::string target = ord_storage_target_cxx(source); !target.empty()) {
+      return StorageCastTarget{std::move(target), nullptr, true};
+    }
+    return std::nullopt;
+  }
+  if (lower == "chr") {
+    if (chr_source_has_byte_storage(source)) {
+      return StorageCastTarget{"::rt::p_char", builtin_char_type(), true};
+    }
+    return std::nullopt;
+  }
+  if (is_primitive_type(lower)) {
+    return StorageCastTarget{primitive_type_cxx(lower), nullptr, true};
+  }
+  if (const TypeExpr* named = analysis_.lookup_named_type_expr(lower)) {
+    return StorageCastTarget{types_.type_name_text_to_cxx(id.name), named,
+                             false};
+  }
+  if (registry_ &&
+      (registry_->records.count(lower) ||
+       registry_->has_class(lower, scope_.current_unit_name))) {
+    return StorageCastTarget{types_.type_name_text_to_cxx(id.name), nullptr,
+                             false};
+  }
+  return std::nullopt;
+}
+
+std::string EmitStorage::typecast_source_raw_pointer(
+    const Expr& source, const std::string& source_cxx, bool untyped_storage) {
+  if (untyped_storage) return source_cxx;
+  if (auto storage = storage_designator(source)) {
+    return storage_designator_raw_address(*storage);
+  }
+  return {};
+}
+
+std::string EmitStorage::scalar_storage_type_cxx(const TypeExpr* t) {
+  t = analysis_.canonicalize_type(t);
+  if (!t) return {};
+  switch (t->kind) {
+    case Kind::TyArray:
+    case Kind::TyRecord:
+    case Kind::TyObject:
+    case Kind::TyProcedural:
+    case Kind::TySet:
+    case Kind::TyString:
+      return {};
+    default:
+      return types_.type_to_cxx(*t);
+  }
+}
+
 std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
     const Expr& e) {
-  auto scalar_storage_type_cxx = [&](const TypeExpr* t) -> std::string {
-    t = analysis_.canonicalize_type(t);
-    if (!t) return {};
-    switch (t->kind) {
-      case Kind::TyArray:
-      case Kind::TyRecord:
-      case Kind::TyObject:
-      case Kind::TyProcedural:
-      case Kind::TySet:
-      case Kind::TyString:
-        return {};
-      default:
-        return types_.type_to_cxx(*t);
-    }
-  };
-
   if (e.kind == Kind::Call) {
     const auto& c = static_cast<const Call&>(e);
     if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
@@ -290,33 +287,8 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
     }
     auto base = storage_designator(*m.base);
     if (base && !base->is_bytewise()) {
-      auto reference_class_cast_pointer = [&](const Expr& base_expr) {
-        if (base_expr.kind != Kind::Call) return std::string{};
-        const auto& call = static_cast<const Call&>(base_expr);
-        if (call.args.size() != 1 || call.callee->kind != Kind::Ident) {
-          return std::string{};
-        }
-        const TypeExpr* target_ty =
-            analysis_.canonicalize_type(analysis_.deduce_type(base_expr));
-        if (!type_is_reference_class(target_ty)) return std::string{};
-        const TypeExpr* source_ty = analysis_.deduce_type(*call.args[0]);
-        if (!type_is_reference_class(source_ty) &&
-            !type_is_pointerish(source_ty)) {
-          return std::string{};
-        }
-        // A reference-class typecast used as a member base changes the object
-        // pointer used for `->field`. It is different from a var/out actual
-        // like `Take(TChild(p))`, where Pascal reinterprets the caller's
-        // pointer slot. Field storage must therefore start from the casted
-        // object pointer value, not from the address of the local pointer
-        // variable.
-        return coerce_pointer_like_text(
-            types_.type_to_cxx(*target_ty), target_ty, source_ty,
-            expr_ops_.expr_to_cxx(*call.args[0]),
-            /*explicit_pascal_cast=*/true);
-      };
       const std::string class_cast_base_ptr =
-          reference_class_cast_pointer(*m.base);
+          reference_class_cast_pointer_cxx(*m.base);
       std::string owner = analysis_.deduce_class_alias(*m.base);
       std::string member_cxx = mangle(m.name);
       if (registry_ && !owner.empty()) {
@@ -413,6 +385,28 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
   }
   return EmitStorageDesignator{EmitStorageAccess::Ordinary,
                                expr_ops_.expr_to_cxx(e), {}, type_cxx};
+}
+
+std::string EmitStorage::reference_class_cast_pointer_cxx(
+    const Expr& base_expr) {
+  if (base_expr.kind != Kind::Call) return {};
+  const auto& call = static_cast<const Call&>(base_expr);
+  if (call.args.size() != 1 || call.callee->kind != Kind::Ident) return {};
+  const TypeExpr* target_ty =
+      analysis_.canonicalize_type(analysis_.deduce_type(base_expr));
+  if (!type_is_reference_class(target_ty)) return {};
+  const TypeExpr* source_ty = analysis_.deduce_type(*call.args[0]);
+  if (!type_is_reference_class(source_ty) && !type_is_pointerish(source_ty)) {
+    return {};
+  }
+  // A reference-class typecast used as a member base changes the object pointer
+  // used for `->field`. It is different from a var/out actual like
+  // `Take(TChild(p))`, where Pascal reinterprets the caller's pointer slot.
+  // Field storage must therefore start from the casted object pointer value,
+  // not from the address of the local pointer variable.
+  return coerce_pointer_like_text(
+      types_.type_to_cxx(*target_ty), target_ty, source_ty,
+      expr_ops_.expr_to_cxx(*call.args[0]), /*explicit_pascal_cast=*/true);
 }
 
 std::string EmitStorage::storage_designator_value(
@@ -978,21 +972,11 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
   const bool dst_ref_class = type_is_reference_class(dst);
   const bool src_ref_class = type_is_reference_class(src);
   if (dst_ref_class && src_ref_class) {
-    auto related = [&](std::string_view ancestor, std::string current) {
-      while (!current.empty()) {
-        if (ascii_lower(current) == ascii_lower(std::string(ancestor))) {
-          return true;
-        }
-        const ClassInfo* info = analysis_.class_info_for_type_name(current);
-        if (!info) break;
-        current = info->parent;
-      }
-      return false;
-    };
     const std::string dst_name = reference_class_name(dst);
     const std::string src_name = reference_class_name(src);
     if ((!dst_name.empty() && !src_name.empty()) &&
-        (related(dst_name, src_name) || related(src_name, dst_name))) {
+        (reference_classes_related(dst_name, src_name) ||
+         reference_classes_related(src_name, dst_name))) {
       return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
     }
     if (!explicit_pascal_cast) return source_cxx;
@@ -1002,6 +986,18 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
     return "reinterpret_cast<" + dst_cxx + ">(" + source_cxx + ")";
   }
   return source_cxx;
+}
+
+bool EmitStorage::reference_classes_related(std::string_view ancestor,
+                                            std::string current) {
+  const std::string ancestor_key = ascii_lower(std::string(ancestor));
+  while (!current.empty()) {
+    if (ascii_lower(current) == ancestor_key) return true;
+    const ClassInfo* info = analysis_.class_info_for_type_name(current);
+    if (!info) break;
+    current = info->parent;
+  }
+  return false;
 }
 
 std::string EmitStorage::reinterpret_ref_text(const std::string& ty_cxx,
@@ -1019,11 +1015,6 @@ std::optional<EmitAbsoluteTargetInfo> EmitStorage::resolve_absolute_target(
     const VarDecl& vd) {
   const std::string target_cxx =
       resolve_name_provider_.resolve_name(vd.absolute_target).cxx;
-  auto target_info = [&](const TypeExpr* type,
-                         bool is_const_storage = false) {
-    return EmitAbsoluteTargetInfo{target_cxx, type, type_is_pointerish(type),
-                                  is_const_storage};
-  };
 
   if (scope_.local_untyped_params.count(vd.absolute_target)) {
     return EmitAbsoluteTargetInfo::untyped_param(target_cxx);
@@ -1036,13 +1027,14 @@ std::optional<EmitAbsoluteTargetInfo> EmitStorage::resolve_absolute_target(
                              "absolute target must be a variable or typed const");
       return std::nullopt;
     }
-    return target_info(lit->second->type.get());
+    return absolute_target_info(target_cxx, lit->second->type.get());
   }
 
   auto tit = scope_.local_types.find(vd.absolute_target);
   if (tit != scope_.local_types.end()) {
-    return target_info(tit->second,
-                       scope_.local_const_params.count(vd.absolute_target) > 0);
+    return absolute_target_info(
+        target_cxx, tit->second,
+        scope_.local_const_params.count(vd.absolute_target) > 0);
   }
 
   ResolveResult rr = resolve_name_provider_.resolve_name(vd.absolute_target);
@@ -1051,12 +1043,12 @@ std::optional<EmitAbsoluteTargetInfo> EmitStorage::resolve_absolute_target(
     if (auto* f = registry_->lookup_class_field(scope_.current_class_name,
                                                 vd.absolute_target,
                                                 scope_.current_unit_name)) {
-      return target_info(f->type.get());
+      return absolute_target_info(target_cxx, f->type.get());
     }
   }
 
   if (const auto* v = analysis_.find_visible_unit_var(vd.absolute_target)) {
-    return target_info(v->type.get());
+    return absolute_target_info(target_cxx, v->type.get());
   }
 
   if (const auto* c = analysis_.find_visible_unit_const(vd.absolute_target)) {
@@ -1065,12 +1057,19 @@ std::optional<EmitAbsoluteTargetInfo> EmitStorage::resolve_absolute_target(
                              "absolute target must be a variable or typed const");
       return std::nullopt;
     }
-    return target_info(c->type.get());
+    return absolute_target_info(target_cxx, c->type.get());
   }
 
   expr_ops_.report_error(vd.loc,
                          "absolute target must be a variable or typed const");
   return std::nullopt;
+}
+
+EmitAbsoluteTargetInfo EmitStorage::absolute_target_info(
+    const std::string& target_cxx, const TypeExpr* type,
+    bool is_const_storage) {
+  return EmitAbsoluteTargetInfo{target_cxx, type, type_is_pointerish(type),
+                                is_const_storage};
 }
 
 }  // namespace tp2cc

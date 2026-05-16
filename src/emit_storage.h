@@ -226,12 +226,32 @@ class EmitStorage {
       const ast::VarDecl& vd);
 
  private:
+  struct StorageCastTarget {
+    std::string cxx;
+    const ast::TypeExpr* type = nullptr;
+    bool primitive = false;
+  };
+
   // Return the C++ type text to use as `offsetof(TYPE, field)`. Named
   // Pascal record/object types use their generated struct name; anonymous local
   // aggregates use `decltype(base_expr_cxx)` because there is no named Pascal
   // type to ask the registry for.
   std::string offsetof_base_type_cxx(const ast::TypeExpr* t,
                                      const std::string& base_expr_cxx);
+  std::string ord_storage_target_cxx(const ast::Expr& source);
+  bool chr_source_has_byte_storage(const ast::Expr& source);
+  std::optional<StorageCastTarget> storage_typecast_target(
+      const ast::Ident& id, const ast::Expr& source);
+  std::string typecast_source_raw_pointer(const ast::Expr& source,
+                                          const std::string& source_cxx,
+                                          bool untyped_storage);
+  std::string scalar_storage_type_cxx(const ast::TypeExpr* t);
+  std::string reference_class_cast_pointer_cxx(const ast::Expr& base_expr);
+  bool reference_classes_related(std::string_view ancestor,
+                                 std::string current);
+  EmitAbsoluteTargetInfo absolute_target_info(
+      const std::string& target_cxx, const ast::TypeExpr* type,
+      bool is_const_storage = false);
 
   const TypeRegistry* registry_;
   ScopeStateView& scope_;
