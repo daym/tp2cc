@@ -48,6 +48,9 @@ std::string class_lifecycle_call_cxx(const ProcDecl& pd) {
   return type_mangle(pd.of_type) + "::" + mangle(pd.name);
 }
 
+void collect_variant_type_refs(const std::shared_ptr<ast::VariantPart>& vpart,
+                               std::unordered_set<std::string>& out);
+
 // Collect every TyName (lowercased) mentioned in a TypeExpr. Recurses into
 // records/objects so that a record's field types contribute dependencies.
 void collect_type_refs(const TypeExpr& t, std::unordered_set<std::string>& out) {
@@ -81,16 +84,7 @@ void collect_type_refs(const TypeExpr& t, std::unordered_set<std::string>& out) 
       const auto& r = static_cast<const TyRecord&>(t);
       for (const auto& f : r.fields)
         if (f.type) collect_type_refs(*f.type, out);
-      auto collect_variant = [&](auto& self, const std::shared_ptr<ast::VariantPart>& vpart) -> void {
-        if (!vpart) return;
-        if (vpart->tag_type) collect_type_refs(*vpart->tag_type, out);
-        for (const auto& vc : vpart->cases) {
-          for (const auto& f : vc.fields)
-            if (f.type) collect_type_refs(*f.type, out);
-          self(self, vc.variant_part);
-        }
-      };
-      collect_variant(collect_variant, r.variant_part);
+      collect_variant_type_refs(r.variant_part, out);
       return;
     }
     case Kind::TyObject: {
@@ -139,6 +133,17 @@ void collect_type_refs(const TypeExpr& t, std::unordered_set<std::string>& out) 
     }
     default:
       return;
+  }
+}
+
+void collect_variant_type_refs(const std::shared_ptr<ast::VariantPart>& vpart,
+                               std::unordered_set<std::string>& out) {
+  if (!vpart) return;
+  if (vpart->tag_type) collect_type_refs(*vpart->tag_type, out);
+  for (const auto& vc : vpart->cases) {
+    for (const auto& f : vc.fields)
+      if (f.type) collect_type_refs(*f.type, out);
+    collect_variant_type_refs(vc.variant_part, out);
   }
 }
 
