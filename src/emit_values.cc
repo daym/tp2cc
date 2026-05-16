@@ -53,6 +53,11 @@ EmitValues::EmitValues(const TypeRegistry* registry, ScopeStateView& scope,
       overload_types_(overload_types),
       expr_ops_(expr_ops) {}
 
+bool EmitValues::same_cxx_type(const TypeExpr* a, const TypeExpr* b) {
+  if (!a || !b) return false;
+  return types_.type_to_cxx(*a) == types_.type_to_cxx(*b);
+}
+
 std::string EmitValues::set_literal_to_cxx(const SetLit& s,
                                            const TypeExpr* target) {
   if (!target) target = analysis_.deduce_set_literal_type(s);
@@ -63,11 +68,6 @@ std::string EmitValues::set_literal_to_cxx(const SetLit& s,
       elem_type = static_cast<const TySet&>(*canon).element.get();
     }
   }
-
-  auto same_type_cxx = [&](const TypeExpr* a, const TypeExpr* b) {
-    if (!a || !b) return false;
-    return types_.type_to_cxx(*a) == types_.type_to_cxx(*b);
-  };
 
   bool has_range = false;
   for (const auto& el : s.elements) {
@@ -93,7 +93,7 @@ std::string EmitValues::set_literal_to_cxx(const SetLit& s,
           common_literal_type = literal_type;
           continue;
         }
-        if (!same_type_cxx(common_literal_type, literal_type)) {
+        if (!same_cxx_type(common_literal_type, literal_type)) {
           consistent_literal_type = false;
           break;
         }
@@ -105,7 +105,7 @@ std::string EmitValues::set_literal_to_cxx(const SetLit& s,
       // matches the actual Pascal members instead of forcing them through the
       // runtime alias.
       if (consistent_literal_type && common_literal_type &&
-          !same_type_cxx(common_literal_type, elem_type)) {
+          !same_cxx_type(common_literal_type, elem_type)) {
         elem_type = common_literal_type;
       }
     }
@@ -350,6 +350,40 @@ std::optional<std::string> EmitValues::maybe_convert_const_int_expr(
   return literal;
 }
 
+bool EmitValues::reject_metaclass_member_as_plain_proc_value(
+    const Expr& value) {
+  const Expr* candidate = &value;
+  if (candidate->kind == Kind::AddrOf) {
+    const auto& addr = static_cast<const AddrOf&>(*candidate);
+    if (!addr.operand) return false;
+    candidate = addr.operand.get();
+  }
+  if (candidate->kind != Kind::Member) return false;
+  const auto& mem = static_cast<const Member&>(*candidate);
+  if (!registry_ || !mem.base) return false;
+  const std::string metaclass =
+      analysis_.metaclass_target_name(analysis_.deduce_type(*mem.base));
+  if (metaclass.empty()) return false;
+  const auto* methods = registry_->lookup_class_methods(
+      metaclass, mem.name, scope_.current_unit_name);
+  bool rejects = false;
+  if (methods) {
+    for (const auto& method : *methods) {
+      if (method.kind == SymKind::ClassMethod ||
+          method.kind == SymKind::Constructor) {
+        rejects = true;
+        break;
+      }
+    }
+  }
+  if (!rejects) return false;
+
+  report_error(value.loc,
+               "cannot use class method through metaclass value as a "
+               "plain procedural value");
+  return true;
+}
+
 std::optional<std::string> EmitValues::maybe_convert_proc_value(
     const Expr& e, const TypeExpr* target) {
   if (!target) return std::nullopt;
@@ -362,41 +396,7 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
   }
 
   if (!proc.is_method) {
-    auto reject_metaclass_member = [&](const Expr& value) -> bool {
-      const Expr* candidate = &value;
-      if (candidate->kind == Kind::AddrOf) {
-        const auto& addr = static_cast<const AddrOf&>(*candidate);
-        if (!addr.operand) return false;
-        candidate = addr.operand.get();
-      }
-      if (candidate->kind != Kind::Member) return false;
-      const auto& mem = static_cast<const Member&>(*candidate);
-      if (!registry_ || !mem.base) return false;
-      const std::string metaclass =
-          analysis_.metaclass_target_name(analysis_.deduce_type(*mem.base));
-      if (metaclass.empty()) return false;
-      const auto* methods = registry_->lookup_class_methods(
-          metaclass, mem.name, scope_.current_unit_name);
-      bool rejects = false;
-      if (methods) {
-        for (const auto& method : *methods) {
-          if (method.kind == SymKind::ClassMethod ||
-              method.kind == SymKind::Constructor) {
-            rejects = true;
-            break;
-          }
-        }
-      }
-      if (!rejects) {
-        return false;
-      }
-      report_error(value.loc,
-                   "cannot use class method through metaclass value as a "
-                   "plain procedural value");
-      return true;
-    };
-
-    if (reject_metaclass_member(e)) return "nullptr";
+    if (reject_metaclass_member_as_plain_proc_value(e)) return "nullptr";
 
     switch (e.kind) {
       case Kind::Ident:
@@ -433,34 +433,35 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
   return target_cxx + "(" + code_text + ", " + self_expr + ")";
 }
 
+std::string EmitValues::concrete_class_name_for_metaclass_value(
+    const Expr& src) {
+  if (src.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(src);
+    if (const auto* ci = analysis_.class_info_for_type_name(id.name);
+        ci && ci->is_reference_type) {
+      return id.name;
+    }
+    return {};
+  }
+  if (src.kind == Kind::Member) {
+    const auto& mem = static_cast<const Member&>(src);
+    if (!mem.base || mem.base->kind != Kind::Ident) return {};
+    const auto& base = static_cast<const Ident&>(*mem.base);
+    const std::string qualified = base.name + "." + mem.name;
+    if (const auto* ci = analysis_.class_info_for_type_name(qualified);
+        ci && ci->is_reference_type) {
+      return qualified;
+    }
+  }
+  return {};
+}
+
 std::optional<std::string> EmitValues::maybe_lower_metaclass_value(
     const Expr& e, const TypeExpr* target) {
   const std::string base_name = analysis_.metaclass_target_name(target);
   if (base_name.empty()) return std::nullopt;
 
-  auto concrete_class_name = [&](const Expr& src) -> std::string {
-    if (src.kind == Kind::Ident) {
-      const auto& id = static_cast<const Ident&>(src);
-      if (const auto* ci = analysis_.class_info_for_type_name(id.name);
-          ci && ci->is_reference_type) {
-        return id.name;
-      }
-      return {};
-    }
-    if (src.kind == Kind::Member) {
-      const auto& mem = static_cast<const Member&>(src);
-      if (mem.base->kind != Kind::Ident) return {};
-      const auto& base = static_cast<const Ident&>(*mem.base);
-      const std::string qualified = base.name + "." + mem.name;
-      if (const auto* ci = analysis_.class_info_for_type_name(qualified);
-          ci && ci->is_reference_type) {
-        return qualified;
-      }
-    }
-    return {};
-  };
-
-  const std::string concrete_name = concrete_class_name(e);
+  const std::string concrete_name = concrete_class_name_for_metaclass_value(e);
   if (concrete_name.empty()) return std::nullopt;
   if (!analysis_.class_info_for_type_name(base_name)) return std::nullopt;
   return types_.metaclass_value_fn_cxx(concrete_name) + "()";
