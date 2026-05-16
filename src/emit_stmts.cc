@@ -70,6 +70,12 @@ class WithStackScope {
   size_t size_;
 };
 
+ExprPtr borrowed_expr_ptr(const Expr& expr) {
+  // Binary lowering needs ExprPtr operands, but case-label lowering compares
+  // existing selector/label nodes without taking ownership of either subtree.
+  return ExprPtr(const_cast<Expr*>(&expr), [](Expr*) {});
+}
+
 }  // namespace
 
 EmitStmts::EmitStmts(const TypeRegistry* registry, ScopeStateView& scope,
@@ -650,29 +656,31 @@ std::string EmitStmts::case_selector_expr(const Expr& e) {
   return text;
 }
 
+std::string EmitStmts::case_binary_condition(const ExprPtr& selector_expr,
+                                             BinOp op, const Expr& rhs) {
+  std::string text = stmt_ops_.expr_to_cxx(
+      Binary(selector_expr->loc, op, selector_expr, borrowed_expr_ptr(rhs),
+             false));
+  if (text.empty()) return "false";
+  return text;
+}
+
+std::string EmitStmts::case_label_condition(const ExprPtr& selector_expr,
+                                            const Expr& label) {
+  if (label.kind != Kind::Range) {
+    return case_binary_condition(selector_expr, BinOp::Eq, label);
+  }
+  const auto& r = static_cast<const Range&>(label);
+  return "(" + case_binary_condition(selector_expr, BinOp::GtEq, *r.lo) +
+         " && " + case_binary_condition(selector_expr, BinOp::LtEq, *r.hi) +
+         ")";
+}
+
 std::string EmitStmts::case_arm_condition(const ExprPtr& selector_expr,
                                          const CaseArm& arm) {
-  auto emit_binary = [&](BinOp op, const ExprPtr& rhs) -> std::string {
-    std::string text =
-        stmt_ops_.expr_to_cxx(Binary(selector_expr->loc, op, selector_expr, rhs,
-                                     false));
-    if (text.empty()) return "false";
-    return text;
-  };
   std::vector<std::string> parts;
   for (const auto& lab : arm.labels) {
-    if (lab->kind == Kind::Range) {
-      const auto& r = static_cast<const Range&>(*lab);
-      auto lo = ExprPtr(const_cast<Expr*>(r.lo.get()),
-                        [](Expr*) {});
-      auto hi = ExprPtr(const_cast<Expr*>(r.hi.get()),
-                        [](Expr*) {});
-      parts.push_back("(" + emit_binary(BinOp::GtEq, lo) + " && " +
-                      emit_binary(BinOp::LtEq, hi) + ")");
-    } else {
-      auto rhs = ExprPtr(const_cast<Expr*>(lab.get()), [](Expr*) {});
-      parts.push_back(emit_binary(BinOp::Eq, rhs));
-    }
+    parts.push_back(case_label_condition(selector_expr, *lab));
   }
   if (parts.empty()) return "false";
   std::string out = parts.front();
@@ -1140,19 +1148,23 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_set(
 }
 
 void EmitStmts::emit_for_in_stmt(const For& f, const std::string& var) {
-  auto done = [](ForInEmitResult r) {
-    return r != ForInEmitResult::NotMatched;
-  };
   // Keep this order aligned with Pascal for-in lookup: type iteration is not an
   // expression lookup, expression enumerators precede built-in carriers, and a
   // successful provider owns the MoveNext/Current contract.
-  if (done(emit_for_in_type_rhs(f, var))) return;
-  if (done(emit_for_in_operator_enumerator(f, var))) return;
-  if (done(emit_for_in_helper_get_enumerator(f, var))) return;
-  if (done(emit_for_in_own_get_enumerator(f, var))) return;
-  if (done(emit_for_in_builtin_string(f, var))) return;
-  if (done(emit_for_in_builtin_array(f, var))) return;
-  if (done(emit_for_in_builtin_set(f, var))) return;
+  if (emit_for_in_type_rhs(f, var) != ForInEmitResult::NotMatched) return;
+  if (emit_for_in_operator_enumerator(f, var) != ForInEmitResult::NotMatched) {
+    return;
+  }
+  if (emit_for_in_helper_get_enumerator(f, var) !=
+      ForInEmitResult::NotMatched) {
+    return;
+  }
+  if (emit_for_in_own_get_enumerator(f, var) != ForInEmitResult::NotMatched) {
+    return;
+  }
+  if (emit_for_in_builtin_string(f, var) != ForInEmitResult::NotMatched) return;
+  if (emit_for_in_builtin_array(f, var) != ForInEmitResult::NotMatched) return;
+  if (emit_for_in_builtin_set(f, var) != ForInEmitResult::NotMatched) return;
   stmt_ops_.report_error(f.loc, "for-in expression type is not supported");
 }
 

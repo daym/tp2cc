@@ -100,6 +100,10 @@ class EmitStmts {
                                           const std::string& class_name,
                                           const std::string& method_name);
   std::string case_selector_expr(const ast::Expr& e);
+  std::string case_binary_condition(const ast::ExprPtr& selector_expr,
+                                    ast::BinOp op, const ast::Expr& rhs);
+  std::string case_label_condition(const ast::ExprPtr& selector_expr,
+                                   const ast::Expr& label);
   std::string case_arm_condition(const ast::ExprPtr& selector_expr,
                                 const ast::CaseArm& arm);
   void emit_case_stmt(const ast::CaseStmt& cs);
