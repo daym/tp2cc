@@ -50,15 +50,15 @@ class Parser {
   // ---- top level ----
   std::shared_ptr<ast::UnitNode> parse_program();
   std::shared_ptr<ast::UnitNode> parse_unit();
-  void parse_uses_into(std::vector<std::string>& out);
+  std::vector<std::string> parse_uses_clause();
   // in_interface:  suppress parsing of proc bodies (interface signatures only)
-  void parse_decl_block(std::vector<ast::DeclPtr>& out, bool in_interface);
+  std::vector<ast::DeclPtr> parse_decl_block(bool in_interface);
 
   // ---- declarations ----
-  void parse_const_section(std::vector<ast::DeclPtr>& out);
-  void parse_type_section(std::vector<ast::DeclPtr>& out);
-  void parse_var_section(std::vector<ast::DeclPtr>& out);
-  void parse_label_section(std::vector<ast::DeclPtr>& out);
+  std::vector<ast::DeclPtr> parse_const_section();
+  std::vector<ast::DeclPtr> parse_type_section();
+  std::vector<ast::DeclPtr> parse_var_section();
+  std::vector<ast::DeclPtr> parse_label_section();
   std::shared_ptr<ast::ProcDecl> parse_proc_decl(ast::ProcKind pk,
                                                  bool in_interface,
                                                  bool is_class_method,
