@@ -111,6 +111,10 @@ class Lexer {
 
   // Helpers.
   static std::string lower(std::string_view s);
+  static void accumulate_digit(uint64_t& value, uint64_t base,
+                               uint64_t digit, bool& overflow);
+  static void accumulate_digit(uint32_t& value, uint32_t base,
+                               uint32_t digit, bool& overflow);
 
   std::vector<Input> stack_;
   // SourceFiles whose Input has already been popped off stack_.  We

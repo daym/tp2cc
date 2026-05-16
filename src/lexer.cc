@@ -152,6 +152,28 @@ std::string Lexer::lower(std::string_view s) {
   return r;
 }
 
+// Numeric tokens and #NN string escapes keep consuming after overflow so one
+// malformed literal produces one diagnostic instead of a cascade.
+void Lexer::accumulate_digit(uint64_t& value, uint64_t base, uint64_t digit,
+                             bool& overflow) {
+  if (overflow) return;
+  uint64_t tmp;
+  if (__builtin_mul_overflow(value, base, &tmp) ||
+      __builtin_add_overflow(tmp, digit, &value)) {
+    overflow = true;
+  }
+}
+
+void Lexer::accumulate_digit(uint32_t& value, uint32_t base, uint32_t digit,
+                             bool& overflow) {
+  if (overflow) return;
+  uint32_t tmp;
+  if (__builtin_mul_overflow(value, base, &tmp) ||
+      __builtin_add_overflow(tmp, digit, &value)) {
+    overflow = true;
+  }
+}
+
 Lexer::Lexer(std::shared_ptr<SourceFile> root,
              std::vector<std::filesystem::path> include_dirs)
     : include_dirs_(std::move(include_dirs)) {
@@ -992,23 +1014,6 @@ Token Lexer::scan_number() {
   std::string text;
   char c = peek();
 
-  // Every integer-base path must reject literals that exceed a
-  // 64-bit unsigned value -- the largest magnitude any legal Pascal
-  // integer constant can denote.  `__builtin_{mul,add}_overflow'
-  // sets a flag on overflow without producing UB; we keep
-  // consuming digits so the whole token is absorbed (avoids
-  // cascading parse errors on the tail), and emit a single
-  // diagnostic.
-  auto accumulate_digit = [](uint64_t& v, uint64_t base, uint64_t digit,
-                             bool& ovf) {
-    if (ovf) return;
-    uint64_t tmp;
-    if (__builtin_mul_overflow(v, base, &tmp) ||
-        __builtin_add_overflow(tmp, digit, &v)) {
-      ovf = true;
-    }
-  };
-
   if (c == '$') {
     // Hex.
     text.push_back(get());
@@ -1115,22 +1120,15 @@ Token Lexer::scan_string() {
       // caught before the value is produced.
       uint32_t code = 0;
       bool ovf = false;
-      auto eat_digit = [&](uint32_t base, uint32_t digit) {
-        if (ovf) return;
-        uint32_t tmp;
-        if (__builtin_mul_overflow(code, base, &tmp) ||
-            __builtin_add_overflow(tmp, digit, &code)) {
-          ovf = true;
-        }
-      };
       if (peek() == '$') {
         get();
         while (!at_eof_of_current() && is_hex(peek())) {
-          eat_digit(16, static_cast<uint32_t>(hex_val(get())));
+          accumulate_digit(code, 16, static_cast<uint32_t>(hex_val(get())),
+                           ovf);
         }
       } else {
         while (!at_eof_of_current() && is_digit(peek())) {
-          eat_digit(10, static_cast<uint32_t>(get() - '0'));
+          accumulate_digit(code, 10, static_cast<uint32_t>(get() - '0'), ovf);
         }
       }
       if (ovf || code > 0xff) {
