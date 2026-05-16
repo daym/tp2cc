@@ -834,7 +834,7 @@ void test_low_high_on_set_type_uses_element_bounds() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "const int32_t p_lastflag = ::rt::p_ord(tp2cc_enum_high_tflag);"));
+                 "inline const auto p_lastflag = ::rt::p_ord(tp2cc_enum_high_tflag);"));
   CHECK(contains(out.header, "const auto p_firstsmall = 2;"));
   CHECK(contains(out.header, "const auto p_lastsmall = 5;"));
   CHECK(contains(out.impl, "if ((::rt::p_ord(tp2cc_enum_high_tflag) > 31))"));
@@ -1128,6 +1128,66 @@ void test_ord_char_value_has_byte_result_type() {
   CHECK(contains(out.impl,
                  "p_b = ::p_u::p_pick(static_cast<uint8_t>(::rt::p_ord(p_c)));"));
   CHECK(!contains(out.impl, "static_cast<int32_t>(::rt::p_ord(p_c))"));
+}
+
+void test_ord_value_result_type_follows_ordinal_operand() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tcolor = (red, green);\n"
+      "procedure run(w : word; wc : widechar; bb : bytebool; wb : wordbool; c : tcolor);\n"
+      "implementation\n"
+      "function pick_word(x : word) : byte;\n"
+      "begin\n"
+      "  pick_word := 1;\n"
+      "end;\n"
+      "function pick_word(x : longint) : byte;\n"
+      "begin\n"
+      "  pick_word := 2;\n"
+      "end;\n"
+      "function pick_shortint(x : shortint) : byte;\n"
+      "begin\n"
+      "  pick_shortint := 1;\n"
+      "end;\n"
+      "function pick_shortint(x : byte) : byte;\n"
+      "begin\n"
+      "  pick_shortint := 2;\n"
+      "end;\n"
+      "function pick_smallint(x : smallint) : byte;\n"
+      "begin\n"
+      "  pick_smallint := 1;\n"
+      "end;\n"
+      "function pick_smallint(x : word) : byte;\n"
+      "begin\n"
+      "  pick_smallint := 2;\n"
+      "end;\n"
+      "function pick_longint(x : longint) : byte;\n"
+      "begin\n"
+      "  pick_longint := 1;\n"
+      "end;\n"
+      "function pick_longint(x : byte) : byte;\n"
+      "begin\n"
+      "  pick_longint := 2;\n"
+      "end;\n"
+      "procedure run(w : word; wc : widechar; bb : bytebool; wb : wordbool; c : tcolor);\n"
+      "var b : byte;\n"
+      "begin\n"
+      "  b := pick_word(ord(w));\n"
+      "  b := pick_word(ord(wc));\n"
+      "  b := pick_shortint(ord(bb));\n"
+      "  b := pick_smallint(ord(wb));\n"
+      "  b := pick_longint(ord(c));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_b = ::p_u::p_pick_word(static_cast<uint16_t>(::rt::p_ord(p_w)));"));
+  CHECK(contains(out.impl,
+                 "p_b = ::p_u::p_pick_word(static_cast<uint16_t>(::rt::p_ord(p_wc)));"));
+  CHECK(contains(out.impl,
+                 "p_b = ::p_u::p_pick_shortint(static_cast<int8_t>(::rt::p_ord(p_bb)));"));
+  CHECK(contains(out.impl,
+                 "p_b = ::p_u::p_pick_smallint(static_cast<int16_t>(::rt::p_ord(p_wb)));"));
+  CHECK(contains(out.impl, "p_b = p_pick_longint(::rt::p_ord(p_c));"));
 }
 
 void test_set_type_alias() {
@@ -8930,6 +8990,7 @@ int main() {
   RUN_TEST(test_ord_storage_view_for_shortstring_length_byte);
   RUN_TEST(test_chr_storage_view_for_byte_assignment_inc_and_var_arg);
   RUN_TEST(test_ord_char_value_has_byte_result_type);
+  RUN_TEST(test_ord_value_result_type_follows_ordinal_operand);
   RUN_TEST(test_set_type_alias);
   RUN_TEST(test_var_extern_in_header_and_def_in_impl);
   RUN_TEST(test_out_parameter_emits_like_var_reference);

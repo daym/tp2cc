@@ -85,6 +85,40 @@ const TypeExpr* EmitAnalysis::canonicalize_type(const TypeExpr* t) {
   return t;
 }
 
+const TypeExpr* EmitAnalysis::ord_result_type_for_type(const TypeExpr* t) {
+  t = canonicalize_type(t);
+  if (!t) return nullptr;
+  if (t->kind == Kind::TyName) {
+    const std::string lower = ascii_lower(static_cast<const TyName&>(*t).name);
+    if (primitive_name_is_charish(lower) || lower == "boolean") {
+      return builtin_integer_type("byte");
+    }
+    if (lower == "widechar") return builtin_integer_type("word");
+    if (lower == "bytebool") return builtin_integer_type("shortint");
+    if (lower == "wordbool") return builtin_integer_type("smallint");
+    if (lower == "longbool") return builtin_integer_type("longint");
+    if (lower == "qwordbool") return builtin_integer_type("int64");
+    if (lower == "boolean64") return builtin_integer_type("qword");
+    if (const PrimitiveInfo* info = primitive_info(lower);
+        info && info->int_kind != PrimitiveIntKind::None) {
+      return builtin_integer_type(info);
+    }
+    return nullptr;
+  }
+  if (t->kind == Kind::TyEnum) return builtin_integer_type("longint");
+  if (t->kind == Kind::TySubrange) return t;
+  if (t->kind == Kind::TyDistinct) {
+    const auto& d = static_cast<const TyDistinct&>(*t);
+    return ord_result_type_for_type(d.underlying.get()) ? t : nullptr;
+  }
+  return nullptr;
+}
+
+const TypeExpr* EmitAnalysis::ord_result_type_for_operand(
+    const Expr& operand) {
+  return ord_result_type_for_type(deduce_type(operand));
+}
+
 const ClassInfo* EmitAnalysis::class_info_for_type_name(std::string_view name) {
   std::string low = ascii_lower(name);
   if (std::string builtin = builtin_reference_class_struct_cxx(low);
@@ -1261,8 +1295,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           return builtin_char_type();
         }
         if (id.name == "ord" && c.args.size() == 1) {
-          const TypeExpr* arg_type = canonicalize_type(deduce_type(*c.args[0]));
-          if (tyname_is_charish(arg_type)) return builtin_integer_type("byte");
+          return ord_result_type_for_operand(*c.args[0]);
         }
       }
       const TypeExpr* callee_type = deduce_type(*c.callee);
@@ -1295,16 +1328,30 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           }
         }
         if ((id.name == "low" || id.name == "high") && c.args.size() == 1) {
+          auto bound_result_type = [&](const TypeExpr* t) -> const TypeExpr* {
+            const TypeExpr* canon = canonicalize_type(t);
+            if (!canon) return t;
+            if (canon->kind == Kind::TySet) {
+              return static_cast<const TySet&>(*canon).element.get();
+            }
+            if (canon->kind == Kind::TyArray) {
+              const auto& arr = static_cast<const TyArray&>(*canon);
+              if (arr.array_kind == ArrayKind::Fixed && !arr.dims.empty()) {
+                return arr.dims.front().get();
+              }
+            }
+            return t;
+          };
           if (c.args[0]->kind == Kind::Ident) {
             const auto& arg_id = static_cast<const Ident&>(*c.args[0]);
             if (const TypeExpr* named = lookup_named_type_expr(arg_id.name)) {
-              return named;
+              return bound_result_type(named);
             }
             if (const TyName* int_ty = builtin_integer_type(arg_id.name)) {
               return int_ty;
             }
           }
-          return deduce_type(*c.args[0]);
+          return bound_result_type(deduce_type(*c.args[0]));
         }
         if (id.name == "sizeof" && c.args.size() == 1) {
           return builtin_integer_type("longint");

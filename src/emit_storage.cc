@@ -78,30 +78,8 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
   }
 
   auto ord_storage_target = [&](const Expr& source) -> std::string {
-    const TypeExpr* source_type =
-        analysis_.canonicalize_type(analysis_.deduce_type(source));
-    if (!source_type) return {};
-    if (source_type->kind == Kind::TyName) {
-      const std::string lower =
-          ascii_lower(static_cast<const TyName&>(*source_type).name);
-      if (primitive_name_is_charish(lower)) return "uint8_t";
-      if (lower == "boolean") return "bool";
-      if (const PrimitiveInfo* info = primitive_info(lower);
-          info && info->int_kind != PrimitiveIntKind::None) {
-        return primitive_type_cxx(lower);
-      }
-    }
-    if (source_type->kind == Kind::TyEnum) {
-      const std::string underlying =
-          types_.enum_underlying_type_to_cxx(
-              static_cast<const TyEnum&>(*source_type));
-      if (underlying == "int32_t" || underlying == "uint32_t") {
-        return "int32_t";
-      }
-      return {};
-    }
-    if (source_type->kind == Kind::TySubrange) {
-      return types_.type_to_cxx(*source_type);
+    if (const TypeExpr* target = analysis_.ord_result_type_for_operand(source)) {
+      return types_.type_to_cxx(*target);
     }
     return {};
   };

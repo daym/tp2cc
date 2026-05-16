@@ -3132,9 +3132,24 @@ inline constexpr uint8_t p_ord(T x) {
   return tp2cc_char_byte(static_cast<p_char>(x));
 }
 template <typename T>
-requires (!std::is_convertible_v<T, p_char>)
+requires (!std::is_convertible_v<T, p_char> &&
+          std::is_same_v<std::remove_cvref_t<T>, bool>)
+inline constexpr uint8_t p_ord(T x) {
+  return static_cast<uint8_t>(x);
+}
+template <typename T>
+requires (!std::is_convertible_v<T, p_char> &&
+          std::is_enum_v<std::remove_cvref_t<T>>)
 inline constexpr int32_t p_ord(T x) {
   return static_cast<int32_t>(x);
+}
+template <typename T>
+requires (!std::is_convertible_v<T, p_char> &&
+          !std::is_same_v<std::remove_cvref_t<T>, bool> &&
+          !std::is_enum_v<std::remove_cvref_t<T>> &&
+          std::is_integral_v<std::remove_cvref_t<T>>)
+inline constexpr T p_ord(T x) {
+  return x;
 }
 inline constexpr p_char p_chr(int x) { return tp2cc_char_of(static_cast<uint8_t>(x)); }
 
