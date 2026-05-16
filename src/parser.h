@@ -43,6 +43,7 @@ class Parser {
   bool accept(Tok t);
   bool expect(Tok t, const char* ctx);
   bool check(Tok t) const { return cur_.kind == t; }
+  bool check_any(std::initializer_list<Tok> tokens) const;
   bool at_end() const { return cur_.kind == Tok::Eof; }
   // Recover by skipping tokens until we see one of the stop tokens.
   void sync_to(std::initializer_list<Tok> stops);
@@ -69,13 +70,13 @@ class Parser {
   // markers cross the parser/emitter boundary as one complete fact.
   std::optional<ast::ProcModifiers> parse_proc_modifier(bool in_type_member);
   ast::ProcModifiers parse_proc_modifiers(ast::ProcModifiers modifiers,
-                                     bool in_type_member);
+                                          bool in_type_member);
   ast::ProcModifiers parse_proc_header_tail(const char* ctx, bool in_type_member);
   static ast::ProcModifiers combine_proc_modifiers(ast::ProcModifiers base,
-                                              ast::ProcModifiers delta);
+                                                   ast::ProcModifiers delta);
   static ast::ProcModifiers proc_modifier(ProcModifierFlag flag);
   static ast::ProcModifiers external_proc_modifier(std::string external_lib,
-                                              std::string external_name);
+                                                   std::string external_name);
 
   // Pascal "directives" are position-dependent words spelled as identifiers
   // (e.g. `name`, `alias`, `read`, `write`, `stored`, `default`, `message`,
@@ -87,6 +88,7 @@ class Parser {
   // ---- types ----
   ast::TypePtr parse_type();
   ast::TypePtr parse_simple_type();  // enum, subrange, name, string[N]
+  ast::TypePtr parse_subrange_type(Location loc, ast::ExprPtr lo);
   ast::TypePtr parse_record_type(bool is_packed);
   std::shared_ptr<ast::VariantPart> parse_variant_part();
   ast::TypePtr parse_object_type();

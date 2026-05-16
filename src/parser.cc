@@ -247,9 +247,16 @@ bool Parser::expect(Tok t, const char* ctx) {
   return false;
 }
 
+bool Parser::check_any(std::initializer_list<Tok> tokens) const {
+  for (Tok token : tokens) {
+    if (cur_.kind == token) return true;
+  }
+  return false;
+}
+
 void Parser::sync_to(std::initializer_list<Tok> stops) {
   while (!at_end()) {
-    for (Tok t : stops) if (cur_.kind == t) return;
+    if (check_any(stops)) return;
     advance();
   }
 }
@@ -416,17 +423,9 @@ std::vector<std::string> Parser::parse_uses_clause() {
 }
 
 StmtPtr Parser::parse_statement_block_until(std::initializer_list<Tok> stops) {
-  auto is_stop = [&]() {
-    if (at_end()) return true;
-    for (Tok stop : stops) {
-      if (check(stop)) return true;
-    }
-    return false;
-  };
-
   Location loc = cur_.loc;
   std::vector<StmtPtr> body;
-  while (!is_stop()) {
+  while (!at_end() && !check_any(stops)) {
     auto s = parse_statement();
     if (s) body.push_back(std::move(s));
     if (!accept(Tok::Semi)) break;
@@ -439,16 +438,32 @@ StmtPtr Parser::parse_statement_block_until(std::initializer_list<Tok> stops) {
 
 std::vector<DeclPtr> Parser::parse_decl_block(bool in_interface) {
   std::vector<DeclPtr> out;
-  auto append_section = [&](std::vector<DeclPtr> section) {
-    out.insert(out.end(), std::make_move_iterator(section.begin()),
-               std::make_move_iterator(section.end()));
-  };
   for (;;) {
     switch (cur_.kind) {
-      case Tok::KwConst: append_section(parse_const_section()); break;
-      case Tok::KwType:  append_section(parse_type_section()); break;
-      case Tok::KwVar:   append_section(parse_var_section()); break;
-      case Tok::KwLabel: append_section(parse_label_section()); break;
+      case Tok::KwConst: {
+        auto section = parse_const_section();
+        out.insert(out.end(), std::make_move_iterator(section.begin()),
+                   std::make_move_iterator(section.end()));
+        break;
+      }
+      case Tok::KwType: {
+        auto section = parse_type_section();
+        out.insert(out.end(), std::make_move_iterator(section.begin()),
+                   std::make_move_iterator(section.end()));
+        break;
+      }
+      case Tok::KwVar: {
+        auto section = parse_var_section();
+        out.insert(out.end(), std::make_move_iterator(section.begin()),
+                   std::make_move_iterator(section.end()));
+        break;
+      }
+      case Tok::KwLabel: {
+        auto section = parse_label_section();
+        out.insert(out.end(), std::make_move_iterator(section.begin()),
+                   std::make_move_iterator(section.end()));
+        break;
+      }
       case Tok::KwProcedure: {
         auto d = parse_proc_decl(ProcKind::Procedure, in_interface,
                                  /*is_class_method=*/false,
@@ -1101,20 +1116,20 @@ TypePtr Parser::parse_type() {
   }
 }
 
+TypePtr Parser::parse_subrange_type(Location loc, ExprPtr lo) {
+  if (lo && !is_constant_subrange_bound_expr(*lo)) {
+    report_error(lo->loc, "non-constant subrange bound");
+  }
+  expect(Tok::DotDot, "subrange");
+  ExprPtr hi = parse_subrange_bound();
+  if (hi && !is_constant_subrange_bound_expr(*hi)) {
+    report_error(hi->loc, "non-constant subrange bound");
+  }
+  return std::make_shared<TySubrange>(loc, std::move(lo), std::move(hi));
+}
+
 TypePtr Parser::parse_simple_type() {
   Location loc = cur_.loc;
-  auto finish_subrange = [&](ExprPtr lo) -> TypePtr {
-    if (lo && !is_constant_subrange_bound_expr(*lo)) {
-      report_error(lo->loc, "non-constant subrange bound");
-    }
-    expect(Tok::DotDot, "subrange");
-    ExprPtr hi = parse_subrange_bound();
-    if (hi && !is_constant_subrange_bound_expr(*hi)) {
-      report_error(hi->loc, "non-constant subrange bound");
-    }
-    return std::make_shared<TySubrange>(loc, std::move(lo), std::move(hi));
-  };
-
   // Enum: `( a, b, c )`
   if (accept(Tok::LParen)) {
     std::vector<EnumMember> members;
@@ -1142,11 +1157,11 @@ TypePtr Parser::parse_simple_type() {
   // constant.
   if (cur_.kind == Tok::Ident) {
     if (peek().kind == Tok::DotDot) {
-      return finish_subrange(parse_subrange_bound());
+      return parse_subrange_type(loc, parse_subrange_bound());
     }
     if (peek().kind == Tok::LParen &&
         is_subrange_bound_intrinsic(cur_.text)) {
-      return finish_subrange(parse_subrange_bound());
+      return parse_subrange_type(loc, parse_subrange_bound());
     }
     std::string name = cur_.text;
     advance();
@@ -1163,7 +1178,7 @@ TypePtr Parser::parse_simple_type() {
     return std::make_shared<TyName>(loc, std::move(name));
   }
   // Otherwise, treat as subrange.
-  return finish_subrange(parse_subrange_bound());
+  return parse_subrange_type(loc, parse_subrange_bound());
 }
 
 TypePtr Parser::parse_array_type(bool packed) {
