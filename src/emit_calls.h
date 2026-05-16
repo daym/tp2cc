@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -95,6 +96,13 @@ class EmitCalls {
       const ast::ProcDecl* decl, std::vector<CallArgumentSlot> slots);
   std::vector<CallArgumentSlot> call_slots_with_decl_param_info(
       const ast::ProcDecl* decl, std::vector<CallArgumentSlot> slots);
+  static void mark_call_slot(std::vector<CallArgumentSlot>& slots,
+                             std::size_t index, UntypedArgKind untyped_kind,
+                             bool is_mutable,
+                             const ast::TypeExpr* type = nullptr);
+  static std::vector<CallArgumentSlot>
+  call_slots_with_builtin_memory_helper_info(
+      std::string_view name, std::vector<CallArgumentSlot> slots);
   std::vector<CallArgumentSlot> call_slots_with_builtin_helper_param_info(
       const ast::Expr& callee, std::vector<CallArgumentSlot> slots);
   std::vector<CallArgumentSlot> call_slots_with_procedural_callee_param_info(

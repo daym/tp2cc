@@ -101,20 +101,28 @@ std::string visible_type_unit_from(std::string_view type_name,
   return {};
 }
 
-std::vector<CallArgumentSlot> call_slots_with_builtin_memory_helper_info(
+}  // namespace
+
+void EmitCalls::mark_call_slot(std::vector<CallArgumentSlot>& slots,
+                               std::size_t index,
+                               UntypedArgKind untyped_kind, bool is_mutable,
+                               const ast::TypeExpr* type) {
+  // Builtin memory helpers are registered as runtime routines, but several of
+  // their Pascal arguments still mean caller storage. Store that fact in the
+  // same slot table used for parsed formal parameters.
+  if (index >= slots.size()) return;
+  CallArgumentSlot& slot = slots[index];
+  if (untyped_kind != UntypedArgKind::None) {
+    slot.untyped_arg = untyped_kind;
+  }
+  if (is_mutable) slot.mutable_ref_arg = true;
+  slot.param_type = type;
+}
+
+std::vector<CallArgumentSlot>
+EmitCalls::call_slots_with_builtin_memory_helper_info(
     std::string_view name, std::vector<CallArgumentSlot> slots) {
   const std::string lower = ascii_lower(name);
-
-  auto mark = [&](size_t index, UntypedArgKind untyped_kind, bool is_mutable,
-                  const ast::TypeExpr* type = nullptr) {
-    if (index >= slots.size()) return;
-    CallArgumentSlot& slot = slots[index];
-    if (untyped_kind != UntypedArgKind::None) {
-      slot.untyped_arg = untyped_kind;
-    }
-    if (is_mutable) slot.mutable_ref_arg = true;
-    slot.param_type = type;
-  };
 
   // Pascal's raw memory helpers all operate on caller storage, not on the
   // value of the first expression. Reuse the normal untyped-argument
@@ -122,46 +130,46 @@ std::vector<CallArgumentSlot> call_slots_with_builtin_memory_helper_info(
   // `&slot` in C++ instead of reinterpreting the pointer value stored there.
   if (lower == "fillchar" || lower == "fillbyte" ||
       lower == "fillword" || lower == "filldword") {
-    mark(0, UntypedArgKind::Mutable, /*is_mutable=*/true);
+    mark_call_slot(slots, 0, UntypedArgKind::Mutable, /*is_mutable=*/true);
     return slots;
   }
   if (lower == "initialize") {
-    mark(0, UntypedArgKind::None, /*is_mutable=*/true);
+    mark_call_slot(slots, 0, UntypedArgKind::None, /*is_mutable=*/true);
     return slots;
   }
   if (lower == "move") {
-    mark(0, UntypedArgKind::Const, /*is_mutable=*/false);
-    mark(1, UntypedArgKind::Mutable, /*is_mutable=*/true);
+    mark_call_slot(slots, 0, UntypedArgKind::Const, /*is_mutable=*/false);
+    mark_call_slot(slots, 1, UntypedArgKind::Mutable, /*is_mutable=*/true);
     return slots;
   }
   if (lower == "setstring") {
     // System.SetString mutates the destination string variable. The source
     // pointer is still an ordinary value because the third argument supplies
     // the byte count to copy.
-    mark(0, UntypedArgKind::None, /*is_mutable=*/true);
+    mark_call_slot(slots, 0, UntypedArgKind::None, /*is_mutable=*/true);
     return slots;
   }
   if (lower == "blockread") {
-    mark(1, UntypedArgKind::Mutable, /*is_mutable=*/true);
+    mark_call_slot(slots, 1, UntypedArgKind::Mutable, /*is_mutable=*/true);
     return slots;
   }
   if (lower == "blockwrite") {
-    mark(1, UntypedArgKind::Const, /*is_mutable=*/false);
+    mark_call_slot(slots, 1, UntypedArgKind::Const, /*is_mutable=*/false);
     return slots;
   }
   if (lower == "indexbyte" || lower == "indexword") {
-    mark(0, UntypedArgKind::Const, /*is_mutable=*/false);
+    mark_call_slot(slots, 0, UntypedArgKind::Const, /*is_mutable=*/false);
     return slots;
   }
   if (lower == "comparebyte" || lower == "comparechar" ||
       lower == "compareword") {
-    mark(0, UntypedArgKind::Const, /*is_mutable=*/false);
-    mark(1, UntypedArgKind::Const, /*is_mutable=*/false);
+    mark_call_slot(slots, 0, UntypedArgKind::Const, /*is_mutable=*/false);
+    mark_call_slot(slots, 1, UntypedArgKind::Const, /*is_mutable=*/false);
     return slots;
   }
   if (lower == "getmem" || lower == "reallocmem" ||
       lower == "dispose" || lower == "strdispose") {
-    mark(0, UntypedArgKind::None, /*is_mutable=*/true);
+    mark_call_slot(slots, 0, UntypedArgKind::None, /*is_mutable=*/true);
   }
   // Pascal `Val(S; var V; var Code)` and `Str(X; var S)` write to caller
   // storage. Mark the var-mode slots so a call-site typecast like
@@ -171,18 +179,16 @@ std::vector<CallArgumentSlot> call_slots_with_builtin_memory_helper_info(
   // overload. Without this, the cast lowers as a value rvalue and the
   // overload set fails to match.
   if (lower == "val") {
-    mark(1, UntypedArgKind::None, /*is_mutable=*/true);
-    mark(2, UntypedArgKind::None, /*is_mutable=*/true);
+    mark_call_slot(slots, 1, UntypedArgKind::None, /*is_mutable=*/true);
+    mark_call_slot(slots, 2, UntypedArgKind::None, /*is_mutable=*/true);
     return slots;
   }
   if (lower == "str") {
-    mark(1, UntypedArgKind::None, /*is_mutable=*/true);
+    mark_call_slot(slots, 1, UntypedArgKind::None, /*is_mutable=*/true);
     return slots;
   }
   return slots;
 }
-
-}  // namespace
 
 EmitCalls::EmitCalls(const TypeRegistry* registry, ScopeStateView& scope,
                      EmitAnalysis& analysis, EmitTypes& types,
