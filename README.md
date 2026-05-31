@@ -2,6 +2,8 @@
 
 This is a small compiler for the Pascal language, written in C++.
 
+The emitted code by the compiler is `Makefile` and C++ source files.  To compile the latter you also need a C++ compiler that supports at least C++17 INCLUDING support for `offsetof` on non-`POD` data types (since we emit packed record accesses via `offsetof`).
+
 # Usage
 
 Create file `prog.pas` with the following content:
