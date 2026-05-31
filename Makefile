@@ -49,7 +49,10 @@ $(OBJDIR)/tests/%.o: tests/%.cc $(ALL_HEADERS)
 
 $(OBJDIR)/tp2cc_rt/%.o: include/tp2cc_rt/%.c
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -c $< -o $@
+	# libtp2cc_rt.a is an installed static runtime archive.  Build its
+	# members as PIC so they can be linked into position-independent outputs
+	# without text relocations.
+	$(CC) $(CFLAGS) -fPIC -c $< -o $@
 
 $(RUNTIME_LIB): $(RUNTIME_OBJS)
 	@mkdir -p $(@D)
