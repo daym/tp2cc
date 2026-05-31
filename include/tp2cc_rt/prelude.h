@@ -4748,37 +4748,42 @@ inline void p_insert(const p_char* src, tp2cc_AnsiString& dest, int pos) {
 
 // --- Memory / bytewise utilities -------------------------------------------
 
+// Pascal FillChar has no effect when count <= 0.
+inline void tp2cc_fill_bytes(void* dest, int count, uint8_t value) {
+  if (count > 0)
+    std::memset(dest, value, static_cast<size_t>(count));
+}
 inline void p_fillchar(void* dest, int count, int value) {
-  std::memset(dest, value & 0xff, static_cast<size_t>(count));
+  tp2cc_fill_bytes(dest, count, static_cast<uint8_t>(value & 0xff));
 }
 inline void p_fillchar(void* dest, int count, p_char value) {
   p_fillchar(dest, count, tp2cc_char_byte(value));
 }
 inline void p_fillbyte(void* dest, int count, uint8_t value) {
-  std::memset(dest, value, static_cast<size_t>(count));
+  tp2cc_fill_bytes(dest, count, value);
 }
 inline void p_fillchar(tp2cc_ShortStringCharRef dest, int count, int value) {
-  std::memset(dest.byte, value & 0xff, static_cast<size_t>(count));
+  tp2cc_fill_bytes(dest.byte, count, static_cast<uint8_t>(value & 0xff));
 }
 inline void p_fillchar(tp2cc_ShortStringCharRef dest, int count, p_char value) {
   p_fillchar(dest, count, tp2cc_char_byte(value));
 }
 inline void p_fillbyte(tp2cc_ShortStringCharRef dest, int count, uint8_t value) {
-  std::memset(dest.byte, value, static_cast<size_t>(count));
+  tp2cc_fill_bytes(dest.byte, count, value);
 }
 inline void p_fillchar(tp2cc_AnsiStringCharRef dest, int count, int value) {
-  std::memset(&dest, value & 0xff, static_cast<size_t>(count));
+  tp2cc_fill_bytes(&dest, count, static_cast<uint8_t>(value & 0xff));
 }
 inline void p_fillchar(tp2cc_AnsiStringCharRef dest, int count, p_char value) {
   p_fillchar(dest, count, tp2cc_char_byte(value));
 }
 inline void p_fillbyte(tp2cc_AnsiStringCharRef dest, int count, uint8_t value) {
-  std::memset(&dest, value, static_cast<size_t>(count));
+  tp2cc_fill_bytes(&dest, count, value);
 }
 template <typename T>
 requires (!std::is_pointer_v<T>)
 inline void p_fillchar(T& dest, int count, int value) {
-  std::memset(&dest, value & 0xff, static_cast<size_t>(count));
+  tp2cc_fill_bytes(&dest, count, static_cast<uint8_t>(value & 0xff));
 }
 template <typename T>
 requires (!std::is_pointer_v<T>)
@@ -4788,66 +4793,71 @@ inline void p_fillchar(T& dest, int count, p_char value) {
 template <typename T>
 requires (!std::is_pointer_v<T>)
 inline void p_fillbyte(T& dest, int count, uint8_t value) {
-  std::memset(&dest, value, static_cast<size_t>(count));
+  tp2cc_fill_bytes(&dest, count, value);
 }
 template <typename T>
 inline void p_initialize(T& value) {
   value = T{};
 }
+// Move has no effect when count <= 0.
+inline void tp2cc_move_bytes(void* dest, const void* src, int count) {
+  if (count > 0)
+    std::memmove(dest, src, static_cast<size_t>(count));
+}
 inline void p_move(const void* src, void* dest, int count) {
-  std::memmove(dest, src, static_cast<size_t>(count));
+  tp2cc_move_bytes(dest, src, count);
 }
 inline void p_move(tp2cc_ShortStringCharRef src, void* dest, int count) {
-  std::memmove(dest, src.byte, static_cast<size_t>(count));
+  tp2cc_move_bytes(dest, src.byte, count);
 }
 inline void p_move(tp2cc_ShortStringCharValue src, void* dest, int count) {
-  std::memmove(dest, src.byte, static_cast<size_t>(count));
+  tp2cc_move_bytes(dest, src.byte, count);
 }
 inline void p_move(tp2cc_AnsiStringCharRef src, void* dest, int count) {
-  std::memmove(dest, &src, static_cast<size_t>(count));
+  tp2cc_move_bytes(dest, &src, count);
 }
 inline void p_move(tp2cc_AnsiStringCharValue src, void* dest, int count) {
-  std::memmove(dest, src.byte, static_cast<size_t>(count));
+  tp2cc_move_bytes(dest, src.byte, count);
 }
 inline void p_move(const void* src, tp2cc_ShortStringCharRef dest, int count) {
-  std::memmove(dest.byte, src, static_cast<size_t>(count));
+  tp2cc_move_bytes(dest.byte, src, count);
 }
 inline void p_move(const void* src, tp2cc_AnsiStringCharRef dest, int count) {
-  std::memmove(&dest, src, static_cast<size_t>(count));
+  tp2cc_move_bytes(&dest, src, count);
 }
 inline void p_move(tp2cc_ShortStringCharValue src, tp2cc_ShortStringCharRef dest, int count) {
-  std::memmove(dest.byte, src.byte, static_cast<size_t>(count));
+  tp2cc_move_bytes(dest.byte, src.byte, count);
 }
 inline void p_move(tp2cc_AnsiStringCharValue src, tp2cc_AnsiStringCharRef dest, int count) {
-  std::memmove(&dest, src.byte, static_cast<size_t>(count));
+  tp2cc_move_bytes(&dest, src.byte, count);
 }
 template <typename D>
 inline void p_move(tp2cc_ShortStringCharRef src, D& dest, int count) {
-  std::memmove(std::addressof(dest), src.byte, static_cast<size_t>(count));
+  tp2cc_move_bytes(std::addressof(dest), src.byte, count);
 }
 template <typename D>
 inline void p_move(tp2cc_AnsiStringCharRef src, D& dest, int count) {
-  std::memmove(std::addressof(dest), &src, static_cast<size_t>(count));
+  tp2cc_move_bytes(std::addressof(dest), &src, count);
 }
 template <typename D>
 inline void p_move(tp2cc_ShortStringCharValue src, D& dest, int count) {
-  std::memmove(std::addressof(dest), src.byte, static_cast<size_t>(count));
+  tp2cc_move_bytes(std::addressof(dest), src.byte, count);
 }
 template <typename D>
 inline void p_move(tp2cc_AnsiStringCharValue src, D& dest, int count) {
-  std::memmove(std::addressof(dest), src.byte, static_cast<size_t>(count));
+  tp2cc_move_bytes(std::addressof(dest), src.byte, count);
 }
 template <typename S, typename D>
 inline void p_move(const S& src, D& dest, int count) {
-  std::memmove(&dest, &src, static_cast<size_t>(count));
+  tp2cc_move_bytes(&dest, &src, count);
 }
 template <typename S>
 inline void p_move(const S& src, tp2cc_ShortStringCharRef dest, int count) {
-  std::memmove(dest.byte, &src, static_cast<size_t>(count));
+  tp2cc_move_bytes(dest.byte, &src, count);
 }
 template <typename S>
 inline void p_move(const S& src, tp2cc_AnsiStringCharRef dest, int count) {
-  std::memmove(&dest, &src, static_cast<size_t>(count));
+  tp2cc_move_bytes(&dest, &src, count);
 }
 inline void p_getmem(void*& p, int size) {
   p = std::malloc(static_cast<size_t>(size));
@@ -5261,7 +5271,7 @@ inline tp2cc_DynArray<T> p_copy(const tp2cc_DynArray<T>& a) {
 
 template <int N>
 inline void p_delete(tp2cc_ShortString<N>& s, int start, int count) {
-  if (start < 1 || start > s.length) return;
+  if (start < 1 || start > s.length || count <= 0) return;
   int tail = s.length - (start - 1) - count;
   if (tail < 0) { s.length = static_cast<uint8_t>(start - 1); return; }
   for (int i = 0; i < tail; ++i) s.data[start - 1 + i] = s.data[start - 1 + count + i];
