@@ -1,0 +1,26 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-07
+Subject: Make TPaiProp.Create an explicit override
+License: expat
+
+TPaiProp.Create has no live polymorphic construction path in the 3.0.4
+compiler sources: no descendants of TPaiProp, no class-of TPaiProp or
+TAoptBase use, and no non-comment call through TAoptBase.Create.
+
+In Pascal, "reintroduce" intentionally hides the inherited virtual
+TAoptBase.Create slot.  C++ cannot express a same-signature derived method
+that does not override an inherited virtual.  Mark this constructor as an
+explicit override so the Pascal source matches the C++ dispatch semantics
+that tp2cc can emit.
+
+--- a/compiler/aoptobj.pas
++++ b/compiler/aoptobj.pas
+@@ -133,7 +133,7 @@ Unit AoptObj;
+         { can this instruction be removed? }
+         CanBeRemoved: Boolean;
+ 
+-        Constructor create; reintroduce;
++        Constructor create; override;
+ 
+         { checks the whole sequence of which (so regs[which].StartMod and and  }
+         { the next NrOfMods Tai objects) to see whether Reg is used somewhere, }
