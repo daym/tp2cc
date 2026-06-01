@@ -2590,6 +2590,60 @@ void test_nested_boolean_function_and_short_circuits() {
   CHECK(!contains(out.impl, "((p_x < 10) & p_ready(p_x))"));
 }
 
+void test_untyped_boolean_const_and_short_circuits() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TSys = (s1, s2);\n"
+      "  TSystems = set of TSys;\n"
+      "const\n"
+      "  ControllerSupport = true;\n"
+      "  SystemsEmbedded : TSystems = [s1];\n"
+      "procedure demo(system : TSys; c : longint; s : string);\n"
+      "implementation\n"
+      "procedure demo(system : TSys; c : longint; s : string);\n"
+      "begin\n"
+      "  if ControllerSupport and (system in SystemsEmbedded) and\n"
+      "     (c <> 0) and (s <> '') then writeln(c);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "if ((((p_controllersupport && "
+                 "(p_systemsembedded).contains(p_system)) && (p_c != 0)) &&"));
+  CHECK(!contains(out.impl, "p_controllersupport & "));
+}
+
+void test_overloaded_boolean_call_result_short_circuits() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TOp = (op_a, op_b);\n"
+      "  TOps = set of TOp;\n"
+      "function matches(op : TOp) : boolean; overload;\n"
+      "function matches(ops : TOps) : boolean; overload;\n"
+      "procedure demo(op : TOp; ready : boolean);\n"
+      "implementation\n"
+      "function matches(op : TOp) : boolean;\n"
+      "begin\n"
+      "  matches := op = op_a;\n"
+      "end;\n"
+      "function matches(ops : TOps) : boolean;\n"
+      "begin\n"
+      "  matches := op_a in ops;\n"
+      "end;\n"
+      "procedure demo(op : TOp; ready : boolean);\n"
+      "begin\n"
+      "  if ready and matches(op) and matches([op]) then writeln('yes');\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_ready && ::p_u::p_matches("));
+  CHECK(contains(out.impl, "&& ::p_u::p_matches(static_cast<t_tops>("));
+  CHECK(!contains(out.impl, "p_ready & "));
+  CHECK(!contains(out.impl, " & ::p_u::p_matches(static_cast<t_tops>("));
+}
+
 void test_nested_untyped_var_forwarding_stays_pointer_value() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -9102,6 +9156,8 @@ int main() {
   RUN_TEST(test_pchar_cast_argument_converts_to_string_value);
   RUN_TEST(test_integer_and_or_stays_bitwise);
   RUN_TEST(test_nested_boolean_function_and_short_circuits);
+  RUN_TEST(test_untyped_boolean_const_and_short_circuits);
+  RUN_TEST(test_overloaded_boolean_call_result_short_circuits);
   RUN_TEST(test_nested_untyped_var_forwarding_stays_pointer_value);
   RUN_TEST(test_nested_untyped_const_forwarding_stays_pointer_value);
   RUN_TEST(test_untyped_method_call_on_variable_uses_storage_address);

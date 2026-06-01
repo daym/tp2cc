@@ -606,7 +606,39 @@ const TypeExpr* EmitAnalysis::deduce_set_literal_type(const SetLit& s,
   if (s.elements.empty()) return nullptr;
 
   auto summary = summarize_set_literal_ordinals(s);
-  if (!summary) return nullptr;
+  if (!summary) {
+    const TypeExpr* element_type = nullptr;
+    std::optional<OrdinalDomain> domain;
+    auto add_element_type = [&](const Expr& e) {
+      const TypeExpr* t = deduce_type(e);
+      auto next = ordinal_domain_for_type(t);
+      if (!next) return false;
+      if (!domain) {
+        element_type = t;
+        domain = *next;
+        return true;
+      }
+      return domain->family == next->family &&
+             domain->enum_key == next->enum_key;
+    };
+    for (const auto& el : s.elements) {
+      if (el->kind == Kind::Range) {
+        const auto& r = static_cast<const Range&>(*el);
+        if (!add_element_type(*r.lo) || !add_element_type(*r.hi)) {
+          return nullptr;
+        }
+      } else if (!add_element_type(*el)) {
+        return nullptr;
+      }
+    }
+    if (!domain || !element_type) return nullptr;
+    // Non-constant set elements such as `[op]` still carry an ordinal Pascal
+    // type. Use that type's full domain so overload ranking can match the set
+    // literal against `set of T` parameters without pretending to know which
+    // runtime elements will be present.
+    return synthesize_set_type(element_type,
+                               std::make_pair(domain->low, domain->high));
+  }
 
   const TypeExpr* element_type = nullptr;
   switch (summary->family) {
@@ -1131,6 +1163,8 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
 const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
   if (!registry_) return nullptr;
   switch (e.kind) {
+    case Kind::BoolLit:
+      return builtin_boolean_type();
     case Kind::IntLit:
       if (auto info = eval_const_int_expr(e); info && info->type) {
         return builtin_integer_type(info->type);

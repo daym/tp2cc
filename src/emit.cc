@@ -371,6 +371,7 @@ struct Emitter : ResolveNameProvider,
   }
   std::string class_cast_rhs_type_cxx(const ast::Expr& rhs);
   std::string char_concat_operand_cxx(const ast::Expr& x, bool wrap_as_string);
+  bool type_is_boolean_value_type(const ast::TypeExpr* t);
   bool expr_is_boolean_value(const ast::Expr& x);
   bool ordinal_value_needs_explicit_cast(const ast::Expr& operand);
   bool call_arg_already_pins_formal_type(const ast::Expr& arg,
@@ -712,49 +713,22 @@ std::string Emitter::char_concat_operand_cxx(const Expr& x,
   return "::rt::tp2cc_shortstring_of<>(" + text + ")";
 }
 
-bool Emitter::expr_is_boolean_value(const Expr& x) {
-  if (x.kind == Kind::Call && registry) {
-    const auto& c = static_cast<const Call&>(x);
-    if (c.callee->kind == Kind::Ident) {
-      const std::string& nm = static_cast<const Ident&>(*c.callee).name;
-      ResolveResult rr = resolve_name(nm);
-      if (rr.return_type_name == "boolean") return true;
-    }
-  }
-  if (x.kind == Kind::Binary) {
-    const auto& bx = static_cast<const Binary&>(x);
-    switch (bx.op) {
-      case BinOp::Eq:
-      case BinOp::NotEq:
-      case BinOp::Lt:
-      case BinOp::Gt:
-      case BinOp::LtEq:
-      case BinOp::GtEq:
-      case BinOp::In:
-      case BinOp::Is:
-        return true;
-      case BinOp::And:
-      case BinOp::Or:
-      case BinOp::Xor:
-        return expr_is_boolean_value(*bx.lhs) &&
-               expr_is_boolean_value(*bx.rhs);
-      default:
-        break;
-    }
-  }
-  if (x.kind == Kind::Unary &&
-      static_cast<const Unary&>(x).op == UnOp::Not) {
-    return expr_is_boolean_value(*static_cast<const Unary&>(x).operand);
-  }
-  if (x.kind == Kind::BoolLit) return true;
-  if (!registry) return false;
-  const TypeExpr* t = type_for_overload(x);
+bool Emitter::type_is_boolean_value_type(const TypeExpr* t) {
   if (!t) return false;
   t = registry->canonicalize(t);
   if (!t || t->kind != Kind::TyName) return false;
   std::string nm = ascii_lower(static_cast<const TyName&>(*t).name);
   return nm == "boolean" || nm == "bytebool" || nm == "wordbool" ||
          nm == "longbool";
+}
+
+bool Emitter::expr_is_boolean_value(const Expr& x) {
+  if (!registry) return false;
+  // Pascal `and` / `or` are selected from operand types. Keep that decision on
+  // the same typed-expression path used for call and operator overload ranking,
+  // so a call operand's result type comes from the selected Pascal callee instead
+  // of a separate syntactic Boolean guess.
+  return type_is_boolean_value_type(type_for_overload(x));
 }
 
 bool Emitter::ordinal_value_needs_explicit_cast(const Expr& operand) {
