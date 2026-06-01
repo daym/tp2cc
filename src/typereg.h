@@ -270,7 +270,11 @@ struct TypeRegistry {
   std::unordered_map<std::string, InterfaceInfo> interfaces;
   std::unordered_map<std::string, RecordInfo> records;
   std::unordered_map<std::string, EnumInfoReg> enums;
-  std::unordered_map<const ast::TyEnum*, std::string> enum_type_names;
+  // Pascal enum type names are scoped by unit. Raw TyEnum* values appear after
+  // type inference, so they need their owner metadata directly instead of going
+  // back through the unqualified name map where two units can both define
+  // `TAsmToken`.
+  std::unordered_map<const ast::TyEnum*, EnumInfoReg> enum_type_info;
   // (unit, member) -> owning enum's AST node, populated from EnumInfoReg as
   // each enum is registered. `EmitAnalysis::deduce_type` asks "is this Ident
   // an enum member?" for nearly every identifier in the source; the answer

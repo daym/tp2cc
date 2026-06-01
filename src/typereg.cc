@@ -217,12 +217,13 @@ void register_enum_type(TypeRegistry& r, UnitInfo* ui, bool is_interface,
   for (const auto& m : te.members) members.push_back(lc(m.name));
   auto& by_member = r.enum_members_by_unit[unit];
   for (const auto& member : members) by_member[member] = &te;
-  r.enums[key] = EnumInfoReg{.name = key,
-                             .defining_unit = unit,
-                             .type = &te,
-                             .cxx_name = cxx_name,
-                             .members = std::move(members)};
-  r.enum_type_names[&te] = key;
+  EnumInfoReg info{.name = key,
+                   .defining_unit = unit,
+                   .type = &te,
+                   .cxx_name = cxx_name,
+                   .members = std::move(members)};
+  r.enum_type_info[&te] = info;
+  r.enums[key] = std::move(info);
   add_unit_enum_members(ui, is_interface, te);
 }
 
@@ -507,12 +508,13 @@ void register_runtime_alias(TypeRegistry& r, UnitInfo& rt_exports,
       members.push_back(lm);
       rt_exports.iface_enum_members.insert(lm);
     }
-    r.enum_type_names[enum_type] = low;
-    r.enums[low] = EnumInfoReg{.name = low,
-                               .defining_unit = "__rt__",
-                               .type = enum_type,
-                               .cxx_name = type_mangle(low),
-                               .members = std::move(members)};
+    EnumInfoReg info{.name = low,
+                     .defining_unit = "__rt__",
+                     .type = enum_type,
+                     .cxx_name = type_mangle(low),
+                     .members = std::move(members)};
+    r.enum_type_info[enum_type] = info;
+    r.enums[low] = std::move(info);
   }
   r.aliases[low] =
       AliasInfo{.defining_unit = "__rt__", .target = std::move(target)};
@@ -1349,10 +1351,10 @@ const ClassInfo* TypeRegistry::lookup_class(std::string_view name,
 const EnumInfoReg* TypeRegistry::enum_info_for_type(
     const TyEnum* type) const {
   if (!type) return nullptr;
-  auto kit = enum_type_names.find(type);
-  if (kit == enum_type_names.end()) return nullptr;
-  auto eit = enums.find(kit->second);
-  return eit == enums.end() ? nullptr : &eit->second;
+  if (auto it = enum_type_info.find(type); it != enum_type_info.end()) {
+    return &it->second;
+  }
+  return nullptr;
 }
 
 const TyEnum* TypeRegistry::lookup_enum_member_in_unit(

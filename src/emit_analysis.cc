@@ -1289,10 +1289,10 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
                                                        id.name)) {
           return t;
         }
-        for (auto it = cur->second.uses.rbegin();
-             it != cur->second.uses.rend(); ++it) {
-          auto uit = registry_->units.find(*it);
-          if (uit == registry_->units.end()) continue;
+        auto lookup_used_value_type = [&](const std::string& unit_name)
+            -> const TypeExpr* {
+          auto uit = registry_->units.find(unit_name);
+          if (uit == registry_->units.end()) return nullptr;
           if (const auto* t =
                   deduce_exported_unit_value_type(uit->second, id.name)) {
             return t;
@@ -1302,6 +1302,20 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
                                                         id.name)) {
             return t;
           }
+          return nullptr;
+        };
+        // Runtime declarations are implicit fallback names. A real unit in the
+        // source `uses` list must keep precedence when it exports the same
+        // value or enum member name.
+        for (auto it = cur->second.uses.rbegin();
+             it != cur->second.uses.rend(); ++it) {
+          if (*it == "__rt__") continue;
+          if (const TypeExpr* t = lookup_used_value_type(*it)) return t;
+        }
+        for (auto it = cur->second.uses.rbegin();
+             it != cur->second.uses.rend(); ++it) {
+          if (*it != "__rt__") continue;
+          if (const TypeExpr* t = lookup_used_value_type(*it)) return t;
         }
       }
       return nullptr;
@@ -1802,10 +1816,17 @@ const EnumInfoReg* EmitAnalysis::find_visible_enum_info_for_member(
   }
   auto cur = registry_->units.find(scope_.current_unit_name);
   if (cur == registry_->units.end()) return nullptr;
+  // Keep runtime enum aliases available without letting them shadow enum
+  // members from an explicitly used source unit with the same names.
+  const EnumInfoReg* runtime_info = nullptr;
   for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend(); ++it) {
+    if (*it == "__rt__") {
+      runtime_info = find_enum_info_in_unit(*it, name);
+      continue;
+    }
     if (const auto* info = find_enum_info_in_unit(*it, name)) return info;
   }
-  return nullptr;
+  return runtime_info;
 }
 
 std::string EmitAnalysis::implicit_self_cxx() {

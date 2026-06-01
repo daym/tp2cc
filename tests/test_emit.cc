@@ -4770,6 +4770,36 @@ void test_cross_unit_enum_set_literal_keeps_exported_enum_type() {
                   "::rt::tp2cc_Set<::rt::t_tfpuexception>::from_list"));
 }
 
+void test_duplicate_enum_type_names_keep_set_literal_member_unit() {
+  auto out = compile_snippet_with_registry(
+      "unit rax86att;\n"
+      "interface\n"
+      "uses rax86int, raatt;\n"
+      "procedure run(act : raatt.tasmtoken);\n"
+      "implementation\n"
+      "procedure run(act : raatt.tasmtoken);\n"
+      "begin\n"
+      "  if act in [as_comma, as_separator, as_end] then begin end;\n"
+      "end;\n"
+      "end.\n",
+      {{"raatt.pas",
+        "unit raatt;\n"
+        "interface\n"
+        "type\n"
+        "  tasmtoken = (as_comma, as_separator, as_end);\n"
+        "implementation\n"
+        "end.\n"},
+       {"rax86int.pas",
+        "unit rax86int;\n"
+        "interface\n"
+        "type\n"
+        "  tasmtoken = (as_comma, as_lbracket, as_end);\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.impl, "::rt::tp2cc_Set<::p_raatt::t_tasmtoken>"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_Set<::p_rax86int::t_tasmtoken>"));
+}
+
 void test_runtime_enum_members_resolve_explicitly() {
   auto out = compile_snippet_with_registry(
       "unit compiler;\n"
@@ -9243,6 +9273,7 @@ int main() {
   RUN_TEST(test_unit_local_enum_array_bounds_win_over_unrelated_same_name_types);
   RUN_TEST(test_typed_set_literal_uses_surrounding_set_type);
   RUN_TEST(test_cross_unit_enum_set_literal_keeps_exported_enum_type);
+  RUN_TEST(test_duplicate_enum_type_names_keep_set_literal_member_unit);
   RUN_TEST(test_runtime_enum_members_resolve_explicitly);
   RUN_TEST(test_sysutils_executeprocess_accepts_execute_flags);
   RUN_TEST(test_ansicomparefilename_resolves_explicitly);
