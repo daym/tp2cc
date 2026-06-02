@@ -15,6 +15,13 @@ using namespace ast;
 
 namespace {
 
+const TypeSymbol* local_type_symbol(const ScopeStateView& scope,
+                                    std::string_view name) {
+  return scope.type_scope
+             ? scope.type_scope->find_lower(ascii_lower(name))
+             : nullptr;
+}
+
 bool is_nonmethod_procedural_type(const TypeExpr* t) {
   if (!t) return false;
   t = static_cast<const TypeExpr*>(t);
@@ -52,8 +59,16 @@ std::string EmitStorage::offsetof_base_type_cxx(
   // for those, use the emitted object expression's `decltype` so offset math
   // still names the actual generated C++ aggregate without parsing generated
   // C++ type text.
+  if (t && t->kind == Kind::TyName) {
+    const auto& n = static_cast<const TyName&>(*t);
+    if (local_type_symbol(scope_, n.name)) {
+      return types_.named_type_struct_cxx(n.name);
+    }
+  }
   if (registry_) {
-    if (std::string name = registry_->direct_type_name(t); !name.empty()) {
+    if (std::string name =
+            registry_->direct_type_name(t, scope_.current_unit_name);
+        !name.empty()) {
       return types_.named_type_struct_cxx(name);
     }
   }
@@ -155,9 +170,11 @@ EmitStorage::storage_typecast_target(const Ident& id, const Expr& source) {
     return StorageCastTarget{types_.type_name_text_to_cxx(id.name), named,
                              false};
   }
-  if (registry_ &&
-      (registry_->records.count(lower) ||
-       registry_->has_class(lower, scope_.current_unit_name))) {
+  if (const TypeSymbol* symbol =
+          registry_ ? registry_->lookup_type_symbol(lower,
+                                                    scope_.current_unit_name)
+                    : nullptr;
+      symbol && (symbol->record_info() || symbol->class_info())) {
     return StorageCastTarget{types_.type_name_text_to_cxx(id.name), nullptr,
                              false};
   }
@@ -306,7 +323,8 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
           member_cxx = prop->read.cxx_path;
         } else if (registry_->lookup_class_field(owner, m.name,
                                                  scope_.current_unit_name) ||
-                   registry_->lookup_record_field(owner, m.name)) {
+                   registry_->lookup_record_field(
+                       owner, m.name, scope_.current_unit_name)) {
           member_cxx = registry_->field_cxx_name(m.name);
         }
       }
@@ -584,11 +602,21 @@ std::optional<EmitUntypedStorageIndexView> EmitStorage::untyped_storage_index_vi
 }
 
 bool EmitStorage::type_is_packed_record(const TypeExpr* t) {
-  if (!registry_ || !t) return false;
+  if (!t) return false;
   if (t->kind == Kind::TyName) {
     const auto& n = static_cast<const TyName&>(*t);
-    auto it = registry_->records.find(ascii_lower(n.name));
-    if (it != registry_->records.end()) return it->second.is_packed;
+    if (const TypeSymbol* symbol = local_type_symbol(scope_, n.name);
+        symbol && symbol->record_info()) {
+      return symbol->record_info()->is_packed;
+    }
+    const TypeSymbol* symbol =
+        registry_ ? registry_->lookup_type_symbol(n.name,
+                                                  scope_.current_unit_name)
+                  : nullptr;
+    if (symbol && symbol->record_info()) {
+      const RecordInfo* record = symbol->record_info();
+      if (record) return record->is_packed;
+    }
   }
   t = analysis_.canonicalize_type(t);
   return t && t->kind == Kind::TyRecord &&
@@ -599,9 +627,12 @@ bool EmitStorage::type_is_direct_packed_aggregate(const TypeExpr* t) {
   if (!t) return false;
   if (t->kind == Kind::TyName) {
     const std::string low = ascii_lower(static_cast<const TyName&>(*t).name);
-    if (!low.empty() && registry_ &&
-        (registry_->records.count(low) ||
-         registry_->has_class(low, scope_.current_unit_name))) {
+    const TypeSymbol* symbol = local_type_symbol(scope_, low);
+    if (!symbol && registry_) {
+      symbol = registry_->lookup_type_symbol(low, scope_.current_unit_name);
+    }
+    if (!low.empty() && symbol &&
+        (symbol->record_info() || symbol->class_info())) {
       return true;
     }
     static const std::unordered_set<std::string> runtime_aggregate_types = {
@@ -740,7 +771,8 @@ EmitStorage::direct_packed_aggregate_field_use(const Expr& e) {
   if (!field_type || !type_is_direct_packed_aggregate(field_type)) {
     return std::nullopt;
   }
-  std::string record_name = registry_->direct_type_name(base_type);
+  std::string record_name =
+      registry_->direct_type_name(base_type, scope_.current_unit_name);
   if (record_name.empty()) record_name = "packed record";
   return EmitPackedAggregateFieldUse{record_name, m.name};
 }

@@ -84,7 +84,7 @@ struct Emitter : ResolveNameProvider,
   // to disambiguate it from a same-named symbol brought in by another
   // `uses` clause.
   std::string current_unit_name;
-  std::string default_arg_emission_unit_name;
+  std::string lookup_emission_unit_name;
 
   // Suppresses the "bare method reference -> append ()" rewrite. tp2cc_Set
   // while emitting (a) the CALLEE of a Call (else `foo(args)` would
@@ -136,20 +136,14 @@ struct Emitter : ResolveNameProvider,
   std::unordered_set<std::string> local_nested_forwards;
   std::vector<std::string> current_fn_param_names;
 
-  // Function-local enum types: name -> the TyEnum AST node. Pascal
-  // lets a `type T = (a, b, c)` and `const X : array[T] of ... = ...`
-  // live inside a proc's declaration section. These aren't in the
-  // unit-wide TypeRegistry (which only indexes interface/impl top-
-  // level decls), so we layer them on here while emitting the proc.
-  std::unordered_map<std::string, const ast::TyEnum*> local_enums;
+  // Pascal type lookup is lexical: the current declaration block shadows its
+  // parent, then lookup falls through to unit/use visibility in TypeRegistry.
+  TypeScopeFrame root_type_scope;
+  TypeScopeFrame* current_type_scope = &root_type_scope;
   // `const` parameters stay read-only storage. An `absolute` alias over one
   // must therefore bind a `const T&`, not a mutable `T&`, or C++ rejects the
   // alias and Pascal source that only reads through it stops compiling.
   std::unordered_set<std::string> local_const_params;
-  // Function-local type aliases: `type pi = ^integer;` style.
-  std::unordered_map<std::string, const ast::TypeExpr*>
-      local_type_aliases_scoped;
-
   // `with X do` bindings: for every `with target`, push the target's
   // expression text (already emitted) and its deduced type. Bare idents
   // inside the body that resolve as fields of one of the targets get
@@ -186,7 +180,7 @@ struct Emitter : ResolveNameProvider,
         unit_init_order(unit_init_order_in),
         scope_state_{current_class_name,
                      current_unit_name,
-                     default_arg_emission_unit_name,
+                     lookup_emission_unit_name,
                      lhs_fn_rewrite,
                      lhs_fn_rewrite_slot,
                      lhs_outer_result_rewrite,
@@ -199,9 +193,8 @@ struct Emitter : ResolveNameProvider,
                      local_untyped_params,
                      local_nested_fns,
                      local_nested_forwards,
-                     local_enums,
+                     current_type_scope,
                      local_const_params,
-                     local_type_aliases_scoped,
                      with_stack,
                      current_fn_name,
                      current_fn_param_names,
@@ -386,6 +379,7 @@ struct Emitter : ResolveNameProvider,
   std::string single_call_arg_cxx(const ast::Call& c);
   bool expr_is_const_untyped_storage_arg(const ast::Expr& e);
   bool visible_type_name_for_intrinsic(std::string_view type_name);
+  bool visible_class_or_record_type_name(std::string_view type_name);
   std::optional<std::string> unit_qualified_type_name(const ast::Expr& expr);
   tp2cc::ResolvedCall resolve_new_constructor_call(
       const ast::Expr& pointer_type_expr, const ast::Expr& ctor_callee,
@@ -715,7 +709,7 @@ std::string Emitter::char_concat_operand_cxx(const Expr& x,
 
 bool Emitter::type_is_boolean_value_type(const TypeExpr* t) {
   if (!t) return false;
-  t = registry->canonicalize(t);
+  t = registry->canonicalize(t, current_unit_name);
   if (!t || t->kind != Kind::TyName) return false;
   std::string nm = ascii_lower(static_cast<const TyName&>(*t).name);
   return nm == "boolean" || nm == "bytebool" || nm == "wordbool" ||
@@ -829,7 +823,7 @@ bool Emitter::visible_type_name_for_intrinsic(std::string_view type_name) {
   if (is_primitive_type(low)) return true;
   if (!runtime_named_type_cxx(low).empty()) return true;
   if (!builtin_reference_class_struct_cxx(low).empty()) return true;
-  if (local_type_aliases_scoped.count(low) || local_enums.count(low)) {
+  if (current_type_scope && current_type_scope->find_lower(low)) {
     return true;
   }
   if (ResolveResult rr = resolve_name(std::string(type_name));
@@ -837,11 +831,17 @@ bool Emitter::visible_type_name_for_intrinsic(std::string_view type_name) {
     return true;
   }
   if (registry) {
-    return registry->has_class(low, current_unit_name) ||
-           registry->records.count(low) || registry->enums.count(low) ||
-           registry->aliases.count(low);
+    return registry->lookup_type_symbol(low, current_unit_name) != nullptr;
   }
   return false;
+}
+
+bool Emitter::visible_class_or_record_type_name(std::string_view type_name) {
+  if (!registry) return false;
+  if (class_info_for_type_name(type_name)) return true;
+  const TypeSymbol* symbol =
+      registry->lookup_type_symbol(type_name, current_unit_name);
+  return symbol && (symbol->class_info() || symbol->record_info());
 }
 
 std::optional<std::string> Emitter::unit_qualified_type_name(const Expr& expr) {
@@ -1021,10 +1021,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         // appear in value position to mean the underlying class's metaclass.
         // Follow the alias chain to its concrete class and emit that metaclass.
         if (registry) {
-          auto ait = registry->aliases.find(ascii_lower(n.name));
-          if (ait != registry->aliases.end() && ait->second.target) {
+          const TypeSymbol* symbol =
+              registry->lookup_type_symbol(n.name, current_unit_name);
+          const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
+          if (alias && alias->target) {
             const TypeExpr* canon =
-                registry->canonicalize(ait->second.target.get());
+                registry->canonicalize(alias->target.get(), current_unit_name);
             if (canon && canon->kind == Kind::TyName) {
               const std::string& target =
                   static_cast<const TyName&>(*canon).name;
@@ -1345,8 +1347,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         // `TClass` must block it: in Pascal `tsym.typedef` is member access on
         // value `tsym` even when a visible type named `tsym` also exists.
         if (!analysis_.identifier_is_shadowed_value(base_name) &&
-            (registry->has_class(base_name, current_unit_name) ||
-             registry->records.count(base_name))) {
+            visible_class_or_record_type_name(base_name)) {
           if (!is_callee_context_) {
             std::vector<const Expr*> no_args;
             ResolvedCall ctor_resolved = resolve_call(m, no_args);
@@ -1468,7 +1469,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       std::string member_cxx = mangle(m.name);
       if (registry && !bcls.empty() &&
           (registry->lookup_class_field(bcls, m.name, current_unit_name) ||
-           registry->lookup_record_field(bcls, m.name))) {
+           registry->lookup_record_field(bcls, m.name, current_unit_name))) {
         member_cxx = registry->field_cxx_name(m.name);
       }
       std::string text = base_cxx + member_access_op(*m.base) + member_cxx;
@@ -1513,8 +1514,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if (m.base && m.base->kind == Kind::Ident) {
           const auto& id = static_cast<const Ident&>(*m.base);
           if (registry && !analysis_.identifier_is_shadowed_value(id.name) &&
-              (registry->has_class(id.name, current_unit_name) ||
-                           registry->records.count(id.name))) {
+              visible_class_or_record_type_name(id.name)) {
             const ProcDecl* selected = nullptr;
             if (const auto* methods =
                     registry->lookup_class_methods(id.name, m.name,
@@ -1592,8 +1592,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (target && target->kind == Kind::TyName) {
               const auto& tn = static_cast<const TyName&>(*target);
               std::string rec_lc = ascii_lower(tn.name);
-              if (registry->records.count(rec_lc)) {
-                if (const auto* fi = registry->lookup_record_field(rec_lc, m.name)) {
+              const TypeSymbol* symbol =
+                  registry->lookup_type_symbol(rec_lc, current_unit_name);
+              if (symbol && symbol->record_info()) {
+                if (const auto* fi =
+                        registry->lookup_record_field(
+                            symbol->name, m.name, current_unit_name)) {
                   std::string struct_cxx = named_type_struct_cxx(rec_lc);
                   std::string field_cxx = registry->field_cxx_name(m.name);
                   std::string field_type_cxx =
@@ -1639,7 +1643,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       is_callee_context_ = saved;
       if (!a.double_addr && registry) {
         const TypeExpr* ot = deduce_type(*a.operand);
-        if (ot) ot = registry->canonicalize(ot);
+        if (ot) ot = registry->canonicalize(ot, current_unit_name);
         if (ot && ot->kind == Kind::TyArray &&
             static_cast<const TyArray&>(*ot).array_kind == ArrayKind::Fixed) {
           // Keep raw `@arr` as an address proxy that can convert to both
@@ -1780,8 +1784,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // at least compiles. Users of this value compare it for
           // equality/inequality at runtime only.
           const auto& a = static_cast<const Ident&>(*c.args[0]);
-          if (registry->has_class(a.name, current_unit_name) ||
-              registry->records.count(a.name)) {
+          if (visible_class_or_record_type_name(a.name)) {
             return "((void*)nullptr)";
           }
         } else if (c.args.size() == 1 && is_primitive_type(n)) {
@@ -1978,9 +1981,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                    single_call_arg_cxx(c) + "))";
           }
           bool named_storage_view_type =
-              registry &&
-              (registry->records.count(n) ||
-               registry->has_class(n, current_unit_name));
+              registry && visible_class_or_record_type_name(n);
           bool aggregate_alias =
               cast_ty && (cast_ty->kind == Kind::TyArray ||
                           cast_ty->kind == Kind::TyRecord ||
@@ -2137,13 +2138,20 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           pointer_cast_ty = &pointer_type_name;
         } else {
           const TypeExpr* tgt = nullptr;
-          auto lit = local_type_aliases_scoped.find(id.name);
-          if (lit != local_type_aliases_scoped.end() && lit->second) {
-            tgt = canonicalize_type(lit->second);
+          if (const TypeSymbol* local_symbol =
+                  current_type_scope
+                      ? current_type_scope->find_lower(id.name)
+                      : nullptr;
+              local_symbol && local_symbol->alias_info() &&
+              local_symbol->alias_info()->target) {
+            tgt = canonicalize_type(local_symbol->alias_info()->target.get());
           } else if (registry) {
-            auto ait = registry->aliases.find(id.name);
-            if (ait != registry->aliases.end() && ait->second.target.get()) {
-              tgt = registry->canonicalize(ait->second.target.get());
+            const TypeSymbol* symbol =
+                registry->lookup_type_symbol(id.name, current_unit_name);
+            const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
+            if (alias && alias->target) {
+              tgt = registry->canonicalize(alias->target.get(),
+                                           current_unit_name);
             }
           }
           if (tgt && tgt->kind == Kind::TyPointer) {

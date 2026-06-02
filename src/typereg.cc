@@ -210,21 +210,74 @@ void add_enum_members(std::unordered_set<std::string>& members,
     for (const auto& em : te->members) members.insert(lc(em.name));
 }
 
-void register_enum_type(TypeRegistry& r, UnitInfo* ui, bool is_interface,
-                        const std::string& unit, const std::string& key,
-                        const std::string& cxx_name, const TyEnum& te) {
+EnumInfoReg make_enum_info(const std::string& unit, const std::string& key,
+                           const std::string& cxx_name, const TyEnum& te) {
   std::vector<std::string> members;
   for (const auto& m : te.members) members.push_back(lc(m.name));
-  auto& by_member = r.enum_members_by_unit[unit];
-  for (const auto& member : members) by_member[member] = &te;
-  EnumInfoReg info{.name = key,
-                   .defining_unit = unit,
-                   .type = &te,
-                   .cxx_name = cxx_name,
-                   .members = std::move(members)};
-  r.enum_type_info[&te] = info;
-  r.enums[key] = std::move(info);
-  add_unit_enum_members(ui, is_interface, te);
+  return EnumInfoReg{.name = key,
+                     .defining_unit = unit,
+                     .type = &te,
+                     .cxx_name = cxx_name,
+                     .members = std::move(members)};
+}
+
+void index_enum_info(TypeRegistry& r, UnitInfo* ui, bool is_interface,
+                     const EnumInfoReg& info) {
+  if (!info.type) return;
+  auto& by_member = r.enum_members_by_unit[info.defining_unit];
+  for (const auto& member : info.members) by_member[member] = info.type;
+  r.enum_type_info[info.type] = &info;
+  add_unit_enum_members(ui, is_interface, *info.type);
+}
+
+TypeSymbol* find_unit_type_symbol(UnitInfo& ui, const std::string& name) {
+  auto iit = ui.iface_types.find(name);
+  if (iit != ui.iface_types.end()) return iit->second;
+  auto mit = ui.impl_types.find(name);
+  return mit == ui.impl_types.end() ? nullptr : mit->second;
+}
+
+TypeSymbol* upsert_unit_type_symbol(TypeRegistry& r, UnitInfo* ui,
+                                    bool is_interface,
+                                    TypeSymbol new_symbol) {
+  const std::string low_name = new_symbol.name;
+  TypeSymbol* stored = ui ? find_unit_type_symbol(*ui, low_name) : nullptr;
+  if (!stored) {
+    r.type_symbols.push_back(std::move(new_symbol));
+    stored = &r.type_symbols.back();
+  } else {
+    const ClassInfo* next_class = new_symbol.class_info();
+    const ClassInfo* current_class = stored->class_info();
+    const bool keep_existing_full_class =
+        next_class && current_class && next_class->is_forward &&
+        !current_class->is_forward;
+    if (!keep_existing_full_class) {
+      *stored = std::move(new_symbol);
+    }
+  }
+  if (ui) {
+    if (is_interface || ui->iface_types.count(low_name)) {
+      ui->iface_types[low_name] = stored;
+    } else {
+      ui->impl_types[low_name] = stored;
+    }
+  }
+  return stored;
+}
+
+TypeSymbolKind type_symbol_kind_for_decl(const TypeExpr& type) {
+  switch (type.kind) {
+    case Kind::TyObject:
+      return TypeSymbolKind::Class;
+    case Kind::TyRecord:
+      return TypeSymbolKind::Record;
+    case Kind::TyInterface:
+      return TypeSymbolKind::Interface;
+    case Kind::TyEnum:
+      return TypeSymbolKind::Enum;
+    default:
+      return TypeSymbolKind::Alias;
+  }
 }
 
 void register_enums_in_type(TypeRegistry& r, UnitInfo* ui, bool is_interface,
@@ -243,7 +296,9 @@ void register_enums_in_type(TypeRegistry& r, UnitInfo* ui, bool is_interface,
         unit + "$" + owner + "$enum" + std::to_string(anon_index);
     const std::string cxx_name =
         type_mangle(owner) + "_enum" + std::to_string(anon_index);
-    register_enum_type(r, ui, is_interface, unit, key, cxx_name, *te);
+    r.anonymous_enum_infos.push_back(
+        make_enum_info(unit, key, cxx_name, *te));
+    index_enum_info(r, ui, is_interface, r.anonymous_enum_infos.back());
     ++anon_index;
   }
 }
@@ -497,27 +552,20 @@ void register_runtime_alias(TypeRegistry& r, UnitInfo& rt_exports,
                             std::string name,
                             std::shared_ptr<const TypeExpr> target) {
   const std::string low = lc(std::move(name));
-  rt_exports.iface_types.insert(low);
-  if (target && target->kind == Kind::TyEnum) {
-    const auto* enum_type = static_cast<const TyEnum*>(target.get());
-    std::vector<std::string> members;
-    auto& by_member = r.enum_members_by_unit["__rt__"];
-    for (const auto& m : enum_type->members) {
-      std::string lm = lc(m.name);
-      by_member[lm] = enum_type;
-      members.push_back(lm);
-      rt_exports.iface_enum_members.insert(lm);
-    }
-    EnumInfoReg info{.name = low,
-                     .defining_unit = "__rt__",
-                     .type = enum_type,
-                     .cxx_name = type_mangle(low),
-                     .members = std::move(members)};
-    r.enum_type_info[enum_type] = info;
-    r.enums[low] = std::move(info);
+  if (!target) return;
+  TypeSymbol* symbol = upsert_unit_type_symbol(
+      r, &rt_exports, /*is_interface=*/true,
+      make_type_symbol_for_type("__rt__", low, std::move(target)));
+  if (const EnumInfoReg* info = symbol->enum_info()) {
+    index_enum_info(r, &rt_exports, /*is_interface=*/true, *info);
   }
-  r.aliases[low] =
-      AliasInfo{.defining_unit = "__rt__", .target = std::move(target)};
+  if (symbol->type) {
+    register_enums_in_type(
+        r, &rt_exports, /*is_interface=*/true, "__rt__", *symbol->type, low,
+        symbol->type->kind == Kind::TyEnum
+            ? static_cast<const TyEnum*>(symbol->type)
+            : nullptr);
+  }
 }
 
 void register_runtime_string_compare_operator(UnitInfo& rt_exports,
@@ -607,14 +655,11 @@ RuntimeMethodLookupStep lookup_runtime_method_step(
 
 ClassInfo* lookup_class_exact_mut(TypeRegistry& r, std::string_view unit,
                                   std::string_view name) {
-  const std::string target_unit = lc(std::string(unit));
-  const std::string target_name = lc(std::string(name));
-  auto it = r.classes.find(target_name);
-  if (it == r.classes.end()) return nullptr;
-  for (auto& ci : it->second) {
-    if (ci.defining_unit == target_unit) return &ci;
+  TypeSymbol* symbol = r.lookup_type_symbol_exact_mut(unit, name);
+  if (!symbol || !symbol->class_info()) {
+    return nullptr;
   }
-  return nullptr;
+  return symbol->mutable_class_info();
 }
 
 std::vector<std::string> lower_path(const PropertyDecl::Accessor& accessor) {
@@ -636,7 +681,8 @@ std::optional<std::string> resolve_field_accessor_cxx(
   std::string out = r.field_cxx_name(path.front());
   const TypeExpr* current_type = field->type.get();
   for (size_t i = 1; i < path.size(); ++i) {
-    const std::string nested_owner = r.direct_type_name(current_type);
+    const std::string nested_owner =
+        r.direct_type_name(current_type, owner.defining_unit);
     if (nested_owner.empty()) return std::nullopt;
 
     const FieldInfo* nested = nullptr;
@@ -647,7 +693,8 @@ std::optional<std::string> resolve_field_accessor_cxx(
       nested =
           r.lookup_class_field(nested_owner, path[i], owner.defining_unit);
     } else {
-      nested = r.lookup_record_field(nested_owner, path[i]);
+      nested = r.lookup_record_field(nested_owner, path[i],
+                                     owner.defining_unit);
     }
     if (!nested) return std::nullopt;
 
@@ -722,37 +769,11 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
         const auto& td = static_cast<const TypeDecl&>(*d);
         if (!td.type) continue;
         std::string nm = lc(td.name);
-        if (ui) (is_interface ? ui->iface_types : ui->impl_types).insert(nm);
-        if (td.type->kind == Kind::TyObject) {
-          const auto& to = static_cast<const TyObject&>(*td.type);
-          ClassInfo ci = class_info_for(unit, nm, to);
-          auto& bucket = r.classes[nm];
-          auto same_unit = std::find_if(
-              bucket.begin(), bucket.end(), [&](const ClassInfo& existing) {
-                return existing.defining_unit == unit;
-              });
-          if (same_unit == bucket.end()) {
-            bucket.push_back(std::move(ci));
-          } else if (!ci.is_forward || same_unit->is_forward) {
-            // A same-unit forward class declaration is only a placeholder for
-            // the later body. Keep one registry entry per Pascal class identity
-            // so member lookups do not hit an empty forward shell.
-            *same_unit = std::move(ci);
-          }
-        } else if (td.type->kind == Kind::TyInterface) {
-          const auto& ti = static_cast<const TyInterface&>(*td.type);
-          r.interfaces[nm] = interface_info_for(unit, nm, ti);
-        } else if (td.type->kind == Kind::TyRecord) {
-          const auto& tr = static_cast<const TyRecord&>(*td.type);
-          r.records[nm] = record_info_for(unit, nm, tr);
-        } else if (td.type->kind == Kind::TyEnum) {
-          const auto& te = static_cast<const TyEnum&>(*td.type);
-          register_enum_type(r, ui, is_interface, unit, nm, type_mangle(nm),
-                             te);
-        } else {
-          // Alias (possibly pointer / array / primitive).
-          r.aliases[nm] = AliasInfo{.defining_unit = unit,
-                                    .target = td.type};
+        TypeSymbol* symbol = upsert_unit_type_symbol(
+            r, ui, is_interface,
+            make_type_symbol_for_type(unit, nm, td.type));
+        if (symbol->enum_info()) {
+          index_enum_info(r, ui, is_interface, *symbol->enum_info());
         }
         register_enums_in_type(
             r, ui, is_interface, unit, *td.type, nm,
@@ -817,8 +838,8 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
 
 void report_type_value_collisions(const UnitInfo& ui) {
   std::unordered_set<std::string> type_names;
-  type_names.insert(ui.iface_types.begin(), ui.iface_types.end());
-  type_names.insert(ui.impl_types.begin(), ui.impl_types.end());
+  insert_map_keys(type_names, ui.iface_types);
+  insert_map_keys(type_names, ui.impl_types);
 
   std::unordered_set<std::string> value_names;
   insert_map_keys(value_names, ui.iface_vars);
@@ -846,6 +867,79 @@ bool PropertyAccessorInfo::empty() const {
 std::string PropertyAccessorInfo::display_name() const {
   if (kind == PropertyAccessorKind::Method) return method_name;
   return join_path(path);
+}
+
+TypeSymbol make_type_symbol_for_type(
+    std::string_view unit, std::string_view name,
+    std::shared_ptr<const TypeExpr> type) {
+  const std::string low_name = lc(std::string(name));
+  const std::string low_unit = lc(std::string(unit));
+  if (!type) {
+    throw std::logic_error("make_type_symbol_for_type called without a type");
+  }
+  TypeSymbolPayload payload =
+      AliasInfo{.defining_unit = low_unit, .target = type};
+  switch (type_symbol_kind_for_decl(*type)) {
+    case TypeSymbolKind::Class:
+      payload = class_info_for(low_unit, low_name,
+                               static_cast<const TyObject&>(*type));
+      break;
+    case TypeSymbolKind::Record:
+      payload = record_info_for(low_unit, low_name,
+                                static_cast<const TyRecord&>(*type));
+      break;
+    case TypeSymbolKind::Interface:
+      payload = interface_info_for(low_unit, low_name,
+                                   static_cast<const TyInterface&>(*type));
+      break;
+    case TypeSymbolKind::Enum:
+      payload = make_enum_info(low_unit, low_name, type_mangle(low_name),
+                               static_cast<const TyEnum&>(*type));
+      break;
+    case TypeSymbolKind::Alias:
+      break;
+  }
+  return TypeSymbol(low_name, low_unit, std::move(type), std::move(payload));
+}
+
+TypeSymbol make_enum_type_symbol(std::string_view unit, std::string_view name,
+                                 std::string_view cxx_name,
+                                 const TyEnum& type) {
+  const std::string low_name = lc(std::string(name));
+  const std::string low_unit = lc(std::string(unit));
+  return TypeSymbol(low_name, low_unit, &type,
+                    make_enum_info(low_unit, low_name,
+                                   std::string(cxx_name), type));
+}
+
+void register_type_symbols_for_owner(
+    std::unordered_map<std::string, TypeSymbol>& out,
+    std::shared_ptr<const TypeExpr> type, std::string_view owner_name,
+    const TyEnum* named_top_level) {
+  if (!type) return;
+  std::vector<const TyEnum*> enums = collect_enum_types(*type);
+  std::unordered_set<const TyEnum*> seen;
+  size_t anon_index = 0;
+  const std::string owner = lc(std::string(owner_name));
+  for (const TyEnum* te : enums) {
+    if (!te || !seen.insert(te).second) continue;
+    if (named_top_level && te == named_top_level) {
+      out.insert_or_assign(
+          owner, make_enum_type_symbol({}, owner, type_mangle(owner), *te));
+      continue;
+    }
+    const bool whole_type_is_enum = te == type.get() && !named_top_level;
+    std::string key = whole_type_is_enum
+                          ? owner
+                          : owner + "_enum" + std::to_string(anon_index);
+    std::string cxx_name = whole_type_is_enum
+                               ? type_mangle(owner)
+                               : type_mangle(owner) + "_enum" +
+                                     std::to_string(anon_index);
+    out.insert_or_assign(
+        key, make_enum_type_symbol({}, key, cxx_name, *te));
+    ++anon_index;
+  }
 }
 
 void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
@@ -1304,55 +1398,136 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   }
 }
 
-const ClassInfo* TypeRegistry::lookup_class_exact(std::string_view unit,
-                                                  std::string_view name) const {
-  std::string target_unit = lc(std::string(unit));
-  std::string target_name = lc(std::string(name));
-  auto it = classes.find(target_name);
-  if (it == classes.end()) return nullptr;
-  for (const auto& ci : it->second) {
-    if (ci.defining_unit == target_unit) return &ci;
-  }
-  return nullptr;
+const TypeSymbol* TypeRegistry::lookup_type_symbol_exact(
+    std::string_view unit, std::string_view name) const {
+  const std::string target_unit = lc(std::string(unit));
+  const std::string target_name = lc(std::string(name));
+  auto uit = units.find(target_unit);
+  if (uit == units.end()) return nullptr;
+  return uit->second.find_type(target_name);
 }
 
-const ClassInfo* TypeRegistry::lookup_class(std::string_view name,
-                                            std::string_view current_unit) const {
-  std::string low = lc(std::string(name));
+TypeSymbol* TypeRegistry::lookup_type_symbol_exact_mut(
+    std::string_view unit, std::string_view name) {
+  const std::string target_unit = lc(std::string(unit));
+  const std::string target_name = lc(std::string(name));
+  auto uit = units.find(target_unit);
+  if (uit == units.end()) return nullptr;
+  if (auto iit = uit->second.iface_types.find(target_name);
+      iit != uit->second.iface_types.end()) {
+    return iit->second;
+  }
+  auto mit = uit->second.impl_types.find(target_name);
+  return mit == uit->second.impl_types.end() ? nullptr : mit->second;
+}
+
+const TypeSymbol* TypeRegistry::lookup_type_symbol(
+    std::string_view name, std::string_view current_unit) const {
+  const std::string low = lc(std::string(name));
   if (auto dot = low.find('.'); dot != std::string::npos) {
-    return lookup_class_exact(low.substr(0, dot), low.substr(dot + 1));
+    return lookup_type_symbol_exact(low.substr(0, dot), low.substr(dot + 1));
   }
 
-  std::string cur_unit = lc(std::string(current_unit));
+  const std::string cur_unit = lc(std::string(current_unit));
   if (!cur_unit.empty()) {
-    if (const ClassInfo* own = lookup_class_exact(cur_unit, low)) return own;
+    if (const TypeSymbol* own = lookup_type_symbol_exact(cur_unit, low)) {
+      return own;
+    }
+
+    const TypeSymbol* runtime = nullptr;
     auto uit = units.find(cur_unit);
     if (uit != units.end()) {
       for (auto use = uit->second.uses.rbegin(); use != uit->second.uses.rend();
            ++use) {
-        if (*use == "__rt__") continue;
         auto used = units.find(*use);
         if (used == units.end()) continue;
-        if (used->second.has_export_type(low)) {
-          if (const ClassInfo* exported = lookup_class_exact(*use, low)) {
-            return exported;
-          }
+        const TypeSymbol* exported = used->second.find_export_type(low);
+        if (!exported) continue;
+        if (*use == "__rt__") {
+          runtime = exported;
+          continue;
         }
+        return exported;
       }
     }
+    if (runtime) return runtime;
   }
 
-  auto it = classes.find(low);
-  if (it == classes.end() || it->second.empty()) return nullptr;
-  if (it->second.size() == 1) return &it->second.front();
-  return nullptr;
+  const TypeSymbol* only_source = nullptr;
+  const TypeSymbol* only_runtime = nullptr;
+  for (const auto& [unit_name, unit] : units) {
+    const TypeSymbol* symbol = unit.find_type(low);
+    if (!symbol) continue;
+    if (unit_name == "__rt__") {
+      only_runtime = symbol;
+      continue;
+    }
+    if (only_source) return nullptr;
+    only_source = symbol;
+  }
+  if (only_source) return only_source;
+  return only_runtime;
+}
+
+const ClassInfo* TypeRegistry::lookup_class_exact(std::string_view unit,
+                                                  std::string_view name) const {
+  const TypeSymbol* symbol = lookup_type_symbol_exact(unit, name);
+  if (!symbol || !symbol->class_info()) {
+    return nullptr;
+  }
+  return symbol->class_info();
+}
+
+const ClassInfo* TypeRegistry::lookup_class(std::string_view name,
+                                            std::string_view current_unit) const {
+  const TypeSymbol* symbol = lookup_type_symbol(name, current_unit);
+  if (!symbol || !symbol->class_info()) {
+    return nullptr;
+  }
+  return symbol->class_info();
+}
+
+const InterfaceInfo* TypeRegistry::lookup_interface_exact(
+    std::string_view unit, std::string_view name) const {
+  const TypeSymbol* symbol = lookup_type_symbol_exact(unit, name);
+  if (!symbol || !symbol->interface_info()) {
+    return nullptr;
+  }
+  return symbol->interface_info();
+}
+
+const InterfaceInfo* TypeRegistry::lookup_interface(
+    std::string_view name, std::string_view current_unit) const {
+  const TypeSymbol* symbol = lookup_type_symbol(name, current_unit);
+  if (!symbol || !symbol->interface_info()) {
+    return nullptr;
+  }
+  return symbol->interface_info();
+}
+
+const RecordInfo* TypeRegistry::lookup_record_exact(
+    std::string_view unit, std::string_view name) const {
+  const TypeSymbol* symbol = lookup_type_symbol_exact(unit, name);
+  if (!symbol || !symbol->record_info()) {
+    return nullptr;
+  }
+  return symbol->record_info();
+}
+
+const RecordInfo* TypeRegistry::lookup_record(
+    std::string_view name, std::string_view current_unit) const {
+  const TypeSymbol* symbol = lookup_type_symbol(name, current_unit);
+  if (!symbol || !symbol->record_info()) {
+    return nullptr;
+  }
+  return symbol->record_info();
 }
 
 const EnumInfoReg* TypeRegistry::enum_info_for_type(
     const TyEnum* type) const {
   if (!type) return nullptr;
   if (auto it = enum_type_info.find(type); it != enum_type_info.end()) {
-    return &it->second;
+    return it->second;
   }
   return nullptr;
 }
@@ -1365,7 +1540,8 @@ const TyEnum* TypeRegistry::lookup_enum_member_in_unit(
   return mit == uit->second.end() ? nullptr : mit->second;
 }
 
-const TypeExpr* TypeRegistry::canonicalize(const TypeExpr* te) const {
+const TypeExpr* TypeRegistry::canonicalize(
+    const TypeExpr* te, std::string_view current_unit) const {
   int hops = 0;
   while (te && te->kind == Kind::TyName) {
     if (hops++ >= kMaxAliasChainHops) {
@@ -1374,29 +1550,20 @@ const TypeExpr* TypeRegistry::canonicalize(const TypeExpr* te) const {
           "kMaxAliasChainHops; cycle or registry corruption");
     }
     const auto& n = static_cast<const TyName&>(*te);
-    std::string low = lc(n.name);
-    auto it = aliases.find(low);
-    if (it == aliases.end()) {
-      if (auto dot = low.find('.'); dot != std::string::npos) {
-        // Default-argument lowering can qualify a formal type as `unit.alias`
-        // because the C++ default value is emitted at a caller in another
-        // unit. Alias lookup is keyed by Pascal type name plus defining unit,
-        // so strip the qualifier only after verifying it names that unit.
-        auto tail_it = aliases.find(low.substr(dot + 1));
-        if (tail_it != aliases.end() &&
-            tail_it->second.defining_unit == low.substr(0, dot)) {
-          it = tail_it;
-        }
-      }
+    const TypeSymbol* symbol = lookup_type_symbol(n.name, current_unit);
+    const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
+    if (!alias || !alias->target) {
+      return te;
     }
-    if (it == aliases.end()) return te;  // no registered alias target
-    te = it->second.target.get();
+    te = alias->target.get();
+    current_unit = symbol->defining_unit;
   }
   return te;
 }
 
-std::string TypeRegistry::pointer_target_type_name(const TypeExpr* te) const {
-  te = canonicalize(te);
+std::string TypeRegistry::pointer_target_type_name(
+    const TypeExpr* te, std::string_view current_unit) const {
+  te = canonicalize(te, current_unit);
   if (!te || te->kind != Kind::TyPointer) return {};
   const auto& p = static_cast<const TyPointer&>(*te);
   const TypeExpr* tgt = p.target.get();
@@ -1409,9 +1576,16 @@ std::string TypeRegistry::pointer_target_type_name(const TypeExpr* te) const {
   return {};
 }
 
-std::string TypeRegistry::direct_type_name(const TypeExpr* te) const {
+std::string TypeRegistry::direct_type_name(
+    const TypeExpr* te, std::string_view current_unit) const {
   if (!te) return {};
-  if (te->kind == Kind::TyName) return lc(static_cast<const TyName&>(*te).name);
+  if (te->kind == Kind::TyName) {
+    const auto& n = static_cast<const TyName&>(*te);
+    if (const TypeSymbol* symbol = lookup_type_symbol(n.name, current_unit)) {
+      return symbol->name;
+    }
+    return lc(n.name);
+  }
   return {};
 }
 
@@ -1455,22 +1629,20 @@ bool TypeRegistry::class_has_enum_member(
 const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
     const std::string& class_name_in, const std::string& member,
     std::string_view current_unit) const {
-  // Walk the class chain looking for `member`, consulting translated
-  // classes first; when the chain bottoms out into a name not in `classes`
-  // (e.g. `Exception`, the parent of a translated `EFoo`), continue into
-  // `rt_classes` so methods inherited from rt-side classes (like
-  // `Exception.Create(string)`) still resolve. The lookup walks both
-  // stores; code-gen iterates only `classes`.
+  // Walk the class chain looking for `member`, consulting translated type
+  // symbols first; when the chain bottoms out into a runtime parent such as
+  // `Exception`, continue into `rt_classes` so inherited runtime methods still
+  // resolve.
   const ClassInfo* ci = lookup_class(class_name_in, current_unit);
   std::string class_name = lc(class_name_in);
   if (auto dot = class_name.find('.'); dot != std::string::npos) {
     class_name = class_name.substr(dot + 1);
   }
   std::string key = lc(member);
-  auto iit = interfaces.find(class_name);
-  if (iit != interfaces.end()) {
-    auto mit = iit->second.methods.find(key);
-    return mit == iit->second.methods.end() ? nullptr : &mit->second;
+  if (const InterfaceInfo* interface =
+          lookup_interface(class_name_in, current_unit)) {
+    auto mit = interface->methods.find(key);
+    return mit == interface->methods.end() ? nullptr : &mit->second;
   }
   std::unordered_set<std::string> seen;
   std::string rt_name;
@@ -1536,12 +1708,12 @@ const PropertyInfo* TypeRegistry::lookup_default_property(
 }
 
 const FieldInfo* TypeRegistry::lookup_record_field(
-    const std::string& record_name, const std::string& member) const {
-  auto it = records.find(lc(record_name));
-  if (it == records.end()) return nullptr;
-  auto fit = it->second.fields.find(lc(member));
-  if (fit == it->second.fields.end()) return nullptr;
-  return &fit->second;
+    const std::string& record_name, const std::string& member,
+    std::string_view current_unit) const {
+  const RecordInfo* record = lookup_record(record_name, current_unit);
+  if (!record) return nullptr;
+  auto fit = record->fields.find(lc(member));
+  return fit == record->fields.end() ? nullptr : &fit->second;
 }
 
 }  // namespace tp2cc

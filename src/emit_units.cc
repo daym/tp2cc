@@ -236,23 +236,16 @@ EmitUnits::EmitUnits(ScopeStateView& scope, int& block_depth,
       ops_(ops) {}
 
 void EmitUnits::seed_unit_type_scope(const std::vector<DeclPtr>& decls) {
+  if (!scope_.type_scope) return;
   for (const auto& d : decls) {
     if (d->kind != Kind::TypeDecl) continue;
     const auto& td = static_cast<const TypeDecl&>(*d);
     if (!td.type) continue;
-    if (td.type->kind == Kind::TyEnum) {
-      register_enum_types_for_owner(
-          scope_.local_enums, td.type.get(), td.name,
-          static_cast<const TyEnum*>(td.type.get()));
-    } else if (td.type->kind != Kind::TyRecord &&
-               td.type->kind != Kind::TyObject &&
-               td.type->kind != Kind::TyInterface) {
-      scope_.local_type_aliases_scoped[td.name] = td.type.get();
-      register_enum_types_for_owner(scope_.local_enums, td.type.get(),
-                                    td.name);
-    } else {
-      register_enum_types_for_owner(scope_.local_enums, td.type.get(),
-                                    td.name);
+    scope_.type_scope->insert_or_assign(
+        make_type_symbol_for_type(scope_.current_unit_name, td.name, td.type));
+    if (td.type->kind != Kind::TyEnum) {
+      register_type_symbols_for_owner(scope_.type_scope->symbols, td.type,
+                                      td.name);
     }
   }
 }
@@ -311,14 +304,14 @@ void EmitUnits::emit_unit(const UnitNode& u) {
   const std::string ns = mangle(u.name);
   const std::string hguard = u.name;
   scope_.current_unit_name = ascii_lower(u.name);
-  auto saved_local_enums = scope_.local_enums;
-  auto saved_local_aliases = scope_.local_type_aliases_scoped;
+  TypeScopeFrame unit_type_scope(scope_.type_scope);
+  TypeScopeFrame* saved_type_scope = scope_.type_scope;
+  scope_.type_scope = &unit_type_scope;
   auto saved_local_consts = scope_.local_consts;
 
   if (scope_.current_unit_name == "tpexcept") {
     emit_tpexcept_unit(u);
-    scope_.local_enums = std::move(saved_local_enums);
-    scope_.local_type_aliases_scoped = std::move(saved_local_aliases);
+    scope_.type_scope = saved_type_scope;
     scope_.local_consts = std::move(saved_local_consts);
     return;
   }
@@ -433,8 +426,7 @@ void EmitUnits::emit_unit(const UnitNode& u) {
     ops_.emitln("}");
   }
 
-  scope_.local_enums = std::move(saved_local_enums);
-  scope_.local_type_aliases_scoped = std::move(saved_local_aliases);
+  scope_.type_scope = saved_type_scope;
   scope_.local_consts = std::move(saved_local_consts);
 }
 

@@ -493,8 +493,12 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
     if (id.name == "self") {
       cls = scope_.current_class_name;
     } else if (!analysis_.identifier_is_shadowed_value(id.name) &&
-               (registry_->has_class(id.name, scope_.current_unit_name) ||
-                registry_->records.count(id.name))) {
+               [&] {
+                 const TypeSymbol* symbol = registry_->lookup_type_symbol(
+                     id.name, scope_.current_unit_name);
+                 return symbol &&
+                        (symbol->class_info() || symbol->record_info());
+               }()) {
       // `Klass.method` where Klass is a type name (not a value) - same as
       // the metaclass case above; not a method-value binding.
       return std::nullopt;
@@ -708,8 +712,11 @@ std::string EmitResolution::receiver_class_for_member_call(const Expr& callee) {
     const auto& id = static_cast<const Ident&>(*member.base);
     if (id.name == "self") return scope_.current_class_name;
     if (!analysis_.identifier_is_shadowed_value(id.name) &&
-        (registry_->has_class(id.name, scope_.current_unit_name) ||
-         registry_->records.count(id.name))) {
+        [&] {
+          const TypeSymbol* symbol =
+              registry_->lookup_type_symbol(id.name, scope_.current_unit_name);
+          return symbol && (symbol->class_info() || symbol->record_info());
+        }()) {
       return id.name;
     }
     return analysis_.deduce_class_alias(*member.base);
@@ -875,10 +882,11 @@ bool EmitResolution::operand_type_allows_operator_lookup(const TypeExpr* t) {
   if (t->kind == Kind::TyName) {
     const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
     if (primitive_info(name)) return false;
-    if (registry_->enums.count(name)) return false;
-    return registry_->records.count(name) ||
-           registry_->has_class(name, scope_.current_unit_name) ||
-           registry_->aliases.count(name);
+    const TypeSymbol* symbol =
+        registry_->lookup_type_symbol(name, scope_.current_unit_name);
+    if (!symbol || symbol->enum_info()) return false;
+    return symbol->record_info() || symbol->class_info() ||
+           symbol->interface_info() || symbol->alias_info();
   }
   return t->kind == Kind::TyRecord || t->kind == Kind::TyObject ||
          t->kind == Kind::TyInterface || t->kind == Kind::TyPointer ||

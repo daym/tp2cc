@@ -283,11 +283,17 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   if (scope_.local_consts.count(name)) {
     return resolved_value(ResolvedKind::Local, mangle(name));
   }
-  for (const auto& [_, en] : scope_.local_enums) {
-    if (!en) continue;
-    for (const auto& member : en->members) {
-      if (ascii_lower(member.name) == ascii_lower(name)) {
-        return resolved_value(ResolvedKind::EnumMember, mangle(name));
+  const std::string low_name = ascii_lower(name);
+  for (const TypeScopeFrame* frame = scope_.type_scope; frame;
+       frame = frame->parent) {
+    for (const auto& [symbol_name, symbol] : frame->symbols) {
+      (void)symbol_name;
+      const EnumInfoReg* info = symbol.enum_info();
+      if (!info || !info->type) continue;
+      for (const auto& member : info->type->members) {
+        if (ascii_lower(member.name) == low_name) {
+          return resolved_value(ResolvedKind::EnumMember, mangle(name));
+        }
       }
     }
   }
@@ -326,15 +332,14 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     const UnitInfo* ui = (uit != registry_->units.end()) ? &uit->second
                                                           : nullptr;
     const std::string own_prefix =
-        (!scope_.default_arg_emission_unit_name.empty() &&
-         scope_.default_arg_emission_unit_name != scope_.current_unit_name)
+        (!scope_.lookup_emission_unit_name.empty() &&
+         scope_.lookup_emission_unit_name != scope_.current_unit_name)
             ? unit_namespace_prefix(scope_.current_unit_name)
             : std::string{};
     // Current unit's own symbols shadow everything from `uses`. Normal
-    // emission leaves them bare. Default-argument lowering is different:
-    // lookup is intentionally in the declaration unit, but the C++ argument is
-    // inserted at a caller in another unit, so declaration-unit symbols need
-    // an explicit namespace prefix there.
+    // emission leaves them bare. When lookup is redirected to a declaration
+    // unit but the generated C++ is inserted in another unit, those
+    // declaration-unit symbols need an explicit namespace prefix there.
     if (ui) {
       if (auto result = resolve_proc_overloads(
               ui->find_procs(name), ResolvedKind::UnitProc,

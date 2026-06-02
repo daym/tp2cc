@@ -18,6 +18,32 @@ namespace {
 constexpr const char* kPascalResultSlotName = "p_result";
 constexpr const char* kCtorStatusSlotName = "tp2cc_ctor_ok";
 
+void upsert_current_type_symbol(TypeScopeFrame& frame, TypeSymbol symbol) {
+  TypeSymbol* existing = frame.find_here_lower_mut(symbol.name);
+  if (!existing) {
+    frame.insert_or_assign(std::move(symbol));
+    return;
+  }
+
+  if (const ClassInfo* next_class = symbol.class_info()) {
+    if (ClassInfo* current_class = existing->mutable_class_info();
+        current_class && next_class->is_forward && !current_class->is_forward) {
+      return;
+    }
+  }
+  *existing = std::move(symbol);
+}
+
+void register_type_decl_in_current_scope(TypeScopeFrame& frame,
+                                         const TypeDecl& td) {
+  if (!td.type) return;
+  upsert_current_type_symbol(
+      frame, make_type_symbol_for_type({}, td.name, td.type));
+  if (td.type->kind != Kind::TyEnum) {
+    register_type_symbols_for_owner(frame.symbols, td.type, td.name);
+  }
+}
+
 }  // namespace
 
 EmitProcs::EmitProcs(ScopeStateView& scope, int& block_depth,
@@ -51,9 +77,8 @@ EmitProcs::SavedProcState EmitProcs::save_proc_state() const {
       .local_nested_fns = scope_.local_nested_fns,
       .local_nested_forwards = scope_.local_nested_forwards,
       .local_untyped_params = scope_.local_untyped_params,
-      .local_enums = scope_.local_enums,
+      .type_scope = scope_.type_scope,
       .local_const_params = scope_.local_const_params,
-      .local_type_aliases_scoped = scope_.local_type_aliases_scoped,
       .block_depth = block_depth_};
 }
 
@@ -76,10 +101,8 @@ void EmitProcs::restore_proc_state(SavedProcState&& saved) {
   scope_.local_nested_fns = std::move(saved.local_nested_fns);
   scope_.local_nested_forwards = std::move(saved.local_nested_forwards);
   scope_.local_untyped_params = std::move(saved.local_untyped_params);
-  scope_.local_enums = std::move(saved.local_enums);
+  scope_.type_scope = saved.type_scope;
   scope_.local_const_params = std::move(saved.local_const_params);
-  scope_.local_type_aliases_scoped =
-      std::move(saved.local_type_aliases_scoped);
   block_depth_ = saved.block_depth;
 }
 
@@ -173,8 +196,8 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
         if (vd.type) scope_.local_types[nm] = vd.type.get();
       }
       if (vd.type && !vd.names.empty()) {
-        register_enum_types_for_owner(scope_.local_enums, vd.type.get(),
-                                      vd.names.front());
+        register_type_symbols_for_owner(scope_.type_scope->symbols, vd.type,
+                                        vd.names.front());
       }
     } else if (l->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
@@ -183,21 +206,11 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
       if (const TypeExpr* ct = analysis_.deduce_const_decl_type(cd)) {
         scope_.local_types[cd.name] = ct;
       }
-      register_enum_types_for_owner(scope_.local_enums, cd.type.get(),
-                                    cd.name);
+      register_type_symbols_for_owner(scope_.type_scope->symbols, cd.type,
+                                      cd.name);
     } else if (l->kind == Kind::TypeDecl) {
       const auto& td = static_cast<const TypeDecl&>(*l);
-      if (td.type) {
-        if (td.type->kind == Kind::TyEnum) {
-          register_enum_types_for_owner(
-              scope_.local_enums, td.type.get(), td.name,
-              static_cast<const TyEnum*>(td.type.get()));
-        } else {
-          scope_.local_type_aliases_scoped[td.name] = td.type.get();
-          register_enum_types_for_owner(scope_.local_enums, td.type.get(),
-                                        td.name);
-        }
-      }
+      register_type_decl_in_current_scope(*scope_.type_scope, td);
     } else if (l->kind == Kind::ProcDecl) {
       const auto& npd = static_cast<const ProcDecl&>(*l);
       if (!insert_proc_local_name(npd.loc, npd.name)) continue;
@@ -242,6 +255,8 @@ void EmitProcs::emit_proc_body(const ProcDecl& pd) {
   }
 
   SavedProcState saved = save_proc_state();
+  TypeScopeFrame proc_type_scope(scope_.type_scope);
+  scope_.type_scope = &proc_type_scope;
   setup_proc_frame(pd, /*nested_lambda=*/false);
   seed_proc_scope(pd);
 
@@ -292,6 +307,8 @@ void EmitProcs::emit_nested_proc_lambda(const ProcDecl& pd) {
   emit_ops_.indent();
 
   SavedProcState saved = save_proc_state();
+  TypeScopeFrame proc_type_scope(scope_.type_scope);
+  scope_.type_scope = &proc_type_scope;
   setup_proc_frame(pd, /*nested_lambda=*/true);
   seed_proc_scope(pd);
 

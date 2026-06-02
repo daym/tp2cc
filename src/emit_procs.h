@@ -62,10 +62,8 @@ class EmitProcs {
     std::unordered_map<std::string, ScopeStateView::NestedFn> local_nested_fns;
     std::unordered_set<std::string> local_nested_forwards;
     std::unordered_set<std::string> local_untyped_params;
-    std::unordered_map<std::string, const ast::TyEnum*> local_enums;
+    TypeScopeFrame* type_scope = nullptr;
     std::unordered_set<std::string> local_const_params;
-    std::unordered_map<std::string, const ast::TypeExpr*>
-        local_type_aliases_scoped;
     int block_depth = 0;
   };
 

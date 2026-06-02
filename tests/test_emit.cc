@@ -4800,6 +4800,75 @@ void test_duplicate_enum_type_names_keep_set_literal_member_unit() {
   CHECK(!contains(out.impl, "::rt::tp2cc_Set<::p_rax86int::t_tasmtoken>"));
 }
 
+void test_duplicate_record_type_names_keep_visible_unit_owner() {
+  auto out = compile_snippet_with_registry(
+      "unit main;\n"
+      "interface\n"
+      "uses ua, ub;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var\n"
+      "  x : tshared;\n"
+      "begin\n"
+      "  x.b := 1;\n"
+      "end;\n"
+      "end.\n",
+      {{"ua.pas",
+        "unit ua;\n"
+        "interface\n"
+        "type\n"
+        "  tshared = record\n"
+        "    a : longint;\n"
+        "  end;\n"
+        "implementation\n"
+        "end.\n"},
+       {"ub.pas",
+        "unit ub;\n"
+        "interface\n"
+        "type\n"
+        "  tshared = record\n"
+        "    b : longint;\n"
+        "  end;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.impl, "::p_ub::t_tshared p_x"));
+  CHECK(contains(out.impl, "p_x.p_b = 1;"));
+  CHECK(!contains(out.impl, "::p_ua::t_tshared p_x"));
+}
+
+void test_duplicate_alias_type_names_keep_visible_unit_owner() {
+  auto out = compile_snippet_with_registry(
+      "unit main;\n"
+      "interface\n"
+      "uses ua, ub;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var\n"
+      "  x : talias;\n"
+      "begin\n"
+      "  x := 300;\n"
+      "end;\n"
+      "end.\n",
+      {{"ua.pas",
+        "unit ua;\n"
+        "interface\n"
+        "type\n"
+        "  talias = byte;\n"
+        "implementation\n"
+        "end.\n"},
+       {"ub.pas",
+        "unit ub;\n"
+        "interface\n"
+        "type\n"
+        "  talias = word;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.impl, "::p_ub::t_talias p_x"));
+  CHECK(!contains(out.impl, "::p_ua::t_talias p_x"));
+}
+
 void test_runtime_enum_members_resolve_explicitly() {
   auto out = compile_snippet_with_registry(
       "unit compiler;\n"
@@ -9274,6 +9343,8 @@ int main() {
   RUN_TEST(test_typed_set_literal_uses_surrounding_set_type);
   RUN_TEST(test_cross_unit_enum_set_literal_keeps_exported_enum_type);
   RUN_TEST(test_duplicate_enum_type_names_keep_set_literal_member_unit);
+  RUN_TEST(test_duplicate_record_type_names_keep_visible_unit_owner);
+  RUN_TEST(test_duplicate_alias_type_names_keep_visible_unit_owner);
   RUN_TEST(test_runtime_enum_members_resolve_explicitly);
   RUN_TEST(test_sysutils_executeprocess_accepts_execute_flags);
   RUN_TEST(test_ansicomparefilename_resolves_explicitly);

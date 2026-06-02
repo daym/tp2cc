@@ -3,16 +3,58 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
+
+#include "typereg.h"
 
 namespace tp2cc::ast {
 struct TypeExpr;
 struct ConstDecl;
 struct ProcDecl;
-struct TyEnum;
 }  // namespace tp2cc::ast
 
 namespace tp2cc {
+
+struct TypeScopeFrame {
+  TypeScopeFrame* parent = nullptr;
+  std::unordered_map<std::string, TypeSymbol> symbols;
+
+  explicit TypeScopeFrame(TypeScopeFrame* parent_in = nullptr)
+      : parent(parent_in) {}
+
+  const TypeSymbol* find_here_lower(std::string_view lower_name) const {
+    auto it = symbols.find(std::string(lower_name));
+    return it == symbols.end() ? nullptr : &it->second;
+  }
+
+  TypeSymbol* find_here_lower_mut(std::string_view lower_name) {
+    auto it = symbols.find(std::string(lower_name));
+    return it == symbols.end() ? nullptr : &it->second;
+  }
+
+  const TypeSymbol* find_lower(std::string_view lower_name) const {
+    const std::string key(lower_name);
+    for (const TypeScopeFrame* frame = this; frame; frame = frame->parent) {
+      auto it = frame->symbols.find(key);
+      if (it != frame->symbols.end()) return &it->second;
+    }
+    return nullptr;
+  }
+
+  TypeSymbol* find_lower_mut(std::string_view lower_name) {
+    const std::string key(lower_name);
+    for (TypeScopeFrame* frame = this; frame; frame = frame->parent) {
+      auto it = frame->symbols.find(key);
+      if (it != frame->symbols.end()) return &it->second;
+    }
+    return nullptr;
+  }
+
+  void insert_or_assign(TypeSymbol symbol) {
+    symbols.insert_or_assign(symbol.name, std::move(symbol));
+  }
+};
 
 // Shared view of the current Pascal semantic environment while emitting one
 // routine or unit. This is intentionally a view over Emitter-owned state, not
@@ -40,11 +82,12 @@ struct ScopeStateView {
 
   std::string& current_class_name;
   std::string& current_unit_name;
-  // Non-empty only while lowering an omitted default argument. Name lookup
-  // uses `current_unit_name` set to the declaration unit, but generated C++
-  // is inserted in this caller unit. Own-unit symbols found through that
-  // declaration-unit lookup therefore need explicit namespace qualification.
-  std::string& default_arg_emission_unit_name;
+  // Non-empty when Pascal name lookup is intentionally performed with
+  // `current_unit_name` set to a declaration unit, while the generated C++
+  // text is inserted in another unit's namespace. Own-unit symbols found
+  // through that declaration-unit lookup therefore still need explicit
+  // namespace qualification for the insertion site.
+  std::string& lookup_emission_unit_name;
 
   // LHS-only rewrites for Pascal's implicit result variables.
   std::string& lhs_fn_rewrite;
@@ -71,10 +114,8 @@ struct ScopeStateView {
   std::unordered_set<std::string>& local_untyped_params;
   std::unordered_map<std::string, NestedFn>& local_nested_fns;
   std::unordered_set<std::string>& local_nested_forwards;
-  std::unordered_map<std::string, const ast::TyEnum*>& local_enums;
+  TypeScopeFrame*& type_scope;
   std::unordered_set<std::string>& local_const_params;
-  std::unordered_map<std::string, const ast::TypeExpr*>&
-      local_type_aliases_scoped;
   std::vector<WithBind>& with_stack;
 
   // Current-function / result-slot state. `Result` semantics differ between

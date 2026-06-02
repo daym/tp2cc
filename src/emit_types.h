@@ -155,6 +155,8 @@ class EmitTypes {
   // Did any non-runtime translated unit declare this type? Runtime aliases are
   // present in the registry for analysis/member lookup, but their C++ type name
   // remains the explicit ::rt::t_* names from runtime_named_type_cxx().
+  std::string active_emission_unit_name() const;
+  bool should_qualify_unit(std::string_view defining_unit) const;
   bool registry_knows_translated_type(std::string_view name);
   EmitRecordFieldDecl record_field_decl(const ast::TypeExpr* type,
                                         std::string_view name);

@@ -598,8 +598,9 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
         if (mem.base && mem.base->kind == Kind::Ident) {
           const std::string base =
               ascii_lower(static_cast<const Ident&>(*mem.base).name);
-          if (!registry_->has_class(base, scope_.current_unit_name) &&
-              !registry_->records.count(base)) {
+          const TypeSymbol* symbol =
+              registry_->lookup_type_symbol(base, scope_.current_unit_name);
+          if (!symbol || (!symbol->class_info() && !symbol->record_info())) {
             cls = analysis_.deduce_class_alias(*mem.base);
           }
         } else {

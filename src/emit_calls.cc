@@ -71,33 +71,10 @@ std::string visible_type_unit_from(std::string_view type_name,
                                    std::string_view unit_name,
                                    const TypeRegistry* registry) {
   if (!registry) return {};
-  const std::string low = ascii_lower(std::string(type_name));
-  const std::string unit = ascii_lower(std::string(unit_name));
-  auto uit = registry->units.find(unit);
-  if (uit != registry->units.end()) {
-    if (uit->second.has_type(low)) return unit;
-    for (auto it = uit->second.uses.rbegin(); it != uit->second.uses.rend();
-         ++it) {
-      if (*it == "__rt__") continue;
-      auto used = registry->units.find(*it);
-      if (used != registry->units.end() && used->second.has_export_type(low)) {
-        return *it;
-      }
-    }
+  if (const TypeSymbol* symbol =
+          registry->lookup_type_symbol(type_name, unit_name)) {
+    return symbol->defining_unit;
   }
-  if (auto ait = registry->aliases.find(low);
-      ait != registry->aliases.end()) {
-    return ait->second.defining_unit;
-  }
-  if (const ClassInfo* ci = registry->lookup_class(low, unit)) {
-    return ci->defining_unit;
-  }
-  auto iit = registry->interfaces.find(low);
-  if (iit != registry->interfaces.end()) return iit->second.defining_unit;
-  auto rit = registry->records.find(low);
-  if (rit != registry->records.end()) return rit->second.defining_unit;
-  auto eit = registry->enums.find(low);
-  if (eit != registry->enums.end()) return eit->second.defining_unit;
   return {};
 }
 
@@ -359,7 +336,7 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
     }
   }
   DefaultArgumentUnitScope default_scope(scope_.current_unit_name,
-                                         scope_.default_arg_emission_unit_name,
+                                         scope_.lookup_emission_unit_name,
                                          default_arg_unit);
   if (param_type && storage_.type_is_open_array(param_type) &&
       arg.kind == Kind::SetLit) {
