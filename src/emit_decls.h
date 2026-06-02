@@ -73,6 +73,12 @@ class EmitDecls {
     std::string name;
   };
 
+  struct PendingReferenceClassSupport {
+    const ast::TypeDecl* decl = nullptr;
+    std::string source_type_name;
+    std::string qualified_cxx_name;
+  };
+
   void emit_packed_record_asserts(const std::string& type_text,
                                   const std::vector<std::pair<std::string,
                                                               std::string>>&
@@ -125,6 +131,18 @@ class EmitDecls {
                          std::string_view bound_name);
   void emit_enum_carrier_decls(const ast::TypeExpr* t,
                                const ast::TyEnum* skip = nullptr);
+  void emit_type_decl_impl(
+      const ast::TypeDecl& td, bool in_header,
+      std::vector<PendingReferenceClassSupport>& pending_support);
+  void emit_nested_type_decl(
+      const ast::TypeDecl& td,
+      std::vector<PendingReferenceClassSupport>& pending_support);
+  void emit_reference_class_support(const ast::TypeDecl& td,
+                                    const ast::TyObject& to,
+                                    std::string_view qualified_cxx_name,
+                                    std::string_view source_type_name);
+  void emit_pending_reference_class_support(
+      const PendingReferenceClassSupport& pending);
   bool should_emit_var_type_helpers(const ast::VarDecl& vd, bool in_header);
 
   const TypeRegistry* registry_;

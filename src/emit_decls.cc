@@ -63,6 +63,74 @@ class ScopedSignatureLookupUnit {
   bool active_ = false;
 };
 
+const TypeSymbol* visible_type_symbol(const TypeRegistry* registry,
+                                      const ScopeStateView& scope,
+                                      std::string_view name) {
+  const std::string lower = ascii_lower(name);
+  if (scope.type_scope) {
+    if (const TypeSymbol* local = scope.type_scope->find_lower(lower)) {
+      return local;
+    }
+  }
+  return registry ? registry->lookup_type_symbol(lower, scope.current_unit_name)
+                  : nullptr;
+}
+
+std::string type_symbol_source_name(const TypeSymbol& symbol) {
+  std::string out;
+  for (const auto& owner : symbol.owner_path) {
+    if (!out.empty()) out += ".";
+    out += owner;
+  }
+  if (!out.empty()) out += ".";
+  out += symbol.name;
+  return out;
+}
+
+const std::unordered_map<std::string, std::shared_ptr<TypeSymbol>>*
+nested_type_symbols(const TypeSymbol* symbol) {
+  if (!symbol) return nullptr;
+  if (const ClassInfo* ci = symbol->class_info()) return &ci->nested_types;
+  if (const RecordInfo* ri = symbol->record_info()) return &ri->nested_types;
+  return nullptr;
+}
+
+class ScopedNestedTypeScope {
+ public:
+  ScopedNestedTypeScope(
+      ScopeStateView& scope,
+      const std::unordered_map<std::string, std::shared_ptr<TypeSymbol>>*
+          nested_types)
+      : scope_(scope),
+        saved_type_scope_(scope.type_scope),
+        frame_(scope.type_scope) {
+    if (!nested_types || nested_types->empty()) return;
+    // Inside a Pascal type declaration, names from that type's nested `type'
+    // section are lexical children of the owner and hide unit-level names.
+    // Link the frame to the previous type scope so nested members can still
+    // refer to enclosing-type and unit-visible types after these children.
+    for (const auto& [name, symbol] : *nested_types) {
+      (void)name;
+      if (symbol) frame_.insert_or_assign(*symbol);
+    }
+    scope_.type_scope = &frame_;
+    active_ = true;
+  }
+
+  ScopedNestedTypeScope(const ScopedNestedTypeScope&) = delete;
+  ScopedNestedTypeScope& operator=(const ScopedNestedTypeScope&) = delete;
+
+  ~ScopedNestedTypeScope() {
+    if (active_) scope_.type_scope = saved_type_scope_;
+  }
+
+ private:
+  ScopeStateView& scope_;
+  TypeScopeFrame* saved_type_scope_ = nullptr;
+  TypeScopeFrame frame_;
+  bool active_ = false;
+};
+
 }  // namespace
 
 EmitDecls::EmitDecls(const TypeRegistry* registry, ScopeStateView& scope,
@@ -591,6 +659,22 @@ generic_emit:;
 }
 
 void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
+  std::vector<PendingReferenceClassSupport> pending_support;
+  emit_type_decl_impl(td, in_header, pending_support);
+  for (const auto& pending : pending_support) {
+    emit_pending_reference_class_support(pending);
+  }
+}
+
+void EmitDecls::emit_nested_type_decl(
+    const TypeDecl& td,
+    std::vector<PendingReferenceClassSupport>& pending_support) {
+  emit_type_decl_impl(td, /*in_header=*/false, pending_support);
+}
+
+void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool in_header,
+                                    std::vector<PendingReferenceClassSupport>&
+                                        pending_support) {
   (void)in_header;
   const std::string name = type_mangle(td.name);
 
@@ -604,12 +688,18 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
 
   if (td.type && td.type->kind == Kind::TyRecord) {
     const auto& tr = static_cast<const TyRecord&>(*td.type);
+    const TypeSymbol* symbol = visible_type_symbol(registry_, scope_, td.name);
+    ScopedNestedTypeScope nested_scope(scope_, nested_type_symbols(symbol));
     const auto layout = types_.compute_record_layout(tr);
     std::string open = "struct ";
     if (tr.is_packed) open += "[[gnu::packed]] ";
     emit_ops_.emitln(open + name + " {");
     
     emit_ops_.indent();
+    std::vector<PendingReferenceClassSupport> nested_pending;
+    for (const auto& nested : tr.nested_types) {
+      if (nested) emit_nested_type_decl(*nested, nested_pending);
+    }
     for (const auto& line : layout.decl_lines) {
       if (line.find('}') != std::string::npos) emit_ops_.dedent();
       emit_ops_.emitln(line);
@@ -622,6 +712,8 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
       emit_packed_record_asserts(name, layout.packed_layout.field_offsets, layout.packed_layout.size_expr,
                                  name);
     }
+    pending_support.insert(pending_support.end(), nested_pending.begin(),
+                           nested_pending.end());
     return;
   }
 
@@ -648,6 +740,12 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
     if (to.is_forward) {
       return;
     }
+    const TypeSymbol* symbol = visible_type_symbol(registry_, scope_, td.name);
+    const std::string source_type_name =
+        symbol ? type_symbol_source_name(*symbol) : ascii_lower(td.name);
+    const std::string qualified_cxx_name =
+        symbol ? types_.type_symbol_struct_cxx(*symbol) : name;
+    ScopedNestedTypeScope nested_scope(scope_, nested_type_symbols(symbol));
     auto inherited_virtual_with_same_cxx_signature =
         [&](const ProcDecl& pd) -> const MethodSig* {
       if (!registry_ || pd.is_class_method || to.parent.empty()) return nullptr;
@@ -704,8 +802,10 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
     emit_ops_.emitln(line);
     emit_ops_.indent();
     if (to.is_reference_type) {
-      const std::string meta_name = "tp2cc_metaclass_" + name;
-      const std::string value_fn = "tp2cc_metaclass_value_" + name;
+      const std::string meta_name =
+          types_.metaclass_struct_cxx(source_type_name);
+      const std::string value_fn =
+          types_.metaclass_value_fn_cxx(source_type_name);
       // The metaclass struct and value function implement Pascal `class of`
       // dispatch. A virtual class method can be strict protected and still
       // have an entry in that table, so the generated table code must be able
@@ -728,13 +828,16 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
     std::string current_access = "public";
     bool seen_class_constructor = false;
     bool seen_class_destructor = false;
+    std::vector<PendingReferenceClassSupport> nested_pending;
     for (const auto& m : to.members) {
       std::string wanted_access = cxx_access_for_pascal_visibility(m.vis);
       if (wanted_access != current_access) {
         emit_ops_.emitln(wanted_access + ":");
         current_access = std::move(wanted_access);
       }
-      if (m.kind == ObjectMemberKind::Field) {
+      if (m.kind == ObjectMemberKind::Type) {
+        if (m.type_decl) emit_nested_type_decl(*m.type_decl, nested_pending);
+      } else if (m.kind == ObjectMemberKind::Field) {
         for (const auto& fn : m.field_names) {
           // FPC rejects a field or class var that reuses an inherited field
           // name. C++ would accept a derived static member with the same name,
@@ -844,108 +947,144 @@ void EmitDecls::emit_type_decl(const TypeDecl& td, bool in_header) {
     emit_ops_.emitln("};");
 
     if (to.is_reference_type) {
-      const std::string meta_name = "tp2cc_metaclass_" + name;
-      const std::string value_fn = "tp2cc_metaclass_value_" + name;
-      const bool has_parent_meta =
-          !to.parent.empty() && analysis_.class_info_for_type_name(to.parent) &&
-          analysis_.class_info_for_type_name(to.parent)->is_reference_type;
-      const std::string parent_meta =
-          has_parent_meta ? types_.metaclass_struct_cxx(to.parent)
-                          : std::string{};
-      const std::string base_meta =
-          has_parent_meta ? parent_meta
-                          : std::string("::rt::tp2cc_metaclass_t_tobject");
-      const auto visible_callables = collect_metaclass_callables(td.name);
-      const auto parent_callables =
-          has_parent_meta ? collect_metaclass_callables(to.parent)
-                          : std::vector<MetaclassCallable>{};
-      const std::vector<MetaclassCallable> own_callables =
-          own_metaclass_callables(visible_callables, parent_callables);
-
-      std::string meta_decl = "struct " + meta_name;
-      meta_decl += " : public " + base_meta;
-      meta_decl += " {";
-      emit_ops_.emitln(meta_decl);
-      emit_ops_.indent();
-      for (const auto& callable : own_callables) {
-        if (is_virtual_metaclass_callable(callable)) {
-          const bool same_as_parent =
-              has_same_parent_metaclass_slot(callable, parent_callables);
-          emit_virtual_metaclass_callable(td.name, callable, same_as_parent);
-        } else {
-          emit_ops_.emitln(metaclass_callable_return_type(td.name, callable) +
-                           " (*" + mangle(callable.name) + ")(" +
-                           metaclass_callable_param_types(callable) + ");");
-        }
-      }
-      const std::string direct_parent_meta =
-          has_parent_meta ? (types_.metaclass_value_fn_cxx(to.parent) + "()")
-                          : std::string("::rt::tp2cc_metaclass_value_t_tobject()");
-      emit_ops_.emitln("::rt::t_tclass tp2cc_parentclass() const override { "
-                       "return " +
-                       direct_parent_meta + "; }");
-      emit_ops_.emitln("::rt::tp2cc_ShortString<> p_classname() const override { "
-                       "return ::rt::tp2cc_shortstring_of<>(\"" +
-                       td.name + "\"); }");
-      if (visible_callables.empty()) {
-        emit_ops_.emitln(meta_name + "() = default;");
-      } else {
-        std::string ctor_params;
-        bool first = true;
-        if (has_parent_meta && !parent_callables.empty()) {
-          ctor_params += parent_meta + " tp2cc_parent";
-          first = false;
-        }
-        for (const auto& callable : own_callables) {
-          if (is_virtual_metaclass_callable(callable)) continue;
-          if (!first) ctor_params += ", ";
-          ctor_params += metaclass_callable_ctor_param(td.name, callable);
-          first = false;
-        }
-        std::string init_list;
-        if (has_parent_meta && !parent_callables.empty()) {
-          init_list = " : " + parent_meta + "(tp2cc_parent)";
-        }
-        for (const auto& callable : own_callables) {
-          if (is_virtual_metaclass_callable(callable)) continue;
-          init_list += (init_list.empty() ? " : " : ", ") +
-                       metaclass_callable_ctor_init(callable);
-        }
-        emit_ops_.emitln(meta_name + "(" + ctor_params + ")" + init_list +
-                         " {}");
-      }
-      emit_ops_.dedent();
-      emit_ops_.emitln("};");
-
-      emit_ops_.emitln("inline " + meta_name + "* " + value_fn + "() {");
-      emit_ops_.indent();
-      if (visible_callables.empty()) {
-        emit_ops_.emitln("static " + meta_name + " value{};");
-      } else {
-        emit_ops_.emitln("static " + meta_name + " value = " +
-                         build_metaclass_ctor_expr(td.name, td.name) + ";");
-      }
-      emit_ops_.emitln("return &value;");
-      emit_ops_.dedent();
-      emit_ops_.emitln("}");
-      emit_ops_.emitln("inline ::rt::t_tclass " + name +
-                       "::p_classtype() const {");
-      emit_ops_.indent();
-      emit_ops_.emitln("return " + value_fn + "();");
-      emit_ops_.dedent();
-      emit_ops_.emitln("}");
-      emit_ops_.emitln("inline int32_t " + name + "::p_instancesize() const {");
-      emit_ops_.indent();
-      emit_ops_.emitln("return sizeof(" + name + ");");
-      emit_ops_.dedent();
-      emit_ops_.emitln("}");
+      pending_support.push_back(PendingReferenceClassSupport{
+          .decl = &td,
+          .source_type_name = source_type_name,
+          .qualified_cxx_name = qualified_cxx_name});
     }
+    pending_support.insert(pending_support.end(), nested_pending.begin(),
+                           nested_pending.end());
     return;
   }
 
   std::string rhs = td.type ? types_.type_to_cxx(*td.type)
                             : std::string("int32_t");
   emit_ops_.emitln("using " + name + " = " + rhs + ";");
+}
+
+void EmitDecls::emit_reference_class_support(
+    const TypeDecl& td, const TyObject& to, std::string_view qualified_cxx_name,
+    std::string_view source_type_name) {
+  const std::string meta_name = types_.metaclass_struct_cxx(source_type_name);
+  const std::string value_fn = types_.metaclass_value_fn_cxx(source_type_name);
+  const bool has_parent_meta =
+      !to.parent.empty() && analysis_.class_info_for_type_name(to.parent) &&
+      analysis_.class_info_for_type_name(to.parent)->is_reference_type;
+  const std::string parent_meta =
+      has_parent_meta ? types_.metaclass_struct_cxx(to.parent) : std::string{};
+  const std::string base_meta =
+      has_parent_meta ? parent_meta
+                      : std::string("::rt::tp2cc_metaclass_t_tobject");
+  const auto visible_callables = collect_metaclass_callables(source_type_name);
+  const auto parent_callables =
+      has_parent_meta ? collect_metaclass_callables(to.parent)
+                      : std::vector<MetaclassCallable>{};
+  const std::vector<MetaclassCallable> own_callables =
+      own_metaclass_callables(visible_callables, parent_callables);
+
+  std::string meta_decl = "struct " + meta_name;
+  meta_decl += " : public " + base_meta;
+  meta_decl += " {";
+  emit_ops_.emitln(meta_decl);
+  emit_ops_.indent();
+  for (const auto& callable : own_callables) {
+    if (is_virtual_metaclass_callable(callable)) {
+      const bool same_as_parent =
+          has_same_parent_metaclass_slot(callable, parent_callables);
+      emit_virtual_metaclass_callable(source_type_name, callable,
+                                      same_as_parent);
+    } else {
+      emit_ops_.emitln(metaclass_callable_return_type(source_type_name,
+                                                      callable) +
+                       " (*" + mangle(callable.name) + ")(" +
+                       metaclass_callable_param_types(callable) + ");");
+    }
+  }
+  const std::string direct_parent_meta =
+      has_parent_meta ? (types_.metaclass_value_fn_cxx(to.parent) + "()")
+                      : std::string("::rt::tp2cc_metaclass_value_t_tobject()");
+  emit_ops_.emitln("::rt::t_tclass tp2cc_parentclass() const override { "
+                   "return " +
+                   direct_parent_meta + "; }");
+  emit_ops_.emitln("::rt::tp2cc_ShortString<> p_classname() const override { "
+                   "return ::rt::tp2cc_shortstring_of<>(\"" +
+                   td.name + "\"); }");
+  if (visible_callables.empty()) {
+    emit_ops_.emitln(meta_name + "() = default;");
+  } else {
+    std::string ctor_params;
+    bool first = true;
+    if (has_parent_meta && !parent_callables.empty()) {
+      ctor_params += parent_meta + " tp2cc_parent";
+      first = false;
+    }
+    for (const auto& callable : own_callables) {
+      if (is_virtual_metaclass_callable(callable)) continue;
+      if (!first) ctor_params += ", ";
+      ctor_params += metaclass_callable_ctor_param(source_type_name, callable);
+      first = false;
+    }
+    std::string init_list;
+    if (has_parent_meta && !parent_callables.empty()) {
+      init_list = " : " + parent_meta + "(tp2cc_parent)";
+    }
+    for (const auto& callable : own_callables) {
+      if (is_virtual_metaclass_callable(callable)) continue;
+      init_list += (init_list.empty() ? " : " : ", ") +
+                   metaclass_callable_ctor_init(callable);
+    }
+    emit_ops_.emitln(meta_name + "(" + ctor_params + ")" + init_list + " {}");
+  }
+  emit_ops_.dedent();
+  emit_ops_.emitln("};");
+
+  emit_ops_.emitln("inline " + meta_name + "* " + value_fn + "() {");
+  emit_ops_.indent();
+  if (visible_callables.empty()) {
+    emit_ops_.emitln("static " + meta_name + " value{};");
+  } else {
+    emit_ops_.emitln("static " + meta_name + " value = " +
+                     build_metaclass_ctor_expr(source_type_name,
+                                               source_type_name) +
+                     ";");
+  }
+  emit_ops_.emitln("return &value;");
+  emit_ops_.dedent();
+  emit_ops_.emitln("}");
+  emit_ops_.emitln("inline ::rt::t_tclass " +
+                   std::string(qualified_cxx_name) + "::p_classtype() const {");
+  emit_ops_.indent();
+  emit_ops_.emitln("return " + value_fn + "();");
+  emit_ops_.dedent();
+  emit_ops_.emitln("}");
+  emit_ops_.emitln("inline int32_t " + std::string(qualified_cxx_name) +
+                   "::p_instancesize() const {");
+  emit_ops_.indent();
+  emit_ops_.emitln("return sizeof(" + std::string(qualified_cxx_name) + ");");
+  emit_ops_.dedent();
+  emit_ops_.emitln("}");
+}
+
+void EmitDecls::emit_pending_reference_class_support(
+    const PendingReferenceClassSupport& pending) {
+  const TypeDecl* td = pending.decl;
+  if (!td || !td->type || td->type->kind != Kind::TyObject) return;
+  const auto& to = static_cast<const TyObject&>(*td->type);
+  if (!to.is_reference_type || to.is_forward) return;
+
+  const std::string source_name = ascii_lower(pending.source_type_name);
+  const TypeSymbol* symbol =
+      registry_ ? registry_->lookup_type_symbol(source_name,
+                                                scope_.current_unit_name)
+                : nullptr;
+  ScopedNestedTypeScope nested_scope(scope_, nested_type_symbols(symbol));
+  // Pascal reference classes need namespace-scope C++ helper definitions for
+  // `class of' values and TObject virtual metadata. The declaration pass
+  // records them while class scopes are open; the containing type drains the
+  // records after its closing brace, when qualified out-of-class definitions
+  // are legal C++.
+  emit_reference_class_support(*td, to, pending.qualified_cxx_name,
+                               source_name);
 }
 
 void EmitDecls::emit_var_decl(const VarDecl& vd, bool in_header) {

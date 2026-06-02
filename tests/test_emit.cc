@@ -3392,7 +3392,7 @@ void test_sizeof_own_implementation_private_qualified_names() {
       "  writeln(sizeof(u.bar));\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "sizeof(::p_u::t_foo)"));
+  CHECK(contains(out.impl, "sizeof(t_foo)"));
   CHECK(contains(out.impl, "sizeof(::p_u::p_bar)"));
 }
 
@@ -3991,7 +3991,7 @@ void test_metaclass_support_can_call_strict_protected_class_methods() {
   CHECK(contains(out.header,
                  "virtual void p_hook() const { t_tfoo::p_hook(); }"));
   CHECK(contains(out.header,
-                 "+[]() -> void { ::p_u::t_tfoo::p_hidden(); }"));
+                 "+[]() -> void { t_tfoo::p_hidden(); }"));
 }
 
 void test_class_var_inherited_duplicate_reports_error() {
@@ -6184,6 +6184,59 @@ void test_class_constructor_call_allocates_instance() {
   CHECK(contains(out.impl, "tp2cc_ptr->p_create();"));
 }
 
+void test_nested_record_type_emits_inside_owner_scope() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    type\n"
+      "      tinner = record\n"
+      "        value : integer;\n"
+      "      end;\n"
+      "    var\n"
+      "      f : tinner;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "struct t_trec {"));
+  CHECK(contains(out.header, "struct t_tinner {"));
+  CHECK(contains(out.header, "int32_t p_value;"));
+  CHECK(contains(out.header, "t_tinner p_f;"));
+}
+
+void test_nested_class_type_emits_qualified_owner_and_method_scope() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  touter = class\n"
+      "  public\n"
+      "    type\n"
+      "      tinner = class\n"
+      "        procedure doit;\n"
+      "      end;\n"
+      "    procedure use(v : tinner);\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure touter.tinner.doit;\n"
+      "begin\n"
+      "end;\n"
+      "procedure touter.use(v : tinner);\n"
+      "begin\n"
+      "  v.doit;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "struct t_touter : public ::rt::t_tobject {"));
+  CHECK(contains(out.header, "struct t_tinner : public ::rt::t_tobject {"));
+  CHECK(contains(out.header, "void p_use(t_tinner* p_v);"));
+  CHECK(contains(out.header,
+                 "inline ::rt::t_tclass t_touter::t_tinner::p_classtype() const"));
+  CHECK(contains(out.impl, "void t_touter::t_tinner::p_doit()"));
+  CHECK(contains(out.impl, "void t_touter::p_use(t_tinner* p_v)"));
+  CHECK(contains(out.impl, "p_v->p_doit();"));
+}
+
 void test_class_lifecycle_methods_run_from_unit_hooks() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -8353,7 +8406,7 @@ void test_metaclass_base_constructor_slot_survives_hidden_child_create() {
       "  inst := cls.create;\n"
       "end.\n");
   CHECK(contains(out.header,
-                 "static_cast<::p_u::t_tbase*>(tp2cc_ptr)->p_create();"));
+                 "static_cast<t_tbase*>(tp2cc_ptr)->p_create();"));
   CHECK(contains(out.impl, "p_inst = p_cls->p_create();"));
 }
 
@@ -9459,6 +9512,8 @@ int main() {
   RUN_TEST(test_tclass_alias_lowers_through_rt);
   RUN_TEST(test_corba_interface_emits_pure_virtual_base_and_pointer_calls);
   RUN_TEST(test_class_constructor_call_allocates_instance);
+  RUN_TEST(test_nested_record_type_emits_inside_owner_scope);
+  RUN_TEST(test_nested_class_type_emits_qualified_owner_and_method_scope);
   RUN_TEST(test_class_lifecycle_methods_run_from_unit_hooks);
   RUN_TEST(test_abstract_class_constructor_call_warns);
   RUN_TEST(test_class_constructor_trailing_default_argument_is_lowered);

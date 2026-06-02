@@ -314,6 +314,79 @@ void test_object_type() {
   if (u) CHECK_EQ(u->interface_decls.size(), size_t{2});
 }
 
+void test_record_nested_type_section() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    type\n"
+      "      tinner = record\n"
+      "        value : integer;\n"
+      "      end;\n"
+      "    var\n"
+      "      f : tinner;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  if (u && !u->interface_decls.empty()) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    CHECK(td);
+    if (td) {
+      auto* tr = dynamic_cast<TyRecord*>(td->type.get());
+      CHECK(tr);
+      if (tr) {
+        CHECK_EQ(tr->nested_types.size(), size_t{1});
+        CHECK_EQ(tr->fields.size(), size_t{1});
+        if (!tr->nested_types.empty()) {
+          CHECK_EQ(tr->nested_types[0]->name, std::string("tinner"));
+        }
+      }
+    }
+  }
+}
+
+void test_class_nested_type_section_ends_at_method() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  touter = class\n"
+      "  public\n"
+      "    type\n"
+      "      tinner = record\n"
+      "        value : integer;\n"
+      "      end;\n"
+      "    procedure use(v : tinner);\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure touter.use(v : tinner);\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  if (u && !u->interface_decls.empty()) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    CHECK(td);
+    if (td) {
+      auto* to = dynamic_cast<TyObject*>(td->type.get());
+      CHECK(to);
+      if (to) {
+        CHECK_EQ(to->members.size(), size_t{2});
+        CHECK_EQ(to->members[0].kind, ObjectMemberKind::Type);
+        CHECK(to->members[0].type_decl != nullptr);
+        if (to->members[0].type_decl) {
+          CHECK_EQ(to->members[0].type_decl->name, std::string("tinner"));
+        }
+        CHECK_EQ(to->members[1].kind, ObjectMemberKind::Method);
+      }
+    }
+  }
+}
+
 void test_object_inheritance() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1162,6 +1235,31 @@ void test_proc_method_qualified() {
   }
 }
 
+void test_proc_method_nested_type_owner() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  touter = class\n"
+      "    type tinner = class procedure run; end;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure touter.tinner.run;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  if (u && !u->impl_decls.empty()) {
+    auto* pd = dynamic_cast<ProcDecl*>(u->impl_decls[0].get());
+    CHECK(pd);
+    if (pd) {
+      CHECK_EQ(pd->of_type, std::string("touter.tinner"));
+      CHECK_EQ(pd->name, std::string("run"));
+    }
+  }
+}
+
 void test_proc_modifiers_forward_external() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1692,12 +1790,15 @@ int main() {
   RUN_TEST(test_record_type);
   RUN_TEST(test_variant_record);
   RUN_TEST(test_object_type);
+  RUN_TEST(test_record_nested_type_section);
+  RUN_TEST(test_class_nested_type_section_ends_at_method);
   RUN_TEST(test_object_inheritance);
   RUN_TEST(test_var_decls);
   RUN_TEST(test_var_absolute);
   RUN_TEST(test_proc_decl_interface);
   RUN_TEST(test_proc_impl_with_body);
   RUN_TEST(test_proc_method_qualified);
+  RUN_TEST(test_proc_method_nested_type_owner);
   RUN_TEST(test_proc_modifiers_forward_external);
   RUN_TEST(test_nested_proc);
   RUN_TEST(test_statements_if_while);

@@ -58,6 +58,8 @@ class Parser {
   // ---- declarations ----
   std::vector<ast::DeclPtr> parse_const_section();
   std::vector<ast::DeclPtr> parse_type_section();
+  std::shared_ptr<ast::TypeDecl> parse_type_decl_from_current_ident(
+      const char* ctx);
   std::vector<ast::DeclPtr> parse_var_section();
   std::vector<ast::DeclPtr> parse_label_section();
   std::shared_ptr<ast::ProcDecl> parse_proc_decl(ast::ProcKind pk,
@@ -84,6 +86,7 @@ class Parser {
   // The lexer delivers them as Tok::Ident; we recognize them by text at
   // the points where they're meaningful.
   bool is_directive(const char* name) const;
+  bool identifier_ends_nested_type_block() const;
 
   // ---- types ----
   ast::TypePtr parse_type();

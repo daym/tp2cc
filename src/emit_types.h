@@ -14,6 +14,7 @@ namespace tp2cc {
 
 struct MethodSig;
 struct TypeRegistry;
+struct TypeSymbol;
 
 class EmitTypeConstRender {
  public:
@@ -92,6 +93,7 @@ class EmitTypes {
   std::string type_name_to_cxx(const ast::TyName& n);
   std::string type_name_text_to_cxx(std::string_view name);
   std::string named_type_struct_cxx(std::string_view name);
+  std::string type_symbol_struct_cxx(const TypeSymbol& symbol) const;
   std::string visible_type_prefix(std::string_view name);
   std::string metaclass_struct_cxx(std::string_view class_name);
   std::string metaclass_value_fn_cxx(std::string_view class_name);

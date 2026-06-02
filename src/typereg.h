@@ -90,6 +90,8 @@ struct PropertyInfo {
   bool is_default = false;
 };
 
+struct TypeSymbol;
+
 struct ClassInfo {
   std::string name;
   std::string parent;                    // empty if none
@@ -111,6 +113,10 @@ struct ClassInfo {
   // use `lookup_class_methods`.
   std::unordered_map<std::string, std::vector<MethodSig>> methods;
   std::unordered_map<std::string, PropertyInfo> properties;
+  // Nested Pascal types are lexical children of the containing type. Keep
+  // them on the owner symbol, not in a parallel flat table, so `Outer.Inner'
+  // lookup and unqualified lookup inside Outer follow the same tree.
+  std::unordered_map<std::string, std::shared_ptr<TypeSymbol>> nested_types;
   // Bare enum labels from class field types are visible while emitting member
   // bodies. Keep the labels here so class and inherited-class lookup can
   // resolve them before ordinary unit lookup.
@@ -131,6 +137,9 @@ struct RecordInfo {
   bool is_packed = false;
   // Flat list of all field names including variant-case fields.
   std::unordered_map<std::string, FieldInfo> fields;
+  // Same lexical nested-type model as ClassInfo; modern Object Pascal records
+  // can own types, and those names are resolved through the record type.
+  std::unordered_map<std::string, std::shared_ptr<TypeSymbol>> nested_types;
 };
 
 struct EnumInfoReg {
@@ -185,6 +194,10 @@ using TypeSymbolPayload =
 struct TypeSymbol {
   std::string name;
   std::string defining_unit;
+  // Containing type names, outermost first. Empty for unit-level types.
+  // Emission uses this to lower Pascal `Outer.Inner' to C++ `Outer::Inner'
+  // after lookup has proven that the dot is type nesting rather than a unit.
+  std::vector<std::string> owner_path;
   // For aliases this is the alias target. For named concrete types this is the
   // declaration AST node. Synthetic runtime types keep ownership in
   // `owned_type` so every TypeSymbol exposes the same raw AST pointer API.
@@ -304,6 +317,12 @@ struct UnitInfo {
     return find(iface_operators, impl_operators, n);
   }
   const TypeSymbol* find_type(const std::string& n) const {
+    auto it = iface_types.find(n);
+    if (it != iface_types.end()) return it->second;
+    auto jt = impl_types.find(n);
+    return jt == impl_types.end() ? nullptr : jt->second;
+  }
+  TypeSymbol* find_type_mut(const std::string& n) {
     auto it = iface_types.find(n);
     if (it != iface_types.end()) return it->second;
     auto jt = impl_types.find(n);

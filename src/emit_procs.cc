@@ -44,6 +44,14 @@ void register_type_decl_in_current_scope(TypeScopeFrame& frame,
   }
 }
 
+void seed_owner_nested_types(TypeScopeFrame& frame, const ClassInfo* owner) {
+  if (!owner) return;
+  for (const auto& [name, symbol] : owner->nested_types) {
+    (void)name;
+    if (symbol) frame.insert_or_assign(*symbol);
+  }
+}
+
 }  // namespace
 
 EmitProcs::EmitProcs(ScopeStateView& scope, int& block_depth,
@@ -231,16 +239,29 @@ std::string EmitProcs::nested_proc_signature_types(const ProcDecl& pd) {
 }
 
 void EmitProcs::emit_proc_body(const ProcDecl& pd) {
+  std::string method_owner;
+  TypeScopeFrame signature_type_scope(scope_.type_scope);
+  TypeScopeFrame* saved_signature_type_scope = scope_.type_scope;
+  if (!pd.of_type.empty()) {
+    method_owner = analysis_.canonical_method_owner_type_name(pd.of_type);
+    scope_.type_scope = &signature_type_scope;
+    // A Pascal method implementation is written outside the class declaration,
+    // but its signature still resolves unqualified nested type names through
+    // the owner class scope.
+    seed_owner_nested_types(
+        signature_type_scope, analysis_.class_info_for_type_name(method_owner));
+  }
+
   // Header line: ret ClassName::Method(args) or ret Method(args).
   std::string ret = decls_.proc_return_type_to_cxx(pd);
   std::string qname = pascal_operator_decl_name_to_cxx(pd);
   if (!pd.of_type.empty()) {
-    qname = types_.named_type_struct_cxx(
-                analysis_.canonical_method_owner_type_name(pd.of_type)) +
+    qname = types_.named_type_struct_cxx(method_owner) +
             "::" + qname;
   }
   emit_ops_.emitln(decls_.proc_attributes_to_cxx(pd) + ret + " " + qname +
                    "(" + decls_.param_list_to_cxx(pd.params) + ") {");
+  scope_.type_scope = saved_signature_type_scope;
   emit_ops_.indent();
 
   if (pd.modifiers.is_abstract && !pd.body) {
@@ -258,6 +279,11 @@ void EmitProcs::emit_proc_body(const ProcDecl& pd) {
   TypeScopeFrame proc_type_scope(scope_.type_scope);
   scope_.type_scope = &proc_type_scope;
   setup_proc_frame(pd, /*nested_lambda=*/false);
+  if (!scope_.current_class_name.empty()) {
+    seed_owner_nested_types(
+        proc_type_scope,
+        analysis_.class_info_for_type_name(scope_.current_class_name));
+  }
   seed_proc_scope(pd);
 
   // `Result` is a Pascal-visible implicit variable in functions, so it uses

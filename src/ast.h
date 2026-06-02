@@ -748,6 +748,7 @@ struct VariantCase {
 
 struct TyRecord : TypeExpr {
   std::vector<RecordField> fields;
+  std::vector<std::shared_ptr<TypeDecl>> nested_types;
   // Optional variant part:
   std::shared_ptr<VariantPart> variant_part;
   bool is_packed = false;
@@ -756,6 +757,14 @@ struct TyRecord : TypeExpr {
            std::shared_ptr<VariantPart> variant_part_in, bool is_packed_in)
       : TypeExpr(Kind::TyRecord, loc_in),
         fields(std::move(fields_in)),
+        variant_part(std::move(variant_part_in)),
+        is_packed(is_packed_in) {}
+  TyRecord(Location loc_in, std::vector<RecordField> fields_in,
+           std::vector<std::shared_ptr<TypeDecl>> nested_types_in,
+           std::shared_ptr<VariantPart> variant_part_in, bool is_packed_in)
+      : TypeExpr(Kind::TyRecord, loc_in),
+        fields(std::move(fields_in)),
+        nested_types(std::move(nested_types_in)),
         variant_part(std::move(variant_part_in)),
         is_packed(is_packed_in) {}
 };
@@ -768,7 +777,7 @@ enum class Visibility : uint8_t {
   StrictProtected,
 };
 
-enum class ObjectMemberKind : uint8_t { Field, Method, Property };
+enum class ObjectMemberKind : uint8_t { Field, Method, Property, Type };
 
 struct PropertyDecl {
   struct Accessor {
@@ -800,6 +809,7 @@ struct PropertyDecl {
 
 struct ObjectMember {
   // One of: field (names+type) | method (ProcDecl) | property (PropertyDecl)
+  // | nested type (TypeDecl)
   Location loc;
   Visibility vis = Visibility::Public;
   ObjectMemberKind kind = ObjectMemberKind::Field;
@@ -812,6 +822,8 @@ struct ObjectMember {
   std::shared_ptr<ProcDecl> method;
   // property side
   PropertyDecl property;
+  // nested type side
+  std::shared_ptr<TypeDecl> type_decl;
   ObjectMember() = default;
   ObjectMember(Location loc_in, Visibility vis_in,
                std::vector<std::string> field_names_in, TypePtr field_type_in,
@@ -833,6 +845,12 @@ struct ObjectMember {
         vis(vis_in),
         kind(ObjectMemberKind::Property),
         property(std::move(property_in)) {}
+  ObjectMember(Location loc_in, Visibility vis_in,
+               std::shared_ptr<TypeDecl> type_decl_in)
+      : loc(loc_in),
+        vis(vis_in),
+        kind(ObjectMemberKind::Type),
+        type_decl(std::move(type_decl_in)) {}
 };
 
 struct TyObject : TypeExpr {

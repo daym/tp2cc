@@ -159,6 +159,69 @@ std::string join_path(const std::vector<std::string>& path) {
   return out;
 }
 
+std::string type_symbol_path(const TypeSymbol& symbol) {
+  std::vector<std::string> path = symbol.owner_path;
+  path.push_back(symbol.name);
+  return join_path(path);
+}
+
+std::vector<std::string> split_path(std::string_view path) {
+  std::vector<std::string> parts;
+  size_t start = 0;
+  while (start <= path.size()) {
+    size_t dot = path.find('.', start);
+    if (dot == std::string_view::npos) {
+      parts.push_back(std::string(path.substr(start)));
+      break;
+    }
+    parts.push_back(std::string(path.substr(start, dot - start)));
+    start = dot + 1;
+  }
+  return parts;
+}
+
+const std::unordered_map<std::string, std::shared_ptr<TypeSymbol>>*
+nested_type_map(const TypeSymbol& symbol) {
+  if (const ClassInfo* ci = symbol.class_info()) return &ci->nested_types;
+  if (const RecordInfo* ri = symbol.record_info()) return &ri->nested_types;
+  return nullptr;
+}
+
+std::unordered_map<std::string, std::shared_ptr<TypeSymbol>>*
+nested_type_map_mut(TypeSymbol& symbol) {
+  if (ClassInfo* ci = symbol.mutable_class_info()) return &ci->nested_types;
+  if (RecordInfo* ri = symbol.mutable_record_info()) return &ri->nested_types;
+  return nullptr;
+}
+
+const TypeSymbol* lookup_nested_type_symbol(
+    const TypeSymbol* root, const std::vector<std::string>& path,
+    size_t start_index) {
+  const TypeSymbol* current = root;
+  for (size_t i = start_index; current && i < path.size(); ++i) {
+    const auto* nested = nested_type_map(*current);
+    if (!nested) return nullptr;
+    auto it = nested->find(path[i]);
+    if (it == nested->end()) return nullptr;
+    current = it->second.get();
+  }
+  return current;
+}
+
+TypeSymbol* lookup_nested_type_symbol_mut(
+    TypeSymbol* root, const std::vector<std::string>& path,
+    size_t start_index) {
+  TypeSymbol* current = root;
+  for (size_t i = start_index; current && i < path.size(); ++i) {
+    auto* nested = nested_type_map_mut(*current);
+    if (!nested) return nullptr;
+    auto it = nested->find(path[i]);
+    if (it == nested->end()) return nullptr;
+    current = it->second.get();
+  }
+  return current;
+}
+
 bool proc_accepts_zero_args(const ProcDecl& pd) {
   // Defaulted trailing parameters make a Pascal routine callable as `foo`
   // / `foo()` even when its flattened formal count is non-zero.
@@ -237,6 +300,8 @@ TypeSymbol* find_unit_type_symbol(UnitInfo& ui, const std::string& name) {
   return mit == ui.impl_types.end() ? nullptr : mit->second;
 }
 
+void populate_nested_types(TypeSymbol& symbol);
+
 TypeSymbol* upsert_unit_type_symbol(TypeRegistry& r, UnitInfo* ui,
                                     bool is_interface,
                                     TypeSymbol new_symbol) {
@@ -255,6 +320,7 @@ TypeSymbol* upsert_unit_type_symbol(TypeRegistry& r, UnitInfo* ui,
       *stored = std::move(new_symbol);
     }
   }
+  populate_nested_types(*stored);
   if (ui) {
     if (is_interface || ui->iface_types.count(low_name)) {
       ui->iface_types[low_name] = stored;
@@ -436,6 +502,7 @@ ClassInfo class_info_for(const std::string& unit, const std::string& name,
                    .fields = class_fields(to),
                    .methods = class_methods(unit, to),
                    .properties = class_properties(to),
+                   .nested_types = {},
                    .enum_members = class_enum_members(to),
                    .default_property_name = class_default_property_name(to)};
 }
@@ -454,7 +521,88 @@ RecordInfo record_info_for(const std::string& unit, const std::string& name,
   return RecordInfo{.name = name,
                     .defining_unit = unit,
                     .is_packed = tr.is_packed,
-                    .fields = record_fields(tr)};
+                    .fields = record_fields(tr),
+                    .nested_types = {}};
+}
+
+TypeSymbol make_type_symbol_for_type_with_owner(
+    std::string_view unit, std::string_view name,
+    std::shared_ptr<const TypeExpr> type,
+    std::vector<std::string> owner_path);
+
+void populate_nested_types(TypeSymbol& symbol) {
+  if (!symbol.type) return;
+  if (auto* nested = nested_type_map_mut(symbol)) {
+    // A forward class symbol can later be replaced by its full declaration.
+    // Rebuild child type symbols from the current AST so old nested aliases or
+    // classes cannot survive that replacement.
+    nested->clear();
+  }
+  std::vector<std::shared_ptr<TypeDecl>> nested_decls;
+  if (symbol.type->kind == Kind::TyObject) {
+    const auto& obj = static_cast<const TyObject&>(*symbol.type);
+    for (const auto& member : obj.members) {
+      if (member.kind == ObjectMemberKind::Type && member.type_decl) {
+        nested_decls.push_back(member.type_decl);
+      }
+    }
+  } else if (symbol.type->kind == Kind::TyRecord) {
+    const auto& rec = static_cast<const TyRecord&>(*symbol.type);
+    nested_decls = rec.nested_types;
+  } else {
+    return;
+  }
+
+  std::vector<std::string> child_owner_path = symbol.owner_path;
+  child_owner_path.push_back(symbol.name);
+  for (const auto& td : nested_decls) {
+    if (!td || !td->type) continue;
+    auto child = std::make_shared<TypeSymbol>(
+        make_type_symbol_for_type_with_owner(symbol.defining_unit, td->name,
+                                             td->type, child_owner_path));
+    if (ClassInfo* ci = symbol.mutable_class_info()) {
+      ci->nested_types.insert_or_assign(child->name, child);
+    } else if (RecordInfo* ri = symbol.mutable_record_info()) {
+      ri->nested_types.insert_or_assign(child->name, child);
+    }
+  }
+}
+
+TypeSymbol make_type_symbol_for_type_with_owner(
+    std::string_view unit, std::string_view name,
+    std::shared_ptr<const TypeExpr> type,
+    std::vector<std::string> owner_path) {
+  const std::string low_name = lc(std::string(name));
+  const std::string low_unit = lc(std::string(unit));
+  if (!type) {
+    throw std::logic_error("make_type_symbol_for_type called without a type");
+  }
+  TypeSymbolPayload payload =
+      AliasInfo{.defining_unit = low_unit, .target = type};
+  switch (type_symbol_kind_for_decl(*type)) {
+    case TypeSymbolKind::Class:
+      payload = class_info_for(low_unit, low_name,
+                               static_cast<const TyObject&>(*type));
+      break;
+    case TypeSymbolKind::Record:
+      payload = record_info_for(low_unit, low_name,
+                                static_cast<const TyRecord&>(*type));
+      break;
+    case TypeSymbolKind::Interface:
+      payload = interface_info_for(low_unit, low_name,
+                                   static_cast<const TyInterface&>(*type));
+      break;
+    case TypeSymbolKind::Enum:
+      payload = make_enum_info(low_unit, low_name, type_mangle(low_name),
+                               static_cast<const TyEnum&>(*type));
+      break;
+    case TypeSymbolKind::Alias:
+      break;
+  }
+  TypeSymbol symbol(low_name, low_unit, std::move(type), std::move(payload));
+  symbol.owner_path = std::move(owner_path);
+  populate_nested_types(symbol);
+  return symbol;
 }
 
 UnitInfo unit_info_for(
@@ -622,6 +770,7 @@ void register_runtime_class(TypeRegistry& r, std::string name,
                 .fields = {},
                 .methods = std::move(method_map),
                 .properties = {},
+                .nested_types = {},
                 .enum_members = {},
                 .default_property_name = {}};
 }
@@ -872,34 +1021,8 @@ std::string PropertyAccessorInfo::display_name() const {
 TypeSymbol make_type_symbol_for_type(
     std::string_view unit, std::string_view name,
     std::shared_ptr<const TypeExpr> type) {
-  const std::string low_name = lc(std::string(name));
-  const std::string low_unit = lc(std::string(unit));
-  if (!type) {
-    throw std::logic_error("make_type_symbol_for_type called without a type");
-  }
-  TypeSymbolPayload payload =
-      AliasInfo{.defining_unit = low_unit, .target = type};
-  switch (type_symbol_kind_for_decl(*type)) {
-    case TypeSymbolKind::Class:
-      payload = class_info_for(low_unit, low_name,
-                               static_cast<const TyObject&>(*type));
-      break;
-    case TypeSymbolKind::Record:
-      payload = record_info_for(low_unit, low_name,
-                                static_cast<const TyRecord&>(*type));
-      break;
-    case TypeSymbolKind::Interface:
-      payload = interface_info_for(low_unit, low_name,
-                                   static_cast<const TyInterface&>(*type));
-      break;
-    case TypeSymbolKind::Enum:
-      payload = make_enum_info(low_unit, low_name, type_mangle(low_name),
-                               static_cast<const TyEnum&>(*type));
-      break;
-    case TypeSymbolKind::Alias:
-      break;
-  }
-  return TypeSymbol(low_name, low_unit, std::move(type), std::move(payload));
+  return make_type_symbol_for_type_with_owner(
+      unit, name, std::move(type), std::vector<std::string>{});
 }
 
 TypeSymbol make_enum_type_symbol(std::string_view unit, std::string_view name,
@@ -1404,7 +1527,10 @@ const TypeSymbol* TypeRegistry::lookup_type_symbol_exact(
   const std::string target_name = lc(std::string(name));
   auto uit = units.find(target_unit);
   if (uit == units.end()) return nullptr;
-  return uit->second.find_type(target_name);
+  std::vector<std::string> path = split_path(target_name);
+  if (path.empty()) return nullptr;
+  const TypeSymbol* root = uit->second.find_type(path.front());
+  return lookup_nested_type_symbol(root, path, 1);
 }
 
 TypeSymbol* TypeRegistry::lookup_type_symbol_exact_mut(
@@ -1413,19 +1539,32 @@ TypeSymbol* TypeRegistry::lookup_type_symbol_exact_mut(
   const std::string target_name = lc(std::string(name));
   auto uit = units.find(target_unit);
   if (uit == units.end()) return nullptr;
-  if (auto iit = uit->second.iface_types.find(target_name);
+  std::vector<std::string> path = split_path(target_name);
+  if (path.empty()) return nullptr;
+  if (auto iit = uit->second.iface_types.find(path.front());
       iit != uit->second.iface_types.end()) {
-    return iit->second;
+    return lookup_nested_type_symbol_mut(iit->second, path, 1);
   }
-  auto mit = uit->second.impl_types.find(target_name);
-  return mit == uit->second.impl_types.end() ? nullptr : mit->second;
+  auto mit = uit->second.impl_types.find(path.front());
+  return mit == uit->second.impl_types.end()
+             ? nullptr
+             : lookup_nested_type_symbol_mut(mit->second, path, 1);
 }
 
 const TypeSymbol* TypeRegistry::lookup_type_symbol(
     std::string_view name, std::string_view current_unit) const {
   const std::string low = lc(std::string(name));
   if (auto dot = low.find('.'); dot != std::string::npos) {
-    return lookup_type_symbol_exact(low.substr(0, dot), low.substr(dot + 1));
+    std::vector<std::string> path = split_path(low);
+    if (path.empty()) return nullptr;
+    if (const TypeSymbol* root =
+            lookup_type_symbol(path.front(), current_unit)) {
+      if (const TypeSymbol* nested =
+              lookup_nested_type_symbol(root, path, 1)) {
+        return nested;
+      }
+    }
+    return lookup_type_symbol_exact(path.front(), low.substr(dot + 1));
   }
 
   const std::string cur_unit = lc(std::string(current_unit));
@@ -1570,7 +1709,11 @@ std::string TypeRegistry::pointer_target_type_name(
   if (!tgt) return {};
   // Target may itself be a TyName.
   if (tgt->kind == Kind::TyName) {
-    return lc(static_cast<const TyName&>(*tgt).name);
+    const auto& n = static_cast<const TyName&>(*tgt);
+    if (const TypeSymbol* symbol = lookup_type_symbol(n.name, current_unit)) {
+      return type_symbol_path(*symbol);
+    }
+    return lc(n.name);
   }
   // Target could be an inline struct. Not useful here.
   return {};
@@ -1582,7 +1725,7 @@ std::string TypeRegistry::direct_type_name(
   if (te->kind == Kind::TyName) {
     const auto& n = static_cast<const TyName&>(*te);
     if (const TypeSymbol* symbol = lookup_type_symbol(n.name, current_unit)) {
-      return symbol->name;
+      return type_symbol_path(*symbol);
     }
     return lc(n.name);
   }

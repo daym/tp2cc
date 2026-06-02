@@ -28,6 +28,41 @@ static const TypeSymbol* local_type_symbol(const ScopeStateView& scope,
              : nullptr;
 }
 
+static std::string type_symbol_source_name(const TypeSymbol& symbol) {
+  std::string out;
+  for (const auto& owner : symbol.owner_path) {
+    if (!out.empty()) out += ".";
+    out += owner;
+  }
+  if (!out.empty()) out += ".";
+  out += symbol.name;
+  return out;
+}
+
+static bool is_local_type_name(const ScopeStateView& scope,
+                               const TypeExpr* type) {
+  if (!type || type->kind != Kind::TyName) return false;
+  const auto& name = static_cast<const TyName&>(*type).name;
+  return local_type_symbol(scope, name) != nullptr;
+}
+
+// Method bodies are emitted outside the Pascal class declaration, but an
+// unqualified type such as `TInner' in that body can still be a lexical child
+// of the method owner. Return the full source owner path so class/member lookup
+// walks `TOuter.TInner' rather than treating `TInner' as a unit-level type.
+static std::string local_member_owner_type_name(
+    const ScopeStateView& scope, const TypeExpr* type) {
+  if (!type || type->kind != Kind::TyName) return {};
+  const auto& name = static_cast<const TyName&>(*type).name;
+  const TypeSymbol* symbol = local_type_symbol(scope, name);
+  if (!symbol) return {};
+  if (!symbol->class_info() && !symbol->record_info() &&
+      !symbol->interface_info()) {
+    return {};
+  }
+  return type_symbol_source_name(*symbol);
+}
+
 static const ProcInfo* unique_zero_arg_proc(
     const std::vector<ProcInfo>* procs) {
   if (!procs) return nullptr;
@@ -196,6 +231,11 @@ const TypeExpr* EmitAnalysis::ord_result_type_for_operand(
 
 const ClassInfo* EmitAnalysis::class_info_for_type_name(std::string_view name) {
   std::string low = ascii_lower(name);
+  if (const TypeSymbol* local = local_type_symbol(scope_, low)) {
+    // Method bodies and nested type declarations can resolve class names
+    // through the current lexical type scope before unit-visible symbols.
+    if (const ClassInfo* ci = local->class_info()) return ci;
+  }
   if (std::string builtin = builtin_reference_class_struct_cxx(low);
       !builtin.empty()) {
     static std::unordered_map<std::string, ClassInfo> builtins;
@@ -1590,34 +1630,39 @@ std::string EmitAnalysis::deduce_class_alias(const Expr& e) {
   // alias recovery on the source-language path instead of canonicalized class
   // bodies. That matters for casts, `self`, and chained member accesses.
   if (auto cls = metaclass_target_name(t); !cls.empty()) return cls;
-  if (auto cls = registry_->direct_type_name(t, scope_.current_unit_name);
-      !cls.empty()) return cls;
-  return registry_->direct_type_name(
-      registry_->canonicalize(t, scope_.current_unit_name),
-      scope_.current_unit_name);
+  if (auto cls = local_member_owner_type_name(scope_, t); !cls.empty()) {
+    return cls;
+  }
+  if (!is_local_type_name(scope_, t)) {
+    if (auto cls = registry_->direct_type_name(t, scope_.current_unit_name);
+        !cls.empty()) return cls;
+  }
+  const TypeExpr* canon = canonicalize_type(t);
+  if (auto cls = local_member_owner_type_name(scope_, canon); !cls.empty()) {
+    return cls;
+  }
+  return registry_->direct_type_name(canon, scope_.current_unit_name);
 }
 
 std::string EmitAnalysis::canonical_method_owner_type_name(
     std::string_view owner) {
-  std::string current = ascii_lower(owner);
-  if (!registry_ || current.empty()) return current;
+  const std::string original = ascii_lower(owner);
+  if (!registry_ || original.empty()) return original;
 
-  std::string explicit_unit;
-  if (auto dot = current.find('.'); dot != std::string::npos) {
-    explicit_unit = current.substr(0, dot);
-    current = current.substr(dot + 1);
+  const TypeSymbol* symbol = local_type_symbol(scope_, original);
+  if (!symbol) {
+    symbol = registry_->lookup_type_symbol(original, scope_.current_unit_name);
   }
+  if (!symbol) return original;
 
+  std::string current = type_symbol_source_name(*symbol);
+  std::string lookup_unit = symbol->defining_unit.empty()
+                                ? scope_.current_unit_name
+                                : symbol->defining_unit;
   std::unordered_set<std::string> seen;
   for (int hops = 0; hops < kMaxAliasChainHops; ++hops) {
-    if (!seen.insert(current).second) break;
-    const TypeSymbol* symbol = nullptr;
-    if (!explicit_unit.empty()) {
-      symbol = registry_->lookup_type_symbol_exact(explicit_unit, current);
-    } else if (!scope_.current_unit_name.empty()) {
-      symbol =
-          registry_->lookup_type_symbol_exact(scope_.current_unit_name, current);
-    }
+    const std::string identity = lookup_unit + "." + current;
+    if (!seen.insert(identity).second) break;
     const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
     if (!alias || !alias->target) {
       break;
@@ -1630,23 +1675,24 @@ std::string EmitAnalysis::canonical_method_owner_type_name(
     // `TAlias = TReal; procedure TAlias.M;`.  C++ cannot define methods on
     // a `using`/typedef alias, so canonicalize only the owner type name of
     // out-of-class method definitions to the underlying Pascal class.
-    std::string next = ascii_lower(static_cast<const TyName&>(*target).name);
-    if (auto dot = next.find('.'); dot != std::string::npos) {
-      explicit_unit = next.substr(0, dot);
-      next = next.substr(dot + 1);
+    const std::string next =
+        ascii_lower(static_cast<const TyName&>(*target).name);
+    const TypeSymbol* next_symbol = registry_->lookup_type_symbol(
+        next, lookup_unit.empty() ? scope_.current_unit_name : lookup_unit);
+    if (!next_symbol) {
+      current = next;
+      break;
     }
-    current = std::move(next);
+    symbol = next_symbol;
+    current = type_symbol_source_name(*symbol);
+    lookup_unit = symbol->defining_unit.empty() ? lookup_unit
+                                                : symbol->defining_unit;
   }
 
-  if (!explicit_unit.empty()) {
-    if (const auto* ci = class_info_for_type_name(explicit_unit + "." + current);
-        ci) {
-      return explicit_unit + "." + current;
-    }
-  } else if (class_info_for_type_name(current)) {
+  if (symbol && symbol->class_info()) {
     return current;
   }
-  return ascii_lower(owner);
+  return original;
 }
 
 const TypeExpr* EmitAnalysis::lookup_record_field_type_in_type(

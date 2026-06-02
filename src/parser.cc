@@ -275,6 +275,13 @@ bool Parser::is_directive(const char* name) const {
   return cur_.kind == Tok::Ident && cur_.text == name;
 }
 
+bool Parser::identifier_ends_nested_type_block() const {
+  return is_directive("private") || is_directive("protected") ||
+         is_directive("public") || is_directive("published") ||
+         is_directive("strict") || is_directive("final") ||
+         is_directive("property");
+}
+
 std::string Parser::consume_name_or_directive(const char* ctx) {
   if (cur_.kind == Tok::Ident) {
     std::string s = cur_.text;
@@ -616,16 +623,19 @@ std::vector<DeclPtr> Parser::parse_type_section() {
   std::vector<DeclPtr> out;
   expect(Tok::KwType, "type section");
   while (check(Tok::Ident)) {
-    Location loc = cur_.loc;
-    std::string name = cur_.text;
-    advance();
-    expect(Tok::Eq, "type decl");
-    TypePtr type = parse_type();
-    expect(Tok::Semi, "type decl");
-    out.push_back(
-        std::make_shared<TypeDecl>(loc, std::move(name), std::move(type)));
+    out.push_back(parse_type_decl_from_current_ident("type decl"));
   }
   return out;
+}
+
+std::shared_ptr<TypeDecl> Parser::parse_type_decl_from_current_ident(
+    const char* ctx) {
+  Location loc = cur_.loc;
+  std::string name = consume_ident(ctx);
+  expect(Tok::Eq, ctx);
+  TypePtr type = parse_type();
+  expect(Tok::Semi, ctx);
+  return std::make_shared<TypeDecl>(loc, std::move(name), std::move(type));
 }
 
 std::vector<DeclPtr> Parser::parse_var_section() {
@@ -863,13 +873,21 @@ std::shared_ptr<ProcDecl> Parser::parse_proc_decl(
     bool in_type_member) {
   Location loc = cur_.loc;
   advance();  // consume procedure/function/constructor/destructor
-  // Name, possibly qualified `TFoo.Bar`. Allow directive words as names
-  // (e.g., `function TCollection.At(...)`).
-  std::string name = consume_name_or_directive("routine name");
+  // Name, possibly qualified `TFoo.Bar` or `TOuter.TInner.Bar`. Allow
+  // directive words as names (e.g., `function TCollection.At(...)`).
+  std::vector<std::string> qualified_name;
+  qualified_name.push_back(consume_name_or_directive("routine name"));
+  while (accept(Tok::Dot)) {
+    qualified_name.push_back(consume_name_or_directive("routine name"));
+  }
   std::string of_type;
-  if (accept(Tok::Dot)) {
-    of_type = std::move(name);
-    name = consume_name_or_directive("method name");
+  std::string name = std::move(qualified_name.back());
+  qualified_name.pop_back();
+  if (!qualified_name.empty()) {
+    for (const auto& segment : qualified_name) {
+      if (!of_type.empty()) of_type += ".";
+      of_type += segment;
+    }
   }
   std::vector<Param> params;
   if (accept(Tok::LParen)) {
@@ -1250,9 +1268,42 @@ TypePtr Parser::parse_record_type(bool packed) {
   Location loc = cur_.loc;
   expect(Tok::KwRecord, "record");
   std::vector<RecordField> fields;
+  std::vector<std::shared_ptr<TypeDecl>> nested_types;
 
+  enum class MemberBlock { General, Type };
+  MemberBlock member_block = MemberBlock::General;
   while (!at_end() && !check(Tok::KwEnd) && !check(Tok::KwCase)) {
+    // Delphi/FPC nested type sections are not terminated by `Ident :`.
+    // Once `type' is seen, ordinary identifiers keep starting type
+    // declarations until a visibility marker or non-identifier member token
+    // returns control to the containing record/class member parser.
+    if (accept(Tok::KwType)) {
+      member_block = MemberBlock::Type;
+      continue;
+    }
+    if (accept(Tok::KwVar)) {
+      member_block = MemberBlock::General;
+      continue;
+    }
+    if (is_directive("private") || is_directive("protected") ||
+        is_directive("public") || is_directive("published")) {
+      advance();
+      member_block = MemberBlock::General;
+      continue;
+    }
+    if (is_directive("strict")) {
+      advance();
+      if (is_directive("private") || is_directive("protected")) advance();
+      member_block = MemberBlock::General;
+      continue;
+    }
     if (cur_.kind != Tok::Ident) break;
+    if (member_block == MemberBlock::Type &&
+        !identifier_ends_nested_type_block()) {
+      nested_types.push_back(parse_type_decl_from_current_ident(
+          "nested record type decl"));
+      continue;
+    }
     std::vector<std::string> names;
     names.push_back(cur_.text);
     advance();
@@ -1270,7 +1321,8 @@ TypePtr Parser::parse_record_type(bool packed) {
 
   expect(Tok::KwEnd, "record");
   return std::make_shared<TyRecord>(
-      loc, std::move(fields), std::move(vpart), packed);
+      loc, std::move(fields), std::move(nested_types), std::move(vpart),
+      packed);
 }
 
 TypePtr Parser::parse_object_type() {
@@ -1317,6 +1369,8 @@ TypePtr Parser::parse_object_type() {
   // `class var' starts a static-field section; a new visibility section
   // starts ordinary instance fields again.
   bool class_var_section = false;
+  enum class MemberBlock { General, Type };
+  MemberBlock member_block = MemberBlock::General;
   std::vector<ObjectMember> members;
   while (!at_end() && !check(Tok::KwEnd)) {
     // visibility change
@@ -1324,18 +1378,21 @@ TypePtr Parser::parse_object_type() {
       advance();
       vis = Visibility::Public;
       class_var_section = false;
+      member_block = MemberBlock::General;
       continue;
     }
     if (is_directive("private")) {
       advance();
       vis = Visibility::Private;
       class_var_section = false;
+      member_block = MemberBlock::General;
       continue;
     }
     if (is_directive("protected")) {
       advance();
       vis = Visibility::Protected;
       class_var_section = false;
+      member_block = MemberBlock::General;
       continue;
     }
     if (is_directive("strict")) {
@@ -1352,12 +1409,31 @@ TypePtr Parser::parse_object_type() {
                      "expected `private' or `protected' after `strict'");
       }
       class_var_section = false;
+      member_block = MemberBlock::General;
       continue;
     }
     if (is_directive("published")) {
       advance();
       vis = Visibility::Public;
       class_var_section = false;
+      member_block = MemberBlock::General;
+      continue;
+    }
+
+    // Match Delphi/FPC class syntax: after `type', ordinary identifiers remain
+    // nested type declarations. `public/private/strict' and non-identifier
+    // member starters end the type section implicitly.
+    if (accept(Tok::KwType)) {
+      class_var_section = false;
+      member_block = MemberBlock::Type;
+      continue;
+    }
+    if (member_block == MemberBlock::Type && cur_.kind == Tok::Ident &&
+        !identifier_ends_nested_type_block()) {
+      Location member_loc = cur_.loc;
+      members.emplace_back(
+          member_loc, vis,
+          parse_type_decl_from_current_ident("nested object type decl"));
       continue;
     }
 
@@ -1372,6 +1448,7 @@ TypePtr Parser::parse_object_type() {
           continue;
         }
         class_var_section = true;
+        member_block = MemberBlock::General;
         continue;
       }
       if (!(check(Tok::KwProcedure) || check(Tok::KwFunction) ||

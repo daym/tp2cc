@@ -222,6 +222,13 @@ std::string EmitTypes::type_name_to_cxx(const TyName& n) {
   // generated `t_*` C++ type names.
   if (registry_knows_translated_type(n.name)) {
     auto lookup_name = ascii_lower(n.name);
+    if (const TypeSymbol* local = local_type_symbol(scope_, lookup_name)) {
+      if (const ClassInfo* ci = local->class_info();
+          ci && ci->is_reference_type) {
+        return named_type_struct_cxx(n.name) + "*";
+      }
+      if (local->interface_info()) return named_type_struct_cxx(n.name) + "*";
+    }
     if (registry_) {
       const ClassInfo* ci =
           registry_->lookup_class(lookup_name, scope_.current_unit_name);
@@ -262,8 +269,22 @@ bool EmitTypes::should_qualify_unit(std::string_view defining_unit) const {
   return !defining_unit.empty() && defining_unit != active_emission_unit_name();
 }
 
+std::string EmitTypes::type_symbol_struct_cxx(
+    const TypeSymbol& symbol) const {
+  std::string out = should_qualify_unit(symbol.defining_unit)
+                        ? unit_namespace_prefix(symbol.defining_unit)
+                        : std::string{};
+  for (const auto& owner : symbol.owner_path) {
+    out += type_mangle(owner);
+    out += "::";
+  }
+  out += type_mangle(symbol.name);
+  return out;
+}
+
 std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
-  // Same registry-first, then runtime-name ordering as type_name_to_cxx.
+  // Keep runtime names fixed unless a translated lexical type exists for the
+  // spelling below.
   if (!registry_knows_translated_type(name)) {
     if (std::string rt = runtime_named_type_cxx(name); !rt.empty()) {
       return rt;
@@ -273,10 +294,20 @@ std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
       !cls.empty()) {
     return cls;
   }
-  auto dot = name.find('.');
-  if (dot != std::string_view::npos) {
-    return unit_namespace_prefix(name.substr(0, dot)) +
-           type_mangle(name.substr(dot + 1));
+  const std::string low = ascii_lower(name);
+  if (const TypeSymbol* local = local_type_symbol(scope_, low)) {
+    // Pascal local and nested type declarations are lexical symbols. They must
+    // shadow same-named unit-level types when emitting a C++ type name, just as
+    // they do when analysis resolves a Pascal type expression.  This branch is
+    // reached through the local spelling, so emit the name visible in the
+    // current C++ scope instead of requalifying it through its owner path.
+    return type_mangle(local->name);
+  }
+  if (registry_) {
+    if (const TypeSymbol* symbol =
+            registry_->lookup_type_symbol(low, scope_.current_unit_name)) {
+      return type_symbol_struct_cxx(*symbol);
+    }
   }
   return visible_type_prefix(name) + type_mangle(name);
 }
@@ -311,11 +342,37 @@ bool EmitTypes::registry_knows_translated_type(std::string_view name) {
 }
 
 std::string EmitTypes::metaclass_struct_cxx(std::string_view class_name) {
-  auto dot = class_name.find('.');
-  std::string tail =
-      (dot == std::string_view::npos) ? std::string(class_name)
-                                      : std::string(class_name.substr(dot + 1));
+  std::string tail = std::string(class_name);
   std::string prefix;
+  if (const TypeSymbol* symbol = local_type_symbol(scope_, class_name)) {
+    tail.clear();
+    for (const auto& owner : symbol->owner_path) {
+      if (!tail.empty()) tail += "_";
+      tail += type_mangle(owner);
+    }
+    if (!tail.empty()) tail += "_";
+    tail += type_mangle(symbol->name);
+    if (should_qualify_unit(symbol->defining_unit)) {
+      prefix = unit_namespace_prefix(symbol->defining_unit);
+    }
+    return prefix + "tp2cc_metaclass_" + tail;
+  }
+  if (registry_) {
+    if (const TypeSymbol* symbol =
+            registry_->lookup_type_symbol(class_name, scope_.current_unit_name)) {
+      tail.clear();
+      for (const auto& owner : symbol->owner_path) {
+        if (!tail.empty()) tail += "_";
+        tail += type_mangle(owner);
+      }
+      if (!tail.empty()) tail += "_";
+      tail += type_mangle(symbol->name);
+      if (should_qualify_unit(symbol->defining_unit)) {
+        prefix = unit_namespace_prefix(symbol->defining_unit);
+      }
+      return prefix + "tp2cc_metaclass_" + tail;
+    }
+  }
   if (const auto* ci = analysis_.class_info_for_type_name(class_name);
       ci && should_qualify_unit(ci->defining_unit)) {
     prefix = unit_namespace_prefix(ci->defining_unit);
@@ -324,11 +381,37 @@ std::string EmitTypes::metaclass_struct_cxx(std::string_view class_name) {
 }
 
 std::string EmitTypes::metaclass_value_fn_cxx(std::string_view class_name) {
-  auto dot = class_name.find('.');
-  std::string tail =
-      (dot == std::string_view::npos) ? std::string(class_name)
-                                      : std::string(class_name.substr(dot + 1));
+  std::string tail = std::string(class_name);
   std::string prefix;
+  if (const TypeSymbol* symbol = local_type_symbol(scope_, class_name)) {
+    tail.clear();
+    for (const auto& owner : symbol->owner_path) {
+      if (!tail.empty()) tail += "_";
+      tail += type_mangle(owner);
+    }
+    if (!tail.empty()) tail += "_";
+    tail += type_mangle(symbol->name);
+    if (should_qualify_unit(symbol->defining_unit)) {
+      prefix = unit_namespace_prefix(symbol->defining_unit);
+    }
+    return prefix + "tp2cc_metaclass_value_" + tail;
+  }
+  if (registry_) {
+    if (const TypeSymbol* symbol =
+            registry_->lookup_type_symbol(class_name, scope_.current_unit_name)) {
+      tail.clear();
+      for (const auto& owner : symbol->owner_path) {
+        if (!tail.empty()) tail += "_";
+        tail += type_mangle(owner);
+      }
+      if (!tail.empty()) tail += "_";
+      tail += type_mangle(symbol->name);
+      if (should_qualify_unit(symbol->defining_unit)) {
+        prefix = unit_namespace_prefix(symbol->defining_unit);
+      }
+      return prefix + "tp2cc_metaclass_value_" + tail;
+    }
+  }
   if (const auto* ci = analysis_.class_info_for_type_name(class_name);
       ci && should_qualify_unit(ci->defining_unit)) {
     prefix = unit_namespace_prefix(ci->defining_unit);
