@@ -92,6 +92,8 @@ class EmitDecls {
       std::string_view concrete_class, const MetaclassCallable& target);
   bool metaclass_callable_matches_impl(const MetaclassCallable& target,
                                        const MethodSig& candidate);
+  std::string method_sig_param_types(const MethodSig& sig);
+  std::string method_sig_param_list(const MethodSig& sig);
   std::string metaclass_callable_param_types(
       const MetaclassCallable& callable);
   bool same_metaclass_callable_surface(const MetaclassCallable& lhs,

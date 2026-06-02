@@ -18,6 +18,53 @@ namespace tp2cc {
 
 using namespace ast;
 
+namespace {
+
+class ScopedSignatureLookupUnit {
+ public:
+  ScopedSignatureLookupUnit(ScopeStateView& scope, const MethodSig* sig)
+      : scope_(scope),
+        saved_unit_(scope.current_unit_name),
+        saved_lookup_emission_unit_(scope.lookup_emission_unit_name),
+        saved_type_scope_(scope.type_scope) {
+    if (!sig || sig->defining_unit.empty() ||
+        sig->defining_unit == scope_.current_unit_name) {
+      return;
+    }
+
+    // MethodSig parameter and result type names were parsed in the declaring
+    // unit. A derived metaclass can be emitted in another unit, but inherited
+    // constructor entries must still resolve aliases through the constructor's
+    // original unit and its imports.
+    active_ = true;
+    scope_.lookup_emission_unit_name =
+        saved_lookup_emission_unit_.empty() ? saved_unit_
+                                            : saved_lookup_emission_unit_;
+    scope_.current_unit_name = sig->defining_unit;
+    scope_.type_scope = nullptr;
+  }
+
+  ScopedSignatureLookupUnit(const ScopedSignatureLookupUnit&) = delete;
+  ScopedSignatureLookupUnit& operator=(const ScopedSignatureLookupUnit&) =
+      delete;
+
+  ~ScopedSignatureLookupUnit() {
+    if (!active_) return;
+    scope_.current_unit_name = saved_unit_;
+    scope_.lookup_emission_unit_name = saved_lookup_emission_unit_;
+    scope_.type_scope = saved_type_scope_;
+  }
+
+ private:
+  ScopeStateView& scope_;
+  std::string saved_unit_;
+  std::string saved_lookup_emission_unit_;
+  TypeScopeFrame* saved_type_scope_ = nullptr;
+  bool active_ = false;
+};
+
+}  // namespace
+
 EmitDecls::EmitDecls(const TypeRegistry* registry, ScopeStateView& scope,
                      EmitAnalysis& analysis,
                      EmitTypes& types, EmitStorage& storage,
@@ -229,14 +276,26 @@ bool EmitDecls::metaclass_callable_matches_impl(
   }
   if (!target.sig || !target.sig->decl) return false;
   return candidate.kind == target.sig->kind &&
-         types_.procedural_param_types_to_cxx(candidate.decl->params) ==
-             types_.procedural_param_types_to_cxx(target.sig->decl->params);
+         method_sig_param_types(candidate) ==
+             method_sig_param_types(*target.sig);
+}
+
+std::string EmitDecls::method_sig_param_types(const MethodSig& sig) {
+  if (!sig.decl) return {};
+  ScopedSignatureLookupUnit lookup_unit(scope_, &sig);
+  return types_.procedural_param_types_to_cxx(sig.decl->params);
+}
+
+std::string EmitDecls::method_sig_param_list(const MethodSig& sig) {
+  if (!sig.decl) return {};
+  ScopedSignatureLookupUnit lookup_unit(scope_, &sig);
+  return param_list_to_cxx(sig.decl->params);
 }
 
 std::string EmitDecls::metaclass_callable_param_types(
     const MetaclassCallable& callable) {
   if (callable.implicit_root_create || !callable.sig) return {};
-  return types_.procedural_param_types_to_cxx(callable.sig->decl->params);
+  return method_sig_param_types(*callable.sig);
 }
 
 bool EmitDecls::same_metaclass_callable_surface(
@@ -301,6 +360,7 @@ std::string EmitDecls::metaclass_callable_return_type(
       (callable.sig && callable.sig->kind == SymKind::Constructor)) {
     return types_.named_type_struct_cxx(target_class) + "*";
   }
+  ScopedSignatureLookupUnit lookup_unit(scope_, callable.sig);
   const auto& pd = *callable.sig->decl;
   if (pd.pkind == ProcKind::Function && pd.return_type) {
     return types_.type_to_cxx(*pd.return_type);
@@ -311,7 +371,7 @@ std::string EmitDecls::metaclass_callable_return_type(
 std::string EmitDecls::metaclass_callable_param_list(
     const MetaclassCallable& callable) {
   if (callable.implicit_root_create || !callable.sig) return {};
-  return param_list_to_cxx(callable.sig->decl->params);
+  return method_sig_param_list(*callable.sig);
 }
 
 std::string EmitDecls::metaclass_callable_arg_list(

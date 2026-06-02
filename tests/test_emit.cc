@@ -8391,6 +8391,59 @@ void test_metaclass_same_signature_constructor_keeps_derived_return_type() {
   CHECK(contains(out.impl, "p_inst = p_cls->p_create();"));
 }
 
+void test_inherited_metaclass_constructor_uses_declaring_unit_type_lookup() {
+  auto out = compile_snippet_with_registry(
+      "unit nx86con;\n"
+      "interface\n"
+      "uses ncon, ncgcon;\n"
+      "type\n"
+      "  tx86realconstnode = class(tcgrealconstnode)\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n",
+      {{"cpuinfo.pas",
+        "unit cpuinfo;\n"
+        "interface\n"
+        "type\n"
+        "  bestreal = double;\n"
+        "implementation\n"
+        "end.\n"},
+       {"ncon.pas",
+        "unit ncon;\n"
+        "interface\n"
+        "uses cpuinfo, node;\n"
+        "type\n"
+        "  trealconstnode = class(tnode)\n"
+        "    constructor create(v : bestreal);\n"
+        "  end;\n"
+        "implementation\n"
+        "end.\n"},
+       {"node.pas",
+        "unit node;\n"
+        "interface\n"
+        "type\n"
+        "  tnodetype = (nt);\n"
+        "  tnode = class\n"
+        "    constructor create(t : tnodetype);\n"
+        "  end;\n"
+        "implementation\n"
+        "end.\n"},
+       {"ncgcon.pas",
+        "unit ncgcon;\n"
+        "interface\n"
+        "uses ncon;\n"
+        "type\n"
+        "  tcgrealconstnode = class(trealconstnode)\n"
+        "  end;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.header,
+                 "t_tx86realconstnode* (*p_create)(::p_cpuinfo::t_bestreal);"));
+  CHECK(contains(out.header, "+[](::p_node::t_tnodetype p_t)"));
+  CHECK(!contains(out.header, "t_tx86realconstnode* (*p_create)(t_bestreal);"));
+  CHECK(!contains(out.header, "+[](t_tnodetype p_t)"));
+}
+
 void test_inheritsfrom_uses_runtime_tclass_and_method_call() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -9491,6 +9544,7 @@ int main() {
   RUN_TEST(test_metaclass_named_constructor_with_args_lowers_to_descriptor_slot);
   RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);
   RUN_TEST(test_metaclass_same_signature_constructor_keeps_derived_return_type);
+  RUN_TEST(test_inherited_metaclass_constructor_uses_declaring_unit_type_lookup);
   RUN_TEST(test_inheritsfrom_uses_runtime_tclass_and_method_call);
   RUN_TEST(test_inheritsfrom_is_boolean_for_short_circuit_and);
   RUN_TEST(test_indexed_property_result_classtype_autocalls);
