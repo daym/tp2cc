@@ -1435,7 +1435,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // parameterless method.
       bool saved_callee = is_callee_context_;
       is_callee_context_ = false;
+      bool saved_storage_view = storage_view_context;
+      storage_view_context = true;
       std::string base_cxx = expr_to_cxx(*m.base);
+      storage_view_context = saved_storage_view;
       is_callee_context_ = saved_callee;
       if (!is_callee_context_) {
         if (auto free_call = maybe_lower_class_free_member(*m.base, m.name)) {
