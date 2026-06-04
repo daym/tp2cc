@@ -180,6 +180,121 @@ std::vector<std::string> split_path(std::string_view path) {
   return parts;
 }
 
+void index_type_expr_unit(TypeRegistry& r, const TypeExpr* type,
+                          const std::string& unit);
+
+void index_param_type_units(TypeRegistry& r, const std::vector<Param>& params,
+                            const std::string& unit) {
+  for (const auto& param : params) {
+    index_type_expr_unit(r, param.type.get(), unit);
+  }
+}
+
+void index_proc_signature_type_units(TypeRegistry& r, const ProcDecl& proc,
+                                     const std::string& unit) {
+  index_param_type_units(r, proc.params, unit);
+  index_type_expr_unit(r, proc.return_type.get(), unit);
+}
+
+void index_variant_type_units(TypeRegistry& r,
+                              const std::shared_ptr<VariantPart>& variant,
+                              const std::string& unit) {
+  if (!variant) return;
+  index_type_expr_unit(r, variant->tag_type.get(), unit);
+  for (const auto& vcase : variant->cases) {
+    for (const auto& field : vcase.fields) {
+      index_type_expr_unit(r, field.type.get(), unit);
+    }
+    index_variant_type_units(r, vcase.variant_part, unit);
+  }
+}
+
+void index_object_member_type_units(TypeRegistry& r, const ObjectMember& member,
+                                    const std::string& unit) {
+  switch (member.kind) {
+    case ObjectMemberKind::Field:
+      index_type_expr_unit(r, member.field_type.get(), unit);
+      break;
+    case ObjectMemberKind::Method:
+      if (member.method) {
+        index_proc_signature_type_units(r, *member.method, unit);
+      }
+      break;
+    case ObjectMemberKind::Property:
+      index_param_type_units(r, member.property.params, unit);
+      index_type_expr_unit(r, member.property.type.get(), unit);
+      break;
+    case ObjectMemberKind::Type:
+      if (member.type_decl) {
+        index_type_expr_unit(r, member.type_decl->type.get(), unit);
+      }
+      break;
+  }
+}
+
+void index_type_expr_unit(TypeRegistry& r, const TypeExpr* type,
+                          const std::string& unit) {
+  if (!type) return;
+  if (!r.type_expr_units.try_emplace(type, unit).second) return;
+  switch (type->kind) {
+    case Kind::TyArray: {
+      const auto& a = static_cast<const TyArray&>(*type);
+      for (const auto& dim : a.dims) index_type_expr_unit(r, dim.get(), unit);
+      index_type_expr_unit(r, a.element.get(), unit);
+      break;
+    }
+    case Kind::TyRecord: {
+      const auto& rec = static_cast<const TyRecord&>(*type);
+      for (const auto& field : rec.fields) {
+        index_type_expr_unit(r, field.type.get(), unit);
+      }
+      for (const auto& nested : rec.nested_types) {
+        if (nested) index_type_expr_unit(r, nested->type.get(), unit);
+      }
+      index_variant_type_units(r, rec.variant_part, unit);
+      break;
+    }
+    case Kind::TyObject: {
+      const auto& obj = static_cast<const TyObject&>(*type);
+      for (const auto& member : obj.members) {
+        index_object_member_type_units(r, member, unit);
+      }
+      break;
+    }
+    case Kind::TyInterface: {
+      const auto& intf = static_cast<const TyInterface&>(*type);
+      for (const auto& member : intf.members) {
+        index_object_member_type_units(r, member, unit);
+      }
+      break;
+    }
+    case Kind::TySet:
+      index_type_expr_unit(r, static_cast<const TySet&>(*type).element.get(),
+                           unit);
+      break;
+    case Kind::TyFile:
+      index_type_expr_unit(r, static_cast<const TyFile&>(*type).element.get(),
+                           unit);
+      break;
+    case Kind::TyPointer:
+      index_type_expr_unit(
+          r, static_cast<const TyPointer&>(*type).target.get(), unit);
+      break;
+    case Kind::TyDistinct:
+      index_type_expr_unit(
+          r, static_cast<const TyDistinct&>(*type).underlying.get(), unit);
+      break;
+    case Kind::TyProcedural: {
+      const auto& proc = static_cast<const TyProcedural&>(*type);
+      index_param_type_units(r, proc.params, unit);
+      index_type_expr_unit(r, proc.return_type.get(), unit);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
 const std::unordered_map<std::string, std::shared_ptr<TypeSymbol>>*
 nested_type_map(const TypeSymbol& symbol) {
   if (const ClassInfo* ci = symbol.class_info()) return &ci->nested_types;
@@ -917,6 +1032,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
       case Kind::TypeDecl: {
         const auto& td = static_cast<const TypeDecl&>(*d);
         if (!td.type) continue;
+        index_type_expr_unit(r, td.type.get(), unit);
         std::string nm = lc(td.name);
         TypeSymbol* symbol = upsert_unit_type_symbol(
             r, ui, is_interface,
@@ -934,6 +1050,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
       case Kind::ProcDecl: {
         auto pd_sp = std::static_pointer_cast<const ProcDecl>(d);
         const auto& pd = *pd_sp;
+        index_proc_signature_type_units(r, pd, unit);
         if (!pd.of_type.empty()) continue;  // method body -- class handles it
         if (pd.is_operator) {
           if (pd.modifiers.is_forward) break;
@@ -956,6 +1073,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
       }
       case Kind::VarDecl: {
         const auto& vd = static_cast<const VarDecl&>(*d);
+        index_type_expr_unit(r, vd.type.get(), unit);
         const VarInfo var{.defining_unit = unit, .type = vd.type};
         for (const auto& n : vd.names) {
           if (ui) (is_interface ? ui->iface_vars : ui->impl_vars)[lc(n)] = var;
@@ -968,6 +1086,7 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
       }
       case Kind::ConstDecl: {
         const auto& cd = static_cast<const ConstDecl&>(*d);
+        index_type_expr_unit(r, cd.type.get(), unit);
         if (ui)
           (is_interface ? ui->iface_consts : ui->impl_consts)[lc(cd.name)] =
               ConstInfo{.defining_unit = unit,
@@ -1669,6 +1788,13 @@ const EnumInfoReg* TypeRegistry::enum_info_for_type(
     return it->second;
   }
   return nullptr;
+}
+
+std::string_view TypeRegistry::declaration_unit_for_type(
+    const TypeExpr* type) const {
+  if (!type) return {};
+  auto it = type_expr_units.find(type);
+  return it == type_expr_units.end() ? std::string_view{} : it->second;
 }
 
 const TyEnum* TypeRegistry::lookup_enum_member_in_unit(

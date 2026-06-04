@@ -770,6 +770,65 @@ void test_signed_ordinal_array_bounds_preserve_negative_low() {
       "using t_tmap = ::rt::tp2cc_Array<uint8_t, ::std::numeric_limits<int16_t>::min(), 65536>;"));
 }
 
+void test_imported_const_array_bounds_are_folded() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses cpubase;\n"
+      "type\n"
+      "  poper = ^longint;\n"
+      "  tinst = record\n"
+      "    oper : array[0..max_operands-1] of poper;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n",
+      {{"cpubase.pas",
+        "unit cpubase;\n"
+        "interface\n"
+        "const max_operands = 3;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(error_count() == before);
+  CHECK(contains(out.header,
+                 "::rt::tp2cc_Array<t_poper, 0, ((2) - (0) + 1)> p_oper;"));
+  CHECK(!contains(out.header, "max_operands"));
+}
+
+void test_imported_const_array_bounds_use_declaring_unit_scope() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit usearr;\n"
+      "interface\n"
+      "uses arrunit;\n"
+      "procedure setoper(var r : trec; i : longint);\n"
+      "implementation\n"
+      "procedure setoper(var r : trec; i : longint);\n"
+      "begin\n"
+      "  r.oper[i] := 1;\n"
+      "end;\n"
+      "end.\n",
+      {{"cpubase.pas",
+        "unit cpubase;\n"
+        "interface\n"
+        "const max_operands = 3;\n"
+        "implementation\n"
+        "end.\n"},
+       {"arrunit.pas",
+        "unit arrunit;\n"
+        "interface\n"
+        "uses cpubase;\n"
+        "type\n"
+        "  trec = record\n"
+        "    oper : array[0..max_operands-1] of longint;\n"
+        "  end;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "p_r.p_oper[p_i] = 1;"));
+  CHECK(!contains(out.impl, "max_operands"));
+}
+
 void test_unsupported_fixed_array_index_reports_error_and_stays_array_typed() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -9321,6 +9380,8 @@ int main() {
   RUN_TEST(test_distinct_ordinal_array_bounds_use_underlying_range);
   RUN_TEST(test_boolean_family_array_bounds_use_boolean_domain);
   RUN_TEST(test_signed_ordinal_array_bounds_preserve_negative_low);
+  RUN_TEST(test_imported_const_array_bounds_are_folded);
+  RUN_TEST(test_imported_const_array_bounds_use_declaring_unit_scope);
   RUN_TEST(test_unsupported_fixed_array_index_reports_error_and_stays_array_typed);
   RUN_TEST(test_low_high_use_resolved_pascal_type);
   RUN_TEST(test_low_high_on_set_type_uses_element_bounds);

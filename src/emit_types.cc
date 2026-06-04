@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <limits>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "emit_support.h"
 #include "typereg.h"
@@ -47,6 +50,110 @@ bool is_single_char_string_literal(const Expr* e) {
   return e && e->kind == Kind::StringLit &&
          static_cast<const StringLit&>(*e).value.size() == 1;
 }
+
+bool array_bound_is_plain_integer_const_syntax(const Expr& e) {
+  switch (e.kind) {
+    case Kind::IntLit:
+    case Kind::Ident:
+    case Kind::Member:
+      return true;
+    case Kind::Unary:
+      return array_bound_is_plain_integer_const_syntax(
+          *static_cast<const Unary&>(e).operand);
+    case Kind::Binary: {
+      const auto& b = static_cast<const Binary&>(e);
+      return array_bound_is_plain_integer_const_syntax(*b.lhs) &&
+             array_bound_is_plain_integer_const_syntax(*b.rhs);
+    }
+    case Kind::Call: {
+      const auto& c = static_cast<const Call&>(e);
+      if (!c.callee || c.callee->kind != Kind::Ident ||
+          c.args.size() != 1 || !c.args[0]) {
+        return false;
+      }
+      const std::string callee =
+          ascii_lower(static_cast<const Ident&>(*c.callee).name);
+      return is_primitive_type(callee) &&
+             array_bound_is_plain_integer_const_syntax(*c.args[0]);
+    }
+    default:
+      return false;
+  }
+}
+
+class ScopedTypeBoundUnit {
+ public:
+  ScopedTypeBoundUnit(ScopeStateView& scope, std::string_view declaration_unit)
+      : scope_(scope) {
+    if (declaration_unit.empty() ||
+        declaration_unit == scope_.current_unit_name) {
+      return;
+    }
+    saved_current_unit_ = scope.current_unit_name;
+    saved_lookup_emission_unit_ = scope.lookup_emission_unit_name;
+    saved_local_scope_ = scope.local_scope;
+    saved_local_types_ = scope.local_types;
+    saved_local_consts_ = scope.local_consts;
+    saved_local_untyped_params_ = scope.local_untyped_params;
+    saved_local_nested_fns_ = scope.local_nested_fns;
+    saved_local_nested_forwards_ = scope.local_nested_forwards;
+    saved_local_const_params_ = scope.local_const_params;
+    saved_with_stack_ = scope.with_stack;
+    saved_type_scope_ = scope.type_scope;
+    // Array-bound expressions are parsed in the type declaration's unit, but
+    // the same TypeExpr can be rendered later while emitting another unit's
+    // code. Resolve names through the declaration unit while still qualifying
+    // generated C++ for the real output namespace.
+    active_ = true;
+    scope_.lookup_emission_unit_name =
+        saved_lookup_emission_unit_.empty() ? saved_current_unit_
+                                            : saved_lookup_emission_unit_;
+    scope_.current_unit_name = std::string(declaration_unit);
+    scope_.local_scope.clear();
+    scope_.local_types.clear();
+    scope_.local_consts.clear();
+    scope_.local_untyped_params.clear();
+    scope_.local_nested_fns.clear();
+    scope_.local_nested_forwards.clear();
+    scope_.local_const_params.clear();
+    scope_.with_stack.clear();
+    scope_.type_scope = nullptr;
+  }
+
+  ScopedTypeBoundUnit(const ScopedTypeBoundUnit&) = delete;
+  ScopedTypeBoundUnit& operator=(const ScopedTypeBoundUnit&) = delete;
+
+  ~ScopedTypeBoundUnit() {
+    if (!active_) return;
+    scope_.current_unit_name = saved_current_unit_;
+    scope_.lookup_emission_unit_name = saved_lookup_emission_unit_;
+    scope_.local_scope = std::move(saved_local_scope_);
+    scope_.local_types = std::move(saved_local_types_);
+    scope_.local_consts = std::move(saved_local_consts_);
+    scope_.local_untyped_params = std::move(saved_local_untyped_params_);
+    scope_.local_nested_fns = std::move(saved_local_nested_fns_);
+    scope_.local_nested_forwards = std::move(saved_local_nested_forwards_);
+    scope_.local_const_params = std::move(saved_local_const_params_);
+    scope_.with_stack = std::move(saved_with_stack_);
+    scope_.type_scope = saved_type_scope_;
+  }
+
+ private:
+  ScopeStateView& scope_;
+  std::string saved_current_unit_;
+  std::string saved_lookup_emission_unit_;
+  std::unordered_set<std::string> saved_local_scope_;
+  std::unordered_map<std::string, const TypeExpr*> saved_local_types_;
+  std::unordered_map<std::string, const ConstDecl*> saved_local_consts_;
+  std::unordered_set<std::string> saved_local_untyped_params_;
+  std::unordered_map<std::string, ScopeStateView::NestedFn>
+      saved_local_nested_fns_;
+  std::unordered_set<std::string> saved_local_nested_forwards_;
+  std::unordered_set<std::string> saved_local_const_params_;
+  std::vector<ScopeStateView::WithBind> saved_with_stack_;
+  TypeScopeFrame* saved_type_scope_ = nullptr;
+  bool active_ = false;
+};
 
 const TypeSymbol* local_type_symbol(const ScopeStateView& scope,
                                     std::string_view name) {
@@ -526,13 +633,39 @@ std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
     const auto& distinct = static_cast<const TyDistinct&>(*dim);
     return array_dim_bounds_to_cxx(*distinct.underlying);
   }
+  std::string_view declaration_unit;
+  if (registry_) {
+    declaration_unit = registry_->declaration_unit_for_type(dim);
+    if (declaration_unit.empty()) {
+      declaration_unit = registry_->declaration_unit_for_type(&dim_in);
+    }
+  }
+  ScopedTypeBoundUnit type_bound_scope(scope_, declaration_unit);
   std::string lo = "0";
   std::string size_expr;
   if (dim->kind == Kind::TySubrange) {
     const auto& sr = static_cast<const TySubrange&>(*dim);
-    lo = const_render_.const_value_to_cxx(*sr.lo);
-    size_expr = "((" + array_bound_ordinal_to_cxx(*sr.hi) + ") - (" +
-                array_bound_ordinal_to_cxx(*sr.lo) + ") + 1)";
+    // C++ array template arguments need integer expressions, so fold imported
+    // Pascal const arithmetic such as `max_operands-1`. Ordinal intrinsics
+    // stay on `array_bound_ordinal_to_cxx` because enum/char bounds carry a
+    // domain in addition to a number. Fold before rendering: rendering an
+    // imported const as raw Pascal text would record an unresolved-id error.
+    std::optional<ConstIntExprInfo> lo_value;
+    std::optional<ConstIntExprInfo> hi_value;
+    if (array_bound_is_plain_integer_const_syntax(*sr.lo)) {
+      lo_value = analysis_.eval_const_int_expr(*sr.lo);
+    }
+    if (array_bound_is_plain_integer_const_syntax(*sr.hi)) {
+      hi_value = analysis_.eval_const_int_expr(*sr.hi);
+    }
+    lo = lo_value ? std::to_string(lo_value->value)
+                  : const_render_.const_value_to_cxx(*sr.lo);
+    std::string lo_ord =
+        lo_value ? lo : array_bound_ordinal_to_cxx(*sr.lo);
+    std::string hi_ord =
+        hi_value ? std::to_string(hi_value->value)
+                 : array_bound_ordinal_to_cxx(*sr.hi);
+    size_expr = "((" + hi_ord + ") - (" + lo_ord + ") + 1)";
     return ArrayDimBounds(std::move(lo), std::move(size_expr));
   }
   if (dim->kind == Kind::TyEnum) {

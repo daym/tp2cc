@@ -397,9 +397,15 @@ struct TypeRegistry {
   std::unordered_map<std::string,
                      std::unordered_map<std::string, const ast::TyEnum*>>
       enum_members_by_unit;
+  // TypeExpr nodes can be reused after their declaring unit has finished
+  // emitting. Keep their Pascal declaration unit so later type-bound lookup
+  // still uses the scope where the type syntax was written.
+  std::unordered_map<const ast::TypeExpr*, std::string> type_expr_units;
 
   // Fill from all parsed UnitNodes.
   void build(const std::vector<const ast::UnitNode*>& units);
+  std::string_view declaration_unit_for_type(
+      const ast::TypeExpr* type) const;
   const TypeSymbol* lookup_type_symbol_exact(std::string_view unit,
                                              std::string_view name) const;
   TypeSymbol* lookup_type_symbol_exact_mut(std::string_view unit,
