@@ -6794,6 +6794,27 @@ void test_record_typecast_field_read_uses_storage_view() {
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_copy<t_twoword>(p_x).p_hi"));
 }
 
+void test_local_record_typecast_field_read_uses_storage_view() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function run(x : double) : longword;\n"
+      "implementation\n"
+      "function run(x : double) : longword;\n"
+      "type\n"
+      "  twoword = record\n"
+      "    lo : longword;\n"
+      "    hi : longword;\n"
+      "  end;\n"
+      "begin\n"
+      "  run := twoword(x).hi;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_storage_ref<t_twoword>(p_x).p_hi"));
+  CHECK(!contains(out.impl, "((t_twoword)(p_x)).p_hi"));
+}
+
 void test_inc_packed_field_routes_through_memcpy_inc() {
   // `Inc(p.f, n)` where `f` is in a `packed record` -- direct member
   // access, no outer typed cast. The emitter uses the field's own
@@ -9557,6 +9578,7 @@ int main() {
   RUN_TEST(test_packed_field_typed_cast_assignment_uses_memcpy_store);
   RUN_TEST(test_packed_record_typecast_field_assignment_uses_storage_view);
   RUN_TEST(test_record_typecast_field_read_uses_storage_view);
+  RUN_TEST(test_local_record_typecast_field_read_uses_storage_view);
   RUN_TEST(test_inc_packed_field_routes_through_memcpy_inc);
   RUN_TEST(test_inc_local_packed_pointee_field_routes_through_memcpy_inc);
   RUN_TEST(test_unaligned_typed_deref_read_uses_bytewise_load);

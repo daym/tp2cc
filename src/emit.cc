@@ -378,6 +378,7 @@ struct Emitter : ResolveNameProvider,
   std::optional<std::string> member_base_ident(const ast::Member& m);
   std::string single_call_arg_cxx(const ast::Call& c);
   bool expr_is_const_untyped_storage_arg(const ast::Expr& e);
+  const TypeSymbol* visible_type_symbol(std::string_view type_name);
   bool visible_type_name_for_intrinsic(std::string_view type_name);
   bool visible_class_or_record_type_name(std::string_view type_name);
   std::optional<std::string> unit_qualified_type_name(const ast::Expr& expr);
@@ -407,6 +408,25 @@ struct Emitter : ResolveNameProvider,
   const ast::TypeExpr* type_for_overload(const ast::Expr& e) override;
   const ast::TypeExpr* type_for_resolved_call(
       const ast::Call& call) override;
+
+  enum class PascalTypecastKind {
+    Unknown,
+    Metaclass,
+    Pointer,
+    Set,
+    ReferenceClass,
+    Aggregate,
+    Scalar,
+  };
+
+  struct PascalTypecastTarget {
+    bool known = false;
+    PascalTypecastKind kind = PascalTypecastKind::Unknown;
+    const ast::TypeExpr* type = nullptr;
+  };
+
+  PascalTypecastTarget classify_pascal_typecast_target(
+      std::string_view type_name);
 
   bool type_is_packed_record(const ast::TypeExpr* t) {
     return storage_.type_is_packed_record(t);
@@ -818,30 +838,102 @@ bool Emitter::expr_is_const_untyped_storage_arg(const Expr& e) {
   return false;
 }
 
+const TypeSymbol* Emitter::visible_type_symbol(std::string_view type_name) {
+  const std::string low = ascii_lower(type_name);
+  if (current_type_scope) {
+    if (const TypeSymbol* local = current_type_scope->find_lower(low)) {
+      return local;
+    }
+  }
+  return registry ? registry->lookup_type_symbol(low, current_unit_name)
+                  : nullptr;
+}
+
 bool Emitter::visible_type_name_for_intrinsic(std::string_view type_name) {
   const std::string low = ascii_lower(type_name);
   if (is_primitive_type(low)) return true;
   if (!runtime_named_type_cxx(low).empty()) return true;
   if (!builtin_reference_class_struct_cxx(low).empty()) return true;
-  if (current_type_scope && current_type_scope->find_lower(low)) {
-    return true;
-  }
+  if (visible_type_symbol(low)) return true;
   if (ResolveResult rr = resolve_name(std::string(type_name));
       rr.kind == ResolvedKind::UnitType) {
     return true;
-  }
-  if (registry) {
-    return registry->lookup_type_symbol(low, current_unit_name) != nullptr;
   }
   return false;
 }
 
 bool Emitter::visible_class_or_record_type_name(std::string_view type_name) {
-  if (!registry) return false;
   if (class_info_for_type_name(type_name)) return true;
-  const TypeSymbol* symbol =
-      registry->lookup_type_symbol(type_name, current_unit_name);
+  const TypeSymbol* symbol = visible_type_symbol(type_name);
   return symbol && (symbol->class_info() || symbol->record_info());
+}
+
+Emitter::PascalTypecastTarget Emitter::classify_pascal_typecast_target(
+    std::string_view type_name) {
+  PascalTypecastTarget out;
+  if (is_builtin_reference_class_name(type_name)) {
+    out.known = true;
+    out.kind = PascalTypecastKind::ReferenceClass;
+    return out;
+  }
+
+  const TypeSymbol* symbol = visible_type_symbol(type_name);
+  if (symbol) {
+    out.known = true;
+    if (const ClassInfo* ci = symbol->class_info()) {
+      out.kind = ci->is_reference_type ? PascalTypecastKind::ReferenceClass
+                                       : PascalTypecastKind::Aggregate;
+      out.type = symbol->type;
+      return out;
+    }
+    if (symbol->record_info()) {
+      out.kind = PascalTypecastKind::Aggregate;
+      out.type = symbol->type;
+      return out;
+    }
+  }
+
+  out.type = lookup_named_type_expr(type_name);
+  if (out.type) {
+    out.known = true;
+    out.type = canonicalize_type(out.type);
+  }
+
+  if (out.type && out.type->kind == Kind::TyName) {
+    const auto& n = static_cast<const TyName&>(*out.type);
+    if (const TypeSymbol* resolved = visible_type_symbol(n.name)) {
+      if (const ClassInfo* ci = resolved->class_info()) {
+        out.kind = ci->is_reference_type ? PascalTypecastKind::ReferenceClass
+                                         : PascalTypecastKind::Aggregate;
+        out.type = resolved->type;
+        return out;
+      }
+      if (resolved->record_info()) {
+        out.kind = PascalTypecastKind::Aggregate;
+        out.type = resolved->type;
+        return out;
+      }
+    }
+  }
+
+  if (!out.type) return out;
+  if (out.type->kind == Kind::TyMetaclass) {
+    out.kind = PascalTypecastKind::Metaclass;
+  } else if (out.type->kind == Kind::TyPointer) {
+    out.kind = PascalTypecastKind::Pointer;
+  } else if (out.type->kind == Kind::TySet) {
+    out.kind = PascalTypecastKind::Set;
+  } else if (type_is_reference_class(out.type)) {
+    out.kind = PascalTypecastKind::ReferenceClass;
+  } else if (out.type->kind == Kind::TyArray ||
+             out.type->kind == Kind::TyRecord ||
+             out.type->kind == Kind::TyObject ||
+             out.type->kind == Kind::TyProcedural) {
+    out.kind = PascalTypecastKind::Aggregate;
+  } else {
+    out.kind = PascalTypecastKind::Scalar;
+  }
+  return out;
 }
 
 std::optional<std::string> Emitter::unit_qualified_type_name(const Expr& expr) {
@@ -1896,55 +1988,26 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return "((" + primitive_type_cxx(n) + ")(" +
                  single_call_arg_cxx(c) + "))";
         } else if (c.args.size() == 1 && n != "inc" && n != "dec") {
-          if (is_builtin_reference_class_name(n)) {
-            // `TObject(expr)` is a pointer cast even though `TObject` itself
-            // comes from the runtime root instead of the registry.
-            TyName cast_name(n);
-            std::string coerced = coerce_pointer_like_text(
-                type_name_to_cxx(cast_name), &cast_name,
-                type_for_overload(*c.args[0]), single_call_arg_cxx(c),
-                /*explicit_pascal_cast=*/true);
-            if (coerced != single_call_arg_cxx(c)) return coerced;
-            return "((" + type_name_to_cxx(cast_name) + ")(" +
-                   single_call_arg_cxx(c) + "))";
-          }
-          if (registry) {
-            const ClassInfo* ci = class_info_for_type_name(n);
-            if (ci && ci->is_reference_type) {
-              // Direct named class casts (`TNode(p)`) do not go through the
-              // alias table, because reference classes are registered as
-              // classes rather than aliases. Treat them as pointer casts here.
-              TyName cast_name(n);
-              std::string coerced = coerce_pointer_like_text(
-                  type_name_to_cxx(cast_name), &cast_name,
-                  type_for_overload(*c.args[0]), single_call_arg_cxx(c),
-                  /*explicit_pascal_cast=*/true);
-              if (coerced != single_call_arg_cxx(c)) return coerced;
-              return "((" + type_name_to_cxx(cast_name) + ")(" +
-                     single_call_arg_cxx(c) + "))";
-            }
-          }
-          const TypeExpr* cast_ty = lookup_named_type_expr(n);
-          if (cast_ty) cast_ty = canonicalize_type(cast_ty);
-          if (cast_ty && cast_ty->kind == Kind::TyMetaclass) {
-            std::string source = const_value_to_cxx(*c.args[0], cast_ty,
+          PascalTypecastTarget target = classify_pascal_typecast_target(n);
+          if (target.known && target.kind == PascalTypecastKind::Metaclass) {
+            std::string source = const_value_to_cxx(*c.args[0], target.type,
                                                     /*explicit_conversion=*/true);
             std::string coerced = coerce_pointer_like_text(
-                type_name_text_to_cxx(n), cast_ty,
+                type_name_text_to_cxx(n), target.type,
                 type_for_overload(*c.args[0]),
                 source,
                 /*explicit_pascal_cast=*/true);
             if (coerced != source) return coerced;
             return "((" + type_name_text_to_cxx(n) + ")(" + source + "))";
           }
-          if (cast_ty && cast_ty->kind == Kind::TyPointer) {
+          if (target.known && target.kind == PascalTypecastKind::Pointer) {
             const Expr* peeled = peel_primitive_casts(c.args[0].get());
             std::string source =
                 (peeled && expr_is_storage_lvalue(*c.args[0]))
                     ? expr_to_cxx(*peeled)
                     : single_call_arg_cxx(c);
             std::string coerced = coerce_pointer_like_text(
-                type_name_text_to_cxx(n), cast_ty,
+                type_name_text_to_cxx(n), target.type,
                 type_for_overload(*c.args[0]),
                 source,
                 /*explicit_pascal_cast=*/true,
@@ -1952,11 +2015,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             if (coerced != source) return coerced;
             return "((" + type_name_text_to_cxx(n) + ")(" + source + "))";
           }
-          if (cast_ty && cast_ty->kind == Kind::TySet) {
-            return "::rt::tp2cc_set_cast<" + type_to_cxx(*cast_ty) + ">(" +
+          if (target.known && target.kind == PascalTypecastKind::Set) {
+            return "::rt::tp2cc_set_cast<" + type_to_cxx(*target.type) + ">(" +
                    single_call_arg_cxx(c) + ")";
           }
-          {
+          if (target.known) {
             TyName target(n);
             if (auto conv = resolution_.find_assignment_operator(
                     type_for_overload(*c.args[0]), &target);
@@ -1969,65 +2032,44 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               return fn + "(" + single_call_arg_cxx(c) + ")";
             }
           }
-          if (cast_ty && type_is_reference_class(cast_ty)) {
-            // `TClass(expr)` is a class-pointer cast in Pascal, not a C++
-            // direct-initialisation attempt. Emit an explicit pointer cast so
-            // bootstrap casts like `TLinkedListItemClass(ClassType)` keep
-            // pointer semantics instead of turning into constructor calls.
+          if (target.known &&
+              target.kind == PascalTypecastKind::ReferenceClass) {
+            // The explicit Pascal cast target is the source-level type name.
+            // Passing a resolved payload type here loses alias qualification
+            // and can make the pointer-slot coercion rules answer for the
+            // class layout instead of the Pascal reference type being cast to.
             TyName cast_name(n);
             std::string coerced = coerce_pointer_like_text(
-                type_name_to_cxx(cast_name), cast_ty,
+                type_name_to_cxx(cast_name), &cast_name,
                 type_for_overload(*c.args[0]), single_call_arg_cxx(c),
                 /*explicit_pascal_cast=*/true);
             if (coerced != single_call_arg_cxx(c)) return coerced;
             return "((" + type_name_to_cxx(cast_name) + ")(" +
                    single_call_arg_cxx(c) + "))";
           }
-          bool named_storage_view_type =
-              registry && visible_class_or_record_type_name(n);
-          bool aggregate_alias =
-              cast_ty && (cast_ty->kind == Kind::TyArray ||
-                          cast_ty->kind == Kind::TyRecord ||
-                          cast_ty->kind == Kind::TyObject ||
-                          cast_ty->kind == Kind::TyProcedural);
-          auto storage_view = storage_.typecast_storage_view(c);
-          if (storage_view) {
-            if (storage_view_context &&
-                (aggregate_alias || named_storage_view_type)) {
-              // Pascal decides `T(x)` from the enclosing context. In a storage
-              // context this is not an aggregate temporary: it is the same
-              // variable designator viewed as `T`, so assignment, `@`, and
-              // var/out actuals can mutate or address the original storage.
+          if (target.known && target.kind == PascalTypecastKind::Aggregate) {
+            auto storage_view = storage_.typecast_storage_view(c);
+            if (storage_view && storage_view_context) {
               return reinterpret_ref_text(storage_view->target_cxx,
                                           storage_view->source_cxx,
                                           storage_view->pointee_view);
             }
-          }
-          if (cast_ty && cast_ty->kind == Kind::TyArray) {
-            const auto& arr = static_cast<const TyArray&>(*cast_ty);
-            const TypeExpr* elem =
-                arr.element ? canonicalize_type(arr.element.get()) : nullptr;
-            if (arr.dims.size() == 1 &&
-                (tyname_is(elem, "byte") || tyname_is_charish(elem))) {
-              // Array casts are value casts in expression context. Pascal
-              // arrays are first-class values: assigning or passing one copies
-              // the whole array, and there is no C-style array-to-pointer decay.
-              // Untyped `var` storage already denotes caller bytes, so copy from
-              // that address; otherwise copy bytes from the source value.
-              if (storage_view && storage_view->source_is_untyped_storage) {
-                return "::rt::tp2cc_reinterpret_load<" +
+            if (target.type && target.type->kind == Kind::TyArray) {
+              const auto& arr = static_cast<const TyArray&>(*target.type);
+              const TypeExpr* elem =
+                  arr.element ? canonicalize_type(arr.element.get()) : nullptr;
+              if (arr.dims.size() == 1 &&
+                  (tyname_is(elem, "byte") || tyname_is_charish(elem))) {
+                if (storage_view && storage_view->source_is_untyped_storage) {
+                  return "::rt::tp2cc_reinterpret_load<" +
+                         type_name_text_to_cxx(n) + ">(" +
+                         storage_view->source_cxx + ")";
+                }
+                return "::rt::tp2cc_reinterpret_bytes<" +
                        type_name_text_to_cxx(n) + ">(" +
-                       storage_view->source_cxx + ")";
+                       single_call_arg_cxx(c) + ")";
               }
-              return "::rt::tp2cc_reinterpret_bytes<" +
-                     type_name_text_to_cxx(n) + ">(" +
-                     single_call_arg_cxx(c) + ")";
             }
-          }
-          if (aggregate_alias || named_storage_view_type) {
-            // Value context produces a copied aggregate value, not a storage
-            // alias. Untyped `var` sources already are storage addresses; other
-            // sources are ordinary values whose object representation is copied.
             if (storage_view && storage_view->source_is_untyped_storage) {
               return "::rt::tp2cc_reinterpret_load<" +
                      type_name_text_to_cxx(n) + ">(" +
@@ -2036,9 +2078,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "::rt::tp2cc_reinterpret_copy<" + type_name_text_to_cxx(n) +
                    ">(" + single_call_arg_cxx(c) + ")";
           }
-          if (cast_ty) {
+          if (target.known && target.kind == PascalTypecastKind::Scalar) {
+            TyName scalar_target(n);
+            if (auto lit =
+                    maybe_convert_const_int_expr(*c.args[0], &scalar_target,
+                                                 true)) {
+              return *lit;
+            }
             return "((" + type_name_text_to_cxx(n) + ")(" +
                    single_call_arg_cxx(c) + "))";
+          }
+          if (target.known) {
+            report_error(c.loc, "unsupported typecast target `" + n + "`");
+            return "/* unsupported typecast */";
           }
         } else if ((n == "inc" || n == "dec") &&
                    (c.args.size() == 1 || c.args.size() == 2)) {
