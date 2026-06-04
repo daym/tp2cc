@@ -96,9 +96,9 @@ static const TypeExpr* proc_result_type(const ProcInfo* proc) {
   return nullptr;
 }
 
-// Types synthesized during analysis are cached in `synthesized_types_`; their
-// child type nodes are borrowed from the parsed AST, so the aliasing deleter
-// leaves ownership with the original AST.
+// Synthesized analysis types borrow child nodes from the parsed AST. They are
+// interned by semantic identity before storage, so repeated type queries do
+// not grow permanent analysis state.
 static TypePtr borrowed_ast_type(const TypeExpr* type) {
   return TypePtr(const_cast<TypeExpr*>(type), [](TypeExpr*) {});
 }
@@ -392,10 +392,31 @@ const TySet* EmitAnalysis::synthesize_set_type(
       has_explicit_bounds ? explicit_bounds->first : 0;
   const int64_t explicit_high =
       has_explicit_bounds ? explicit_bounds->second : 0;
+  SynthesizedSetKey key{.element = element,
+                        .has_explicit_bounds = has_explicit_bounds,
+                        .low = explicit_low,
+                        .high = explicit_high};
+  if (auto it = synthesized_set_types_.find(key);
+      it != synthesized_set_types_.end()) {
+    return it->second.get();
+  }
   auto tp = std::make_shared<TySet>(
       element->loc, borrowed_ast_type(element), has_explicit_bounds,
       explicit_low, explicit_high);
-  synthesized_types_.push_back(tp);
+  synthesized_set_types_.emplace(key, tp);
+  return tp.get();
+}
+
+const TyPointer* EmitAnalysis::synthesize_pointer_type(
+    const TypeExpr* target) {
+  if (!target) return nullptr;
+  if (auto it = synthesized_pointer_types_.find(target);
+      it != synthesized_pointer_types_.end()) {
+    return it->second.get();
+  }
+  auto tp = std::make_shared<TyPointer>(
+      target->loc, borrowed_ast_type(target));
+  synthesized_pointer_types_.emplace(target, tp);
   return tp.get();
 }
 
@@ -1595,10 +1616,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         const TypeExpr* operand_ty = deduce_type(*a.operand);
         const TypeExpr* canon = canonicalize_type(operand_ty);
         if (operand_ty && canon && canon->kind != Kind::TyArray) {
-          auto tp = std::make_shared<TyPointer>(
-              operand_ty->loc, borrowed_ast_type(operand_ty));
-          synthesized_types_.push_back(tp);
-          return tp.get();
+          return synthesize_pointer_type(operand_ty);
         }
       }
       return nullptr;

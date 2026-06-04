@@ -3,6 +3,7 @@
 #include <optional>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -182,6 +183,8 @@ class EmitAnalysis {
   const ast::TySet* synthesize_set_type(
       const ast::TypeExpr* element,
       std::optional<std::pair<int64_t, int64_t>> explicit_bounds);
+  const ast::TyPointer* synthesize_pointer_type(
+      const ast::TypeExpr* target);
   bool same_type_ast(const ast::TypeExpr* a, const ast::TypeExpr* b);
   std::optional<OrdinalDomain> ordinal_domain_for_type(const ast::TypeExpr* t);
   std::optional<OrdinalDomain> ordinal_domain_for_set_type(
@@ -222,7 +225,33 @@ class EmitAnalysis {
   ScopeStateView& scope_;
   ResolveNameProvider& resolve_name_provider_;
   CallTypeProvider& call_type_provider_;
-  std::vector<std::shared_ptr<ast::TypeExpr>> synthesized_types_;
+  struct SynthesizedSetKey {
+    const ast::TypeExpr* element = nullptr;
+    bool has_explicit_bounds = false;
+    int64_t low = 0;
+    int64_t high = 0;
+    bool operator==(const SynthesizedSetKey& other) const {
+      return element == other.element &&
+             has_explicit_bounds == other.has_explicit_bounds &&
+             low == other.low &&
+             high == other.high;
+    }
+  };
+  struct SynthesizedSetKeyHash {
+    std::size_t operator()(const SynthesizedSetKey& key) const {
+      std::size_t h = std::hash<const ast::TypeExpr*>{}(key.element);
+      h ^= std::hash<bool>{}(key.has_explicit_bounds) + 0x9e3779b9 +
+           (h << 6) + (h >> 2);
+      h ^= std::hash<int64_t>{}(key.low) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<int64_t>{}(key.high) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+  std::unordered_map<SynthesizedSetKey, std::shared_ptr<ast::TySet>,
+                     SynthesizedSetKeyHash>
+      synthesized_set_types_;
+  std::unordered_map<const ast::TypeExpr*, std::shared_ptr<ast::TyPointer>>
+      synthesized_pointer_types_;
 };
 
 }  // namespace tp2cc
