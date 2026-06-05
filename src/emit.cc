@@ -152,6 +152,15 @@ struct Emitter : ResolveNameProvider,
   using WithBind = ScopeStateView::WithBind;
   std::vector<WithBind> with_stack;
 
+  // Overload scoring revisits the same operand nodes while resolving nested
+  // binary expressions. Cache only for the active query tree: a unit-wide cache
+  // keeps AST-derived type pointers alive longer than the emission query that
+  // needed them, but no cache makes deep operator expressions recompute the
+  // same subtrees repeatedly.
+  std::unordered_set<const ast::Expr*> overload_type_in_progress;
+  std::unordered_map<const ast::Expr*, const ast::TypeExpr*> overload_type_cache;
+  size_t overload_type_query_depth = 0;
+
   // Reified type/symbol tree spanning all parsed units. tp2cc_Set by the
   // driver. Drives member-access and ident-call decisions.
   const TypeRegistry* registry = nullptr;
@@ -406,6 +415,7 @@ struct Emitter : ResolveNameProvider,
   // globals and the current scope tables for locals/self-class.
   const ast::TypeExpr* deduce_type(const ast::Expr& e);
   const ast::TypeExpr* type_for_overload(const ast::Expr& e) override;
+  const ast::TypeExpr* compute_type_for_overload(const ast::Expr& e);
   const ast::TypeExpr* type_for_resolved_call(
       const ast::Call& call) override;
 
@@ -680,6 +690,30 @@ const TypeExpr* Emitter::type_for_resolved_call(const Call& c) {
 }
 
 const TypeExpr* Emitter::type_for_overload(const Expr& e) {
+  const bool root_query = overload_type_query_depth == 0;
+  if (root_query) overload_type_cache.clear();
+  ++overload_type_query_depth;
+  auto finish = [&](const TypeExpr* result) {
+    --overload_type_query_depth;
+    if (root_query) overload_type_cache.clear();
+    return result;
+  };
+
+  if (auto cached = overload_type_cache.find(&e);
+      cached != overload_type_cache.end()) {
+    return finish(cached->second);
+  }
+
+  if (!overload_type_in_progress.insert(&e).second) {
+    return finish(nullptr);
+  }
+  const TypeExpr* result = compute_type_for_overload(e);
+  overload_type_in_progress.erase(&e);
+  overload_type_cache.emplace(&e, result);
+  return finish(result);
+}
+
+const TypeExpr* Emitter::compute_type_for_overload(const Expr& e) {
   if (e.kind == Kind::Call) {
     const auto& c = static_cast<const Call&>(e);
     if (c.callee->kind == Kind::Ident &&

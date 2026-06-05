@@ -13,6 +13,7 @@
 // their signatures/types. Expression resolution lives on top of this.
 
 #include <deque>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -27,6 +28,30 @@
 #include "ast.h"
 
 namespace tp2cc {
+
+struct StringViewHash {
+  using is_transparent = void;
+
+  size_t operator()(std::string_view value) const noexcept {
+    return std::hash<std::string_view>{}(value);
+  }
+
+  size_t operator()(const std::string& value) const noexcept {
+    return (*this)(std::string_view(value));
+  }
+
+  size_t operator()(const char* value) const noexcept {
+    return (*this)(std::string_view(value));
+  }
+};
+
+struct StringViewEqual {
+  using is_transparent = void;
+
+  bool operator()(std::string_view a, std::string_view b) const noexcept {
+    return a == b;
+  }
+};
 
 // Upper bound on the length of a TyName -> TyName alias chain that
 // `canonicalize' is willing to follow.  A well-formed Pascal program
@@ -271,6 +296,10 @@ struct TypeSymbol {
   }
 };
 
+using TypeSymbolScopeMap =
+    std::unordered_map<std::string, TypeSymbol, StringViewHash,
+                       StringViewEqual>;
+
 struct UnitInfo {
   std::string name;
   std::vector<std::string> uses;         // interface + impl (order)
@@ -397,10 +426,12 @@ struct TypeRegistry {
   std::unordered_map<std::string,
                      std::unordered_map<std::string, const ast::TyEnum*>>
       enum_members_by_unit;
-  // TypeExpr nodes can be reused after their declaring unit has finished
-  // emitting. Keep their Pascal declaration unit so later type-bound lookup
-  // still uses the scope where the type syntax was written.
-  std::unordered_map<const ast::TypeExpr*, std::string> type_expr_units;
+  // Type syntax can be rendered after its declaring unit has finished
+  // emitting. `Location::file` identifies the parsed source buffer that
+  // contributed that syntax, including include-file buffers, so this map keeps
+  // bound-name lookup in the unit that owned the source text without storing
+  // an entry for every TypeExpr node.
+  std::unordered_map<const SourceFile*, std::string> source_file_units;
 
   // Fill from all parsed UnitNodes.
   void build(const std::vector<const ast::UnitNode*>& units);
@@ -497,8 +528,8 @@ TypeSymbol make_type_symbol_for_type(
     std::string_view unit, std::string_view name,
     std::shared_ptr<const ast::TypeExpr> type);
 void register_type_symbols_for_owner(
-    std::unordered_map<std::string, TypeSymbol>& out,
-    std::shared_ptr<const ast::TypeExpr> type, std::string_view owner_name,
+    TypeSymbolScopeMap& out, std::shared_ptr<const ast::TypeExpr> type,
+    std::string_view owner_name,
     const ast::TyEnum* named_top_level = nullptr);
 
 }  // namespace tp2cc

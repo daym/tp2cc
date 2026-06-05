@@ -165,21 +165,6 @@ std::string type_symbol_path(const TypeSymbol& symbol) {
   return join_path(path);
 }
 
-std::vector<std::string> split_path(std::string_view path) {
-  std::vector<std::string> parts;
-  size_t start = 0;
-  while (start <= path.size()) {
-    size_t dot = path.find('.', start);
-    if (dot == std::string_view::npos) {
-      parts.push_back(std::string(path.substr(start)));
-      break;
-    }
-    parts.push_back(std::string(path.substr(start, dot - start)));
-    start = dot + 1;
-  }
-  return parts;
-}
-
 void index_type_expr_unit(TypeRegistry& r, const TypeExpr* type,
                           const std::string& unit);
 
@@ -235,7 +220,9 @@ void index_object_member_type_units(TypeRegistry& r, const ObjectMember& member,
 void index_type_expr_unit(TypeRegistry& r, const TypeExpr* type,
                           const std::string& unit) {
   if (!type) return;
-  if (!r.type_expr_units.try_emplace(type, unit).second) return;
+  if (type->loc.file) {
+    r.source_file_units.try_emplace(type->loc.file.get(), unit);
+  }
   switch (type->kind) {
     case Kind::TyArray: {
       const auto& a = static_cast<const TyArray&>(*type);
@@ -309,30 +296,40 @@ nested_type_map_mut(TypeSymbol& symbol) {
   return nullptr;
 }
 
-const TypeSymbol* lookup_nested_type_symbol(
-    const TypeSymbol* root, const std::vector<std::string>& path,
-    size_t start_index) {
+const TypeSymbol* lookup_nested_type_symbol_path(const TypeSymbol* root,
+                                                 const std::string& path,
+                                                 size_t start) {
   const TypeSymbol* current = root;
-  for (size_t i = start_index; current && i < path.size(); ++i) {
+  while (current && start < path.size()) {
+    const size_t dot = path.find('.', start);
+    const size_t len =
+        dot == std::string::npos ? std::string::npos : dot - start;
     const auto* nested = nested_type_map(*current);
     if (!nested) return nullptr;
-    auto it = nested->find(path[i]);
+    auto it = nested->find(path.substr(start, len));
     if (it == nested->end()) return nullptr;
     current = it->second.get();
+    if (dot == std::string::npos) break;
+    start = dot + 1;
   }
   return current;
 }
 
-TypeSymbol* lookup_nested_type_symbol_mut(
-    TypeSymbol* root, const std::vector<std::string>& path,
-    size_t start_index) {
+TypeSymbol* lookup_nested_type_symbol_path_mut(TypeSymbol* root,
+                                               const std::string& path,
+                                               size_t start) {
   TypeSymbol* current = root;
-  for (size_t i = start_index; current && i < path.size(); ++i) {
+  while (current && start < path.size()) {
+    const size_t dot = path.find('.', start);
+    const size_t len =
+        dot == std::string::npos ? std::string::npos : dot - start;
     auto* nested = nested_type_map_mut(*current);
     if (!nested) return nullptr;
-    auto it = nested->find(path[i]);
+    auto it = nested->find(path.substr(start, len));
     if (it == nested->end()) return nullptr;
     current = it->second.get();
+    if (dot == std::string::npos) break;
+    start = dot + 1;
   }
   return current;
 }
@@ -899,23 +896,35 @@ void register_external_stub_unit(TypeRegistry& r, std::string used_name) {
   r.units[low] = unit_info_for(low);
 }
 
-struct RuntimeMethodLookupStep {
-  const std::vector<MethodSig>* methods = nullptr;
-  std::string parent;
-};
-
-RuntimeMethodLookupStep lookup_runtime_method_step(
-    const std::unordered_map<std::string, ClassInfo>& store,
-    const std::string& class_name, const std::string& method_name) {
-  auto cit = store.find(class_name);
-  if (cit == store.end()) return {};
-  auto mit = cit->second.methods.find(method_name);
-  if (mit != cit->second.methods.end()) {
-    return RuntimeMethodLookupStep{.methods = &mit->second, .parent = {}};
+class SeenClassChain {
+ public:
+  bool mark(const ClassInfo* cls) {
+    if (!cls) return false;
+    for (size_t i = 0; i < inline_count_; ++i) {
+      if (inline_seen_[i] == cls) return false;
+    }
+    if (!overflow_seen_.empty()) {
+      return overflow_seen_.insert(cls).second;
+    }
+    if (inline_count_ < inline_seen_.size()) {
+      inline_seen_[inline_count_++] = cls;
+      return true;
+    }
+    // Member lookup is a hot path during type deduction. ClassInfo addresses
+    // are stable registry identities, so only genuinely deep inheritance chains
+    // need heap storage for cycle detection.
+    overflow_seen_.reserve(inline_seen_.size() + 1);
+    for (const ClassInfo* seen : inline_seen_) {
+      overflow_seen_.insert(seen);
+    }
+    return overflow_seen_.insert(cls).second;
   }
-  return RuntimeMethodLookupStep{.methods = nullptr,
-                                 .parent = cit->second.parent};
-}
+
+ private:
+  std::array<const ClassInfo*, 16> inline_seen_{};
+  size_t inline_count_ = 0;
+  std::unordered_set<const ClassInfo*> overflow_seen_;
+};
 
 ClassInfo* lookup_class_exact_mut(TypeRegistry& r, std::string_view unit,
                                   std::string_view name) {
@@ -1155,7 +1164,7 @@ TypeSymbol make_enum_type_symbol(std::string_view unit, std::string_view name,
 }
 
 void register_type_symbols_for_owner(
-    std::unordered_map<std::string, TypeSymbol>& out,
+    TypeSymbolScopeMap& out,
     std::shared_ptr<const TypeExpr> type, std::string_view owner_name,
     const TyEnum* named_top_level) {
   if (!type) return;
@@ -1646,10 +1655,10 @@ const TypeSymbol* TypeRegistry::lookup_type_symbol_exact(
   const std::string target_name = lc(std::string(name));
   auto uit = units.find(target_unit);
   if (uit == units.end()) return nullptr;
-  std::vector<std::string> path = split_path(target_name);
-  if (path.empty()) return nullptr;
-  const TypeSymbol* root = uit->second.find_type(path.front());
-  return lookup_nested_type_symbol(root, path, 1);
+  const size_t dot = target_name.find('.');
+  if (dot == std::string::npos) return uit->second.find_type(target_name);
+  const TypeSymbol* root = uit->second.find_type(target_name.substr(0, dot));
+  return lookup_nested_type_symbol_path(root, target_name, dot + 1);
 }
 
 TypeSymbol* TypeRegistry::lookup_type_symbol_exact_mut(
@@ -1658,32 +1667,36 @@ TypeSymbol* TypeRegistry::lookup_type_symbol_exact_mut(
   const std::string target_name = lc(std::string(name));
   auto uit = units.find(target_unit);
   if (uit == units.end()) return nullptr;
-  std::vector<std::string> path = split_path(target_name);
-  if (path.empty()) return nullptr;
-  if (auto iit = uit->second.iface_types.find(path.front());
+  const size_t dot = target_name.find('.');
+  if (dot == std::string::npos) return uit->second.find_type_mut(target_name);
+  const std::string root_name = target_name.substr(0, dot);
+  if (auto iit = uit->second.iface_types.find(root_name);
       iit != uit->second.iface_types.end()) {
-    return lookup_nested_type_symbol_mut(iit->second, path, 1);
+    return lookup_nested_type_symbol_path_mut(iit->second, target_name,
+                                              dot + 1);
   }
-  auto mit = uit->second.impl_types.find(path.front());
+  auto mit = uit->second.impl_types.find(root_name);
   return mit == uit->second.impl_types.end()
              ? nullptr
-             : lookup_nested_type_symbol_mut(mit->second, path, 1);
+             : lookup_nested_type_symbol_path_mut(mit->second, target_name,
+                                                   dot + 1);
 }
 
 const TypeSymbol* TypeRegistry::lookup_type_symbol(
     std::string_view name, std::string_view current_unit) const {
   const std::string low = lc(std::string(name));
   if (auto dot = low.find('.'); dot != std::string::npos) {
-    std::vector<std::string> path = split_path(low);
-    if (path.empty()) return nullptr;
-    if (const TypeSymbol* root =
-            lookup_type_symbol(path.front(), current_unit)) {
+    // Non-dotted lookups are on the hot path for expression typing. Avoid
+    // constructing a vector of path segments for every query; only dotted
+    // Pascal type names need segment walking.
+    const std::string root_name = low.substr(0, dot);
+    if (const TypeSymbol* root = lookup_type_symbol(root_name, current_unit)) {
       if (const TypeSymbol* nested =
-              lookup_nested_type_symbol(root, path, 1)) {
+              lookup_nested_type_symbol_path(root, low, dot + 1)) {
         return nested;
       }
     }
-    return lookup_type_symbol_exact(path.front(), low.substr(dot + 1));
+    return lookup_type_symbol_exact(root_name, low.substr(dot + 1));
   }
 
   const std::string cur_unit = lc(std::string(current_unit));
@@ -1792,9 +1805,9 @@ const EnumInfoReg* TypeRegistry::enum_info_for_type(
 
 std::string_view TypeRegistry::declaration_unit_for_type(
     const TypeExpr* type) const {
-  if (!type) return {};
-  auto it = type_expr_units.find(type);
-  return it == type_expr_units.end() ? std::string_view{} : it->second;
+  if (!type || !type->loc.file) return {};
+  auto it = source_file_units.find(type->loc.file.get());
+  return it == source_file_units.end() ? std::string_view{} : it->second;
 }
 
 const TyEnum* TypeRegistry::lookup_enum_member_in_unit(
@@ -1867,11 +1880,8 @@ const FieldInfo* TypeRegistry::lookup_class_field(
     std::string_view current_unit) const {
   const ClassInfo* ci = lookup_class(class_name_in, current_unit);
   std::string key = lc(member);
-  std::unordered_set<std::string> seen;
-  while (ci) {
-    const std::string identity = ci->defining_unit + "." + ci->name;
-    if (seen.count(identity)) break;
-    seen.insert(identity);
+  SeenClassChain seen;
+  while (ci && seen.mark(ci)) {
     auto fit = ci->fields.find(key);
     if (fit != ci->fields.end()) return &fit->second;
     ci = ci->parent.empty() ? nullptr : lookup_class(ci->parent, ci->defining_unit);
@@ -1884,11 +1894,8 @@ bool TypeRegistry::class_has_enum_member(
     std::string_view current_unit) const {
   const ClassInfo* ci = lookup_class(class_name_in, current_unit);
   std::string key = lc(member);
-  std::unordered_set<std::string> seen;
-  while (ci) {
-    const std::string identity = ci->defining_unit + "." + ci->name;
-    if (seen.count(identity)) break;
-    seen.insert(identity);
+  SeenClassChain seen;
+  while (ci && seen.mark(ci)) {
     if (ci->enum_members.count(key)) return true;
     ci = ci->parent.empty() ? nullptr : lookup_class(ci->parent, ci->defining_unit);
   }
@@ -1903,22 +1910,15 @@ const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
   // `Exception`, continue into `rt_classes` so inherited runtime methods still
   // resolve.
   const ClassInfo* ci = lookup_class(class_name_in, current_unit);
-  std::string class_name = lc(class_name_in);
-  if (auto dot = class_name.find('.'); dot != std::string::npos) {
-    class_name = class_name.substr(dot + 1);
-  }
   std::string key = lc(member);
   if (const InterfaceInfo* interface =
           lookup_interface(class_name_in, current_unit)) {
     auto mit = interface->methods.find(key);
     return mit == interface->methods.end() ? nullptr : &mit->second;
   }
-  std::unordered_set<std::string> seen;
+  SeenClassChain seen;
   std::string rt_name;
-  while (ci) {
-    const std::string identity = ci->defining_unit + "." + ci->name;
-    if (seen.count(identity)) break;
-    seen.insert(identity);
+  while (ci && seen.mark(ci)) {
     auto mit = ci->methods.find(key);
     if (mit != ci->methods.end()) return &mit->second;
     if (ci->parent.empty() && ci->is_reference_type) {
@@ -1932,12 +1932,12 @@ const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
     }
     ci = next;
   }
-  while (!rt_name.empty() && !seen.count("__rt__." + rt_name)) {
-    seen.insert("__rt__." + rt_name);
-    RuntimeMethodLookupStep rt_step =
-        lookup_runtime_method_step(rt_classes, rt_name, key);
-    if (rt_step.methods) return rt_step.methods;
-    rt_name = std::move(rt_step.parent);
+  while (!rt_name.empty()) {
+    auto cit = rt_classes.find(rt_name);
+    if (cit == rt_classes.end() || !seen.mark(&cit->second)) break;
+    auto mit = cit->second.methods.find(key);
+    if (mit != cit->second.methods.end()) return &mit->second;
+    rt_name = cit->second.parent;
   }
   return nullptr;
 }
@@ -1947,11 +1947,8 @@ const PropertyInfo* TypeRegistry::lookup_class_property(
     std::string_view current_unit) const {
   const ClassInfo* ci = lookup_class(class_name_in, current_unit);
   std::string key = lc(member);
-  std::unordered_set<std::string> seen;
-  while (ci) {
-    const std::string identity = ci->defining_unit + "." + ci->name;
-    if (seen.count(identity)) break;
-    seen.insert(identity);
+  SeenClassChain seen;
+  while (ci && seen.mark(ci)) {
     auto pit = ci->properties.find(key);
     if (pit != ci->properties.end()) return &pit->second;
     ci = ci->parent.empty() ? nullptr : lookup_class(ci->parent, ci->defining_unit);
@@ -1962,11 +1959,8 @@ const PropertyInfo* TypeRegistry::lookup_class_property(
 const PropertyInfo* TypeRegistry::lookup_default_property(
     const std::string& class_name_in, std::string_view current_unit) const {
   const ClassInfo* ci = lookup_class(class_name_in, current_unit);
-  std::unordered_set<std::string> seen;
-  while (ci) {
-    const std::string identity = ci->defining_unit + "." + ci->name;
-    if (seen.count(identity)) break;
-    seen.insert(identity);
+  SeenClassChain seen;
+  while (ci && seen.mark(ci)) {
     if (!ci->default_property_name.empty()) {
       auto pit = ci->properties.find(ci->default_property_name);
       if (pit != ci->properties.end()) return &pit->second;

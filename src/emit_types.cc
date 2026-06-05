@@ -91,14 +91,14 @@ class ScopedTypeBoundUnit {
     }
     saved_current_unit_ = scope.current_unit_name;
     saved_lookup_emission_unit_ = scope.lookup_emission_unit_name;
-    saved_local_scope_ = scope.local_scope;
-    saved_local_types_ = scope.local_types;
-    saved_local_consts_ = scope.local_consts;
-    saved_local_untyped_params_ = scope.local_untyped_params;
-    saved_local_nested_fns_ = scope.local_nested_fns;
-    saved_local_nested_forwards_ = scope.local_nested_forwards;
-    saved_local_const_params_ = scope.local_const_params;
-    saved_with_stack_ = scope.with_stack;
+    saved_local_scope_.swap(scope.local_scope);
+    saved_local_types_.swap(scope.local_types);
+    saved_local_consts_.swap(scope.local_consts);
+    saved_local_untyped_params_.swap(scope.local_untyped_params);
+    saved_local_nested_fns_.swap(scope.local_nested_fns);
+    saved_local_nested_forwards_.swap(scope.local_nested_forwards);
+    saved_local_const_params_.swap(scope.local_const_params);
+    saved_with_stack_.swap(scope.with_stack);
     saved_type_scope_ = scope.type_scope;
     // Array-bound expressions are parsed in the type declaration's unit, but
     // the same TypeExpr can be rendered later while emitting another unit's
@@ -109,14 +109,6 @@ class ScopedTypeBoundUnit {
         saved_lookup_emission_unit_.empty() ? saved_current_unit_
                                             : saved_lookup_emission_unit_;
     scope_.current_unit_name = std::string(declaration_unit);
-    scope_.local_scope.clear();
-    scope_.local_types.clear();
-    scope_.local_consts.clear();
-    scope_.local_untyped_params.clear();
-    scope_.local_nested_fns.clear();
-    scope_.local_nested_forwards.clear();
-    scope_.local_const_params.clear();
-    scope_.with_stack.clear();
     scope_.type_scope = nullptr;
   }
 
@@ -127,14 +119,14 @@ class ScopedTypeBoundUnit {
     if (!active_) return;
     scope_.current_unit_name = saved_current_unit_;
     scope_.lookup_emission_unit_name = saved_lookup_emission_unit_;
-    scope_.local_scope = std::move(saved_local_scope_);
-    scope_.local_types = std::move(saved_local_types_);
-    scope_.local_consts = std::move(saved_local_consts_);
-    scope_.local_untyped_params = std::move(saved_local_untyped_params_);
-    scope_.local_nested_fns = std::move(saved_local_nested_fns_);
-    scope_.local_nested_forwards = std::move(saved_local_nested_forwards_);
-    scope_.local_const_params = std::move(saved_local_const_params_);
-    scope_.with_stack = std::move(saved_with_stack_);
+    scope_.local_scope.swap(saved_local_scope_);
+    scope_.local_types.swap(saved_local_types_);
+    scope_.local_consts.swap(saved_local_consts_);
+    scope_.local_untyped_params.swap(saved_local_untyped_params_);
+    scope_.local_nested_fns.swap(saved_local_nested_fns_);
+    scope_.local_nested_forwards.swap(saved_local_nested_forwards_);
+    scope_.local_const_params.swap(saved_local_const_params_);
+    scope_.with_stack.swap(saved_with_stack_);
     scope_.type_scope = saved_type_scope_;
   }
 

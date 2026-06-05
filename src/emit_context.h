@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -18,34 +19,35 @@ namespace tp2cc {
 
 struct TypeScopeFrame {
   TypeScopeFrame* parent = nullptr;
-  std::unordered_map<std::string, TypeSymbol> symbols;
+  // Type deduction probes local scopes very frequently while emitting large
+  // units. The map owns stable lowercase strings, but lookup must not allocate
+  // a temporary key on every probe.
+  TypeSymbolScopeMap symbols;
 
   explicit TypeScopeFrame(TypeScopeFrame* parent_in = nullptr)
       : parent(parent_in) {}
 
   const TypeSymbol* find_here_lower(std::string_view lower_name) const {
-    auto it = symbols.find(std::string(lower_name));
+    auto it = symbols.find(lower_name);
     return it == symbols.end() ? nullptr : &it->second;
   }
 
   TypeSymbol* find_here_lower_mut(std::string_view lower_name) {
-    auto it = symbols.find(std::string(lower_name));
+    auto it = symbols.find(lower_name);
     return it == symbols.end() ? nullptr : &it->second;
   }
 
   const TypeSymbol* find_lower(std::string_view lower_name) const {
-    const std::string key(lower_name);
     for (const TypeScopeFrame* frame = this; frame; frame = frame->parent) {
-      auto it = frame->symbols.find(key);
+      auto it = frame->symbols.find(lower_name);
       if (it != frame->symbols.end()) return &it->second;
     }
     return nullptr;
   }
 
   TypeSymbol* find_lower_mut(std::string_view lower_name) {
-    const std::string key(lower_name);
     for (TypeScopeFrame* frame = this; frame; frame = frame->parent) {
-      auto it = frame->symbols.find(key);
+      auto it = frame->symbols.find(lower_name);
       if (it != frame->symbols.end()) return &it->second;
     }
     return nullptr;
