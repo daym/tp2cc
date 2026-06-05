@@ -1428,6 +1428,14 @@ TypePtr Parser::parse_object_type() {
       member_block = MemberBlock::Type;
       continue;
     }
+    if (accept(Tok::KwVar)) {
+      // FPC class/object bodies use bare `var' as a field-section marker,
+      // e.g. `protected type ... protected var ...'. Only `class var' below
+      // marks static fields.
+      class_var_section = false;
+      member_block = MemberBlock::General;
+      continue;
+    }
     if (member_block == MemberBlock::Type && cur_.kind == Tok::Ident &&
         !identifier_ends_nested_type_block()) {
       Location member_loc = cur_.loc;

@@ -387,6 +387,80 @@ void test_class_nested_type_section_ends_at_method() {
   }
 }
 
+void test_class_nested_type_section_ends_at_var_section() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  touter = class\n"
+      "  protected type\n"
+      "    tinner = record\n"
+      "      value : integer;\n"
+      "    end;\n"
+      "  protected var\n"
+      "    fvalue : tinner;\n"
+      "    property value : tinner read fvalue;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  if (u && !u->interface_decls.empty()) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    auto* to = td ? dynamic_cast<TyObject*>(td->type.get()) : nullptr;
+    CHECK(to);
+    if (to) {
+      CHECK_EQ(to->members.size(), size_t{3});
+      CHECK_EQ(to->members[0].kind, ObjectMemberKind::Type);
+      CHECK_EQ(to->members[0].vis, Visibility::Protected);
+      CHECK(to->members[0].type_decl != nullptr);
+      if (to->members[0].type_decl) {
+        CHECK_EQ(to->members[0].type_decl->name, std::string("tinner"));
+      }
+      CHECK_EQ(to->members[1].kind, ObjectMemberKind::Field);
+      CHECK_EQ(to->members[1].vis, Visibility::Protected);
+      CHECK(!to->members[1].is_class_var);
+      CHECK_EQ(to->members[1].field_names.size(), size_t{1});
+      if (!to->members[1].field_names.empty()) {
+        CHECK_EQ(to->members[1].field_names[0], std::string("fvalue"));
+      }
+      CHECK_EQ(to->members[2].kind, ObjectMemberKind::Property);
+      CHECK_EQ(to->members[2].vis, Visibility::Protected);
+      CHECK_EQ(to->members[2].property.name, std::string("value"));
+    }
+  }
+}
+
+void test_old_syntax_var_visibility_section_marks_instance_fields() {
+  int before = error_count();
+  auto u = parse_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  touter = class\n"
+      "    type\n"
+      "      tinner = record\n"
+      "        value : integer;\n"
+      "      end;\n"
+      "    var protected\n"
+      "      fvalue : tinner;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  if (u && !u->interface_decls.empty()) {
+    auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+    auto* to = td ? dynamic_cast<TyObject*>(td->type.get()) : nullptr;
+    CHECK(to);
+    if (to) {
+      CHECK_EQ(to->members.size(), size_t{2});
+      CHECK_EQ(to->members[1].kind, ObjectMemberKind::Field);
+      CHECK_EQ(to->members[1].vis, Visibility::Protected);
+      CHECK(!to->members[1].is_class_var);
+    }
+  }
+}
+
 void test_object_inheritance() {
   int before = error_count();
   auto u = parse_snippet(
@@ -1826,6 +1900,8 @@ int main() {
   RUN_TEST(test_error_recovery_basic);
   RUN_TEST(test_class_declaration);
   RUN_TEST(test_empty_inherited_class_decl);
+  RUN_TEST(test_class_nested_type_section_ends_at_var_section);
+  RUN_TEST(test_old_syntax_var_visibility_section_marks_instance_fields);
   RUN_TEST(test_class_var_declaration_sections);
   RUN_TEST(test_strict_visibility_sections);
   RUN_TEST(test_class_var_rejected_in_object);
