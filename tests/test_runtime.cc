@@ -523,6 +523,43 @@ void test_reallocmem_returns_updated_pointer_slot() {
   std::free(raw);
 }
 
+void test_pointer_slot_helpers_update_byte_storage() {
+  alignas(void*) unsigned char slot[sizeof(int32_t*)] = {};
+
+  p_new_slot<int32_t*>(slot);
+  int32_t* p = tp2cc_reinterpret_load<int32_t*>(slot);
+  CHECK(p != nullptr);
+  CHECK_EQ(*p, int32_t{0});
+  *p = 123;
+  p_dispose(p);
+
+  p_getmem_slot<int32_t*>(slot, static_cast<int>(2 * sizeof(int32_t)));
+  p = tp2cc_reinterpret_load<int32_t*>(slot);
+  CHECK(p != nullptr);
+  p[0] = 11;
+  p[1] = 22;
+
+  int32_t* grown =
+      p_reallocmem_slot<int32_t*>(slot, static_cast<int>(4 * sizeof(int32_t)));
+  CHECK(grown == tp2cc_reinterpret_load<int32_t*>(slot));
+  CHECK_EQ(grown[0], int32_t{11});
+  CHECK_EQ(grown[1], int32_t{22});
+
+  int32_t* cleared = p_reallocmem_slot<int32_t*>(slot, 0);
+  CHECK(cleared == nullptr);
+  CHECK(tp2cc_reinterpret_load<int32_t*>(slot) == nullptr);
+}
+
+void test_strdispose_slot_clears_byte_storage() {
+  alignas(void*) unsigned char slot[sizeof(p_char*)] = {};
+  p_char* text = p_strnew("slot");
+  tp2cc_reinterpret_store<p_char*>(slot, text);
+
+  p_strdispose_slot(slot);
+
+  CHECK(tp2cc_reinterpret_load<p_char*>(slot) == nullptr);
+}
+
 void test_ansistring_setlength_and_insert_delete_keep_bytes_stable() {
   tp2cc_AnsiString s = tp2cc_ansistring_of("ab");
 
@@ -1524,6 +1561,8 @@ int main() {
   RUN_TEST(test_new_and_dispose_share_malloc_storage_family);
   RUN_TEST(test_dispose_releases_plain_storage_grown_with_reallocmem);
   RUN_TEST(test_reallocmem_returns_updated_pointer_slot);
+  RUN_TEST(test_pointer_slot_helpers_update_byte_storage);
+  RUN_TEST(test_strdispose_slot_clears_byte_storage);
   RUN_TEST(test_ansistring_setlength_and_insert_delete_keep_bytes_stable);
   RUN_TEST(test_ansistring_compares_equal_to_single_char_pascal_style);
   RUN_TEST(test_ansistring_converts_to_shortstring_with_pascal_truncation);

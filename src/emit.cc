@@ -2340,6 +2340,41 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return "setjmp(::p_tpexcept::p_detail::p_state_for(&(" +
                expr_to_cxx(*c.args[0]) + ")).p_env)";
       }
+      const std::string memory_helper =
+          callee_text == "::rt::p_getmem"
+              ? "getmem"
+              : callee_text == "::rt::p_reallocmem"
+                    ? "reallocmem"
+                    : callee_text == "::rt::p_strdispose" ? "strdispose" : "";
+      if (!memory_helper.empty() && !c.args.empty()) {
+        const bool bytewise_pointer_slot_helper =
+            memory_helper == "getmem" || memory_helper == "reallocmem" ||
+            memory_helper == "strdispose";
+        if (bytewise_pointer_slot_helper) {
+          if (auto storage = storage_.storage_designator(*c.args[0]);
+              storage && storage->is_bytewise()) {
+            if (storage->type_cxx.empty()) {
+              report_error(c.args[0]->loc,
+                           "memory helper requires a typed pointer slot");
+              return "/* invalid pointer slot */";
+            }
+            // These helpers mutate the pointer value stored in the Pascal
+            // slot. A bytewise slot is addressable storage, but not a live C++
+            // pointer object, so the runtime helper updates it by byte-copy.
+            if (memory_helper == "getmem" && c.args.size() >= 2) {
+              return "::rt::p_getmem_slot<" + storage->type_cxx + ">(" +
+                     storage->ptr_cxx + ", " + expr_to_cxx(*c.args[1]) + ")";
+            }
+            if (memory_helper == "reallocmem" && c.args.size() >= 2) {
+              return "::rt::p_reallocmem_slot<" + storage->type_cxx + ">(" +
+                     storage->ptr_cxx + ", " + expr_to_cxx(*c.args[1]) + ")";
+            }
+            if (memory_helper == "strdispose") {
+              return "::rt::p_strdispose_slot(" + storage->ptr_cxx + ")";
+            }
+          }
+        }
+      }
       std::string out = callee_text + "(";
       for (size_t i = 0; i < call_plan.slots.size(); ++i) {
         if (i) out += ", ";

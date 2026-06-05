@@ -4946,6 +4946,31 @@ inline P* p_reallocmem(P*& p, int size) {
 }
 
 template <typename P>
+inline void p_getmem_slot(void* slot, int size) {
+  static_assert(std::is_pointer_v<P>, "GetMem slot type must be a pointer");
+  void* raw = std::malloc(static_cast<size_t>(size));
+  tp2cc_reinterpret_store<P>(slot, static_cast<P>(raw));
+}
+
+template <typename P>
+inline P p_reallocmem_slot(void* slot, int size) {
+  static_assert(std::is_pointer_v<P>, "ReallocMem slot type must be a pointer");
+  P p = tp2cc_reinterpret_load<P>(slot);
+  if (size <= 0) {
+    std::free(static_cast<void*>(p));
+    p = nullptr;
+    tp2cc_reinterpret_store<P>(slot, p);
+    return p;
+  }
+  void* q = std::realloc(static_cast<void*>(p), static_cast<size_t>(size));
+  if (q) {
+    p = static_cast<P>(q);
+    tp2cc_reinterpret_store<P>(slot, p);
+  }
+  return p;
+}
+
+template <typename P>
 inline void p_new(P*& p) {
   // Pascal typed-pointer allocation must stay in the same malloc/realloc/free
   // family as getmem/reallocmem/freemem. Plain typed storage is sometimes
@@ -4957,6 +4982,18 @@ inline void p_new(P*& p) {
   if (!raw) std::abort();
   p = static_cast<P*>(raw);
   ::new (raw) P{};
+}
+
+template <typename P>
+inline void p_new_slot(void* slot) {
+  static_assert(std::is_pointer_v<P>, "New slot type must be a pointer");
+  using Elem = std::remove_pointer_t<P>;
+  static_assert(!std::is_void_v<Elem>, "New requires a typed pointer slot");
+  void* raw = std::malloc(sizeof(Elem));
+  if (!raw) std::abort();
+  P p = static_cast<P>(raw);
+  ::new (raw) Elem{};
+  tp2cc_reinterpret_store<P>(slot, p);
 }
 
 // Pascal `Dispose(p)` -- destroy the pointed-to object and free its
@@ -5866,6 +5903,13 @@ inline void p_strdispose(p_char*& p) {
   if (!p) return;
   std::free(static_cast<void*>(p));
   p = nullptr;
+}
+inline void p_strdispose_slot(void* slot) {
+  p_char* p = tp2cc_reinterpret_load<p_char*>(slot);
+  if (!p) return;
+  std::free(static_cast<void*>(p));
+  p = nullptr;
+  tp2cc_reinterpret_store<p_char*>(slot, p);
 }
 inline bool p_chmod(const tp2cc_ShortString<>& path, int32_t newmode) {
   return ::chmod(tp2cc_to_std_string(path).c_str(),

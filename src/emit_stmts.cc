@@ -530,11 +530,29 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
     // statement-form Pascal `new` through the runtime helper rather than
     // raw C++ `new`, so later `reallocmem` / `dispose` on the same typed
     // storage stays in one allocation family.
-    std::string p = calls_.lower_call_arg(*call_expr->args[0],
-                                          /*param_type=*/nullptr,
-                                          UntypedArgKind::None,
-                                          /*mutable_ref_arg=*/true);
-    stmt_ops_.emitln("::rt::p_new(" + p + ");");
+    std::string p;
+    if (auto storage = storage_.storage_designator(*call_expr->args[0]);
+        storage && storage->is_bytewise()) {
+      if (storage->type_cxx.empty()) {
+        stmt_ops_.report_error(call_expr->args[0]->loc,
+                               "new requires a typed pointer slot");
+        p = stmt_ops_.expr_to_cxx(*call_expr->args[0]);
+      } else {
+        // Bytewise variant/packed pointer slots are real Pascal storage, but
+        // not live C++ pointer objects. Store the allocated pointer value into
+        // the slot with byte-copy helpers instead of binding a C++ reference.
+        stmt_ops_.emitln("::rt::p_new_slot<" + storage->type_cxx + ">(" +
+                         storage->ptr_cxx + ");");
+        p = "::rt::tp2cc_reinterpret_load<" + storage->type_cxx + ">(" +
+            storage->ptr_cxx + ")";
+      }
+    } else {
+      p = calls_.lower_call_arg(*call_expr->args[0],
+                                /*param_type=*/nullptr,
+                                UntypedArgKind::None,
+                                /*mutable_ref_arg=*/true);
+      stmt_ops_.emitln("::rt::p_new(" + p + ");");
+    }
     if (call_expr->args.size() >= 2) {
       const auto& second = *call_expr->args[1];
       std::string method;
@@ -571,10 +589,7 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
   }
   if (name == "dispose" && call_expr && !call_expr->args.empty()) {
     // dispose(p) or dispose(p, Done)
-    std::string p = calls_.lower_call_arg(*call_expr->args[0],
-                                          /*param_type=*/nullptr,
-                                          UntypedArgKind::None,
-                                          /*mutable_ref_arg=*/true);
+    std::string p = stmt_ops_.expr_to_cxx(*call_expr->args[0]);
     if (call_expr->args.size() >= 2) {
       const auto& second = *call_expr->args[1];
       std::string method;

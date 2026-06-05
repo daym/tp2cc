@@ -200,6 +200,8 @@ struct EmitStorageDesignator {
 // - naturally aligned ordinary storage uses normal typed lvalues/references
 // - explicit bytewise views (`unaligned(...)`, typed casts over raw storage,
 //   scalar fields inside packed records) go through memcpy-style helpers
+// - typed var/out calls reject bytewise storage instead of manufacturing a
+//   C++ reference to bytes that do not hold a live, aligned object
 // - aggregate subobjects inside packed records are rejected unless they are
 //   byte-aligned carriers that are safe to index directly
 class EmitStorage {

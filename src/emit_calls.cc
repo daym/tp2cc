@@ -145,7 +145,7 @@ EmitCalls::call_slots_with_builtin_memory_helper_info(
     return slots;
   }
   if (lower == "getmem" || lower == "reallocmem" ||
-      lower == "dispose" || lower == "strdispose") {
+      lower == "strdispose") {
     mark_call_slot(slots, 0, UntypedArgKind::None, /*is_mutable=*/true);
   }
   // Pascal `Val(S; var V; var Code)` and `Str(X; var S)` write to caller
@@ -415,16 +415,10 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
         return expr_ops_.expr_to_cxx(arg);
       }
       if (storage->is_bytewise()) {
-        const std::string ref_type =
-            param_type ? types_.type_to_cxx(*param_type) : storage->type_cxx;
-        if (!ref_type.empty()) {
-          // Bytewise designators keep Pascal storage as a raw address until a
-          // mutable-reference boundary. Builtins such as `new(p)` and
-          // `getmem(p, n)` have no registered formal type, so use the
-          // designator's own Pascal type for the reference view.
-          return storage_.reinterpret_ref_text(ref_type, storage->ptr_cxx,
-                                               true);
-        }
+        expr_ops_.report_error(
+            arg.loc,
+            "byte-addressed storage cannot be passed to typed var/out parameter");
+        return "/* invalid byte-addressed var/out */";
       }
     }
   }
