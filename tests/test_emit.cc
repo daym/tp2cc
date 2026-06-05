@@ -6956,6 +6956,54 @@ void test_with_variant_record_payload_keeps_field_storage() {
   CHECK(!contains(out.impl, "tp2cc_with_0.p_uvalue"));
 }
 
+void test_with_variant_payload_object_field_method_keeps_payload_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tderef = object\n"
+      "    dataidx : longint;\n"
+      "    procedure reset;\n"
+      "    function resolve : pointer;\n"
+      "  end;\n"
+      "  titem = record\n"
+      "    case byte of\n"
+      "      0 : (symderef : tderef);\n"
+      "      1 : (other : longint);\n"
+      "  end;\n"
+      "function run(var item : titem) : pointer;\n"
+      "implementation\n"
+      "procedure tderef.reset;\n"
+      "begin\n"
+      "  dataidx := 0;\n"
+      "end;\n"
+      "function tderef.resolve : pointer;\n"
+      "begin\n"
+      "  resolve := nil;\n"
+      "end;\n"
+      "function run(var item : titem) : pointer;\n"
+      "begin\n"
+      "  with item do begin\n"
+      "    symderef.reset;\n"
+      "    run := symderef.resolve;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  // A bare field inside `with` still names the variant payload slot. Calling an
+  // object method on it must bind `Self` to that slot, not to a copied value.
+  const std::string slot =
+      "::rt::tp2cc_byte_offset((&p_item), offsetof(t_titem, p_symderef))";
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_ref<t_tderef>(" + slot +
+                     ").p_reset();"));
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_ref<t_tderef>(" + slot +
+                               ").p_resolve()"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tderef>(" + slot +
+                                ").p_reset()"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tderef>(" + slot +
+                                ").p_resolve()"));
+}
+
 void test_variant_record_payload_member_read_address_and_untyped_actual() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -7064,6 +7112,42 @@ void test_variant_record_payload_index_read_address_and_untyped_actual() {
   CHECK(contains(out.impl,
                  "p_raw(((void*)(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)), ((p_i) - (1)) * sizeof(int32_t)))));"));
   CHECK(!contains(out.impl, "&::rt::tp2cc_reinterpret_load<int32_t>"));
+}
+
+void test_variant_payload_object_array_index_method_keeps_payload_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tderef = object\n"
+      "    dataidx : longint;\n"
+      "    procedure reset;\n"
+      "  end;\n"
+      "  tderefs = array[1..3] of tderef;\n"
+      "  tview = record\n"
+      "    case byte of\n"
+      "      0 : (items : tderefs);\n"
+      "      1 : (other : longint);\n"
+      "  end;\n"
+      "procedure run(var view : tview; i : longint);\n"
+      "implementation\n"
+      "procedure tderef.reset;\n"
+      "begin\n"
+      "  dataidx := 0;\n"
+      "end;\n"
+      "procedure run(var view : tview; i : longint);\n"
+      "begin\n"
+      "  view.items[i].reset;\n"
+      "end;\n"
+      "end.\n");
+  // Indexing composes another byte offset onto the variant payload address.
+  // The method receiver must be the addressed array element itself.
+  const std::string slot =
+      "::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)), ((p_i) - (1)) * sizeof(t_tderef))";
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_ref<t_tderef>(" + slot +
+                               ").p_reset();"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tderef>(" + slot +
+                                ").p_reset()"));
 }
 
 void test_variant_record_payload_array_address_uses_payload_address_proxy() {
@@ -7336,13 +7420,14 @@ void test_variant_payload_after_reference_field_loads_reference_before_offset() 
                   "tp2cc_byte_offset(::rt::tp2cc_pointer_byte_offset(static_cast<t_tcall*>(static_cast<t_tcall*>(p_n)->p_right), offsetof(t_tcall, p_left)), offsetof(t_tnode, p_location))"));
 }
 
-void test_variant_payload_object_method_is_not_field_storage() {
+void test_variant_payload_object_field_method_keeps_payload_storage() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
       "type\n"
       "  tderef = object\n"
       "    dataidx : longint;\n"
+      "    procedure reset;\n"
       "    function resolve : pointer;\n"
       "  end;\n"
       "  pitem = ^titem;\n"
@@ -7353,16 +7438,33 @@ void test_variant_payload_object_method_is_not_field_storage() {
       "  end;\n"
       "function run(hp : pitem) : pointer;\n"
       "implementation\n"
+      "procedure tderef.reset;\n"
+      "begin\n"
+      "  dataidx := 0;\n"
+      "end;\n"
       "function tderef.resolve : pointer;\n"
       "begin\n"
       "  resolve := nil;\n"
       "end;\n"
       "function run(hp : pitem) : pointer;\n"
       "begin\n"
+      "  hp^.symderef.reset;\n"
       "  run := hp^.symderef.resolve;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, ".p_resolve()"));
+  // `symderef` is an object field in a variant-record payload. Method calls
+  // need Pascal `Self` to name that payload slot, not a temporary value loaded
+  // from the slot.
+  const std::string slot =
+      "::rt::tp2cc_pointer_byte_offset(p_hp, offsetof(t_titem, p_symderef))";
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_ref<t_tderef>(" + slot +
+                               ").p_reset();"));
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_ref<t_tderef>(" + slot +
+                               ").p_resolve()"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tderef>(" + slot +
+                                ").p_reset()"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tderef>(" + slot +
+                                ").p_resolve()"));
   CHECK(!contains(out.impl, "offsetof(t_tderef, p_resolve)"));
 }
 
@@ -10412,9 +10514,11 @@ int main() {
   RUN_TEST(test_variant_record_payload_fields_use_byte_storage);
   RUN_TEST(test_variant_record_payload_storage_composes_through_members);
   RUN_TEST(test_with_variant_record_payload_keeps_field_storage);
+  RUN_TEST(test_with_variant_payload_object_field_method_keeps_payload_storage);
   RUN_TEST(test_variant_record_payload_member_read_address_and_untyped_actual);
   RUN_TEST(test_variant_record_payload_storage_composes_through_indexes);
   RUN_TEST(test_variant_record_payload_index_read_address_and_untyped_actual);
+  RUN_TEST(test_variant_payload_object_array_index_method_keeps_payload_storage);
   RUN_TEST(test_variant_record_payload_array_address_uses_payload_address_proxy);
   RUN_TEST(test_variant_record_payload_shortstring_index_stays_on_storage);
   RUN_TEST(test_variant_record_pointer_payload_passes_slot_to_allocation_builtins);
@@ -10423,7 +10527,7 @@ int main() {
   RUN_TEST(test_variant_record_pointer_payload_typecast_keeps_slot_storage);
   RUN_TEST(test_variant_class_payload_member_loads_pointer_before_field_offset);
   RUN_TEST(test_variant_payload_after_reference_field_loads_reference_before_offset);
-  RUN_TEST(test_variant_payload_object_method_is_not_field_storage);
+  RUN_TEST(test_variant_payload_object_field_method_keeps_payload_storage);
   RUN_TEST(test_packed_field_typed_cast_assignment_uses_memcpy_store);
   RUN_TEST(test_packed_record_typecast_field_assignment_uses_storage_view);
   RUN_TEST(test_record_typecast_field_read_uses_storage_view);

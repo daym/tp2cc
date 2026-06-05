@@ -222,6 +222,8 @@ class EmitStorage {
   std::optional<EmitStorageDesignator> resolved_bytewise_with_field_storage(
       const ResolveResult& rr);
   std::string storage_designator_value(const EmitStorageDesignator& d);
+  std::string storage_designator_member_base(const EmitStorageDesignator& d,
+                                             Location loc);
   // Raw address of the Pascal storage denoted by a designator. This is for
   // internal storage computations: byte offsets, memcpy helpers, and backing
   // var/out machinery. It is not the public Pascal value of `@expr`.

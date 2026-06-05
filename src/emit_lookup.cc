@@ -226,7 +226,11 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       }
       if (const ast::TypeExpr* field_type =
               analysis_.lookup_record_field_type_in_with(*it, name)) {
-        if (it->bytewise_storage) {
+        if (it->bytewise_storage &&
+            (it->bytewise_storage->field_selection ==
+                 ScopeStateView::WithBind::BytewiseStorage::FieldSelection::
+                     AllFields ||
+             analysis_.record_field_is_variant_in_type(it->type, name))) {
           const auto& bytewise = *it->bytewise_storage;
           return ResolveResult::bytewise_with_field_result(
               field_type, bytewise.ptr_cxx, bytewise.type_cxx,

@@ -697,6 +697,19 @@ std::string EmitStorage::storage_designator_value(
   return std::string(helper) + d.type_cxx + ">(" + d.ptr_cxx + ")";
 }
 
+std::string EmitStorage::storage_designator_member_base(
+    const EmitStorageDesignator& d, Location loc) {
+  if (!d.is_bytewise()) return d.text;
+  if (d.access == EmitStorageAccess::UnalignedBytewise) {
+    expr_ops_.report_error(
+        loc, "method receiver through unaligned storage is unsupported");
+    return "/* invalid unaligned method receiver */";
+  }
+  // Value reads from byte-addressed storage may copy aggregate payload fields.
+  // Object and record methods need Pascal `Self` to name the original slot.
+  return reinterpret_ref_text(d.type_cxx, d.ptr_cxx, true);
+}
+
 std::string EmitStorage::storage_designator_raw_address(
     const EmitStorageDesignator& d) {
   if (d.is_bytewise()) return d.ptr_cxx;

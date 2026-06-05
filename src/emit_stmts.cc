@@ -1312,7 +1312,9 @@ void EmitStmts::emit_stmt(const Stmt& s) {
               nm, ty, class_name, access_op,
               ScopeStateView::WithBind::BytewiseStorage(
                   nm, storage->type_cxx,
-                  storage->access == EmitStorageAccess::UnalignedBytewise));
+                  storage->access == EmitStorageAccess::UnalignedBytewise,
+                  ScopeStateView::WithBind::BytewiseStorage::FieldSelection::
+                      AllFields));
           continue;
         }
         std::string init = stmt_ops_.expr_to_cxx(with_expr);
@@ -1325,6 +1327,18 @@ void EmitStmts::emit_stmt(const Stmt& s) {
         stmt_ops_.emitln(std::string(bind_by_ref ? "auto& " : "auto ") + nm +
                          " = " + init + ";");
         scope_.with_stack.emplace_back(nm, ty, class_name, access_op);
+        if (storage && !reference_receiver && !storage->type_cxx.empty()) {
+          // A normal `with rec do` binding may later expose a Pascal variant
+          // payload field. Those payload fields need byte-offset selection
+          // even though ordinary fields on the same binding stay direct.
+          scope_.with_stack.back().bytewise_storage =
+              ScopeStateView::WithBind::BytewiseStorage(
+                  storage_.storage_designator_raw_address(*storage),
+                  storage->type_cxx,
+                  storage->access == EmitStorageAccess::UnalignedBytewise,
+                  ScopeStateView::WithBind::BytewiseStorage::FieldSelection::
+                      VariantPayloadFieldsOnly);
+        }
       }
       if (w.body) emit_stmt(*w.body);
       stmt_ops_.dedent();

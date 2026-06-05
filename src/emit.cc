@@ -102,6 +102,7 @@ struct Emitter : ResolveNameProvider,
   std::string lhs_outer_result_rewrite_slot;
   bool suppress_packed_scalar_value_load = false;
   bool storage_view_context = false;
+  bool member_base_context = false;
 
   // Names bound in the current function's scope (parameters + locals).
   // `obj` resolved bare at block scope that hits this set must be a
@@ -521,6 +522,12 @@ struct Emitter : ResolveNameProvider,
                                    const std::string& source_cxx,
                                    bool pointee_view) {
     return storage_.reinterpret_ref_text(ty_cxx, source_cxx, pointee_view);
+  }
+  std::string storage_designator_value_or_member_base(
+      Location loc, const EmitStorageDesignator& storage) {
+    return member_base_context
+               ? storage_.storage_designator_member_base(storage, loc)
+               : storage_.storage_designator_value(storage);
   }
   using AbsoluteTargetInfo = EmitAbsoluteTargetInfo;
   std::optional<AbsoluteTargetInfo> resolve_absolute_target(
@@ -1139,7 +1146,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         report_error(n.loc, "unresolved identifier `" + n.name + "`");
       }
       if (auto storage = storage_.resolved_bytewise_with_field_storage(rr)) {
-        return storage_.storage_designator_value(*storage);
+        return storage_designator_value_or_member_base(n.loc, *storage);
       }
       if (rr.kind == ResolvedKind::UnitType) {
         if (const auto* ci = class_info_for_type_name(n.name);
@@ -1403,7 +1410,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // but their storage address may not denote a live, aligned C++
           // object. Read the value through the same byte-addressed designator
           // used by assignment, Inc/Dec, address-of, and var/untyped actuals.
-          return storage_.storage_designator_value(*storage);
+          return storage_designator_value_or_member_base(m.loc, *storage);
         }
       }
       // Classify the base into one of the qualifier kinds that
@@ -1568,8 +1575,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       bool saved_callee = is_callee_context_;
       is_callee_context_ = false;
       bool saved_storage_view = storage_view_context;
+      bool saved_member_base = member_base_context;
       storage_view_context = true;
+      member_base_context = true;
       std::string base_cxx = expr_to_cxx(*m.base);
+      member_base_context = saved_member_base;
       storage_view_context = saved_storage_view;
       is_callee_context_ = saved_callee;
       if (!is_callee_context_) {
@@ -2466,7 +2476,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         // storage. Ordinary indexes and aligned storage-view indexes keep the
         // normal expression path; bytewise indexes must load from the composed
         // element address instead of indexing a copied aggregate value.
-        return storage_.storage_designator_value(*storage);
+        return storage_designator_value_or_member_base(i.loc, *storage);
       }
       std::string out = expr_to_cxx(*i.base);
       for (const auto& idx : i.indices) out += "[" + expr_to_cxx(*idx) + "]";

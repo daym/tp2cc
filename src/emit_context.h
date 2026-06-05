@@ -78,15 +78,22 @@ struct ScopeStateView {
   // Pascal type/class information needed to resolve bare members through it.
   struct WithBind {
     struct BytewiseStorage {
+      enum class FieldSelection {
+        AllFields,
+        VariantPayloadFieldsOnly,
+      };
+
       std::string ptr_cxx;
       std::string type_cxx;
       bool unaligned;
+      FieldSelection field_selection;
 
       BytewiseStorage(std::string ptr_cxx_in, std::string type_cxx_in,
-                      bool unaligned_in)
+                      bool unaligned_in, FieldSelection field_selection_in)
           : ptr_cxx(std::move(ptr_cxx_in)),
             type_cxx(std::move(type_cxx_in)),
-            unaligned(unaligned_in) {}
+            unaligned(unaligned_in),
+            field_selection(field_selection_in) {}
     };
 
     WithBind(std::string cxx_text_in, const ast::TypeExpr* type_in,
@@ -109,10 +116,12 @@ struct ScopeStateView {
     const ast::TypeExpr* type = nullptr;
     std::string class_name;
     std::string access_op;
-    // `with` over a variant-record or packed aggregate payload cannot bind a
-    // C++ aggregate reference: the receiver is byte-addressed storage, not a
-    // live C++ subobject. Bare fields inside the block compose from this raw
-    // base address instead of selecting from `cxx_text`.
+    // Base storage available to bare fields inside `with`.
+    //
+    // If the `with` target itself is byte-addressed, every field selection must
+    // compose from this address. If the target is ordinary record storage, only
+    // variant payload fields use it; ordinary fields stay on direct C++ member
+    // access through `cxx_text`.
     std::optional<BytewiseStorage> bytewise_storage;
   };
 
