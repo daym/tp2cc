@@ -928,15 +928,6 @@ class SeenClassChain {
   std::unordered_set<const ClassInfo*> overflow_seen_;
 };
 
-ClassInfo* lookup_class_exact_mut(TypeRegistry& r, std::string_view unit,
-                                  std::string_view name) {
-  TypeSymbol* symbol = r.lookup_type_symbol_exact_mut(unit, name);
-  if (!symbol || !symbol->class_info()) {
-    return nullptr;
-  }
-  return symbol->mutable_class_info();
-}
-
 std::vector<std::string> lower_path(const PropertyDecl::Accessor& accessor) {
   std::vector<std::string> out;
   out.reserve(accessor.path.size());
@@ -946,11 +937,13 @@ std::vector<std::string> lower_path(const PropertyDecl::Accessor& accessor) {
 
 std::optional<std::string> resolve_field_accessor_cxx(
     const TypeRegistry& r, const ClassInfo& owner,
+    std::string_view owner_lookup_name,
     const std::vector<std::string>& path) {
   if (path.empty()) return std::nullopt;
 
   const FieldInfo* field =
-      r.lookup_class_field(owner.name, path.front(), owner.defining_unit);
+      r.lookup_class_field(std::string(owner_lookup_name), path.front(),
+                           owner.defining_unit);
   if (!field) return std::nullopt;
 
   std::string out = r.field_cxx_name(path.front());
@@ -981,11 +974,13 @@ std::optional<std::string> resolve_field_accessor_cxx(
 
 PropertyAccessorInfo resolve_property_accessor(
     const TypeRegistry& r, const ClassInfo& owner,
+    std::string_view owner_lookup_name,
     const PropertyDecl::Accessor& accessor) {
   std::vector<std::string> path = lower_path(accessor);
   if (path.empty()) return PropertyAccessorInfo{};
 
-  if (auto cxx_path = resolve_field_accessor_cxx(r, owner, path)) {
+  if (auto cxx_path =
+          resolve_field_accessor_cxx(r, owner, owner_lookup_name, path)) {
     return PropertyAccessorInfo{.kind = PropertyAccessorKind::FieldPath,
                                 .path = std::move(path),
                                 .cxx_path = *cxx_path,
@@ -993,7 +988,8 @@ PropertyAccessorInfo resolve_property_accessor(
   }
 
   if (path.size() == 1 &&
-      r.lookup_class_methods(owner.name, path.front(), owner.defining_unit)) {
+      r.lookup_class_methods(std::string(owner_lookup_name), path.front(),
+                             owner.defining_unit)) {
     return PropertyAccessorInfo{.kind = PropertyAccessorKind::Method,
                                 .path = path,
                                 .cxx_path = {},
@@ -1006,6 +1002,35 @@ PropertyAccessorInfo resolve_property_accessor(
                               .method_name = {}};
 }
 
+void resolve_property_accessors_in_symbol(TypeRegistry& r,
+                                          TypeSymbol& symbol) {
+  if (ClassInfo* ci = symbol.mutable_class_info()) {
+    if (symbol.type && symbol.type->kind == Kind::TyObject) {
+      const auto& to = static_cast<const TyObject&>(*symbol.type);
+      const std::string owner_lookup_name = type_symbol_path(symbol);
+      for (const auto& member : to.members) {
+        if (member.kind != ObjectMemberKind::Property) continue;
+        auto pit = ci->properties.find(lc(member.property.name));
+        if (pit == ci->properties.end()) continue;
+        pit->second.read = resolve_property_accessor(
+            r, *ci, owner_lookup_name, member.property.read_accessor);
+        pit->second.write = resolve_property_accessor(
+            r, *ci, owner_lookup_name, member.property.write_accessor);
+      }
+    }
+  }
+
+  // Nested classes are stored in the registry as TypeSymbols, not unit-level
+  // declarations. Resolve their property accessors here so a nested property
+  // such as Outer.Inner.Current can be emitted through the same lookup path as
+  // a top-level class property.
+  if (auto* nested = nested_type_map_mut(symbol)) {
+    for (auto& [_, child] : *nested) {
+      if (child) resolve_property_accessors_in_symbol(r, *child);
+    }
+  }
+}
+
 void resolve_property_accessors_from_decls(TypeRegistry& r,
                                            std::string_view unit,
                                            const std::vector<DeclPtr>& decls) {
@@ -1014,18 +1039,9 @@ void resolve_property_accessors_from_decls(TypeRegistry& r,
     const auto& td = static_cast<const TypeDecl&>(*d);
     if (!td.type || td.type->kind != Kind::TyObject) continue;
 
-    ClassInfo* ci = lookup_class_exact_mut(r, unit, td.name);
-    if (!ci) continue;
-    const auto& to = static_cast<const TyObject&>(*td.type);
-    for (const auto& member : to.members) {
-      if (member.kind != ObjectMemberKind::Property) continue;
-      auto pit = ci->properties.find(lc(member.property.name));
-      if (pit == ci->properties.end()) continue;
-      pit->second.read =
-          resolve_property_accessor(r, *ci, member.property.read_accessor);
-      pit->second.write =
-          resolve_property_accessor(r, *ci, member.property.write_accessor);
-    }
+    TypeSymbol* symbol = r.lookup_type_symbol_exact_mut(unit, td.name);
+    if (!symbol) continue;
+    resolve_property_accessors_in_symbol(r, *symbol);
   }
 }
 

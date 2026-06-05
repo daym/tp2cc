@@ -821,11 +821,31 @@ std::optional<std::string> EmitStmts::for_in_type_rhs_name(const Expr& e) {
   return std::nullopt;
 }
 
-std::string EmitStmts::for_in_class_type_name(const TypeExpr* type) {
+std::string EmitStmts::for_in_class_type_name(
+    const TypeExpr* type, std::string_view owner_class_name) {
+  if (!type) return {};
+  if (type->kind == Kind::TyName) {
+    const std::string name = ascii_lower(static_cast<const TyName&>(*type).name);
+    if (!owner_class_name.empty() && name.find('.') == std::string::npos) {
+      const std::string nested =
+          std::string(owner_class_name) + "." + name;
+      if (analysis_.class_info_for_type_name(nested)) return nested;
+    }
+    if (registry_) {
+      const std::string direct =
+          registry_->direct_type_name(type, scope_.current_unit_name);
+      if (!direct.empty() && analysis_.class_info_for_type_name(direct)) {
+        return direct;
+      }
+    }
+    if (analysis_.class_info_for_type_name(name)) return name;
+  }
   type = analysis_.canonicalize_type(type);
-  if (!type || type->kind != Kind::TyName) return {};
-  const std::string name = static_cast<const TyName&>(*type).name;
-  return analysis_.class_info_for_type_name(name) ? name : std::string{};
+  if (type && type->kind == Kind::TyName) {
+    const std::string name = ascii_lower(static_cast<const TyName&>(*type).name);
+    if (analysis_.class_info_for_type_name(name)) return name;
+  }
+  return {};
 }
 
 const MethodSig* EmitStmts::for_in_zero_arg_method(
@@ -915,8 +935,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_helper_get_enumerator(
 EmitStmts::ForInEmitResult EmitStmts::emit_for_in_own_get_enumerator(
     const For& f, const std::string& var) {
   if (!f.in_expr) return ForInEmitResult::NotMatched;
-  const std::string class_name =
-      for_in_class_type_name(analysis_.deduce_type(*f.in_expr));
+  const std::string class_name = analysis_.deduce_class_alias(*f.in_expr);
   if (class_name.empty()) return ForInEmitResult::NotMatched;
   const MethodSig* get =
       for_in_zero_arg_method(f.loc, class_name, "GetEnumerator");
@@ -931,14 +950,15 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_own_get_enumerator(
   ForInEnumeratorProvider provider(
       stmt_ops_.expr_to_cxx(*f.in_expr) + access + mangle(get->decl->name) +
           "()",
-      get->decl->return_type.get(), f.loc);
+      get->decl->return_type.get(), f.loc, class_name);
   return emit_for_in_enumerator_provider(f, var, provider);
 }
 
 EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
     const For& f, const std::string& var,
     const ForInEnumeratorProvider& provider) {
-  const std::string enum_class = for_in_class_type_name(provider.type);
+  const std::string enum_class =
+      for_in_class_type_name(provider.type, provider.owner_class_name);
   if (enum_class.empty()) {
     stmt_ops_.report_error(provider.loc,
                            "enumerator provider must return an object or class");
@@ -1066,24 +1086,27 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_array(
     return ForInEmitResult::NotMatched;
   }
   const auto& arr_type = static_cast<const TyArray&>(*in_type);
-  if (arr_type.array_kind != ArrayKind::Fixed) {
-    stmt_ops_.report_error(f.loc,
-                           "for-in over open or dynamic arrays is not "
-                           "supported");
-    return ForInEmitResult::Error;
-  }
-  std::string low = types_.low_high_expr_for_type(in_type, true);
-  std::string high = types_.low_high_expr_for_type(in_type, false);
-  if (low.empty() || high.empty()) {
-    stmt_ops_.report_error(f.loc, "cannot determine bounds for array for-in");
-    return ForInEmitResult::Error;
-  }
-
   std::string n = std::to_string(++loop_label_counter_);
   std::string brk = "tp2cc_loop_break_" + n;
   std::string cont = "tp2cc_loop_continue_" + n;
   std::string arr = "tp2cc_array_" + n;
   std::string idx = "tp2cc_index_" + n;
+  std::string low;
+  std::string high;
+  if (arr_type.array_kind == ArrayKind::Fixed) {
+    low = types_.low_high_expr_for_type(in_type, true);
+    high = types_.low_high_expr_for_type(in_type, false);
+    if (low.empty() || high.empty()) {
+      stmt_ops_.report_error(f.loc, "cannot determine bounds for array for-in");
+      return ForInEmitResult::Error;
+    }
+  } else {
+    // Open and dynamic arrays have no declared Pascal index type to preserve;
+    // FPC for-in walks their zero-based runtime storage.
+    low = "0";
+    high = "::rt::p_length(" + arr + ") - 1";
+  }
+
   stmt_ops_.emitln("{");
   stmt_ops_.indent();
   stmt_ops_.emitln("auto&& " + arr + " = (" +

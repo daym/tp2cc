@@ -61,10 +61,18 @@ class EmitStmts {
   struct ForInEnumeratorProvider {
     std::string value_cxx;
     const ast::TypeExpr* type = nullptr;
+    // A class-scoped GetEnumerator can return a nested class by bare name.
+    // Keep the provider owner so return-type lookup does not fall back to an
+    // unrelated unit-level type with the same spelling.
+    std::string owner_class_name;
     Location loc;
     ForInEnumeratorProvider(std::string value_cxx_in,
-                            const ast::TypeExpr* type_in, Location loc_in)
-        : value_cxx(std::move(value_cxx_in)), type(type_in), loc(loc_in) {}
+                            const ast::TypeExpr* type_in, Location loc_in,
+                            std::string owner_class_name_in = {})
+        : value_cxx(std::move(value_cxx_in)),
+          type(type_in),
+          owner_class_name(std::move(owner_class_name_in)),
+          loc(loc_in) {}
   };
 
   bool stmt_autocalls_procvar(const ast::Expr& expr);
@@ -95,7 +103,9 @@ class EmitStmts {
       const ast::For& f, const std::string& var,
       const ForInEnumeratorProvider& provider);
   std::optional<std::string> for_in_type_rhs_name(const ast::Expr& e);
-  std::string for_in_class_type_name(const ast::TypeExpr* type);
+  std::string for_in_class_type_name(
+      const ast::TypeExpr* type,
+      std::string_view owner_class_name = std::string_view{});
   const MethodSig* for_in_zero_arg_method(Location loc,
                                           const std::string& class_name,
                                           const std::string& method_name);

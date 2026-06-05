@@ -8626,6 +8626,157 @@ void test_for_in_own_getenumerator_uses_movenext_and_current() {
   CHECK(contains(out.impl, "->p_movenext()"));
 }
 
+void test_for_in_open_array_uses_value_length_bounds() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tasmop = (a_none, a_add);\n"
+      "function p(const ops : array of tasmop) : boolean;\n"
+      "implementation\n"
+      "function p(const ops : array of tasmop) : boolean;\n"
+      "var op : tasmop;\n"
+      "begin\n"
+      "  Result := false;\n"
+      "  for op in ops do\n"
+      "    Result := true;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "auto&& tp2cc_array_"));
+  CHECK(contains(out.impl, " = (p_ops);"));
+  CHECK(contains(out.impl, "auto tp2cc_index_"));
+  CHECK(contains(out.impl, " = (0);"));
+  CHECK(contains(out.impl, "::rt::p_length(tp2cc_array_"));
+  CHECK(contains(out.impl, ") - 1);"));
+  CHECK(contains(out.impl, "p_op = tp2cc_array_"));
+}
+
+void test_for_in_dynamic_array_property_uses_value_length_bounds() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsegmentlist = array of integer;\n"
+      "  tgroup = class\n"
+      "    fsegmentlist : tsegmentlist;\n"
+      "    property SegmentList : tsegmentlist read fsegmentlist;\n"
+      "  end;\n"
+      "procedure p(g : tgroup);\n"
+      "implementation\n"
+      "procedure p(g : tgroup);\n"
+      "var segment : integer; total : integer;\n"
+      "begin\n"
+      "  total := 0;\n"
+      "  for segment in g.SegmentList do\n"
+      "    total := total + segment;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "auto&& tp2cc_array_"));
+  CHECK(contains(out.impl, "p_g->p_fsegmentlist"));
+  CHECK(contains(out.impl, "::rt::p_length(tp2cc_array_"));
+  CHECK(contains(out.impl, "p_segment = tp2cc_array_"));
+}
+
+void test_for_in_nested_getenumerator_return_type_resolves_in_owner() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class end;\n"
+      "  taggregate = class\n"
+      "  public\n"
+      "    type tenumerator = class\n"
+      "      fcurrent : titem;\n"
+      "      function MoveNext : boolean;\n"
+      "      property Current : titem read fcurrent;\n"
+      "    end;\n"
+      "    function GetEnumerator : tenumerator;\n"
+      "  end;\n"
+      "procedure p(agg : taggregate);\n"
+      "implementation\n"
+      "function taggregate.tenumerator.MoveNext : boolean;\n"
+      "begin\n"
+      "  Result := false;\n"
+      "end;\n"
+      "function taggregate.GetEnumerator : tenumerator;\n"
+      "begin\n"
+      "  Result := nil;\n"
+      "end;\n"
+      "procedure p(agg : taggregate);\n"
+      "var item : titem;\n"
+      "begin\n"
+      "  for item in agg do\n"
+      "    item := nil;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_agg->p_getenumerator()"));
+  CHECK(contains(out.impl, "->p_movenext()"));
+  CHECK(contains(out.impl, "p_item = tp2cc_enum_"));
+  CHECK(contains(out.impl, "->p_fcurrent"));
+}
+
+void test_for_in_self_uses_current_class_getenumerator() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class end;\n"
+      "  taggregate = class\n"
+      "  public\n"
+      "    type tenumerator = class\n"
+      "      fcurrent : titem;\n"
+      "      function MoveNext : boolean;\n"
+      "      property Current : titem read fcurrent;\n"
+      "    end;\n"
+      "    function GetEnumerator : tenumerator;\n"
+      "    procedure Convert;\n"
+      "  end;\n"
+      "implementation\n"
+      "function taggregate.tenumerator.MoveNext : boolean;\n"
+      "begin\n"
+      "  Result := false;\n"
+      "end;\n"
+      "function taggregate.GetEnumerator : tenumerator;\n"
+      "begin\n"
+      "  Result := nil;\n"
+      "end;\n"
+      "procedure taggregate.Convert;\n"
+      "var item : titem;\n"
+      "begin\n"
+      "  for item in self do\n"
+      "    item := nil;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "this->p_getenumerator()"));
+  CHECK(contains(out.impl, "->p_movenext()"));
+  CHECK(contains(out.impl, "p_item = tp2cc_enum_"));
+  CHECK(contains(out.impl, "->p_fcurrent"));
+}
+
+void test_for_in_set_literal_assigns_to_distinct_ordinal_loop_var() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsuperregister = type word;\n"
+      "const\n"
+      "  rs_s1 = $20;\n"
+      "  rs_s3 = $22;\n"
+      "procedure p;\n"
+      "implementation\n"
+      "procedure p;\n"
+      "var i : tsuperregister; total : longint;\n"
+      "begin\n"
+      "  total := 0;\n"
+      "  for i in [rs_s1, rs_s3] do\n"
+      "    total := total + ord(i);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "auto tp2cc_set_"));
+  CHECK(contains(out.impl, "p_i = tp2cc_item_"));
+  CHECK(contains(out.impl, ".contains(tp2cc_item_"));
+}
+
 void test_overload_picks_set_difference_arg_against_typed_set_param() {
   // Pascal's `set - set` (set difference) returns the same set type as
   // its operands. Without typing the binary expression here, the
@@ -10572,6 +10723,11 @@ int main() {
   RUN_TEST(test_type_for_in_lowers_to_ordinal_bounds_loop);
   RUN_TEST(test_for_in_operator_enumerator_precedes_builtin_set);
   RUN_TEST(test_for_in_own_getenumerator_uses_movenext_and_current);
+  RUN_TEST(test_for_in_open_array_uses_value_length_bounds);
+  RUN_TEST(test_for_in_dynamic_array_property_uses_value_length_bounds);
+  RUN_TEST(test_for_in_nested_getenumerator_return_type_resolves_in_owner);
+  RUN_TEST(test_for_in_self_uses_current_class_getenumerator);
+  RUN_TEST(test_for_in_set_literal_assigns_to_distinct_ordinal_loop_var);
   RUN_TEST(test_overload_picks_set_difference_arg_against_typed_set_param);
   RUN_TEST(test_property_read_lowers_to_getter_call);
   RUN_TEST(test_property_write_lowers_to_setter_call);
