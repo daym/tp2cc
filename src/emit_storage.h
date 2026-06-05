@@ -214,6 +214,8 @@ class EmitStorage {
   std::optional<EmitTypecastStorageView> typecast_storage_view(
       const ast::Expr& e);
   std::optional<EmitStorageDesignator> storage_designator(const ast::Expr& e);
+  std::optional<EmitStorageDesignator> resolved_bytewise_with_field_storage(
+      const ResolveResult& rr);
   std::string storage_designator_value(const EmitStorageDesignator& d);
   // Raw address of the Pascal storage denoted by a designator. This is for
   // internal storage computations: byte offsets, memcpy helpers, and backing

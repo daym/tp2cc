@@ -1138,6 +1138,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (rr.kind == ResolvedKind::Unknown) {
         report_error(n.loc, "unresolved identifier `" + n.name + "`");
       }
+      if (auto storage = storage_.resolved_bytewise_with_field_storage(rr)) {
+        return storage_.storage_designator_value(*storage);
+      }
       if (rr.kind == ResolvedKind::UnitType) {
         if (const auto* ci = class_info_for_type_name(n.name);
             ci && ci->is_reference_type) {

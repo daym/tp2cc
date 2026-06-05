@@ -6919,6 +6919,45 @@ void test_variant_record_payload_storage_composes_through_members() {
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_treference>("));
 }
 
+void test_with_variant_record_payload_keeps_field_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tconstexprint = record\n"
+      "    case signed : boolean of\n"
+      "      false : (uvalue : qword);\n"
+      "      true : (svalue : int64);\n"
+      "  end;\n"
+      "  tconstvalue = record\n"
+      "    case tag : longint of\n"
+      "      0 : (valueord : tconstexprint);\n"
+      "      1 : (valueptr : pointer);\n"
+      "  end;\n"
+      "procedure run(var value : tconstvalue; v : qword; var outv : qword);\n"
+      "implementation\n"
+      "procedure run(var value : tconstvalue; v : qword; var outv : qword);\n"
+      "begin\n"
+      "  with value.valueord do begin\n"
+      "    signed := false;\n"
+      "    uvalue := v;\n"
+      "    outv := uvalue;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "auto tp2cc_with_0 = ::rt::tp2cc_byte_offset((&p_value), offsetof(t_tconstvalue, p_valueord));"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<bool>(::rt::tp2cc_byte_offset(tp2cc_with_0, offsetof(t_tconstexprint, p_signed)), false);"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<uint64_t>(::rt::tp2cc_byte_offset(tp2cc_with_0, offsetof(t_tconstexprint, p_uvalue)), p_v);"));
+  CHECK(contains(out.impl,
+                 "p_outv = ::rt::tp2cc_reinterpret_load<uint64_t>(::rt::tp2cc_byte_offset(tp2cc_with_0, offsetof(t_tconstexprint, p_uvalue)));"));
+  CHECK(!contains(out.impl,
+                  "auto& tp2cc_with_0 = ::rt::tp2cc_reinterpret_load<t_tconstexprint>"));
+  CHECK(!contains(out.impl, "tp2cc_with_0.p_uvalue"));
+}
+
 void test_variant_record_payload_member_read_address_and_untyped_actual() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -10376,6 +10415,7 @@ int main() {
   RUN_TEST(test_inline_anonymous_variant_record_lowers_to_union);
   RUN_TEST(test_variant_record_payload_fields_use_byte_storage);
   RUN_TEST(test_variant_record_payload_storage_composes_through_members);
+  RUN_TEST(test_with_variant_record_payload_keeps_field_storage);
   RUN_TEST(test_variant_record_payload_member_read_address_and_untyped_actual);
   RUN_TEST(test_variant_record_payload_storage_composes_through_indexes);
   RUN_TEST(test_variant_record_payload_index_read_address_and_untyped_actual);

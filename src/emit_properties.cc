@@ -117,16 +117,9 @@ std::optional<ResolveResult> EmitProperties::maybe_resolve_implicit_property(
   std::vector<const Expr*> no_indices;
   if (auto text = maybe_property_read_text(found->base_cxx, found->class_name,
                                            *found->prop, no_indices)) {
-    return ResolveResult{.kind = found->from_with
-                                     ? ResolvedKind::WithProperty
-                                     : ResolvedKind::ClassProperty,
-                         .cxx = *text,
-                         .is_parameterless = false,
-                         .is_callable = false,
-                         .proc = nullptr,
-                         .accepts_zero_args = false,
-                         .return_type_name = {},
-                         .default_arg_unit = {}};
+    return ResolveResult(found->from_with ? ResolvedKind::WithProperty
+                                          : ResolvedKind::ClassProperty,
+                         *text);
   }
   return std::nullopt;
 }

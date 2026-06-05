@@ -37,71 +37,43 @@ static const MethodSig* unique_zero_arg_method(
 }
 
 static ResolveResult resolved_value(ResolvedKind kind, std::string cxx) {
-  return ResolveResult{.kind = kind,
-                       .cxx = std::move(cxx),
-                       .is_parameterless = false,
-                       .is_callable = false,
-                       .proc = nullptr,
-                       .accepts_zero_args = false,
-                       .return_type_name = {},
-                       .default_arg_unit = {}};
+  return ResolveResult(kind, std::move(cxx));
 }
 
 static ResolveResult zero_arg_callable(ResolvedKind kind, std::string cxx) {
-  return ResolveResult{.kind = kind,
-                       .cxx = std::move(cxx),
-                       .is_parameterless = true,
-                       .is_callable = true,
-                       .proc = nullptr,
-                       .accepts_zero_args = true,
-                       .return_type_name = {},
-                       .default_arg_unit = {}};
+  return ResolveResult::callable(kind, std::move(cxx),
+                                 /*is_parameterless=*/true, nullptr,
+                                 /*accepts_zero_args=*/true, {}, {});
 }
 
 static std::optional<ResolveResult> resolve_proc_overloads(
     const std::vector<ProcInfo>* procs, ResolvedKind kind, std::string cxx) {
   if (!procs || procs->empty()) return std::nullopt;
   if (const ProcInfo* proc = unique_zero_arg_proc(procs)) {
-    return ResolveResult{.kind = kind,
-                         .cxx = std::move(cxx),
-                         .is_parameterless = (proc->param_count == 0),
-                         .is_callable = true,
-                         .proc = proc->decl.get(),
-                         .accepts_zero_args = true,
-                         .return_type_name = proc->return_type_name,
-                         .default_arg_unit = proc->defining_unit};
+    return ResolveResult::callable(kind, std::move(cxx),
+                                   proc->param_count == 0, proc->decl.get(),
+                                   /*accepts_zero_args=*/true,
+                                   proc->return_type_name,
+                                   proc->defining_unit);
   }
-  return ResolveResult{.kind = kind,
-                       .cxx = std::move(cxx),
-                       .is_parameterless = false,
-                       .is_callable = true,
-                       .proc = nullptr,
-                       .accepts_zero_args = false,
-                       .return_type_name = {},
-                       .default_arg_unit = {}};
+  return ResolveResult::callable(kind, std::move(cxx),
+                                 /*is_parameterless=*/false, nullptr,
+                                 /*accepts_zero_args=*/false, {}, {});
 }
 
 static std::optional<ResolveResult> resolve_method_overloads(
     const std::vector<MethodSig>* methods, ResolvedKind kind, std::string cxx) {
   if (!methods || methods->empty()) return std::nullopt;
   if (const MethodSig* method = unique_zero_arg_method(methods)) {
-    return ResolveResult{.kind = kind,
-                         .cxx = std::move(cxx),
-                         .is_parameterless = (method->param_count == 0),
-                         .is_callable = true,
-                         .proc = method->decl.get(),
-                         .accepts_zero_args = true,
-                         .return_type_name = {},
-                         .default_arg_unit = method->defining_unit};
+    return ResolveResult::callable(kind, std::move(cxx),
+                                   method->param_count == 0,
+                                   method->decl.get(),
+                                   /*accepts_zero_args=*/true, {},
+                                   method->defining_unit);
   }
-  return ResolveResult{.kind = kind,
-                       .cxx = std::move(cxx),
-                       .is_parameterless = false,
-                       .is_callable = true,
-                       .proc = nullptr,
-                       .accepts_zero_args = false,
-                       .return_type_name = {},
-                       .default_arg_unit = {}};
+  return ResolveResult::callable(kind, std::move(cxx),
+                                 /*is_parameterless=*/false, nullptr,
+                                 /*accepts_zero_args=*/false, {}, {});
 }
 
 EmitLookup::EmitLookup(const TypeRegistry* registry, ScopeStateView& scope,
@@ -252,7 +224,14 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
                                     registry_->field_cxx_name(name));
         }
       }
-      if (analysis_.lookup_record_field_type_in_with(*it, name)) {
+      if (const ast::TypeExpr* field_type =
+              analysis_.lookup_record_field_type_in_with(*it, name)) {
+        if (it->bytewise_storage) {
+          const auto& bytewise = *it->bytewise_storage;
+          return ResolveResult::bytewise_with_field_result(
+              field_type, bytewise.ptr_cxx, bytewise.type_cxx,
+              registry_->field_cxx_name(name), bytewise.unaligned);
+        }
         return resolved_value(ResolvedKind::WithField,
                               it->cxx_text + access +
                                   registry_->field_cxx_name(name));
@@ -265,14 +244,10 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   {
     auto nit = scope_.local_nested_fns.find(name);
     if (nit != scope_.local_nested_fns.end()) {
-      return ResolveResult{.kind = ResolvedKind::NestedFn,
-                           .cxx = mangle(name),
-                           .is_parameterless = (nit->second.param_count == 0),
-                           .is_callable = true,
-                           .proc = nit->second.decl,
-                           .accepts_zero_args = nit->second.accepts_zero_args,
-                           .return_type_name = {},
-                           .default_arg_unit = scope_.current_unit_name};
+      return ResolveResult::callable(
+          ResolvedKind::NestedFn, mangle(name),
+          nit->second.param_count == 0, nit->second.decl,
+          nit->second.accepts_zero_args, {}, scope_.current_unit_name);
     }
   }
 

@@ -209,6 +209,27 @@ std::string EmitStorage::storage_type_cxx(const TypeExpr* t) {
   return t ? types_.type_to_cxx(*t) : std::string{};
 }
 
+std::optional<EmitStorageDesignator>
+EmitStorage::resolved_bytewise_with_field_storage(const ResolveResult& rr) {
+  if (rr.kind != ResolvedKind::WithField || !rr.bytewise_with_field) {
+    return std::nullopt;
+  }
+  const auto& field = *rr.bytewise_with_field;
+  if (field.base_ptr_cxx.empty() || field.base_type_cxx.empty() ||
+      field.field_cxx.empty() || !field.field_type) {
+    return std::nullopt;
+  }
+  const std::string field_cxx = storage_type_cxx(field.field_type);
+  if (field_cxx.empty()) return std::nullopt;
+  const std::string ptr_cxx =
+      "::rt::tp2cc_byte_offset(" + field.base_ptr_cxx + ", offsetof(" +
+      field.base_type_cxx + ", " + field.field_cxx + "))";
+  if (field.unaligned) {
+    return EmitStorageDesignator::unaligned_bytewise(ptr_cxx, field_cxx);
+  }
+  return EmitStorageDesignator::bytewise(ptr_cxx, field_cxx);
+}
+
 const TypeExpr* EmitStorage::pointer_like_member_object_type(const TypeExpr* t) {
   t = analysis_.canonicalize_type(t);
   if (!t) return nullptr;
@@ -634,6 +655,13 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
         type_cxx);
   }
   if (e.kind != Kind::Ident) return std::nullopt;
+  {
+    const auto& id = static_cast<const Ident&>(e);
+    if (auto storage = resolved_bytewise_with_field_storage(
+            resolve_name_provider_.resolve_name(id.name))) {
+      return storage;
+    }
+  }
   return EmitStorageDesignator::ordinary(expr_ops_.expr_to_cxx(e), type_cxx);
 }
 

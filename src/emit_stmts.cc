@@ -63,7 +63,9 @@ class WithStackScope {
   WithStackScope(const WithStackScope&) = delete;
   WithStackScope& operator=(const WithStackScope&) = delete;
 
-  ~WithStackScope() { stack_.resize(size_); }
+  ~WithStackScope() {
+    while (stack_.size() > size_) stack_.pop_back();
+  }
 
  private:
   std::vector<ScopeStateView::WithBind>& stack_;
@@ -1295,17 +1297,34 @@ void EmitStmts::emit_stmt(const Stmt& s) {
         if (ty) ty = analysis_.canonicalize_type(ty);
         std::string nm =
             "tp2cc_with_" + std::to_string(scope_.with_stack.size());
+        auto storage = storage_.storage_designator(with_expr);
+        std::string class_name = analysis_.deduce_class_alias(with_expr);
+        std::string access_op = storage_.member_access_op(with_expr);
+        const bool reference_receiver =
+            storage_.type_is_reference_class(ty) ||
+            analysis_.type_is_interface(ty);
+        if (storage && storage->is_bytewise() && !reference_receiver &&
+            !storage->type_cxx.empty()) {
+          stmt_ops_.emitln("auto " + nm + " = " +
+                           storage_.storage_designator_raw_address(*storage) +
+                           ";");
+          scope_.with_stack.emplace_back(
+              nm, ty, class_name, access_op,
+              ScopeStateView::WithBind::BytewiseStorage(
+                  nm, storage->type_cxx,
+                  storage->access == EmitStorageAccess::UnalignedBytewise));
+          continue;
+        }
         std::string init = stmt_ops_.expr_to_cxx(with_expr);
-        bool bind_by_ref = storage_.expr_is_storage_lvalue(with_expr);
+        bool bind_by_ref =
+            storage_.expr_is_storage_lvalue(with_expr) &&
+            !(storage && storage->is_bytewise());
         // `with T(p) do` and similar casts produce pointer rvalues. Bind those
-        // by value; only genuine lvalues can be safely aliased with `auto&`.
+        // by value; byte-addressed storage also loads a value, not a C++ field
+        // lvalue. Only genuine lvalues can be safely aliased with `auto&`.
         stmt_ops_.emitln(std::string(bind_by_ref ? "auto& " : "auto ") + nm +
                          " = " + init + ";");
-        scope_.with_stack.push_back(ScopeStateView::WithBind{
-            .cxx_text = nm,
-            .type = ty,
-            .class_name = analysis_.deduce_class_alias(with_expr),
-            .access_op = storage_.member_access_op(with_expr)});
+        scope_.with_stack.emplace_back(nm, ty, class_name, access_op);
       }
       if (w.body) emit_stmt(*w.body);
       stmt_ops_.dedent();

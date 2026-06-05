@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -76,10 +77,43 @@ struct ScopeStateView {
   // `with X do` contributes an already-lowered receiver expression plus the
   // Pascal type/class information needed to resolve bare members through it.
   struct WithBind {
+    struct BytewiseStorage {
+      std::string ptr_cxx;
+      std::string type_cxx;
+      bool unaligned;
+
+      BytewiseStorage(std::string ptr_cxx_in, std::string type_cxx_in,
+                      bool unaligned_in)
+          : ptr_cxx(std::move(ptr_cxx_in)),
+            type_cxx(std::move(type_cxx_in)),
+            unaligned(unaligned_in) {}
+    };
+
+    WithBind(std::string cxx_text_in, const ast::TypeExpr* type_in,
+             std::string class_name_in, std::string access_op_in)
+        : cxx_text(std::move(cxx_text_in)),
+          type(type_in),
+          class_name(std::move(class_name_in)),
+          access_op(std::move(access_op_in)) {}
+
+    WithBind(std::string cxx_text_in, const ast::TypeExpr* type_in,
+             std::string class_name_in, std::string access_op_in,
+             BytewiseStorage bytewise_storage_in)
+        : cxx_text(std::move(cxx_text_in)),
+          type(type_in),
+          class_name(std::move(class_name_in)),
+          access_op(std::move(access_op_in)),
+          bytewise_storage(std::move(bytewise_storage_in)) {}
+
     std::string cxx_text;
     const ast::TypeExpr* type = nullptr;
     std::string class_name;
     std::string access_op;
+    // `with` over a variant-record or packed aggregate payload cannot bind a
+    // C++ aggregate reference: the receiver is byte-addressed storage, not a
+    // live C++ subobject. Bare fields inside the block compose from this raw
+    // base address instead of selecting from `cxx_text`.
+    std::optional<BytewiseStorage> bytewise_storage;
   };
 
   std::string& current_class_name;

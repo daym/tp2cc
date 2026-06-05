@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace tp2cc::ast {
@@ -36,6 +38,24 @@ enum class ResolvedKind {
 };
 
 struct ResolveResult {
+  struct BytewiseWithField {
+    const ast::TypeExpr* field_type;
+    std::string base_ptr_cxx;
+    std::string base_type_cxx;
+    std::string field_cxx;
+    bool unaligned;
+
+    BytewiseWithField(const ast::TypeExpr* field_type_in,
+                      std::string base_ptr_cxx_in,
+                      std::string base_type_cxx_in, std::string field_cxx_in,
+                      bool unaligned_in)
+        : field_type(field_type_in),
+          base_ptr_cxx(std::move(base_ptr_cxx_in)),
+          base_type_cxx(std::move(base_type_cxx_in)),
+          field_cxx(std::move(field_cxx_in)),
+          unaligned(unaligned_in) {}
+  };
+
   ResolvedKind kind = ResolvedKind::Unknown;
   std::string cxx;              // complete C++ access expression text
   bool is_parameterless = false;         // callable with zero explicit args
@@ -44,6 +64,52 @@ struct ResolveResult {
   bool accepts_zero_args = false;        // rt builtin or decl permits zero args
   std::string return_type_name;          // Pascal-facing return type alias/name
   std::string default_arg_unit;          // declaration scope for defaults
+  // Metadata for a bare field resolved through `with` where the `with`
+  // receiver is byte-addressed storage. The ordinary `cxx` expression cannot
+  // name such a field without first manufacturing a C++ aggregate reference.
+  std::optional<BytewiseWithField> bytewise_with_field;
+
+  ResolveResult() = default;
+  ResolveResult(ResolvedKind kind_in, std::string cxx_in)
+      : kind(kind_in), cxx(std::move(cxx_in)) {}
+
+  static ResolveResult callable(ResolvedKind kind, std::string cxx,
+                                bool is_parameterless,
+                                const ast::ProcDecl* proc,
+                                bool accepts_zero_args,
+                                std::string return_type_name,
+                                std::string default_arg_unit) {
+    return ResolveResult(kind, std::move(cxx), is_parameterless, true, proc,
+                         accepts_zero_args, std::move(return_type_name),
+                         std::move(default_arg_unit), std::nullopt);
+  }
+
+  static ResolveResult bytewise_with_field_result(
+      const ast::TypeExpr* field_type, std::string base_ptr_cxx,
+      std::string base_type_cxx, std::string field_cxx, bool unaligned) {
+    return ResolveResult(
+        ResolvedKind::WithField, {}, false, false, nullptr, false, {}, {},
+        BytewiseWithField(field_type, std::move(base_ptr_cxx),
+                          std::move(base_type_cxx), std::move(field_cxx),
+                          unaligned));
+  }
+
+ private:
+  ResolveResult(ResolvedKind kind_in, std::string cxx_in,
+                bool is_parameterless_in, bool is_callable_in,
+                const ast::ProcDecl* proc_in, bool accepts_zero_args_in,
+                std::string return_type_name_in,
+                std::string default_arg_unit_in,
+                std::optional<BytewiseWithField> bytewise_with_field_in)
+      : kind(kind_in),
+        cxx(std::move(cxx_in)),
+        is_parameterless(is_parameterless_in),
+        is_callable(is_callable_in),
+        proc(proc_in),
+        accepts_zero_args(accepts_zero_args_in),
+        return_type_name(std::move(return_type_name_in)),
+        default_arg_unit(std::move(default_arg_unit_in)),
+        bytewise_with_field(std::move(bytewise_with_field_in)) {}
 };
 
 // Empty qualifier means ordinary lexical lookup. Non-empty qualifiers are
