@@ -26,10 +26,8 @@ class EmitStorageExprOps {
 };
 
 struct EmitBytewiseStorage {
-  // Byte-addressable storage view safe only for memcpy-style helpers.
-  // The pointer text may denote misaligned storage (`packed` fields,
-  // `unaligned(...)`, typed derefs over byte buffers), so callers must never
-  // turn it into `*reinterpret_cast<T*>(p)` or a C++ reference.
+  // Byte-addressable storage view used before the caller decides whether the
+  // view is merely offset-based or also unaligned.
   std::string void_ptr_text;
   std::string elem_cxx;
 };
@@ -97,7 +95,12 @@ struct EmitTypecastStorageView {
 enum class EmitStorageAccess {
   Ordinary,
   ReinterpretRef,
+  // Aligned storage reached through byte offsets. Variant-record payloads use
+  // this to avoid selecting a C++ union member for reads/writes; typed var/out
+  // calls may still need a reference to the payload storage.
   Bytewise,
+  // Storage that may violate the C++ alignment requirement for its Pascal
+  // type, such as packed fields or explicit `unaligned(...)`.
   UnalignedBytewise,
 };
 
@@ -198,10 +201,12 @@ struct EmitStorageDesignator {
 //
 // The intended policy is simple:
 // - naturally aligned ordinary storage uses normal typed lvalues/references
-// - explicit bytewise views (`unaligned(...)`, typed casts over raw storage,
+// - aligned variant payload storage uses byte offsets for value operations so
+//   reads/writes do not depend on C++ union active-member rules
+// - unaligned bytewise views (`unaligned(...)`, typed casts over raw storage,
 //   scalar fields inside packed records) go through memcpy-style helpers
-// - typed var/out calls reject bytewise storage instead of manufacturing a
-//   C++ reference to bytes that do not hold a live, aligned object
+// - typed var/out calls reject unaligned storage instead of manufacturing a
+//   C++ reference that violates the callee's alignment assumptions
 // - aggregate subobjects inside packed records are rejected unless they are
 //   byte-aligned carriers that are safe to index directly
 class EmitStorage {

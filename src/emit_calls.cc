@@ -415,10 +415,16 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
         return expr_ops_.expr_to_cxx(arg);
       }
       if (storage->is_bytewise()) {
-        expr_ops_.report_error(
-            arg.loc,
-            "byte-addressed storage cannot be passed to typed var/out parameter");
-        return "/* invalid byte-addressed var/out */";
+        const std::string ref_type =
+            param_type ? types_.type_to_cxx(*param_type) : storage->type_cxx;
+        if (!ref_type.empty()) {
+          // Variant payloads are aligned Pascal storage, but they are reached
+          // through byte offsets so value reads/writes avoid C++ union
+          // active-member rules. A typed var/out call needs the callee's
+          // reference view of that same storage.
+          return storage_.reinterpret_ref_text(ref_type, storage->ptr_cxx,
+                                               true);
+        }
       }
     }
   }

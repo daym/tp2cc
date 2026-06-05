@@ -6817,7 +6817,7 @@ void test_inline_anonymous_packed_record_var_lowers_to_struct() {
   CHECK(contains(out.impl, "uint8_t p_c;"));
   CHECK(contains(out.impl, "::rt::tp2cc_Array<uint8_t, 0, ((3) - (0) + 1)> p_payload;"));
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_store<uint8_t>(::rt::tp2cc_byte_offset((&p_rec), offsetof(::std::remove_reference_t<decltype(p_rec)>, p_a)), 1);"));
+                 "::rt::tp2cc_unaligned_store<uint8_t>(::rt::tp2cc_byte_offset((&p_rec), offsetof(::std::remove_reference_t<decltype(p_rec)>, p_a)), 1);"));
   // Layout asserts use `decltype(p_rec)` since there's no typedef name.
   CHECK(contains(out.impl,
                  "static_assert(offsetof(decltype(p_rec), p_a) == 0"));
@@ -6882,7 +6882,6 @@ void test_variant_record_payload_fields_use_byte_storage() {
 }
 
 void test_variant_record_payload_storage_composes_through_members() {
-  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -6909,13 +6908,12 @@ void test_variant_record_payload_storage_composes_through_members() {
       "  touch(loc.reference);\n"
       "end;\n"
       "end.\n");
-  CHECK(error_count() > before);
   CHECK(contains(out.impl,
                  "::rt::tp2cc_reinterpret_store<int32_t>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference)), offsetof(t_treference, p_offset)), 4);"));
   CHECK(contains(out.impl,
                  "::rt::tp2cc_reinterpret_inc<int32_t>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference)), offsetof(t_treference, p_offset)), p_delta);"));
-  CHECK(!contains(out.impl,
-                  "p_touch(::rt::tp2cc_reinterpret_ref<t_treference>("));
+  CHECK(contains(out.impl,
+                 "p_touch(::rt::tp2cc_reinterpret_ref<t_treference>(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference))));"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_treference>("));
 }
 
@@ -7126,7 +7124,7 @@ void test_variant_record_payload_shortstring_index_stays_on_storage() {
       "  take(view.text[i]);\n"
       "end;\n"
       "end.\n");
-  CHECK(error_count() > before);
+  CHECK_EQ(error_count(), before);
   const std::string slot =
       "::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_text)), ::rt::tp2cc_shortstring_index_offset<10>(p_i))";
   CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_load<::rt::p_char>(" + slot + ")"));
@@ -7134,8 +7132,8 @@ void test_variant_record_payload_shortstring_index_stays_on_storage() {
   CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_inc<::rt::p_char>(" + slot + ");"));
   CHECK(contains(out.impl, "p_p = reinterpret_cast<::rt::p_char*>(" + slot + ");"));
   CHECK(contains(out.impl, "p_raw(((void*)(" + slot + ")));"));
-  CHECK(!contains(out.impl,
-                  "p_take(::rt::tp2cc_reinterpret_ref<::rt::p_char>("));
+  CHECK(contains(out.impl,
+                 "p_take(::rt::tp2cc_reinterpret_ref<::rt::p_char>(" + slot + "));"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<::rt::tp2cc_ShortString<10>>"));
   CHECK(!contains(out.impl, "&(::rt::tp2cc_reinterpret_load"));
 }
@@ -7190,12 +7188,13 @@ void test_shadowed_getmem_does_not_use_runtime_slot_helper() {
       "  getmem(view.text, size);\n"
       "end;\n"
       "end.\n");
-  CHECK(error_count() > before);
+  CHECK_EQ(error_count(), before);
   CHECK(!contains(out.impl, "::rt::p_getmem_slot"));
+  CHECK(contains(out.impl,
+                 "p_getmem(::rt::tp2cc_reinterpret_ref<::rt::p_char*>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_text))), p_size);"));
 }
 
 void test_variant_record_pointer_payload_distinguishes_slot_from_pointee() {
-  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -7228,11 +7227,10 @@ void test_variant_record_pointer_payload_distinguishes_slot_from_pointee() {
       "  addrpointed := @view.item^;\n"
       "end;\n"
       "end.\n");
-  CHECK(error_count() > before);
   CHECK(contains(out.impl,
                  "::rt::tp2cc_reinterpret_store<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item)), p_p);"));
-  CHECK(!contains(out.impl,
-                  "p_touch(::rt::tp2cc_reinterpret_ref<t_pint>("));
+  CHECK(contains(out.impl,
+                 "p_touch(::rt::tp2cc_reinterpret_ref<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item))));"));
   CHECK(contains(out.impl,
                  "::rt::tp2cc_deref(::rt::tp2cc_reinterpret_load<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item)))) = p_v;"));
   CHECK(contains(out.impl,
@@ -7241,7 +7239,6 @@ void test_variant_record_pointer_payload_distinguishes_slot_from_pointee() {
 }
 
 void test_variant_record_pointer_payload_typecast_keeps_slot_storage() {
-  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -7264,11 +7261,10 @@ void test_variant_record_pointer_payload_typecast_keeps_slot_storage() {
       "  touch(pwide(value.valueptr));\n"
       "end;\n"
       "end.\n");
-  CHECK(error_count() > before);
   CHECK(contains(out.impl,
                  "::rt::tp2cc_reinterpret_store<t_pwide>(::rt::tp2cc_byte_offset((&p_value), offsetof(t_tconstvalue, p_valueptr)), p_pw);"));
-  CHECK(!contains(out.impl,
-                  "p_touch(::rt::tp2cc_reinterpret_ref<t_pwide>("));
+  CHECK(contains(out.impl,
+                 "p_touch(::rt::tp2cc_reinterpret_ref<t_pwide>(::rt::tp2cc_byte_offset((&p_value), offsetof(t_tconstvalue, p_valueptr))));"));
   CHECK(!contains(out.impl,
                   "tp2cc_reinterpret_storage_ref<t_pwide>(::rt::tp2cc_reinterpret_load"));
 }
@@ -7373,7 +7369,7 @@ void test_variant_payload_object_method_is_not_field_storage() {
 void test_packed_field_typed_cast_assignment_uses_memcpy_store() {
   // `longint(p.d1) := X` where `d1` is in a `packed record`. Forming a
   // `T&` to a packed field is UB; the emitter routes the assignment
-  // through `tp2cc_reinterpret_store` (memcpy) instead.
+  // through `tp2cc_unaligned_store` (memcpy) instead.
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -7386,7 +7382,7 @@ void test_packed_field_typed_cast_assignment_uses_memcpy_store() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_store<int32_t>(::rt::tp2cc_byte_offset((&p_p), offsetof(t_tg, p_d1)), p_v);"));
+                 "::rt::tp2cc_unaligned_store<int32_t>(::rt::tp2cc_byte_offset((&p_p), offsetof(t_tg, p_d1)), p_v);"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_storage_ref<int32_t>"));
 }
 
@@ -7409,7 +7405,7 @@ void test_packed_record_typecast_field_assignment_uses_storage_view() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_store<t_tkind>(::rt::tp2cc_byte_offset((&p_r), offsetof(t_tview, p_kind)), p_k);"));
+                 "::rt::tp2cc_unaligned_store<t_tkind>(::rt::tp2cc_byte_offset((&p_r), offsetof(t_tview, p_kind)), p_k);"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_copy<t_tview>(p_r).p_kind"));
 }
 
@@ -7459,7 +7455,7 @@ void test_inc_packed_field_routes_through_memcpy_inc() {
   // `Inc(p.f, n)` where `f` is in a `packed record` -- direct member
   // access, no outer typed cast. The emitter uses the field's own
   // declared type as the operand and routes through
-  // `tp2cc_reinterpret_inc`.
+  // `tp2cc_unaligned_inc`.
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -7472,7 +7468,7 @@ void test_inc_packed_field_routes_through_memcpy_inc() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_inc<uint16_t>(::rt::tp2cc_byte_offset((&p_p), offsetof(t_tdir, p_name_ord)), p_n);"));
+                 "::rt::tp2cc_unaligned_inc<uint16_t>(::rt::tp2cc_byte_offset((&p_p), offsetof(t_tdir, p_name_ord)), p_n);"));
 }
 
 void test_inc_local_packed_pointee_field_routes_through_memcpy_inc() {
@@ -7492,7 +7488,7 @@ void test_inc_local_packed_pointee_field_routes_through_memcpy_inc() {
       "  inc(p^.name_ord, n);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_inc<uint16_t>("));
+  CHECK(contains(out.impl, "::rt::tp2cc_unaligned_inc<uint16_t>("));
 }
 
 void test_unaligned_typed_deref_read_uses_bytewise_load() {
@@ -7675,16 +7671,16 @@ void test_packed_record_field_through_pointer_slot_stays_bytewise() {
   const std::string slot =
       "::rt::tp2cc_pointer_byte_offset(::rt::tp2cc_deref(p_slot), offsetof(t_tpacked, p_w))";
   CHECK(contains(out.impl,
-                 "p_result = ::rt::tp2cc_reinterpret_load<uint16_t>(" +
+                 "p_result = ::rt::tp2cc_unaligned_load<uint16_t>(" +
                      slot + ");"));
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_store<uint16_t>(" + slot +
+                 "::rt::tp2cc_unaligned_store<uint16_t>(" + slot +
                      ", p_n);"));
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_inc<uint16_t>(" + slot + ", p_n);"));
+                 "::rt::tp2cc_unaligned_inc<uint16_t>(" + slot + ", p_n);"));
   CHECK(contains(out.impl, "p_p = reinterpret_cast<uint16_t*>(" + slot + ");"));
   CHECK(contains(out.impl, "p_raw(((void*)(" + slot + ")));"));
-  CHECK(!contains(out.impl, "&::rt::tp2cc_reinterpret_load<uint16_t>"));
+  CHECK(!contains(out.impl, "&::rt::tp2cc_unaligned_load<uint16_t>"));
   CHECK(!contains(out.impl, "::rt::p_inc(::rt::tp2cc_deref(p_slot)->p_w"));
 }
 

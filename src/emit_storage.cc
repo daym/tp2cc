@@ -397,8 +397,8 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
             // A primitive cast over packed scalar storage is an aliasing view
             // in Pascal, but the packed field may be misaligned in C++. Keep it
             // as bytewise storage so stores and Inc/Dec use memcpy helpers.
-            return EmitStorageDesignator::bytewise(packed->void_ptr_text,
-                                                   view->target_cxx);
+            return EmitStorageDesignator::unaligned_bytewise(
+                packed->void_ptr_text, view->target_cxx);
           }
         }
       }
@@ -616,7 +616,8 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
         // `pp^.field`, the AST base has pointer type, but selecting `field`
         // still enters the pointee record; if that record is packed, C++ must
         // not bind a typed reference to the possibly misaligned field.
-        return EmitStorageDesignator::bytewise(field_ptr_cxx, field_cxx);
+        return EmitStorageDesignator::unaligned_bytewise(field_ptr_cxx,
+                                                         field_cxx);
       }
 
       if (base->is_special() ||
@@ -634,8 +635,8 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
   }
 
   if (auto packed = packed_scalar_storage_ref(e)) {
-    return EmitStorageDesignator::bytewise(packed->void_ptr_text,
-                                           packed->elem_cxx);
+    return EmitStorageDesignator::unaligned_bytewise(packed->void_ptr_text,
+                                                     packed->elem_cxx);
   }
 
   if (!expr_is_storage_lvalue(e)) return std::nullopt;
