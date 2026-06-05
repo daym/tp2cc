@@ -407,7 +407,7 @@ void test_subrange_bound_folds_ord_high_enum_type() {
   CHECK(contains(out.header, "using t_tindex = uint8_t;"));
   CHECK(contains(out.header,
                  "using t_tmap = ::rt::tp2cc_Array<uint8_t, 1, "
-                 "((tp2cc_enum_high_tdefoption) - (1) + 1)>;"));
+                 "((static_cast<int32_t>(tp2cc_enum_high_tdefoption)) - (1) + 1)>;"));
   CHECK(!contains(out.header, "::rt::p_ord("));
 }
 
@@ -947,6 +947,47 @@ void test_system_qualified_low_high_lowers_like_unqualified() {
   CHECK(contains(out.impl, "::std::numeric_limits<int64_t>::min()"));
   CHECK(!contains(out.impl, "::rt::p_low("));
   CHECK(!contains(out.impl, "::rt::p_high("));
+}
+
+void test_system_qualified_runtime_exports_use_implicit_unit() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "var\n"
+      "  f : text;\n"
+      "  n, code : longint;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  n := system.heapsize;\n"
+      "  system.val('12', n, code);\n"
+      "  system.close(f);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_n = ::rt::p_heapsize;"));
+  CHECK(contains(out.impl, "::rt::p_val("));
+  CHECK(contains(out.impl, "::rt::p_close(p_f);"));
+  CHECK(!contains(out.impl, "p_system"));
+}
+
+void test_system_member_access_respects_value_shadowing() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    heapsize : longint;\n"
+      "  end;\n"
+      "procedure run(system : trec; var n : longint);\n"
+      "implementation\n"
+      "procedure run(system : trec; var n : longint);\n"
+      "begin\n"
+      "  n := system.heapsize;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_n = p_system.p_heapsize;"));
+  CHECK(!contains(out.impl, "::rt::p_heapsize"));
 }
 
 void test_char_array_typed_const_uses_explicit_array_literal_helper() {
@@ -5494,7 +5535,7 @@ void test_addr_of_pointer_deref_field_uses_offsetof_arithmetic() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(p_p) + offsetof("));
+                 "reinterpret_cast<int32_t*>(::rt::tp2cc_pointer_byte_offset(p_p, offsetof("));
   CHECK(!contains(out.impl, "&::rt::tp2cc_deref(p_p).p_b"));
 }
 
@@ -5549,9 +5590,28 @@ void test_addr_of_pointer_deref_array_field_uses_offsetof_proxy() {
   // it also has to stay usable as both `pchar` and `^tcode`. The runtime
   // proxy keeps that address ambiguity until the use site converts it.
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_array_addr(reinterpret_cast<t_tcode*>(reinterpret_cast<uintptr_t>(p_p) + offsetof("));
+                 "::rt::tp2cc_array_addr(reinterpret_cast<t_tcode*>(::rt::tp2cc_pointer_byte_offset(p_p, offsetof("));
   CHECK(!contains(out.impl, "&::rt::tp2cc_deref(p_p).p_code"));
   CHECK(!contains(out.impl, "((::rt::p_char*)("));
+}
+
+void test_addr_of_pointer_deref_array_index_uses_pointer_offset() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tarr = array[0..9] of char;\n"
+      "  ptarr = ^tarr;\n"
+      "procedure run(p : ptarr; i : longint; var outp : pchar);\n"
+      "implementation\n"
+      "procedure run(p : ptarr; i : longint; var outp : pchar);\n"
+      "begin\n"
+      "  outp := @p^[i];\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_outp = reinterpret_cast<::rt::p_char*>(::rt::tp2cc_pointer_byte_offset(p_p, ((p_i) - (0)) * sizeof(::rt::p_char)));"));
+  CHECK(!contains(out.impl, "&::rt::tp2cc_deref(p_p)[p_i]"));
 }
 
 void test_addr_of_dynamic_array_targets_array_handle_not_data_proxy() {
@@ -5575,7 +5635,7 @@ void test_addr_of_dynamic_array_targets_array_handle_not_data_proxy() {
       "end.\n");
   CHECK(contains(out.impl, "p_pa = (&p_a);"));
   CHECK(contains(out.impl,
-                 "p_pr = reinterpret_cast<t_tbytes*>(reinterpret_cast<uintptr_t>(p_r) + offsetof("));
+                 "p_pr = reinterpret_cast<t_tbytes*>(::rt::tp2cc_pointer_byte_offset(p_r, offsetof("));
   CHECK(!contains(out.impl, "tp2cc_array_addr(p_a)"));
   CHECK(!contains(out.impl, "tp2cc_array_addr(reinterpret_cast<t_tbytes*"));
 }
@@ -6756,8 +6816,8 @@ void test_inline_anonymous_packed_record_var_lowers_to_struct() {
   CHECK(contains(out.impl, "uint8_t p_b;"));
   CHECK(contains(out.impl, "uint8_t p_c;"));
   CHECK(contains(out.impl, "::rt::tp2cc_Array<uint8_t, 0, ((3) - (0) + 1)> p_payload;"));
-  // Field access on the local works.
-  CHECK(contains(out.impl, "p_rec.p_a = 1;"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<uint8_t>(::rt::tp2cc_byte_offset((&p_rec), offsetof(::std::remove_reference_t<decltype(p_rec)>, p_a)), 1);"));
   // Layout asserts use `decltype(p_rec)` since there's no typedef name.
   CHECK(contains(out.impl,
                  "static_assert(offsetof(decltype(p_rec), p_a) == 0"));
@@ -6785,8 +6845,454 @@ void test_inline_anonymous_variant_record_lowers_to_union() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "union { struct { ::rt::p_char* p_n_name; }; struct { int32_t p_n_strx; }; };"));
-  CHECK(contains(out.impl, "p_n.p_n_un.p_n_strx = 7;"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<int32_t>(::rt::tp2cc_byte_offset((&p_n.p_n_un), offsetof(::std::remove_reference_t<decltype(p_n.p_n_un)>, p_n_strx)), 7);"));
+  CHECK(!contains(out.impl, "p_n.p_n_un.p_n_strx = 7;"));
   CHECK(!contains(out.impl, "/* inline-variant-record */ int32_t"));
+}
+
+void test_variant_record_payload_fields_use_byte_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tintbits = record\n"
+      "    overflow : boolean;\n"
+      "    case signed : boolean of\n"
+      "      false : (uvalue : qword);\n"
+      "      true : (svalue : int64);\n"
+      "  end;\n"
+      "function readu(var r : tintbits) : qword;\n"
+      "procedure writeu(var r : tintbits; v : qword);\n"
+      "implementation\n"
+      "function readu(var r : tintbits) : qword;\n"
+      "begin\n"
+      "  readu := r.uvalue;\n"
+      "end;\n"
+      "procedure writeu(var r : tintbits; v : qword);\n"
+      "begin\n"
+      "  r.uvalue := v;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_load<uint64_t>(::rt::tp2cc_byte_offset((&p_r), offsetof(t_tintbits, p_uvalue)))"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<uint64_t>(::rt::tp2cc_byte_offset((&p_r), offsetof(t_tintbits, p_uvalue)), p_v);"));
+  CHECK(!contains(out.impl, "p_r.p_uvalue"));
+}
+
+void test_variant_record_payload_storage_composes_through_members() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  treference = record\n"
+      "    offset : longint;\n"
+      "    base : longint;\n"
+      "  end;\n"
+      "  tlocation = record\n"
+      "    case tag : longint of\n"
+      "      0 : (reference : treference);\n"
+      "      1 : (reg : longint);\n"
+      "  end;\n"
+      "procedure touch(var r : treference);\n"
+      "procedure run(var loc : tlocation; delta : longint);\n"
+      "implementation\n"
+      "procedure touch(var r : treference);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run(var loc : tlocation; delta : longint);\n"
+      "begin\n"
+      "  loc.reference.offset := 4;\n"
+      "  inc(loc.reference.offset, delta);\n"
+      "  touch(loc.reference);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<int32_t>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference)), offsetof(t_treference, p_offset)), 4);"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_inc<int32_t>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference)), offsetof(t_treference, p_offset)), p_delta);"));
+  CHECK(contains(out.impl,
+                 "p_touch(::rt::tp2cc_reinterpret_ref<t_treference>(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference))));"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_treference>("));
+}
+
+void test_variant_record_payload_member_read_address_and_untyped_actual() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  plongint = ^longint;\n"
+      "  treference = record\n"
+      "    offset : longint;\n"
+      "    base : longint;\n"
+      "  end;\n"
+      "  tlocation = record\n"
+      "    case tag : longint of\n"
+      "      0 : (reference : treference);\n"
+      "      1 : (reg : longint);\n"
+      "  end;\n"
+      "procedure raw(var x);\n"
+      "function readoffset(var loc : tlocation) : longint;\n"
+      "function addressoffset(var loc : tlocation) : plongint;\n"
+      "procedure passoffset(var loc : tlocation);\n"
+      "implementation\n"
+      "procedure raw(var x);\n"
+      "begin\n"
+      "end;\n"
+      "function readoffset(var loc : tlocation) : longint;\n"
+      "begin\n"
+      "  readoffset := loc.reference.offset;\n"
+      "end;\n"
+      "function addressoffset(var loc : tlocation) : plongint;\n"
+      "begin\n"
+      "  addressoffset := @loc.reference.offset;\n"
+      "end;\n"
+      "procedure passoffset(var loc : tlocation);\n"
+      "begin\n"
+      "  raw(loc.reference.offset);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_result = ::rt::tp2cc_reinterpret_load<int32_t>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference)), offsetof(t_treference, p_offset)));"));
+  CHECK(contains(out.impl,
+                 "p_result = reinterpret_cast<int32_t*>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference)), offsetof(t_treference, p_offset)));"));
+  CHECK(contains(out.impl,
+                 "p_raw(((void*)(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference)), offsetof(t_treference, p_offset)))));"));
+  CHECK(!contains(out.impl, "&::rt::tp2cc_reinterpret_load<int32_t>"));
+}
+
+void test_variant_record_payload_storage_composes_through_indexes() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tarr = array[1..3] of longint;\n"
+      "  tview = record\n"
+      "    case tag : longint of\n"
+      "      0 : (items : tarr);\n"
+      "      1 : (other : longint);\n"
+      "  end;\n"
+      "procedure run(var view : tview; i : longint; value : longint);\n"
+      "implementation\n"
+      "procedure run(var view : tview; i : longint; value : longint);\n"
+      "begin\n"
+      "  view.items[i] := value;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<int32_t>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)), ((p_i) - (1)) * sizeof(int32_t)), p_value);"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tarr>("));
+}
+
+void test_variant_record_payload_index_read_address_and_untyped_actual() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pint = ^longint;\n"
+      "  tarr = array[1..3] of longint;\n"
+      "  tview = record\n"
+      "    case tag : longint of\n"
+      "      0 : (items : tarr);\n"
+      "      1 : (other : longint);\n"
+      "  end;\n"
+      "procedure raw(var x);\n"
+      "function readitem(var view : tview; i : longint) : longint;\n"
+      "function addritem(var view : tview; i : longint) : pint;\n"
+      "procedure passitem(var view : tview; i : longint);\n"
+      "implementation\n"
+      "procedure raw(var x);\n"
+      "begin\n"
+      "end;\n"
+      "function readitem(var view : tview; i : longint) : longint;\n"
+      "begin\n"
+      "  readitem := view.items[i];\n"
+      "end;\n"
+      "function addritem(var view : tview; i : longint) : pint;\n"
+      "begin\n"
+      "  addritem := @view.items[i];\n"
+      "end;\n"
+      "procedure passitem(var view : tview; i : longint);\n"
+      "begin\n"
+      "  raw(view.items[i]);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_result = ::rt::tp2cc_reinterpret_load<int32_t>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)), ((p_i) - (1)) * sizeof(int32_t)));"));
+  CHECK(contains(out.impl,
+                 "p_result = reinterpret_cast<int32_t*>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)), ((p_i) - (1)) * sizeof(int32_t)));"));
+  CHECK(contains(out.impl,
+                 "p_raw(((void*)(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)), ((p_i) - (1)) * sizeof(int32_t)))));"));
+  CHECK(!contains(out.impl, "&::rt::tp2cc_reinterpret_load<int32_t>"));
+}
+
+void test_variant_record_payload_array_address_uses_payload_address_proxy() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tarr = array[1..3] of char;\n"
+      "  ptarr = ^tarr;\n"
+      "  tview = record\n"
+      "    case tag : longint of\n"
+      "      0 : (items : tarr);\n"
+      "      1 : (other : longint);\n"
+      "  end;\n"
+      "procedure run(var view : tview; var pc : pchar; var pa : ptarr);\n"
+      "implementation\n"
+      "procedure run(var view : tview; var pc : pchar; var pa : ptarr);\n"
+      "begin\n"
+      "  pc := @view.items;\n"
+      "  pa := @view.items;\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(count_substring(out.impl,
+                           "::rt::tp2cc_array_addr(reinterpret_cast<t_tarr*>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items))))"),
+           static_cast<size_t>(2));
+  CHECK(!contains(out.impl, "::rt::tp2cc_array_addr()"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tarr>"));
+}
+
+void test_variant_record_payload_shortstring_index_stays_on_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tview = record\n"
+      "    case tag : longint of\n"
+      "      0 : (text : string[10]);\n"
+      "      1 : (other : longint);\n"
+      "  end;\n"
+      "procedure raw(var x);\n"
+      "procedure take(var ch : char);\n"
+      "procedure run(var view : tview; i : longint; ch : char; var p : pchar);\n"
+      "implementation\n"
+      "procedure raw(var x);\n"
+      "begin\n"
+      "end;\n"
+      "procedure take(var ch : char);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run(var view : tview; i : longint; ch : char; var p : pchar);\n"
+      "begin\n"
+      "  ch := view.text[i];\n"
+      "  view.text[i] := ch;\n"
+      "  inc(view.text[i]);\n"
+      "  p := @view.text[i];\n"
+      "  raw(view.text[i]);\n"
+      "  take(view.text[i]);\n"
+      "end;\n"
+      "end.\n");
+  const std::string slot =
+      "::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_text)), ::rt::tp2cc_shortstring_index_offset<10>(p_i))";
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_load<::rt::p_char>(" + slot + ")"));
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_store<::rt::p_char>(" + slot + ", p_ch);"));
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_inc<::rt::p_char>(" + slot + ");"));
+  CHECK(contains(out.impl, "p_p = reinterpret_cast<::rt::p_char*>(" + slot + ");"));
+  CHECK(contains(out.impl, "p_raw(((void*)(" + slot + ")));"));
+  CHECK(contains(out.impl, "p_take(::rt::tp2cc_reinterpret_ref<::rt::p_char>(" + slot + "));"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<::rt::tp2cc_ShortString<10>>"));
+  CHECK(!contains(out.impl, "&(::rt::tp2cc_reinterpret_load"));
+}
+
+void test_variant_record_pointer_payload_passes_slot_to_allocation_builtins() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pint = ^longint;\n"
+      "  tview = record\n"
+      "    case tag : longint of\n"
+      "      0 : (item : pint);\n"
+      "      1 : (text : pchar);\n"
+      "  end;\n"
+      "procedure run(var view : tview; size : longint);\n"
+      "implementation\n"
+      "procedure run(var view : tview; size : longint);\n"
+      "begin\n"
+      "  new(view.item);\n"
+      "  getmem(view.text, size);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::p_new(::rt::tp2cc_reinterpret_ref<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item))));"));
+  CHECK(contains(out.impl,
+                 "::rt::p_getmem(::rt::tp2cc_reinterpret_ref<::rt::p_char*>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_text))), p_size);"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_load<t_pint>"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_load<::rt::p_char*>"));
+}
+
+void test_variant_record_pointer_payload_distinguishes_slot_from_pointee() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pint = ^longint;\n"
+      "  tview = record\n"
+      "    case tag : longint of\n"
+      "      0 : (item : pint);\n"
+      "      1 : (value : longint);\n"
+      "  end;\n"
+      "procedure touch(var p : pint);\n"
+      "procedure setslot(var view : tview; p : pint);\n"
+      "procedure setpointed(var view : tview; v : longint);\n"
+      "function addrpointed(var view : tview) : pint;\n"
+      "implementation\n"
+      "procedure touch(var p : pint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure setslot(var view : tview; p : pint);\n"
+      "begin\n"
+      "  view.item := p;\n"
+      "  touch(view.item);\n"
+      "end;\n"
+      "procedure setpointed(var view : tview; v : longint);\n"
+      "begin\n"
+      "  view.item^ := v;\n"
+      "end;\n"
+      "function addrpointed(var view : tview) : pint;\n"
+      "begin\n"
+      "  addrpointed := @view.item^;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item)), p_p);"));
+  CHECK(contains(out.impl,
+                 "p_touch(::rt::tp2cc_reinterpret_ref<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item))));"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_deref(::rt::tp2cc_reinterpret_load<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item)))) = p_v;"));
+  CHECK(contains(out.impl,
+                 "p_result = ::rt::tp2cc_reinterpret_load<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item)));"));
+  CHECK(!contains(out.impl, "&::rt::tp2cc_deref"));
+}
+
+void test_variant_record_pointer_payload_typecast_keeps_slot_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pwide = ^longint;\n"
+      "  tconstvalue = record\n"
+      "    case integer of\n"
+      "      0 : (valueptr : pointer; len : longint);\n"
+      "      1 : (valueord : longint);\n"
+      "  end;\n"
+      "procedure touch(var p : pwide);\n"
+      "procedure run(var value : tconstvalue; pw : pwide);\n"
+      "implementation\n"
+      "procedure touch(var p : pwide);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run(var value : tconstvalue; pw : pwide);\n"
+      "begin\n"
+      "  pwide(value.valueptr) := pw;\n"
+      "  touch(pwide(value.valueptr));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<t_pwide>(::rt::tp2cc_byte_offset((&p_value), offsetof(t_tconstvalue, p_valueptr)), p_pw);"));
+  CHECK(contains(out.impl,
+                 "p_touch(::rt::tp2cc_reinterpret_ref<t_pwide>(::rt::tp2cc_byte_offset((&p_value), offsetof(t_tconstvalue, p_valueptr))));"));
+  CHECK(!contains(out.impl,
+                  "tp2cc_reinterpret_storage_ref<t_pwide>(::rt::tp2cc_reinterpret_load"));
+}
+
+void test_variant_class_payload_member_loads_pointer_before_field_offset() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  psymtable = ^tsymtable;\n"
+      "  tsymtable = record\n"
+      "    marker : longint;\n"
+      "  end;\n"
+      "  tsym = class\n"
+      "  public\n"
+      "    owner : psymtable;\n"
+      "  end;\n"
+      "  pitem = ^titem;\n"
+      "  titem = record\n"
+      "    case byte of\n"
+      "      0 : (sym : tsym);\n"
+      "      1 : (value : longint);\n"
+      "  end;\n"
+      "function read_owner(plist : pitem) : psymtable;\n"
+      "procedure write_owner(plist : pitem; st : psymtable);\n"
+      "implementation\n"
+      "function read_owner(plist : pitem) : psymtable;\n"
+      "begin\n"
+      "  read_owner := plist^.sym.owner;\n"
+      "end;\n"
+      "procedure write_owner(plist : pitem; st : psymtable);\n"
+      "begin\n"
+      "  plist^.sym.owner := st;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "tp2cc_pointer_byte_offset(::rt::tp2cc_reinterpret_load<t_tsym*>(::rt::tp2cc_pointer_byte_offset(p_plist, offsetof(t_titem, p_sym))), offsetof(t_tsym, p_owner))"));
+  CHECK(!contains(out.impl,
+                  "tp2cc_byte_offset(::rt::tp2cc_byte_offset(p_plist, offsetof(t_titem, p_sym)), offsetof(t_tsym, p_owner))"));
+}
+
+void test_variant_payload_after_reference_field_loads_reference_before_offset() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tlocation = record\n"
+      "    case byte of\n"
+      "      0 : (reg : longint);\n"
+      "      1 : (other : longint);\n"
+      "  end;\n"
+      "  tnode = class\n"
+      "    location : tlocation;\n"
+      "  end;\n"
+      "  tcall = class(tnode)\n"
+      "    left : tnode;\n"
+      "    right : tnode;\n"
+      "  end;\n"
+      "function read_reg(n : tnode) : longint;\n"
+      "implementation\n"
+      "function read_reg(n : tnode) : longint;\n"
+      "begin\n"
+      "  read_reg := tcall(tcall(n).right).left.location.reg;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "tp2cc_pointer_byte_offset(static_cast<t_tcall*>(static_cast<t_tcall*>(p_n)->p_right)->p_left, offsetof(t_tnode, p_location))"));
+  CHECK(!contains(out.impl,
+                  "tp2cc_byte_offset(::rt::tp2cc_pointer_byte_offset(static_cast<t_tcall*>(static_cast<t_tcall*>(p_n)->p_right), offsetof(t_tcall, p_left)), offsetof(t_tnode, p_location))"));
+}
+
+void test_variant_payload_object_method_is_not_field_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tderef = object\n"
+      "    dataidx : longint;\n"
+      "    function resolve : pointer;\n"
+      "  end;\n"
+      "  pitem = ^titem;\n"
+      "  titem = record\n"
+      "    case byte of\n"
+      "      0 : (symderef : tderef);\n"
+      "      1 : (value : longint);\n"
+      "  end;\n"
+      "function run(hp : pitem) : pointer;\n"
+      "implementation\n"
+      "function tderef.resolve : pointer;\n"
+      "begin\n"
+      "  resolve := nil;\n"
+      "end;\n"
+      "function run(hp : pitem) : pointer;\n"
+      "begin\n"
+      "  run := hp^.symderef.resolve;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, ".p_resolve()"));
+  CHECK(!contains(out.impl, "offsetof(t_tderef, p_resolve)"));
 }
 
 void test_packed_field_typed_cast_assignment_uses_memcpy_store() {
@@ -6954,6 +7460,159 @@ void test_unaligned_typed_deref_write_uses_bytewise_store() {
   CHECK(!contains(out.impl, "::rt::p_unaligned("));
 }
 
+void test_unaligned_typed_deref_inc_dec_use_unaligned_helpers() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type pword = ^word;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var\n"
+      "  b : array[0..15] of byte;\n"
+      "  i : longint;\n"
+      "  n : word;\n"
+      "begin\n"
+      "  inc(unaligned(pword(@b[i])^), n);\n"
+      "  dec(unaligned(pword(@b[i])^));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_unaligned_inc<uint16_t>("));
+  CHECK(contains(out.impl, "::rt::tp2cc_unaligned_dec<uint16_t>("));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_inc<uint16_t>("));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_dec<uint16_t>("));
+}
+
+void test_unaligned_variant_payload_uses_payload_storage_address() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tview = record\n"
+      "    case byte of\n"
+      "      0 : (w : word);\n"
+      "      1 : (i : longint);\n"
+      "  end;\n"
+      "function readw(var view : tview) : word;\n"
+      "implementation\n"
+      "function readw(var view : tview) : word;\n"
+      "begin\n"
+      "  readw := unaligned(view.w);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_unaligned_load<uint16_t>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_w)))"));
+  CHECK(!contains(out.impl, "&(::rt::tp2cc_reinterpret_load<uint16_t>"));
+}
+
+void test_unaligned_storage_address_and_untyped_actual_use_raw_address() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuf = array[0..15] of byte;\n"
+      "  pword = ^word;\n"
+      "procedure raw(var x);\n"
+      "procedure run(var b : tbuf; i : longint; var p : pword);\n"
+      "implementation\n"
+      "procedure raw(var x);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run(var b : tbuf; i : longint; var p : pword);\n"
+      "begin\n"
+      "  p := @unaligned(pword(@b[i])^);\n"
+      "  raw(unaligned(pword(@b[i])^));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_p = reinterpret_cast<uint16_t*>("));
+  CHECK(contains(out.impl, "p_raw(((void*)("));
+  CHECK(contains(out.impl, "(&p_b[p_i])"));
+  CHECK(!contains(out.impl, "&(::rt::tp2cc_unaligned_load<uint16_t>"));
+}
+
+void test_typecast_over_unaligned_storage_preserves_unaligned_helpers() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuf = array[0..15] of byte;\n"
+      "  plongint = ^longint;\n"
+      "procedure raw(var x);\n"
+      "function readl(var b : tbuf; i : longint) : longint;\n"
+      "procedure run(var b : tbuf; i : longint; v : longint; var p : plongint);\n"
+      "implementation\n"
+      "procedure raw(var x);\n"
+      "begin\n"
+      "end;\n"
+      "function readl(var b : tbuf; i : longint) : longint;\n"
+      "begin\n"
+      "  readl := longint(unaligned(plongint(@b[i])^));\n"
+      "end;\n"
+      "procedure run(var b : tbuf; i : longint; v : longint; var p : plongint);\n"
+      "begin\n"
+      "  longint(unaligned(plongint(@b[i])^)) := v;\n"
+      "  inc(longint(unaligned(plongint(@b[i])^)), v);\n"
+      "  p := @longint(unaligned(plongint(@b[i])^));\n"
+      "  raw(longint(unaligned(plongint(@b[i])^)));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_result = ((int32_t)(::rt::tp2cc_unaligned_load<int32_t>("));
+  CHECK(contains(out.impl, "::rt::tp2cc_unaligned_store<int32_t>("));
+  CHECK(contains(out.impl, "::rt::tp2cc_unaligned_inc<int32_t>("));
+  CHECK(contains(out.impl, "p_p = reinterpret_cast<int32_t*>("));
+  CHECK(contains(out.impl, "p_raw(((void*)("));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_store<int32_t>("));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_inc<int32_t>("));
+  CHECK(!contains(out.impl, "&(::rt::tp2cc_unaligned_load<int32_t>"));
+}
+
+void test_packed_record_field_through_pointer_slot_stays_bytewise() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tpacked = packed record\n"
+      "    w : word;\n"
+      "  end;\n"
+      "  ppacked = ^tpacked;\n"
+      "  pslot = ^ppacked;\n"
+      "  pword = ^word;\n"
+      "procedure raw(var x);\n"
+      "function readw(slot : pslot) : word;\n"
+      "procedure run(slot : pslot; n : word; var p : pword);\n"
+      "implementation\n"
+      "procedure raw(var x);\n"
+      "begin\n"
+      "end;\n"
+      "function readw(slot : pslot) : word;\n"
+      "begin\n"
+      "  readw := slot^.w;\n"
+      "end;\n"
+      "procedure run(slot : pslot; n : word; var p : pword);\n"
+      "begin\n"
+      "  slot^.w := n;\n"
+      "  inc(slot^.w, n);\n"
+      "  p := @slot^.w;\n"
+      "  raw(slot^.w);\n"
+      "end;\n"
+      "end.\n");
+  const std::string slot =
+      "::rt::tp2cc_pointer_byte_offset(::rt::tp2cc_deref(p_slot), offsetof(t_tpacked, p_w))";
+  CHECK(contains(out.impl,
+                 "p_result = ::rt::tp2cc_reinterpret_load<uint16_t>(" +
+                     slot + ");"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<uint16_t>(" + slot +
+                     ", p_n);"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_inc<uint16_t>(" + slot + ", p_n);"));
+  CHECK(contains(out.impl, "p_p = reinterpret_cast<uint16_t*>(" + slot + ");"));
+  CHECK(contains(out.impl, "p_raw(((void*)(" + slot + ")));"));
+  CHECK(!contains(out.impl, "&::rt::tp2cc_reinterpret_load<uint16_t>"));
+  CHECK(!contains(out.impl, "::rt::p_inc(::rt::tp2cc_deref(p_slot)->p_w"));
+}
+
 void test_unaligned_pointer_field_read_uses_bytewise_load() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -6971,6 +7630,38 @@ void test_unaligned_pointer_field_read_uses_bytewise_load() {
       "end.\n");
   CHECK(contains(out.impl, "::rt::tp2cc_unaligned_load<::rt::p_char*>("));
   CHECK(!contains(out.impl, "::rt::p_unaligned("));
+}
+
+void test_unaligned_storage_var_arg_is_rejected_instead_of_ref_bound() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pword = ^word;\n"
+      "  plongint = ^longint;\n"
+      "procedure take(var w : word);\n"
+      "procedure takel(var l : longint);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure take(var w : word);\n"
+      "begin\n"
+      "end;\n"
+      "procedure takel(var l : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run;\n"
+      "var\n"
+      "  b : array[0..15] of byte;\n"
+      "  i : longint;\n"
+      "begin\n"
+      "  take(unaligned(pword(@b[i])^));\n"
+      "  takel(longint(unaligned(plongint(@b[i])^)));\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 2);
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_ref<uint16_t>("));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_ref<int32_t>("));
 }
 
 void test_overload_picks_shortstring_target_for_short_string_arg() {
@@ -8639,6 +9330,7 @@ void test_inheritsfrom_is_boolean_for_short_circuit_and() {
 }
 
 void test_indexed_property_result_classtype_autocalls() {
+  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -8660,12 +9352,14 @@ void test_indexed_property_result_classtype_autocalls() {
       "function sameclass(b : tbox; i : integer; c : tclass) : boolean;\n"
       "begin\n"
       "  sameclass := b.items[i].classtype = c;\n"
-      "end.\n"
+      "end;\n"
       "end.\n");
+  CHECK(error_count() == before);
   CHECK(contains(out.impl, "p_result = (p_b->p_getitem(p_i)->p_classtype() == p_c);"));
 }
 
 void test_implicit_indexed_property_result_classtype_autocalls() {
+  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -8687,12 +9381,14 @@ void test_implicit_indexed_property_result_classtype_autocalls() {
       "function tbox.sameclass(i : integer; c : tclass) : boolean;\n"
       "begin\n"
       "  sameclass := items[i].classtype = c;\n"
-      "end.\n"
+      "end;\n"
       "end.\n");
+  CHECK(error_count() == before);
   CHECK(contains(out.impl, "p_result = (this->p_getitem(p_i)->p_classtype() == p_c);"));
 }
 
 void test_indexed_implicit_property_in_method_body() {
+  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -8714,11 +9410,13 @@ void test_indexed_implicit_property_in_method_body() {
       "  first := items[0];\n"
       "end;\n"
       "end.\n");
+  CHECK(error_count() == before);
   CHECK(contains(out.impl, "p_result = this->p_get(0);"));
   CHECK(!contains(out.impl, "p_items[0]"));
 }
 
 void test_indexed_implicit_property_result_write_in_method_body() {
+  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -8749,6 +9447,7 @@ void test_indexed_implicit_property_result_write_in_method_body() {
       "  list[2] := p;\n"
       "end;\n"
       "end.\n");
+  CHECK(error_count() == before);
   CHECK(contains(out.impl, "p_p = this->p_flist->p_get(1);"));
   CHECK(contains(out.impl, "this->p_flist->p_put(2, p_p);"));
   CHECK(!contains(out.impl, "property is read-only"));
@@ -9216,7 +9915,7 @@ void test_addr_of_reference_class_typecast_field_uses_object_pointer() {
       "end.\n");
   CHECK(contains(out.impl,
                  "p_result = reinterpret_cast<int32_t*>("
-                 "::rt::tp2cc_byte_offset(static_cast<t_tchild*>(p_p), "
+                 "::rt::tp2cc_pointer_byte_offset(static_cast<t_tchild*>(p_p), "
                  "offsetof(t_tchild, p_value)));"));
   CHECK(!contains(out.impl, "::rt::tp2cc_byte_offset((&p_p), "
                             "offsetof(t_tchild, p_value))"));
@@ -9244,7 +9943,7 @@ void test_addr_of_object_pointer_field_returns_typed_pointer() {
       "end.\n");
   CHECK(contains(out.impl,
                  "p_result = reinterpret_cast<t_tinfo*>("
-                 "::rt::tp2cc_byte_offset(p_last, "
+                 "::rt::tp2cc_pointer_byte_offset(p_last, "
                  "offsetof(t_tai, p_fileinfo)));"));
 }
 
@@ -9387,6 +10086,8 @@ int main() {
   RUN_TEST(test_low_high_on_set_type_uses_element_bounds);
   RUN_TEST(test_low_high_on_local_array_type_lowers_to_index_bounds);
   RUN_TEST(test_system_qualified_low_high_lowers_like_unqualified);
+  RUN_TEST(test_system_qualified_runtime_exports_use_implicit_unit);
+  RUN_TEST(test_system_member_access_respects_value_shadowing);
   RUN_TEST(test_char_array_typed_const_uses_explicit_array_literal_helper);
   RUN_TEST(test_char_array_assignment_uses_explicit_array_literal_helper);
   RUN_TEST(test_nested_array_typed_const_initializes_each_array_data_member);
@@ -9581,6 +10282,7 @@ int main() {
   RUN_TEST(test_addr_of_pointer_deref_field_uses_offsetof_arithmetic);
   RUN_TEST(test_addr_of_array_value_uses_context_selecting_proxy);
   RUN_TEST(test_addr_of_pointer_deref_array_field_uses_offsetof_proxy);
+  RUN_TEST(test_addr_of_pointer_deref_array_index_uses_pointer_offset);
   RUN_TEST(test_addr_of_dynamic_array_targets_array_handle_not_data_proxy);
   RUN_TEST(test_set_to_int_cast_uses_endian_safe_helper);
   RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);
@@ -9636,6 +10338,19 @@ int main() {
   RUN_TEST(test_inline_anonymous_enum_class_field_resolves_members);
   RUN_TEST(test_inline_anonymous_packed_record_var_lowers_to_struct);
   RUN_TEST(test_inline_anonymous_variant_record_lowers_to_union);
+  RUN_TEST(test_variant_record_payload_fields_use_byte_storage);
+  RUN_TEST(test_variant_record_payload_storage_composes_through_members);
+  RUN_TEST(test_variant_record_payload_member_read_address_and_untyped_actual);
+  RUN_TEST(test_variant_record_payload_storage_composes_through_indexes);
+  RUN_TEST(test_variant_record_payload_index_read_address_and_untyped_actual);
+  RUN_TEST(test_variant_record_payload_array_address_uses_payload_address_proxy);
+  RUN_TEST(test_variant_record_payload_shortstring_index_stays_on_storage);
+  RUN_TEST(test_variant_record_pointer_payload_passes_slot_to_allocation_builtins);
+  RUN_TEST(test_variant_record_pointer_payload_distinguishes_slot_from_pointee);
+  RUN_TEST(test_variant_record_pointer_payload_typecast_keeps_slot_storage);
+  RUN_TEST(test_variant_class_payload_member_loads_pointer_before_field_offset);
+  RUN_TEST(test_variant_payload_after_reference_field_loads_reference_before_offset);
+  RUN_TEST(test_variant_payload_object_method_is_not_field_storage);
   RUN_TEST(test_packed_field_typed_cast_assignment_uses_memcpy_store);
   RUN_TEST(test_packed_record_typecast_field_assignment_uses_storage_view);
   RUN_TEST(test_record_typecast_field_read_uses_storage_view);
@@ -9644,7 +10359,13 @@ int main() {
   RUN_TEST(test_inc_local_packed_pointee_field_routes_through_memcpy_inc);
   RUN_TEST(test_unaligned_typed_deref_read_uses_bytewise_load);
   RUN_TEST(test_unaligned_typed_deref_write_uses_bytewise_store);
+  RUN_TEST(test_unaligned_typed_deref_inc_dec_use_unaligned_helpers);
+  RUN_TEST(test_unaligned_variant_payload_uses_payload_storage_address);
+  RUN_TEST(test_unaligned_storage_address_and_untyped_actual_use_raw_address);
+  RUN_TEST(test_typecast_over_unaligned_storage_preserves_unaligned_helpers);
+  RUN_TEST(test_packed_record_field_through_pointer_slot_stays_bytewise);
   RUN_TEST(test_unaligned_pointer_field_read_uses_bytewise_load);
+  RUN_TEST(test_unaligned_storage_var_arg_is_rejected_instead_of_ref_bound);
   RUN_TEST(test_overload_picks_shortstring_target_for_short_string_arg);
   RUN_TEST(test_overload_picks_pchar_to_shortstring_over_ansistring);
   RUN_TEST(test_sizeof_lowers_to_int32_to_match_pascal_longint_semantics);

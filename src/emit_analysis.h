@@ -115,6 +115,8 @@ class EmitAnalysis {
   std::string canonical_method_owner_type_name(std::string_view owner);
   const ast::TypeExpr* lookup_record_field_type_in_type(
       const ast::TypeExpr* type, std::string_view field_name);
+  bool record_field_is_variant_in_type(const ast::TypeExpr* type,
+                                       std::string_view field_name);
   const ast::TypeExpr* lookup_record_field_type_in_with(
       const ScopeStateView::WithBind& wb, std::string_view field_name);
 

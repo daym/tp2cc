@@ -491,7 +491,9 @@ void append_record_variant_fields(
   }
   for (const auto& vc : vpart->cases) {
     for (const auto& f : vc.fields) {
-      const FieldInfo field{.type = f.type, .is_class_var = false};
+      const FieldInfo field{.type = f.type,
+                            .is_class_var = false,
+                            .is_variant = true};
       for (const auto& n : f.names) fields[lc(n)] = field;
     }
     append_record_variant_fields(vc.variant_part, fields);
@@ -1421,6 +1423,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
                        runtime_procedural_type(false, {}));
   register_runtime_var(rt_exports, "erroraddr", runtime_type_name("pointer"));
   register_runtime_var(rt_exports, "exitcode", runtime_type_name("longint"));
+  register_runtime_var(rt_exports, "heapsize", runtime_type_name("longint"));
 
   register_runtime_const(rt_exports, "sigint", runtime_type_name("longint"),
                          runtime_int_literal(2));

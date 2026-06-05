@@ -678,6 +678,21 @@ void test_shortstring_charref_inc_and_dec_update_length_slot_storage() {
   CHECK_EQ(tp2cc_to_std_string(s), std::string("A"));
 }
 
+void test_shortstring_index_address_names_layout_bytes() {
+  tp2cc_ShortString<8> s = tp2cc_shortstring_of<8>("AB");
+
+  auto* length_byte =
+      static_cast<uint8_t*>(tp2cc_shortstring_index_address<8>(&s, 0));
+  auto* first_char =
+      static_cast<p_char*>(tp2cc_shortstring_index_address<8>(&s, 1));
+  auto* second_char =
+      static_cast<p_char*>(tp2cc_shortstring_index_address<8>(&s, 2));
+
+  CHECK_EQ(*length_byte, 2);
+  CHECK_EQ(*first_char, tp2cc_char_of('A'));
+  CHECK_EQ(*second_char, tp2cc_char_of('B'));
+}
+
 void test_octstr_formats_octal_with_zero_padding() {
   CHECK_EQ(tp2cc_to_std_string(p_octstr(9, 4)), std::string("0011"));
 }
@@ -890,6 +905,12 @@ void test_unaligned_load_store_handle_misaligned_bytes() {
     CHECK_EQ(raw[1 + i], expected[i]);
   }
   CHECK_EQ(tp2cc_unaligned_load<int32_t>(p), value);
+
+  tp2cc_unaligned_inc<int32_t>(p);
+  CHECK_EQ(tp2cc_unaligned_load<int32_t>(p), value + 1);
+
+  tp2cc_unaligned_dec<int32_t>(p, 2);
+  CHECK_EQ(tp2cc_unaligned_load<int32_t>(p), value - 1);
 }
 
 void test_scope_exit_runs_on_exception_unwind() {
@@ -1517,6 +1538,7 @@ int main() {
   RUN_TEST(test_strpas_returns_shortstring_up_to_first_nul);
   RUN_TEST(test_ansistring_from_shortstring_keeps_trailing_nul_storage);
   RUN_TEST(test_shortstring_charref_inc_and_dec_update_length_slot_storage);
+  RUN_TEST(test_shortstring_index_address_names_layout_bytes);
   RUN_TEST(test_octstr_formats_octal_with_zero_padding);
   RUN_TEST(test_move_reads_from_const_shortstring_storage);
   RUN_TEST(test_shortstring_compares_equal_to_pchar_buffer);

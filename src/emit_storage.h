@@ -68,6 +68,8 @@ struct EmitTypecastStorageView {
   const ast::TypeExpr* target_type = nullptr;
   bool target_is_primitive = false;
   bool source_is_untyped_storage = false;
+  bool source_is_bytewise_storage = false;
+  bool source_is_unaligned_bytewise_storage = false;
   bool pointee_view = false;
   EmitTypecastStorageView(const ast::Expr* source_in,
                           std::string source_cxx_in,
@@ -76,6 +78,8 @@ struct EmitTypecastStorageView {
                           const ast::TypeExpr* target_type_in,
                           bool target_is_primitive_in,
                           bool source_is_untyped_storage_in,
+                          bool source_is_bytewise_storage_in,
+                          bool source_is_unaligned_bytewise_storage_in,
                           bool pointee_view_in)
       : source(source_in),
         source_cxx(std::move(source_cxx_in)),
@@ -84,6 +88,9 @@ struct EmitTypecastStorageView {
         target_type(target_type_in),
         target_is_primitive(target_is_primitive_in),
         source_is_untyped_storage(source_is_untyped_storage_in),
+        source_is_bytewise_storage(source_is_bytewise_storage_in),
+        source_is_unaligned_bytewise_storage(
+            source_is_unaligned_bytewise_storage_in),
         pointee_view(pointee_view_in) {}
 };
 
@@ -108,6 +115,53 @@ enum class EmitStorageAddressForm {
 // references. Keep the semantic decision in one object so callers ask for
 // "store", "address", or "increment" and get the correct representation.
 struct EmitStorageDesignator {
+  static EmitStorageDesignator ordinary(std::string text_in,
+                                        std::string type_cxx_in) {
+    return EmitStorageDesignator(EmitStorageAccess::Ordinary,
+                                 std::move(text_in), {},
+                                 std::move(type_cxx_in),
+                                 EmitStorageAddressForm::None);
+  }
+
+  static EmitStorageDesignator ordinary_typed_address(
+      std::string text_in, std::string ptr_cxx_in, std::string type_cxx_in) {
+    return EmitStorageDesignator(EmitStorageAccess::Ordinary,
+                                 std::move(text_in), std::move(ptr_cxx_in),
+                                 std::move(type_cxx_in),
+                                 EmitStorageAddressForm::TypedStoragePointer);
+  }
+
+  static EmitStorageDesignator reinterpret_ref(std::string text_in,
+                                               std::string ptr_cxx_in,
+                                               std::string type_cxx_in) {
+    return EmitStorageDesignator(EmitStorageAccess::ReinterpretRef,
+                                 std::move(text_in), std::move(ptr_cxx_in),
+                                 std::move(type_cxx_in),
+                                 EmitStorageAddressForm::TypedStoragePointer);
+  }
+
+  static EmitStorageDesignator bytewise(std::string ptr_cxx_in,
+                                        std::string type_cxx_in) {
+    return raw_byte_address(EmitStorageAccess::Bytewise, {},
+                            std::move(ptr_cxx_in), std::move(type_cxx_in));
+  }
+
+  static EmitStorageDesignator unaligned_bytewise(std::string ptr_cxx_in,
+                                                  std::string type_cxx_in) {
+    return raw_byte_address(EmitStorageAccess::UnalignedBytewise, {},
+                            std::move(ptr_cxx_in), std::move(type_cxx_in));
+  }
+
+  static EmitStorageDesignator raw_byte_address(EmitStorageAccess access_in,
+                                                std::string text_in,
+                                                std::string ptr_cxx_in,
+                                                std::string type_cxx_in) {
+    return EmitStorageDesignator(access_in, std::move(text_in),
+                                 std::move(ptr_cxx_in),
+                                 std::move(type_cxx_in),
+                                 EmitStorageAddressForm::RawBytePointer);
+  }
+
   EmitStorageAccess access = EmitStorageAccess::Ordinary;
   std::string text;
   // Address of the Pascal storage denoted by the designator, when that address
@@ -127,6 +181,16 @@ struct EmitStorageDesignator {
     return is_bytewise() || access == EmitStorageAccess::ReinterpretRef ||
            ptr_form == EmitStorageAddressForm::RawBytePointer;
   }
+
+ private:
+  EmitStorageDesignator(EmitStorageAccess access_in, std::string text_in,
+                        std::string ptr_cxx_in, std::string type_cxx_in,
+                        EmitStorageAddressForm ptr_form_in)
+      : access(access_in),
+        text(std::move(text_in)),
+        ptr_cxx(std::move(ptr_cxx_in)),
+        type_cxx(std::move(type_cxx_in)),
+        ptr_form(ptr_form_in) {}
 };
 
 // Storage / aliasing lowering. This module owns the dangerous questions about
@@ -189,6 +253,10 @@ class EmitStorage {
       const ast::Expr& e);
   std::optional<EmitPackedAggregateFieldUse> direct_packed_aggregate_field_use(
       const ast::Expr& e);
+  std::optional<EmitPackedAggregateFieldUse> packed_aggregate_path_use(
+      const ast::Expr& e);
+  bool variant_payload_path_use(const ast::Expr& e);
+  bool member_value_may_need_storage_designator(const ast::Expr& e);
   void report_packed_aggregate_subobject_use(
       Location where, std::string_view op,
       const EmitPackedAggregateFieldUse& use);
@@ -245,6 +313,15 @@ class EmitStorage {
   std::string typecast_source_raw_pointer(const ast::Expr& source,
                                           const std::string& source_cxx,
                                           bool untyped_storage);
+  // Pascal pointer/reference values support member selection on the pointed-to
+  // object. Storage composition needs that object type when the current
+  // designator is the pointer slot rather than the pointee.
+  const ast::TypeExpr* pointer_like_member_object_type(const ast::TypeExpr* t);
+  std::optional<EmitStorageDesignator> raw_address_index_designator(
+      const ast::Index& i, const EmitStorageDesignator& base,
+      const ast::TypeExpr* base_type);
+  bool index_base_denotes_property_value(const ast::Index& i);
+  std::string storage_type_cxx(const ast::TypeExpr* t);
   std::string scalar_storage_type_cxx(const ast::TypeExpr* t);
   std::string reference_class_cast_pointer_cxx(const ast::Expr& base_expr);
   bool reference_classes_related(std::string_view ancestor,

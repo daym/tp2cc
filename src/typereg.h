@@ -85,6 +85,7 @@ struct MethodSig {
 struct FieldInfo {
   std::shared_ptr<const ast::TypeExpr> type;   // declared field type
   bool is_class_var = false;
+  bool is_variant = false;
 };
 
 enum class PropertyAccessorKind : uint8_t {

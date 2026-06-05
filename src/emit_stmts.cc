@@ -274,12 +274,17 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
       }
     }
   }
+  if (auto use = storage_.packed_aggregate_path_use(*a.target)) {
+    storage_.report_packed_aggregate_subobject_use(a.loc, "assignment", *use);
+    return;
+  }
   // Assignment targets are storage contexts in Pascal. Most targets also spell
   // ordinary C++ lvalues, and those must still use the normal assignment path
   // below so shortstrings, range checks, properties, and custom assignment
   // operators keep their existing rules. Intercept only targets whose storage
   // cannot safely be expressed as a plain C++ lvalue, such as untyped storage,
-  // packed scalar storage, `unaligned(...)`, or a storage-view typecast.
+  // packed scalar storage, variant-record payload storage, `unaligned(...)`, or
+  // a storage-view typecast.
   if (auto target = storage_.storage_designator(*a.target);
       target && target->is_special()) {
     const TypeExpr* target_ty = analysis_.deduce_type(*a.target);

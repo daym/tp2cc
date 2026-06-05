@@ -1393,6 +1393,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         report_packed_aggregate_subobject_use(
             m.loc, "nested member access", *use);
       }
+      if (storage_.member_value_may_need_storage_designator(e)) {
+        if (auto storage = storage_.storage_designator(e);
+            storage && storage->is_bytewise()) {
+          // Packed scalar fields and variant payload fields are Pascal values,
+          // but their storage address may not denote a live, aligned C++
+          // object. Read the value through the same byte-addressed designator
+          // used by assignment, Inc/Dec, address-of, and var/untyped actuals.
+          return storage_.storage_designator_value(*storage);
+        }
+      }
       // Classify the base into one of the qualifier kinds that
       // `resolve_name` understands. The base cases are:
       //   - `inherited.name`    -> class-qualified on parent alias
@@ -1440,13 +1450,6 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return want_call ? text + "()" : text;
       }
 
-      // Pascal's `System` unit is implicitly used everywhere. Route
-      // `System.x` straight to `::rt::x` so every builtin (delete,
-      // length, copy, pos, ...) resolves without a per-method stub
-      // on some `p_system` object.
-      if (base_ident && *base_ident == "system") {
-        return "::rt::" + mangle(m.name);
-      }
       // `Unit.name` is not member access on a value named `Unit`. The shared
       // analysis helper has already applied Pascal shadowing and uses-visibility
       // rules, so this branch can emit the qualified symbol directly.
@@ -1698,59 +1701,6 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return "(" + mangle(id.name) + ")";
         }
       }
-      // Pascal `@p^.field` computes the address of `field` inside the
-      // pointee of `p`; under fpc no memory is read through `p`. The
-      // naive C++ `&deref(p).field` binds a reference to `*p`, which
-      // is UB when `p` is nil. Lower through integer arithmetic +
-      // reinterpret_cast<T*> so the C++ output never derefs `p`.
-      // Restrict to record pointees so `offsetof` stays on standard-
-      // layout types.
-      //
-      // When the field itself is an array, keep the emitted address as a
-      // runtime proxy. The use site decides whether Pascal `@arrfield` means
-      // pointer-to-array or pointer-to-first-element.
-      if (registry && a.operand && a.operand->kind == Kind::Member) {
-        const auto& m = static_cast<const Member&>(*a.operand);
-        if (m.base && m.base->kind == Kind::Deref) {
-          const auto& d = static_cast<const Deref&>(*m.base);
-          const TypeExpr* pt = deduce_type(*d.operand);
-          if (pt) pt = canonicalize_type(pt);
-          if (pt && pt->kind == Kind::TyPointer) {
-            const TypeExpr* target =
-                canonicalize_type(static_cast<const TyPointer&>(*pt).target.get());
-            if (target && target->kind == Kind::TyName) {
-              const auto& tn = static_cast<const TyName&>(*target);
-              std::string rec_lc = ascii_lower(tn.name);
-              const TypeSymbol* symbol =
-                  registry->lookup_type_symbol(rec_lc, current_unit_name);
-              if (symbol && symbol->record_info()) {
-                if (const auto* fi =
-                        registry->lookup_record_field(
-                            symbol->name, m.name, current_unit_name)) {
-                  std::string struct_cxx = named_type_struct_cxx(rec_lc);
-                  std::string field_cxx = registry->field_cxx_name(m.name);
-                  std::string field_type_cxx =
-                      fi->type ? type_to_cxx(*fi->type) : std::string("void");
-                  std::string field_addr =
-                      "reinterpret_cast<" + field_type_cxx +
-                      "*>(reinterpret_cast<uintptr_t>(" +
-                      expr_to_cxx(*d.operand) + ") + offsetof(" +
-                      struct_cxx + ", " + field_cxx + "))";
-                  const TypeExpr* field_ty =
-                      fi->type ? canonicalize_type(fi->type.get()) : nullptr;
-                  if (!a.double_addr && field_ty &&
-                      field_ty->kind == Kind::TyArray &&
-                      static_cast<const TyArray&>(*field_ty).array_kind ==
-                          ArrayKind::Fixed) {
-                    return "::rt::tp2cc_array_addr(" + field_addr + ")";
-                  }
-                  return field_addr;
-                }
-              }
-            }
-          }
-        }
-      }
       bool saved = is_callee_context_;
       is_callee_context_ = true;
       bool saved_suppress = suppress_packed_scalar_value_load;
@@ -1779,7 +1729,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // `^array` and `^element` forms. Native FPC accepts both
           // assignments and reports ambiguity when both overloads are
           // equally viable; hardwiring a decay here miscompiles one side.
-          return "::rt::tp2cc_array_addr(" + inner + ")";
+          std::string array_addr_arg = inner;
+          if (storage && (!storage->ptr_cxx.empty() ||
+                          storage->raw_address_needs_typed_cast() ||
+                          storage->text.empty())) {
+            // The array-address proxy needs a storage address when the array
+            // lvalue is not safely expressible in C++: `p^` already has the
+            // pointer value, and variant/packed storage is byte-addressed.
+            array_addr_arg =
+                storage_.storage_designator_typed_address_value(*storage);
+          }
+          return "::rt::tp2cc_array_addr(" + array_addr_arg + ")";
         }
       }
       if (storage) {
@@ -1809,8 +1769,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // of falling through to a runtime call.
       if (c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
-        if (mem.base->kind == Kind::Ident &&
-            ascii_lower(static_cast<const Ident&>(*mem.base).name) == "system" &&
+        const bool system_unit_qualifier =
+            analysis_.resolve_unit_qualified_member(mem).has_value() ||
+            (!registry && mem.base->kind == Kind::Ident &&
+             ascii_lower(static_cast<const Ident&>(*mem.base).name) == "system");
+        if (system_unit_qualifier &&
             (mem.name == "low" || mem.name == "high") && c.args.size() == 1) {
           const bool want_low = (mem.name == "low");
           if (c.args[0]->kind == Kind::Ident) {
@@ -2460,7 +2423,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
       }
       if (auto storage = storage_.storage_designator(i);
-          storage && storage->is_special()) {
+          storage && storage->is_bytewise()) {
+        // Value reads only need the storage designator for byte-addressed
+        // storage. Ordinary indexes and aligned storage-view indexes keep the
+        // normal expression path; bytewise indexes must load from the composed
+        // element address instead of indexing a copied aggregate value.
         return storage_.storage_designator_value(*storage);
       }
       std::string out = expr_to_cxx(*i.base);

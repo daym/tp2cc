@@ -98,7 +98,7 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
     if (!storage_typecast_target(nested_id, *nested.args[0])) break;
     source = nested.args[0].get();
   }
-  if (!source || !expr_is_storage_lvalue(*source)) return std::nullopt;
+  if (!source) return std::nullopt;
 
   if (source->kind == Kind::Ident) {
     ResolveResult rr = resolve_name_provider_.resolve_name(
@@ -111,9 +111,20 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
   }
 
   const bool untyped_storage = expr_is_untyped_storage_ref(*source);
+  std::optional<EmitStorageDesignator> source_storage =
+      untyped_storage ? std::nullopt : storage_designator(*source);
+  // A storage designator can prove storage even when the syntax is not a plain
+  // lvalue. `unaligned(x)` is a Call node, but it still denotes `x`'s bytes.
+  if (!untyped_storage && !source_storage && !expr_is_storage_lvalue(*source)) {
+    return std::nullopt;
+  }
   std::string source_cxx = expr_ops_.expr_to_cxx(*source);
   std::string source_ptr_cxx =
-      typecast_source_raw_pointer(*source, source_cxx, untyped_storage);
+      untyped_storage
+          ? source_cxx
+          : (source_storage
+                 ? storage_designator_raw_address(*source_storage)
+                 : typecast_source_raw_pointer(*source, source_cxx, false));
   // Pointee-view applies only to untyped-param storage (`procedure foo(var x)`
   // with `T(x) := y` meaning "write T at *x"). A typed pointer lvalue cast
   // like `ptaiprop(field) := y` is a storage alias of the slot itself;
@@ -122,6 +133,10 @@ std::optional<EmitTypecastStorageView> EmitStorage::typecast_storage_view(
                                  std::move(source_ptr_cxx),
                                  std::move(target->cxx), target->type,
                                  target->primitive, untyped_storage,
+                                 source_storage && source_storage->is_bytewise(),
+                                 source_storage &&
+                                     source_storage->access ==
+                                         EmitStorageAccess::UnalignedBytewise,
                                  untyped_storage);
 }
 
@@ -190,6 +205,22 @@ std::string EmitStorage::typecast_source_raw_pointer(
   return {};
 }
 
+std::string EmitStorage::storage_type_cxx(const TypeExpr* t) {
+  return t ? types_.type_to_cxx(*t) : std::string{};
+}
+
+const TypeExpr* EmitStorage::pointer_like_member_object_type(const TypeExpr* t) {
+  t = analysis_.canonicalize_type(t);
+  if (!t) return nullptr;
+  if (t->kind == Kind::TyPointer) {
+    return static_cast<const TyPointer&>(*t).target.get();
+  }
+  if (type_is_reference_class(t) || analysis_.type_is_interface(t)) {
+    return t;
+  }
+  return nullptr;
+}
+
 std::string EmitStorage::scalar_storage_type_cxx(const TypeExpr* t) {
   t = analysis_.canonicalize_type(t);
   if (!t) return {};
@@ -206,6 +237,114 @@ std::string EmitStorage::scalar_storage_type_cxx(const TypeExpr* t) {
   }
 }
 
+std::optional<EmitStorageDesignator> EmitStorage::raw_address_index_designator(
+    const Index& i, const EmitStorageDesignator& base,
+    const TypeExpr* base_type) {
+  // Index suffixes over pointer-backed or byte-addressed storage must compose
+  // the storage address. Rebuilding them as `&base[i]` would first dereference
+  // pointer bases such as `p^` or load bytewise aggregate storage into a C++
+  // temporary.
+  base_type = analysis_.canonicalize_type(base_type);
+  if (!base_type || i.indices.empty()) return std::nullopt;
+
+  const bool base_address_is_pointer_value =
+      base.access == EmitStorageAccess::Ordinary &&
+      base.ptr_form == EmitStorageAddressForm::TypedStoragePointer &&
+      !base.ptr_cxx.empty();
+
+  std::string text;
+  if (!base.is_bytewise()) {
+    text = base.text;
+    for (const auto& idx : i.indices) {
+      text += "[" + expr_ops_.expr_to_cxx(*idx) + "]";
+    }
+  }
+
+  if (i.indices.size() == 1) {
+    if (auto cap = types_.shortstring_capacity_to_cxx(base_type)) {
+      const std::string index_cxx = expr_ops_.expr_to_cxx(*i.indices[0]);
+      const char* offset_helper = base_address_is_pointer_value
+                                      ? "::rt::tp2cc_pointer_byte_offset"
+                                      : "::rt::tp2cc_byte_offset";
+      const std::string base_addr = storage_designator_raw_address(base);
+      const std::string offset_cxx =
+          "::rt::tp2cc_shortstring_index_offset<" + *cap + ">(" +
+          index_cxx + ")";
+      const std::string ptr_cxx =
+          std::string(offset_helper) + "(" + base_addr + ", " + offset_cxx +
+          ")";
+      return EmitStorageDesignator::raw_byte_address(base.access, text, ptr_cxx,
+                                                     "::rt::p_char");
+    }
+  }
+
+  if (base_type->kind != Kind::TyArray) return std::nullopt;
+  const auto& array_type = static_cast<const TyArray&>(*base_type);
+  if (array_type.array_kind != ArrayKind::Fixed ||
+      i.indices.size() > array_type.dims.size() || !array_type.element) {
+    return std::nullopt;
+  }
+  auto element_cxx_after_dim = [&](size_t selected_dim) {
+    std::string ty = storage_type_cxx(array_type.element.get());
+    for (size_t dim = array_type.dims.size(); dim-- > selected_dim + 1;) {
+      auto bounds = types_.array_dim_bounds_to_cxx(*array_type.dims[dim]);
+      if (!bounds) return std::string{};
+      ty = "::rt::tp2cc_Array<" + ty + ", " + bounds->low + ", " +
+           bounds->size_expr + ">";
+    }
+    return ty;
+  };
+  std::string ptr_cxx = storage_designator_raw_address(base);
+  std::string elem_cxx;
+  for (size_t dim = 0; dim < i.indices.size(); ++dim) {
+    auto bounds = types_.array_dim_bounds_to_cxx(*array_type.dims[dim]);
+    if (!bounds) return std::nullopt;
+    elem_cxx = element_cxx_after_dim(dim);
+    if (elem_cxx.empty()) return std::nullopt;
+    const std::string index_cxx = expr_ops_.expr_to_cxx(*i.indices[dim]);
+    const std::string offset = "((" + index_cxx + ") - (" + bounds->low +
+                               ")) * sizeof(" + elem_cxx + ")";
+    const char* offset_helper = dim == 0 && base_address_is_pointer_value
+                                    ? "::rt::tp2cc_pointer_byte_offset"
+                                    : "::rt::tp2cc_byte_offset";
+    ptr_cxx = std::string(offset_helper) + "(" + ptr_cxx + ", " + offset + ")";
+  }
+  return EmitStorageDesignator::raw_byte_address(base.access, text, ptr_cxx,
+                                                 elem_cxx);
+}
+
+bool EmitStorage::index_base_denotes_property_value(const Index& i) {
+  if (!registry_) return false;
+
+  if (i.base->kind == Kind::Member) {
+    const auto& mem = static_cast<const Member&>(*i.base);
+    std::string cls;
+    if (mem.base->kind == Kind::Ident &&
+        static_cast<const Ident&>(*mem.base).name == "self") {
+      cls = scope_.current_class_name;
+    } else {
+      cls = analysis_.deduce_class_alias(*mem.base);
+    }
+    if (!cls.empty() &&
+        registry_->lookup_class_property(cls, mem.name,
+                                         scope_.current_unit_name)) {
+      return true;
+    }
+  }
+
+  if (i.base->kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(*i.base);
+    if (auto found = analysis_.find_implicit_class_property(id.name);
+        found && found->prop) {
+      return true;
+    }
+  }
+
+  std::string cls = analysis_.deduce_class_alias(*i.base);
+  return !cls.empty() &&
+         registry_->lookup_default_property(cls, scope_.current_unit_name);
+}
+
 std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
     const Expr& e) {
   if (e.kind == Kind::Call) {
@@ -217,10 +356,8 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
           // `unaligned(x)` promises only byte-addressable storage. Binding a
           // C++ `T&` would still require alignment and a live `T` object, so
           // reads/writes/increments must stay on memcpy-style helpers.
-          return EmitStorageDesignator{EmitStorageAccess::UnalignedBytewise,
-                                       {}, storage->void_ptr_text,
-                                       storage->elem_cxx,
-                                       EmitStorageAddressForm::RawBytePointer};
+          return EmitStorageDesignator::unaligned_bytewise(
+              storage->void_ptr_text, storage->elem_cxx);
         }
       }
     }
@@ -231,31 +368,34 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
           // A primitive cast such as `longint(b)` says how to interpret those
           // bytes; it must not manufacture a typed C++ reference to storage
           // that may not contain a live `longint` object.
-          return EmitStorageDesignator{EmitStorageAccess::Bytewise, {},
-                                       view->source_cxx, view->target_cxx,
-                                       EmitStorageAddressForm::RawBytePointer};
+          return EmitStorageDesignator::bytewise(view->source_cxx,
+                                                 view->target_cxx);
         }
         if (view->source) {
           if (auto packed = packed_scalar_storage_ref(*view->source)) {
             // A primitive cast over packed scalar storage is an aliasing view
             // in Pascal, but the packed field may be misaligned in C++. Keep it
             // as bytewise storage so stores and Inc/Dec use memcpy helpers.
-            return EmitStorageDesignator{EmitStorageAccess::Bytewise, {},
-                                         packed->void_ptr_text,
-                                         view->target_cxx,
-                                         EmitStorageAddressForm::RawBytePointer};
+            return EmitStorageDesignator::bytewise(packed->void_ptr_text,
+                                                   view->target_cxx);
           }
         }
       }
       // In a storage context, `T(x)` aliases the original Pascal variable
       // designator as type `T`. This reference path is only for ordinary
       // aligned storage; raw/untyped/packed cases returned bytewise above.
-      return EmitStorageDesignator{
-          EmitStorageAccess::ReinterpretRef,
+      if (view->source_is_bytewise_storage) {
+        if (view->source_is_unaligned_bytewise_storage) {
+          return EmitStorageDesignator::unaligned_bytewise(
+              view->source_ptr_cxx, view->target_cxx);
+        }
+        return EmitStorageDesignator::bytewise(view->source_ptr_cxx,
+                                               view->target_cxx);
+      }
+      return EmitStorageDesignator::reinterpret_ref(
           reinterpret_ref_text(view->target_cxx, view->source_cxx,
                                view->pointee_view),
-          view->source_ptr_cxx, view->target_cxx,
-          EmitStorageAddressForm::TypedStoragePointer};
+          view->source_ptr_cxx, view->target_cxx);
     }
   }
 
@@ -265,9 +405,19 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
       // `TArray(b)[i]` where `b` is untyped storage indexes bytes owned by the
       // caller, not a temporary C++ array object. Compute the element address
       // and let the load/store helpers copy the element representation.
-      return EmitStorageDesignator{EmitStorageAccess::Bytewise, {},
-                                   view->ptr_cxx, view->elem_cxx,
-                                   EmitStorageAddressForm::RawBytePointer};
+      return EmitStorageDesignator::bytewise(view->ptr_cxx, view->elem_cxx);
+    }
+    if (auto base = storage_designator(*i.base)) {
+      if (base->is_bytewise() || !base->ptr_cxx.empty()) {
+        return raw_address_index_designator(
+            i, *base, analysis_.deduce_type(*i.base));
+      }
+    }
+    if (index_base_denotes_property_value(i)) {
+      // Indexed property syntax looks like an array lvalue, but the accessor
+      // may be a getter/setter. Property lowering owns that semantic decision;
+      // storage fallback must not first emit the bare property name as storage.
+      return std::nullopt;
     }
     if (!expr_is_storage_lvalue(e)) return std::nullopt;
     const TypeExpr* t = analysis_.deduce_type(e);
@@ -284,8 +434,7 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
     for (const auto& idx : i.indices) {
       text += "[" + expr_ops_.expr_to_cxx(*idx) + "]";
     }
-    return EmitStorageDesignator{EmitStorageAccess::Ordinary, text, {},
-                                 type_cxx};
+    return EmitStorageDesignator::ordinary(text, type_cxx);
   }
 
   if (e.kind == Kind::Member) {
@@ -297,15 +446,38 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
     if (auto unit_member = analysis_.resolve_unit_qualified_member(m)) {
       if (unit_member->resolved.kind == ResolvedKind::UnitVar) {
         const TypeExpr* t = analysis_.deduce_type(e);
-        return EmitStorageDesignator{
-            EmitStorageAccess::Ordinary, unit_member->resolved.cxx, {},
-            t ? scalar_storage_type_cxx(t) : std::string{}};
+        return EmitStorageDesignator::ordinary(
+            unit_member->resolved.cxx,
+            t ? scalar_storage_type_cxx(t) : std::string{});
       }
+      return std::nullopt;
     }
+    const TypeExpr* base_type = analysis_.deduce_type(*m.base);
+    const bool variant_payload_field =
+        analysis_.record_field_is_variant_in_type(base_type, m.name);
     auto base = storage_designator(*m.base);
-    if (base && !base->is_bytewise()) {
+    if (!base && variant_payload_field && expr_is_storage_lvalue(*m.base)) {
+      const TypeExpr* field_type = analysis_.deduce_type(e);
+      if (!field_type) {
+        field_type = analysis_.lookup_record_field_type_in_type(base_type,
+                                                                m.name);
+      }
+      const std::string field_cxx = storage_type_cxx(field_type);
+      const std::string base_text = expr_ops_.expr_to_cxx(*m.base);
+      const std::string offset_type =
+          offsetof_base_type_cxx(base_type, base_text);
+      if (field_cxx.empty() || offset_type.empty()) return std::nullopt;
+      const std::string member_cxx =
+          registry_ ? registry_->field_cxx_name(m.name) : mangle(m.name);
+      const std::string field_ptr_cxx =
+          "::rt::tp2cc_byte_offset((&" + base_text + "), offsetof(" +
+          offset_type + ", " + member_cxx + "))";
+      return EmitStorageDesignator::bytewise(field_ptr_cxx, field_cxx);
+    }
+    if (base) {
       const std::string class_cast_base_ptr =
-          reference_class_cast_pointer_cxx(*m.base);
+          base->is_bytewise() ? std::string{}
+                              : reference_class_cast_pointer_cxx(*m.base);
       std::string owner = analysis_.deduce_class_alias(*m.base);
       std::string member_cxx = mangle(m.name);
       if (registry_ && !owner.empty()) {
@@ -326,41 +498,104 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
                    registry_->lookup_record_field(
                        owner, m.name, scope_.current_unit_name)) {
           member_cxx = registry_->field_cxx_name(m.name);
+        } else if (registry_->lookup_class_methods(owner, m.name,
+                                                   scope_.current_unit_name)) {
+          // Storage designators are field/property paths. A method selected
+          // from a byte-addressed variant payload must fall back to expression
+          // lowering; otherwise the offset path would treat the method name as
+          // a C++ data member and emit `offsetof(T, method)`.
+          return std::nullopt;
         }
       }
 
       const std::string base_text =
           class_cast_base_ptr.empty() ? base->text : class_cast_base_ptr;
-      const std::string text = base_text + member_access_op(*m.base) + member_cxx;
+      const std::string text =
+          base->is_bytewise() ? std::string{}
+                              : base_text + member_access_op(*m.base) + member_cxx;
       const TypeExpr* field_type = analysis_.deduce_type(e);
-      const std::string field_cxx = scalar_storage_type_cxx(field_type);
+      if (!field_type) {
+        field_type = analysis_.lookup_record_field_type_in_type(base_type,
+                                                                m.name);
+      }
+      const bool field_uses_raw_address =
+          base->is_bytewise() || variant_payload_field || base->is_special() ||
+          !base->ptr_cxx.empty();
+      const std::string field_cxx =
+          field_uses_raw_address ? storage_type_cxx(field_type)
+                                 : scalar_storage_type_cxx(field_type);
       std::string field_ptr_cxx;
+      const TypeExpr* offset_base_type = base_type;
+      const TypeExpr* pointer_member_object_type =
+          pointer_like_member_object_type(base_type);
+      const bool base_is_pointer_slot =
+          pointer_member_object_type &&
+          (base->is_bytewise() ||
+           base->access == EmitStorageAccess::ReinterpretRef ||
+           base->ptr_form == EmitStorageAddressForm::RawBytePointer ||
+           (base->access == EmitStorageAccess::Ordinary &&
+            base->ptr_form == EmitStorageAddressForm::TypedStoragePointer));
+      if (base_is_pointer_slot) offset_base_type = pointer_member_object_type;
       const std::string offset_type =
-          offsetof_base_type_cxx(analysis_.deduce_type(*m.base), base->text);
+          offsetof_base_type_cxx(offset_base_type, base->text);
       if (!offset_type.empty()) {
         // Packed fields and fields selected from a reinterpreted storage view
         // need the field address without first manufacturing a C++ reference to
         // the containing object. Compute it from the base storage address plus
         // the C++ field offset, so later memcpy helpers never depend on
         // misaligned or non-live typed references.
-        const std::string base_addr =
-            class_cast_base_ptr.empty() ? storage_designator_raw_address(*base)
-                                        : class_cast_base_ptr;
-        field_ptr_cxx = "::rt::tp2cc_byte_offset(" + base_addr +
-                        ", offsetof(" + offset_type + ", " + member_cxx +
-                        "))";
+        std::string base_addr;
+        // A raw address can be either the object address (`p^`) or the address
+        // of a slot whose value is a pointer/reference. For the slot case,
+        // Pascal member selection loads the pointer value before selecting the
+        // next field; using the slot address as the object base reads adjacent
+        // storage instead.
+        const bool base_addr_is_pointer_value =
+            !class_cast_base_ptr.empty() || base_is_pointer_slot ||
+            (base->access == EmitStorageAccess::Ordinary &&
+             base->ptr_form == EmitStorageAddressForm::TypedStoragePointer &&
+             !base->ptr_cxx.empty());
+        if (!class_cast_base_ptr.empty()) {
+          base_addr = class_cast_base_ptr;
+        } else if (base_is_pointer_slot) {
+          base_addr = storage_designator_value(*base);
+        } else {
+          base_addr = storage_designator_raw_address(*base);
+        }
+        const char* offset_helper = base_addr_is_pointer_value
+                                        ? "::rt::tp2cc_pointer_byte_offset"
+                                        : "::rt::tp2cc_byte_offset";
+        field_ptr_cxx = std::string(offset_helper) + "(" + base_addr +
+                        ", offsetof(" + offset_type + ", " + member_cxx + "))";
       }
 
-      if (type_is_packed_record(analysis_.deduce_type(*m.base))) {
+      if (base->is_bytewise()) {
         if (field_cxx.empty() || field_ptr_cxx.empty()) return std::nullopt;
-        // A field selected from a storage-view cast such as
-        // `TRegisterRec(r).subreg := x` is storage in the original `r` slot.
-        // If the view type is packed, use the offset-derived field address
-        // above so the load/store helpers copy bytes without binding a C++
-        // reference to a possibly misaligned field.
-        return EmitStorageDesignator{EmitStorageAccess::Bytewise, {},
-                                     field_ptr_cxx, field_cxx,
-                                     EmitStorageAddressForm::RawBytePointer};
+        // Once a designator path is byte-addressed, later suffixes must keep
+        // composing addresses. Loading the aggregate and then selecting a
+        // field would create an rvalue and would re-enter C++ union active-arm
+        // rules for Pascal variant-record payloads.
+        return EmitStorageDesignator::raw_byte_address(base->access, {},
+                                                       field_ptr_cxx,
+                                                       field_cxx);
+      }
+
+      if (variant_payload_field) {
+        if (field_cxx.empty() || field_ptr_cxx.empty()) return std::nullopt;
+        // Pascal variant-record payload fields overlap. A program may write one
+        // payload field and read another, so emitted code must not depend on a
+        // C++ union arm being active. Use the generated union only for layout
+        // and access the payload through its byte offset.
+        return EmitStorageDesignator::bytewise(field_ptr_cxx, field_cxx);
+      }
+
+      if (type_is_packed_record(offset_base_type)) {
+        if (field_cxx.empty() || field_ptr_cxx.empty()) return std::nullopt;
+        // Decide packedness from the record that owns the selected field. In
+        // `pp^.field`, the AST base has pointer type, but selecting `field`
+        // still enters the pointee record; if that record is packed, C++ must
+        // not bind a typed reference to the possibly misaligned field.
+        return EmitStorageDesignator::bytewise(field_ptr_cxx, field_cxx);
       }
 
       if (base->is_special() ||
@@ -370,17 +605,16 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
         // address through the field offset so `@base.field` and var/out
         // arguments use the field's address without manufacturing a C++ field
         // reference first.
-        return EmitStorageDesignator{base->access, text, field_ptr_cxx,
-                                     field_cxx,
-                                     EmitStorageAddressForm::RawBytePointer};
+        return EmitStorageDesignator::raw_byte_address(base->access, text,
+                                                       field_ptr_cxx,
+                                                       field_cxx);
       }
     }
   }
 
   if (auto packed = packed_scalar_storage_ref(e)) {
-    return EmitStorageDesignator{EmitStorageAccess::Bytewise, {},
-                                 packed->void_ptr_text, packed->elem_cxx,
-                                 EmitStorageAddressForm::RawBytePointer};
+    return EmitStorageDesignator::bytewise(packed->void_ptr_text,
+                                           packed->elem_cxx);
   }
 
   if (!expr_is_storage_lvalue(e)) return std::nullopt;
@@ -395,14 +629,12 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
     // `Move(p^, q^, 0)`: Pascal only asks for a storage address, while
     // `&tp2cc_deref(p)` first forms a C++ reference and is already invalid if
     // `p` is nil even though the byte count is zero.
-    return EmitStorageDesignator{EmitStorageAccess::Ordinary,
-                                 expr_ops_.expr_to_cxx(e),
-                                 expr_ops_.expr_to_cxx(*d.operand),
-                                 type_cxx,
-                                 EmitStorageAddressForm::TypedStoragePointer};
+    return EmitStorageDesignator::ordinary_typed_address(
+        expr_ops_.expr_to_cxx(e), expr_ops_.expr_to_cxx(*d.operand),
+        type_cxx);
   }
-  return EmitStorageDesignator{EmitStorageAccess::Ordinary,
-                               expr_ops_.expr_to_cxx(e), {}, type_cxx};
+  if (e.kind != Kind::Ident) return std::nullopt;
+  return EmitStorageDesignator::ordinary(expr_ops_.expr_to_cxx(e), type_cxx);
 }
 
 std::string EmitStorage::reference_class_cast_pointer_cxx(
@@ -483,10 +715,15 @@ std::string EmitStorage::storage_designator_store(
 
 std::string EmitStorage::storage_designator_inc_dec(
     const EmitStorageDesignator& d, bool is_inc, const std::string& delta_cxx) {
-  const std::string op =
-      is_inc ? "::rt::tp2cc_reinterpret_inc" : "::rt::tp2cc_reinterpret_dec";
   if (d.is_bytewise()) {
-    std::string out = op + "<" + d.type_cxx + ">(" + d.ptr_cxx;
+    const bool unaligned = d.access == EmitStorageAccess::UnalignedBytewise;
+    const char* helper =
+        is_inc ? (unaligned ? "::rt::tp2cc_unaligned_inc"
+                            : "::rt::tp2cc_reinterpret_inc")
+               : (unaligned ? "::rt::tp2cc_unaligned_dec"
+                            : "::rt::tp2cc_reinterpret_dec");
+    std::string out = std::string(helper) + "<" + d.type_cxx + ">(" +
+                      d.ptr_cxx;
     if (!delta_cxx.empty()) out += ", " + delta_cxx;
     out += ")";
     return out;
@@ -508,15 +745,14 @@ std::optional<EmitBytewiseStorage> EmitStorage::bytewise_storage_ref(
   if (!elem_type) return std::nullopt;
   const std::string elem_cxx = types_.type_to_cxx(*elem_type);
 
-  if (root.kind == Kind::Deref) {
-    const auto& d = static_cast<const Deref&>(root);
-    return EmitBytewiseStorage{expr_ops_.expr_to_cxx(*d.operand), elem_cxx};
+  // `unaligned(expr)` is a storage view. Reuse the same designator path used by
+  // `@`, var/out, and assignment so variant payloads and `p^` do not regress to
+  // `&(value-load)` or `&tp2cc_deref(p)`.
+  if (auto storage = storage_designator(root)) {
+    return EmitBytewiseStorage{storage_designator_raw_address(*storage),
+                               elem_cxx};
   }
-  if (root.kind == Kind::Index) {
-    if (auto view = untyped_storage_index_view(static_cast<const Index&>(root))) {
-      return EmitBytewiseStorage{view->ptr_cxx, view->elem_cxx};
-    }
-  }
+
   return EmitBytewiseStorage{"&(" + expr_ops_.expr_to_cxx(root) + ")",
                              elem_cxx};
 }
@@ -775,6 +1011,61 @@ EmitStorage::direct_packed_aggregate_field_use(const Expr& e) {
       registry_->direct_type_name(base_type, scope_.current_unit_name);
   if (record_name.empty()) record_name = "packed record";
   return EmitPackedAggregateFieldUse{record_name, m.name};
+}
+
+std::optional<EmitPackedAggregateFieldUse>
+EmitStorage::packed_aggregate_path_use(const Expr& e) {
+  for (const Expr* cur = &e; cur && cur->kind == Kind::Member;
+       cur = static_cast<const Member&>(*cur).base.get()) {
+    const auto& m = static_cast<const Member&>(*cur);
+    if (auto use = direct_packed_aggregate_field_use(*m.base)) return use;
+  }
+  return std::nullopt;
+}
+
+bool EmitStorage::variant_payload_path_use(const Expr& e) {
+  if (e.kind == Kind::Index) {
+    return variant_payload_path_use(*static_cast<const Index&>(e).base);
+  }
+  if (e.kind != Kind::Member) return false;
+
+  const auto& m = static_cast<const Member&>(e);
+  const TypeExpr* base_type = analysis_.deduce_type(*m.base);
+  if (analysis_.record_field_is_variant_in_type(base_type, m.name)) {
+    return true;
+  }
+  return variant_payload_path_use(*m.base);
+}
+
+bool EmitStorage::member_value_may_need_storage_designator(const Expr& e) {
+  if (e.kind != Kind::Member) return false;
+  for (const Expr* cur = &e; cur && cur->kind == Kind::Member;) {
+    const auto& m = static_cast<const Member&>(*cur);
+    if (!m.base) return false;
+    switch (m.base->kind) {
+      case Kind::Index:
+        if (index_base_denotes_property_value(
+                static_cast<const Index&>(*m.base))) {
+          // `Items[i].Field` may look like field selection from an array slot,
+          // but an indexed property is selected by accessor semantics first.
+          // Probing it as storage would lower the bare property name before the
+          // property getter has a chance to produce the object value.
+          return false;
+        }
+        [[fallthrough]];
+      case Kind::Call:
+      case Kind::Deref:
+        // Typecast/unaligned views, pointer dereferences, and real indexed
+        // storage bases may already be byte-addressed. Let the storage
+        // designator decide whether the final member read is a bytewise value
+        // load.
+        return true;
+      default:
+        cur = m.base.get();
+        break;
+    }
+  }
+  return variant_payload_path_use(e);
 }
 
 void EmitStorage::report_packed_aggregate_subobject_use(

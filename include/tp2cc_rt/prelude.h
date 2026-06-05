@@ -2614,6 +2614,28 @@ inline const void* tp2cc_byte_offset(const void* p, std::ptrdiff_t n) {
   return static_cast<const void*>(static_cast<const unsigned char*>(p) + n);
 }
 
+inline void* tp2cc_pointer_byte_offset(const void* p, std::ptrdiff_t n) {
+  // Pascal address-of through a pointer designator, e.g. `@p^.field` or
+  // `@p^[i]`, computes an address from the pointer value. It does not read
+  // `p^`. C++ pointer arithmetic on a null pointer is undefined, so use integer
+  // address arithmetic for this case.
+  return reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(p) + n);
+}
+
+template <int N, typename Index>
+inline std::ptrdiff_t tp2cc_shortstring_index_offset(Index index) {
+  // ShortString indexing is defined by the storage layout: index 0 addresses the
+  // length byte, and index 1 addresses the first character byte.
+  const auto i = static_cast<std::ptrdiff_t>(index);
+  return i == 0 ? 0 : offsetof(tp2cc_ShortString<N>, data) +
+                          (i - 1) * static_cast<std::ptrdiff_t>(sizeof(p_char));
+}
+
+template <int N, typename Index>
+inline void* tp2cc_shortstring_index_address(void* p, Index index) {
+  return tp2cc_byte_offset(p, tp2cc_shortstring_index_offset<N>(index));
+}
+
 // View the bytes of the source object itself as a different type.
 // This is the helper used for Pascal `absolute` aliases and typed lvalue
 // casts, where the source object already is the storage being re-viewed.
@@ -3287,6 +3309,27 @@ template <typename T, typename N> inline void tp2cc_reinterpret_dec(void* p, N n
   T x = tp2cc_reinterpret_load<T>(p);
   p_dec(x, n);
   tp2cc_reinterpret_store<T>(p, x);
+}
+
+template <typename T> inline void tp2cc_unaligned_inc(void* p) {
+  T x = tp2cc_unaligned_load<T>(p);
+  p_inc(x);
+  tp2cc_unaligned_store<T>(p, x);
+}
+template <typename T, typename N> inline void tp2cc_unaligned_inc(void* p, N n) {
+  T x = tp2cc_unaligned_load<T>(p);
+  p_inc(x, n);
+  tp2cc_unaligned_store<T>(p, x);
+}
+template <typename T> inline void tp2cc_unaligned_dec(void* p) {
+  T x = tp2cc_unaligned_load<T>(p);
+  p_dec(x);
+  tp2cc_unaligned_store<T>(p, x);
+}
+template <typename T, typename N> inline void tp2cc_unaligned_dec(void* p, N n) {
+  T x = tp2cc_unaligned_load<T>(p);
+  p_dec(x, n);
+  tp2cc_unaligned_store<T>(p, x);
 }
 
 // No rvalue `p_inc`/`p_dec` overloads here: typed-storage casted lvalues like

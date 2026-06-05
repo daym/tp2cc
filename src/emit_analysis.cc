@@ -133,6 +133,21 @@ static const TypeExpr* variant_part_field_type(
   return nullptr;
 }
 
+static bool variant_part_has_payload_field(
+    const std::shared_ptr<ast::VariantPart>& vpart,
+    std::string_view lower_field_name) {
+  if (!vpart) return false;
+  for (const auto& vc : vpart->cases) {
+    for (const auto& field : vc.fields) {
+      if (record_field_type(field, lower_field_name)) return true;
+    }
+    if (variant_part_has_payload_field(vc.variant_part, lower_field_name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static const TypeExpr* method_result_type(const MethodSig* method) {
   if (!method || !method->decl || !method->decl->return_type) return nullptr;
   return method->decl->return_type.get();
@@ -1216,7 +1231,6 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
 }
 
 const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
-  if (!registry_) return nullptr;
   switch (e.kind) {
     case Kind::BoolLit:
       return builtin_boolean_type();
@@ -1289,7 +1303,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         return scope_.outer_result_type;
       }
       // Class member lookup inside a known method body.
-      if (!scope_.current_class_name.empty()) {
+      if (registry_ && !scope_.current_class_name.empty()) {
         if (auto* f = registry_->lookup_class_field(
                 scope_.current_class_name, id.name, scope_.current_unit_name)) {
           return f->type.get();
@@ -1310,7 +1324,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       for (auto it = scope_.with_stack.rbegin(); it != scope_.with_stack.rend();
            ++it) {
         const std::string& ac = it->class_name;
-        if (!ac.empty()) {
+        if (registry_ && !ac.empty()) {
           if (auto* f = registry_->lookup_class_field(
                   ac, id.name, scope_.current_unit_name)) {
             return f->type.get();
@@ -1334,6 +1348,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       // Do not consult the registry's global last-wins maps here; two units
       // can export the same name with different meanings and Pascal only sees
       // the units actually imported by the current unit.
+      if (!registry_) return nullptr;
       auto cur = registry_->units.find(scope_.current_unit_name);
       if (cur != registry_->units.end()) {
         if (const auto* t = deduce_own_unit_value_type(cur->second, id.name)) {
@@ -1397,33 +1412,36 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
                                                        m.name);
         }
       }
+      const TypeExpr* base_type = deduce_type(*m.base);
+      if (const TypeExpr* rf =
+              lookup_record_field_type_in_type(base_type, m.name)) {
+        return rf;
+      }
       std::string cls;
       if (m.base->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*m.base);
         if (id.name == "self") cls = scope_.current_class_name;
         else if (class_info_for_type_name(id.name)) cls = id.name;
-        else if (const TypeSymbol* symbol =
-                     registry_->lookup_type_symbol(id.name,
-                                                   scope_.current_unit_name);
-                 symbol && symbol->record_info()) {
-          cls = id.name;
+        else if (registry_) {
+          if (const TypeSymbol* symbol =
+                  registry_->lookup_type_symbol(id.name,
+                                                scope_.current_unit_name);
+              symbol && symbol->record_info()) {
+            cls = id.name;
+          }
         }
       }
       if (cls.empty()) {
         // Chained accesses like `x.sym.name` and result-slot writes like
         // `clone.next := nil` must recover the Pascal class alias from the
         // base expression, not from the canonicalized class body node.
-        const TypeExpr* bt = deduce_type(*m.base);
-        if (bt) cls = metaclass_target_name(bt);
+        if (base_type) cls = metaclass_target_name(base_type);
       }
       if (cls.empty()) cls = deduce_class_alias(*m.base);
       if (cls.empty()) {
-        if (const TypeExpr* rf =
-                lookup_record_field_type_in_type(deduce_type(*m.base), m.name)) {
-          return rf;
-        }
         return nullptr;
       }
+      if (!registry_) return nullptr;
       if (const TypeExpr* mt = method_result_type(unique_zero_arg_method(
               registry_->lookup_class_methods(cls, m.name,
                                               scope_.current_unit_name)))) {
@@ -1446,7 +1464,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       // alias is not in the global registry maps above. Fall back to direct
       // structural field lookup on the deduced base type before giving up.
       if (const TypeExpr* rf =
-              lookup_record_field_type_in_type(deduce_type(*m.base), m.name)) {
+              lookup_record_field_type_in_type(base_type, m.name)) {
         return rf;
       }
       return nullptr;
@@ -1542,7 +1560,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
             return int_ty;
           }
           const TypeSymbol* symbol =
-              registry_->lookup_type_symbol(id.name, scope_.current_unit_name);
+              registry_ ? registry_->lookup_type_symbol(
+                              id.name, scope_.current_unit_name)
+                        : nullptr;
           if (is_builtin_reference_class_name(id.name) ||
               class_info_for_type_name(id.name) ||
               (symbol && symbol->record_info())) {
@@ -1584,7 +1604,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           return nit->second.return_type;
         }
         const TypeSymbol* symbol =
-            registry_->lookup_type_symbol(id.name, scope_.current_unit_name);
+            registry_ ? registry_->lookup_type_symbol(id.name,
+                                                      scope_.current_unit_name)
+                      : nullptr;
         const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
         if (alias && alias->target && c.args.size() == 1) {
           // Type cast `T(expr)` -- the call expression has the alias's own
@@ -1751,6 +1773,37 @@ const TypeExpr* EmitAnalysis::lookup_record_field_type_in_type(
   return variant_part_field_type(rec.variant_part, lower_field_name);
 }
 
+bool EmitAnalysis::record_field_is_variant_in_type(
+    const TypeExpr* type, std::string_view field_name) {
+  if (!type) return false;
+  type = canonicalize_type(type);
+  if (!type) return false;
+  if (type->kind == Kind::TyPointer) {
+    return record_field_is_variant_in_type(
+        static_cast<const TyPointer&>(*type).target.get(), field_name);
+  }
+  if (type->kind == Kind::TyName) {
+    const auto& tn = static_cast<const TyName&>(*type);
+    if (const TypeSymbol* symbol = local_type_symbol(scope_, tn.name);
+        symbol && symbol->record_info()) {
+      const RecordInfo* record = symbol->record_info();
+      auto it = record->fields.find(ascii_lower(field_name));
+      return it != record->fields.end() && it->second.is_variant;
+    }
+    if (auto* rf = registry_ ? registry_->lookup_record_field(
+                                   tn.name, std::string(field_name),
+                                   scope_.current_unit_name)
+                             : nullptr) {
+      return rf->is_variant;
+    }
+  }
+  if (type->kind != Kind::TyRecord) return false;
+
+  const auto& rec = static_cast<const TyRecord&>(*type);
+  return variant_part_has_payload_field(
+      rec.variant_part, ascii_lower(std::string(field_name)));
+}
+
 const TypeExpr* EmitAnalysis::lookup_record_field_type_in_with(
     const ScopeStateView::WithBind& wb, std::string_view field_name) {
   if (const TypeExpr* ft = lookup_record_field_type_in_type(
@@ -1809,6 +1862,10 @@ bool EmitAnalysis::identifier_is_shadowed_value(std::string_view name_in) {
 bool EmitAnalysis::is_visible_unit_qualifier(std::string_view name_in) {
   if (!registry_) return false;
   const std::string name = ascii_lower(name_in);
+  // Pascal imports System implicitly. tp2cc registers that surface as the
+  // synthetic `__rt__` unit so unqualified runtime lookup and `System.name`
+  // qualification use the same symbol table.
+  if (name == "system") return registry_->units.count("__rt__") > 0;
   // TypeRegistry includes parsed units plus empty semantic stubs for missing
   // external RTL units that main.cc will emit with write_external_stub. A
   // qualified unit name is still only in Pascal scope for the current unit
@@ -1835,6 +1892,8 @@ EmitAnalysis::resolve_unit_qualified_member(const ast::Member& mem) {
       !is_visible_unit_qualifier(unit_name)) {
     return std::nullopt;
   }
+  const std::string lookup_unit_name =
+      (unit_name == "system") ? "__rt__" : unit_name;
 
   // From here the base identifier is a unit qualifier, not a value expression.
   // Call the normal qualified-name resolver once and hand that result to value,
@@ -1842,8 +1901,8 @@ EmitAnalysis::resolve_unit_qualified_member(const ast::Member& mem) {
   // into the qualifier and rediscover the same rule.
   ResolveResult rr =
       resolve_name_provider_.resolve_name(mem.name, QualifierKind::Unit,
-                                          unit_name);
-  return UnitQualifiedMemberLookup{unit_name, mem.name, rr};
+                                          lookup_unit_name);
+  return UnitQualifiedMemberLookup{lookup_unit_name, mem.name, rr};
 }
 
 const VarInfo* EmitAnalysis::find_visible_unit_var(const std::string& name) {

@@ -396,13 +396,36 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
     // `var`/`out` actuals are storage contexts. Reuse the same designator
     // lowering as assignment so call-site typecasts like `Val(s,
     // cardinal(result), code)` are storage views, not value casts.
-    if (auto storage = storage_.storage_designator(arg);
-        storage && storage->access == EmitStorageAccess::ReinterpretRef) {
-      if (param_type && storage->type_cxx != types_.type_to_cxx(*param_type)) {
-        return storage_.reinterpret_ref_text(types_.type_to_cxx(*param_type),
-                                             storage->text, false);
+    if (auto use = storage_.packed_aggregate_path_use(arg)) {
+      storage_.report_packed_aggregate_subobject_use(
+          arg.loc, "var/out argument", *use);
+      return expr_ops_.expr_to_cxx(arg);
+    }
+    if (auto storage = storage_.storage_designator(arg)) {
+      if (storage->access == EmitStorageAccess::ReinterpretRef) {
+        if (param_type && storage->type_cxx != types_.type_to_cxx(*param_type)) {
+          return storage_.reinterpret_ref_text(types_.type_to_cxx(*param_type),
+                                               storage->text, false);
+        }
+        return storage->text;
       }
-      return storage->text;
+      if (storage->access == EmitStorageAccess::UnalignedBytewise) {
+        expr_ops_.report_error(
+            arg.loc, "unaligned storage cannot be passed to var/out parameter");
+        return expr_ops_.expr_to_cxx(arg);
+      }
+      if (storage->is_bytewise()) {
+        const std::string ref_type =
+            param_type ? types_.type_to_cxx(*param_type) : storage->type_cxx;
+        if (!ref_type.empty()) {
+          // Bytewise designators keep Pascal storage as a raw address until a
+          // mutable-reference boundary. Builtins such as `new(p)` and
+          // `getmem(p, n)` have no registered formal type, so use the
+          // designator's own Pascal type for the reference view.
+          return storage_.reinterpret_ref_text(ref_type, storage->ptr_cxx,
+                                               true);
+        }
+      }
     }
   }
   if (mutable_ref_arg && canon_param_type && arg_type &&
