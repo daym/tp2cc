@@ -1125,7 +1125,7 @@ The path separator constants use the runtime values that compiler-support code e
 | ~DriveSeparator~ | ~':'~ | Separator after a DOS-style drive designator. |
 | ~ExtensionSeparator~ | ~'.'~ | Separator before a file extension, as used by ~ExtractFileExt~. |
 | ~PathSeparator~ | ~':'~ | Separator between entries in a path list such as ~PATH~. |
-System implements these type names beyond the basic scalar/string/pointer types already described earlier: ~TObject~, ~TClass~, ~TMethod~, ~Currency~, ~DateTime~, ~TDateTime~, ~DirStr~, ~NameStr~, ~ExtStr~, ~PathStr~, ~ComStr~, ~HRESULT~, ~PAnsiString~, ~PCardinal~, ~PCurrency~, ~PDWord~, ~PInt64~, ~PPointer~, ~PQWord~, ~PShortString~, ~PtrInt~, ~PtrUInt~, ~SearchRec~, ~TSearchRec~, ~SignalHandler~, ~SizeInt~, ~SizeUInt~, ~Stat~, ~TFPUException~, ~TFPUExceptionMask~, and ~TSystemTime~.
+System implements these type names beyond the basic scalar/string/pointer types already described earlier: ~TObject~, ~TClass~, ~TMethod~, ~TProcedure~, ~Currency~, ~DateTime~, ~TDateTime~, ~DirStr~, ~NameStr~, ~ExtStr~, ~PathStr~, ~ComStr~, ~HRESULT~, ~PAnsiString~, ~PCardinal~, ~PCurrency~, ~PDWord~, ~PInt64~, ~PPointer~, ~PQWord~, ~PShortString~, ~PtrInt~, ~PtrUInt~, ~SearchRec~, ~TSearchRec~, ~SignalHandler~, ~SizeInt~, ~SizeUInt~, ~Stat~, ~TFPUException~, ~TFPUExceptionMask~, and ~TSystemTime~.
 ** SysUtils
 ~SysUtils~ provides these names:
 | Name | Interface | Use |

@@ -408,6 +408,7 @@ const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
       {"tsearchrec", "::rt::t_tsearchrec"},
       {"tsystemtime", "::rt::t_tsystemtime"},
       {"tmethod", "::rt::t_tmethod"},
+      {"tprocedure", "::rt::t_tprocedure"},
   };
   return m;
 }

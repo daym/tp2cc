@@ -1957,6 +1957,8 @@ struct t_tsystemtime {
   uint16_t p_milliseconds = 0;
 };
 
+using t_tprocedure = void (*)();
+
 // signal handler (syslinux) + POSIX signal numbers used by catch.pas.
 using t_signalhandler = void (*)(int32_t);
 inline constexpr int32_t p_sighup  = 1;

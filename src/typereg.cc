@@ -1506,6 +1506,8 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
 
   // Runtime type names that Pascal code can mention directly are registered as
   // aliases so casts and member lookups go through normal type analysis.
+  register_runtime_alias(*this, rt_exports, "tprocedure",
+                         runtime_procedural_type(false, {}));
   register_runtime_alias(*this, rt_exports, "signalhandler",
                          runtime_pointer_type());
   register_runtime_alias(

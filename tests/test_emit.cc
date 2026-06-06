@@ -4251,6 +4251,31 @@ void test_parameterless_proc_assignment_keeps_designator() {
   CHECK(!contains(out.impl, "p_p = p_foo();"));
 }
 
+void test_runtime_tprocedure_alias_keeps_procvar_semantics() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "var\n"
+      "  hook : TProcedure;\n"
+      "procedure foo;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure foo;\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  hook := foo;\n"
+      "  if assigned(hook) then\n"
+      "    hook;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "extern ::rt::t_tprocedure p_hook;"));
+  CHECK(contains(out.impl, "p_hook = p_foo;"));
+  CHECK(contains(out.impl, "if (::rt::p_assigned(p_hook))"));
+  CHECK(contains(out.impl, "p_hook();"));
+}
+
 void test_method_pointer_type_and_bound_assignment_emit() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -10600,6 +10625,7 @@ int main() {
   RUN_TEST(test_text_typecast_over_pointer_deref_keeps_file_lvalue);
   RUN_TEST(test_visible_pointer_alias_cast_uses_qualified_type_name);
   RUN_TEST(test_local_pointer_alias_cast_uses_local_type_name);
+  RUN_TEST(test_runtime_tprocedure_alias_keeps_procvar_semantics);
   RUN_TEST(test_runtime_alias_type_names_are_explicitly_qualified);
   RUN_TEST(test_tdatetime_and_runtime_date_time_lower_through_rt);
   RUN_TEST(test_runtime_aliases_cover_currency_systemtime_and_pansistring);
