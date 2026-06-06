@@ -5272,6 +5272,33 @@ void test_runtime_rotate_helpers_resolve_explicitly() {
   CHECK(contains(out.impl, "::rt::p_rolqword("));
 }
 
+void test_runtime_bitscan_helpers_resolve_explicitly() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var b : byte; w : word; d : dword; q : qword; c : cardinal;\n"
+      "begin\n"
+      "  b := BsfByte(b) + BsrByte(b);\n"
+      "  c := BsfWord(w) + BsrWord(w);\n"
+      "  c := c + BsfDWord(d) + BsrDWord(d);\n"
+      "  c := c + BsfQWord(q) + BsrQWord(q);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "::rt::p_bsfbyte("));
+  CHECK(contains(out.impl, "::rt::p_bsrbyte("));
+  CHECK(contains(out.impl, "::rt::p_bsfword("));
+  CHECK(contains(out.impl, "::rt::p_bsrword("));
+  CHECK(contains(out.impl, "::rt::p_bsfdword("));
+  CHECK(contains(out.impl, "::rt::p_bsrdword("));
+  CHECK(contains(out.impl, "::rt::p_bsfqword("));
+  CHECK(contains(out.impl, "::rt::p_bsrqword("));
+}
+
 void test_runtime_string_and_memory_helpers_resolve_explicitly() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -10644,6 +10671,7 @@ int main() {
   RUN_TEST(test_runtime_math_surface_resolves_explicitly);
   RUN_TEST(test_runtime_endian_helpers_resolve_explicitly);
   RUN_TEST(test_runtime_rotate_helpers_resolve_explicitly);
+  RUN_TEST(test_runtime_bitscan_helpers_resolve_explicitly);
   RUN_TEST(test_runtime_string_and_memory_helpers_resolve_explicitly);
   RUN_TEST(test_sysutils_setdirseparators_resolves_qualified_and_unqualified);
   RUN_TEST(test_and_with_not_of_xor_short_circuits);

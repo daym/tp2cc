@@ -326,6 +326,26 @@ void test_runtime_rotate_helpers_mask_distance() {
   CHECK_EQ(p_roldword(0x12345678u, 32), 0x12345678u);
 }
 
+void test_runtime_bitscan_helpers_match_fpc_results() {
+  CHECK_EQ(p_bsfbyte(static_cast<uint8_t>(0)), static_cast<uint8_t>(0xff));
+  CHECK_EQ(p_bsrbyte(static_cast<uint8_t>(0)), static_cast<uint8_t>(0xff));
+  CHECK_EQ(p_bsfword(static_cast<uint16_t>(0)), uint32_t{0xff});
+  CHECK_EQ(p_bsrword(static_cast<uint16_t>(0)), uint32_t{0xff});
+  CHECK_EQ(p_bsfdword(uint32_t{0}), uint32_t{0xff});
+  CHECK_EQ(p_bsrdword(uint32_t{0}), uint32_t{0xff});
+  CHECK_EQ(p_bsfqword(uint64_t{0}), uint32_t{0xff});
+  CHECK_EQ(p_bsrqword(uint64_t{0}), uint32_t{0xff});
+
+  CHECK_EQ(p_bsfbyte(static_cast<uint8_t>(0x28u)), static_cast<uint8_t>(3));
+  CHECK_EQ(p_bsrbyte(static_cast<uint8_t>(0x25u)), static_cast<uint8_t>(5));
+  CHECK_EQ(p_bsfword(static_cast<uint16_t>(0x0400u)), uint32_t{10});
+  CHECK_EQ(p_bsrword(static_cast<uint16_t>(0x8400u)), uint32_t{15});
+  CHECK_EQ(p_bsfdword(uint32_t{0x00100000u}), uint32_t{20});
+  CHECK_EQ(p_bsrdword(uint32_t{0x80100000u}), uint32_t{31});
+  CHECK_EQ(p_bsfqword(uint64_t{1} << 47), uint32_t{47});
+  CHECK_EQ(p_bsrqword((uint64_t{1} << 63) | 7), uint32_t{63});
+}
+
 void test_getmem_typed_pointer_keeps_requested_prefix_size() {
   using HugeSymIndex = tp2cc_Array<void*, 0, 536870911>;
 
@@ -1550,6 +1570,7 @@ int main() {
   RUN_TEST(test_runtime_file_helpers_expose_real_sysutils_surface);
   RUN_TEST(test_runtime_swap_fill_and_compare_helpers);
   RUN_TEST(test_runtime_rotate_helpers_mask_distance);
+  RUN_TEST(test_runtime_bitscan_helpers_match_fpc_results);
   RUN_TEST(test_getmem_typed_pointer_keeps_requested_prefix_size);
   RUN_TEST(test_shortstring_pointer_deref_uses_live_prefix_storage);
   RUN_TEST(test_shortstring_pointer_deref_interoperates_with_string_ops);

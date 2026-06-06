@@ -1089,6 +1089,7 @@ In the table, ~S~ denotes any tp2cc-supported string value (typically ~String~, 
 | ~BEToN~, ~LEToN~, ~NToBE~, ~NToLE~ | one integer argument | Endian conversion helpers. |
 | ~RorByte~, ~RorWord~, ~RorDWord~, ~RorQWord~ | ~Ror*(X[, Count])~ | Rotate right by one or by ~Count~. |
 | ~RolByte~, ~RolWord~, ~RolDWord~, ~RolQWord~ | ~Rol*(X[, Count])~ | Rotate left by one or by ~Count~. |
+| ~BsfByte~, ~BsfWord~, ~BsfDWord~, ~BsfQWord~, ~BsrByte~, ~BsrWord~, ~BsrDWord~, ~BsrQWord~ | one unsigned ordinal argument | Returns the zero-based index of the least- or most-significant set bit; returns ~$ff~ for zero. |
 | ~Include~, ~Exclude~ | ~Include(var SetValue, Elem)~, ~Exclude(var SetValue, Elem)~ | Adds or removes one element in a set. |
 | ~Prefetch~ | ~Prefetch(X)~ | Stub: accepted as a no-op compatibility intrinsic. |
 | ~GetExceptionMask~, ~SetExceptionMask~ | FPU exception-mask get/set | Runtime FPU exception mask helpers. |

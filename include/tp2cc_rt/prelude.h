@@ -2106,6 +2106,55 @@ inline uint64_t p_rolqword(uint64_t value, uint8_t dist) {
 }
 
 template <typename T>
+inline uint32_t tp2cc_bsf(T value) {
+  using U = std::make_unsigned_t<T>;
+  U bits = static_cast<U>(value);
+  // FPC's Bsf*/Bsr* helpers return $ff when the input has no set bit.
+  if (bits == 0) return 0xff;
+  uint32_t result = 0;
+  while ((bits & U{1}) == 0) {
+    bits >>= 1;
+    ++result;
+  }
+  return result;
+}
+
+template <typename T>
+inline uint32_t tp2cc_bsr(T value) {
+  using U = std::make_unsigned_t<T>;
+  U bits = static_cast<U>(value);
+  if (bits == 0) return 0xff;
+  uint32_t result = 0;
+  while ((bits >>= 1) != 0) ++result;
+  return result;
+}
+
+inline uint8_t p_bsfbyte(uint8_t value) {
+  return static_cast<uint8_t>(tp2cc_bsf(value));
+}
+inline uint8_t p_bsrbyte(uint8_t value) {
+  return static_cast<uint8_t>(tp2cc_bsr(value));
+}
+inline uint32_t p_bsfword(uint16_t value) {
+  return tp2cc_bsf(value);
+}
+inline uint32_t p_bsrword(uint16_t value) {
+  return tp2cc_bsr(value);
+}
+inline uint32_t p_bsfdword(uint32_t value) {
+  return tp2cc_bsf(value);
+}
+inline uint32_t p_bsrdword(uint32_t value) {
+  return tp2cc_bsr(value);
+}
+inline uint32_t p_bsfqword(uint64_t value) {
+  return tp2cc_bsf(value);
+}
+inline uint32_t p_bsrqword(uint64_t value) {
+  return tp2cc_bsr(value);
+}
+
+template <typename T>
 inline constexpr int tp2cc_ordinal_value(T x) {
   if constexpr (std::is_convertible_v<T, p_char>)
     return static_cast<int>(tp2cc_char_byte(static_cast<p_char>(x)));
