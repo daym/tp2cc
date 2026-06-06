@@ -76,6 +76,7 @@ class EmitStmts {
   };
 
   bool stmt_autocalls_procvar(const ast::Expr& expr);
+  bool emit_property_assign_stmt(const ast::Assign& a);
   void emit_assign_stmt(const ast::Assign& a);
   void emit_expr_stmt(const ast::ExprStmt& es);
   void emit_ordinal_for_body(const ast::For& f, const std::string& var,

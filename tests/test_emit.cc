@@ -8946,6 +8946,41 @@ void test_property_write_lowers_to_setter_call() {
   CHECK(!contains(out.impl, "p_b->p_val ="));
 }
 
+void test_implicit_write_only_property_assignment_lowers_to_setter_call() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = class\n"
+      "  private\n"
+      "    procedure setval(v : longint);\n"
+      "    procedure putslot(i : longint; v : longint);\n"
+      "  public\n"
+      "    property val : longint write setval;\n"
+      "    property slots[i : longint] : longint write putslot;\n"
+      "    procedure write_it;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tbox.setval(v : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure tbox.putslot(i : longint; v : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure tbox.write_it;\n"
+      "begin\n"
+      "  val := 42;\n"
+      "  slots[3] := 9;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "this->p_setval(42);"));
+  CHECK(contains(out.impl, "this->p_putslot(3, 9);"));
+  CHECK(!contains(out.impl, "p_val ="));
+  CHECK(!contains(out.impl, "p_slots"));
+}
+
 void test_typecast_property_write_lowers_to_setter_call() {
   // Property assignment must run before raw storage lowering. Even with a
   // class typecast on the base, `T(x).Prop := y` must call the Pascal setter
@@ -10731,6 +10766,7 @@ int main() {
   RUN_TEST(test_overload_picks_set_difference_arg_against_typed_set_param);
   RUN_TEST(test_property_read_lowers_to_getter_call);
   RUN_TEST(test_property_write_lowers_to_setter_call);
+  RUN_TEST(test_implicit_write_only_property_assignment_lowers_to_setter_call);
   RUN_TEST(test_typecast_property_write_lowers_to_setter_call);
   RUN_TEST(test_property_read_through_field_lowers_to_field_access);
   RUN_TEST(test_property_dotted_field_accessor_lowers_to_field_path);

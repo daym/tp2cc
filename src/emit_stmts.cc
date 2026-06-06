@@ -254,8 +254,10 @@ void EmitStmts::emit_try_stmt(const Try& t) {
   stmt_ops_.emitln("}");
 }
 
-void EmitStmts::emit_assign_stmt(const Assign& a) {
-  if (registry_ && a.target->kind == Kind::Member) {
+bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
+  if (!registry_) return false;
+
+  if (a.target->kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(*a.target);
     std::string cls;
     if (mem.base->kind == Kind::Ident &&
@@ -272,38 +274,20 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
                              a.loc, stmt_ops_.expr_to_cxx(*mem.base), cls,
                              *prop, no_indices, *a.value) +
                          ";");
-        return;
+        return true;
       }
     }
   }
-  if (auto use = storage_.packed_aggregate_path_use(*a.target)) {
-    storage_.report_packed_aggregate_subobject_use(a.loc, "assignment", *use);
-    return;
-  }
-  // Assignment targets are storage contexts in Pascal. Most targets also spell
-  // ordinary C++ lvalues, and those must still use the normal assignment path
-  // below so shortstrings, range checks, properties, and custom assignment
-  // operators keep their existing rules. Intercept only targets whose storage
-  // cannot safely be expressed as a plain C++ lvalue, such as untyped storage,
-  // packed scalar storage, variant-record payload storage, `unaligned(...)`, or
-  // a storage-view typecast.
-  if (auto target = storage_.storage_designator(*a.target);
-      target && target->is_special()) {
-    const TypeExpr* target_ty = analysis_.deduce_type(*a.target);
-    std::string rhs_cxx = stmt_ops_.const_value_to_cxx(*a.value, target_ty);
-    stmt_ops_.emitln(storage_.storage_designator_store(*target, rhs_cxx) + ";");
-    return;
-  }
-  if (registry_ && a.target->kind == Kind::Ident) {
+  if (a.target->kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(*a.target);
     if (auto text =
             properties_.maybe_lower_implicit_property_write(a.loc, id.name,
                                                             *a.value)) {
       stmt_ops_.emitln(*text + ";");
-      return;
+      return true;
     }
   }
-  if (registry_ && a.target->kind == Kind::Index) {
+  if (a.target->kind == Kind::Index) {
     const auto& ix = static_cast<const Index&>(*a.target);
     std::vector<const Expr*> indices;
     for (const auto& idx : ix.indices) indices.push_back(idx.get());
@@ -324,7 +308,7 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
                                  a.loc, stmt_ops_.expr_to_cxx(*mem.base), cls,
                                  *prop, indices, *a.value) +
                              ";");
-            return;
+            return true;
           }
         }
       }
@@ -337,7 +321,7 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
                              a.loc, found->base_cxx, found->class_name,
                              *found->prop, indices, *a.value) +
                          ";");
-        return;
+        return true;
       }
     }
     std::string cls = analysis_.deduce_class_alias(*ix.base);
@@ -348,9 +332,33 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
                              a.loc, stmt_ops_.expr_to_cxx(*ix.base), cls,
                              *prop, indices, *a.value) +
                          ";");
-        return;
+        return true;
       }
     }
+  }
+  return false;
+}
+
+void EmitStmts::emit_assign_stmt(const Assign& a) {
+  if (emit_property_assign_stmt(a)) return;
+
+  if (auto use = storage_.packed_aggregate_path_use(*a.target)) {
+    storage_.report_packed_aggregate_subobject_use(a.loc, "assignment", *use);
+    return;
+  }
+  // Assignment targets are storage contexts in Pascal. Most targets also spell
+  // ordinary C++ lvalues, and those must still use the normal assignment path
+  // below so shortstrings, range checks, properties, and custom assignment
+  // operators keep their existing rules. Intercept only targets whose storage
+  // cannot safely be expressed as a plain C++ lvalue, such as untyped storage,
+  // packed scalar storage, variant-record payload storage, `unaligned(...)`, or
+  // a storage-view typecast.
+  if (auto target = storage_.storage_designator(*a.target);
+      target && target->is_special()) {
+    const TypeExpr* target_ty = analysis_.deduce_type(*a.target);
+    std::string rhs_cxx = stmt_ops_.const_value_to_cxx(*a.value, target_ty);
+    stmt_ops_.emitln(storage_.storage_designator_store(*target, rhs_cxx) + ";");
+    return;
   }
   // Enable LHS-rewrite for the function name so that Pascal
   // `funcname := x`, `funcname[i] := x`, `funcname.field := x` etc.
