@@ -350,7 +350,8 @@ std::string EmitTypes::type_name_to_cxx(const TyName& n) {
   if (std::string rt = runtime_named_type_cxx(n.name); !rt.empty()) {
     return rt;
   }
-  return named_type_struct_cxx(n.name);
+  diag_ops_.report_error(n.loc, "unresolved type `" + n.name + "`");
+  return "void";
 }
 
 std::string EmitTypes::type_name_text_to_cxx(std::string_view name) {
@@ -408,7 +409,8 @@ std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
       return type_symbol_struct_cxx(*symbol);
     }
   }
-  return visible_type_prefix(name) + type_mangle(name);
+  diag_ops_.report_error({}, "unresolved type `" + std::string(name) + "`");
+  return "void";
 }
 
 std::string EmitTypes::visible_type_prefix(std::string_view name) {
@@ -427,11 +429,11 @@ std::string EmitTypes::visible_type_prefix(std::string_view name) {
 }
 
 bool EmitTypes::registry_knows_translated_type(std::string_view name) {
-  if (!registry_) return false;
   std::string lower = ascii_lower(std::string(name));
   if (local_type_symbol(scope_, lower)) {
     return true;
   }
+  if (!registry_) return false;
   if (const TypeSymbol* symbol =
           registry_->lookup_type_symbol(lower, scope_.current_unit_name);
       symbol && symbol->defining_unit != "__rt__") {

@@ -3390,6 +3390,18 @@ void test_tmethod_type_name_is_explicitly_qualified() {
   CHECK(!contains(out.impl, "\n  t_tmethod p_m{};"));
 }
 
+void test_unknown_type_name_reports_error_instead_of_emitting_fallback() {
+  int before = error_count();
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "var x : TMissing;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+  CHECK(!contains(out.header, "t_tmissing"));
+}
+
 void test_local_enum_members_do_not_fall_back_to_runtime() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -10593,6 +10605,7 @@ int main() {
   RUN_TEST(test_runtime_aliases_cover_currency_systemtime_and_pansistring);
   RUN_TEST(test_string_comparison_uses_runtime_operator_resolution);
   RUN_TEST(test_tmethod_type_name_is_explicitly_qualified);
+  RUN_TEST(test_unknown_type_name_reports_error_instead_of_emitting_fallback);
   RUN_TEST(test_local_enum_members_do_not_fall_back_to_runtime);
   RUN_TEST(test_sizeof_visible_type_uses_type_name_not_identifier_lookup);
   RUN_TEST(test_sizeof_qualified_type_uses_type_name_not_value_namespace);
