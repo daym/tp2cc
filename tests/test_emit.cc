@@ -971,6 +971,21 @@ void test_system_qualified_runtime_exports_use_implicit_unit() {
   CHECK(!contains(out.impl, "p_system"));
 }
 
+void test_system_extensionseparator_resolves_as_implicit_runtime_const() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run(var c : char);\n"
+      "implementation\n"
+      "procedure run(var c : char);\n"
+      "begin\n"
+      "  c := ExtensionSeparator;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_c = ::rt::p_extensionseparator;"));
+  CHECK(!contains(out.impl, "p_ExtensionSeparator"));
+}
+
 void test_system_member_access_respects_value_shadowing() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -10446,6 +10461,7 @@ int main() {
   RUN_TEST(test_low_high_on_local_array_type_lowers_to_index_bounds);
   RUN_TEST(test_system_qualified_low_high_lowers_like_unqualified);
   RUN_TEST(test_system_qualified_runtime_exports_use_implicit_unit);
+  RUN_TEST(test_system_extensionseparator_resolves_as_implicit_runtime_const);
   RUN_TEST(test_system_member_access_respects_value_shadowing);
   RUN_TEST(test_char_array_typed_const_uses_explicit_array_literal_helper);
   RUN_TEST(test_char_array_assignment_uses_explicit_array_literal_helper);

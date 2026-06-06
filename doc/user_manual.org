@@ -1117,7 +1117,13 @@ In the table, ~S~ denotes any tp2cc-supported string value (typically ~String~, 
 | ~ExecuteProcess~ | path plus command line or argument array | Runs a process and returns the exit status. |
 | ~Signal~, ~FpSignal~ | signal number and handler | Installs a signal handler through the C runtime signal API. |
 System implements these variables: ~DosError~, ~FileMode~, ~StdErr~, ~Output~, ~Input~, ~ExitProc~, ~ErrorAddr~, ~ExitCode~, and ~AllowDirectorySeparators~.
-System implements these constants: ~SigInt~, ~SigFpe~, ~SigSegv~, ~Pi~, ~MaxInt~, ~MaxLongInt~, ~ReadOnly~, ~Hidden~, ~Directory~, ~Archive~, ~FAReadOnly~, ~FAHidden~, ~FADirectory~, ~FAArchive~, ~AnyFile~, ~FAAnyFile~, ~fmShareDenyNone~, ~vtAnsiString~, ~varStrArg~, ~DirectorySeparator~, ~DriveSeparator~, and ~PathSeparator~.
+System implements these constants: ~SigInt~, ~SigFpe~, ~SigSegv~, ~Pi~, ~MaxInt~, ~MaxLongInt~, ~ReadOnly~, ~Hidden~, ~Directory~, ~Archive~, ~FAReadOnly~, ~FAHidden~, ~FADirectory~, ~FAArchive~, ~AnyFile~, ~FAAnyFile~, ~fmShareDenyNone~, ~vtAnsiString~, ~varStrArg~, ~DirectorySeparator~, ~DriveSeparator~, ~ExtensionSeparator~, and ~PathSeparator~.
+The path separator constants use the runtime values that compiler-support code expects:
+| Constant | Value | Use |
+| ~DirectorySeparator~ | ~'/'~ | Separator between path components. |
+| ~DriveSeparator~ | ~':'~ | Separator after a DOS-style drive designator. |
+| ~ExtensionSeparator~ | ~'.'~ | Separator before a file extension, as used by ~ExtractFileExt~. |
+| ~PathSeparator~ | ~':'~ | Separator between entries in a path list such as ~PATH~. |
 System implements these type names beyond the basic scalar/string/pointer types already described earlier: ~TObject~, ~TClass~, ~TMethod~, ~Currency~, ~DateTime~, ~TDateTime~, ~DirStr~, ~NameStr~, ~ExtStr~, ~PathStr~, ~ComStr~, ~HRESULT~, ~PAnsiString~, ~PCardinal~, ~PCurrency~, ~PDWord~, ~PInt64~, ~PPointer~, ~PQWord~, ~PShortString~, ~PtrInt~, ~PtrUInt~, ~SearchRec~, ~TSearchRec~, ~SignalHandler~, ~SizeInt~, ~SizeUInt~, ~Stat~, ~TFPUException~, ~TFPUExceptionMask~, and ~TSystemTime~.
 ** SysUtils
 ~SysUtils~ provides these names:

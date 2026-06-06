@@ -5996,6 +5996,8 @@ inline void p_packtime(t_datetime& t, int32_t& p) {
 }
 inline constexpr p_char p_directoryseparator = tp2cc_char_of('/');
 inline constexpr p_char p_driveseparator = tp2cc_char_of(':');
+// File extension separator used by System.ExtractFileExt-compatible code.
+inline constexpr p_char p_extensionseparator = tp2cc_char_of('.');
 // PATH-list separator (the one between entries in $PATH-style strings),
 // not the drive-letter colon.
 inline constexpr p_char p_pathseparator = tp2cc_char_of(':');

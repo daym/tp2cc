@@ -1488,6 +1488,8 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
                          runtime_type_name("char"), nullptr);
   register_runtime_const(rt_exports, "driveseparator",
                          runtime_type_name("char"), nullptr);
+  register_runtime_const(rt_exports, "extensionseparator",
+                         runtime_type_name("char"), nullptr);
   register_runtime_const(rt_exports, "pathseparator", runtime_type_name("char"),
                          nullptr);
   register_runtime_const(rt_exports, "maxlongint",
