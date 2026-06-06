@@ -1,0 +1,151 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-01
+Subject: Use ARM compiler-local bit helpers during tp2cc bootstrap
+License: expat
+
+The ARM compiler backend calls BsfDWord, BsrDWord, and SarLongint from the
+RTL System unit.  During the tp2cc stage1 translation, compiler units are
+translated as compiler units; the RTL System helper implementations are not in
+that unit graph.  Keep the ARM backend's intended bit operations local to the
+ARM compiler unit instead.
+
+--- a/compiler/arm/aoptcpu.pas
++++ b/compiler/arm/aoptcpu.pas
+@@ -1033,7 +1033,7 @@
+                            (taicpu(hp1).oper[2]^.typ = top_const) and
+                            { Check if the BIC actually would only mask out bits beeing already zero because of the shift }
+                            (taicpu(hp1).oper[2]^.val<>0) and
+-                           (BsfDWord(taicpu(hp1).oper[2]^.val)>=32-taicpu(p).oper[2]^.shifterop^.shiftimm) then
++                           (arm_bsf_dword(taicpu(hp1).oper[2]^.val)>=32-taicpu(p).oper[2]^.shifterop^.shiftimm) then
+                            begin
+                              DebugMsg('Peephole LsrBic2Lsr done', hp1);
+                              taicpu(p).oper[0]^.reg:=taicpu(hp1).oper[0]^.reg;
+--- a/compiler/arm/cgcpu.pas
++++ b/compiler/arm/cgcpu.pas
+@@ -847,7 +847,7 @@
+             first:=true;
+             while multiplier<>0 do
+               begin
+-                shifterop.shiftimm:=BsrDWord(multiplier);
++                shifterop.shiftimm:=arm_bsr_dword(multiplier);
+                 if odd(multiplier) then
+                   begin
+                     list.concat(taicpu.op_reg_reg_reg_shifterop(A_ADD,dst,src,src,shifterop));
+@@ -876,7 +876,7 @@
+                     shifterop.shiftimm:=power;
+                   end
+                 else
+-                  shifterop.shiftimm:=BsrDWord(multiplier);
++                  shifterop.shiftimm:=arm_bsr_dword(multiplier);
+ 
+                 if odd(multiplier) then
+                   begin
+--- a/compiler/arm/cpubase.pas
++++ b/compiler/arm/cpubase.pas
+@@ -370,6 +370,9 @@
+     function is_thumb32_imm(d : aint) : boolean;
+     function split_into_shifter_const(value : aint;var imm1: dword; var imm2: dword):boolean;
+     function is_continuous_mask(d : aint;var lsb, width: byte) : boolean;
++    function arm_bsf_dword(const value : dword) : cardinal;
++    function arm_bsr_dword(const value : dword) : cardinal;
++    function arm_sar_longint(const value : longint; const shift : byte) : longint;
+     function dwarf_reg(r:tregister):shortint;
+ 
+     function IsIT(op: TAsmOp) : boolean;
+@@ -589,13 +592,64 @@
+         else
+           result:=false;
+       end;
+-    
++
++    function arm_bsf_dword(const value : dword) : cardinal;
++      var
++        v : dword;
++      begin
++        if value=0 then
++          begin
++            result:=$ff;
++            exit;
++          end;
++
++        result:=0;
++        v:=value;
++        while (v and 1)=0 do
++          begin
++            v:=v shr 1;
++            inc(result);
++          end;
++      end;
++
++    function arm_bsr_dword(const value : dword) : cardinal;
++      var
++        mask : dword;
++      begin
++        if value=0 then
++          begin
++            result:=$ff;
++            exit;
++          end;
++
++        result:=31;
++        mask:=$80000000;
++        while (value and mask)=0 do
++          begin
++            mask:=mask shr 1;
++            dec(result);
++          end;
++      end;
++
++    function arm_sar_longint(const value : longint; const shift : byte) : longint;
++      var
++        s : byte;
++      begin
++        s:=shift and 31;
++        if s=0 then
++          result:=value
++        else if value<0 then
++          result:=longint((dword(value) shr s) or (not(dword(0)) shl (32-s)))
++        else
++          result:=longint(dword(value) shr s);
++      end;
++
+     function is_continuous_mask(d : aint;var lsb, width: byte) : boolean;
+       var
+         msb : byte;
+       begin
+-        lsb:=BsfDword(d);
+-        msb:=BsrDword(d);
++        lsb:=arm_bsf_dword(d);
++        msb:=arm_bsr_dword(d);
+         
+         width:=msb-lsb+1;
+         
+--- a/compiler/arm/cpuelf.pas
++++ b/compiler/arm/cpuelf.pas
+@@ -30,7 +30,7 @@
+   uses
+     globtype,cutils,cclasses,
+     verbose, elfbase,
+-    systems,aasmbase,ogbase,ogelf,assemble;
++    systems,aasmbase,cpubase,ogbase,ogelf,assemble;
+ 
+   type
+     TElfExeOutputARM=class(TElfExeOutput)
+@@ -389,7 +389,7 @@
+             shift:=0
+           else
+             { MSB in the residual, aligned to a 2-bit boundary }
+-            shift:=max(0,(bsrdword(value) and (not 1))-6);
++            shift:=max(0,(arm_bsr_dword(value) and (not 1))-6);
+ 
+           { Calculate plain g_n and encode it into constant+rotation form }
+           g_n:=value and ($ff shl shift);
+@@ -660,7 +660,7 @@
+                   to go via thunking code.
+                   2) when target is unresolved weak symbol, CALL must be changed to NOP,
+                   while JUMP24 behavior is unspecified. }
+-                tmp:=sarlongint((address and $00FFFFFF) shl 8,6);
++                tmp:=arm_sar_longint((address and $00FFFFFF) shl 8,6);
+                 tmp:=tmp+relocval;
+                 if odd(tmp) then    { dest is Thumb? }
+                   begin
