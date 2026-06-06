@@ -1,0 +1,22 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-02
+Subject: Pass ARM FindRegDeAlloc a base tai node
+License: expat
+
+`FindRegDeAlloc` walks the assembly list from `StartPai: Tai`.  The ARM
+`MovLdr2Ldr` peephole only needs to start that walk at the list node after
+`p`; that node can be a `tai_regalloc` marker rather than a `taicpu`
+instruction.  Passing `p.Next` through `taicpu(...)` narrows before the
+callee can inspect the node.  Pass the base `tai` node instead.
+
+--- a/compiler/arm/aoptcpu.pas
++++ b/compiler/arm/aoptcpu.pas
+@@ -1269,7 +1269,7 @@
+                         if taicpu(hp1).oper[1]^.ref^.index = taicpu(p).oper[0]^.reg then
+                           taicpu(hp1).oper[1]^.ref^.index := taicpu(p).oper[1]^.reg;
+ 
+-                        dealloc:=FindRegDeAlloc(taicpu(p).oper[1]^.reg, taicpu(p.Next));
++                        dealloc:=FindRegDeAlloc(taicpu(p).oper[1]^.reg, tai(p.Next));
+                         if Assigned(dealloc) then
+                           begin
+                             asml.remove(dealloc);
