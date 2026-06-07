@@ -2607,6 +2607,39 @@ void test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers
   CHECK(contains(out.impl, "p_i = ::p_ops::tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(p_b);"));
 }
 
+void test_imported_assignment_operator_handles_explicit_qword_constant_cast() {
+  auto out = compile_snippet_with_registry(
+      "unit useops;\n"
+      "interface\n"
+      "uses ops;\n"
+      "procedure test;\n"
+      "implementation\n"
+      "procedure test;\n"
+      "var b : tbox;\n"
+      "begin\n"
+      "  b := qword(-1);\n"
+      "end;\n"
+      "end.\n",
+      {{"ops.pas",
+        "unit ops;\n"
+        "interface\n"
+        "type\n"
+        "  tbox = record\n"
+        "    v : qword;\n"
+        "  end;\n"
+        "operator := (const n : qword) : tbox;\n"
+        "implementation\n"
+        "operator := (const n : qword) : tbox;\n"
+        "begin\n"
+        "  result.v := n;\n"
+        "end;\n"
+        "end.\n"}});
+  CHECK(contains(
+      out.impl,
+      "p_b = ::p_ops::tp2cc_operator_assign_params_const_name_qword_ret_name_tbox("));
+  CHECK(contains(out.impl, "18446744073709551615ULL"));
+}
+
 void test_overloaded_call_result_type_uses_selected_decl() {
   auto out = compile_snippet_with_registry(
       "unit ops;\n"
@@ -8219,10 +8252,11 @@ void test_sizeof_lowers_to_int32_to_match_pascal_longint_semantics() {
 }
 
 void test_overload_picks_unsigned_widening_over_sign_change() {
-  // For an unsigned arg, `f(uint64)` (IntWideningSameSign, rank 4)
-  // beats both `f(int64)` and `f(int32)` (OrdinalSignChange, rank 9).
-  // C++ would otherwise call all three candidates ambiguous because
-  // every conversion is a single standard conversion.
+  // A Cardinal argument can hold values outside LongInt, so the smallest
+  // domain-compatible formals are Int64 and QWord. FPC uses signedness as the
+  // equal-width tie-breaker there, picking QWord. This is deliberately not the
+  // same as saying every unsigned source prefers the unsigned 64-bit overload:
+  // small unsigned domains still prefer LongInt when Cardinal is absent.
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -8612,6 +8646,239 @@ void test_overload_picks_narrowest_widening_target() {
   // because four candidates remain after arity narrowing.
   CHECK(contains(out.impl, "static_cast<uint32_t>"));
   CHECK(!contains(out.impl, "static_cast<uint64_t>"));
+}
+
+void test_overload_small_unsigned_domain_prefers_longint_without_cardinal() {
+  // FPC ranks integer overloads by Pascal value domain, not by emitted C++
+  // signedness alone. Byte's full domain fits LongInt, and LongInt is a smaller
+  // formal than QWord, so `tostr(byte)` chooses LongInt when Cardinal is absent.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function tostr(i : qword) : shortstring; overload;\n"
+      "function tostr(i : int64) : shortstring; overload;\n"
+      "function tostr(i : longint) : shortstring; overload;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "function tostr(i : qword) : shortstring; begin tostr := ''; end;\n"
+      "function tostr(i : int64) : shortstring; begin tostr := ''; end;\n"
+      "function tostr(i : longint) : shortstring; begin tostr := ''; end;\n"
+      "procedure run;\n"
+      "var b : byte;\n"
+      "    s : shortstring;\n"
+      "begin\n"
+      "  s := tostr(b);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_tostr(static_cast<int32_t>(p_b))"));
+  CHECK(!contains(out.impl, "p_tostr(static_cast<uint64_t>(p_b))"));
+  CHECK(!contains(out.impl, "p_tostr(static_cast<int64_t>(p_b))"));
+}
+
+void test_overload_untyped_constant_keeps_longint_domain_in_mixed_call() {
+  // Untyped integer constants are not ranked as the smallest C++ storage type
+  // that can hold the literal. The constant `1` keeps a LongInt-compatible
+  // Pascal domain, so `pair(cardinal, 1)` cannot use QWord for both arguments
+  // and FPC picks Int64.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function pair(a,b : qword) : shortstring; overload;\n"
+      "function pair(a,b : int64) : shortstring; overload;\n"
+      "function pair(a,b : longint) : shortstring; overload;\n"
+      "procedure run(c : cardinal);\n"
+      "implementation\n"
+      "function pair(a,b : qword) : shortstring; begin pair := ''; end;\n"
+      "function pair(a,b : int64) : shortstring; begin pair := ''; end;\n"
+      "function pair(a,b : longint) : shortstring; begin pair := ''; end;\n"
+      "procedure run(c : cardinal);\n"
+      "var s : shortstring;\n"
+      "begin\n"
+      "  s := pair(c, 1);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_pair(static_cast<int64_t>(p_c), "
+                           "static_cast<int64_t>(((int64_t)(1))))"));
+  CHECK(!contains(out.impl, "p_pair(static_cast<uint64_t>(p_c)"));
+}
+
+void test_overload_integer_domain_primitive_candidate_beats_operator_candidate() {
+  // Direct primitive integer conversions are ranked before user-defined
+  // assignment-operator conversions. FPC chooses Int64 for `cardinal, 1` and
+  // QWord for `cardinal, cardinal`, even when a record overload is also
+  // reachable through integer conversion operators.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tbig = record value : qword; end;\n"
+      "operator := (const n : qword) : tbig;\n"
+      "operator := (const n : int64) : tbig;\n"
+      "function pick(a,b : qword) : shortstring; overload;\n"
+      "function pick(a,b : int64) : shortstring; overload;\n"
+      "function pick(a,b : longint) : shortstring; overload;\n"
+      "function pick(const a,b : tbig) : shortstring; overload;\n"
+      "procedure run(c : cardinal);\n"
+      "implementation\n"
+      "operator := (const n : qword) : tbig; begin result.value := n; end;\n"
+      "operator := (const n : int64) : tbig; begin result.value := qword(n); end;\n"
+      "function pick(a,b : qword) : shortstring; begin pick := ''; end;\n"
+      "function pick(a,b : int64) : shortstring; begin pick := ''; end;\n"
+      "function pick(a,b : longint) : shortstring; begin pick := ''; end;\n"
+      "function pick(const a,b : tbig) : shortstring; begin pick := ''; end;\n"
+      "procedure run(c : cardinal);\n"
+      "var s : shortstring;\n"
+      "begin\n"
+      "  s := pick(c, 1);\n"
+      "  s := pick(c, c);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_pick(static_cast<int64_t>(p_c), "
+                           "static_cast<int64_t>(((int64_t)(1))))"));
+  CHECK(contains(out.impl, "p_pick(static_cast<uint64_t>(p_c), "
+                           "static_cast<uint64_t>(p_c))"));
+}
+
+void test_overload_integer_domain_ignores_nonconvertible_record_candidate() {
+  // A record overload with no conversion path is not viable for integer actuals.
+  // FPC therefore chooses the same primitive integer overloads as if the record
+  // overload did not exist.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tbig = record value : qword; end;\n"
+      "function pick(a,b : qword) : shortstring; overload;\n"
+      "function pick(a,b : int64) : shortstring; overload;\n"
+      "function pick(a,b : longint) : shortstring; overload;\n"
+      "function pick(const a,b : tbig) : shortstring; overload;\n"
+      "procedure run(c : cardinal);\n"
+      "implementation\n"
+      "function pick(a,b : qword) : shortstring; begin pick := ''; end;\n"
+      "function pick(a,b : int64) : shortstring; begin pick := ''; end;\n"
+      "function pick(a,b : longint) : shortstring; begin pick := ''; end;\n"
+      "function pick(const a,b : tbig) : shortstring; begin pick := ''; end;\n"
+      "procedure run(c : cardinal);\n"
+      "var s : shortstring;\n"
+      "begin\n"
+      "  s := pick(c, 1);\n"
+      "  s := pick(c, c);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_pick(static_cast<int64_t>(p_c), "
+                           "static_cast<int64_t>(((int64_t)(1))))"));
+  CHECK(contains(out.impl, "p_pick(static_cast<uint64_t>(p_c), "
+                           "static_cast<uint64_t>(p_c))"));
+}
+
+void test_overload_integer_domain_survives_exact_record_extra_arg() {
+  // Adding a non-overload-driving record argument to every overload must not
+  // change how FPC ranks the remaining integer arguments.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tbig = record value : qword; end;\n"
+      "function pick(a,b : qword; const r : tbig) : shortstring; overload;\n"
+      "function pick(a,b : int64; const r : tbig) : shortstring; overload;\n"
+      "function pick(a,b : longint; const r : tbig) : shortstring; overload;\n"
+      "procedure run(c : cardinal; const r : tbig);\n"
+      "implementation\n"
+      "function pick(a,b : qword; const r : tbig) : shortstring; begin pick := ''; end;\n"
+      "function pick(a,b : int64; const r : tbig) : shortstring; begin pick := ''; end;\n"
+      "function pick(a,b : longint; const r : tbig) : shortstring; begin pick := ''; end;\n"
+      "procedure run(c : cardinal; const r : tbig);\n"
+      "var s : shortstring;\n"
+      "begin\n"
+      "  s := pick(c, 1, r);\n"
+      "  s := pick(c, c, r);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_pick(static_cast<int64_t>(p_c), "
+                           "static_cast<int64_t>(((int64_t)(1))), "
+                           "static_cast<t_tbig>(p_r))"));
+  CHECK(contains(out.impl, "p_pick(static_cast<uint64_t>(p_c), "
+                           "static_cast<uint64_t>(p_c), "
+                           "static_cast<t_tbig>(p_r))"));
+}
+
+void test_overload_subrange_uses_declared_integer_domain() {
+  // A 0..255 subrange argument chooses Byte over LongInt/Cardinal in FPC.
+  // Treating every subrange as Equal-to-LongInt for overload ranking would make
+  // the translated compiler choose the wrong overload even though the storage
+  // type is representable as a machine integer either way.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tsmall = 0..255;\n"
+      "function pick(i : byte) : shortstring; overload;\n"
+      "function pick(i : longint) : shortstring; overload;\n"
+      "function pick(i : cardinal) : shortstring; overload;\n"
+      "procedure run(s : tsmall);\n"
+      "implementation\n"
+      "function pick(i : byte) : shortstring; begin pick := ''; end;\n"
+      "function pick(i : longint) : shortstring; begin pick := ''; end;\n"
+      "function pick(i : cardinal) : shortstring; begin pick := ''; end;\n"
+      "procedure run(s : tsmall);\n"
+      "var out_s : shortstring;\n"
+      "begin\n"
+      "  out_s := pick(s);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_pick(static_cast<uint8_t>(p_s))"));
+  CHECK(!contains(out.impl, "p_pick(static_cast<int32_t>(p_s))"));
+  CHECK(!contains(out.impl, "p_pick(static_cast<uint32_t>(p_s))"));
+}
+
+void test_overload_exact_subrange_formal_survives_integer_domain_ranking() {
+  // Integer-domain ranking only breaks ties among conversion candidates; it
+  // must not demote an exact Pascal formal type just because the formal is a
+  // named subrange instead of a primitive integer spelling.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tsmall = 0..255;\n"
+      "function pick(i : tsmall) : shortstring; overload;\n"
+      "function pick(i : longint) : shortstring; overload;\n"
+      "procedure run(s : tsmall);\n"
+      "implementation\n"
+      "function pick(i : tsmall) : shortstring; begin pick := ''; end;\n"
+      "function pick(i : longint) : shortstring; begin pick := ''; end;\n"
+      "procedure run(s : tsmall);\n"
+      "var out_s : shortstring;\n"
+      "begin\n"
+      "  out_s := pick(s);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_pick(static_cast<t_tsmall>(p_s))"));
+  CHECK(!contains(out.impl, "p_pick(static_cast<int32_t>(p_s))"));
+}
+
+void test_overload_integer_domain_does_not_hide_operator_conversion() {
+  // Integer-domain ranking only applies when the actual arguments already have
+  // integer domains. A record actual still has to use the normal conversion
+  // operator path, and the presence of a competing integer overload must not
+  // make the domain pass discard that candidate set.
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tbox = record v : longint; end;\n"
+      "operator := (const b : tbox) : qword;\n"
+      "function take(i : int64) : shortstring; overload;\n"
+      "function take(i : qword) : shortstring; overload;\n"
+      "procedure run(b : tbox);\n"
+      "implementation\n"
+      "operator := (const b : tbox) : qword;\n"
+      "begin\n"
+      "  result := b.v;\n"
+      "end;\n"
+      "function take(i : int64) : shortstring; begin take := ''; end;\n"
+      "function take(i : qword) : shortstring; begin take := ''; end;\n"
+      "procedure run(b : tbox);\n"
+      "begin\n"
+      "  take(b);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_take(static_cast<uint64_t>(::p_u::tp2cc_operator_assign_params_const_name_tbox_ret_name_qword(p_b)))"));
+  CHECK(!contains(out.impl, "static_cast<int64_t>(p_b)"));
 }
 
 void test_overload_int_narrowing_to_shortint_param_is_viable() {
@@ -10863,6 +11130,7 @@ int main() {
   RUN_TEST(test_var_ansistring_call_keeps_lvalue_storage);
   RUN_TEST(test_overloaded_string_and_bool_call_keeps_boolean_argument_raw);
   RUN_TEST(test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers);
+  RUN_TEST(test_imported_assignment_operator_handles_explicit_qword_constant_cast);
   RUN_TEST(test_overloaded_call_result_type_uses_selected_decl);
   RUN_TEST(test_nested_overload_result_type_is_used_for_outer_overload);
   RUN_TEST(test_pchar_cast_argument_converts_to_string_value);
@@ -11100,6 +11368,14 @@ int main() {
   RUN_TEST(test_overload_local_unit_shadows_uses_chain_overloads);
   RUN_TEST(test_overload_exact_match_dominates_widening_alternatives);
   RUN_TEST(test_overload_picks_narrowest_widening_target);
+  RUN_TEST(test_overload_small_unsigned_domain_prefers_longint_without_cardinal);
+  RUN_TEST(test_overload_untyped_constant_keeps_longint_domain_in_mixed_call);
+  RUN_TEST(test_overload_integer_domain_primitive_candidate_beats_operator_candidate);
+  RUN_TEST(test_overload_integer_domain_ignores_nonconvertible_record_candidate);
+  RUN_TEST(test_overload_integer_domain_survives_exact_record_extra_arg);
+  RUN_TEST(test_overload_subrange_uses_declared_integer_domain);
+  RUN_TEST(test_overload_exact_subrange_formal_survives_integer_domain_ranking);
+  RUN_TEST(test_overload_integer_domain_does_not_hide_operator_conversion);
   RUN_TEST(test_overload_int_narrowing_to_shortint_param_is_viable);
   RUN_TEST(test_overload_resolves_through_with_block_bare_ident_call);
   RUN_TEST(test_overload_picks_string_concat_arg_against_string_param);

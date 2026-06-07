@@ -157,36 +157,38 @@ class CallTypeProvider {
 //    2   | Equal                   | TSubrangeInt -> Integer (same underlying)
 //    3   | SetCompatible           | set of 0..7 -> set of byte
 //    4   | ClassHierarchy          | TButton -> TControl
-//    5   | IntWideningSameSign     | byte -> word -> longint
-//    6   | RealWidening            | single -> double -> extended
-//    7   | StringSameTagWiden      | ShortString<N> -> ShortString<M>, M >= N
-//    8   | StringToShortString     | Char/PChar/AnsiString -> ShortString
-//    9   | StringToAnsiString      | Char/PChar/ShortString -> AnsiString;
+//    5   | IntDomainCompatible     | 0..255 -> byte/cardinal/longint
+//    6   | IntWideningSameSign     | byte -> word -> qword
+//    7   | RealWidening            | single -> double -> extended
+//    8   | StringSameTagWiden      | ShortString<N> -> ShortString<M>, M >= N
+//    9   | StringToShortString     | Char/PChar/AnsiString -> ShortString
+//   10   | StringToAnsiString      | Char/PChar/ShortString -> AnsiString;
 //        |                         | ShortString/AnsiString -> PChar
-//   10   | OrdinalSignChange       | longint -> longword (or back)
-//   11   | IntNarrowing            | longint -> shortint, etc.
-//   12   | Operator                | FPC operator := conversion
-//   13   | Variant                 | anything <-> variant
+//   11   | OrdinalSignChange       | longint -> longword (or back)
+//   12   | IntNarrowing            | longint -> shortint, etc.
+//   13   | Operator                | FPC operator := conversion
+//   14   | Variant                 | anything <-> variant
 //    -   | NotViable               | no implicit conversion exists
 //
-// Ranks 7 vs 8 stay split because the bootstrap compiler runs under `{$H-}`
-// semantics, where `string` aliases ShortString and Pascal prefers
-// ShortString-typed parameters over AnsiString-typed ones when both are
+// The ShortString and AnsiString ranks stay split because the bootstrap compiler
+// runs under `{$H-}` semantics, where `string` aliases ShortString and Pascal
+// prefers ShortString-typed parameters over AnsiString-typed ones when both are
 // otherwise tied.
 enum class ConvRank : uint8_t {
   Exact = 1,
   Equal = 2,
   SetCompatible = 3,
   ClassHierarchy = 4,
-  IntWideningSameSign = 5,
-  RealWidening = 6,
-  StringSameTagWiden = 7,
-  StringToShortString = 8,
-  StringToAnsiString = 9,
-  OrdinalSignChange = 10,
-  IntNarrowing = 11,
-  Operator = 12,
-  Variant = 13,
+  IntDomainCompatible = 5,
+  IntWideningSameSign = 6,
+  RealWidening = 7,
+  StringSameTagWiden = 8,
+  StringToShortString = 9,
+  StringToAnsiString = 10,
+  OrdinalSignChange = 11,
+  IntNarrowing = 12,
+  Operator = 13,
+  Variant = 14,
   NotViable = 255,
 };
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -145,6 +146,11 @@ class EmitResolution {
     const ast::ProcDecl* decl = nullptr;
     std::vector<ConvScore> scores;
   };
+  struct IntegerActualDomain {
+    int64_t low = 0;
+    uint64_t high = 0;
+    PrimitiveIntKind preferred_kind = PrimitiveIntKind::None;
+  };
   struct InstanceMethodLookup {
     enum class Kind { NoInstanceMethod, SignatureMismatch, Match };
 
@@ -177,6 +183,19 @@ class EmitResolution {
   ConvScore class_hierarchy_conversion_score(const ast::TypeExpr* arg,
                                              const ast::TypeExpr* param);
   const PrimitiveInfo* primitive_for_type(const ast::TypeExpr* t);
+  std::optional<IntegerActualDomain> integer_actual_domain_for_type(
+      const ast::TypeExpr* t);
+  std::optional<IntegerActualDomain> integer_actual_domain_for_expr(
+      const ast::Expr& arg);
+  bool is_untyped_integer_constant_expr(const ast::Expr& arg);
+  bool integer_domain_fits_primitive(const IntegerActualDomain& domain,
+                                     const PrimitiveInfo& formal) const;
+  ConvScore rank_integer_domain_conversion(
+      const IntegerActualDomain& domain, const ast::TypeExpr* param,
+      bool var_param);
+  std::optional<PickResult> pick_integer_domain_overload(
+      const std::vector<ScoredCandidate>& viable,
+      const std::vector<const ast::Expr*>& args);
   int real_conversion_rank(std::string_view name) const;
   bool type_is_shortstring_family(const ast::TypeExpr* t) const;
   bool type_is_ansistring(const ast::TypeExpr* t) const;

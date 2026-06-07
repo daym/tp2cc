@@ -1,6 +1,8 @@
 #include "emit_resolution.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <utility>
 
@@ -92,7 +94,8 @@ std::vector<EmitResolution::AnyCand> EmitResolution::unit_export_proc_cands(
   if (!v) return candidates;
   for (const auto& pi : *v) {
     candidates.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-                          unit, pi.defining_unit, {}, pi.return_type_name});
+                          unit, pi.defining_unit, {},
+                          pi.return_type_name});
   }
   return candidates;
 }
@@ -245,6 +248,218 @@ ConvScore EmitResolution::class_hierarchy_conversion_score(
 const PrimitiveInfo* EmitResolution::primitive_for_type(const TypeExpr* t) {
   if (!t || t->kind != Kind::TyName) return nullptr;
   return primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
+}
+
+std::optional<EmitResolution::IntegerActualDomain>
+EmitResolution::integer_actual_domain_for_type(const TypeExpr* t) {
+  t = analysis_.canonicalize_type(t);
+  if (!t) return std::nullopt;
+  if (t->kind == Kind::TyDistinct) {
+    return integer_actual_domain_for_type(
+        static_cast<const TyDistinct&>(*t).underlying.get());
+  }
+  if (t->kind == Kind::TySubrange) {
+    const auto& sr = static_cast<const TySubrange&>(*t);
+    if (!sr.lo || !sr.hi) return std::nullopt;
+    auto lo = analysis_.eval_const_int_expr(*sr.lo);
+    auto hi = analysis_.eval_const_int_expr(*sr.hi);
+    if (!lo || !hi) return std::nullopt;
+    int64_t low = std::min(lo->value, hi->value);
+    int64_t high = std::max(lo->value, hi->value);
+    return IntegerActualDomain{
+        .low = low,
+        .high = high < 0 ? 0 : static_cast<uint64_t>(high),
+        .preferred_kind = low < 0 ? PrimitiveIntKind::Signed
+                                  : PrimitiveIntKind::Unsigned};
+  }
+  const PrimitiveInfo* pi = primitive_for_type(t);
+  if (!pi || pi->int_kind == PrimitiveIntKind::None || pi->bits == 0) {
+    return std::nullopt;
+  }
+  if (pi->int_kind == PrimitiveIntKind::Unsigned) {
+    return IntegerActualDomain{
+        .low = 0,
+        .high = pi->bits >= 64 ? std::numeric_limits<uint64_t>::max()
+                               : ((uint64_t{1} << pi->bits) - 1),
+        .preferred_kind = PrimitiveIntKind::Unsigned};
+  }
+  return IntegerActualDomain{
+      .low = pi->bits >= 64
+                 ? std::numeric_limits<int64_t>::min()
+                 : -(int64_t{1} << (pi->bits - 1)),
+      .high = pi->bits >= 64
+                  ? static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
+                  : ((uint64_t{1} << (pi->bits - 1)) - 1),
+      .preferred_kind = PrimitiveIntKind::Signed};
+}
+
+bool EmitResolution::is_untyped_integer_constant_expr(const Expr& arg) {
+  switch (arg.kind) {
+    case Kind::IntLit:
+      return true;
+    case Kind::Unary: {
+      const auto& u = static_cast<const Unary&>(arg);
+      return u.operand && is_untyped_integer_constant_expr(*u.operand);
+    }
+    case Kind::Binary: {
+      const auto& b = static_cast<const Binary&>(arg);
+      return b.lhs && b.rhs && is_untyped_integer_constant_expr(*b.lhs) &&
+             is_untyped_integer_constant_expr(*b.rhs);
+    }
+    case Kind::Ident: {
+      const auto& id = static_cast<const Ident&>(arg);
+      auto local = scope_.local_consts.find(id.name);
+      if (local != scope_.local_consts.end()) {
+        return local->second && !local->second->type && local->second->value;
+      }
+      if (const ConstInfo* c = analysis_.find_visible_unit_const(id.name)) {
+        return !c->type && c->value;
+      }
+      return false;
+    }
+    default:
+      return false;
+  }
+}
+
+std::optional<EmitResolution::IntegerActualDomain>
+EmitResolution::integer_actual_domain_for_expr(const Expr& arg) {
+  if (is_untyped_integer_constant_expr(arg)) {
+    auto c = analysis_.eval_const_int_expr(arg);
+    if (!c) return std::nullopt;
+    if (c->value >= std::numeric_limits<int32_t>::min() &&
+        c->value <= std::numeric_limits<int32_t>::max()) {
+      // FPC overload resolution treats ordinary untyped integer constants as
+      // Integer/LongInt candidates, not as the smallest storage type that would
+      // hold their current value. That is why `pair(cardinal_value, 1)` chooses
+      // the Int64 overload: the second argument still carries a signed LongInt
+      // domain, so QWord is not a common formal for the whole call.
+      return integer_actual_domain_for_type(builtin_integer_type("longint"));
+    }
+    return IntegerActualDomain{
+        .low = c->value < 0 ? c->value : 0,
+        .high = c->value < 0 ? 0 : static_cast<uint64_t>(c->value),
+        .preferred_kind = c->value < 0 ? PrimitiveIntKind::Signed
+                                       : PrimitiveIntKind::Unsigned};
+  }
+  return integer_actual_domain_for_type(overload_types_.type_for_overload(arg));
+}
+
+bool EmitResolution::integer_domain_fits_primitive(
+    const IntegerActualDomain& domain, const PrimitiveInfo& formal) const {
+  if (formal.int_kind == PrimitiveIntKind::None || formal.bits == 0) {
+    return false;
+  }
+  if (formal.int_kind == PrimitiveIntKind::Unsigned) {
+    if (domain.low < 0) return false;
+    const uint64_t max =
+        formal.bits >= 64 ? std::numeric_limits<uint64_t>::max()
+                          : ((uint64_t{1} << formal.bits) - 1);
+    return domain.high <= max;
+  }
+  const int64_t min =
+      formal.bits >= 64 ? std::numeric_limits<int64_t>::min()
+                        : -(int64_t{1} << (formal.bits - 1));
+  const uint64_t max =
+      formal.bits >= 64
+          ? static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
+          : ((uint64_t{1} << (formal.bits - 1)) - 1);
+  return domain.low >= min && domain.high <= max;
+}
+
+ConvScore EmitResolution::rank_integer_domain_conversion(
+    const IntegerActualDomain& domain, const TypeExpr* param, bool var_param) {
+  if (var_param) return {};
+  const TypeExpr* p = analysis_.canonicalize_type(param);
+  const PrimitiveInfo* formal = primitive_for_type(p);
+  if (!formal || formal->int_kind == PrimitiveIntKind::None ||
+      formal->bits == 0) {
+    return {};
+  }
+  if (!integer_domain_fits_primitive(domain, *formal)) return {};
+  // FPC chooses the smallest integer formal that can represent the Pascal
+  // source domain, then uses signedness only to break equal-width ties. This is
+  // why `byte` binds to `longint` rather than `qword` when no `cardinal`
+  // overload exists, while `cardinal` still binds to `qword` over `int64`.
+  const int sign_mismatch =
+      domain.preferred_kind == formal->int_kind ? 0 : 1;
+  return {ConvRank::IntDomainCompatible,
+          static_cast<int>(formal->bits) * 2 + sign_mismatch};
+}
+
+std::optional<PickResult> EmitResolution::pick_integer_domain_overload(
+    const std::vector<ScoredCandidate>& viable,
+    const std::vector<const Expr*>& args) {
+  if (args.empty()) return std::nullopt;
+
+  std::vector<std::optional<IntegerActualDomain>> domains;
+  domains.reserve(args.size());
+  bool saw_integer_domain = false;
+  for (const Expr* arg : args) {
+    if (!arg) return std::nullopt;
+    auto domain = integer_actual_domain_for_expr(*arg);
+    if (domain) saw_integer_domain = true;
+    domains.push_back(std::move(domain));
+  }
+  if (!saw_integer_domain) return std::nullopt;
+
+  std::vector<ScoredCandidate> domain_viable;
+  for (const ScoredCandidate& candidate : viable) {
+    if (!candidate.decl) continue;
+    std::vector<FlatCallParamInfo> flat =
+        flatten_call_param_info(candidate.decl);
+    if (args.size() > flat.size()) continue;
+
+    ScoredCandidate scored{candidate.decl, candidate.scores};
+    bool fits_all = true;
+    for (size_t i = 0; i < args.size(); ++i) {
+      if (!domains[i]) continue;
+      if (scored.scores[i].rank == ConvRank::Exact ||
+          scored.scores[i].rank == ConvRank::Equal) {
+        continue;
+      }
+      if (flat[i].mutable_ref) {
+        fits_all = false;
+        break;
+      }
+      const TypeExpr* formal_type = analysis_.canonicalize_type(flat[i].type);
+      const PrimitiveInfo* formal = primitive_for_type(formal_type);
+      if (!formal || formal->int_kind == PrimitiveIntKind::None ||
+          formal->bits == 0) {
+        // Integer actuals may also fit non-primitive overloads through
+        // assignment operators. FPC still ranks the primitive integer candidates
+        // as their own set first; operator candidates remain available only if
+        // no primitive integer candidate wins.
+        fits_all = false;
+        break;
+      }
+      ConvScore score =
+          rank_integer_domain_conversion(*domains[i], flat[i].type, false);
+      if (!score.viable()) {
+        fits_all = false;
+        break;
+      }
+      scored.scores[i] = score;
+    }
+    if (fits_all) domain_viable.push_back(std::move(scored));
+  }
+
+  if (domain_viable.empty()) return std::nullopt;
+  if (domain_viable.size() == 1) return PickResult{domain_viable[0].decl, false};
+
+  size_t best = 0;
+  for (size_t i = 1; i < domain_viable.size(); ++i) {
+    if (conversion_candidate_dominates(domain_viable[i], domain_viable[best])) {
+      best = i;
+    }
+  }
+  for (size_t i = 0; i < domain_viable.size(); ++i) {
+    if (i == best) continue;
+    if (!conversion_candidate_dominates(domain_viable[best], domain_viable[i])) {
+      return PickResult{nullptr, true};
+    }
+  }
+  return PickResult{domain_viable[best].decl, false};
 }
 
 int EmitResolution::real_conversion_rank(std::string_view name) const {
@@ -613,9 +828,23 @@ ConvScore EmitResolution::score_argument_conversion(
       return *score;
     }
   }
-  return score_conversion(overload_types_.type_for_overload(arg), param.type,
-                          param.mutable_ref,
-                          allow_assignment_operator_conversions);
+  const TypeExpr* arg_type = overload_types_.type_for_overload(arg);
+  ConvScore direct = rank_conversion(arg_type, param.type, param.mutable_ref);
+  if (direct.rank == ConvRank::Exact) return direct;
+  if (auto domain = integer_actual_domain_for_expr(arg)) {
+    if (ConvScore ordinal =
+            rank_integer_domain_conversion(*domain, param.type,
+                                           param.mutable_ref);
+        ordinal.viable()) {
+      return ordinal;
+    }
+  }
+  if (direct.viable()) return direct;
+  if (!allow_assignment_operator_conversions || param.mutable_ref) return {};
+  if (find_assignment_operator(arg_type, param.type).decl) {
+    return {ConvRank::Operator, 0};
+  }
+  return {};
 }
 
 bool EmitResolution::conversion_score_less(const ConvScore& a,
@@ -676,6 +905,10 @@ PickResult EmitResolution::pick_overload(
   }
   if (viable.empty()) return {};
   if (viable.size() == 1) return {viable[0].decl, false};
+
+  if (auto integer_pick = pick_integer_domain_overload(viable, args)) {
+    return *integer_pick;
+  }
 
   size_t best = 0;
   for (size_t i = 1; i < viable.size(); ++i) {
