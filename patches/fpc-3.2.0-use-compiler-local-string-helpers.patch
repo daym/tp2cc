@@ -1,0 +1,30 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-31
+Subject: Use compiler-local string helpers in the bootstrap compiler
+License: expat
+
+Replace those calls with compiler-local helpers or direct Pascal operations.
+--- a/compiler/scandir.pas
++++ b/compiler/scandir.pas
+@@ -1011,7 +1011,7 @@
+                 current_scanner.readstring;
+                 s:=s+'.'+orgpattern;
+               end;
+-            disposestr(current_module.namespace);
++            stringdispose(current_module.namespace);
+             current_module.namespace:=stringdup(s);
+           end;
+       end;
+--- a/compiler/cfileutl.pas
++++ b/compiler/cfileutl.pas
+@@ -716,9 +716,7 @@
+         i, L : longint;
+         P: PChar;
+       begin
+-        Result := s;
+-        { make result unique since we're going to change it via a pchar }
+-        uniquestring(result);
++        Result := copy(s,1,length(s));
+         L := Length(Result);
+         if L=0 then
+           exit;
