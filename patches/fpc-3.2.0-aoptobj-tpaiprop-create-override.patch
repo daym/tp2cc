@@ -1,0 +1,25 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-05
+Subject: Make TPaiProp.Create an explicit override for FPC 3.2.0
+License: expat
+
+TPaiProp.Create has the same signature as the inherited virtual
+TAoptBase.Create constructor.  tp2cc lowers Pascal objects to C++ classes,
+where a same-signature derived method overrides the inherited virtual slot.
+
+The 3.2.0 compiler source has no live TPaiProp descendant or class-reference
+construction path that depends on hiding TAoptBase.Create.  Mark the
+constructor as override so the Pascal declaration matches the dispatch
+semantics that the generated C++ can represent.
+
+--- a/compiler/aoptobj.pas
++++ b/compiler/aoptobj.pas
+@@ -136,7 +136,7 @@ Unit AoptObj;
+         { can this instruction be removed? }
+         CanBeRemoved: Boolean;
+ 
+-        Constructor create; reintroduce;
++        Constructor create; override;
+ 
+         { checks the whole sequence of which (so regs[which].StartMod and and  }
+         { the next NrOfMods Tai objects) to see whether Reg is used somewhere, }
