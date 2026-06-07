@@ -1,0 +1,47 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-06
+Subject: Prune ogcoff when COFF targets are disabled
+License: expat
+
+ogcoff uses unsupported packed record member access.
+
+Guard the direct ogcoff "uses" since we dont use COFF anyway.
+
+This disables ogcoff's initialization section as well.
+
+--- a/compiler/i386/cputarg.pas
++++ b/compiler/i386/cputarg.pas
+@@ -104,6 +104,8 @@ implementation
+     {$endif}
+ 
+-      ,ogcoff
++    {$if not defined(NOTARGETGO32V2) or not defined(NOTARGETWIN) or not defined(NOTARGETNATIVENT) or not defined(NOTARGETWDOSX) or not defined(NOTARGETWINCE)}
++      ,ogcoff
++    {$endif}
+       ,ogelf
+       ,ogmacho
+       ,cpuelf
+--- a/compiler/x86_64/cputarg.pas
++++ b/compiler/x86_64/cputarg.pas
+@@ -78,6 +78,8 @@ implementation
+     {$endif}
+ 
+-      ,ogcoff
++    {$ifndef NOTARGETWIN}
++      ,ogcoff
++    {$endif}
+       ,ogelf
+       ,cpuelf
+ 
+--- a/compiler/arm/cputarg.pas
++++ b/compiler/arm/cputarg.pas
+@@ -74,6 +74,8 @@ implementation
+     {$endif}
+ 
+-      ,ogcoff
++    {$ifndef NOTARGETWINCE}
++      ,ogcoff
++    {$endif}
+       ,ogelf
+       ,cpuelf
+ 
