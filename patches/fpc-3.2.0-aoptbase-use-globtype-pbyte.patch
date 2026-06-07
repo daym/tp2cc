@@ -1,0 +1,23 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-07
+Subject: Use compiler-local PByte in aoptbase
+License: expat
+
+`compiler/aoptbase.pas` declares `TInstrSinceLastMod` in its interface using
+`pbyte`, but it does not import the compiler unit that defines the compiler's
+own `pbyte = ^byte` alias. Native FPC can resolve this through implicit
+System.PByte, hiding the missing compiler-local dependency.
+
+Import `globtype` explicitly so the translated bootstrap resolves the same
+type through the compiler source instead of relying on a System alias.
+
+--- a/compiler/aoptbase.pas
++++ b/compiler/aoptbase.pas
+@@ -27,6 +27,7 @@
+   interface
+ 
+     uses
++      globtype,
+       aasmbase,aasmcpu,aasmtai,aasmdata,
+       cpubase,
+       cgbase,
