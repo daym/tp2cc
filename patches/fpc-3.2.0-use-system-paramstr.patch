@@ -1,0 +1,18 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-31
+Subject: Use System.ParamStr while reading bootstrap compiler options
+License: expat
+
+We have `System.ParamStr` but not `objpas.ParamStr`.
+
+--- a/compiler/options.pas
++++ b/compiler/options.pas
+@@ -2949,7 +2949,7 @@
+   while paramindex<paramcount do
+    begin
+      inc(paramindex);
+-     opts:=objpas.paramstr(paramindex);
++     opts:=system.paramstr(paramindex);
+      if length(opts)>0 then
+        case opts[1] of
+          '@' :
