@@ -42,6 +42,22 @@ fpc_compiler_version_defines() {
     -dVER2 -dVER2_6 -dVER2_6_0
 }
 
+fpc_target_prune_win_defines() {
+  case "$(fpc_source_version)" in
+    3.*)
+      # NOTARGETWIN removes Win/COFF target units such as ogcoff from the
+      # compiler target registry.  FPC 3.x i386 still has one Win32 stack-probe
+      # branch guarded by __NOWINPECOFF__ instead, so define both symbols to
+      # prune the target unit and the matching backend code together.
+      printf '%s' "-dNOTARGETWIN -dNOTARGETWIN32 -dNOTARGETWINCE -d__NOWINPECOFF__"
+      ;;
+    *)
+      echo "error: bootstrap-fpc-3.sh has no Win target-prune rule for FPC $(fpc_source_version)" >&2
+      exit 1
+      ;;
+  esac
+}
+
 case "$(fpc_source_version)" in
   3.*)
     ;;
@@ -235,7 +251,7 @@ $(fpc_compiler_version_defines) \
 -dFPC_HAS_OPERATOR_ENUMERATOR -dFPC_HAS_CONSTREF \
 -dFPC_STATICRIPFIXED -dFPC_VARIANTCOPY_FIXED -dFPC_DYNARRAYCOPY_FIXED \
 -dFPC_HAS_INTERNAL_ABS_LONG \
--dFPC_HAS_UNICODESTRING -dFPC_RTTI_PACKSET1 -dFPC_HAS_CPSTRING \
+-dFPC_HAS_UNICODESTRING -dFPC_RTTI_PACKSET1 \
 -dFPC_HAS_CEXTENDED -dFPC_HAS_RESSTRINITS \
 -dFPC_HAS_INTERNAL_SAR -dFPC_HAS_MEMBAR -dFPC_SETBASE_USED \
 -dINTERNAL_BACKTRACE -dSTR_CONCAT_PROCS -dREGCALL \
@@ -268,17 +284,22 @@ $(fpc_compiler_version_defines) \
 
   # tp2cc-specific knobs: prune target backends we don't translate, and
   # force the dwarf debug-info backend off (it pulls array-of-const
-  # parsing tp2cc doesn't yet handle).
+  # parsing tp2cc doesn't yet handle). The i386 NASM backend is not needed
+  # for this bootstrap; leaving it enabled makes emit-all translate OMF-only
+  # units such as omfbase even though all OMF targets are pruned.
   tp2cc_target_prune="\
--dNoDbgDwarf \
--dNOTARGETAMIGA -dNOTARGETBEOS -dNOTARGETFREEBSD \
--dNOTARGETGO32V1 -dNOTARGETGO32V2 -dNOTARGETOS2 \
--dNOTARGETPALMOS -dNOTARGETQNX -dNOTARGETSUNOS \
--dNOTARGETWIN32 -dNOTARGETNETBSD -dNOTARGETOPENBSD \
--dNOTARGETDARWIN -dNOTARGETNETWARE -dNOTARGETEMX \
--dNOTARGETHAIKU -dNOTARGETANDROID -dNOTARGETAROS \
--dNOTARGETSYMBIAN -dNOTARGETNATIVENT -dNOTARGETWATCOM \
--dNOTARGETWII -dNOTARGETGBA -dNOTARGETNDS -dNOTARGETEMBEDDED"
+-dNoDbgDwarf -dNOAG386NSM \
+-dNOTARGETAIX -dNOTARGETAMIGA -dNOTARGETAROS -dNOTARGETATARI \
+-dNOTARGETBEOS -dNOTARGETBSD -dNOTARGETDARWIN -dNOTARGETEMX \
+-dNOTARGETFREEBSD -dNOTARGETGO32V1 -dNOTARGETGO32V2 \
+-dNOTARGETHAIKU -dNOTARGETMACOS -dNOTARGETMORPHOS \
+-dNOTARGETMSDOS -dNOTARGETNATIVENT -dNOTARGETNDS \
+-dNOTARGETNETBSD -dNOTARGETNETWARE -dNOTARGETNETWLIBC \
+-dNOTARGETOPENBSD -dNOTARGETOS2 -dNOTARGETPALMOS \
+-dNOTARGETQNX -dNOTARGETSUNOS -dNOTARGETSYMBIAN \
+-dNOTARGETWATCOM -dNOTARGETWDOSX -dNOTARGETWII \
+$(fpc_target_prune_win_defines) \
+-dNOTARGETANDROID -dNOTARGETGBA -dNOTARGETEMBEDDED"
 
   "$HOST_BUILD/bin/tp2cc" emit-all \
     $fpc_auto_defines \
