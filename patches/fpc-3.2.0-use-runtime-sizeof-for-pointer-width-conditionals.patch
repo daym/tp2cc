@@ -1,0 +1,128 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-31
+Subject: Use ordinary SizeOf for pointer-width branches
+License: expat
+
+FPC 3.2.0 uses {$if sizeof(...)} inside compiler implementation code to choose pointer-sized and host-sized executable branches.  These decisions are ordinary Pascal code decisions, so keep both branches visible to the parser and use normal SizeOf tests at runtime.
+
+--- a/compiler/hlcgobj.pas
++++ b/compiler/hlcgobj.pas
+@@ -3623,11 +3623,9 @@
+         maxdef:=fromdef
+       else
+         maxdef:=todef;
+-{$if sizeof(aintmax) = 8}
+-      if maxdef.size=8 then
++      if (sizeof(aintmax) = 8) and (maxdef.size=8) then
+         aintmax:=high(int64)
+       else
+-{$endif}
+         begin
+           aintmax:=high(longint);
+           maxdef:=u32inttype;
+--- a/compiler/entfile.pas
++++ b/compiler/entfile.pas
+@@ -852,11 +852,10 @@
+     result:=getqword
+   else result:=getdword;
+ {$else not generic_cpu}
+-  {$if sizeof(TConstPtrUInt)=8}
+-  result:=tconstptruint(getint64);
+-  {$else}
+-  result:=TConstPtrUInt(getlongint);
+-  {$endif}
++  if sizeof(TConstPtrUInt)=8 then
++    result:=tconstptruint(getint64)
++  else
++    result:=TConstPtrUInt(getlongint);
+ {$endif not generic_cpu}
+ end;
+ 
+@@ -1272,11 +1271,10 @@
+ 
+ procedure tentryfile.putptruint(v:TConstPtrUInt);
+ begin
+-  {$if sizeof(TConstPtrUInt)=8}
+-  putint64(int64(v));
+-  {$else}
+-  putlongint(longint(v));
+-  {$endif}
++  if sizeof(TConstPtrUInt)=8 then
++    putint64(int64(v))
++  else
++    putlongint(longint(v));
+ end;
+ 
+ 
+--- a/compiler/ncnv.pas
++++ b/compiler/ncnv.pas
+@@ -1053,19 +1053,23 @@
+         if left.nodetype=ordconstn then
+           begin
+             { check if we have a valid pointer constant (JM) }
+-            {$if sizeof(pointer) > sizeof(TConstPtrUInt)}
+-              {$if sizeof(TConstPtrUInt) = 4}
+-                  if (tordconstnode(left).value < int64(low(longint))) or
+-                     (tordconstnode(left).value > int64(high(cardinal))) then
+-                  CGMessage(parser_e_range_check_error);
+-              {$else} {$if sizeof(TConstPtrUInt) = 8}
+-                  if (tordconstnode(left).value < int64(low(int64))) or
+-                     (tordconstnode(left).value > int64(high(qword))) then
+-                  CGMessage(parser_e_range_check_error);
+-              {$else}
+-                internalerror(2001020801);
+-              {$endif} {$endif}
+-            {$endif}
++            if sizeof(pointer) > sizeof(TConstPtrUInt) then
++              begin
++                if sizeof(TConstPtrUInt) = 4 then
++                  begin
++                    if (tordconstnode(left).value < int64(low(longint))) or
++                       (tordconstnode(left).value > int64(high(cardinal))) then
++                      CGMessage(parser_e_range_check_error);
++                  end
++                else if sizeof(TConstPtrUInt) = 8 then
++                  begin
++                    if (tordconstnode(left).value < int64(low(int64))) or
++                       (tordconstnode(left).value > int64(high(qword))) then
++                      CGMessage(parser_e_range_check_error);
++                  end
++                else
++                  internalerror(2001020801);
++              end;
+ 
+             if not(nf_explicit in flags) then
+               if (tordconstnode(left).value.svalue=0) then
+--- a/compiler/ngtcon.pas
++++ b/compiler/ngtcon.pas
+@@ -792,20 +792,16 @@
+           begin
+             ftcb.queue_init(def);
+             ftcb.queue_typeconvn(ptrsinttype,def);
+-            {$if sizeof(TConstPtrUInt)=8}
+-              ftcb.queue_emit_ordconst(int64(tpointerconstnode(node).value),ptrsinttype);
+-            {$else}
+-              {$if sizeof(TConstPtrUInt)=4}
+-                ftcb.queue_emit_ordconst(longint(tpointerconstnode(node).value),ptrsinttype);
+-              {$else}
+-                {$if sizeof(TConstPtrUInt)=2}
+-                  ftcb.queue_emit_ordconst(smallint(tpointerconstnode(node).value),ptrsinttype);
+-                {$else}
+-                  {$if sizeof(TConstPtrUInt)=1}
+-                    ftcb.queue_emit_ordconst(shortint(tpointerconstnode(node).value),ptrsinttype);
+-                  {$else}
+-                    internalerror(200404122);
+-            {$endif} {$endif} {$endif} {$endif}
++            if sizeof(TConstPtrUInt)=8 then
++              ftcb.queue_emit_ordconst(int64(tpointerconstnode(node).value),ptrsinttype)
++            else if sizeof(TConstPtrUInt)=4 then
++              ftcb.queue_emit_ordconst(longint(tpointerconstnode(node).value),ptrsinttype)
++            else if sizeof(TConstPtrUInt)=2 then
++              ftcb.queue_emit_ordconst(smallint(tpointerconstnode(node).value),ptrsinttype)
++            else if sizeof(TConstPtrUInt)=1 then
++              ftcb.queue_emit_ordconst(shortint(tpointerconstnode(node).value),ptrsinttype)
++            else
++              internalerror(200404122);
+           end
+         { nil pointer ? }
+         else if node.nodetype=niln then
