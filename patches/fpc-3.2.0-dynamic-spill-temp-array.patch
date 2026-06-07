@@ -1,0 +1,209 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-31
+Subject: Use a dynamic array for spills
+License: expat
+
+`Tspill_temp_list = array[tsuperregister] of Treference` declares a static array spanning the full superregister range.  The allocator sized the storage for `maxreg` entries and then treated that buffer as the static array type.  Native FPC avoids copying the full static array in the reached paths, but that is a calling-convention dependency rather than a property of the source.
+
+Switch the spill-temp carrier to a dynamic array and use `SetLength` / `:=nil` instead of `allocmem` / `freemem`.
+
+--- a/compiler/rgobj.pas
++++ b/compiler/rgobj.pas
+@@ -129,8 +129,7 @@
+         reginfo: array[0..3] of tspillreginfo;
+       end;
+ 
+-      Pspill_temp_list=^Tspill_temp_list;
+-      Tspill_temp_list=array[tsuperregister] of Treference;
++      Tspill_temp_list=array of Treference;
+ 
+       { used to store where a register is spilled and what interferences it has at the point of being spilled }
+       tspillinfo = record
+@@ -215,7 +214,7 @@
+                                       const spilltemplist:Tspill_temp_list): boolean;virtual;
+         procedure insert_regalloc_info_all(list:TAsmList);
+         procedure determine_spill_registers(list:TAsmList;headertail:tai); virtual;
+-        procedure get_spill_temp(list:TAsmlist;spill_temps: Pspill_temp_list; supreg: tsuperregister);virtual;
++        procedure get_spill_temp(list:TAsmlist;var spill_temps: Tspill_temp_list; supreg: tsuperregister);virtual;
+       strict protected
+         { Highest register allocated until now.}
+         reginfo           : PReginfo;
+@@ -1742,7 +1741,7 @@
+       end;
+ 
+ 
+-    procedure trgobj.get_spill_temp(list: TAsmlist; spill_temps: Pspill_temp_list; supreg: tsuperregister);
++    procedure trgobj.get_spill_temp(list: TAsmlist; var spill_temps: Tspill_temp_list; supreg: tsuperregister);
+       var
+         size: ptrint;
+       begin
+@@ -1758,7 +1757,7 @@
+           size:=tcgsize2size[reg_cgsize(newreg(regtype,supreg,reginfo[supreg].subreg))];
+         tg.gettemp(list,
+                    size,size,
+-                   tt_noreuse,spill_temps^[supreg]);
++                   tt_noreuse,spill_temps[supreg]);
+       end;
+ 
+ 
+@@ -2046,7 +2045,7 @@
+         t : tsuperregister;
+         p,q : Tai;
+         regs_to_spill_set:Tsuperregisterset;
+-        spill_temps : ^Tspill_temp_list;
++        spill_temps : Tspill_temp_list;
+         supreg,x,y : tsuperregister;
+         templist : TAsmList;
+         j : Longint;
+@@ -2059,7 +2058,7 @@
+         sort_spillednodes;
+         for i:=first_imaginary to maxreg-1 do
+           exclude(reginfo[i].flags,ri_selected);
+-        spill_temps:=allocmem(sizeof(treference)*maxreg);
++        SetLength(spill_temps,maxreg);
+         supregset_reset(regs_to_spill_set,false,$ffff);
+ 
+ {$ifdef DEBUG_SPILLCOALESCE}
+@@ -2113,7 +2112,7 @@
+                       (spillinfo[get_alias(y)].spilled) and
+                       not(spillinfo[get_alias(y)].interferences[0,t]) then
+                       begin
+-                        spill_temps^[t]:=spillinfo[get_alias(y)].spilllocation;
++                        spill_temps[t]:=spillinfo[get_alias(y)].spilllocation;
+ {$ifdef DEBUG_SPILLCOALESCE}
+                         writeln('trgobj.spill_registers: Spill coalesce ',t,' to ',y);
+ {$endif DEBUG_SPILLCOALESCE}
+@@ -2127,7 +2126,7 @@
+ {$ifdef DEBUG_SPILLCOALESCE}
+                         writeln('trgobj.spill_registers: Spill coalesce ',t,' to ',x);
+ {$endif DEBUG_SPILLCOALESCE}
+-                        spill_temps^[t]:=spillinfo[get_alias(x)].spilllocation;
++                        spill_temps[t]:=spillinfo[get_alias(x)].spilllocation;
+                         getnewspillloc:=false;
+                         break;
+                       end;
+@@ -2137,13 +2136,13 @@
+                 get_spill_temp(templist,spill_temps,t);
+ 
+ {$ifdef DEBUG_SPILLCOALESCE}
+-              writeln('trgobj.spill_registers: Spill temp: ',getsupreg(spill_temps^[t].base),'+',spill_temps^[t].offset);
++              writeln('trgobj.spill_registers: Spill temp: ',getsupreg(spill_temps[t].base),'+',spill_temps[t].offset);
+ {$endif DEBUG_SPILLCOALESCE}
+ 
+               { set spilled only as soon as a temp is assigned, else a mov iregX,iregX results in a spill coalesce with itself }
+               spillinfo[t].spilled:=true;
+ 
+-              spillinfo[t].spilllocation:=spill_temps^[t];
++              spillinfo[t].spilllocation:=spill_temps[t];
+             end;
+         list.insertlistafter(headertai,templist);
+         templist.free;
+@@ -2187,7 +2186,7 @@
+                   begin
+ //                    writeln(gas_op2str[tai_cpu_abstract_sym(p).opcode]);
+                     current_filepos:=fileinfo;
+-                    if instr_spill_register(list,tai_cpu_abstract_sym(p),regs_to_spill_set,spill_temps^) then
++                    if instr_spill_register(list,tai_cpu_abstract_sym(p),regs_to_spill_set,spill_temps) then
+                       spill_registers:=true;
+                   end;
+             end;
+@@ -2197,8 +2196,8 @@
+         {Safe: this procedure is only called if there are spilled nodes.}
+         with spillednodes do
+           for i:=0 to length-1 do
+-            tg.ungettemp(list,spill_temps^[buf^[i]]);
+-        freemem(spill_temps);
++            tg.ungettemp(list,spill_temps[buf^[i]]);
++        spill_temps:=nil;
+       end;
+ 
+ 
+@@ -2580,4 +2579,3 @@
+       end;
+ 
+ end.
+-
+--- a/compiler/jvm/rgcpu.pas
++++ b/compiler/jvm/rgcpu.pas
+@@ -32,7 +32,7 @@
+       rgobj;
+ 
+     type
+-      tspilltemps = array[tregistertype] of ^Tspill_temp_list;
++      tspilltemps = array[tregistertype] of Tspill_temp_list;
+ 
+       { trgcpu }
+ 
+@@ -67,7 +67,7 @@
+           if instr.oper[l]^.typ=top_reg then
+             begin
+               reg:=instr.oper[l]^.reg;
+-              instr.loadref(l,spilltemps[getregtype(reg)]^[getsupreg(reg)]);
++              instr.loadref(l,spilltemps[getregtype(reg)][getsupreg(reg)]);
+             end;
+       end;
+ 
+@@ -346,8 +346,8 @@
+         { remove some simple useless store/load sequences }
+         remove_dummy_load_stores(list,headertai);
+         { allocate room to store the virtual register -> temp mapping }
+-        spill_temps[R_INTREGISTER]:=allocmem(sizeof(treference)*intrg.maxreg);
+-        spill_temps[R_FPUREGISTER]:=allocmem(sizeof(treference)*fprg.maxreg);
++        SetLength(spill_temps[R_INTREGISTER],intrg.maxreg);
++        SetLength(spill_temps[R_FPUREGISTER],fprg.maxreg);
+         { List to insert temp allocations into }
+         templist:=TAsmList.create;
+         { allocate/replace all registers }
+@@ -378,10 +378,10 @@
+                       ra_alloc :
+                         tg.gettemp(templist,
+                                    size,1,
+-                                   tt_regallocator,spill_temps[getregtype(reg)]^[getsupreg(reg)]);
++                                   tt_regallocator,spill_temps[getregtype(reg)][getsupreg(reg)]);
+                       ra_dealloc :
+                         begin
+-                          tg.ungettemp(templist,spill_temps[getregtype(reg)]^[getsupreg(reg)]);
++                          tg.ungettemp(templist,spill_temps[getregtype(reg)][getsupreg(reg)]);
+                           { don't invalidate the temp reference, may still be used one instruction
+                             later }
+                         end;
+@@ -401,8 +401,8 @@
+             end;
+             p:=Tai(p.next);
+           end;
+-        freemem(spill_temps[R_INTREGISTER]);
+-        freemem(spill_temps[R_FPUREGISTER]);
++        spill_temps[R_INTREGISTER]:=nil;
++        spill_temps[R_FPUREGISTER]:=nil;
+         templist.free;
+       end;
+ 
+--- a/compiler/llvm/rgllvm.pas
++++ b/compiler/llvm/rgllvm.pas
+@@ -44,7 +44,7 @@
+         function instr_get_oper_spilling_info(var regs: tspillregsinfo; const r: tsuperregisterset; instr: tai_cpu_abstract_sym; opidx: longint): boolean; override;
+         procedure substitute_spilled_registers(const regs: tspillregsinfo; instr: tai_cpu_abstract_sym; opidx: longint); override;
+         procedure determine_spill_registers(list: TasmList; headertai: tai); override;
+-        procedure get_spill_temp(list:TAsmlist;spill_temps: Pspill_temp_list; supreg: tsuperregister);override;
++        procedure get_spill_temp(list:TAsmlist;var spill_temps: Tspill_temp_list; supreg: tsuperregister);override;
+        strict protected
+        type
+          tregwrites = (rw_none, rw_one, rw_multiple);
+@@ -212,7 +212,7 @@
+        end;
+ 
+ 
+-    procedure trgllvm.get_spill_temp(list: TAsmlist; spill_temps: Pspill_temp_list; supreg: tsuperregister);
++    procedure trgllvm.get_spill_temp(list: TAsmlist; var spill_temps: Tspill_temp_list; supreg: tsuperregister);
+       var
+         supstart: tai;
+         i, paracnt: longint;
+@@ -253,7 +253,7 @@
+           end;
+         if not assigned(def) then
+           internalerror(2013110702);
+-        tg.gethltemp(list,def,def.size,tt_noreuse,spill_temps^[supreg]);
++        tg.gethltemp(list,def,def.size,tt_noreuse,spill_temps[supreg]);
+         { record for use in spill instructions }
+         reginfo[supreg].def:=def;
+       end;
