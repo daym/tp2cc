@@ -1,0 +1,43 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-05
+Subject: Use an explicit COFF bigobj header initializer
+License: expat
+
+TCoffObjInput.ReadObjData initializes a local COFF bigobj header with
+Default(tcoffbigobjheader).  tp2cc does not yet lower the generic Default(T)
+intrinsic, and this site only needs the all-zero record value before the
+object reader fills the header from the input stream.
+
+Use a typed local constant with an explicit zero record initializer so the
+source has the same initial value without requiring Default(T) support.
+
+--- a/compiler/ogcoff.pas
++++ b/compiler/ogcoff.pas
+@@ -2063,6 +2063,18 @@ unit ogcoff;
+ 
+     function  TCoffObjInput.ReadObjData(AReader:TObjectreader;out objdata:TObjData):boolean;
++      const
++        emptyboheader : tcoffbigobjheader = (
++          Sig1:0;
++          Sig2:0;
++          Version:0;
++          Machine:0;
++          TimeDateStame:0;
++          UUID:(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
++          unused:(0,0,0,0);
++          NumberOfSections:0;
++          PointerToSymbolTable:0;
++          NumberOfSymbols:0);
+       var
+         secalign : longint;
+         secofs,
+@@ -2082,7 +2094,7 @@ unit ogcoff;
+         FReader:=AReader;
+         InputFileName:=AReader.FileName;
+         objdata:=CObjData.Create(InputFileName);
+         result:=false;
+-        boheader:=default(tcoffbigobjheader);
++        boheader:=emptyboheader;
+         FCoffSyms:=TDynamicArray.Create(SymbolMaxGrow);
+         with TCoffObjData(objdata) do
+          begin
