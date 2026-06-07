@@ -9175,7 +9175,7 @@ void test_set_for_in_lowers_to_ordered_membership_scan() {
   CHECK(contains(out.impl, ".contains(tp2cc_item_"));
   CHECK(contains(out.impl, "p_j = tp2cc_item_"));
   CHECK(contains(out.impl, "if (tp2cc_item_"));
-  CHECK(contains(out.impl, " == 7) break;"));
+  CHECK(contains(out.impl, " == static_cast<t_treg>(7)) break;"));
   CHECK(contains(out.impl, "::rt::p_inc(tp2cc_item_"));
 }
 
@@ -9476,6 +9476,28 @@ void test_for_in_set_literal_assigns_to_distinct_ordinal_loop_var() {
   CHECK(contains(out.impl, "auto tp2cc_set_"));
   CHECK(contains(out.impl, "p_i = tp2cc_item_"));
   CHECK(contains(out.impl, ".contains(tp2cc_item_"));
+}
+
+void test_for_in_enum_set_literal_casts_loop_bounds_to_enum_type() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tasm = (as_none, as_gas, as_ggas, as_darwin);\n"
+      "procedure p;\n"
+      "implementation\n"
+      "procedure p;\n"
+      "var asmkind : tasm; total : longint;\n"
+      "begin\n"
+      "  total := 0;\n"
+      "  for asmkind in [as_gas, as_ggas, as_darwin] do\n"
+      "    total := total + ord(asmkind);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "t_tasm tp2cc_item_"));
+  CHECK(contains(out.impl, " = static_cast<t_tasm>(1);"));
+  CHECK(contains(out.impl, " == static_cast<t_tasm>(3)) break;"));
+  CHECK(contains(out.impl, "p_asmkind = tp2cc_item_"));
 }
 
 void test_overload_picks_set_difference_arg_against_typed_set_param() {
@@ -11488,6 +11510,7 @@ int main() {
   RUN_TEST(test_for_in_getenumerator_after_nested_type_section_resolves_nested_return);
   RUN_TEST(test_for_in_self_uses_current_class_getenumerator);
   RUN_TEST(test_for_in_set_literal_assigns_to_distinct_ordinal_loop_var);
+  RUN_TEST(test_for_in_enum_set_literal_casts_loop_bounds_to_enum_type);
   RUN_TEST(test_overload_picks_set_difference_arg_against_typed_set_param);
   RUN_TEST(test_property_read_lowers_to_getter_call);
   RUN_TEST(test_property_write_lowers_to_setter_call);

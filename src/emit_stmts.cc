@@ -1190,12 +1190,17 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_set(
   std::string set = "tp2cc_set_" + n;
   std::string item = "tp2cc_item_" + n;
   std::string elem_type = types_.type_to_cxx(*set_type.element);
+  std::string low_value = "static_cast<" + elem_type + ">(" + low + ")";
+  std::string high_value = "static_cast<" + elem_type + ">(" + high + ")";
 
   stmt_ops_.emitln("{");
   stmt_ops_.indent();
   stmt_ops_.emitln("auto " + set + " = (" +
                    stmt_ops_.expr_to_cxx(*f.in_expr) + ");");
-  stmt_ops_.emitln(elem_type + " " + item + " = " + low + ";");
+  // Set literals remember numeric ordinal bounds, but the loop item has the
+  // Pascal element type. Cast the bounds here so enum-set iteration does not
+  // depend on C++ accepting raw integers as enum values.
+  stmt_ops_.emitln(elem_type + " " + item + " = " + low_value + ";");
   stmt_ops_.emitln("while (true) {");
   stmt_ops_.indent();
   stmt_ops_.emitln("if (" + set + ".contains(" + item + ")) {");
@@ -1208,7 +1213,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_set(
   }
   stmt_ops_.dedent();
   stmt_ops_.emitln("}");
-  stmt_ops_.emitln("if (" + item + " == " + high + ") break;");
+  stmt_ops_.emitln("if (" + item + " == " + high_value + ") break;");
   stmt_ops_.emitln("::rt::p_inc(" + item + ");");
   stmt_ops_.dedent();
   stmt_ops_.emitln("}");
