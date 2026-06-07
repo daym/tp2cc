@@ -23,6 +23,8 @@ enum class UntypedArgKind : uint8_t { None, Const, Mutable };
 struct CallArgumentSlot {
   const ast::Expr* expr = nullptr;
   const ast::TypeExpr* param_type = nullptr;
+  std::string param_unit;
+  std::string param_declaring_type;
   UntypedArgKind untyped_arg = UntypedArgKind::None;
   bool mutable_ref_arg = false;
   bool defaulted = false;
@@ -60,7 +62,8 @@ class EmitCalls {
   CallArgumentPlan plan_call_arguments(
       const ast::ProcDecl* decl, const ast::Expr* callee,
       const std::vector<const ast::Expr*>& explicit_args,
-      std::string_view default_arg_unit = {});
+      std::string_view default_arg_unit = {},
+      std::string_view signature_declaring_type = {});
 
   // Lower one Pascal actual argument into the C++ form required by the
   // chosen formal parameter slot: open-array constructors, typed/mutable
@@ -70,7 +73,9 @@ class EmitCalls {
                              const ast::TypeExpr* param_type,
                              UntypedArgKind untyped_arg,
                              bool mutable_ref_arg,
-                             std::string_view default_arg_unit = {});
+                             std::string_view default_arg_unit = {},
+                             std::string_view param_unit = {},
+                             std::string_view param_declaring_type = {});
   std::string lower_call_arg(const CallArgumentSlot& slot,
                              std::string_view default_arg_unit = {});
 
@@ -79,7 +84,8 @@ class EmitCalls {
   // implicit sites share the exact same lowering as explicit `Call`.
   std::string lower_implicit_zero_arg_call(const std::string& callee_text,
                                            const ast::ProcDecl* decl,
-                                           std::string_view default_arg_unit);
+                                           std::string_view default_arg_unit,
+                                           std::string_view signature_declaring_type = {});
 
   // Pascal `obj.Free` is the null-safe TObject cleanup entrypoint, not a
   // normal instance call, and `TClass.Create` on a metaclass value allocates a
@@ -95,7 +101,8 @@ class EmitCalls {
   std::vector<CallArgumentSlot> append_default_call_slots(
       const ast::ProcDecl* decl, std::vector<CallArgumentSlot> slots);
   std::vector<CallArgumentSlot> call_slots_with_decl_param_info(
-      const ast::ProcDecl* decl, std::vector<CallArgumentSlot> slots);
+      const ast::ProcDecl* decl, std::vector<CallArgumentSlot> slots,
+      std::string_view param_unit, std::string_view param_declaring_type);
   static void mark_call_slot(std::vector<CallArgumentSlot>& slots,
                              std::size_t index, UntypedArgKind untyped_kind,
                              bool is_mutable,

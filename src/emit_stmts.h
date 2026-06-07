@@ -61,6 +61,7 @@ class EmitStmts {
   struct ForInEnumeratorProvider {
     std::string value_cxx;
     const ast::TypeExpr* type = nullptr;
+    const MethodSig* method = nullptr;
     // A class-scoped GetEnumerator can return a nested class by bare name.
     // Keep the provider owner so return-type lookup does not fall back to an
     // unrelated unit-level type with the same spelling.
@@ -106,7 +107,8 @@ class EmitStmts {
   std::optional<std::string> for_in_type_rhs_name(const ast::Expr& e);
   std::string for_in_class_type_name(
       const ast::TypeExpr* type,
-      std::string_view owner_class_name = std::string_view{});
+      std::string_view owner_class_name = std::string_view{},
+      const MethodSig* method = nullptr);
   const MethodSig* for_in_zero_arg_method(Location loc,
                                           const std::string& class_name,
                                           const std::string& method_name);

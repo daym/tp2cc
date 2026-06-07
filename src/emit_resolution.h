@@ -138,6 +138,7 @@ class EmitResolution {
     bool accepts_zero_args = false;
     std::string callee_unit;       // nonempty for namespace-spelled unit procs
     std::string declaration_unit;  // scope for default parameter expressions
+    std::string declaring_type;    // owning type scope for method signatures
     std::string return_type_name;  // for decl-less runtime builtins
   };
   struct ScoredCandidate {

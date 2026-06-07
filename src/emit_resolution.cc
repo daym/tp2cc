@@ -4,6 +4,7 @@
 #include <memory>
 #include <utility>
 
+#include "emit_signature_scope.h"
 #include "typereg.h"
 
 namespace tp2cc {
@@ -28,6 +29,7 @@ ResolvedCall unresolved_call(std::string member_name = {}) {
                       .defining_unit = {},
                       .member_name = std::move(member_name),
                       .default_arg_unit = {},
+                      .signature_declaring_type = {},
                       .return_type_name = {},
                       .needs_arg_casts = false,
                       .ambiguous = false};
@@ -55,7 +57,7 @@ std::vector<EmitResolution::AnyCand> EmitResolution::class_method_cands(
   for (const auto& ms : *set) {
     if (!ms.decl) continue;
     candidates.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args,
-                          {}, ms.defining_unit, {}});
+                          {}, ms.defining_unit, ms.declaring_type, {}});
   }
   return candidates;
 }
@@ -73,7 +75,7 @@ std::vector<EmitResolution::AnyCand> EmitResolution::metaclass_method_cands(
       continue;
     }
     candidates.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args,
-                          {}, ms.defining_unit, {}});
+                          {}, ms.defining_unit, ms.declaring_type, {}});
   }
   return candidates;
 }
@@ -90,7 +92,7 @@ std::vector<EmitResolution::AnyCand> EmitResolution::unit_export_proc_cands(
   if (!v) return candidates;
   for (const auto& pi : *v) {
     candidates.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-                          unit, pi.defining_unit, pi.return_type_name});
+                          unit, pi.defining_unit, {}, pi.return_type_name});
   }
   return candidates;
 }
@@ -113,7 +115,7 @@ EmitResolution::gather_callable_in_pascal_scope(
       if (!nested.decl) continue;
       candidates.push_back(
           {nested.decl, nested.param_count, nested.accepts_zero_args, {},
-           scope_.current_unit_name, {}});
+           scope_.current_unit_name, {}, {}});
     }
     return candidates;
   }
@@ -130,7 +132,8 @@ EmitResolution::gather_callable_in_pascal_scope(
     for (const auto& pi : *local) {
       candidates.push_back(
           {pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-           scope_.current_unit_name, pi.defining_unit, pi.return_type_name});
+           scope_.current_unit_name, pi.defining_unit, {},
+           pi.return_type_name});
     }
     return candidates;
   }
@@ -155,7 +158,7 @@ EmitResolution::gather_operator_in_pascal_scope(
     for (const auto& pi : *local) {
       candidates.push_back(
           {pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-           scope_.current_unit_name, pi.defining_unit, {}});
+           scope_.current_unit_name, pi.defining_unit, {}, {}});
     }
     return candidates;
   }
@@ -167,7 +170,7 @@ EmitResolution::gather_operator_in_pascal_scope(
     if (!ops) continue;
     for (const auto& pi : *ops) {
       candidates.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-                            *it, pi.defining_unit, {}});
+                            *it, pi.defining_unit, {}, {}});
     }
   }
   return candidates;
@@ -701,6 +704,7 @@ ResolvedCall EmitResolution::resolved_call_from_candidate(
       .defining_unit = chosen.callee_unit,
       .member_name = member_name,
       .default_arg_unit = chosen.declaration_unit,
+      .signature_declaring_type = chosen.declaring_type,
       .return_type_name = chosen.return_type_name,
       .needs_arg_casts = ran_type_picker,
       .ambiguous = false};
@@ -715,10 +719,12 @@ std::string EmitResolution::receiver_class_for_member_call(const Expr& callee) {
     if (!analysis_.identifier_is_shadowed_value(id.name) &&
         [&] {
           const TypeSymbol* symbol =
-              registry_->lookup_type_symbol(id.name, scope_.current_unit_name);
+              signature_type_symbol_for(registry_, scope_, id.name);
           return symbol && (symbol->class_info() || symbol->record_info());
         }()) {
-      return id.name;
+      const TypeSymbol* symbol =
+          signature_type_symbol_for(registry_, scope_, id.name);
+      return symbol ? type_symbol_pascal_path(*symbol) : id.name;
     }
     return analysis_.deduce_class_alias(*member.base);
   }
@@ -833,6 +839,7 @@ ResolvedCall EmitResolution::resolve_call(
                           .defining_unit = {},
                           .member_name = member_name,
                           .default_arg_unit = {},
+                          .signature_declaring_type = {},
                           .return_type_name = {},
                           .needs_arg_casts = false,
                           .ambiguous = true};
@@ -853,6 +860,7 @@ ResolvedCall EmitResolution::resolve_call(
                         .defining_unit = {},
                         .member_name = member_name,
                         .default_arg_unit = {},
+                        .signature_declaring_type = {},
                         .return_type_name = {},
                         .needs_arg_casts = true,
                         .ambiguous = false};

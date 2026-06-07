@@ -10,6 +10,7 @@
 #include "diag.h"
 #include "emit_analysis.h"
 #include "emit_resolution.h"
+#include "emit_signature_scope.h"
 #include "emit_storage.h"
 #include "emit_support.h"
 #include "emit_types.h"
@@ -76,6 +77,29 @@ std::string visible_type_unit_from(std::string_view type_name,
     return symbol->defining_unit;
   }
   return {};
+}
+
+std::shared_ptr<TyName> qualified_signature_type_name(
+    const TypeRegistry* registry, ScopeStateView& scope,
+    const TypeExpr* param_type, std::string_view param_unit,
+    std::string_view param_declaring_type) {
+  if (!param_type || param_type->kind != Kind::TyName) return nullptr;
+  const auto& tn = static_cast<const TyName&>(*param_type);
+  if (tn.name == "nil" || is_primitive_type(tn.name) ||
+      !runtime_named_type_cxx(tn.name).empty()) {
+    return nullptr;
+  }
+  ScopedSignatureLookupUnit signature_scope(scope, registry, param_unit,
+                                            param_declaring_type);
+  const TypeSymbol* symbol =
+      signature_type_symbol_for(registry, scope, tn.name);
+  if (!symbol || symbol->defining_unit.empty() ||
+      symbol->defining_unit == "__rt__") {
+    return nullptr;
+  }
+  auto qualified = std::make_shared<TyName>(tn);
+  qualified->name = type_symbol_unit_pascal_path(*symbol);
+  return qualified;
 }
 
 }  // namespace
@@ -207,14 +231,21 @@ std::vector<CallArgumentSlot> EmitCalls::append_default_call_slots(
 
   slots.reserve(flat_params.size());
   for (size_t i = slots.size(); i < flat_params.size(); ++i) {
-    slots.push_back(CallArgumentSlot{.expr = flat_params[i].default_value,
-                                     .defaulted = true});
+    slots.push_back(CallArgumentSlot{
+        .expr = flat_params[i].default_value,
+        .param_type = nullptr,
+        .param_unit = {},
+        .param_declaring_type = {},
+        .untyped_arg = UntypedArgKind::None,
+        .mutable_ref_arg = false,
+        .defaulted = true});
   }
   return slots;
 }
 
 std::vector<CallArgumentSlot> EmitCalls::call_slots_with_decl_param_info(
-    const ProcDecl* decl, std::vector<CallArgumentSlot> slots) {
+    const ProcDecl* decl, std::vector<CallArgumentSlot> slots,
+    std::string_view param_unit, std::string_view param_declaring_type) {
   if (!decl) return slots;
   size_t ai = 0;
   for (const auto& p : decl->params) {
@@ -232,6 +263,8 @@ std::vector<CallArgumentSlot> EmitCalls::call_slots_with_decl_param_info(
           (p.mode == Param::Const &&
            analysis_.const_param_needs_mutable_ref(p.type.get()));
       slot.param_type = p.type.get();
+      slot.param_unit = std::string(param_unit);
+      slot.param_declaring_type = std::string(param_declaring_type);
       ++ai;
     }
   }
@@ -288,11 +321,19 @@ EmitCalls::call_slots_with_procedural_callee_param_info(
 CallArgumentPlan EmitCalls::plan_call_arguments(
     const ProcDecl* decl, const Expr* callee,
     const std::vector<const Expr*>& explicit_args,
-    std::string_view default_arg_unit) {
+    std::string_view default_arg_unit,
+    std::string_view signature_declaring_type) {
   std::vector<CallArgumentSlot> slots;
   slots.reserve(explicit_args.size());
   for (const Expr* arg : explicit_args) {
-    slots.push_back(CallArgumentSlot{.expr = arg});
+    slots.push_back(CallArgumentSlot{
+        .expr = arg,
+        .param_type = nullptr,
+        .param_unit = {},
+        .param_declaring_type = {},
+        .untyped_arg = UntypedArgKind::None,
+        .mutable_ref_arg = false,
+        .defaulted = false});
   }
 
   slots = append_default_call_slots(decl, std::move(slots));
@@ -301,7 +342,9 @@ CallArgumentPlan EmitCalls::plan_call_arguments(
     slots = call_slots_with_builtin_helper_param_info(*callee, std::move(slots));
   }
   if (decl) {
-    slots = call_slots_with_decl_param_info(decl, std::move(slots));
+    slots = call_slots_with_decl_param_info(decl, std::move(slots),
+                                            default_arg_unit,
+                                            signature_declaring_type);
   } else if (callee) {
     slots =
         call_slots_with_procedural_callee_param_info(*callee, std::move(slots));
@@ -313,7 +356,15 @@ CallArgumentPlan EmitCalls::plan_call_arguments(
 std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
                                       UntypedArgKind untyped_arg,
                                       bool mutable_ref_arg,
-                                      std::string_view default_arg_unit) {
+                                      std::string_view default_arg_unit,
+                                      std::string_view param_unit,
+                                      std::string_view param_declaring_type) {
+  std::shared_ptr<TyName> qualified_signature_param_type =
+      qualified_signature_type_name(registry_, scope_, param_type, param_unit,
+                                    param_declaring_type);
+  if (qualified_signature_param_type) {
+    param_type = qualified_signature_param_type.get();
+  }
   std::shared_ptr<TyName> qualified_default_param_type;
   if (!default_arg_unit.empty() && default_arg_unit != scope_.current_unit_name &&
       param_type &&
@@ -541,17 +592,20 @@ std::string EmitCalls::lower_call_arg(const CallArgumentSlot& slot,
   if (!slot.expr) return {};
   return lower_call_arg(*slot.expr, slot.param_type, slot.untyped_arg,
                         slot.mutable_ref_arg,
-                        slot.defaulted ? default_arg_unit : std::string_view{});
+                        slot.defaulted ? default_arg_unit : std::string_view{},
+                        slot.param_unit, slot.param_declaring_type);
 }
 
 std::string EmitCalls::lower_implicit_zero_arg_call(
     const std::string& callee_text, const ProcDecl* decl,
-    std::string_view default_arg_unit) {
+    std::string_view default_arg_unit,
+    std::string_view signature_declaring_type) {
   if (!decl) return callee_text + "()";
 
   std::vector<const Expr*> args;
   CallArgumentPlan plan =
-      plan_call_arguments(decl, nullptr, args, default_arg_unit);
+      plan_call_arguments(decl, nullptr, args, default_arg_unit,
+                          signature_declaring_type);
   if (plan.slots.empty()) return callee_text + "()";
 
   std::string out = callee_text + "(";

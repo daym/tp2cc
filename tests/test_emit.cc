@@ -6484,12 +6484,142 @@ void test_nested_class_type_emits_qualified_owner_and_method_scope() {
       "end.\n");
   CHECK(contains(out.header, "struct t_touter : public ::rt::t_tobject {"));
   CHECK(contains(out.header, "struct t_tinner : public ::rt::t_tobject {"));
-  CHECK(contains(out.header, "void p_use(t_tinner* p_v);"));
+  CHECK(contains(out.header, "void p_use(t_touter::t_tinner* p_v);"));
   CHECK(contains(out.header,
                  "inline ::rt::t_tclass t_touter::t_tinner::p_classtype() const"));
   CHECK(contains(out.impl, "void t_touter::t_tinner::p_doit()"));
-  CHECK(contains(out.impl, "void t_touter::p_use(t_tinner* p_v)"));
+  CHECK(contains(out.impl, "void t_touter::p_use(t_touter::t_tinner* p_v)"));
   CHECK(contains(out.impl, "p_v->p_doit();"));
+}
+
+void test_inherited_class_method_signature_keeps_declaring_type_scope() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit child;\n"
+      "interface\n"
+      "uses base;\n"
+      "type\n"
+      "  tchild = class(thandler)\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n",
+      {{"base.pas",
+        "unit base;\n"
+        "interface\n"
+        "type\n"
+        "  thandler = class\n"
+        "  protected\n"
+        "    type\n"
+        "      tstate = record\n"
+        "        value : integer;\n"
+        "      end;\n"
+        "    class procedure bar(var s : tstate); virtual;\n"
+        "  end;\n"
+        "implementation\n"
+        "class procedure thandler.bar(var s : tstate);\n"
+        "begin\n"
+        "  s.value := 1;\n"
+        "end;\n"
+        "end.\n"}});
+  CHECK(error_count() == before);
+  CHECK(contains(out.header, "struct tp2cc_metaclass_t_tchild"));
+  CHECK(contains(out.header, "virtual void p_bar(::p_base::t_thandler::t_tstate &p_s) const"));
+}
+
+void test_class_method_signature_uses_own_nested_type_scope() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  thandler = class\n"
+      "    type\n"
+      "      ttemps = record value : integer; end;\n"
+      "      tstate = record code : integer; end;\n"
+      "    class procedure start(var t : ttemps); virtual;\n"
+      "    class procedure finish(const t : ttemps; out s : tstate); virtual;\n"
+      "  end;\n"
+      "implementation\n"
+      "class procedure thandler.start(var t : ttemps);\n"
+      "begin\n"
+      "  t.value := 1;\n"
+      "end;\n"
+      "class procedure thandler.finish(const t : ttemps; out s : tstate);\n"
+      "begin\n"
+      "  s.code := t.value;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.header, "static void p_start(t_thandler::t_ttemps &p_t);"));
+  CHECK(contains(out.header, "static void p_finish("));
+  CHECK(contains(out.header, "t_thandler::t_ttemps"));
+  CHECK(contains(out.header, "t_thandler::t_tstate &p_s"));
+}
+
+void test_imported_proc_formal_alias_uses_declaration_unit_at_call_site() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit nx;\n"
+      "interface\n"
+      "uses globals, cpuinfo;\n"
+      "procedure use;\n"
+      "implementation\n"
+      "procedure use;\n"
+      "var value_real : bestreal;\n"
+      "begin\n"
+      "  get_real_sign(value_real);\n"
+      "end;\n"
+      "end.\n",
+      {{"cpuinfo.pas",
+        "unit cpuinfo;\n"
+        "interface\n"
+        "type\n"
+        "  bestreal = double;\n"
+        "implementation\n"
+        "end.\n"},
+       {"globals.pas",
+        "unit globals;\n"
+        "interface\n"
+        "uses cpuinfo;\n"
+        "function get_real_sign(r : bestreal) : longint;\n"
+        "implementation\n"
+        "function get_real_sign(r : bestreal) : longint;\n"
+        "begin\n"
+        "  get_real_sign := 0;\n"
+        "end;\n"
+        "end.\n"}});
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "::p_globals::p_get_real_sign(p_value_real);"));
+}
+
+void test_metaclass_method_nested_formal_uses_declaring_type_at_call_site() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  thandler = class\n"
+      "    type\n"
+      "      ttemps = record value : integer; end;\n"
+      "    class procedure get_exception_temps(var t : ttemps); virtual;\n"
+      "  end;\n"
+      "  thandlerclass = class of thandler;\n"
+      "var\n"
+      "  c : thandlerclass;\n"
+      "procedure use;\n"
+      "implementation\n"
+      "class procedure thandler.get_exception_temps(var t : ttemps);\n"
+      "begin\n"
+      "  t.value := 1;\n"
+      "end;\n"
+      "procedure use;\n"
+      "var tmp : thandler.ttemps;\n"
+      "begin\n"
+      "  c.get_exception_temps(tmp);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "p_c->p_get_exception_temps(p_tmp);"));
 }
 
 void test_class_lifecycle_methods_run_from_unit_hooks() {
@@ -8814,6 +8944,7 @@ void test_for_in_dynamic_array_property_uses_value_length_bounds() {
 }
 
 void test_for_in_nested_getenumerator_return_type_resolves_in_owner() {
+  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -8845,7 +8976,58 @@ void test_for_in_nested_getenumerator_return_type_resolves_in_owner() {
       "    item := nil;\n"
       "end;\n"
       "end.\n");
+  CHECK(error_count() == before);
   CHECK(contains(out.impl, "p_agg->p_getenumerator()"));
+  CHECK(contains(out.impl, "->p_movenext()"));
+  CHECK(contains(out.impl, "p_item = tp2cc_enum_"));
+  CHECK(contains(out.impl, "->p_fcurrent"));
+}
+
+void test_for_in_getenumerator_after_nested_type_section_resolves_nested_return() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class end;\n"
+      "  taggregate = class\n"
+      "  public type\n"
+      "    tenumerator = class\n"
+      "    private\n"
+      "      fcurrent : titem;\n"
+      "    public\n"
+      "      constructor Create(data : taggregate);\n"
+      "      function MoveNext : boolean;\n"
+      "      property Current : titem read fcurrent;\n"
+      "    end;\n"
+      "  protected\n"
+      "    fcount : longint;\n"
+      "  public\n"
+      "    function GetEnumerator : tenumerator;\n"
+      "    procedure Convert;\n"
+      "  end;\n"
+      "implementation\n"
+      "constructor taggregate.tenumerator.Create(data : taggregate);\n"
+      "begin\n"
+      "  inherited Create;\n"
+      "end;\n"
+      "function taggregate.tenumerator.MoveNext : boolean;\n"
+      "begin\n"
+      "  Result := false;\n"
+      "end;\n"
+      "function taggregate.GetEnumerator : tenumerator;\n"
+      "begin\n"
+      "  Result := tenumerator.Create(self);\n"
+      "end;\n"
+      "procedure taggregate.Convert;\n"
+      "var item : titem;\n"
+      "begin\n"
+      "  for item in self do\n"
+      "    item := nil;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "this->p_getenumerator()"));
   CHECK(contains(out.impl, "->p_movenext()"));
   CHECK(contains(out.impl, "p_item = tp2cc_enum_"));
   CHECK(contains(out.impl, "->p_fcurrent"));
@@ -10820,6 +11002,10 @@ int main() {
   RUN_TEST(test_class_constructor_call_allocates_instance);
   RUN_TEST(test_nested_record_type_emits_inside_owner_scope);
   RUN_TEST(test_nested_class_type_emits_qualified_owner_and_method_scope);
+  RUN_TEST(test_inherited_class_method_signature_keeps_declaring_type_scope);
+  RUN_TEST(test_class_method_signature_uses_own_nested_type_scope);
+  RUN_TEST(test_imported_proc_formal_alias_uses_declaration_unit_at_call_site);
+  RUN_TEST(test_metaclass_method_nested_formal_uses_declaring_type_at_call_site);
   RUN_TEST(test_class_lifecycle_methods_run_from_unit_hooks);
   RUN_TEST(test_abstract_class_constructor_call_warns);
   RUN_TEST(test_class_constructor_trailing_default_argument_is_lowered);
@@ -10903,6 +11089,7 @@ int main() {
   RUN_TEST(test_for_in_open_array_uses_value_length_bounds);
   RUN_TEST(test_for_in_dynamic_array_property_uses_value_length_bounds);
   RUN_TEST(test_for_in_nested_getenumerator_return_type_resolves_in_owner);
+  RUN_TEST(test_for_in_getenumerator_after_nested_type_section_resolves_nested_return);
   RUN_TEST(test_for_in_self_uses_current_class_getenumerator);
   RUN_TEST(test_for_in_set_literal_assigns_to_distinct_ordinal_loop_var);
   RUN_TEST(test_overload_picks_set_difference_arg_against_typed_set_param);

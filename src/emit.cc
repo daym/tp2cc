@@ -21,6 +21,7 @@
 #include "emit_properties.h"
 #include "emit_procs.h"
 #include "emit_resolution.h"
+#include "emit_signature_scope.h"
 #include "emit_storage.h"
 #include "emit_stmts.h"
 #include "emit_types.h"
@@ -40,12 +41,12 @@ constexpr const char* kUnitFiniName = "tp2cc_unit_fini";
 constexpr const char* kPascalResultSlotName = "p_result";
 constexpr const char* kCtorStatusSlotName = "tp2cc_ctor_ok";
 
-std::string defining_unit_for_method_decl(
+const MethodSig* method_sig_for_decl(
     const std::vector<MethodSig>& methods, const ProcDecl* decl) {
   for (const auto& method : methods) {
-    if (method.decl.get() == decl) return method.defining_unit;
+    if (method.decl.get() == decl) return &method;
   }
-  return {};
+  return nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -549,9 +550,11 @@ struct Emitter : ResolveNameProvider,
   CallArgumentPlan plan_call_arguments(
       const ast::ProcDecl* decl, const ast::Expr* callee,
       const std::vector<const ast::Expr*>& explicit_args,
-      std::string_view default_arg_unit = {}) {
+      std::string_view default_arg_unit = {},
+      std::string_view signature_declaring_type = {}) {
     return calls_.plan_call_arguments(decl, callee, explicit_args,
-                                      default_arg_unit);
+                                      default_arg_unit,
+                                      signature_declaring_type);
   }
   std::string lower_call_arg(const ast::Expr& arg,
                              const ast::TypeExpr* param_type,
@@ -567,9 +570,11 @@ struct Emitter : ResolveNameProvider,
   }
   std::string lower_implicit_zero_arg_call(const std::string& callee_text,
                                            const ast::ProcDecl* decl,
-                                           std::string_view default_arg_unit) {
+                                           std::string_view default_arg_unit,
+                                           std::string_view signature_declaring_type = {}) {
     return calls_.lower_implicit_zero_arg_call(callee_text, decl,
-                                               default_arg_unit);
+                                               default_arg_unit,
+                                               signature_declaring_type);
   }
   std::string lower_property_read(Location where,
                                   const std::string& base_cxx,
@@ -1188,7 +1193,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       bool want_call = !is_callee_context_ && block_depth > 0 &&
                        rr.is_callable && rr.accepts_zero_args;
       return want_call ? lower_implicit_zero_arg_call(
-                             rr.cxx, rr.proc, rr.default_arg_unit)
+                             rr.cxx, rr.proc, rr.default_arg_unit,
+                             rr.signature_declaring_type)
                        : rr.cxx;
     }
     case Kind::Binary: {
@@ -1499,7 +1505,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             std::vector<const Expr*> no_args;
             ResolvedCall ctor_resolved = resolve_call(m, no_args);
             CallArgumentPlan ctor_plan = plan_call_arguments(
-                ctor_resolved.decl, &m, no_args, ctor_resolved.default_arg_unit);
+                ctor_resolved.decl, &m, no_args, ctor_resolved.default_arg_unit,
+                ctor_resolved.signature_declaring_type);
             if (auto ctor_call = maybe_lower_class_constructor_call(
                     m.loc, base_name, m.name, ctor_plan, ctor_resolved.decl)) {
               return *ctor_call;
@@ -1513,7 +1520,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             bool want_call = !is_callee_context_ &&
                              rr.is_callable && rr.accepts_zero_args;
             return want_call ? lower_implicit_zero_arg_call(
-                                   text, rr.proc, rr.default_arg_unit)
+                                   text, rr.proc, rr.default_arg_unit,
+                                   rr.signature_declaring_type)
                              : text;
           }
           std::string text =
@@ -1521,7 +1529,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           bool want_call = !is_callee_context_ &&
                            rr.is_callable && rr.accepts_zero_args;
           return want_call ? lower_implicit_zero_arg_call(
-                                 text, rr.proc, rr.default_arg_unit)
+                                 text, rr.proc, rr.default_arg_unit,
+                                 rr.signature_declaring_type)
                            : text;
         }
       }
@@ -1560,10 +1569,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
             PickResult picked = resolution_.pick_overload(candidates, {});
             if (!picked.ambiguous && picked.decl) {
-              const std::string unit =
-                  defining_unit_for_method_decl(*methods, picked.decl);
+              const MethodSig* sig = method_sig_for_decl(*methods, picked.decl);
               return !is_callee_context_
-                         ? lower_implicit_zero_arg_call(text, picked.decl, unit)
+                         ? lower_implicit_zero_arg_call(
+                               text, picked.decl,
+                               sig ? sig->defining_unit : std::string_view{},
+                               sig ? sig->declaring_type : std::string_view{})
                          : text;
             }
           }
@@ -1636,14 +1647,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
         PickResult picked = resolution_.pick_overload(candidates, {});
         if (!picked.ambiguous && picked.decl) {
-          std::string unit;
-          for (const auto& method : *methods) {
-            if (method.decl.get() == picked.decl) {
-              unit = method.defining_unit;
-              break;
-            }
-          }
-          text = lower_implicit_zero_arg_call(text, picked.decl, unit);
+          const MethodSig* sig = method_sig_for_decl(*methods, picked.decl);
+          text = lower_implicit_zero_arg_call(
+              text, picked.decl,
+              sig ? sig->defining_unit : std::string_view{},
+              sig ? sig->declaring_type : std::string_view{});
         }
       }
       return text;
@@ -2176,7 +2184,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                                              ctor_args);
             CallArgumentPlan ctor_plan =
                 plan_call_arguments(ctor_resolved.decl, cc.callee.get(),
-                                    ctor_args, ctor_resolved.default_arg_unit);
+                                    ctor_args, ctor_resolved.default_arg_unit,
+                                    ctor_resolved.signature_declaring_type);
             for (size_t i = 0; i < ctor_plan.slots.size(); ++i) {
               if (i) margs += ", ";
               margs += lower_call_arg(ctor_plan.slots[i],
@@ -2320,7 +2329,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       const ProcDecl* call_decl = resolved.decl;
       CallArgumentPlan call_plan = plan_call_arguments(
-          call_decl, c.callee.get(), call_args, resolved.default_arg_unit);
+          call_decl, c.callee.get(), call_args, resolved.default_arg_unit,
+          resolved.signature_declaring_type);
       if (c.args.empty() && c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         if (auto free_call = maybe_lower_class_free_member(*mem.base, mem.name)) {

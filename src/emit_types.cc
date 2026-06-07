@@ -396,12 +396,10 @@ std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
   }
   const std::string low = ascii_lower(name);
   if (const TypeSymbol* local = local_type_symbol(scope_, low)) {
-    // Pascal local and nested type declarations are lexical symbols. They must
-    // shadow same-named unit-level types when emitting a C++ type name, just as
-    // they do when analysis resolves a Pascal type expression.  This branch is
-    // reached through the local spelling, so emit the name visible in the
-    // current C++ scope instead of requalifying it through its owner path.
-    return type_mangle(local->name);
+    // Pascal local and nested type declarations are lexical symbols. Emitting
+    // the resolved symbol path keeps the same lookup result usable both inside
+    // the declaring C++ class and from namespace-scope helper declarations.
+    return type_symbol_struct_cxx(*local);
   }
   if (registry_) {
     if (const TypeSymbol* symbol =

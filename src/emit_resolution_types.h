@@ -64,6 +64,7 @@ struct ResolveResult {
   bool accepts_zero_args = false;        // rt builtin or decl permits zero args
   std::string return_type_name;          // Pascal-facing return type alias/name
   std::string default_arg_unit;          // declaration scope for defaults
+  std::string signature_declaring_type;  // owning type scope for method formals
   // Metadata for a bare field resolved through `with` where the `with`
   // receiver is byte-addressed storage. The ordinary `cxx` expression cannot
   // name such a field without first manufacturing a C++ aggregate reference.
@@ -78,10 +79,12 @@ struct ResolveResult {
                                 const ast::ProcDecl* proc,
                                 bool accepts_zero_args,
                                 std::string return_type_name,
-                                std::string default_arg_unit) {
+                                std::string default_arg_unit,
+                                std::string signature_declaring_type = {}) {
     return ResolveResult(kind, std::move(cxx), is_parameterless, true, proc,
                          accepts_zero_args, std::move(return_type_name),
-                         std::move(default_arg_unit), std::nullopt);
+                         std::move(default_arg_unit),
+                         std::move(signature_declaring_type), std::nullopt);
   }
 
   static ResolveResult bytewise_with_field_result(
@@ -89,9 +92,9 @@ struct ResolveResult {
       std::string base_type_cxx, std::string field_cxx, bool unaligned) {
     return ResolveResult(
         ResolvedKind::WithField, {}, false, false, nullptr, false, {}, {},
-        BytewiseWithField(field_type, std::move(base_ptr_cxx),
-                          std::move(base_type_cxx), std::move(field_cxx),
-                          unaligned));
+        {}, BytewiseWithField(field_type, std::move(base_ptr_cxx),
+                              std::move(base_type_cxx), std::move(field_cxx),
+                              unaligned));
   }
 
  private:
@@ -100,6 +103,7 @@ struct ResolveResult {
                 const ast::ProcDecl* proc_in, bool accepts_zero_args_in,
                 std::string return_type_name_in,
                 std::string default_arg_unit_in,
+                std::string signature_declaring_type_in,
                 std::optional<BytewiseWithField> bytewise_with_field_in)
       : kind(kind_in),
         cxx(std::move(cxx_in)),
@@ -109,6 +113,7 @@ struct ResolveResult {
         accepts_zero_args(accepts_zero_args_in),
         return_type_name(std::move(return_type_name_in)),
         default_arg_unit(std::move(default_arg_unit_in)),
+        signature_declaring_type(std::move(signature_declaring_type_in)),
         bytewise_with_field(std::move(bytewise_with_field_in)) {}
 };
 
@@ -233,6 +238,7 @@ struct ResolvedCall {
   // Default parameter expressions are lowered at the call site, but
   // unqualified names inside them resolve in the declaration's unit.
   std::string default_arg_unit;
+  std::string signature_declaring_type;
   // Metadata-only runtime helpers have no ProcDecl but still have a Pascal
   // result type visible to type analysis.
   std::string return_type_name;

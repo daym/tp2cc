@@ -12,6 +12,7 @@
 #include "emit_properties.h"
 #include "emit_resolution.h"
 #include "emit_resolution_types.h"
+#include "emit_signature_scope.h"
 #include "emit_storage.h"
 #include "emit_support.h"
 #include "emit_types.h"
@@ -582,7 +583,8 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
         CallArgumentPlan ctor_plan =
             calls_.plan_call_arguments(ctor_resolved.decl, cc.callee.get(),
                                        ctor_args,
-                                       ctor_resolved.default_arg_unit);
+                                       ctor_resolved.default_arg_unit,
+                                       ctor_resolved.signature_declaring_type);
         for (size_t i = 0; i < ctor_plan.slots.size(); ++i) {
           if (i) args += ", ";
           args += calls_.lower_call_arg(ctor_plan.slots[i],
@@ -830,10 +832,23 @@ std::optional<std::string> EmitStmts::for_in_type_rhs_name(const Expr& e) {
 }
 
 std::string EmitStmts::for_in_class_type_name(
-    const TypeExpr* type, std::string_view owner_class_name) {
+    const TypeExpr* type, std::string_view owner_class_name,
+    const MethodSig* method) {
   if (!type) return {};
   if (type->kind == Kind::TyName) {
     const std::string name = ascii_lower(static_cast<const TyName&>(*type).name);
+    if (registry_ && method) {
+      const std::string unit = method->defining_unit.empty()
+                                   ? scope_.current_unit_name
+                                   : method->defining_unit;
+      ScopedSignatureLookupUnit signature_scope(scope_, registry_, unit,
+                                                method->declaring_type);
+      const TypeSymbol* symbol =
+          signature_type_symbol_for(registry_, scope_, name);
+      if (symbol && symbol->class_info()) {
+        return type_symbol_unit_pascal_path(*symbol);
+      }
+    }
     if (!owner_class_name.empty() && name.find('.') == std::string::npos) {
       const std::string nested =
           std::string(owner_class_name) + "." + name;
@@ -918,8 +933,8 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_operator_enumerator(
   if (!op.decl) return ForInEmitResult::NotMatched;
 
   std::vector<const Expr*> op_args{f.in_expr.get()};
-  CallArgumentPlan op_plan =
-      calls_.plan_call_arguments(op.decl, nullptr, op_args);
+  CallArgumentPlan op_plan = calls_.plan_call_arguments(
+      op.decl, nullptr, op_args, op.defining_unit);
   std::string fn = pascal_operator_decl_name_to_cxx(*op.decl);
   if (!op.defining_unit.empty()) {
     fn = unit_namespace_prefix(op.defining_unit) + fn;
@@ -959,6 +974,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_own_get_enumerator(
       stmt_ops_.expr_to_cxx(*f.in_expr) + access + mangle(get->decl->name) +
           "()",
       get->decl->return_type.get(), f.loc, class_name);
+  provider.method = get;
   return emit_for_in_enumerator_provider(f, var, provider);
 }
 
@@ -966,7 +982,8 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
     const For& f, const std::string& var,
     const ForInEnumeratorProvider& provider) {
   const std::string enum_class =
-      for_in_class_type_name(provider.type, provider.owner_class_name);
+      for_in_class_type_name(provider.type, provider.owner_class_name,
+                             provider.method);
   if (enum_class.empty()) {
     stmt_ops_.report_error(provider.loc,
                            "enumerator provider must return an object or class");

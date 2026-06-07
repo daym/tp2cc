@@ -517,11 +517,25 @@ SymKind method_kind_for(const ProcDecl& pd) {
   return SymKind::Method;
 }
 
+std::string type_source_name(std::string_view name,
+                             const std::vector<std::string>& owner_path) {
+  std::string out;
+  for (const auto& owner : owner_path) {
+    if (!out.empty()) out += ".";
+    out += owner;
+  }
+  if (!out.empty()) out += ".";
+  out += lc(std::string(name));
+  return out;
+}
+
 MethodSig method_sig_for(std::string defining_unit,
+                         std::string declaring_type,
                          std::shared_ptr<const ProcDecl> method) {
   const auto& pd = *method;
   return MethodSig{.kind = method_kind_for(pd),
                    .defining_unit = std::move(defining_unit),
+                   .declaring_type = std::move(declaring_type),
                    .param_count = proc_param_count(pd.params),
                    .accepts_zero_args = proc_accepts_zero_args(pd),
                    .is_function = (pd.pkind == ProcKind::Function),
@@ -551,12 +565,13 @@ std::unordered_set<std::string> class_enum_members(const TyObject& to) {
 }
 
 std::unordered_map<std::string, std::vector<MethodSig>> class_methods(
-    const std::string& defining_unit, const TyObject& to) {
+    const std::string& defining_unit, std::string_view declaring_type,
+    const TyObject& to) {
   std::unordered_map<std::string, std::vector<MethodSig>> methods;
   for (const auto& m : to.members) {
     if (m.kind == ObjectMemberKind::Method && m.method) {
       methods[lc(m.method->name)].push_back(
-          method_sig_for(defining_unit, m.method));
+          method_sig_for(defining_unit, std::string(declaring_type), m.method));
     }
   }
   return methods;
@@ -595,6 +610,7 @@ std::unordered_map<std::string, std::vector<MethodSig>> interface_methods(
     methods[lc(pd.name)].push_back(MethodSig{
         .kind = SymKind::Method,
         .defining_unit = defining_unit,
+        .declaring_type = {},
         .param_count = proc_param_count(pd.params),
         .accepts_zero_args = proc_accepts_zero_args(pd),
         .is_function = (pd.pkind == ProcKind::Function),
@@ -606,7 +622,9 @@ std::unordered_map<std::string, std::vector<MethodSig>> interface_methods(
 }
 
 ClassInfo class_info_for(const std::string& unit, const std::string& name,
+                         const std::vector<std::string>& owner_path,
                          const TyObject& to) {
+  const std::string declaring_type = type_source_name(name, owner_path);
   return ClassInfo{.name = name,
                    .parent = lc(to.parent),
                    .defining_unit = unit,
@@ -614,7 +632,7 @@ ClassInfo class_info_for(const std::string& unit, const std::string& name,
                    .is_abstract = to.is_abstract,
                    .is_forward = to.is_forward,
                    .fields = class_fields(to),
-                   .methods = class_methods(unit, to),
+                   .methods = class_methods(unit, declaring_type, to),
                    .properties = class_properties(to),
                    .nested_types = {},
                    .enum_members = class_enum_members(to),
@@ -695,7 +713,7 @@ TypeSymbol make_type_symbol_for_type_with_owner(
       AliasInfo{.defining_unit = low_unit, .target = type};
   switch (type_symbol_kind_for_decl(*type)) {
     case TypeSymbolKind::Class:
-      payload = class_info_for(low_unit, low_name,
+      payload = class_info_for(low_unit, low_name, owner_path,
                                static_cast<const TyObject&>(*type));
       break;
     case TypeSymbolKind::Record:
@@ -857,6 +875,7 @@ MethodSig runtime_method_sig(std::string name, ProcKind pkind,
               : class_method ? SymKind::ClassMethod
                              : SymKind::Method,
       .defining_unit = "__rt__",
+      .declaring_type = {},
       .param_count = param_count,
       .accepts_zero_args = (param_count == 0),
       .is_function = (pkind == ProcKind::Function),

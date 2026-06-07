@@ -70,7 +70,8 @@ static std::optional<ResolveResult> resolve_method_overloads(
                                    method->param_count == 0,
                                    method->decl.get(),
                                    /*accepts_zero_args=*/true, {},
-                                   method->defining_unit);
+                                   method->defining_unit,
+                                   method->declaring_type);
   }
   return ResolveResult::callable(kind, std::move(cxx),
                                  /*is_parameterless=*/false, nullptr,
