@@ -1,0 +1,29 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-31
+Subject: Use portable bit scan in ispowerof2
+License: expat
+
+`ispowerof2` already proves that exactly one bit is set, so compute the bit index with ordinary shifts.
+
+--- a/compiler/cutils.pas
++++ b/compiler/cutils.pas
+@@ -954,10 +954,18 @@
+     {
+       return if value is a power of 2. And if correct return the power
+     }
++      var
++        i : longint;
+       begin
+         if (value <= 0) or (value and (value - 1) <> 0) then
+           exit(false);
+-        power:=BsfQWord(value);
++        i:=0;
++        while (value and 1)=0 do
++          begin
++            value:=value shr 1;
++            inc(i);
++          end;
++        power:=i;
+         result:=true;
+       end;
+ 
