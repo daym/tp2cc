@@ -3530,6 +3530,27 @@ void test_sizeof_qualified_type_uses_type_name_not_value_namespace() {
   CHECK(contains(out.impl, "sizeof(::p_macho::p_counter)"));
 }
 
+void test_sizeof_pointer_type_deref_uses_pointee_type_not_value_deref() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  bestreal = extended;\n"
+      "  pbestreal = ^bestreal;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var n : longint; p : pbestreal;\n"
+      "begin\n"
+      "  n := sizeof(pbestreal^);\n"
+      "  n := sizeof(p^);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "static_cast<int32_t>(sizeof(t_bestreal))") ||
+        contains(out.impl, "static_cast<int32_t>(sizeof(long double))"));
+  CHECK(!contains(out.impl, "tp2cc_deref"));
+}
+
 void test_unit_type_value_duplicates_across_sections_report_error() {
   int before = error_count();
   (void)compile_snippet_with_registry(
@@ -10878,6 +10899,7 @@ int main() {
   RUN_TEST(test_local_enum_members_do_not_fall_back_to_runtime);
   RUN_TEST(test_sizeof_visible_type_uses_type_name_not_identifier_lookup);
   RUN_TEST(test_sizeof_qualified_type_uses_type_name_not_value_namespace);
+  RUN_TEST(test_sizeof_pointer_type_deref_uses_pointee_type_not_value_deref);
   RUN_TEST(test_unit_type_value_duplicates_across_sections_report_error);
   RUN_TEST(test_sizeof_own_implementation_private_qualified_names);
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);

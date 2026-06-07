@@ -391,6 +391,7 @@ struct Emitter : ResolveNameProvider,
   const TypeSymbol* visible_type_symbol(std::string_view type_name);
   bool visible_type_name_for_intrinsic(std::string_view type_name);
   bool visible_class_or_record_type_name(std::string_view type_name);
+  std::optional<std::string> sizeof_type_operand_cxx(const ast::Expr& expr);
   std::optional<std::string> unit_qualified_type_name(const ast::Expr& expr);
   tp2cc::ResolvedCall resolve_new_constructor_call(
       const ast::Expr& pointer_type_expr, const ast::Expr& ctor_callee,
@@ -911,6 +912,39 @@ bool Emitter::visible_class_or_record_type_name(std::string_view type_name) {
   if (class_info_for_type_name(type_name)) return true;
   const TypeSymbol* symbol = visible_type_symbol(type_name);
   return symbol && (symbol->class_info() || symbol->record_info());
+}
+
+std::optional<std::string> Emitter::sizeof_type_operand_cxx(
+    const Expr& expr) {
+  if (expr.kind == Kind::Ident) {
+    const auto& tn = static_cast<const Ident&>(expr);
+    if (visible_type_name_for_intrinsic(tn.name)) {
+      return type_name_text_to_cxx(tn.name);
+    }
+    return std::nullopt;
+  }
+
+  if (auto qualified = unit_qualified_type_name(expr)) {
+    return type_name_text_to_cxx(*qualified);
+  }
+
+  if (expr.kind != Kind::Deref) return std::nullopt;
+  const auto& deref = static_cast<const Deref&>(expr);
+  const TypeExpr* ptr_type = nullptr;
+  if (deref.operand->kind == Kind::Ident) {
+    ptr_type = lookup_named_type_expr(
+        static_cast<const Ident&>(*deref.operand).name);
+  } else if (auto qualified = unit_qualified_type_name(*deref.operand)) {
+    ptr_type = lookup_named_type_expr(*qualified);
+  }
+  if (!ptr_type) ptr_type = type_for_overload(*deref.operand);
+  ptr_type = canonicalize_type(ptr_type);
+  if (!ptr_type || ptr_type->kind != Kind::TyPointer) return std::nullopt;
+
+  const TypeExpr* pointee =
+      static_cast<const TyPointer&>(*ptr_type).target.get();
+  if (!pointee) return std::nullopt;
+  return type_to_cxx(*pointee);
 }
 
 Emitter::PascalTypecastTarget Emitter::classify_pascal_typecast_target(
@@ -1874,16 +1908,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // `tostr(sizeof(aint))` ends up ambiguous against the
           // qword/int64/longint overload set.
           std::string inner;
-          if (c.args[0]->kind == Kind::Ident) {
-            const auto& tn = static_cast<const Ident&>(*c.args[0]);
-            if (visible_type_name_for_intrinsic(tn.name)) {
-              inner = "sizeof(" + type_name_text_to_cxx(tn.name) + ")";
-            }
-          }
-          if (inner.empty()) {
-            if (auto qualified = unit_qualified_type_name(*c.args[0])) {
-              inner = "sizeof(" + type_name_text_to_cxx(*qualified) + ")";
-            }
+          if (auto type_operand = sizeof_type_operand_cxx(*c.args[0])) {
+            inner = "sizeof(" + *type_operand + ")";
           }
           if (inner.empty()) inner = "sizeof(" + expr_to_cxx(*c.args[0]) + ")";
           return "static_cast<int32_t>(" + inner + ")";
