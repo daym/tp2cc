@@ -5434,15 +5434,17 @@ void test_sysutils_setdirseparators_resolves_qualified_and_unqualified() {
       "procedure demo;\n"
       "implementation\n"
       "procedure demo;\n"
-      "var s : string;\n"
+      "var s : string; p : pchar;\n"
       "begin\n"
       "  s := SetDirSeparators(s);\n"
       "  s := SysUtils.SetDirSeparators(s);\n"
+      "  s := SysUtils.StrPas(p);\n"
       "end;\n"
       "end.\n");
   CHECK(error_count() == before);
   CHECK(contains(out.impl, "::rt::p_setdirseparators("));
   CHECK(contains(out.impl, "::p_sysutils::p_setdirseparators("));
+  CHECK(contains(out.impl, "::p_sysutils::p_strpas("));
 }
 
 void test_prefetch_intrinsic_statement_is_noop() {

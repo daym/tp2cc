@@ -173,6 +173,7 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
         "p_stringofchar",
         "p_comparetext",
         "p_ansicomparefilename",
+        "p_strpas",
     };
     for (const char* name : kSysutilsValueAliases) {
       h << "using ::rt::" << name << ";\n";
