@@ -1,0 +1,145 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-31
+Subject: Avoid packed lvalue hazards in the translated bootstrap
+License: expat
+
+tp2cc must not bind C++ references to packed storage for indexed aggregate elements or mutable lvalues.
+
+Keep serialized PE/COFF records packed, but route `DataDirectory` indexing through an explicitly typed pointer carrier.  For in-memory-only optimizer metadata, remove unnecessary packing from `TInsProp` and `tinsentry`.
+
+--- a/compiler/ogcoff.pas
++++ b/compiler/ogcoff.pas
+@@ -44,6 +44,8 @@
+          vaddr : longword;
+          size  : longword;
+        end;
++       tcoffpedatadirarray = array[0..PE_DATADIR_ENTRIES-1] of tcoffpedatadir;
++       ptcoffpedatadirarray = ^tcoffpedatadirarray;
+        tcoffheader = packed record
+          mach   : word;
+          nsects : word;
+@@ -2479,12 +2481,14 @@
+         procedure UpdateDataDir(const secname:string;idx:longint);
+         var
+           exesec : TExeSection;
++          datadirs : ptcoffpedatadirarray;
+         begin
+           exesec:=FindExeSection(secname);
+           if assigned(exesec) then
+             begin
+-              peoptheader.DataDirectory[idx].vaddr:=exesec.mempos;
+-              peoptheader.DataDirectory[idx].size:=exesec.Size;
++              datadirs:=ptcoffpedatadirarray(@peoptheader.DataDirectory);
++              datadirs^[idx].vaddr:=exesec.mempos;
++              datadirs^[idx].size:=exesec.Size;
+            end;
+         end;
+ 
+@@ -2493,6 +2497,7 @@
+           exesec: TExeSection;
+           objsec, iat_start, iat_end, ilt_start: TObjSection;
+           i: longint;
++          datadirs : ptcoffpedatadirarray;
+         begin
+           exesec:=FindExeSection('.idata');
+           if exesec=nil then
+@@ -2518,16 +2523,17 @@
+                   end;
+             end;
+ 
+-          peoptheader.DataDirectory[PE_DATADIR_IDATA].vaddr:=exesec.mempos;
++          datadirs:=ptcoffpedatadirarray(@peoptheader.DataDirectory);
++          datadirs^[PE_DATADIR_IDATA].vaddr:=exesec.mempos;
+           if Assigned(ilt_start) then
+-            peoptheader.DataDirectory[PE_DATADIR_IDATA].size:=ilt_start.mempos-exesec.mempos
++            datadirs^[PE_DATADIR_IDATA].size:=ilt_start.mempos-exesec.mempos
+           else  { should not happen }
+-            peoptheader.DataDirectory[PE_DATADIR_IDATA].size:=exesec.Size;
++            datadirs^[PE_DATADIR_IDATA].size:=exesec.Size;
+ 
+           if Assigned(iat_start) and Assigned(iat_end) then
+             begin
+-              peoptheader.DataDirectory[PE_DATADIR_IMPORTADDRESSTABLE].vaddr:=iat_start.mempos;
+-              peoptheader.DataDirectory[PE_DATADIR_IMPORTADDRESSTABLE].size:=iat_end.mempos-iat_start.mempos;
++              datadirs^[PE_DATADIR_IMPORTADDRESSTABLE].vaddr:=iat_start.mempos;
++              datadirs^[PE_DATADIR_IMPORTADDRESSTABLE].size:=iat_end.mempos-iat_start.mempos;
+             end;
+         end;
+ 
+@@ -2538,6 +2544,7 @@
+           tlssymbol: TObjSymbol;
+           callbackexesymbol: TExeSymbol;
+           //callbacksymbol: TObjSymbol;
++          datadirs : ptcoffpedatadirarray;
+         begin
+           { according to GNU ld,
+             the callback routines should be placed into .CRT$XL*
+@@ -2553,9 +2560,10 @@
+           if assigned(tlsexesymbol) then
+             begin
+               tlssymbol:=tlsexesymbol.ObjSymbol;
+-              peoptheader.DataDirectory[PE_DATADIR_TLS].vaddr:=tlssymbol.address;
++              datadirs:=ptcoffpedatadirarray(@peoptheader.DataDirectory);
++              datadirs^[PE_DATADIR_TLS].vaddr:=tlssymbol.address;
+               { sizeof(TlsDirectory) is different on host and target when cross-compiling }
+-              peoptheader.DataDirectory[PE_DATADIR_TLS].size:=TLSDIR_SIZE;
++              datadirs^[PE_DATADIR_TLS].size:=TLSDIR_SIZE;
+               if IsSharedLibrary then
+                 begin
+                   { Here we should reset __FPC_tls_callbacks value to nil }
+@@ -3211,6 +3219,7 @@
+         i         : longint;
+         found     : boolean;
+         sechdr    : tCoffSecHdr;
++        datadirs  : ptcoffpedatadirarray;
+ {$ifdef win32}
+         p : pointer;
+ {$endif win32}
+@@ -3252,6 +3261,7 @@
+           end;
+         { Read optheader }
+         DLLreader.Read(peheader,sizeof(tcoffpeoptheader));
++        datadirs:=ptcoffpedatadirarray(@peheader.DataDirectory);
+         { Section headers }
+         found:=false;
+         for i:=1 to header.nsects do
+@@ -3261,8 +3271,8 @@
+                 Comment(V_Error,'Error reading coff file '+DLLName);
+                 exit;
+               end;
+-            if (sechdr.rvaofs<=peheader.DataDirectory[PE_DATADIR_EDATA].vaddr) and
+-               (peheader.DataDirectory[PE_DATADIR_EDATA].vaddr<sechdr.rvaofs+sechdr.vsize) then
++            if (sechdr.rvaofs<=datadirs^[PE_DATADIR_EDATA].vaddr) and
++               (datadirs^[PE_DATADIR_EDATA].vaddr<sechdr.rvaofs+sechdr.vsize) then
+               begin
+                 found:=true;
+                 break;
+@@ -3274,7 +3284,7 @@
+             exit;
+           end;
+         { Process edata }
+-        DLLReader.Seek(sechdr.datapos+peheader.DataDirectory[PE_DATADIR_EDATA].vaddr-sechdr.rvaofs);
++        DLLReader.Seek(sechdr.datapos+datadirs^[PE_DATADIR_EDATA].vaddr-sechdr.rvaofs);
+         DLLReader.Read(expdir,sizeof(expdir));
+         for i:=0 to expdir.NumNames-1 do
+           begin
+--- a/compiler/x86/aasmcpu.pas
++++ b/compiler/x86/aasmcpu.pas
+@@ -251,7 +251,7 @@
+         Ch_MRAX, Ch_MRCX, Ch_MRDX, Ch_MRBX, Ch_MRSP, Ch_MRBP, Ch_MRSI, Ch_MRDI
+       );
+ 
+-      TInsProp = packed record
++      TInsProp = record
+         Ch : set of TInsChange;
+       end;
+ 
+@@ -386,7 +386,7 @@
+       IF_PLEVEL=[IF_8086..IF_NEC]; { mask for processor level }
+ 
+     type
+-      tinsentry=packed record
++      tinsentry=record
+         opcode  : tasmop;
+         ops     : byte;
+         optypes : array[0..max_operands-1] of longint;
