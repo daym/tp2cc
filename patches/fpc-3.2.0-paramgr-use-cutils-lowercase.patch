@@ -1,0 +1,28 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-05
+Subject: Use compiler-local string lowercase in paramgr
+License: expat
+
+paramgr lowercases explicit register names before looking them up.  Use the
+compiler-local cutils.lower string helper for that operation so the translated
+bootstrap does not depend on an RTL string helper.
+
+--- a/compiler/paramgr.pas
++++ b/compiler/paramgr.pas
+@@ -186,7 +186,7 @@ implementation
+ 
+     uses
+-       systems,
++       systems,cutils,
+        cgobj,tgobj,
+        defutil,verbose,
+        hlcgobj;
+@@ -582,7 +582,7 @@ implementation
+         paraloc^.loc:=LOC_REGISTER;
+         paraloc^.size:=def_cgsize(parasym.vardef);
+         paraloc^.def:=parasym.vardef;
+-        paraloc^.register:=std_regnum_search(lowercase(s));
++        paraloc^.register:=std_regnum_search(lower(s));
+ 
+         { copy to callee side }
+         parasym.paraloc[calleeside].add_location^:=paraloc^;
