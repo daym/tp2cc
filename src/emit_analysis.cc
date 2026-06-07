@@ -1276,8 +1276,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       // like `if ready and flag then` lower correctly before the ident emitter
       // auto-calls a parameterless `ready`.
       auto nit = scope_.local_nested_fns.find(id.name);
-      if (nit != scope_.local_nested_fns.end() && nit->second.is_function) {
-        return nit->second.return_type;
+      if (nit != scope_.local_nested_fns.end() && nit->second.size() == 1 &&
+          nit->second.front().is_function) {
+        return nit->second.front().return_type;
       }
       if (scope_.local_untyped_params.count(id.name)) {
         // Untyped Pascal params are raw storage slots. Treat the identifier
@@ -1600,8 +1601,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           return deduce_type(*c.args[0]);
         }
         auto nit = scope_.local_nested_fns.find(id.name);
-        if (nit != scope_.local_nested_fns.end() && nit->second.is_function) {
-          return nit->second.return_type;
+        if (nit != scope_.local_nested_fns.end() && nit->second.size() == 1 &&
+            nit->second.front().is_function) {
+          return nit->second.front().return_type;
         }
         const TypeSymbol* symbol =
             registry_ ? registry_->lookup_type_symbol(id.name,

@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -74,6 +75,33 @@ static std::optional<ResolveResult> resolve_method_overloads(
   return ResolveResult::callable(kind, std::move(cxx),
                                  /*is_parameterless=*/false, nullptr,
                                  /*accepts_zero_args=*/false, {}, {});
+}
+
+static std::optional<ResolveResult> resolve_nested_overloads(
+    const std::vector<ScopeStateView::NestedFn>& overloads,
+    std::string_view current_unit_name) {
+  if (overloads.empty()) return std::nullopt;
+  const ScopeStateView::NestedFn* zero_arg = nullptr;
+  for (const auto& overload : overloads) {
+    if (!overload.accepts_zero_args) continue;
+    if (zero_arg) {
+      return ResolveResult::callable(
+          ResolvedKind::NestedFn, overloads.front().cxx_name,
+          /*is_parameterless=*/false, nullptr,
+          /*accepts_zero_args=*/false, {}, {});
+    }
+    zero_arg = &overload;
+  }
+  if (zero_arg) {
+    return ResolveResult::callable(
+        ResolvedKind::NestedFn, zero_arg->cxx_name, zero_arg->param_count == 0,
+        zero_arg->decl, zero_arg->accepts_zero_args, {},
+        std::string(current_unit_name));
+  }
+  return ResolveResult::callable(
+      ResolvedKind::NestedFn, overloads.front().cxx_name,
+      /*is_parameterless=*/false, nullptr,
+      /*accepts_zero_args=*/false, {}, {});
 }
 
 EmitLookup::EmitLookup(const TypeRegistry* registry, ScopeStateView& scope,
@@ -248,10 +276,10 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   {
     auto nit = scope_.local_nested_fns.find(name);
     if (nit != scope_.local_nested_fns.end()) {
-      return ResolveResult::callable(
-          ResolvedKind::NestedFn, mangle(name),
-          nit->second.param_count == 0, nit->second.decl,
-          nit->second.accepts_zero_args, {}, scope_.current_unit_name);
+      if (auto resolved =
+              resolve_nested_overloads(nit->second, scope_.current_unit_name)) {
+        return *resolved;
+      }
     }
   }
 

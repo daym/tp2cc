@@ -59,7 +59,8 @@ class EmitProcs {
     std::unordered_set<std::string> local_scope;
     std::unordered_map<std::string, const ast::TypeExpr*> local_types;
     std::unordered_map<std::string, const ast::ConstDecl*> local_consts;
-    std::unordered_map<std::string, ScopeStateView::NestedFn> local_nested_fns;
+    std::unordered_map<std::string, std::vector<ScopeStateView::NestedFn>>
+        local_nested_fns;
     std::unordered_set<std::string> local_nested_forwards;
     std::unordered_set<std::string> local_untyped_params;
     TypeScopeFrame* type_scope = nullptr;
@@ -72,6 +73,7 @@ class EmitProcs {
   void setup_proc_frame(const ast::ProcDecl& pd, bool nested_lambda);
   bool insert_proc_local_name(Location where, const std::string& name);
   void seed_proc_scope(const ast::ProcDecl& pd);
+  std::string nested_proc_cxx_name(const ast::ProcDecl& pd) const;
   std::string nested_proc_signature_types(const ast::ProcDecl& pd);
 
   ScopeStateView& scope_;

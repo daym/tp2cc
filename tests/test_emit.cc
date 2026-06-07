@@ -2058,6 +2058,60 @@ void test_nested_function_uses_own_result_and_outer_name() {
   CHECK(contains(out.impl, "p_result = 123;"));
 }
 
+void test_overloaded_nested_functions_get_distinct_local_callees() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function outer : longint;\n"
+      "implementation\n"
+      "function outer : longint;\n"
+      "  function pick(n : longint) : longint;\n"
+      "  begin\n"
+      "    pick := n;\n"
+      "  end;\n"
+      "  function pick(b : boolean) : longint;\n"
+      "  begin\n"
+      "    if b then pick := 1 else pick := 0;\n"
+      "  end;\n"
+      "begin\n"
+      "  outer := pick(5) + pick(true);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::std::function<int32_t(int32_t)> p_pick;"));
+  CHECK(contains(out.impl, "::std::function<int32_t(bool)> p_pick_ov1;"));
+  CHECK(contains(out.impl, "p_pick(static_cast<int32_t>(5))"));
+  CHECK(contains(out.impl, "p_pick_ov1(static_cast<bool>(true))"));
+}
+
+void test_nested_forward_decl_does_not_create_duplicate_overload_candidate() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function outer : longint;\n"
+      "implementation\n"
+      "function outer : longint;\n"
+      "var\n"
+      "  t : longint;\n"
+      "  function read_expr(var exprType : longint; eval : boolean) : longint; forward;\n"
+      "  function read_factor(var factorType : longint; eval : boolean) : longint;\n"
+      "  begin\n"
+      "    read_factor := read_expr(factorType, eval);\n"
+      "  end;\n"
+      "  function read_expr(var exprType : longint; eval : boolean) : longint;\n"
+      "  begin\n"
+      "    read_expr := exprType;\n"
+      "  end;\n"
+      "begin\n"
+      "  t := 3;\n"
+      "  outer := read_factor(t, true);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::std::function<int32_t(int32_t&, bool)> p_read_expr;"));
+  CHECK(!contains(out.impl, "p_read_expr_ov1"));
+  CHECK(contains(out.impl, "p_read_expr(p_factortype, p_eval)"));
+}
+
 void test_try_finally_uses_scope_exit_guard() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -10584,6 +10638,8 @@ int main() {
   RUN_TEST(test_local_result_name_is_rejected_in_function_body);
   RUN_TEST(test_nested_procedure_can_assign_enclosing_result);
   RUN_TEST(test_nested_function_uses_own_result_and_outer_name);
+  RUN_TEST(test_overloaded_nested_functions_get_distinct_local_callees);
+  RUN_TEST(test_nested_forward_decl_does_not_create_duplicate_overload_candidate);
   RUN_TEST(test_try_finally_uses_scope_exit_guard);
   RUN_TEST(test_try_except_raises_and_matches_exception_class);
   RUN_TEST(test_raise_at_address_and_frame_metadata_is_accepted_and_discarded);

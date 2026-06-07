@@ -129,11 +129,10 @@ struct Emitter : ResolveNameProvider,
   std::unordered_set<std::string> local_untyped_params;
 
   // Nested procs/functions declared in the current scope. For each
-  // name, store the parameter count and whether it returns a value.
-  // Used so bare references to a parameterless nested `function`
-  // auto-call (the lambda itself is `std::function<T()>`, not a `T`).
+  // Pascal name, store the overload set. Pascal overload identity is the
+  // declaration, while C++ local lambda variables must each have a unique name.
   using NestedFn = ScopeStateView::NestedFn;
-  std::unordered_map<std::string, NestedFn> local_nested_fns;
+  std::unordered_map<std::string, std::vector<NestedFn>> local_nested_fns;
   std::unordered_set<std::string> local_nested_forwards;
   std::vector<std::string> current_fn_param_names;
 
@@ -1043,6 +1042,15 @@ std::string Emitter::format_resolved_callee(
       !resolved.defining_unit.empty()) {
     return unit_namespace_prefix(resolved.defining_unit) +
            mangle(resolved.member_name);
+  }
+  if (resolved.decl && callee_ast.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(callee_ast);
+    auto it = local_nested_fns.find(id.name);
+    if (it != local_nested_fns.end()) {
+      for (const auto& overload : it->second) {
+        if (overload.decl == resolved.decl) return overload.cxx_name;
+      }
+    }
   }
   bool prev_callee_ctx = is_callee_context_;
   is_callee_context_ = true;

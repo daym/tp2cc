@@ -72,6 +72,7 @@ struct ScopeStateView {
     bool is_function = false;
     const ast::TypeExpr* return_type = nullptr;
     const ast::ProcDecl* decl = nullptr;
+    std::string cxx_name;
   };
 
   // `with X do` contributes an already-lowered receiver expression plus the
@@ -157,7 +158,7 @@ struct ScopeStateView {
   std::unordered_map<std::string, const ast::TypeExpr*>& local_types;
   std::unordered_map<std::string, const ast::ConstDecl*>& local_consts;
   std::unordered_set<std::string>& local_untyped_params;
-  std::unordered_map<std::string, NestedFn>& local_nested_fns;
+  std::unordered_map<std::string, std::vector<NestedFn>>& local_nested_fns;
   std::unordered_set<std::string>& local_nested_forwards;
   TypeScopeFrame*& type_scope;
   std::unordered_set<std::string>& local_const_params;

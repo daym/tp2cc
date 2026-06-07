@@ -138,7 +138,7 @@ class ScopedTypeBoundUnit {
   std::unordered_map<std::string, const TypeExpr*> saved_local_types_;
   std::unordered_map<std::string, const ConstDecl*> saved_local_consts_;
   std::unordered_set<std::string> saved_local_untyped_params_;
-  std::unordered_map<std::string, ScopeStateView::NestedFn>
+  std::unordered_map<std::string, std::vector<ScopeStateView::NestedFn>>
       saved_local_nested_fns_;
   std::unordered_set<std::string> saved_local_nested_forwards_;
   std::unordered_set<std::string> saved_local_const_params_;

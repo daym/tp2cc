@@ -222,16 +222,38 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
     } else if (l->kind == Kind::ProcDecl) {
       const auto& npd = static_cast<const ProcDecl&>(*l);
       if (!insert_proc_local_name(npd.loc, npd.name)) continue;
+      if (npd.modifiers.is_forward) {
+        // A Pascal `forward` local routine is completed by the later body in
+        // the same block. Only the body is callable; registering both would
+        // create duplicate overload candidates for recursive parser helpers.
+        continue;
+      }
       size_t param_count = 0;
       for (const auto& p : npd.params) param_count += p.names.size();
-      scope_.local_nested_fns[npd.name] = ScopeStateView::NestedFn{
+      auto& overloads = scope_.local_nested_fns[npd.name];
+      const size_t overload_index = overloads.size();
+      overloads.push_back(ScopeStateView::NestedFn{
           .param_count = param_count,
           .accepts_zero_args = calls_.proc_accepts_zero_args(npd),
           .is_function = (npd.pkind == ProcKind::Function),
           .return_type = npd.return_type.get(),
-          .decl = &npd};
+          .decl = &npd,
+          .cxx_name = overload_index == 0
+                          ? mangle(npd.name)
+                          : mangle(npd.name) + "_ov" +
+                                std::to_string(overload_index)});
     }
   }
+}
+
+std::string EmitProcs::nested_proc_cxx_name(const ProcDecl& pd) const {
+  auto it = scope_.local_nested_fns.find(pd.name);
+  if (it != scope_.local_nested_fns.end()) {
+    for (const auto& overload : it->second) {
+      if (overload.decl == &pd) return overload.cxx_name;
+    }
+  }
+  return mangle(pd.name);
 }
 
 std::string EmitProcs::nested_proc_signature_types(const ProcDecl& pd) {
@@ -322,9 +344,9 @@ void EmitProcs::emit_nested_proc_lambda(const ProcDecl& pd) {
           : std::string("void");
   const std::string sig_params = nested_proc_signature_types(pd);
 
-  const std::string lname = mangle(pd.name);
+  const std::string lname = nested_proc_cxx_name(pd);
   // Forward-declare the std::function so the lambda can recurse by name.
-  if (!scope_.local_nested_forwards.count(pd.name)) {
+  if (!scope_.local_nested_forwards.count(lname)) {
     emit_ops_.emitln("::std::function<" + ret + "(" + sig_params + ")> " +
                      lname + ";");
   }

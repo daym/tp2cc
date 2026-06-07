@@ -109,10 +109,11 @@ EmitResolution::gather_callable_in_pascal_scope(
   }
   if (auto nit = scope_.local_nested_fns.find(name);
       nit != scope_.local_nested_fns.end()) {
-    if (nit->second.decl) {
+    for (const auto& nested : nit->second) {
+      if (!nested.decl) continue;
       candidates.push_back(
-          {nit->second.decl, nit->second.param_count,
-           nit->second.accepts_zero_args, {}, scope_.current_unit_name, {}});
+          {nested.decl, nested.param_count, nested.accepts_zero_args, {},
+           scope_.current_unit_name, {}});
     }
     return candidates;
   }

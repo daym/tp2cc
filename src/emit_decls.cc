@@ -76,6 +76,17 @@ const TypeSymbol* visible_type_symbol(const TypeRegistry* registry,
                   : nullptr;
 }
 
+std::string nested_proc_cxx_name(const ScopeStateView& scope,
+                                 const ProcDecl& pd) {
+  auto it = scope.local_nested_fns.find(pd.name);
+  if (it != scope.local_nested_fns.end()) {
+    for (const auto& overload : it->second) {
+      if (overload.decl == &pd) return overload.cxx_name;
+    }
+  }
+  return mangle(pd.name);
+}
+
 std::string type_symbol_source_name(const TypeSymbol& symbol) {
   std::string out;
   for (const auto& owner : symbol.owner_path) {
@@ -1403,9 +1414,10 @@ void EmitDecls::emit_decl(const Decl& d, bool in_header) {
               sig_params += pt;
             }
           }
+          const std::string lname = nested_proc_cxx_name(scope_, pd);
           emit_ops_.emitln("::std::function<" + ret + "(" + sig_params +
-                           ")> " + mangle(pd.name) + ";");
-          scope_.local_nested_forwards.insert(pd.name);
+                           ")> " + lname + ";");
+          scope_.local_nested_forwards.insert(lname);
         } else {
           emit_proc_decl_signature(pd);
         }
