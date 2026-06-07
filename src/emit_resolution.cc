@@ -58,8 +58,14 @@ std::vector<EmitResolution::AnyCand> EmitResolution::class_method_cands(
   if (!set) return candidates;
   for (const auto& ms : *set) {
     if (!ms.decl) continue;
+    // Pascal constructor calls are expressions whose result is the constructed
+    // class reference. The emitted constructor method body itself returns
+    // bool, so call-type deduction needs this Pascal-facing result metadata.
+    std::string return_type_name =
+        ms.kind == SymKind::Constructor ? cls : std::string{};
     candidates.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args,
-                          {}, ms.defining_unit, ms.declaring_type, {}});
+                          {}, ms.defining_unit, ms.declaring_type,
+                          std::move(return_type_name)});
   }
   return candidates;
 }
@@ -76,8 +82,14 @@ std::vector<EmitResolution::AnyCand> EmitResolution::metaclass_method_cands(
     if (ms.kind != SymKind::Constructor && ms.kind != SymKind::ClassMethod) {
       continue;
     }
+    // Pascal constructor calls are expressions whose result is the constructed
+    // class reference. The emitted constructor method body itself returns
+    // bool, so call-type deduction needs this Pascal-facing result metadata.
+    std::string return_type_name =
+        ms.kind == SymKind::Constructor ? cls : std::string{};
     candidates.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args,
-                          {}, ms.defining_unit, ms.declaring_type, {}});
+                          {}, ms.defining_unit, ms.declaring_type,
+                          std::move(return_type_name)});
   }
   return candidates;
 }

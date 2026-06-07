@@ -6905,6 +6905,31 @@ void test_class_self_and_free_use_pointer_semantics() {
   CHECK(!contains(out.impl, "this->p_next->p_free()"));
 }
 
+void test_class_constructor_result_free_uses_pointer_semantics() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  ttemp = class\n"
+      "  end;\n"
+      "  tdelete = class\n"
+      "    constructor create(t : ttemp);\n"
+      "  end;\n"
+      "procedure run(temp : ttemp);\n"
+      "implementation\n"
+      "constructor tdelete.create(t : ttemp);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run(temp : ttemp);\n"
+      "begin\n"
+      "  tdelete.create(temp).free;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::t_tobject::p_free("));
+  CHECK(contains(out.impl, "->p_create(p_temp)"));
+  CHECK(!contains(out.impl, ".p_free"));
+}
+
 void test_metaclass_alias_and_concrete_class_value_lowering() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -9387,6 +9412,8 @@ void test_for_in_getenumerator_after_nested_type_section_resolves_nested_return(
   CHECK(contains(out.impl, "->p_movenext()"));
   CHECK(contains(out.impl, "p_item = tp2cc_enum_"));
   CHECK(contains(out.impl, "->p_fcurrent"));
+  CHECK(contains(out.header,
+                 "struct tp2cc_metaclass_t_taggregate_t_tenumerator;"));
 }
 
 void test_for_in_self_uses_current_class_getenumerator() {
@@ -11373,6 +11400,7 @@ int main() {
   RUN_TEST(test_implicit_tobject_inherited_constructor_autocalls);
   RUN_TEST(test_inherited_destroy_autocalls_through_non_overriding_parent);
   RUN_TEST(test_class_self_and_free_use_pointer_semantics);
+  RUN_TEST(test_class_constructor_result_free_uses_pointer_semantics);
   RUN_TEST(test_metaclass_alias_and_concrete_class_value_lowering);
   RUN_TEST(test_metaclass_virtual_class_method_dispatch);
   RUN_TEST(test_bare_inherited_in_function_value_context_calls_current_parent_method);

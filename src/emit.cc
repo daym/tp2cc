@@ -391,6 +391,7 @@ struct Emitter : ResolveNameProvider,
   const TypeSymbol* visible_type_symbol(std::string_view type_name);
   bool visible_type_name_for_intrinsic(std::string_view type_name);
   bool visible_class_or_record_type_name(std::string_view type_name);
+  std::string visible_class_or_record_type_path(std::string_view type_name);
   std::optional<std::string> sizeof_type_operand_cxx(const ast::Expr& expr);
   std::optional<std::string> unit_qualified_type_name(const ast::Expr& expr);
   tp2cc::ResolvedCall resolve_new_constructor_call(
@@ -912,6 +913,16 @@ bool Emitter::visible_class_or_record_type_name(std::string_view type_name) {
   if (class_info_for_type_name(type_name)) return true;
   const TypeSymbol* symbol = visible_type_symbol(type_name);
   return symbol && (symbol->class_info() || symbol->record_info());
+}
+
+std::string Emitter::visible_class_or_record_type_path(
+    std::string_view type_name) {
+  const TypeSymbol* symbol = visible_type_symbol(type_name);
+  if (symbol && (symbol->class_info() || symbol->record_info())) {
+    return type_symbol_pascal_path(*symbol);
+  }
+  return class_info_for_type_name(type_name) ? std::string(type_name)
+                                             : std::string{};
 }
 
 std::optional<std::string> Emitter::sizeof_type_operand_cxx(
@@ -1527,14 +1538,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       if (registry && base_ident) {
         const std::string& base_name = *base_ident;
+        const std::string base_type_path =
+            analysis_.identifier_is_shadowed_value(base_name)
+                ? std::string{}
+                : visible_class_or_record_type_path(base_name);
         // `TClass.method` -- Pascal's way to call a specific
         // class's method (typically the parent's version from
         // inside an override). Emit `TClass::method`. This is a
         // type-name interpretation, so a parameter/local/current-field named
         // `TClass` must block it: in Pascal `tsym.typedef` is member access on
         // value `tsym` even when a visible type named `tsym` also exists.
-        if (!analysis_.identifier_is_shadowed_value(base_name) &&
-            visible_class_or_record_type_name(base_name)) {
+        if (!base_type_path.empty()) {
           if (!is_callee_context_) {
             std::vector<const Expr*> no_args;
             ResolvedCall ctor_resolved = resolve_call(m, no_args);
@@ -1542,14 +1556,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                 ctor_resolved.decl, &m, no_args, ctor_resolved.default_arg_unit,
                 ctor_resolved.signature_declaring_type);
             if (auto ctor_call = maybe_lower_class_constructor_call(
-                    m.loc, base_name, m.name, ctor_plan, ctor_resolved.decl)) {
+                    m.loc, base_type_path, m.name, ctor_plan,
+                    ctor_resolved.decl)) {
               return *ctor_call;
             }
           }
           ResolveResult rr =
-              resolve_name(m.name, QualifierKind::Class, base_name);
+              resolve_name(m.name, QualifierKind::Class, base_type_path);
           if (ascii_lower(m.name) == "classname") {
-            std::string text = metaclass_value_fn_cxx(base_name) +
+            std::string text = metaclass_value_fn_cxx(base_type_path) +
                                "()->" + mangle(m.name);
             bool want_call = !is_callee_context_ &&
                              rr.is_callable && rr.accepts_zero_args;
@@ -1559,7 +1574,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                              : text;
           }
           std::string text =
-              named_type_struct_cxx(base_name) + "::" + mangle(m.name);
+              named_type_struct_cxx(base_type_path) + "::" + mangle(m.name);
           bool want_call = !is_callee_context_ &&
                            rr.is_callable && rr.accepts_zero_args;
           return want_call ? lower_implicit_zero_arg_call(
@@ -2367,10 +2382,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         if (mem.base->kind == Kind::Ident && registry) {
           const auto& id = static_cast<const Ident&>(*mem.base);
-          if (!analysis_.identifier_is_shadowed_value(id.name) &&
-              registry->has_class(id.name, current_unit_name)) {
+          const std::string class_type_path =
+              analysis_.identifier_is_shadowed_value(id.name)
+                  ? std::string{}
+                  : visible_class_or_record_type_path(id.name);
+          if (!class_type_path.empty()) {
             if (auto ctor_call = maybe_lower_class_constructor_call(
-                    c.loc, id.name, mem.name, call_plan, resolved.decl)) {
+                    c.loc, class_type_path, mem.name, call_plan,
+                    resolved.decl)) {
               return *ctor_call;
             }
           }
@@ -2615,6 +2634,49 @@ void Emitter::emit_forward_struct_decls(
 
 // Scan the decl list and emit forward declarations for every record/object/interface
 // type, so a pointer type that textually precedes its target still compiles.
+static std::string nested_pascal_type_path(std::string_view owner,
+                                           std::string_view name) {
+  std::string out(owner);
+  if (!out.empty()) out += ".";
+  out += ascii_lower(name);
+  return out;
+}
+
+static void emit_reference_metaclass_forward_decls_impl(
+    Emitter& e, const TypeDecl& td, std::string_view pascal_path,
+    bool emit_current) {
+  if (!td.type) return;
+  if (td.type->kind == Kind::TyObject) {
+    const auto& to = static_cast<const TyObject&>(*td.type);
+    if (to.is_reference_type && emit_current) {
+      // Metaclass carriers live at namespace scope even for Pascal nested
+      // classes. The nested class body friends the carrier value function, so
+      // the carrier struct has to be declared before the owner body is emitted.
+      e.emitln("struct " + e.metaclass_struct_cxx(pascal_path) + ";");
+    }
+    for (const auto& member : to.members) {
+      if (member.kind != ObjectMemberKind::Type || !member.type_decl) {
+        continue;
+      }
+      const std::string nested_path =
+          nested_pascal_type_path(pascal_path, member.type_decl->name);
+      emit_reference_metaclass_forward_decls_impl(
+          e, *member.type_decl, nested_path, /*emit_current=*/true);
+    }
+    return;
+  }
+  if (td.type->kind == Kind::TyRecord) {
+    const auto& tr = static_cast<const TyRecord&>(*td.type);
+    for (const auto& nested : tr.nested_types) {
+      if (!nested) continue;
+      const std::string nested_path =
+          nested_pascal_type_path(pascal_path, nested->name);
+      emit_reference_metaclass_forward_decls_impl(
+          e, *nested, nested_path, /*emit_current=*/true);
+    }
+  }
+}
+
 static void emit_forward_struct_decls_impl(Emitter& e,
                                            const std::vector<DeclPtr>& decls) {
   for (const auto& d : decls) {
@@ -2628,6 +2690,8 @@ static void emit_forward_struct_decls_impl(Emitter& e,
           static_cast<const TyObject&>(*td.type).is_reference_type) {
         e.emitln("struct tp2cc_metaclass_" + type_mangle(td.name) + ";");
       }
+      emit_reference_metaclass_forward_decls_impl(
+          e, td, ascii_lower(td.name), /*emit_current=*/false);
     }
   }
 }
