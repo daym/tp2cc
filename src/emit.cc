@@ -487,6 +487,8 @@ struct Emitter : ResolveNameProvider,
   bool expr_is_untyped_storage_ref(const ast::Expr& e) {
     return storage_.expr_is_untyped_storage_ref(e);
   }
+  std::optional<std::string> untyped_pointer_deref_address(
+      const ast::Expr& e);
   bool expr_is_charish(const ast::Expr& e) {
     const ast::TypeExpr* t = type_for_overload(e);
     if (!t) return false;
@@ -875,6 +877,18 @@ std::string Emitter::single_call_arg_cxx(const Call& c) {
   // Callers only use this in one-argument intrinsic/typecast branches; a
   // fallback value would hide a violated parser/emitter invariant.
   return expr_to_cxx(*c.args[0]);
+}
+
+std::optional<std::string> Emitter::untyped_pointer_deref_address(
+    const Expr& e) {
+  if (e.kind != Kind::Deref) return std::nullopt;
+  const auto& d = static_cast<const Deref&>(e);
+  const TypeExpr* operand_ty = canonicalize_type(type_for_overload(*d.operand));
+  if (!tyname_is(operand_ty, "pointer")) return std::nullopt;
+  // Pascal `pointer` has no pointee type. In `T(p^)`, the explicit typecast
+  // supplies that missing type, so value lowering must load T's bytes from p
+  // instead of first emitting `p^` as the runtime's byte-sized placeholder.
+  return expr_to_cxx(*d.operand);
 }
 
 bool Emitter::expr_is_const_untyped_storage_arg(const Expr& e) {
@@ -1999,6 +2013,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "::rt::tp2cc_reinterpret_load<" + primitive_type_cxx(n) +
                    ">(" + expr_to_cxx(*peeled) + ")";
           }
+          if (!storage_view_context) {
+            if (auto ptr = untyped_pointer_deref_address(*c.args[0])) {
+              return "::rt::tp2cc_reinterpret_load<" + primitive_type_cxx(n) +
+                     ">(" + *ptr + ")";
+            }
+          }
           if (const PrimitiveInfo* info = primitive_info(n);
               info && (info->int_kind == PrimitiveIntKind::Signed ||
                        info->int_kind == PrimitiveIntKind::Unsigned)) {
@@ -2101,6 +2121,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "((" + type_name_text_to_cxx(n) + ")(" + source + "))";
           }
           if (target.known && target.kind == PascalTypecastKind::Set) {
+            if (!storage_view_context) {
+              if (auto ptr = untyped_pointer_deref_address(*c.args[0])) {
+                return "::rt::tp2cc_reinterpret_load<" +
+                       type_to_cxx(*target.type) + ">(" + *ptr + ")";
+              }
+            }
             return "::rt::tp2cc_set_cast<" + type_to_cxx(*target.type) + ">(" +
                    single_call_arg_cxx(c) + ")";
           }
@@ -2139,6 +2165,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                                           storage_view->source_cxx,
                                           storage_view->pointee_view);
             }
+            if (!storage_view_context) {
+              if (auto ptr = untyped_pointer_deref_address(*c.args[0])) {
+                return "::rt::tp2cc_reinterpret_load<" +
+                       type_name_text_to_cxx(n) + ">(" + *ptr + ")";
+              }
+            }
             if (target.type && target.type->kind == Kind::TyArray) {
               const auto& arr = static_cast<const TyArray&>(*target.type);
               const TypeExpr* elem =
@@ -2169,6 +2201,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                     maybe_convert_const_int_expr(*c.args[0], &scalar_target,
                                                  true)) {
               return *lit;
+            }
+            if (!storage_view_context) {
+              if (auto ptr = untyped_pointer_deref_address(*c.args[0])) {
+                return "::rt::tp2cc_reinterpret_load<" +
+                       type_name_text_to_cxx(n) + ">(" + *ptr + ")";
+              }
             }
             return "((" + type_name_text_to_cxx(n) + ")(" +
                    single_call_arg_cxx(c) + "))";

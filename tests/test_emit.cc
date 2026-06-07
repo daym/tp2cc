@@ -5273,6 +5273,30 @@ void test_explicit_set_cast_uses_runtime_helper() {
   CHECK(contains(out.impl, "::rt::tp2cc_set_cast<::rt::tp2cc_Set<uint8_t>>(p_small)"));
 }
 
+void test_set_typecast_from_pointer_deref_loads_target_set() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnodeflag = (nf_one, nf_two);\n"
+      "  tnodeflags = set of tnodeflag;\n"
+      "procedure reset(arg : pointer);\n"
+      "implementation\n"
+      "procedure reset(arg : pointer);\n"
+      "var\n"
+      "  flags : tnodeflags;\n"
+      "begin\n"
+      "  flags := tnodeflags(arg^);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_flags = ::rt::tp2cc_reinterpret_load<"));
+  CHECK(contains(out.impl, "tp2cc_Set<t_tnodeflag>") ||
+        contains(out.impl, "t_tnodeflags"));
+  CHECK(contains(out.impl, ">(p_arg);"));
+  CHECK(!contains(out.impl,
+                  "::rt::tp2cc_set_cast<t_tnodeflags>(::rt::tp2cc_deref(p_arg))"));
+}
+
 void test_named_set_const_assigns_to_compatible_set_via_runtime_helper() {
   auto out = compile_snippet_with_registry(
       "unit cpupara;\n"
@@ -11462,6 +11486,7 @@ int main() {
   RUN_TEST(test_sysutils_executeprocess_accepts_execute_flags);
   RUN_TEST(test_ansicomparefilename_resolves_explicitly);
   RUN_TEST(test_explicit_set_cast_uses_runtime_helper);
+  RUN_TEST(test_set_typecast_from_pointer_deref_loads_target_set);
   RUN_TEST(test_named_set_const_assigns_to_compatible_set_via_runtime_helper);
   RUN_TEST(test_compatible_set_actual_stays_viable_in_overload_resolution);
   RUN_TEST(test_set_range_literal_uses_integer_ordinal_loop);
