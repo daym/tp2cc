@@ -1,0 +1,44 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-31
+Subject: Make compiler units use compiler-side align helper
+License: expat
+
+Several compiler units call bare integer `align(...)`; the compiler-side
+helper is declared in `cutils.pas`.  Import `cutils` explicitly at those
+call sites.
+
+--- a/compiler/machoutils.pas
++++ b/compiler/machoutils.pas
+@@ -30,6 +30,7 @@
+ interface
+ 
+ uses
++  cutils,
+   macho;
+ 
+   type
+--- a/compiler/ogmacho.pas
++++ b/compiler/ogmacho.pas
+@@ -27,6 +27,7 @@
+ 
+ uses
+   cclasses,
++  cutils,
+   globals, globtype, verbose,
+   owbase, ogbase,
+   aasmbase, assemble,
+@@ -1249,4 +1250,3 @@
+ {$endif i386}
+ 
+ end.
+-
+--- a/compiler/i386/hlcgcpu.pas
++++ b/compiler/i386/hlcgcpu.pas
+@@ -59,6 +59,7 @@
+   uses
+     globals, procinfo,
+     verbose,
++    cutils,
+     fmodule,systems,
+     aasmbase,aasmtai,
+     paramgr,
