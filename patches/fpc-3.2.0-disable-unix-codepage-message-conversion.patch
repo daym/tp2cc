@@ -1,0 +1,61 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-02
+Subject: Keep Unix bootstrap messages byte-oriented
+License: expat
+
+FPC 3.2.0 enables codepage-aware compiler message conversion on Unix.
+That path calls RTL codepage APIs from `cmsgs.pas` (`SetCodePage`,
+`RawByteString`, and `CP_ACP`) that are not part of the tp2cc-translated
+bootstrap compiler.  The bootstrap uses the English message file and does not
+need message text recoding, so keep Unix message strings byte-oriented and
+avoid the remaining CP_ACP default-value dependency.  Keep the codepage
+metadata type local to cmsgs.pas with the same representation as System, since
+the translated compiler does not import System's real interface declarations.
+
+--- a/compiler/fpcdefs.inc
++++ b/compiler/fpcdefs.inc
+@@ -22,8 +22,11 @@
+ { This define enables codepage-aware compiler messages handling. Turning it on
+   forces code page conversion from the codepage, specified in the .msg file to
+   CP_ACP, before printing the message to the console. Enable this for host
+-  platforms, that have code page conversion support in their RTL. }
+-{$if defined(win32) or defined(win64) or defined(unix)}
++  platforms, that have code page conversion support in their RTL.
++
++  The tp2cc bootstrap does not translate the RTL codepage-conversion API used
++  by cmsgs.pas on Unix, so keep bootstrap message strings byte-oriented. }
++{$if defined(win32) or defined(win64)}
+   {$define cpawaremessages}
+ {$endif}
+ 
+--- a/compiler/cmsgs.pas
++++ b/compiler/cmsgs.pas
+@@ -28,8 +28,10 @@ uses
+ 
+ const
+   maxmsgidxparts = 20;
++  defaultmsgcodepage = 0;
+ 
+ type
+   ppchar=^pchar;
+   TMsgStr = AnsiString;
++  TSystemCodePage = Word;
+ 
+@@ -117,7 +118,7 @@ begin
+   has_local_changes:=false;
+   msgsize:=0;
+   msgparts:=n;
+-  msgcodepage:=CP_ACP;
++  msgcodepage:=defaultmsgcodepage;
+   if n<>high(idxmax)+1 then
+    fail;
+   for i:=1 to n do
+@@ -187,7 +188,7 @@ var
+ 
+ begin
+   LoadExtern:=false;
+-  msgcodepage:=CP_ACP;
++  msgcodepage:=defaultmsgcodepage;
+   getmem(buf,bufsize);
+   { Read the message file }
+   assign(f,fn);
