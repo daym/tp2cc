@@ -1,0 +1,24 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-31
+Subject: Use PChar subtraction for objdump symbol-name offsets
+License: expat
+
+`compiler/optdead.pas` finds the start of an objdump symbol name by
+subtracting the address of the input line from the result of `StrRScan`.
+
+Both operands are character pointers, but the original source casts them to
+generic `Pointer` before subtracting.  FPC 3.2.0 accepts `PChar - PChar`, so
+spell the operation that way and avoid forcing the translated bootstrap to
+support generic `Pointer` subtraction for this character-buffer offset.
+
+--- a/compiler/optdead.pas
++++ b/compiler/optdead.pas
+@@ -371,7 +371,7 @@
+           end;
+         fsymtypepos:=pos(objdumpsearchstr,line)+1;
+         { find begin of symbol name }
+-        fsymnamepos:=(pointer(strrscan(pchar(line),' '))-pointer(@line[1]))+2;
++        fsymnamepos:=(pchar(strrscan(pchar(line),' '))-pchar(@line[1]))+2;
+         { sanity check }
+         if (fsymnamepos <= fsymtypepos+length(objdumpcheckstr)) then
+           exit;
