@@ -1,0 +1,23 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-02
+Subject: Initialize exception state record fields explicitly
+License: expat
+
+`tcgexceptionstatehandler.texceptionstate` contains only a label object
+reference and two flow-control sets.  `Default(texceptionstate)` therefore
+means a nil label and empty sets; spell those values out directly so the
+bootstrap compiler source does not require the `Default` intrinsic here.
+
+--- a/compiler/ncgflw.pas
++++ b/compiler/ncgflw.pas
+@@ -714,7 +714,9 @@
+          breaktrylabel:=nil;
+          continueexceptlabel:=nil;
+          breakexceptlabel:=nil;
+-         doobjectdestroyandreraisestate:=Default(tcgexceptionstatehandler.texceptionstate);
++         doobjectdestroyandreraisestate.exceptionlabel:=nil;
++         doobjectdestroyandreraisestate.oldflowcontrol:=[];
++         doobjectdestroyandreraisestate.newflowcontrol:=[];
+ 
+          { this can be called recursivly }
+          oldBreakLabel:=nil;
