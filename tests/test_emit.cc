@@ -4885,6 +4885,72 @@ void test_open_array_call_uses_owning_temporary_wrapper() {
   CHECK(contains(out.impl, "p_log(::rt::tp2cc_open_array<uint16_t>())"));
 }
 
+void test_open_array_constructor_participates_in_overload_resolution() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tai = record end;\n"
+      "  tasmop = (a_add, a_sub, a_mul);\n"
+      "  topsize = (s_no, s_l);\n"
+      "  topsizes = set of topsize;\n"
+      "function match(instr : tai; op : tasmop; sizes : topsizes) : boolean; overload;\n"
+      "function match(instr : tai; const ops : array of tasmop; sizes : topsizes) : boolean; overload;\n"
+      "procedure demo(instr : tai);\n"
+      "implementation\n"
+      "function match(instr : tai; op : tasmop; sizes : topsizes) : boolean;\n"
+      "begin\n"
+      "  match := true;\n"
+      "end;\n"
+      "function match(instr : tai; const ops : array of tasmop; sizes : topsizes) : boolean;\n"
+      "begin\n"
+      "  match := true;\n"
+      "end;\n"
+      "procedure demo(instr : tai);\n"
+      "begin\n"
+      "  if match(instr, [a_add, a_sub], [s_no]) then begin end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_open_array_of<t_tasmop>(p_a_add, p_a_sub)"));
+  CHECK(contains(out.impl, "::rt::tp2cc_Set<t_topsize>::from_list({p_s_no})"));
+  CHECK(!contains(out.impl, "static_cast<t_tasmop>(::rt::set_of"));
+}
+
+void test_open_array_pointer_constructor_participates_in_method_overload_resolution() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tcgpara = record value : integer; end;\n"
+      "  pcgpara = ^tcgpara;\n"
+      "  thlcg = object\n"
+      "    function call_system_proc(list : pointer; const name : string; const paras : array of pcgpara; force : pointer) : integer; overload;\n"
+      "    function call_system_proc(list : pointer; pd : pointer; const paras : array of pcgpara; force : pointer) : integer; overload;\n"
+      "  end;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "function thlcg.call_system_proc(list : pointer; const name : string; const paras : array of pcgpara; force : pointer) : integer;\n"
+      "begin\n"
+      "  call_system_proc := 0;\n"
+      "end;\n"
+      "function thlcg.call_system_proc(list : pointer; pd : pointer; const paras : array of pcgpara; force : pointer) : integer;\n"
+      "begin\n"
+      "  call_system_proc := 0;\n"
+      "end;\n"
+      "procedure demo;\n"
+      "var h : thlcg; list, pd : pointer; p1, p2 : tcgpara; r : integer;\n"
+      "begin\n"
+      "  r := h.call_system_proc(list, 'fpc_iocheck', [], nil);\n"
+      "  r := h.call_system_proc(list, pd, [@p1, @p2], nil);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_h.p_call_system_proc(static_cast<void*>(p_list), "));
+  CHECK(contains(out.impl, "::rt::tp2cc_open_array<t_pcgpara>()"));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_open_array_of<t_pcgpara>((&p_p1), (&p_p2))"));
+  CHECK(!contains(out.impl, "::rt::set_of((&p_p1), (&p_p2))"));
+}
+
 void test_high_low_on_open_array_use_runtime_length() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -11219,6 +11285,8 @@ int main() {
   RUN_TEST(test_open_array_method_signature_keeps_wrapper_type);
   RUN_TEST(test_open_array_procvar_signature_keeps_wrapper_type);
   RUN_TEST(test_open_array_call_uses_owning_temporary_wrapper);
+  RUN_TEST(test_open_array_constructor_participates_in_overload_resolution);
+  RUN_TEST(test_open_array_pointer_constructor_participates_in_method_overload_resolution);
   RUN_TEST(test_high_low_on_open_array_use_runtime_length);
   RUN_TEST(test_dynamic_array_type_uses_runtime_carrier);
   RUN_TEST(test_dynamic_array_actual_converts_to_open_array_view);

@@ -190,6 +190,8 @@ class EmitResolution {
   bool is_untyped_integer_constant_expr(const ast::Expr& arg);
   bool integer_domain_fits_primitive(const IntegerActualDomain& domain,
                                      const PrimitiveInfo& formal) const;
+  bool set_literal_can_construct_open_array(const ast::SetLit& literal,
+                                            const ast::TypeExpr* param) const;
   ConvScore rank_integer_domain_conversion(
       const IntegerActualDomain& domain, const ast::TypeExpr* param,
       bool var_param);

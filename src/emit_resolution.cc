@@ -367,6 +367,19 @@ bool EmitResolution::integer_domain_fits_primitive(
   return domain.low >= min && domain.high <= max;
 }
 
+bool EmitResolution::set_literal_can_construct_open_array(
+    const SetLit& literal, const TypeExpr* param) const {
+  const TypeExpr* p = analysis_.canonicalize_type(param);
+  if (!p || p->kind != Kind::TyArray ||
+      static_cast<const TyArray&>(*p).array_kind != ArrayKind::Open) {
+    return false;
+  }
+  for (const auto& element : literal.elements) {
+    if (element && element->kind == Kind::Range) return false;
+  }
+  return true;
+}
+
 ConvScore EmitResolution::rank_integer_domain_conversion(
     const IntegerActualDomain& domain, const TypeExpr* param, bool var_param) {
   if (var_param) return {};
@@ -783,6 +796,15 @@ ConvScore EmitResolution::score_argument_conversion(
   if (arg.kind == Kind::SetLit && canon_param &&
       canon_param->kind == Kind::TySet &&
       static_cast<const SetLit&>(arg).elements.empty()) {
+    return {ConvRank::Exact, 0};
+  }
+  if (arg.kind == Kind::SetLit &&
+      set_literal_can_construct_open_array(
+          static_cast<const SetLit&>(arg), param.type)) {
+    // Bracket syntax is target-typed in Pascal calls: `[a, b]` is an
+    // open-array constructor when the selected formal is `array of T`, not a
+    // set value. Score it here so overload selection reaches the existing
+    // open-array argument lowering instead of emitting a set literal too early.
     return {ConvRank::Exact, 0};
   }
   // `nil` has no standalone type; deduce_type(NilLit) returns null, so
