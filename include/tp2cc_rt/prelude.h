@@ -1954,7 +1954,7 @@ struct t_tsystemtime {
   uint16_t p_hour = 0;
   uint16_t p_minute = 0;
   uint16_t p_second = 0;
-  uint16_t p_milliseconds = 0;
+  uint16_t p_millisecond = 0;
 };
 
 using t_tprocedure = void (*)();
@@ -4254,7 +4254,7 @@ inline void p_getlocaltime(t_tsystemtime& out) {
   out.p_hour = static_cast<uint16_t>(lt.tm_hour);
   out.p_minute = static_cast<uint16_t>(lt.tm_min);
   out.p_second = static_cast<uint16_t>(lt.tm_sec);
-  out.p_milliseconds =
+  out.p_millisecond =
       static_cast<uint16_t>(tv.tv_usec / tp2cc_milliseconds_per_second);
 }
 

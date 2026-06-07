@@ -1137,7 +1137,7 @@ System implements these type names beyond the basic scalar/string/pointer types 
 | ~TDateTime~ | type alias | Date/time value, represented by the runtime as a floating value. |
 | ~TExecuteFlags~ | ~set of (ExecInheritsHandles)~ | Process-execution flags accepted by ~ExecuteProcess~. |
 | ~TSysCharSet~ | ~set of Char~ | Character set type for string-scanning interfaces. |
-| ~TSystemTime~ | record alias | Year/month/day/hour/min/sec/millisecond fields for ~GetLocalTime~. |
+| ~TSystemTime~ | record alias | Year/month/day/hour/min/sec/~MilliSecond~ fields for ~GetLocalTime~. |
 | ~HRESULT~ | integer alias | Windows-style result code type used by compiler support code. |
 | ~PAnsiString~, ~PDWord~, ~PQWord~, ~PShortString~ | pointer aliases | Pointer type aliases reached by translated compiler sources. |
 | ~ChangeFileExt(Path, Ext)~ | returns ~AnsiString~ | Replaces or adds a file extension. |

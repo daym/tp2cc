@@ -3333,10 +3333,12 @@ void test_runtime_aliases_cover_currency_systemtime_and_pansistring() {
       "  pl : plongword;\n"
       "  sc : tsyscharset;\n"
       "  st : tsystemtime;\n"
+      "  w : word;\n"
       "  ps : pansistring;\n"
       "  pq : pqword;\n"
       "  pss : pshortstring;\n"
       "begin\n"
+      "  w := st.MilliSecond;\n"
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "::rt::t_currency p_c{};"));
@@ -3346,6 +3348,7 @@ void test_runtime_aliases_cover_currency_systemtime_and_pansistring() {
   CHECK(contains(out.impl, "::rt::t_plongword p_pl{};"));
   CHECK(contains(out.impl, "::rt::t_tsyscharset p_sc{};"));
   CHECK(contains(out.impl, "::rt::t_tsystemtime p_st{};"));
+  CHECK(contains(out.impl, "p_w = p_st.p_millisecond;"));
   CHECK(contains(out.impl, "::rt::t_pansistring p_ps{};"));
   CHECK(contains(out.impl, "::rt::t_pqword p_pq{};"));
   CHECK(contains(out.impl, "::rt::t_pshortstring p_pss{};"));
