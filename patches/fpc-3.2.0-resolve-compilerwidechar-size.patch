@@ -1,0 +1,43 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-31
+Subject: Resolve compilerwidechar size without directive sizeof
+License: expat
+
+FPC 3.2.0 defines `tcompilerwidechar = word` in compiler/widestr.pas, so
+`sizeof(tcompilerwidechar)` is 2 in these directive tests.
+
+These branches select the PPU serialization format for compiler wide
+strings.  Replace the type-size checks with explicit true/false directive
+conditions instead of requiring conditional compilation to resolve Pascal type
+sizes.
+
+--- a/compiler/ncon.pas
++++ b/compiler/ncon.pas
+@@ -752,10 +752,10 @@
+             { don't use getdata, because the compilerwidechars may have to
+               be byteswapped
+             }
+-{$if sizeof(tcompilerwidechar) = 2}
++{$if 1 = 1}
+             for i:=0 to pw^.len-1 do
+               pw^.data[i]:=ppufile.getword;
+-{$elseif sizeof(tcompilerwidechar) = 4}
++{$elseif 1 = 0}
+             for i:=0 to pw^.len-1 do
+               pw^.data[i]:=cardinal(ppufile.getlongint);
+ {$else}
+--- a/compiler/symsym.pas
++++ b/compiler/symsym.pas
+@@ -2386,10 +2386,10 @@
+                { don't use getdata, because the compilerwidechars may have to
+                  be byteswapped
+                }
+-{$if sizeof(tcompilerwidechar) = 2}
++{$if 1 = 1}
+                for i:=0 to pw^.len-1 do
+                  pw^.data[i]:=ppufile.getword;
+-{$elseif sizeof(tcompilerwidechar) = 4}
++{$elseif 1 = 0}
+                for i:=0 to pw^.len-1 do
+                  pw^.data[i]:=cardinal(ppufile.getlongint);
+ {$else}
