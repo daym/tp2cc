@@ -1,0 +1,414 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-05-31
+Subject: Drop the charset/codepage path from the bootstrap compiler
+License: expat
+
+The compiler reaches `charset` and the per-codepage unit tables for source codepage conversion.  The translated bootstrap sources do not need those tables at runtime, and keeping them pulls a large codepage registry into the translated compiler.
+
+Drop the dependency.  Keep the `widestr.pas` entry points callable with byte-to-widechar and byte-to-byte pass-through behavior, remove the Unix system-codepage lookup and the `-Fm` mapping loader, and route reached string-constant conversions through those same compiler-local helpers.
+
+--- a/compiler/compiler.pas
++++ b/compiler/compiler.pas
+@@ -36,11 +36,6 @@
+ {$ifdef WATCOM}
+   emu387,
+ {$endif WATCOM}
+-{$if defined(unix) and (FPC_FULLVERSION>20700)}
+-  { system code page stuff for unix }
+-  unixcp,
+-  fpwidestring,
+-{$endif}
+ {$IFNDEF USE_FAKE_SYSUTILS}
+   sysutils,math,
+ {$ELSE}
+@@ -187,10 +178,6 @@
+ begin
+   if CompilerInited then
+    DoneCompiler;
+-{$if defined(unix) and (FPC_FULLVERSION>20700)}
+-  { Set default code page for ansistrings on unix-like systems }
+-  DefaultSystemCodePage:=GetSystemCodePage;
+-{$endif}
+ { inits which need to be done before the arguments are parsed }
+   InitSystems;
+   { fileutils depends on source_info so it must be after systems }
+--- a/compiler/options.pas
++++ b/compiler/options.pas
+@@ -95,7 +95,6 @@
+ 
+ uses
+   widestr,
+-  {$if FPC_FULLVERSION<20700}ccharset{$else}charset{$endif},
+   SysUtils,
+   version,
+   cutils,cmsgs,
+@@ -1025,7 +1032,6 @@
+   j,l   : longint;
+   d,s   : TCmdStr;
+   hs    : TCmdStr;
+-  unicodemapping : punicodemap;
+ begin
+   if opt='' then
+    exit;
+@@ -1559,20 +1565,6 @@
+                      else
+                        includesearchpath.AddPath(More,true);
+                    end;
+-                 'm' :
+-                   begin
+-                     s:=ExtractFileDir(more);
+-                     if TryStrToInt(ExtractFileName(more),j) then
+-                       begin
+-                         unicodemapping:=loadunicodemapping(More,More+'.txt',j);
+-                         if assigned(unicodemapping) then
+-                           registermapping(unicodemapping)
+-                         else
+-                           IllegalPara(opt);
+-                       end
+-                     else
+-                       IllegalPara(opt);
+-                   end;
+                  'M' :
+                    unicodepath:=FixPath(More,true);
+                  'g' :
+--- a/compiler/widestr.pas
++++ b/compiler/widestr.pas
+@@ -28,7 +28,7 @@
+   interface
+ 
+     uses
+-       {$if FPC_FULLVERSION<20700}ccharset{$else}charset{$endif},globtype;
++       globtype;
+ 
+ 
+     type
+@@ -66,22 +66,12 @@
+     function charlength(p: pchar; len: sizeint): sizeint;
+     function charlength(const s: string): sizeint;
+ 
++    const
++       DefaultSystemCodePage = 437;
++
+   implementation
+ 
+     uses
+-      {$if FPC_FULLVERSION>20700}
+-      { use only small codepage maps, others will be }
+-      { loaded on demand from -FM path               }
+-
+-      { cyrillic code pages }
+-      cp1251,cp866,cp8859_5,
+-      { greek code page }
+-      cp1253,
+-      { other code pages }
+-      cp8859_1,cp850,cp437,cp1252,cp646,
+-      cp874, cp856,cp852,cp8859_2,
+-      cp1250,cp1254,cp1255,cp1256,cp1257,cp1258,
+-      {$endif}
+       globals,cutils;
+ 
+ 
+@@ -178,27 +168,16 @@
+       end;
+ 
+     function asciichar2unicode(c : char) : tcompilerwidechar;
+-      var
+-         m : punicodemap;
+       begin
+-         if (current_settings.sourcecodepage <> CP_UTF8) then
+-           begin
+-             m:=getmap(current_settings.sourcecodepage);
+-             asciichar2unicode:=getunicode(c,m);
+-           end
+-         else
+-           result:=tcompilerwidechar(c);
++         result:=tcompilerwidechar(c);
+       end;
+ 
+     function unicode2asciichar(c : tcompilerwidechar) : char;
+-      {begin
++      begin
+         if word(c)<128 then
+           unicode2asciichar:=char(word(c))
+          else
+           unicode2asciichar:='?';
+-      end;}
+-      begin
+-         Result := getascii(c,getmap(current_settings.sourcecodepage))[1];
+       end;
+ 
+ 
+@@ -207,65 +186,30 @@
+          source : pchar;
+          dest   : tcompilerwidecharptr;
+          i      : SizeInt;
+-         m      : punicodemap;
+       begin
+-         m:=getmap(cp);
+          setlengthwidestring(r,l);
+          source:=p;
+          dest:=tcompilerwidecharptr(r^.data);
+-         if codepagetranslation then
+-           begin
+-             if cp<>CP_UTF8 then
+-               begin
+-                 for i:=1 to l do
+-                    begin
+-                      dest^:=getunicode(source^,m);
+-                      inc(dest);
+-                      inc(source);
+-                    end;
+-               end
+-             else
+-               begin
+-                 r^.len:=Utf8ToUnicode(punicodechar(r^.data),r^.maxlen,p,l);
+-                 { -1, because utf8tounicode includes room for a terminating 0 in
+-                   its result count }
+-                 if r^.len>0 then
+-                   dec(r^.len);
+-               end;
+-           end
+-         else
+-           begin
+-             for i:=1 to l do
+-                begin
+-                  dest^:=tcompilerwidechar(source^);
+-                  inc(dest);
+-                  inc(source);
+-                end;
+-           end;
++         for i:=1 to l do
++            begin
++              dest^:=tcompilerwidechar(source^);
++              inc(dest);
++              inc(source);
++            end;
+       end;
+ 
+ 
+     procedure unicode2ascii(r : pcompilerwidestring;p:pchar;cp : tstringencoding);
+       var
+-        m : punicodemap;
+         source : tcompilerwidecharptr;
+         dest   : pchar;
+         i      : longint;
+       begin
+-        { can't implement that here, because the memory size for p() cannot
+-          be changed here, and we may need more bytes than have been allocated }
+-        if cp=CP_UTF8 then
+-          internalerrorproc(2015092701);
+-
+-        if (cp = 0) or (cp=CP_NONE) then
+-          m:=getmap(current_settings.sourcecodepage)
+-        else
+-          m:=getmap(cp);
+         source:=tcompilerwidecharptr(r^.data);
+         dest:=p;
+         for i:=1 to r^.len do
+          begin
+-           dest^ := getascii(source^,m)[1];
++           dest^ := unicode2asciichar(source^);
+            inc(dest);
+            inc(source);
+          end;
+@@ -291,20 +235,12 @@
+ 
+     function cpavailable(const s: string): boolean;
+       begin
+-        result:=mappingavailable(lower(s));
+-        {$if FPC_FULLVERSION>20700}
+-        if not result then
+-          result:=(unicodepath<>'')and(registerbinarymapping(unicodepath+'charset',lower(s)));
+-        {$ifend}
++        result:=true;
+       end;
+ 
+     function cpavailable(cp: word): boolean;
+       begin
+-        result:=mappingavailable(cp);
+-        {$if FPC_FULLVERSION>20700}
+-        if not result then
+-          result:=(unicodepath<>'')and(registerbinarymapping(unicodepath+'charset','cp'+tostr(cp)));
+-        {$ifend}
++        result:=true;
+       end;
+ 
+     procedure changecodepage(
+@@ -312,31 +248,26 @@
+       d : pchar; dcp : tstringencoding
+     );
+       var
+-        ms, md : punicodemap;
+         source : pchar;
+         dest   : pchar;
+         i      : longint;
+       begin
+-        ms:=getmap(scp);
+-        md:=getmap(dcp);
+         source:=s;
+         dest:=d;
+         for i:=1 to l do
+          begin
+-           dest^ := getascii(getunicode(source^,ms),md)[1];
++           dest^ := source^;
+            inc(dest);
+            inc(source);
+          end;
+       end;
+ 
+     function codepagebyname(const s : string) : tstringencoding;
+-      var
+-        p : punicodemap;
+       begin
+-        Result:=0;
+-        p:=getmap(lower(s));
+-        if (p<>nil) then
+-          Result:=p^.cp;
++        if lower(s)='utf8' then
++          result:=CP_UTF8
++        else
++          result:=DefaultSystemCodePage;
+       end;
+ 
+ 
+--- a/compiler/ncon.pas
++++ b/compiler/ncon.pas
+@@ -914,7 +914,7 @@
+         pc : pchar;
+         cp1 : tstringencoding;
+         cp2 : tstringencoding;
+-        l,l2 : longint;
++        l : longint;
+       begin
+         if def.typ<>stringdef then
+           internalerror(200510011);
+@@ -935,25 +935,12 @@
+               cp1:=tstringdef(def).encoding;
+               if (cp1=globals.CP_NONE) or (cp1=0) then
+                 cp1:=current_settings.sourcecodepage;
+-              if (cp1=CP_UTF8) then
+-                begin
+-                  pw:=pcompilerwidestring(value_str);
+-                  l2:=len;
+-                  l:=UnicodeToUtf8(nil,0,PUnicodeChar(pw^.data),l2);
+-                  getmem(pc,l);
+-                  UnicodeToUtf8(pc,l,PUnicodeChar(pw^.data),l2);
+-                  len:=l-1;
+-                  donewidestring(pw);
+-                  value_str:=pc;
+-                end
+-              else
+-                begin
+-                  pw:=pcompilerwidestring(value_str);
+-                  getmem(pc,getlengthwidestring(pw)+1);
+-                  unicode2ascii(pw,pc,cp1);
+-                  donewidestring(pw);
+-                  value_str:=pc;
+-                end;
++              pw:=pcompilerwidestring(value_str);
++              len:=getlengthwidestring(pw);
++              getmem(pc,len+1);
++              unicode2ascii(pw,pc,cp1);
++              donewidestring(pw);
++              value_str:=pc;
+             end
+         else
+           if (tstringdef(def).stringtype = st_ansistring) and
+@@ -983,18 +970,13 @@
+                       if (cp2=CP_UTF8) then
+                         begin
+                           if not cpavailable(cp1) then
+-                            Message1(option_code_page_not_available,IntToStr(cp1));
++                            Message1(option_code_page_not_available,tostr(cp1));
+                           initwidestring(pw);
+-                          setlengthwidestring(pw,len);
+-                          { returns room for terminating 0 }
+-                          l:=Utf8ToUnicode(PUnicodeChar(pw^.data),len,value_str,len);
+-                          if (l<>getlengthwidestring(pw)) then
+-                            begin
+-                              setlengthwidestring(pw,l);
+-                              ReAllocMem(value_str,l);
+-                            end;
++                          ascii2unicode(value_str,len,cp2,pw);
++                          l:=getlengthwidestring(pw);
++                          if l<>len then
++                            ReAllocMem(value_str,l);
+                           unicode2ascii(pw,value_str,cp1);
+-                          len:=l-1;
+                           donewidestring(pw);
+                         end
+                       else
+@@ -1002,25 +984,23 @@
+                       if (cp1=CP_UTF8) then
+                         begin
+                           if not cpavailable(cp2) then
+-                            Message1(option_code_page_not_available,IntToStr(cp2));
++                            Message1(option_code_page_not_available,tostr(cp2));
+                           initwidestring(pw);
+-                          setlengthwidestring(pw,len);
+                           ascii2unicode(value_str,len,cp2,pw);
+-                          { returns room for terminating 0 }
+-                          l:=UnicodeToUtf8(nil,0,PUnicodeChar(pw^.data),len);
++                          l:=getlengthwidestring(pw)+1;
+                           if l<>len then
+                             ReAllocMem(value_str,l);
+                           len:=l-1;
+-                          UnicodeToUtf8(value_str,PUnicodeChar(pw^.data),l);
++                          unicode2ascii(pw,value_str,cp1);
+                           donewidestring(pw);
+                         end
+                       else
+                         begin
+                           { output error message that encoding is not available for the compiler }
+                           if not cpavailable(cp1) then
+-                            Message1(option_code_page_not_available,IntToStr(cp1));
++                            Message1(option_code_page_not_available,tostr(cp1));
+                           if not cpavailable(cp2) then
+-                            Message1(option_code_page_not_available,IntToStr(cp2));
++                            Message1(option_code_page_not_available,tostr(cp2));
+                         end;
+                     end;
+                 end;
+--- a/compiler/ncnv.pas
++++ b/compiler/ncnv.pas
+@@ -1206,13 +1210,10 @@
+         para : tcallparanode;
+         hp : tstringconstnode;
+         ws : pcompilerwidestring;
+-        sa : ansistring;
+         cw : tcompilerwidechar;
+-        l : SizeUInt;
+         exprtype : tdef;
+       begin
+          result:=nil;
+-         sa:='';
+          if (left.nodetype=ordconstn) and
+             ((tstringdef(resultdef).stringtype in [st_widestring,st_unicodestring,st_ansistring]) or
+              (torddef(left.resultdef).ordtype in [uchar,uwidechar])) then
+@@ -1257,10 +1258,7 @@
+                       else
+                         begin
+                           cw:=tcompilerwidechar(tordconstnode(left).value.uvalue);
+-                          SetLength(sa,5);
+-                          l:=UnicodeToUtf8(@(sa[1]),Length(sa),@cw,1);
+-                          SetLength(sa,l-1);
+-                          hp:=cstringconstnode.createstr(sa);
++                          hp:=cstringconstnode.createstr(unicode2asciichar(cw));
+                         end
+                     end
+                   else
+--- a/compiler/scanner.pas
++++ b/compiler/scanner.pas
+@@ -289,11 +289,7 @@
+       cpuinfo,
+       fmodule,fppu,
+       { this is needed for $I %CURRENTROUTINE%}
+-      procinfo
+-{$if FPC_FULLVERSION<20700}
+-      ,ccharset
+-{$endif}
+-      ;
++      procinfo;
+ 
+     var
+       { dictionaries with the supported directives }
