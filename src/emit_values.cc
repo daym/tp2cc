@@ -338,7 +338,7 @@ std::optional<std::string> EmitValues::maybe_convert_const_int_expr(
   auto value = analysis_.eval_const_int_expr(e);
   if (!value) return std::nullopt;
   auto converted = analysis_.convert_const_int_value(
-      e.loc, value->value, target, explicit_conversion, /*diagnose=*/true);
+      e.loc, *value, target, explicit_conversion, /*diagnose=*/true);
   if (!converted || !converted->type) return std::nullopt;
   std::string literal =
       (converted->type->int_kind == PrimitiveIntKind::Unsigned)

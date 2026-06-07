@@ -2618,6 +2618,7 @@ void test_imported_assignment_operator_handles_explicit_qword_constant_cast() {
       "var b : tbox;\n"
       "begin\n"
       "  b := qword(-1);\n"
+      "  b := $ffffffffffffffff;\n"
       "end;\n"
       "end.\n",
       {{"ops.pas",
@@ -2638,6 +2639,9 @@ void test_imported_assignment_operator_handles_explicit_qword_constant_cast() {
       out.impl,
       "p_b = ::p_ops::tp2cc_operator_assign_params_const_name_qword_ret_name_tbox("));
   CHECK(contains(out.impl, "18446744073709551615ULL"));
+  CHECK(contains(
+      out.impl,
+      "p_b = ::p_ops::tp2cc_operator_assign_params_const_name_qword_ret_name_tbox(18446744073709551615ULL);"));
 }
 
 void test_overloaded_call_result_type_uses_selected_decl() {

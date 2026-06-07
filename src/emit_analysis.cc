@@ -790,7 +790,7 @@ SetConversionKind EmitAnalysis::classify_set_conversion(
 }
 
 std::optional<ConvertedConstInt> EmitAnalysis::convert_const_int_value(
-    Location where, int64_t value, const TypeExpr* target,
+    Location where, const ConstIntExprInfo& value, const TypeExpr* target,
     bool explicit_conversion, bool diagnose) {
   if (!target) return std::nullopt;
   const TypeExpr* canon = canonicalize_type(target);
@@ -799,30 +799,44 @@ std::optional<ConvertedConstInt> EmitAnalysis::convert_const_int_value(
   auto* info = primitive_info(name);
   if (!info || info->int_kind == PrimitiveIntKind::None) return std::nullopt;
 
+  const bool source_is_unsigned =
+      value.type && value.type->int_kind == PrimitiveIntKind::Unsigned;
   bool fits = true;
   if (info->int_kind == PrimitiveIntKind::Unsigned) {
-    if (value < 0) {
+    if (source_is_unsigned) {
+      fits = info->bits >= 64 ||
+             value.bits <= ((uint64_t{1} << info->bits) - 1);
+    } else if (value.value < 0) {
       fits = false;
     } else if (info->bits < 64) {
-      fits = static_cast<uint64_t>(value) <= ((uint64_t{1} << info->bits) - 1);
+      fits = static_cast<uint64_t>(value.value) <=
+             ((uint64_t{1} << info->bits) - 1);
     }
   } else {
-    int64_t lo = 0;
-    int64_t hi = 0;
-    if (info->bits == 64) {
-      lo = INT64_MIN;
-      hi = INT64_MAX;
+    if (source_is_unsigned) {
+      const uint64_t hi =
+          info->bits >= 64
+              ? static_cast<uint64_t>(INT64_MAX)
+              : ((uint64_t{1} << (info->bits - 1)) - 1);
+      fits = value.bits <= hi;
     } else {
-      lo = -(int64_t{1} << (info->bits - 1));
-      hi = (int64_t{1} << (info->bits - 1)) - 1;
+      int64_t lo = 0;
+      int64_t hi = 0;
+      if (info->bits == 64) {
+        lo = INT64_MIN;
+        hi = INT64_MAX;
+      } else {
+        lo = -(int64_t{1} << (info->bits - 1));
+        hi = (int64_t{1} << (info->bits - 1)) - 1;
+      }
+      fits = value.value >= lo && value.value <= hi;
     }
-    fits = value >= lo && value <= hi;
   }
   if (!fits && diagnose && !explicit_conversion) {
     report_warning(where, "range check error while evaluating constants");
   }
 
-  const uint64_t bits = low_bits(static_cast<uint64_t>(value), info->bits);
+  const uint64_t bits = low_bits(value.bits, info->bits);
   if (info->int_kind == PrimitiveIntKind::Unsigned) {
     return ConvertedConstInt{.value = static_cast<int64_t>(bits),
                              .bits = bits,
@@ -852,9 +866,9 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_cast(
   auto arg = eval_const_int_expr(*c.args[0], visiting_const_names);
   if (!arg) return std::nullopt;
   auto converted =
-      convert_const_int_value(c.loc, arg->value, cast_type, true, false);
+      convert_const_int_value(c.loc, *arg, cast_type, true, false);
   if (!converted) return std::nullopt;
-  return ConstIntExprInfo{converted->value, converted->type};
+  return ConstIntExprInfo{converted->value, converted->bits, converted->type};
 }
 
 const TypeExpr* EmitAnalysis::const_intrinsic_type_arg(const Expr& arg) {
@@ -1073,7 +1087,10 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
   switch (e.kind) {
     case Kind::IntLit: {
       const auto& n = static_cast<const IntLit&>(e);
-      if (n.value > static_cast<uint64_t>(INT64_MAX)) return std::nullopt;
+      if (n.value > static_cast<uint64_t>(INT64_MAX)) {
+        return ConstIntExprInfo{static_cast<int64_t>(n.value), n.value,
+                                primitive_info("qword")};
+      }
       int64_t value = static_cast<int64_t>(n.value);
       return ConstIntExprInfo{value, primitive_info_for_value(value)};
     }

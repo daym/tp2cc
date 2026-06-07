@@ -24,7 +24,15 @@ struct VarInfo;
 
 struct ConstIntExprInfo {
   int64_t value = 0;
+  uint64_t bits = 0;
   const PrimitiveInfo* type = nullptr;
+
+  ConstIntExprInfo() = default;
+  ConstIntExprInfo(int64_t value_in, const PrimitiveInfo* type_in)
+      : value(value_in), bits(static_cast<uint64_t>(value_in)), type(type_in) {}
+  ConstIntExprInfo(int64_t value_in, uint64_t bits_in,
+                   const PrimitiveInfo* type_in)
+      : value(value_in), bits(bits_in), type(type_in) {}
 };
 
 // Value produced by converting a Pascal integer expression into a specific
@@ -88,7 +96,8 @@ class EmitAnalysis {
   const ast::TypeExpr* deduce_const_decl_type(const ast::ConstDecl& cd);
   const ast::TypeExpr* deduce_const_info_type(const ConstInfo& c);
   std::optional<ConvertedConstInt> convert_const_int_value(
-      Location where, int64_t value, const ast::TypeExpr* target,
+      Location where, const ConstIntExprInfo& value,
+      const ast::TypeExpr* target,
       bool explicit_conversion, bool diagnose);
   std::optional<ConstIntExprInfo> eval_const_int_cast(
       const ast::Call& c,

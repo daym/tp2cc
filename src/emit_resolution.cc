@@ -339,6 +339,18 @@ EmitResolution::integer_actual_domain_for_expr(const Expr& arg) {
   if (is_untyped_integer_constant_expr(arg)) {
     auto c = analysis_.eval_const_int_expr(arg);
     if (!c) return std::nullopt;
+    if (c->type && c->type->int_kind == PrimitiveIntKind::Unsigned) {
+      if (c->bits <= static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+        // FPC overload resolution treats ordinary untyped integer constants as
+        // Integer/LongInt candidates, not as the smallest storage type that
+        // would hold their current value.
+        return integer_actual_domain_for_type(builtin_integer_type("longint"));
+      }
+      return IntegerActualDomain{.low = 0,
+                                 .high = c->bits,
+                                 .preferred_kind =
+                                     PrimitiveIntKind::Unsigned};
+    }
     if (c->value >= std::numeric_limits<int32_t>::min() &&
         c->value <= std::numeric_limits<int32_t>::max()) {
       // FPC overload resolution treats ordinary untyped integer constants as
