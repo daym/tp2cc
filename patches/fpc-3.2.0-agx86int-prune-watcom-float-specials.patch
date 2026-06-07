@@ -1,0 +1,56 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-05
+Subject: Prune Watcom-only float literal formatting
+License: expat
+
+The i386 Intel assembler writer has special output for Watcom Wasm infinity
+and NaN literals.  The tp2cc bootstrap translates with NOTARGETWATCOM, so that
+assembler is unavailable, but the runtime conditional still makes the
+translated compiler resolve Math helpers used only by that branch.
+
+Guard the Watcom-only branches with NOTARGETWATCOM.  Other i386 assemblers
+continue to use the normal literal formatting path.
+
+--- a/compiler/x86/agx86int.pas
++++ b/compiler/x86/agx86int.pas
+@@ -648,6 +648,7 @@ unit agx86int;
+                case tai_realconst(hp).realtyp of
+                  aitrealconst_s32bit:
+                    begin
++{$ifndef NOTARGETWATCOM}
+                      if (asminfo^.id = as_i386_wasm) and (IsInfinite(tai_realconst(hp).value.s32val)) then
+                        begin
+                          { Watcom Wasm does not handle Infinity }
+@@ -659,10 +660,12 @@ unit agx86int;
+                      else if (asminfo^.id = as_i386_wasm) and (IsNan(tai_realconst(hp).value.s32val)) then
+                        writer.AsmWriteln(#9#9'DB'#9'1,0,80h,7Fh')
+                      else
++{$endif NOTARGETWATCOM}
+                        writer.AsmWriteLn(#9#9'DD'#9+single2str(tai_realconst(hp).value.s32val));
+                    end;
+                  aitrealconst_s64bit:
+                    begin
++{$ifndef NOTARGETWATCOM}
+                      if (asminfo^.id = as_i386_wasm) and (IsInfinite(tai_realconst(hp).value.s64val)) then
+                        begin
+                          { Watcom Wasm does not handle Infinity }
+@@ -674,9 +677,11 @@ unit agx86int;
+                      else if (asminfo^.id = as_i386_wasm) and (IsNan(tai_realconst(hp).value.s64val)) then
+                        writer.AsmWriteln(#9#9'DW'#9'0,0,0,0,7FF8h')
+                      else
++{$endif NOTARGETWATCOM}
+                        writer.AsmWriteLn(#9#9'DQ'#9+double2str(tai_realconst(hp).value.s64val));
+                    end;
+                  aitrealconst_s80bit:
++{$ifndef NOTARGETWATCOM}
+                    if (asminfo^.id = as_i386_wasm) and (IsInfinite(tai_realconst(hp).value.s80val)) then
+                      begin
+                        { Watcom Wasm does not handle Infinity }
+@@ -688,6 +693,7 @@ unit agx86int;
+                    else if (asminfo^.id = as_i386_wasm) and (IsNan(tai_realconst(hp).value.s80val)) then
+                      writer.AsmWriteln(#9#9'DW'#9'0,0,0,C000h,7FFFh')
+                    else
++{$endif NOTARGETWATCOM}
+                      writer.AsmWriteLn(#9#9'DT'#9+extended2str(tai_realconst(hp).value.s80val));
+                  aitrealconst_s64comp:
+                    writer.AsmWriteLn(#9#9'DQ'#9+comp2str(tai_realconst(hp).value.s64compval));
