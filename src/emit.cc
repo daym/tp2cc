@@ -336,6 +336,15 @@ struct Emitter : ResolveNameProvider,
 
   // Expressions -> C++ expression.
   std::string expr_to_cxx(const Expr& e);
+  std::string expr_value_to_cxx(const Expr& e) override {
+    bool saved_member_base = member_base_context;
+    // Index operands are values even when the whole index expression is being
+    // emitted as an object/member receiver, e.g. `slots[p^.kind]^.field`.
+    member_base_context = false;
+    std::string text = expr_to_cxx(e);
+    member_base_context = saved_member_base;
+    return text;
+  }
   std::string ordinal_value_to_cxx(const Expr& e,
                                    std::string value_cxx) override;
   std::string expr_to_cxx_no_autocall(const Expr& e) override {
@@ -1707,6 +1716,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Deref: {
       const auto& d = static_cast<const Deref&>(e);
+      if (auto storage = storage_.storage_designator(*d.operand);
+          storage && storage->is_bytewise() &&
+          storage_.type_is_pointerish(deduce_type(*d.operand))) {
+        // A byte-addressed pointer slot contains a pointer value. Load that
+        // value by bytes, then dereference the pointee; do not turn packed or
+        // variant payload storage itself into a typed C++ receiver.
+        return "::rt::tp2cc_deref(" +
+               storage_.storage_designator_value(*storage) + ")";
+      }
       // `::rt::tp2cc_deref(p)` is equivalent to `*p` for typed pointers and
       // yields `char&` for `void*` so Pascal `ptr^` on untyped pointers
       // still compiles.
@@ -2542,7 +2560,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return storage_designator_value_or_member_base(i.loc, *storage);
       }
       std::string out = expr_to_cxx(*i.base);
-      for (const auto& idx : i.indices) out += "[" + expr_to_cxx(*idx) + "]";
+      for (const auto& idx : i.indices) {
+        out += "[" + expr_value_to_cxx(*idx) + "]";
+      }
       return out;
     }
     case Kind::SetLit: {

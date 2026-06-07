@@ -277,13 +277,14 @@ std::optional<EmitStorageDesignator> EmitStorage::raw_address_index_designator(
   if (!base.is_bytewise()) {
     text = base.text;
     for (const auto& idx : i.indices) {
-      text += "[" + expr_ops_.expr_to_cxx(*idx) + "]";
+      text += "[" + expr_ops_.expr_value_to_cxx(*idx) + "]";
     }
   }
 
   if (i.indices.size() == 1) {
     if (auto cap = types_.shortstring_capacity_to_cxx(base_type)) {
-      const std::string index_cxx = expr_ops_.expr_to_cxx(*i.indices[0]);
+      const std::string index_cxx =
+          expr_ops_.expr_value_to_cxx(*i.indices[0]);
       const char* offset_helper = base_address_is_pointer_value
                                       ? "::rt::tp2cc_pointer_byte_offset"
                                       : "::rt::tp2cc_byte_offset";
@@ -322,7 +323,8 @@ std::optional<EmitStorageDesignator> EmitStorage::raw_address_index_designator(
     if (!bounds) return std::nullopt;
     elem_cxx = element_cxx_after_dim(dim);
     if (elem_cxx.empty()) return std::nullopt;
-    const std::string index_cxx = expr_ops_.expr_to_cxx(*i.indices[dim]);
+    const std::string index_cxx =
+        expr_ops_.expr_value_to_cxx(*i.indices[dim]);
     const std::string offset = "((" + index_cxx + ") - (" + bounds->low +
                                ")) * sizeof(" + elem_cxx + ")";
     const char* offset_helper = dim == 0 && base_address_is_pointer_value
@@ -453,7 +455,7 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
     // without recursing back into index expression emission.
     std::string text = expr_ops_.expr_to_cxx(*i.base);
     for (const auto& idx : i.indices) {
-      text += "[" + expr_ops_.expr_to_cxx(*idx) + "]";
+      text += "[" + expr_ops_.expr_value_to_cxx(*idx) + "]";
     }
     return EmitStorageDesignator::ordinary(text, type_cxx);
   }
@@ -869,7 +871,7 @@ std::optional<EmitUntypedStorageIndexView> EmitStorage::untyped_storage_index_vi
     return std::nullopt;
   }
   std::string elem_cxx = types_.type_to_cxx(*arr.element);
-  const std::string index_cxx = expr_ops_.expr_to_cxx(*i.indices[0]);
+  const std::string index_cxx = expr_ops_.expr_value_to_cxx(*i.indices[0]);
   const std::string offset =
       "((" + index_cxx + ") - (" + bounds->low + ")) * sizeof(" + elem_cxx +
       ")";

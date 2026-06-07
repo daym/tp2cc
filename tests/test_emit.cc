@@ -8218,6 +8218,118 @@ void test_unaligned_pointer_field_read_uses_bytewise_load() {
   CHECK(!contains(out.impl, "::rt::p_unaligned("));
 }
 
+void test_unaligned_pointer_field_deref_uses_loaded_pointer_value() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = object\n"
+      "    value : longint;\n"
+      "    function getvalue : longint;\n"
+      "  end;\n"
+      "  pitem = ^titem;\n"
+      "  trec = packed record\n"
+      "    item : pitem;\n"
+      "  end;\n"
+      "function read(var r : trec) : longint;\n"
+      "implementation\n"
+      "function titem.getvalue : longint;\n"
+      "begin\n"
+      "  getvalue := value;\n"
+      "end;\n"
+      "function read(var r : trec) : longint;\n"
+      "begin\n"
+      "  if assigned(r.item) then\n"
+      "    read := r.item^.value + r.item^.getvalue\n"
+      "  else\n"
+      "    read := 0;\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::rt::tp2cc_unaligned_load<t_titem*>("));
+  CHECK(contains(out.impl, "::rt::tp2cc_deref(::rt::tp2cc_unaligned_load<t_titem*>("));
+  CHECK(contains(out.impl, ".p_value"));
+  CHECK(contains(out.impl, ".p_getvalue()"));
+  CHECK(!contains(out.impl, "method receiver through unaligned storage"));
+}
+
+void test_unaligned_pointer_field_deref_through_packed_pointer_loads_pointer_value() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = object\n"
+      "    value : longint;\n"
+      "    function getvalue : longint;\n"
+      "  end;\n"
+      "  tslot = object\n"
+      "    secidx : longint;\n"
+      "  end;\n"
+      "  pitem = ^titem;\n"
+      "  pslot = ^tslot;\n"
+      "  prec = ^trec;\n"
+      "  trec = packed record\n"
+      "    item : pitem;\n"
+      "    kind : longint;\n"
+      "  end;\n"
+      "  tslotarray = array[0..3] of pslot;\n"
+      "function read(p : prec; var slots : tslotarray) : longint;\n"
+      "implementation\n"
+      "function titem.getvalue : longint;\n"
+      "begin\n"
+      "  getvalue := value;\n"
+      "end;\n"
+      "function read(p : prec; var slots : tslotarray) : longint;\n"
+      "begin\n"
+      "  if assigned(p^.item) then\n"
+      "    read := p^.item^.value + p^.item^.getvalue + slots[p^.kind]^.secidx\n"
+      "  else\n"
+      "    read := 0;\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(
+      out.impl,
+      "::rt::tp2cc_unaligned_load<t_pitem>(::rt::tp2cc_pointer_byte_offset("));
+  CHECK(contains(out.impl, "::rt::tp2cc_deref(::rt::tp2cc_unaligned_load<t_pitem>("));
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_unaligned_load<int32_t>("
+                 "::rt::tp2cc_pointer_byte_offset("));
+  CHECK(contains(out.impl, ".p_value"));
+  CHECK(contains(out.impl, ".p_getvalue()"));
+  CHECK(contains(out.impl, ".p_secidx"));
+  CHECK(!contains(out.impl, "method receiver through unaligned storage"));
+}
+
+void test_unaligned_pointer_field_var_arg_is_rejected() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = object\n"
+      "  end;\n"
+      "  pitem = ^titem;\n"
+      "  trec = packed record\n"
+      "    item : pitem;\n"
+      "  end;\n"
+      "procedure take(var p : pitem);\n"
+      "procedure run(var r : trec);\n"
+      "implementation\n"
+      "procedure take(var p : pitem);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run(var r : trec);\n"
+      "begin\n"
+      "  take(r.item);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 1);
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_ref<t_titem*>("));
+}
+
 void test_unaligned_storage_var_arg_is_rejected_instead_of_ref_bound() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -11466,6 +11578,9 @@ int main() {
   RUN_TEST(test_typecast_over_unaligned_storage_preserves_unaligned_helpers);
   RUN_TEST(test_packed_record_field_through_pointer_slot_stays_bytewise);
   RUN_TEST(test_unaligned_pointer_field_read_uses_bytewise_load);
+  RUN_TEST(test_unaligned_pointer_field_deref_uses_loaded_pointer_value);
+  RUN_TEST(test_unaligned_pointer_field_deref_through_packed_pointer_loads_pointer_value);
+  RUN_TEST(test_unaligned_pointer_field_var_arg_is_rejected);
   RUN_TEST(test_unaligned_storage_var_arg_is_rejected_instead_of_ref_bound);
   RUN_TEST(test_overload_picks_shortstring_target_for_short_string_arg);
   RUN_TEST(test_overload_picks_pchar_to_shortstring_over_ansistring);

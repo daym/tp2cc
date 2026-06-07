@@ -22,6 +22,9 @@ class EmitStorageExprOps {
  public:
   virtual ~EmitStorageExprOps() = default;
   virtual std::string expr_to_cxx(const ast::Expr& e) = 0;
+  // Emit a value subexpression from inside storage/address composition.
+  // Contexts such as member-receiver emission must not leak into array indexes.
+  virtual std::string expr_value_to_cxx(const ast::Expr& e) = 0;
   virtual void report_error(Location where, const std::string& msg) = 0;
 };
 
