@@ -1059,6 +1059,22 @@ void test_dynamic_array_copy_makes_independent_storage() {
   CHECK_EQ(copy[0], 7);
 }
 
+void test_dynamic_array_assignment_from_fixed_array_copies_values() {
+  tp2cc_Array<uint16_t, 1, 4> fixed{{3, 5, 7, 11}};
+  tp2cc_DynArray<uint16_t> dyn;
+
+  dyn = fixed;
+
+  CHECK_EQ(p_length(dyn), 4);
+  CHECK_EQ(dyn[0], 3);
+  CHECK_EQ(dyn[1], 5);
+  CHECK_EQ(dyn[2], 7);
+  CHECK_EQ(dyn[3], 11);
+
+  fixed[1] = 99;
+  CHECK_EQ(dyn[1], 5);
+}
+
 void test_open_array_view_uses_dynamic_array_storage() {
   tp2cc_DynArray<int32_t> values;
   p_setlength(values, 3);
@@ -1619,6 +1635,7 @@ int main() {
   RUN_TEST(test_open_array_helper_owns_temporary_storage);
   RUN_TEST(test_dynamic_array_setlength_detaches_and_zeroes_tail);
   RUN_TEST(test_dynamic_array_copy_makes_independent_storage);
+  RUN_TEST(test_dynamic_array_assignment_from_fixed_array_copies_values);
   RUN_TEST(test_open_array_view_uses_dynamic_array_storage);
   RUN_TEST(test_array_addr_proxy_converts_to_array_and_element_pointers);
   RUN_TEST(test_array_addr_proxy_preserves_constness);

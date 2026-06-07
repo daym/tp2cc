@@ -2435,6 +2435,24 @@ struct tp2cc_DynArray {
     return *this;
   }
 
+  template <typename U, auto Lo, std::size_t N>
+  requires std::is_assignable_v<T&, const U&>
+  tp2cc_DynArray& operator=(const tp2cc_Array<U, Lo, N>& src) {
+    // Pascal permits assigning a fixed array value to a dynamic array.
+    // The dynamic array owns a zero-based copy; it is not a view into the
+    // fixed-array storage.
+    if constexpr (N == 0) {
+      data.reset();
+      count = 0;
+    } else {
+      std::shared_ptr<T[]> next(new T[N]());
+      for (std::size_t i = 0; i < N; ++i) next[i] = src.data[i];
+      data = std::move(next);
+      count = static_cast<int32_t>(N);
+    }
+    return *this;
+  }
+
   template <typename Ix>
   T& operator[](Ix i) {
     return data[static_cast<size_t>(tp2cc_ordinal_value(i))];
