@@ -96,7 +96,19 @@ STAGE1_LOGDIR="$BOOT_ROOT/compile-logs-stage1"
 SAN_LOGDIR="$BOOT_ROOT/sanitizer-logs"
 ENTRY_FILE="$SOURCE_DIR/compiler/pp.pas"
 MSG_FILE="$SOURCE_DIR/compiler/msg/errore.msg"
-STARTUP_AS="$CLEAN_SRC/rtl/linux/i386/prt0.as"
+case "$(fpc_source_version)" in
+  3.2.*)
+    # FPC 3.2 i386-linux moved startup code from external loader files into
+    # sysinit units: si_prc.pp, si_c.pp, si_c21.pp, si_dll.pp, and si_uc.pp
+    # include rtl/linux/i386/si_*.inc files that define the relevant `_start`
+    # entry points. rtl/linux/Makefile.fpc therefore sets LOADERS= for
+    # ARCH=i386, leaving no external prt0.as/cprt0.as to assemble here.
+    STARTUP_AS=
+    ;;
+  *)
+    STARTUP_AS="$CLEAN_SRC/rtl/linux/i386/prt0.as"
+    ;;
+esac
 RUNTIME_SHIM="$ROOT/include/tp2cc_rt/fenv_shim.c"
 
 compiler_dir_flags() {

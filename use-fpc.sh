@@ -15,7 +15,9 @@ fi
 FPCDIR_DEFAULT="$ROOT/../rpm/"
 AS="${AS:-as}"
 LD="${LD:-ld}"
-STARTUP_AS="${STARTUP_AS:-$ROOT/../rpm/rtl/linux/i386/prt0.as}"
+if [ "${STARTUP_AS+x}" != x ]; then
+  STARTUP_AS="$ROOT/../rpm/rtl/linux/i386/prt0.as"
+fi
 KEEP_WORK="${KEEP_TP2CC_WORK:-0}"
 FORCE_BUILD_FLAG="-B"
 if [ "${USE_FPC_FORCE_BUILD:-1}" = "0" ]; then
@@ -32,7 +34,7 @@ if [ ! -f "$CFG" ]; then
   exit 1
 fi
 
-if [ ! -f "$STARTUP_AS" ]; then
+if [ -n "$STARTUP_AS" ] && [ ! -f "$STARTUP_AS" ]; then
   echo "error: startup file not found: $STARTUP_AS" >&2
   exit 1
 fi
@@ -115,7 +117,9 @@ fi
 
 chmod +x "$pp_script"
 
-"$AS" --32 -o "$startup_obj" "$STARTUP_AS"
+if [ -n "$STARTUP_AS" ]; then
+  "$AS" --32 -o "$startup_obj" "$STARTUP_AS"
+fi
 
 sh "$pp_script"
 
