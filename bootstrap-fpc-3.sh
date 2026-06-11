@@ -68,20 +68,24 @@ case "$(fpc_source_version)" in
 esac
 echo "FPC source: $SOURCE_DIR (version $(fpc_source_version))"
 
-# Keep the translated compiler under sanitizer instrumentation.  UBSan must be
-# recoverable by default so one bootstrap run reports the whole visible surface
-# instead of stopping at the first bad cast/overflow and forcing a rebuild loop.
-# ASan still aborts on memory-corruption classes where continuing is unsafe.
-SAN="${SAN:--fsanitize=address,undefined -fsanitize-recover=undefined -fno-omit-frame-pointer}"
-CXXFLAGS="-std=gnu++20 -I. -O3 -g -pipe -Wno-narrowing $SAN"
+# Keep the translated compiler under sanitizer instrumentation.
+# Default to UBSan-only for stage1 (recoverable) so the bootstrap can report
+# multiple issues in one pass. Set SAN explicitly to include ASan if you need it.
+SAN="${SAN:--fsanitize=undefined -fsanitize-recover=undefined -fno-omit-frame-pointer}"
+CXXFLAGS="-std=gnu++20 -I. -O3 -g -pipe -Wno-narrowing -Wno-invalid-offsetof $SAN"
 CFLAGS="-std=gnu11 -O3 -g -pipe $SAN"
 export CXXFLAGS
 export CFLAGS
 
-# FPC frees most global state only at process exit. Disable leak checking.
-# UBSan reports are recoverable; stage compiler invocations below are logged so
-# every emitted report survives even if the compiler later exits successfully.
-export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1}"
+# FPC frees most global state only at process exit. UBSan is recoverable so one
+# translated compiler invocation can report every visible issue; the logged
+# output is checked after those invocations so any UBSan report still fails the
+# bootstrap.
+if printf '%s' "$SAN" | tr ',' ' ' | grep -qw "address"; then
+  export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1}"
+else
+  export ASAN_OPTIONS="${ASAN_OPTIONS-}"
+fi
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=0:print_stacktrace=1}"
 
 BOOT_ROOT="${BOOTSTRAP_ROOT:-$ROOT/build/fpc-3-bootstrap}"
@@ -187,6 +191,40 @@ install_support_files() {
   fi
 }
 
+fail_on_ubsan_reports() {
+  log_file="$1"
+  if grep -q ': runtime error:' "$log_file"; then
+    echo "error: UBSan reported undefined behavior; see $log_file" >&2
+    exit 1
+  fi
+}
+
+run_logged() {
+  log_file="$1"
+  shift
+  status_file="$log_file.status"
+  rm -f "$status_file"
+  set +e
+  (
+    set +e
+    "$@" 2>&1
+    printf '%s\n' "$?" > "$status_file"
+  ) | tee "$log_file"
+  tee_status="$?"
+  set -e
+  if [ "$tee_status" -ne 0 ]; then
+    echo "error: tee failed while writing $log_file" >&2
+    exit "$tee_status"
+  fi
+  if [ ! -f "$status_file" ]; then
+    echo "error: command status was not captured for $log_file" >&2
+    exit 1
+  fi
+  command_status=$(cat "$status_file")
+  rm -f "$status_file"
+  return "$command_status"
+}
+
 needs_sysinit_units() {
   return 0
 }
@@ -201,12 +239,21 @@ build_sysinit_units() {
   echo "== build sysinit units for $pp_bin =="
   rm -rf "$sysinit_dir"
   mkdir -p "$sysinit_dir"
-  PPC_CONFIG_PATH="$cfg_dir" \
-  FPCDIR="$CLEAN_SRC" \
-    "$pp_bin" -B -a -s \
-      "-FE$sysinit_dir" \
-      "-FU$sysinit_dir" \
-      "$CLEAN_SRC/rtl/linux/si_prc.pp"
+  mkdir -p "$SAN_LOGDIR"
+  log_name=$(printf '%s' "sysinit-$sysinit_dir" | tr -c 'A-Za-z0-9_' '_')
+  log_file="$SAN_LOGDIR/$log_name.log"
+  echo "logging sysinit compiler output to $log_file"
+  if ! run_logged "$log_file" \
+      env PPC_CONFIG_PATH="$cfg_dir" \
+        FPCDIR="$CLEAN_SRC" \
+        "$pp_bin" -B -a -s \
+          "-FE$sysinit_dir" \
+          "-FU$sysinit_dir" \
+          "$CLEAN_SRC/rtl/linux/si_prc.pp"
+  then
+    exit 1
+  fi
+  fail_on_ubsan_reports "$log_file"
   (
     cd "$sysinit_dir"
     sh ./ppas.sh
@@ -349,25 +396,26 @@ compile_pp_stage() {
   rm -rf "$out_dir"
   mkdir -p "$out_dir"
   sysinit_dir="$out_dir-sysinit-units"
-  build_sysinit_units "$pp_bin" "$cfg_dir" "$sysinit_dir"
   mkdir -p "$SAN_LOGDIR"
+  build_sysinit_units "$pp_bin" "$cfg_dir" "$sysinit_dir"
   log_name=$(printf '%s' "$stage_name" | tr -c 'A-Za-z0-9_' '_')
   log_file="$SAN_LOGDIR/$log_name.log"
-  echo "logging $stage_name sanitizer output to $log_file"
-  if ! PP="$pp_bin" \
-    PPC_CONFIG_PATH="$cfg_dir" \
-    FPCDIR="$CLEAN_SRC" \
-    STARTUP_AS="$STARTUP_AS" \
-    USE_FPC_FORCE_BUILD="$(stage_force_build)" \
+  echo "logging $stage_name compiler output to $log_file"
+  if ! run_logged "$log_file" \
+      env PP="$pp_bin" \
+        PPC_CONFIG_PATH="$cfg_dir" \
+        FPCDIR="$CLEAN_SRC" \
+        STARTUP_AS="$STARTUP_AS" \
+        USE_FPC_FORCE_BUILD="$(stage_force_build)" \
       "$ROOT/use-fpc.sh" \
         $(compiler_dir_flags) \
         $(stage_extra_unit_flags "$sysinit_dir") \
         "-o$out_dir/pp" \
-        "$CLEAN_SRC/compiler/pp.pas" >"$log_file" 2>&1
+        "$CLEAN_SRC/compiler/pp.pas"
   then
-    cat "$log_file" >&2
     exit 1
   fi
+  fail_on_ubsan_reports "$log_file"
   install_support_files "$out_dir"
 }
 
@@ -377,6 +425,11 @@ verify_compiler() {
   help_out=$(mktemp "${TMPDIR:-/tmp}/tp2cc-bootstrap-help.XXXXXX")
   if PPC_CONFIG_PATH="$cfg_dir" FPCDIR="$CLEAN_SRC" "$pp_bin" -h >"$help_out" 2>&1; then
     :
+  fi
+  if grep -q ': runtime error:' "$help_out"; then
+    cat "$help_out" >&2
+    rm -f "$help_out"
+    exit 1
   fi
   if ! grep -q "Free Pascal Compiler version" "$help_out"; then
     cat "$help_out" >&2
