@@ -1,128 +1,47 @@
 Author: Danny Milosavljevic <dannym@friendly-machines.com>
 Date: 2026-05-31
-Subject: Use ordinary SizeOf for pointer-width branches
+Subject: Type hlcgobj range checks after SizeOf lowering
 License: expat
 
-FPC 3.2.0 uses {$if sizeof(...)} inside compiler implementation code to choose pointer-sized and host-sized executable branches.  These decisions are ordinary Pascal code decisions, so keep both branches visible to the parser and use normal SizeOf tests at runtime.
+FPC 3.2.0 uses a preprocessor SizeOf test in hlcgobj.pas to pick the integer
+type used for range-check constants.  Once that test is ordinary Pascal code,
+the i386 bootstrap must still type-check the 64-bit arm of the branch.
+
+Keep aintmax in the TCGInt domain consumed by a_cmp_const_reg_label and test
+the original pointer-width condition explicitly.  Suppress only the diagnostic
+for the inactive host-width branch.
 
 --- a/compiler/hlcgobj.pas
 +++ b/compiler/hlcgobj.pas
-@@ -3623,11 +3623,9 @@
+@@ -3491,11 +3491,7 @@
+ 
+   procedure thlcgobj.g_rangecheck(list: TAsmList; const l: tlocation; fromdef, todef: tdef);
+     var
+-{$if defined(cpu64bitalu) or defined(cpu32bitalu)}
+-      aintmax: aint;
+-{$else}
+-      aintmax: longint;
+-{$endif}
++      aintmax: TCGInt;
+       neglabel : tasmlabel;
+       hreg : tregister;
+       lto,hto,
+@@ -3623,15 +3619,15 @@
          maxdef:=fromdef
        else
          maxdef:=todef;
 -{$if sizeof(aintmax) = 8}
 -      if maxdef.size=8 then
-+      if (sizeof(aintmax) = 8) and (maxdef.size=8) then
++      {$push}{$warn 6018 off} { The inactive range-check width arm is unreachable on each host. }
++      if (sizeof(aint) = 8) and (maxdef.size=8) then
          aintmax:=high(int64)
        else
 -{$endif}
          begin
            aintmax:=high(longint);
            maxdef:=u32inttype;
---- a/compiler/entfile.pas
-+++ b/compiler/entfile.pas
-@@ -852,11 +852,10 @@
-     result:=getqword
-   else result:=getdword;
- {$else not generic_cpu}
--  {$if sizeof(TConstPtrUInt)=8}
--  result:=tconstptruint(getint64);
--  {$else}
--  result:=TConstPtrUInt(getlongint);
--  {$endif}
-+  if sizeof(TConstPtrUInt)=8 then
-+    result:=tconstptruint(getint64)
-+  else
-+    result:=TConstPtrUInt(getlongint);
- {$endif not generic_cpu}
- end;
+         end;
++      {$pop}
  
-@@ -1272,11 +1271,10 @@
- 
- procedure tentryfile.putptruint(v:TConstPtrUInt);
- begin
--  {$if sizeof(TConstPtrUInt)=8}
--  putint64(int64(v));
--  {$else}
--  putlongint(longint(v));
--  {$endif}
-+  if sizeof(TConstPtrUInt)=8 then
-+    putint64(int64(v))
-+  else
-+    putlongint(longint(v));
- end;
- 
- 
---- a/compiler/ncnv.pas
-+++ b/compiler/ncnv.pas
-@@ -1053,19 +1053,23 @@
-         if left.nodetype=ordconstn then
-           begin
-             { check if we have a valid pointer constant (JM) }
--            {$if sizeof(pointer) > sizeof(TConstPtrUInt)}
--              {$if sizeof(TConstPtrUInt) = 4}
--                  if (tordconstnode(left).value < int64(low(longint))) or
--                     (tordconstnode(left).value > int64(high(cardinal))) then
--                  CGMessage(parser_e_range_check_error);
--              {$else} {$if sizeof(TConstPtrUInt) = 8}
--                  if (tordconstnode(left).value < int64(low(int64))) or
--                     (tordconstnode(left).value > int64(high(qword))) then
--                  CGMessage(parser_e_range_check_error);
--              {$else}
--                internalerror(2001020801);
--              {$endif} {$endif}
--            {$endif}
-+            if sizeof(pointer) > sizeof(TConstPtrUInt) then
-+              begin
-+                if sizeof(TConstPtrUInt) = 4 then
-+                  begin
-+                    if (tordconstnode(left).value < int64(low(longint))) or
-+                       (tordconstnode(left).value > int64(high(cardinal))) then
-+                      CGMessage(parser_e_range_check_error);
-+                  end
-+                else if sizeof(TConstPtrUInt) = 8 then
-+                  begin
-+                    if (tordconstnode(left).value < int64(low(int64))) or
-+                       (tordconstnode(left).value > int64(high(qword))) then
-+                      CGMessage(parser_e_range_check_error);
-+                  end
-+                else
-+                  internalerror(2001020801);
-+              end;
- 
-             if not(nf_explicit in flags) then
-               if (tordconstnode(left).value.svalue=0) then
---- a/compiler/ngtcon.pas
-+++ b/compiler/ngtcon.pas
-@@ -792,20 +792,16 @@
-           begin
-             ftcb.queue_init(def);
-             ftcb.queue_typeconvn(ptrsinttype,def);
--            {$if sizeof(TConstPtrUInt)=8}
--              ftcb.queue_emit_ordconst(int64(tpointerconstnode(node).value),ptrsinttype);
--            {$else}
--              {$if sizeof(TConstPtrUInt)=4}
--                ftcb.queue_emit_ordconst(longint(tpointerconstnode(node).value),ptrsinttype);
--              {$else}
--                {$if sizeof(TConstPtrUInt)=2}
--                  ftcb.queue_emit_ordconst(smallint(tpointerconstnode(node).value),ptrsinttype);
--                {$else}
--                  {$if sizeof(TConstPtrUInt)=1}
--                    ftcb.queue_emit_ordconst(shortint(tpointerconstnode(node).value),ptrsinttype);
--                  {$else}
--                    internalerror(200404122);
--            {$endif} {$endif} {$endif} {$endif}
-+            if sizeof(TConstPtrUInt)=8 then
-+              ftcb.queue_emit_ordconst(int64(tpointerconstnode(node).value),ptrsinttype)
-+            else if sizeof(TConstPtrUInt)=4 then
-+              ftcb.queue_emit_ordconst(longint(tpointerconstnode(node).value),ptrsinttype)
-+            else if sizeof(TConstPtrUInt)=2 then
-+              ftcb.queue_emit_ordconst(smallint(tpointerconstnode(node).value),ptrsinttype)
-+            else if sizeof(TConstPtrUInt)=1 then
-+              ftcb.queue_emit_ordconst(shortint(tpointerconstnode(node).value),ptrsinttype)
-+            else
-+              internalerror(200404122);
-           end
-         { nil pointer ? }
-         else if node.nodetype=niln then
+       { generate the rangecheck code for the def where we are going to }
+       { store the result                                               }
