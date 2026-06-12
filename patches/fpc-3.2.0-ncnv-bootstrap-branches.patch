@@ -1,0 +1,50 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-11
+Subject: Validate pointer constants with runtime SizeOf branches
+License: expat
+
+FPC 3.2.0 hides pointer-width validation code behind preprocessor SizeOf tests.  The translated bootstrap keeps that choice as ordinary Pascal code, so both branches must type-check while only the active host-width branch runs.
+
+Suppress the unreachable-branch diagnostic around the inactive width arm and keep the existing range checks for the selected TConstPtrUInt width.
+
+--- a/compiler/ncnv.pas
++++ b/compiler/ncnv.pas
+@@ -1053,19 +1053,25 @@
+         if left.nodetype=ordconstn then
+           begin
+             { check if we have a valid pointer constant (JM) }
+-            {$if sizeof(pointer) > sizeof(TConstPtrUInt)}
+-              {$if sizeof(TConstPtrUInt) = 4}
+-                  if (tordconstnode(left).value < int64(low(longint))) or
+-                     (tordconstnode(left).value > int64(high(cardinal))) then
+-                  CGMessage(parser_e_range_check_error);
+-              {$else} {$if sizeof(TConstPtrUInt) = 8}
+-                  if (tordconstnode(left).value < int64(low(int64))) or
+-                     (tordconstnode(left).value > int64(high(qword))) then
+-                  CGMessage(parser_e_range_check_error);
+-              {$else}
+-                internalerror(2001020801);
+-              {$endif} {$endif}
+-            {$endif}
++            {$push}{$warn 6018 off} { The inactive pointer-width validation arm is unreachable on each host. }
++            if sizeof(pointer) > sizeof(TConstPtrUInt) then
++              begin
++                if sizeof(TConstPtrUInt) = 4 then
++                  begin
++                    if (tordconstnode(left).value < int64(low(longint))) or
++                       (tordconstnode(left).value > int64(high(cardinal))) then
++                      CGMessage(parser_e_range_check_error);
++                  end
++                else if sizeof(TConstPtrUInt) = 8 then
++                  begin
++                    if (tordconstnode(left).value < int64(low(int64))) or
++                       (tordconstnode(left).value > int64(high(qword))) then
++                      CGMessage(parser_e_range_check_error);
++                  end
++                else
++                  internalerror(2001020801);
++              end;
++            {$pop}
+ 
+             if not(nf_explicit in flags) then
+               if (tordconstnode(left).value.svalue=0) then
