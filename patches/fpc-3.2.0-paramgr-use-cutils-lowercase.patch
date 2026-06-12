@@ -9,7 +9,7 @@ bootstrap does not depend on an RTL string helper.
 
 --- a/compiler/paramgr.pas
 +++ b/compiler/paramgr.pas
-@@ -186,7 +186,7 @@ implementation
+@@ -186,6 +186,6 @@ implementation
  
      uses
 -       systems,
@@ -18,7 +18,7 @@ bootstrap does not depend on an RTL string helper.
         defutil,verbose,
         hlcgobj;
 @@ -582,7 +582,7 @@ implementation
-         paraloc^.loc:=LOC_REGISTER;
+        paraloc^.loc:=LOC_REGISTER;
          paraloc^.size:=def_cgsize(parasym.vardef);
          paraloc^.def:=parasym.vardef;
 -        paraloc^.register:=std_regnum_search(lowercase(s));
