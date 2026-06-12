@@ -1,0 +1,139 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-11
+Subject: Store PPU reals by Pascal payload bytes
+License: expat
+
+FPC 3.2.0 serializes real constants through entryreal, which is bestreal in
+this unit.  In the Linux bootstrap target matrix, the compiler sources define
+bestreal as Extended for i386 and x86_64, and as Double for arm, aarch64,
+powerpc and powerpc64.  The x86 Extended file-format payload is 10 bytes; on
+targets where bestreal is double it is 8 bytes.  The translated bootstrap
+compiler may store x86 Extended in a C++ long double object whose ABI storage
+is wider than the Pascal payload.
+
+Do not read, write, or byte-swap translated storage padding as part of PPU
+entry data.  Use the Pascal payload width for entryreal I/O, while preserving
+the existing Win64 double path.  Convert the pointer-width entry helpers from
+preprocessor tests to ordinary SizeOf branches in the same file so the
+unchosen branch is visible but explicitly warning-suppressed during the i386
+bootstrap.
+
+--- a/compiler/entfile.pas
++++ b/compiler/entfile.pas
+@@ -318,14 +318,30 @@
+     cutils;
+ 
+ 
++function entryreal_payload_size: longint;
++begin
++  result:=sizeof(entryreal);
++  { Entry files store Pascal real payloads, not translated C++ object storage.
++    x87 Extended has a 10-byte payload even when translated long double storage
++    has ABI padding.  In the Linux bootstrap matrix this affects i386 and
++    x86_64; arm, aarch64, powerpc and powerpc64 have bestreal=double and keep
++    all 8 bytes. }
++  if result>sizeof(double) then
++    result:=10;
++end;
++
++
+ function swapendian_entryreal(d:entryreal):entryreal;
+ type
+   entryreal_bytes=array[0..sizeof(d)-1] of byte;
+ var
+-  i:0..sizeof(d)-1;
++  i:longint;
++  payload_size:longint;
+ begin
+-  for i:=low(entryreal_bytes) to high(entryreal_bytes) do
+-    entryreal_bytes(result)[i]:=entryreal_bytes(d)[high(entryreal_bytes)-i];
++  fillchar(result,sizeof(result),0);
++  payload_size:=entryreal_payload_size;
++  for i:=0 to payload_size-1 do
++    entryreal_bytes(result)[i]:=entryreal_bytes(d)[payload_size-1-i];
+ end;
+ 
+ {*****************************************************************************
+@@ -852,11 +868,12 @@
+     result:=getqword
+   else result:=getdword;
+ {$else not generic_cpu}
+-  {$if sizeof(TConstPtrUInt)=8}
+-  result:=tconstptruint(getint64);
+-  {$else}
+-  result:=TConstPtrUInt(getlongint);
+-  {$endif}
++  {$push}{$warn 6018 off} { SizeOf is a constant here; the unchosen width branch is intentionally unreachable. }
++  if sizeof(TConstPtrUInt)=8 then
++    result:=tconstptruint(getint64)
++  else
++    result:=TConstPtrUInt(getlongint);
++  {$pop}
+ {$endif not generic_cpu}
+ end;
+ 
+@@ -902,21 +919,24 @@
+   e : entryreal;
+   d : double;
+   s : single;
++  payload_size : longint;
+ begin
+-  if sizeofreal=sizeof(e) then
++  payload_size:=entryreal_payload_size;
++  if sizeofreal=payload_size then
+     begin
+-      if entryidx+sizeof(e)>entry.size then
++      if entryidx+payload_size>entry.size then
+        begin
+          error:=true;
+          result:=0;
+          exit;
+        end;
+-      readdata(e,sizeof(e));
++      fillchar(e,sizeof(e),0);
++      readdata(e,payload_size);
+       if change_endian then
+         result:=swapendian_entryreal(e)
+       else
+         result:=e;
+-      inc(entryidx,sizeof(e));
++      inc(entryidx,payload_size);
+       exit;
+     end;
+   if sizeofreal=sizeof(d) then
+@@ -970,7 +990,7 @@
+     end
+   else
+     begin
+-      d:=getrealsize(sizeof(d));
++      d:=getrealsize(entryreal_payload_size);
+       getreal:=d;
+     end;
+ end;
+@@ -1272,11 +1292,12 @@
+ 
+ procedure tentryfile.putptruint(v:TConstPtrUInt);
+ begin
+-  {$if sizeof(TConstPtrUInt)=8}
+-  putint64(int64(v));
+-  {$else}
+-  putlongint(longint(v));
+-  {$endif}
++  {$push}{$warn 6018 off} { SizeOf is a constant here; the unchosen width branch is intentionally unreachable. }
++  if sizeof(TConstPtrUInt)=8 then
++    putint64(int64(v))
++  else
++    putlongint(longint(v));
++  {$pop}
+ end;
+ 
+ 
+@@ -1298,7 +1319,7 @@
+       putdata(hd,sizeof(hd));
+     end
+   else
+-    putdata(d,sizeof(entryreal));
++    putdata(d,entryreal_payload_size);
+ end;
+ 
+ 
