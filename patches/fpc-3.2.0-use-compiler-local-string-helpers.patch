@@ -3,7 +3,14 @@ Date: 2026-05-31
 Subject: Use compiler-local string helpers in the bootstrap compiler
 License: expat
 
-Replace those calls with compiler-local helpers or direct Pascal operations.
+`scandir.pas` stores module namespaces with the compiler's stringdup/stringdispose
+allocation pair, while the bootstrap does not provide the older RTL `disposestr`
+name on that path.  Use the matching compiler-local dispose helper.
+
+`cfileutl.pas` mutates an AnsiString through a PChar after first calling
+UniqueString.  The translated bootstrap does not provide a UniqueString
+routine, and this caller only needs an unaliased writable string before taking
+the PChar, so make that copy explicit with `copy`.
 --- a/compiler/scandir.pas
 +++ b/compiler/scandir.pas
 @@ -1011,7 +1011,7 @@
