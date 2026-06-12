@@ -234,7 +234,7 @@ Drop the dependency.  Keep the `widestr.pas` entry points callable with byte-to-
        end;
  
      procedure changecodepage(
-@@ -312,31 +248,26 @@
+@@ -312,76 +248,35 @@
        d : pchar; dcp : tstringencoding
      );
        var
@@ -271,6 +271,54 @@ Drop the dependency.  Keep the `widestr.pas` entry points callable with byte-to-
        end;
  
  
+     function charlength(p: pchar; len: sizeint): sizeint;
+-      {$IFDEF FPC_HAS_CPSTRING}
+-      var
+-        p2: pchar;
+-        i, chars, codepointlen: sizeint;
+-      {$ENDIF FPC_HAS_CPSTRING}
+       begin
+-{$IFDEF FPC_HAS_CPSTRING}
+-        if len=0 then
+-          begin
+-            result:=0;
+-            exit;
+-          end;
+-{ Length of the string converted to a SBCS codepage (e.g. ISO 8859-1)
+-  should be equal to the amount of characters in the source string. }
+-        if defaultsystemcodepage=cp_utf8 then
+-{ ChangeCodePage does not work for UTF-8 apparently... :-( }
+-          begin
+-            i:=1;
+-            chars:=0;
+-            while i<=len do
+-              begin
+-                codepointlen:=utf8codepointlen(p,len-i+1,true);
+-                inc(i,codepointlen);
+-                inc(p,codepointlen);
+-                inc(chars);
+-              end;
+-            result:=chars;
+-          end
+-        else if cpavailable(defaultsystemcodepage) then
+-          begin
+-            getmem(p2,succ(len));
+-            fillchar(p2^,succ(len),0);
+-            changecodepage(p,len,defaultsystemcodepage,p2,28591);
+-            result:=strlen(p2);
+-            freemem(p2,succ(len));
+-          end
+-        else
+-          result:=len;
+-{$ELSE FPC_HAS_CPSTRING}
++        { Charset tables are pruned for this bootstrap.  The conversion
++          helpers above are byte-preserving, so character length is the input
++          byte count even when compiler_cycle defines FPC_HAS_CPSTRING. }
+         result:=len;
+-{$ENDIF FPC_HAS_CPSTRING}
+       end;
+ 
+     function charlength(const s: string): sizeint;
 --- a/compiler/ncon.pas
 +++ b/compiler/ncon.pas
 @@ -914,7 +914,7 @@
