@@ -1,20 +1,54 @@
 Author: Danny Milosavljevic <dannym@friendly-machines.com>
 Date: 2026-05-31
-Subject: Use first char address for ngtcon byte buffers
+Subject: Avoid ngtcon byte-buffer and pointer-width assumptions
 License: expat
 
-`compiler/ngtcon.pas` uses a local `array[0..1] of char` as scratch
-storage for one-character constants, then reads that scratch storage through
-a `pbyte` cursor.
+compiler/ngtcon.pas uses a local array[0..1] of char as scratch storage for
+one-character constants, then reads that scratch storage through a pbyte
+cursor.  Point at the first character explicitly instead of assigning the
+address of the whole array to a byte pointer.
 
-The original `ca := @ch` relies on assigning the address of the whole array
-to a byte pointer.  Point at the first character explicitly instead; this
-keeps the same byte-buffer semantics while avoiding a whole-array pointer
-conversion in the translated bootstrap.
+The same unit also chooses pointer-sized integer constant emission with
+preprocessor SizeOf tests.  Keep those branches as ordinary Pascal code for
+the translated bootstrap, but suppress the unreachable-branch diagnostic that
+FPC reports for the inactive host width.
 
 --- a/compiler/ngtcon.pas
 +++ b/compiler/ngtcon.pas
-@@ -1331,7 +1331,7 @@
+@@ -792,20 +792,18 @@
+           begin
+             ftcb.queue_init(def);
+             ftcb.queue_typeconvn(ptrsinttype,def);
+-            {$if sizeof(TConstPtrUInt)=8}
+-              ftcb.queue_emit_ordconst(int64(tpointerconstnode(node).value),ptrsinttype);
+-            {$else}
+-              {$if sizeof(TConstPtrUInt)=4}
+-                ftcb.queue_emit_ordconst(longint(tpointerconstnode(node).value),ptrsinttype);
+-              {$else}
+-                {$if sizeof(TConstPtrUInt)=2}
+-                  ftcb.queue_emit_ordconst(smallint(tpointerconstnode(node).value),ptrsinttype);
+-                {$else}
+-                  {$if sizeof(TConstPtrUInt)=1}
+-                    ftcb.queue_emit_ordconst(shortint(tpointerconstnode(node).value),ptrsinttype);
+-                  {$else}
+-                    internalerror(200404122);
+-            {$endif} {$endif} {$endif} {$endif}
++            {$push}{$warn 6018 off} { The inactive pointer-width emission arm is unreachable on each host. }
++            if sizeof(TConstPtrUInt)=8 then
++              ftcb.queue_emit_ordconst(int64(tpointerconstnode(node).value),ptrsinttype)
++            else if sizeof(TConstPtrUInt)=4 then
++              ftcb.queue_emit_ordconst(longint(tpointerconstnode(node).value),ptrsinttype)
++            else if sizeof(TConstPtrUInt)=2 then
++              ftcb.queue_emit_ordconst(smallint(tpointerconstnode(node).value),ptrsinttype)
++            else if sizeof(TConstPtrUInt)=1 then
++              ftcb.queue_emit_ordconst(shortint(tpointerconstnode(node).value),ptrsinttype)
++            else
++              internalerror(200404122);
++            {$pop}
+           end
+         { nil pointer ? }
+         else if node.nodetype=niln then
+@@ -1331,7 +1329,7 @@
                      else
                        internalerror(2010033002);
                    end;
@@ -23,7 +57,7 @@ conversion in the translated bootstrap.
                    len:=1;
                  end
               else if is_constwidecharnode(n) and (current_settings.sourcecodepage<>CP_UTF8) then
-@@ -1349,7 +1349,7 @@
+@@ -1349,7 +1347,7 @@
                      else
                        internalerror(2010033002);
                    end;
