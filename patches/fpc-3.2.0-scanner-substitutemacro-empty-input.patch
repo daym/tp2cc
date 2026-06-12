@@ -1,0 +1,42 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-11
+Subject: Guard macro scanner rewind when no input buffer is active
+License: expat
+
+`compiler/symcreat.pas` builds synthetic method bodies by replacing the
+current scanner with a fresh macro scanner and then calling
+`tscannerfile.substitutemacro`. That fresh scanner has no active input
+buffer yet: `tscannerfile.create` initializes `inputpointer` to nil, and
+`replace_scanner` does not call `firstfile` before installing the macro text.
+
+`substitutemacro` rewinds `inputpointer` before swapping in the macro file so
+ordinary callers preserve the current character position. For a fresh macro
+scanner there is no current character to rewind. Guard the rewind the same
+way `startreplaytokens` already does, so synthetic-method parsing can install
+its macro text without first decrementing a nil pointer.
+
+1. replace_scanner creates a new tscannerfile.
+2. inputpointer := nil
+3. inputbuffer := nil
+4. symcreat immediately calls substitutemacro(...) on that scanner.
+5. First line in substitutemacro: dec(inputpointer);
+
+C++20 rule is [expr.add] 7.6.6 paragraph 4:
+For pointer P and integral J, C++20 defines only these cases:
+
+1. P is null and J == 0: result is null.
+2. Otherwise P points into an array object and the result stays within [0, n].
+3. Otherwise behavior is undefined.
+
+--- a/compiler/scanner.pas
++++ b/compiler/scanner.pas
+@@ -3559,7 +3555,8 @@
+         hp : tinputfile;
+       begin
+         { save old postion }
+-        dec(inputpointer);
++        if assigned(inputpointer) then
++          dec(inputpointer);
+         tempcloseinputfile;
+       { create macro 'file' }
+         { use special name to dispose after !! }
