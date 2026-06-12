@@ -1340,6 +1340,8 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"roldword",   2, true,  false, "dword"},
       {"rolqword",   1, true,  false, "qword"},
       {"rolqword",   2, true,  false, "qword"},
+      {"sarlongint", 1, true,  false, "longint"},
+      {"sarlongint", 2, true,  false, "longint"},
       {"bsfbyte",    1, true,  false, "byte"},
       {"bsrbyte",    1, true,  false, "byte"},
       {"bsfword",    1, true,  false, "cardinal"},

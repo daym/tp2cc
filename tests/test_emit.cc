@@ -5522,12 +5522,13 @@ void test_runtime_bitscan_helpers_resolve_explicitly() {
       "procedure demo;\n"
       "implementation\n"
       "procedure demo;\n"
-      "var b : byte; w : word; d : dword; q : qword; c : cardinal;\n"
+      "var b : byte; w : word; d : dword; q : qword; c : cardinal; l : longint;\n"
       "begin\n"
       "  b := BsfByte(b) + BsrByte(b);\n"
       "  c := BsfWord(w) + BsrWord(w);\n"
       "  c := c + BsfDWord(d) + BsrDWord(d);\n"
       "  c := c + BsfQWord(q) + BsrQWord(q);\n"
+      "  l := SarLongint(l) + SarLongint(l, 6);\n"
       "end;\n"
       "end.\n");
   CHECK(error_count() == before);
@@ -5539,6 +5540,7 @@ void test_runtime_bitscan_helpers_resolve_explicitly() {
   CHECK(contains(out.impl, "::rt::p_bsrdword("));
   CHECK(contains(out.impl, "::rt::p_bsfqword("));
   CHECK(contains(out.impl, "::rt::p_bsrqword("));
+  CHECK(contains(out.impl, "::rt::p_sarlongint("));
 }
 
 void test_runtime_string_and_memory_helpers_resolve_explicitly() {

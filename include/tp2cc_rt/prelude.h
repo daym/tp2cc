@@ -2107,6 +2107,19 @@ inline uint64_t p_rolqword(uint64_t value, uint8_t dist) {
   return tp2cc_rol<uint64_t, 64>(value, dist);
 }
 
+inline int32_t p_sarlongint(int32_t value, uint8_t dist) {
+  uint8_t s = dist & 31;
+  if (s == 0) return value;
+  uint32_t bits = static_cast<uint32_t>(value);
+  uint32_t shifted = bits >> s;
+  if (value < 0) shifted |= (~uint32_t{0}) << (32 - s);
+  return static_cast<int32_t>(shifted);
+}
+
+inline int32_t p_sarlongint(int32_t value) {
+  return p_sarlongint(value, 1);
+}
+
 template <typename T>
 inline uint32_t tp2cc_bsf(T value) {
   using U = std::make_unsigned_t<T>;

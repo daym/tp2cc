@@ -346,6 +346,20 @@ void test_runtime_bitscan_helpers_match_fpc_results() {
   CHECK_EQ(p_bsrqword((uint64_t{1} << 63) | 7), uint32_t{63});
 }
 
+void test_runtime_sarlongint_matches_fpc_results() {
+  CHECK_EQ(p_sarlongint(int32_t{-0x3fffffff}, 4), int32_t{-0x04000000});
+  CHECK_EQ(p_sarlongint(int32_t{0x3fffffff}, 4), int32_t{0x03ffffff});
+  CHECK_EQ(p_sarlongint(int32_t{-0x3ffffff0}, 4), int32_t{-0x03ffffff});
+  CHECK_EQ(p_sarlongint(int32_t{0x3ffffff0}, 4), int32_t{0x03ffffff});
+  CHECK_EQ(p_sarlongint(int32_t{-0x3fffffff}, 0), int32_t{-0x3fffffff});
+  CHECK_EQ(p_sarlongint(int32_t{0x3fffffff}, 0), int32_t{0x3fffffff});
+  CHECK_EQ(p_sarlongint(int32_t{-0x3fffffff}, 31), int32_t{-1});
+  CHECK_EQ(p_sarlongint(int32_t{0x3fffffff}, 31), int32_t{0});
+  CHECK_EQ(p_sarlongint(int32_t{-0x3fffffff}), int32_t{-0x20000000});
+  CHECK_EQ(p_sarlongint(int32_t{0x3fffffff}), int32_t{0x1fffffff});
+  CHECK_EQ(p_sarlongint(int32_t{0x3fffffff}, 36), int32_t{0x03ffffff});
+}
+
 void test_getmem_typed_pointer_keeps_requested_prefix_size() {
   using HugeSymIndex = tp2cc_Array<void*, 0, 536870911>;
 
@@ -1587,6 +1601,7 @@ int main() {
   RUN_TEST(test_runtime_swap_fill_and_compare_helpers);
   RUN_TEST(test_runtime_rotate_helpers_mask_distance);
   RUN_TEST(test_runtime_bitscan_helpers_match_fpc_results);
+  RUN_TEST(test_runtime_sarlongint_matches_fpc_results);
   RUN_TEST(test_getmem_typed_pointer_keeps_requested_prefix_size);
   RUN_TEST(test_shortstring_pointer_deref_uses_live_prefix_storage);
   RUN_TEST(test_shortstring_pointer_deref_interoperates_with_string_ops);
