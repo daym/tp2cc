@@ -8,30 +8,35 @@ pool key has to preserve the exact real payload together with the float type
 and byte-order flag.  That byte identity is intentional: NaNs and signed zeroes
 must not collapse just because arithmetic comparison would consider them equal.
 
-In the Linux bootstrap target matrix, the FPC 3.2.0 compiler sources define
-bestreal as Extended for i386 and x86_64, and as Double for arm, aarch64,
-powerpc and powerpc64.  The translated bootstrap compiler can represent the
-x86 Extended payload in a C++ long double object whose storage is wider than
-the 10-byte Pascal payload.  Hashing a key that contains the translated
-bestreal object would make the pool depend on storage padding.  Store only the
-defined Pascal payload bytes in the hash key, while targets whose bestreal is
-double keep their full 8-byte payload.
+The FPC 3.2.0 compiler sources define bestreal as Extended for i386 and x86_64,
+and as Double for arm, aarch64, powerpc and powerpc64.
+
+The translated bootstrap compiler can represent the x86 Extended payload in a
+C++ long double object whose storage is wider than the 10-byte Pascal payload.
+
+Hashing a key that contains the translated bestreal object would make the pool
+depend on storage padding--which is undefined.
+
+Store only the defined Pascal payload bytes in a packed hash key, while targets
+whose bestreal is double keep their full 8-byte payload.
 
 --- a/compiler/ncgcon.pas
 +++ b/compiler/ncgcon.pas
-@@ -95,8 +95,10 @@ implementation
+@@ -95,8 +95,11 @@ implementation
          between all float types. This requires type and hiloswapped flag to
          be matched along with the value }
        type
 +        tbestrealbytes = array[0..sizeof(bestreal)-1] of byte;
-+        tfloatkeyrealbytes = array[0..9] of byte;
-         tfloatkey = record
+-        tfloatkey = record
 -          value: bestreal;
-+          value: tfloatkeyrealbytes;
++        tfloatkeypayload = array[0..9] of byte;
++        tfloatkey = packed record
++          payload_size: byte;
++          payload: tfloatkeypayload;
            typ: tfloattype;
            swapped: boolean;
          end;
-@@ -110,6 +112,27 @@ implementation
+@@ -110,6 +113,29 @@ implementation
           hiloswapped : boolean;
  {$endif ARM}
  
@@ -48,23 +53,28 @@ double keep their full 8-byte payload.
 +            result:=10;
 +        end;
 +
-+      procedure copy_bestreal_payload(var bytes: tfloatkeyrealbytes; const r: bestreal);
++      procedure copy_bestreal_payload(var key: tfloatkey; const r: bestreal);
 +        var
-+          i: longint;
++          i, payload_size: longint;
 +        begin
-+          for i:=0 to bestreal_payload_size-1 do
-+            bytes[i]:=tbestrealbytes(r)[i];
++          payload_size:=bestreal_payload_size;
++          key.payload_size:=byte(payload_size);
++          for i:=0 to payload_size-1 do
++            key.payload[i]:=tbestrealbytes(r)[i];
 +        end;
 +
        begin
          location_reset_ref(location,LOC_CREFERENCE,def_cgsize(resultdef),const_align(resultdef.alignment),[]);
          lastlabel:=nil;
-@@ -122,7 +145,7 @@ implementation
+@@ -120,9 +146,9 @@ implementation
+         { const already used ? }
+         if not assigned(lab_real) then
            begin
-             { there may be gap between record fields, zero it out }
+-            { there may be gap between record fields, zero it out }
++            { Zero unused payload bytes before hashing the packed key. }
              fillchar(key,sizeof(key),0);
 -            key.value:=value_real;
-+            copy_bestreal_payload(key.value,value_real);
++            copy_bestreal_payload(key,value_real);
              key.typ:=tfloatdef(resultdef).floattype;
  {$ifdef ARM}
              key.swapped:=hiloswapped;
