@@ -1,0 +1,57 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-11
+Subject: Compare real defaults by Pascal payload bytes
+License: expat
+
+FPC 3.2.0 compares real default parameter constants bytewise when matching a
+forward declaration with its implementation.  That is intentional: it lets the
+same NaN default match itself while still treating distinct real encodings,
+such as +0.0 and -0.0, as different declarations.
+
+The comparison must only cover the defined Pascal real payload.  In the Linux
+bootstrap target matrix, the FPC 3.2.0 compiler sources define bestreal as
+Extended for i386 and x86_64, and as Double for arm, aarch64, powerpc and
+powerpc64.  The x86 Extended payload is 10 bytes, but the translated compiler
+may store it in a C++ long double object whose ABI storage is wider.  Those
+extra bytes are translated-storage padding, not Pascal value bytes, so
+comparing them makes identical real defaults depend on unspecified padding
+contents.
+
+Limit wider-than-double translated storage to the 10-byte Pascal x87 payload.
+Targets whose bestreal is double keep the existing full-size comparison.
+
+--- a/compiler/symutil.pas
++++ b/compiler/symutil.pas
+@@ -56,6 +56,23 @@ implementation
+     function equal_constsym(sym1,sym2:tconstsym; nanequal: boolean):boolean;
+       var
+         p1,p2,pend : pchar;
++
++      function real_const_compare_size: longint;
++        begin
++          result:=sizeof(pbestreal^);
++          { Real default values are compared bytewise when nanequal is set so
++            that NaN defaults match the same NaN bit pattern, and so distinct
++            real encodings such as +0.0 and -0.0 remain distinct during
++            forward/implementation header matching.  That bytewise comparison
++            must cover only the Pascal real payload.  x87 Extended carries a
++            10-byte payload, while translated C++ long double storage can be
++            wider because of ABI padding.  In the Linux bootstrap matrix this
++            affects i386 and x86_64; arm, aarch64, powerpc and powerpc64 have
++            bestreal=double and keep the full double-sized value. }
++          if result>sizeof(double) then
++            result:=10;
++        end;
++
+       begin
+         equal_constsym:=false;
+         if sym1.consttyp<>sym2.consttyp then
+@@ -91,7 +108,7 @@ implementation
+              end;
+            constreal :
+              if nanequal then
+-               equal_constsym:=CompareByte(pbestreal(sym1.value.valueptr)^,pbestreal(sym2.value.valueptr)^,sizeof(pbestreal^))=0
++               equal_constsym:=CompareByte(pbestreal(sym1.value.valueptr)^,pbestreal(sym2.value.valueptr)^,real_const_compare_size)=0
+              else
+                equal_constsym:=pbestreal(sym1.value.valueptr)^=pbestreal(sym2.value.valueptr)^;
+            constset :
