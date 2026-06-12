@@ -4,13 +4,10 @@ Subject: Keep Unix bootstrap messages byte-oriented
 License: expat
 
 FPC 3.2.0 enables codepage-aware compiler message conversion on Unix.
-That path calls RTL codepage APIs from `cmsgs.pas` (`SetCodePage`,
-`RawByteString`, and `CP_ACP`) that are not part of the tp2cc-translated
-bootstrap compiler.  The bootstrap uses the English message file and does not
-need message text recoding, so keep Unix message strings byte-oriented and
-avoid the remaining CP_ACP default-value dependency.  Keep the codepage
-metadata type local to cmsgs.pas with the same representation as System, since
-the translated compiler does not import System's real interface declarations.
+
+The bootstrap uses the English message file and does not need message text
+recoding complication, so keep Unix message strings byte-oriented and
+avoid the remaining CP_ACP default-value dependency.
 
 --- a/compiler/fpcdefs.inc
 +++ b/compiler/fpcdefs.inc

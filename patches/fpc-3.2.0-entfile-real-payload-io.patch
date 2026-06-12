@@ -4,19 +4,21 @@ Subject: Store PPU reals by Pascal payload bytes
 License: expat
 
 FPC 3.2.0 serializes real constants through entryreal, which is bestreal in
-this unit.  In the Linux bootstrap target matrix, the compiler sources define
-bestreal as Extended for i386 and x86_64, and as Double for arm, aarch64,
-powerpc and powerpc64.  The x86 Extended file-format payload is 10 bytes; on
-targets where bestreal is double it is 8 bytes.  The translated bootstrap
-compiler may store x86 Extended in a C++ long double object whose ABI storage
-is wider than the Pascal payload.
+this unit.  The compiler sources define bestreal as Extended for i386 and x86_64,
+and as Double for arm, aarch64, powerpc and powerpc64 etc.
+
+The x86 Extended file-format payload is 10 bytes; on targets where bestreal
+is double it is 8 bytes.
+
+The translated bootstrap compiler may store x86 Extended in a C++ long double
+object whose ABI storage is wider than the Pascal payload (12 or 16 bytes).
 
 Do not read, write, or byte-swap translated storage padding as part of PPU
-entry data.  Use the Pascal payload width for entryreal I/O, while preserving
-the existing Win64 double path.  Convert the pointer-width entry helpers from
-preprocessor tests to ordinary SizeOf branches in the same file so the
-unchosen branch is visible but explicitly warning-suppressed during the i386
-bootstrap.
+entry data.  Use the Pascal payload width for entryreal I/O.
+
+Convert the pointer-width entry helpers from preprocessor tests to ordinary
+SizeOf branches since otherwise parser and preprocessor would have to
+share state--which they don't in tp2cc.
 
 --- a/compiler/entfile.pas
 +++ b/compiler/entfile.pas

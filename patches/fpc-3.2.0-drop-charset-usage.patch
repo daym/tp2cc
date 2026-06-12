@@ -3,9 +3,11 @@ Date: 2026-05-31
 Subject: Drop the charset/codepage path from the bootstrap compiler
 License: expat
 
-The compiler reaches `charset` and the per-codepage unit tables for source codepage conversion.  The translated bootstrap sources do not need those tables at runtime, and keeping them pulls a large codepage registry into the translated compiler.
+The compiler reaches `charset` and the per-codepage unit tables for source codepage conversion.
 
-Drop the dependency.  Keep the `widestr.pas` entry points callable with byte-to-widechar and byte-to-byte pass-through behavior, remove the Unix system-codepage lookup and the `-Fm` mapping loader, and route reached string-constant conversions through those same compiler-local helpers.
+Drop the dependency.
+
+Keep the `widestr.pas` entry points callable, with byte-to-widechar and byte-to-byte pass-through behavior.
 
 --- a/compiler/compiler.pas
 +++ b/compiler/compiler.pas

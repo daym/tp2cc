@@ -3,7 +3,9 @@ Date: 2026-05-31
 Subject: Drop heap-status reporting from the bootstrap compiler
 License: expat
 
-The 3.2.0 compiler uses `TFPCHeapStatus` only for optional memory debug and status output.  The translated bootstrap does not need that diagnostic path, and keeping it would require extra runtime heap-status API surface.
+The 3.2.0 compiler uses `TFPCHeapStatus` for optional memory debug and status output.
+
+We don't want to implement that in the bootstrap compiler.
 
 Remove the reporting hooks.
 

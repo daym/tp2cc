@@ -5,7 +5,8 @@ License: expat
 
 TPaiProp.Create has the same signature as the inherited virtual
 TAoptBase.Create constructor.  tp2cc lowers Pascal objects to C++ classes,
-where a same-signature derived method overrides the inherited virtual slot.
+where a same-signature derived method overrides the inherited virtual slot
+even WITHOUT specifying `virtual`.
 
 The 3.2.0 compiler source has no live TPaiProp descendant or class-reference
 construction path that depends on hiding TAoptBase.Create.  Mark the

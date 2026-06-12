@@ -3,9 +3,15 @@ Date: 2026-05-31
 Subject: Use a dynamic array for spills
 License: expat
 
-`Tspill_temp_list = array[tsuperregister] of Treference` declares a static array spanning the full superregister range.  The allocator sized the storage for `maxreg` entries and then treated that buffer as the static array type.  Native FPC avoids copying the full static array in the reached paths, but that is a calling-convention dependency rather than a property of the source.
+`Tspill_temp_list = array[tsuperregister] of Treference` declares a
+static array spanning the full superregister range.
+The allocator sized the storage for `maxreg` entries and then treated
+that buffer as the static array type.
 
-Switch the spill-temp carrier to a dynamic array and use `SetLength` / `:=nil` instead of `allocmem` / `freemem`.
+Native FPC avoids copying the full static array in the reached paths, but
+that is an accidential calling-convention property.
+
+Switch the spill-temp carrier to a dynamic array.
 
 --- a/compiler/rgobj.pas
 +++ b/compiler/rgobj.pas
