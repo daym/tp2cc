@@ -120,6 +120,32 @@ const TypeExpr* EmitStmts::selected_value_type(const Expr& expr) {
   return overload_types_.type_for_overload(expr);
 }
 
+const TypeExpr* EmitStmts::assignment_target_type(const Expr& expr) {
+  // Assignment target typing is a storage query. It must describe the Pascal
+  // slot being written so range checks, shortstring capacity, and custom
+  // assignment see the target storage type, not merely a selected value result.
+  return analysis_.deduce_type(expr);
+}
+
+const TypeExpr* EmitStmts::new_pointer_slot_type(const Expr& expr) {
+  // `new(p, ctor)` needs the declared pointer slot type to find the pointee
+  // constructor surface after allocating through the caller's storage.
+  return analysis_.deduce_type(expr);
+}
+
+const TypeExpr* EmitStmts::procedural_designator_type(const Expr& expr) {
+  // Statement-form procvar autocall asks whether the designator itself is a
+  // parameterless procedural value. Do not substitute a generic value-result
+  // query here; assignments of the same expression must stay plain values.
+  return analysis_.deduce_type(expr);
+}
+
+const TypeExpr* EmitStmts::with_receiver_type(const Expr& expr) {
+  // `with` binds a receiver environment. The type must match the bound storage
+  // or receiver expression used for member lookup inside the block.
+  return analysis_.deduce_type(expr);
+}
+
 std::string EmitStmts::value_class_alias(const Expr& expr) {
   if (expr.kind == Kind::Ident &&
       static_cast<const Ident&>(expr).name == "self") {
@@ -162,7 +188,7 @@ bool EmitStmts::stmt_autocalls_procvar(const Expr& expr) {
     default:
       return false;
   }
-  if (const TypeExpr* t = analysis_.deduce_type(expr);
+  if (const TypeExpr* t = procedural_designator_type(expr);
       t && (t = analysis_.canonicalize_type(t)) &&
       t->kind == Kind::TyProcedural) {
     return procedural_param_count(static_cast<const TyProcedural&>(*t)) == 0;
@@ -398,7 +424,7 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
   // a storage-view typecast.
   if (auto target = storage_.storage_designator(*a.target);
       target && target->is_special()) {
-    const TypeExpr* target_ty = analysis_.deduce_type(*a.target);
+    const TypeExpr* target_ty = assignment_target_type(*a.target);
     std::string rhs_cxx = stmt_ops_.const_value_to_cxx(*a.value, target_ty);
     stmt_ops_.emitln(storage_.storage_designator_store(*target, rhs_cxx) + ";");
     return;
@@ -427,7 +453,7 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
   scope_.lhs_fn_rewrite_slot.clear();
   scope_.lhs_outer_result_rewrite.clear();
   scope_.lhs_outer_result_rewrite_slot.clear();
-  const TypeExpr* target_ty = analysis_.deduce_type(*a.target);
+  const TypeExpr* target_ty = assignment_target_type(*a.target);
   std::string rhs_cxx = stmt_ops_.const_value_to_cxx(*a.value, target_ty);
   if (target_ty && types_.shortstring_capacity_to_cxx(target_ty)) {
     stmt_ops_.emitln("::rt::tp2cc_shortstring_assign(" + target_cxx + ", " +
@@ -609,7 +635,8 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
     if (call_expr->args.size() >= 2) {
       const auto& second = *call_expr->args[1];
       std::string method;
-      const TypeExpr* ptr_arg_ty = analysis_.deduce_type(*call_expr->args[0]);
+      const TypeExpr* ptr_arg_ty =
+          new_pointer_slot_type(*call_expr->args[0]);
       std::string args;
       if (second.kind == Kind::Call) {
         const auto& cc = static_cast<const Call&>(second);
@@ -1388,7 +1415,7 @@ void EmitStmts::emit_stmt(const Stmt& s) {
       WithStackScope with_scope(scope_.with_stack);
       for (size_t i = 0; i < w.exprs.size(); ++i) {
         const Expr& with_expr = *w.exprs[i];
-        const TypeExpr* ty = analysis_.deduce_type(with_expr);
+        const TypeExpr* ty = with_receiver_type(with_expr);
         if (ty) ty = analysis_.canonicalize_type(ty);
         std::string nm =
             "tp2cc_with_" + std::to_string(scope_.with_stack.size());
