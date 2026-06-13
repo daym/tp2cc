@@ -114,6 +114,7 @@ class EmitCalls {
       const ast::Expr& callee, std::vector<CallArgumentSlot> slots);
   std::vector<CallArgumentSlot> call_slots_with_procedural_callee_param_info(
       const ast::Expr& callee, std::vector<CallArgumentSlot> slots);
+  const ast::TypeExpr* procedural_callee_type(const ast::Expr& callee);
 
   const TypeRegistry* registry_;
   ScopeStateView& scope_;

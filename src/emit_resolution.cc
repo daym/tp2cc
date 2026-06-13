@@ -738,7 +738,8 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
   // `Klass.method` (a metaclass-qualified reference) doesn't bind a Self -
   // it would name a class function, which is not a valid value for a
   // procedure-of-object target.
-  if (!analysis_.metaclass_target_name(analysis_.deduce_type(*member.base))
+  if (!analysis_.metaclass_target_name(
+           method_value_member_base_type(*member.base))
            .empty()) {
     return std::nullopt;
   }
@@ -784,6 +785,14 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
   }
   return MethodValueBinding::via_member(lookup.decl, std::move(cls),
                                         method_base);
+}
+
+const TypeExpr* EmitResolution::method_value_member_base_type(
+    const Expr& base) {
+  // Method-value binding first classifies the receiver expression. A metaclass
+  // value is rejected for procedure-of-object binding before normal member
+  // lookup because it has no instance Self to capture.
+  return analysis_.deduce_type(base);
 }
 
 std::optional<ConvScore> EmitResolution::score_procedural_argument_conversion(

@@ -291,7 +291,7 @@ EmitCalls::call_slots_with_builtin_helper_param_info(
 std::vector<CallArgumentSlot>
 EmitCalls::call_slots_with_procedural_callee_param_info(
     const Expr& callee, std::vector<CallArgumentSlot> slots) {
-  const TypeExpr* callee_type = analysis_.deduce_type(callee);
+  const TypeExpr* callee_type = procedural_callee_type(callee);
   if (callee_type) callee_type = analysis_.canonicalize_type(callee_type);
   if (!callee_type || callee_type->kind != Kind::TyProcedural) return slots;
 
@@ -316,6 +316,13 @@ EmitCalls::call_slots_with_procedural_callee_param_info(
     }
   }
   return slots;
+}
+
+const TypeExpr* EmitCalls::procedural_callee_type(const Expr& callee) {
+  // Argument adaptation for a procvar call comes from the callee expression's
+  // declared procedural type. It is not a target-typed conversion of the call
+  // result and it is not storage binding for the callee slot.
+  return analysis_.deduce_type(callee);
 }
 
 CallArgumentPlan EmitCalls::plan_call_arguments(

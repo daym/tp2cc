@@ -204,6 +204,7 @@ class EmitResolution {
   bool type_is_char_type(const ast::TypeExpr* t) const;
   bool procedural_signatures_match(const ast::ProcDecl& decl,
                                    const ast::TyProcedural& proc);
+  const ast::TypeExpr* method_value_member_base_type(const ast::Expr& base);
   // NoInstanceMethod means ordinary expression lowering may still apply;
   // SignatureMismatch means the Pascal method name exists but is not viable for
   // this procedural target type.

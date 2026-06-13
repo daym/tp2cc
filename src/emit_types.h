@@ -163,6 +163,7 @@ class EmitTypes {
   EmitRecordFieldDecl record_field_decl(const ast::TypeExpr* type,
                                         std::string_view name);
   std::string array_bound_ordinal_to_cxx(const ast::Expr& e);
+  const ast::TypeExpr* subrange_bound_source_type(const ast::Expr& e);
   const ast::TypeExpr* subrange_bound_canonical_type(const ast::Expr* e);
   std::string visible_enum_type_for_member(std::string_view name);
   std::string visible_enum_type_for_type_name(std::string_view name);

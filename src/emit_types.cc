@@ -758,9 +758,16 @@ std::string EmitTypes::array_bound_ordinal_to_cxx(const Expr& e) {
       e, const_render_.const_value_to_cxx(e));
 }
 
+const TypeExpr* EmitTypes::subrange_bound_source_type(const Expr& e) {
+  // Subrange declarations use each bound expression's own Pascal type to
+  // choose char/enum/integer storage. There is no surrounding target type to
+  // apply and no addressable storage slot involved.
+  return analysis_.deduce_type(e);
+}
+
 const TypeExpr* EmitTypes::subrange_bound_canonical_type(const Expr* e) {
   if (!e) return nullptr;
-  const TypeExpr* t = analysis_.deduce_type(*e);
+  const TypeExpr* t = subrange_bound_source_type(*e);
   return t ? analysis_.canonicalize_type(t) : nullptr;
 }
 
