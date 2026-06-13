@@ -11,24 +11,31 @@ must not collapse just because arithmetic comparison would consider them equal.
 The FPC 3.2.0 compiler sources define bestreal as Extended for i386 and x86_64,
 and as Double for arm, aarch64, powerpc and powerpc64.
 
-The translated bootstrap compiler can represent the x86 Extended payload in a
+The translated bootstrap compiler represents the x86 Extended payload in a
 C++ long double object whose storage is wider than the 10-byte Pascal payload.
 
 Hashing a key that contains the translated bestreal object would make the pool
-depend on storage padding--which is undefined.
-
-Store only the defined Pascal payload bytes in a packed hash key, while targets
-whose bestreal is double keep their full 8-byte payload.
+depend on C++ long double storage padding (2 or 6 more bytes)--which is
+undefined.
 
 --- a/compiler/ncgcon.pas
 +++ b/compiler/ncgcon.pas
-@@ -95,8 +95,11 @@ implementation
+@@ -73,7 +73,7 @@
+       globtype,widestr,systems,
+       verbose,globals,cutils,
+       aasmcnst,
+-      symconst,symdef,aasmtai,aasmdata,defutil,
++      symconst,symdef,symcpu,aasmtai,aasmdata,defutil,
+       cpuinfo,cpubase,
+       cgbase,cgutils,
+       hlcgobj,cclasses
+@@ -95,8 +95,11 @@
          between all float types. This requires type and hiloswapped flag to
          be matched along with the value }
        type
-+        tbestrealbytes = array[0..sizeof(bestreal)-1] of byte;
 -        tfloatkey = record
 -          value: bestreal;
++        tbestrealbytes = array[0..sizeof(bestreal)-1] of byte;
 +        tfloatkeypayload = array[0..9] of byte;
 +        tfloatkey = packed record
 +          payload_size: byte;
@@ -36,21 +43,18 @@ whose bestreal is double keep their full 8-byte payload.
            typ: tfloattype;
            swapped: boolean;
          end;
-@@ -110,6 +113,29 @@ implementation
+@@ -110,6 +113,31 @@
           hiloswapped : boolean;
  {$endif ARM}
  
 +      function bestreal_payload_size: longint;
 +        begin
-+          result:=sizeof(bestreal);
-+          { The float constant pool key is bytewise so NaNs and signed zeroes
-+            keep their exact Pascal payload identity.  Do not include
-+            translated-storage padding from x87 Extended values.  In the Linux
-+            bootstrap matrix this affects i386 and x86_64; arm, aarch64,
-+            powerpc and powerpc64 use double as bestreal and keep the full
-+            double payload. }
-+          if result>sizeof(double) then
-+            result:=10;
++          { bestreal values are stored in a host variable, but the key must
++            cover only the Pascal payload bytes for the compiler's internal
++            bestreal type.  pbestrealtype comes from the same CPU-specific
++            compiler unit as bestreal and its public size accessor excludes
++            translated long-double object padding. }
++          result:=pbestrealtype^.size;
 +        end;
 +
 +      procedure copy_bestreal_payload(var key: tfloatkey; const r: bestreal);
@@ -59,6 +63,11 @@ whose bestreal is double keep their full 8-byte payload.
 +        begin
 +          payload_size:=bestreal_payload_size;
 +          key.payload_size:=byte(payload_size);
++          { On Linux i386/x86_64, the SysV ABI stores the x87 payload in the
++            leading bytes of the long-double object and leaves any wider object
++            storage as trailing padding.  The other architectures don't have
++            long double padding in the first place (usually they use double).
++          }
 +          for i:=0 to payload_size-1 do
 +            key.payload[i]:=tbestrealbytes(r)[i];
 +        end;
@@ -66,7 +75,7 @@ whose bestreal is double keep their full 8-byte payload.
        begin
          location_reset_ref(location,LOC_CREFERENCE,def_cgsize(resultdef),const_align(resultdef.alignment),[]);
          lastlabel:=nil;
-@@ -120,9 +146,9 @@ implementation
+@@ -120,9 +148,9 @@
          { const already used ? }
          if not assigned(lab_real) then
            begin
