@@ -401,6 +401,7 @@ struct Emitter : ResolveNameProvider,
   bool visible_type_name_for_intrinsic(std::string_view type_name);
   bool visible_class_or_record_type_name(std::string_view type_name);
   std::string visible_class_or_record_type_path(std::string_view type_name);
+  bool type_is_aggregate_cast_source(const ast::TypeExpr* t);
   std::optional<std::string> sizeof_type_operand_cxx(const ast::Expr& expr);
   std::optional<std::string> unit_qualified_type_name(const ast::Expr& expr);
   tp2cc::ResolvedCall resolve_new_constructor_call(
@@ -1047,6 +1048,23 @@ Emitter::PascalTypecastTarget Emitter::classify_pascal_typecast_target(
     out.kind = PascalTypecastKind::Scalar;
   }
   return out;
+}
+
+bool Emitter::type_is_aggregate_cast_source(const TypeExpr* t) {
+  t = canonicalize_type(t);
+  if (!t) return false;
+  if (t->kind == Kind::TyArray || t->kind == Kind::TyRecord ||
+      t->kind == Kind::TyObject || t->kind == Kind::TyProcedural) {
+    return true;
+  }
+  if (t->kind != Kind::TyName) return false;
+
+  const auto& name = static_cast<const TyName&>(*t);
+  const TypeSymbol* symbol = visible_type_symbol(name.name);
+  if (!symbol) return false;
+  if (symbol->record_info()) return true;
+  if (const ClassInfo* ci = symbol->class_info()) return !ci->is_reference_type;
+  return false;
 }
 
 std::optional<std::string> Emitter::unit_qualified_type_name(const Expr& expr) {
@@ -2035,20 +2053,6 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                      ">(" + single_call_arg_cxx(c) + ")";
             }
           }
-          if (const TypeExpr* source_ty =
-                  canonicalize_type(type_for_overload(*c.args[0]));
-              source_ty &&
-              (source_ty->kind == Kind::TyArray ||
-               source_ty->kind == Kind::TyRecord ||
-               source_ty->kind == Kind::TyObject ||
-               source_ty->kind == Kind::TyProcedural)) {
-            // FPC accepts same-size aggregate-to-scalar casts as
-            // representation casts. This is a value context, so first build the
-            // source value, then copy its bytes into the scalar target; storage
-            // contexts request storage views before reaching this branch.
-            return "::rt::tp2cc_reinterpret_copy<" + primitive_type_cxx(n) +
-                   ">(" + single_call_arg_cxx(c) + ")";
-          }
           if (primitive_name_is_charish(n)) {
             return "::rt::p_chr(" + single_call_arg_cxx(c) + ")";
           }
@@ -2089,6 +2093,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (auto lit =
                   maybe_convert_const_int_expr(*c.args[0], &target, true)) {
             return *lit;
+          }
+          if (type_is_aggregate_cast_source(type_for_overload(*c.args[0]))) {
+            // FPC accepts same-size aggregate-to-scalar casts as
+            // representation casts when no user-defined conversion owns the
+            // source/target pair. This is a value context, so first build the
+            // source value, then copy its bytes into the scalar target; storage
+            // contexts request storage views before reaching this branch.
+            return "::rt::tp2cc_reinterpret_copy<" + primitive_type_cxx(n) +
+                   ">(" + single_call_arg_cxx(c) + ")";
           }
           return "((" + primitive_type_cxx(n) + ")(" +
                  single_call_arg_cxx(c) + "))";

@@ -3758,6 +3758,42 @@ void test_aggregate_to_primitive_cast_reinterprets_bytes() {
   CHECK(!contains(out.impl, "p_d = ((double)(p_bits));"));
 }
 
+void test_named_record_to_primitive_cast_reinterprets_bytes() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses types;\n"
+      "procedure fetch;\n"
+      "implementation\n"
+      "procedure fetch;\n"
+      "var\n"
+      "  r : twordrec;\n"
+      "  bits : dword;\n"
+      "begin\n"
+      "  r.value := 1;\n"
+      "  bits := dword(r);\n"
+      "  r := twordrec(ntole(dword(r)));\n"
+      "end;\n"
+      "end.\n",
+      {{"types.pas",
+        "unit types;\n"
+        "interface\n"
+        "type\n"
+        "  twordrec = record\n"
+        "    case byte of\n"
+        "      0 : (bytes : array[0..3] of byte);\n"
+        "      1 : (value : dword);\n"
+        "  end;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.impl,
+                 "p_bits = ::rt::tp2cc_reinterpret_copy<uint32_t>(p_r);"));
+  CHECK(contains(out.impl,
+                 "p_r = ::rt::tp2cc_reinterpret_copy<::p_types::t_twordrec>(::rt::p_ntole(::rt::tp2cc_reinterpret_copy<uint32_t>(p_r)));"));
+  CHECK(!contains(out.impl, "p_bits = ((uint32_t)(p_r));"));
+  CHECK(!contains(out.impl, "::rt::p_ntole(((uint32_t)(p_r)))"));
+}
+
 void test_nested_aggregate_to_primitive_cast_reinterprets_source_bytes() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -11409,6 +11445,7 @@ int main() {
   RUN_TEST(test_byte_array_typecast_index_read_builds_value);
   RUN_TEST(test_local_byte_array_typecast_index_read_builds_value);
   RUN_TEST(test_array_typecast_index_assignment_uses_storage_view);
+  RUN_TEST(test_named_record_to_primitive_cast_reinterprets_bytes);
   RUN_TEST(test_untyped_array_value_cast_copies_caller_storage);
   RUN_TEST(test_untyped_record_value_cast_copies_caller_storage);
   RUN_TEST(test_text_typecast_over_pointer_deref_keeps_file_lvalue);
