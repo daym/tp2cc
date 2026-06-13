@@ -42,3 +42,15 @@ call sites.
      fmodule,systems,
      aasmbase,aasmtai,
      paramgr,
+--- a/compiler/aarch64/cpupi.pas
++++ b/compiler/aarch64/cpupi.pas
+@@ -39,7 +39,8 @@
+ 
+   uses
+     tgobj,
+-    cpubase;
++    cpubase,
++    cutils;
+ 
+   constructor tcpuprocinfo.create(aparent: tprocinfo);
+     begin
