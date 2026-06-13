@@ -120,6 +120,38 @@ const TypeExpr* EmitStmts::selected_value_type(const Expr& expr) {
   return overload_types_.type_for_overload(expr);
 }
 
+std::string EmitStmts::value_class_alias(const Expr& expr) {
+  if (expr.kind == Kind::Ident &&
+      static_cast<const Ident&>(expr).name == "self") {
+    return scope_.current_class_name;
+  }
+  const bool produced_value =
+      expr.kind == Kind::Call || expr.kind == Kind::Binary ||
+      expr.kind == Kind::Unary;
+  if (!produced_value) {
+    if (auto cls = analysis_.deduce_class_alias(expr); !cls.empty()) {
+      return cls;
+    }
+  }
+  if (const TypeExpr* t = selected_value_type(expr)) {
+    if (auto cls = analysis_.metaclass_target_name(t); !cls.empty()) return cls;
+    if (registry_) {
+      if (auto cls = registry_->direct_type_name(t, scope_.current_unit_name);
+          !cls.empty()) {
+        return cls;
+      }
+      if (const TypeExpr* canon = analysis_.canonicalize_type(t)) {
+        if (auto cls =
+                registry_->direct_type_name(canon, scope_.current_unit_name);
+            !cls.empty()) {
+          return cls;
+        }
+      }
+    }
+  }
+  return analysis_.deduce_class_alias(expr);
+}
+
 bool EmitStmts::stmt_autocalls_procvar(const Expr& expr) {
   switch (expr.kind) {
     case Kind::Ident:
@@ -275,7 +307,7 @@ bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
         static_cast<const Ident&>(*mem.base).name == "self") {
       cls = scope_.current_class_name;
     } else {
-      cls = analysis_.deduce_class_alias(*mem.base);
+      cls = value_class_alias(*mem.base);
     }
     if (!cls.empty()) {
       if (auto* prop = registry_->lookup_class_property(
@@ -309,7 +341,7 @@ bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
           static_cast<const Ident&>(*mem.base).name == "self") {
         cls = scope_.current_class_name;
       } else {
-        cls = analysis_.deduce_class_alias(*mem.base);
+        cls = value_class_alias(*mem.base);
       }
       if (!cls.empty()) {
         if (auto* prop = registry_->lookup_class_property(
@@ -335,7 +367,7 @@ bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
         return true;
       }
     }
-    std::string cls = analysis_.deduce_class_alias(*ix.base);
+    std::string cls = value_class_alias(*ix.base);
     if (!cls.empty()) {
       if (auto* prop = registry_->lookup_default_property(
               cls, scope_.current_unit_name)) {
@@ -643,10 +675,10 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
           const TypeSymbol* symbol =
               registry_->lookup_type_symbol(base, scope_.current_unit_name);
           if (!symbol || (!symbol->class_info() && !symbol->record_info())) {
-            cls = analysis_.deduce_class_alias(*mem.base);
+            cls = value_class_alias(*mem.base);
           }
         } else {
-          cls = analysis_.deduce_class_alias(*mem.base);
+          cls = value_class_alias(*mem.base);
         }
         if (!cls.empty()) {
           if (const auto* methods = registry_->lookup_class_methods(
@@ -968,7 +1000,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_helper_get_enumerator(
 EmitStmts::ForInEmitResult EmitStmts::emit_for_in_own_get_enumerator(
     const For& f, const std::string& var) {
   if (!f.in_expr) return ForInEmitResult::NotMatched;
-  const std::string class_name = analysis_.deduce_class_alias(*f.in_expr);
+  const std::string class_name = value_class_alias(*f.in_expr);
   if (class_name.empty()) return ForInEmitResult::NotMatched;
   const MethodSig* get =
       for_in_zero_arg_method(f.loc, class_name, "GetEnumerator");

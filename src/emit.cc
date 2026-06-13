@@ -476,9 +476,9 @@ struct Emitter : ResolveNameProvider,
     storage_.report_packed_aggregate_subobject_use(where, op, use);
   }
 
-  // Class/record alias name ("tfoo") of `e`, lowercased, if detectable.
-  // Empty if the type can't be narrowed to a named object/record type.
-  std::string deduce_class_alias(const ast::Expr& e);
+  // Member/property receivers are produced values. Overloaded calls/operators can
+  // supply a more precise result type than syntax-only deduction.
+  std::string value_class_alias(const ast::Expr& e);
   const ast::Expr* peel_primitive_casts(const ast::Expr* e) {
     return storage_.peel_primitive_casts(e);
   }
@@ -764,7 +764,31 @@ const TypeExpr* Emitter::compute_type_for_overload(const Expr& e) {
   return analysis_.deduce_type(e);
 }
 
-std::string Emitter::deduce_class_alias(const Expr& e) {
+std::string Emitter::value_class_alias(const Expr& e) {
+  if (e.kind == Kind::Ident &&
+      static_cast<const Ident&>(e).name == "self") {
+    return current_class_name;
+  }
+  const bool produced_value =
+      e.kind == Kind::Call || e.kind == Kind::Binary || e.kind == Kind::Unary;
+  if (!produced_value) {
+    if (auto cls = analysis_.deduce_class_alias(e); !cls.empty()) return cls;
+  }
+  if (const TypeExpr* t = type_for_overload(e)) {
+    if (auto cls = metaclass_target_name(t); !cls.empty()) return cls;
+    if (registry) {
+      if (auto cls = registry->direct_type_name(t, current_unit_name);
+          !cls.empty()) {
+        return cls;
+      }
+      if (const TypeExpr* canon = canonicalize_type(t)) {
+        if (auto cls = registry->direct_type_name(canon, current_unit_name);
+            !cls.empty()) {
+          return cls;
+        }
+      }
+    }
+  }
   return analysis_.deduce_class_alias(e);
 }
 
@@ -1629,7 +1653,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // and class-method members are stored as descriptor function slots, not as
       // fields of an instance.
       if (registry) {
-        const std::string metaclass = metaclass_target_name(deduce_type(*m.base));
+        const std::string metaclass =
+            metaclass_target_name(type_for_overload(*m.base));
         if (!metaclass.empty()) {
           // Member's base is an *object-position* expression, not a callee.
           // Suppress callee-context auto-call suppression while emitting it
@@ -1696,7 +1721,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return *free_call;
         }
       }
-      std::string bcls = deduce_class_alias(*m.base);
+      std::string bcls = value_class_alias(*m.base);
       if (m.name == "classtype" || m.name == "instancesize") {
         const auto* ci = bcls.empty() ? nullptr : class_info_for_type_name(bcls);
         if ((ci && ci->is_reference_type) || expr_is_reference_class(*m.base)) {
@@ -2572,7 +2597,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             static_cast<const Ident&>(*mem.base).name == "self") {
           cls = current_class_name;
         } else {
-          cls = deduce_class_alias(*mem.base);
+          cls = value_class_alias(*mem.base);
         }
         if (!cls.empty()) {
           if (auto* prop = registry->lookup_class_property(
@@ -2593,7 +2618,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
       }
       if (registry) {
-        std::string cls = deduce_class_alias(*i.base);
+        std::string cls = value_class_alias(*i.base);
         if (!cls.empty()) {
           if (auto* prop = registry->lookup_default_property(
                   cls, current_unit_name)) {

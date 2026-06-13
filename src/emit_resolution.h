@@ -216,6 +216,8 @@ class EmitResolution {
   ResolvedCall resolved_call_from_candidate(const std::string& member_name,
                                             const AnyCand& chosen,
                                             bool ran_type_picker) const;
+  std::string value_class_alias(const ast::Expr& e);
+  std::string value_metaclass_target(const ast::Expr& e);
   std::string receiver_class_for_member_call(const ast::Expr& callee);
   bool operand_type_allows_operator_lookup(const ast::TypeExpr* t);
   ConvScore score_conversion(const ast::TypeExpr* arg,

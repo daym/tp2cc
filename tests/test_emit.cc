@@ -4725,6 +4725,71 @@ void test_string_case_statement_with_operator_result_selector() {
       "::rt::tp2cc_shortstring_literal<255>("));
 }
 
+void test_operator_result_member_property_uses_selected_result_type() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = record\n"
+      "    v : longint;\n"
+      "  end;\n"
+      "  tcarrier = object\n"
+      "    fvalue : longint;\n"
+      "    property value : longint read fvalue;\n"
+      "    function add(x : longint) : longint;\n"
+      "  end;\n"
+      "operator + (const a,b : tbox) : tcarrier;\n"
+      "procedure demo(a,b : tbox; var i : longint);\n"
+      "implementation\n"
+      "operator + (const a,b : tbox) : tcarrier;\n"
+      "begin\n"
+      "  result.fvalue := a.v + b.v;\n"
+      "end;\n"
+      "function tcarrier.add(x : longint) : longint;\n"
+      "begin\n"
+      "  add := fvalue + x;\n"
+      "end;\n"
+      "procedure demo(a,b : tbox; var i : longint);\n"
+      "begin\n"
+      "  i := (a + b).value + (a + b).add(2);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "(p_a + p_b).p_fvalue"));
+  CHECK(!contains(out.impl, "(p_a + p_b).p_value"));
+  CHECK(contains(out.impl, "(p_a + p_b).p_add(2)"));
+}
+
+void test_operator_result_property_write_uses_selected_result_type() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnum = record\n"
+      "    v : longint;\n"
+      "  end;\n"
+      "  tbox = class\n"
+      "    procedure setvalue(x : longint);\n"
+      "    property value : longint write setvalue;\n"
+      "  end;\n"
+      "operator + (const a,b : tnum) : tbox;\n"
+      "procedure demo(a,b : tnum);\n"
+      "implementation\n"
+      "operator + (const a,b : tnum) : tbox;\n"
+      "begin\n"
+      "  result := nil;\n"
+      "end;\n"
+      "procedure tbox.setvalue(x : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo(a,b : tnum);\n"
+      "begin\n"
+      "  (a + b).value := 3;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "(p_a + p_b)->p_setvalue(3);"));
+  CHECK(!contains(out.impl, "p_value = 3"));
+}
+
 void test_runtime_upcase_uses_typed_overload_results() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -9512,6 +9577,50 @@ void test_for_in_binary_operator_result_uses_builtin_set_loop() {
   CHECK(contains(out.impl, ".contains(tp2cc_item_"));
 }
 
+void test_for_in_operator_result_uses_own_getenumerator() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnum = record\n"
+      "    v : longint;\n"
+      "  end;\n"
+      "  tenumerator = class\n"
+      "    fcurrent : integer;\n"
+      "    function MoveNext : boolean;\n"
+      "    property Current : integer read fcurrent;\n"
+      "  end;\n"
+      "  tbox = class\n"
+      "    function GetEnumerator : tenumerator;\n"
+      "  end;\n"
+      "operator + (const a,b : tnum) : tbox;\n"
+      "procedure p;\n"
+      "implementation\n"
+      "operator + (const a,b : tnum) : tbox;\n"
+      "begin\n"
+      "  result := nil;\n"
+      "end;\n"
+      "function tenumerator.MoveNext : boolean;\n"
+      "begin\n"
+      "  Result := false;\n"
+      "end;\n"
+      "function tbox.GetEnumerator : tenumerator;\n"
+      "begin\n"
+      "  Result := nil;\n"
+      "end;\n"
+      "procedure p;\n"
+      "var a,b : tnum; i : integer;\n"
+      "begin\n"
+      "  for i in a + b do\n"
+      "    i := i + 1;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "(p_a + p_b)->p_getenumerator()"));
+  CHECK(contains(out.impl, "p_i = tp2cc_enum_"));
+  CHECK(contains(out.impl, "->p_fcurrent"));
+  CHECK(contains(out.impl, "->p_movenext()"));
+}
+
 void test_for_in_own_getenumerator_uses_movenext_and_current() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -11601,6 +11710,8 @@ int main() {
   RUN_TEST(test_string_case_statement_with_upcase_selector);
   RUN_TEST(test_string_case_statement_with_builtin_upcase_selector);
   RUN_TEST(test_string_case_statement_with_operator_result_selector);
+  RUN_TEST(test_operator_result_member_property_uses_selected_result_type);
+  RUN_TEST(test_operator_result_property_write_uses_selected_result_type);
   RUN_TEST(test_runtime_upcase_uses_typed_overload_results);
   RUN_TEST(test_char_case_statement_uses_direct_comparison);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
@@ -11786,6 +11897,7 @@ int main() {
   RUN_TEST(test_type_for_in_lowers_to_ordinal_bounds_loop);
   RUN_TEST(test_for_in_operator_enumerator_precedes_builtin_set);
   RUN_TEST(test_for_in_binary_operator_result_uses_builtin_set_loop);
+  RUN_TEST(test_for_in_operator_result_uses_own_getenumerator);
   RUN_TEST(test_for_in_own_getenumerator_uses_movenext_and_current);
   RUN_TEST(test_for_in_open_array_uses_value_length_bounds);
   RUN_TEST(test_for_in_dynamic_array_property_uses_value_length_bounds);

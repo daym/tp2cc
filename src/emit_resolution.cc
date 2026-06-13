@@ -989,6 +989,42 @@ ResolvedCall EmitResolution::resolved_call_from_candidate(
       .ambiguous = false};
 }
 
+std::string EmitResolution::value_class_alias(const Expr& e) {
+  if (e.kind == Kind::Ident &&
+      static_cast<const Ident&>(e).name == "self") {
+    return scope_.current_class_name;
+  }
+  const bool produced_value =
+      e.kind == Kind::Call || e.kind == Kind::Binary || e.kind == Kind::Unary;
+  if (!produced_value) {
+    if (auto cls = analysis_.deduce_class_alias(e); !cls.empty()) return cls;
+  }
+  if (const TypeExpr* t = overload_types_.type_for_overload(e)) {
+    if (auto cls = analysis_.metaclass_target_name(t); !cls.empty()) return cls;
+    if (registry_) {
+      if (auto cls = registry_->direct_type_name(t, scope_.current_unit_name);
+          !cls.empty()) {
+        return cls;
+      }
+      if (const TypeExpr* canon = analysis_.canonicalize_type(t)) {
+        if (auto cls =
+                registry_->direct_type_name(canon, scope_.current_unit_name);
+            !cls.empty()) {
+          return cls;
+        }
+      }
+    }
+  }
+  return analysis_.deduce_class_alias(e);
+}
+
+std::string EmitResolution::value_metaclass_target(const Expr& e) {
+  if (const TypeExpr* t = overload_types_.type_for_overload(e)) {
+    return analysis_.metaclass_target_name(t);
+  }
+  return {};
+}
+
 std::string EmitResolution::receiver_class_for_member_call(const Expr& callee) {
   if (callee.kind != Kind::Member) return {};
   const auto& member = static_cast<const Member&>(callee);
@@ -1005,9 +1041,9 @@ std::string EmitResolution::receiver_class_for_member_call(const Expr& callee) {
           signature_type_symbol_for(registry_, scope_, id.name);
       return symbol ? type_symbol_pascal_path(*symbol) : id.name;
     }
-    return analysis_.deduce_class_alias(*member.base);
+    return value_class_alias(*member.base);
   }
-  return analysis_.deduce_class_alias(*member.base);
+  return value_class_alias(*member.base);
 }
 
 ResolvedCall EmitResolution::resolve_call(
@@ -1058,8 +1094,7 @@ ResolvedCall EmitResolution::resolve_call(
       }
     }
     if (!inherited_call && !unit_qualified) {
-      const std::string metaclass =
-          analysis_.metaclass_target_name(analysis_.deduce_type(*mem.base));
+      const std::string metaclass = value_metaclass_target(*mem.base);
       if (!metaclass.empty()) {
         all_cands = metaclass_method_cands(metaclass, mem.name);
       } else {
