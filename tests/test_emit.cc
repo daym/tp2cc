@@ -4680,13 +4680,49 @@ void test_string_case_statement_with_builtin_upcase_selector() {
       "end.\n");
   CHECK(!contains(out.impl, "switch ("));
   CHECK(!contains(out.impl, "p_ord("));
-  CHECK(contains(out.impl, "auto p_tp2cc_case_1 = ::rt::p_upcase(p_s);"));
+  CHECK(contains(
+      out.impl,
+      "auto p_tp2cc_case_1 = "
+      "::rt::p_upcase(static_cast<::rt::tp2cc_ShortString<>>(p_s));"));
   CHECK(contains(
       out.impl,
       "if ((::rt::tp2cc_string_compare(p_tp2cc_case_1,"));
   CHECK(contains(
       out.impl,
       "else if ((::rt::tp2cc_string_compare(p_tp2cc_case_1,"));
+}
+
+void test_runtime_upcase_uses_typed_overload_results() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function pick(c : char) : longint; overload;\n"
+      "function pick(const s : string) : longint; overload;\n"
+      "function pick(const s : ansistring) : longint; overload;\n"
+      "procedure demo(c : char; s : string; a : ansistring; var i : longint);\n"
+      "implementation\n"
+      "function pick(c : char) : longint; begin pick := 1; end;\n"
+      "function pick(const s : string) : longint; begin pick := 2; end;\n"
+      "function pick(const s : ansistring) : longint; begin pick := 3; end;\n"
+      "procedure demo(c : char; s : string; a : ansistring; var i : longint);\n"
+      "begin\n"
+      "  i := pick(UpCase(c));\n"
+      "  i := pick(UpCase(s));\n"
+      "  i := pick(UpCase(a));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(
+      out.impl,
+      "p_pick(static_cast<::rt::p_char>("
+      "::rt::p_upcase(static_cast<::rt::p_char>(p_c))))"));
+  CHECK(contains(
+      out.impl,
+      "p_pick(static_cast<::rt::tp2cc_ShortString<>>("
+      "::rt::p_upcase(static_cast<::rt::tp2cc_ShortString<>>(p_s))))"));
+  CHECK(contains(
+      out.impl,
+      "p_pick(static_cast<::rt::tp2cc_AnsiString>("
+      "::rt::p_upcase(static_cast<::rt::tp2cc_AnsiString>(p_a))))"));
 }
 
 void test_char_case_statement_uses_direct_comparison() {
@@ -11503,6 +11539,7 @@ int main() {
   RUN_TEST(test_string_case_statement_with_char_label_uses_string_compare);
   RUN_TEST(test_string_case_statement_with_upcase_selector);
   RUN_TEST(test_string_case_statement_with_builtin_upcase_selector);
+  RUN_TEST(test_runtime_upcase_uses_typed_overload_results);
   RUN_TEST(test_char_case_statement_uses_direct_comparison);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
   RUN_TEST(test_parameterless_procvar_stmt_autocalls);

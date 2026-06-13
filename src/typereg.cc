@@ -862,6 +862,14 @@ void register_runtime_string_compare_operator(UnitInfo& rt_exports,
   rt_exports.iface_operators[op].push_back(make_proc_info("__rt__", pd));
 }
 
+void register_runtime_proc(UnitInfo& rt_exports, ProcKind pkind,
+                           std::string name, std::vector<Param> params,
+                           TypePtr return_type = nullptr) {
+  auto pd = runtime_proc_decl(pkind, std::move(name), std::move(params),
+                              std::move(return_type));
+  rt_exports.iface_procs[lc(pd->name)].push_back(make_proc_info("__rt__", pd));
+}
+
 MethodSig runtime_method_sig(std::string name, ProcKind pkind,
                              std::vector<Param> params,
                              TypePtr return_type = nullptr,
@@ -1350,7 +1358,6 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"bsrdword",   1, true,  false, "cardinal"},
       {"bsfqword",   1, true,  false, "cardinal"},
       {"bsrqword",   1, true,  false, "cardinal"},
-      {"upcase",     1, true,  false, "char"},
       {"pred",       1, true,  false, ""},
       {"succ",       1, true,  false, ""},
       {"include",    2, false, false, ""},
@@ -1454,9 +1461,18 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   units["__rt__"] = unit_info_for("__rt__", {}, std::move(rt_iface_procs));
   UnitInfo& rt_exports = units["__rt__"];
 
-  // Runtime MethodSigs below carry synthesized ProcDecls so overload
-  // resolution sees the same parameter data for runtime classes as for
-  // Pascal declarations.
+  register_runtime_proc(
+      rt_exports, ProcKind::Function, "upcase",
+      {runtime_const_param("c", runtime_type_name("char"))},
+      runtime_type_name("char"));
+  register_runtime_proc(
+      rt_exports, ProcKind::Function, "upcase",
+      {runtime_const_param("s", runtime_type_name("shortstring"))},
+      runtime_type_name("shortstring"));
+  register_runtime_proc(
+      rt_exports, ProcKind::Function, "upcase",
+      {runtime_const_param("s", runtime_type_name("ansistring"))},
+      runtime_type_name("ansistring"));
 
   // Runtime globals/constants that old compiler trees refer to directly.
   register_runtime_var(rt_exports, "doserror", runtime_type_name("longint"));
