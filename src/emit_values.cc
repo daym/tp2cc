@@ -58,6 +58,20 @@ bool EmitValues::same_cxx_type(const TypeExpr* a, const TypeExpr* b) {
   return types_.type_to_cxx(*a) == types_.type_to_cxx(*b);
 }
 
+const TypeExpr* EmitValues::set_literal_member_source_type(const Expr& e) {
+  // Set-literal member typing preserves the source enum owner's unit. A target
+  // set type can be an alias from a different unit, but the literal's enum
+  // constants still need their own defining-unit carrier.
+  return analysis_.deduce_type(e);
+}
+
+const TypeExpr* EmitValues::metaclass_value_base_type(const Expr& e) {
+  // Plain procedural values cannot be class-method dispatches through a
+  // metaclass variable. This query identifies that metaclass base; it is not a
+  // target-typed conversion of the member expression.
+  return analysis_.deduce_type(e);
+}
+
 std::string EmitValues::set_literal_to_cxx(const SetLit& s,
                                            const TypeExpr* target) {
   if (!target) target = analysis_.deduce_set_literal_type(s);
@@ -84,7 +98,7 @@ std::string EmitValues::set_literal_to_cxx(const SetLit& s,
       const TypeExpr* common_literal_type = nullptr;
       bool consistent_literal_type = true;
       for (const auto& el : s.elements) {
-        const TypeExpr* literal_type = analysis_.deduce_type(*el);
+        const TypeExpr* literal_type = set_literal_member_source_type(*el);
         if (!literal_type) {
           consistent_literal_type = false;
           break;
@@ -363,7 +377,7 @@ bool EmitValues::reject_metaclass_member_as_plain_proc_value(
   const auto& mem = static_cast<const Member&>(*candidate);
   if (!registry_ || !mem.base) return false;
   const std::string metaclass =
-      analysis_.metaclass_target_name(analysis_.deduce_type(*mem.base));
+      analysis_.metaclass_target_name(metaclass_value_base_type(*mem.base));
   if (metaclass.empty()) return false;
   const auto* methods = registry_->lookup_class_methods(
       metaclass, mem.name, scope_.current_unit_name);
