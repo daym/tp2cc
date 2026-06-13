@@ -320,6 +320,8 @@ class EmitStorage {
   // type to ask the registry for.
   std::string offsetof_base_type_cxx(const ast::TypeExpr* t,
                                      const std::string& base_expr_cxx);
+  const ast::TypeExpr* storage_expr_type(const ast::Expr& e);
+  const ast::TypeExpr* canonical_storage_expr_type(const ast::Expr& e);
   std::string ord_storage_target_cxx(const ast::Expr& source);
   bool chr_source_has_byte_storage(const ast::Expr& source);
   std::optional<StorageCastTarget> storage_typecast_target(

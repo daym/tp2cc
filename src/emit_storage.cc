@@ -51,6 +51,17 @@ EmitStorage::EmitStorage(const TypeRegistry* registry, ScopeStateView& scope,
       resolve_name_provider_(resolve_name_provider),
       expr_ops_(expr_ops) {}
 
+const TypeExpr* EmitStorage::storage_expr_type(const Expr& e) {
+  // Storage lowering needs the source/designator type for address composition
+  // and aliasing decisions. Overload-selected value result typing is a
+  // different query domain and must not be mixed into storage ownership.
+  return analysis_.deduce_type(e);
+}
+
+const TypeExpr* EmitStorage::canonical_storage_expr_type(const Expr& e) {
+  return analysis_.canonicalize_type(storage_expr_type(e));
+}
+
 std::string EmitStorage::offsetof_base_type_cxx(
     const TypeExpr* t, const std::string& base_expr_cxx) {
   // `offsetof` needs a C++ type, not a value expression. Prefer the registered
@@ -148,8 +159,7 @@ std::string EmitStorage::ord_storage_target_cxx(const Expr& source) {
 }
 
 bool EmitStorage::chr_source_has_byte_storage(const Expr& source) {
-  const TypeExpr* source_type =
-      analysis_.canonicalize_type(analysis_.deduce_type(source));
+  const TypeExpr* source_type = canonical_storage_expr_type(source);
   if (!source_type) return false;
   if (source_type->kind == Kind::TyName) {
     const std::string lower =
@@ -441,7 +451,7 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
     if (auto base = storage_designator(*i.base)) {
       if (base->is_bytewise() || !base->ptr_cxx.empty()) {
         return raw_address_index_designator(
-            i, *base, analysis_.deduce_type(*i.base));
+            i, *base, storage_expr_type(*i.base));
       }
     }
     if (index_base_denotes_property_value(i)) {
@@ -451,7 +461,7 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
       return std::nullopt;
     }
     if (!expr_is_storage_lvalue(e)) return std::nullopt;
-    const TypeExpr* t = analysis_.deduce_type(e);
+    const TypeExpr* t = storage_expr_type(e);
     std::string type_cxx;
     if (t) type_cxx = types_.type_to_cxx(*t);
 
@@ -476,19 +486,19 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
     // such as `constexp.internalerror := @internalerror`.
     if (auto unit_member = analysis_.resolve_unit_qualified_member(m)) {
       if (unit_member->resolved.kind == ResolvedKind::UnitVar) {
-        const TypeExpr* t = analysis_.deduce_type(e);
+        const TypeExpr* t = storage_expr_type(e);
         return EmitStorageDesignator::ordinary(
             unit_member->resolved.cxx,
             t ? scalar_storage_type_cxx(t) : std::string{});
       }
       return std::nullopt;
     }
-    const TypeExpr* base_type = analysis_.deduce_type(*m.base);
+    const TypeExpr* base_type = storage_expr_type(*m.base);
     const bool variant_payload_field =
         analysis_.record_field_is_variant_in_type(base_type, m.name);
     auto base = storage_designator(*m.base);
     if (!base && variant_payload_field && expr_is_storage_lvalue(*m.base)) {
-      const TypeExpr* field_type = analysis_.deduce_type(e);
+      const TypeExpr* field_type = storage_expr_type(e);
       if (!field_type) {
         field_type = analysis_.lookup_record_field_type_in_type(base_type,
                                                                 m.name);
@@ -544,7 +554,7 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
       const std::string text =
           base->is_bytewise() ? std::string{}
                               : base_text + member_access_op(*m.base) + member_cxx;
-      const TypeExpr* field_type = analysis_.deduce_type(e);
+      const TypeExpr* field_type = storage_expr_type(e);
       if (!field_type) {
         field_type = analysis_.lookup_record_field_type_in_type(base_type,
                                                                 m.name);
@@ -650,7 +660,7 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
   }
 
   if (!expr_is_storage_lvalue(e)) return std::nullopt;
-  const TypeExpr* t = analysis_.deduce_type(e);
+  const TypeExpr* t = storage_expr_type(e);
   std::string type_cxx;
   if (t) type_cxx = types_.type_to_cxx(*t);
   if (e.kind == Kind::Deref) {
@@ -682,9 +692,9 @@ std::string EmitStorage::reference_class_cast_pointer_cxx(
   const auto& call = static_cast<const Call&>(base_expr);
   if (call.args.size() != 1 || call.callee->kind != Kind::Ident) return {};
   const TypeExpr* target_ty =
-      analysis_.canonicalize_type(analysis_.deduce_type(base_expr));
+      canonical_storage_expr_type(base_expr);
   if (!type_is_reference_class(target_ty)) return {};
-  const TypeExpr* source_ty = analysis_.deduce_type(*call.args[0]);
+  const TypeExpr* source_ty = storage_expr_type(*call.args[0]);
   if (!type_is_reference_class(source_ty) && !type_is_pointerish(source_ty)) {
     return {};
   }
@@ -793,7 +803,7 @@ std::optional<EmitBytewiseStorage> EmitStorage::bytewise_storage_ref(
   const Expr& root = peeled ? *peeled : e;
   if (!expr_is_storage_lvalue(root)) return std::nullopt;
 
-  const TypeExpr* elem_type = analysis_.deduce_type(root);
+  const TypeExpr* elem_type = storage_expr_type(root);
   if (!elem_type) return std::nullopt;
   const std::string elem_cxx = types_.type_to_cxx(*elem_type);
 
@@ -811,7 +821,7 @@ std::optional<EmitBytewiseStorage> EmitStorage::bytewise_storage_ref(
 
 std::optional<EmitBytewiseStorage> EmitStorage::packed_scalar_storage_ref(
     const Expr& e) {
-  const TypeExpr* elem_type = analysis_.canonicalize_type(analysis_.deduce_type(e));
+  const TypeExpr* elem_type = canonical_storage_expr_type(e);
   if (!elem_type) return std::nullopt;
   const std::string elem_cxx = types_.type_to_cxx(*elem_type);
   switch (elem_type->kind) {
@@ -838,7 +848,7 @@ std::optional<EmitBytewiseStorage> EmitStorage::packed_scalar_storage_ref(
     // packed aggregate lvalue. Only `packed_scalar_value_load` has the offset
     // based lowering needed for that expression, and it is intentionally read-only.
     if (direct_packed_aggregate_field_use(*m.base)) return std::nullopt;
-    const TypeExpr* base_type = analysis_.deduce_type(*m.base);
+    const TypeExpr* base_type = storage_expr_type(*m.base);
     if (type_is_packed_record(base_type)) {
       if (auto base = storage_designator(*m.base)) {
         const std::string offset_type =
@@ -865,7 +875,7 @@ std::optional<EmitUntypedStorageIndexView> EmitStorage::untyped_storage_index_vi
       !expr_is_untyped_storage_ref(*cast.args[0])) {
     return std::nullopt;
   }
-  const TypeExpr* base_ty = analysis_.deduce_type(*i.base);
+  const TypeExpr* base_ty = storage_expr_type(*i.base);
   if (!base_ty) return std::nullopt;
   base_ty = analysis_.canonicalize_type(base_ty);
   if (!base_ty || base_ty->kind != Kind::TyArray) return std::nullopt;
@@ -997,7 +1007,7 @@ std::optional<EmitPackedScalarValueLoad> EmitStorage::packed_scalar_value_load(
   if (!root || chain.empty()) return std::nullopt;
   std::reverse(chain.begin(), chain.end());
 
-  const TypeExpr* current_type = analysis_.deduce_type(*root);
+  const TypeExpr* current_type = storage_expr_type(*root);
   if (!current_type) return std::nullopt;
 
   bool crossed_packed_aggregate = false;
@@ -1052,7 +1062,7 @@ std::optional<EmitPackedAggregateFieldUse>
 EmitStorage::direct_packed_aggregate_field_use(const Expr& e) {
   if (!registry_ || e.kind != Kind::Member) return std::nullopt;
   const auto& m = static_cast<const Member&>(e);
-  const TypeExpr* base_type = analysis_.deduce_type(*m.base);
+  const TypeExpr* base_type = storage_expr_type(*m.base);
   if (!type_is_packed_record(base_type)) return std::nullopt;
   const TypeExpr* field_type =
       analysis_.lookup_record_field_type_in_type(base_type, m.name);
@@ -1082,7 +1092,7 @@ bool EmitStorage::variant_payload_path_use(const Expr& e) {
   if (e.kind != Kind::Member) return false;
 
   const auto& m = static_cast<const Member&>(e);
-  const TypeExpr* base_type = analysis_.deduce_type(*m.base);
+  const TypeExpr* base_type = storage_expr_type(*m.base);
   if (analysis_.record_field_is_variant_in_type(base_type, m.name)) {
     return true;
   }
@@ -1191,7 +1201,7 @@ bool EmitStorage::expr_is_untyped_storage_ref(const Expr& e) {
 }
 
 bool EmitStorage::expr_is_charish(const Expr& e) {
-  const TypeExpr* t = analysis_.deduce_type(e);
+  const TypeExpr* t = storage_expr_type(e);
   if (!t) return false;
   t = analysis_.canonicalize_type(t);
   return tyname_is_charish(t);
@@ -1254,11 +1264,11 @@ bool EmitStorage::expr_is_reference_class(const Expr& e) {
       return true;
     }
   }
-  return type_is_reference_class(analysis_.deduce_type(e));
+  return type_is_reference_class(storage_expr_type(e));
 }
 
 std::string EmitStorage::member_access_op(const Expr& e) {
-  const TypeExpr* t = analysis_.deduce_type(e);
+  const TypeExpr* t = storage_expr_type(e);
   if (expr_is_reference_class(e) || type_is_pointerish(t)) return "->";
   if (t) {
     std::string cxx = types_.type_to_cxx(*t);
