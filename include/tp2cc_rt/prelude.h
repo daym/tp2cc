@@ -3414,11 +3414,10 @@ template <typename T, typename N> inline void tp2cc_unaligned_dec(void* p, N n) 
   tp2cc_unaligned_store<T>(p, x);
 }
 
-// No rvalue `p_inc`/`p_dec` overloads here: typed-storage casted lvalues like
-// `inc(longint(p))` on a real pointer slot are emitted as
-// `p_inc(tp2cc_reinterpret_storage_ref<int32_t>(p))`. Untyped-storage byte views
-// use `tp2cc_reinterpret_inc` / `tp2cc_reinterpret_dec` above instead of manufacturing
-// a potentially misaligned C++ reference.
+// No rvalue `p_inc`/`p_dec` overloads here. Storage-view casts such as
+// `inc(longint(p))` are emitted through `tp2cc_reinterpret_inc` /
+// `tp2cc_reinterpret_dec` above so the operation copies bytes instead of
+// manufacturing a C++ reference to a different object type.
 
 // --- Missing small RTL procedures ------------------------------------------
 

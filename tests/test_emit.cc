@@ -1172,11 +1172,11 @@ void test_ord_storage_view_for_char_assignment_inc_and_address() {
       "  p := @ord(c);\n"
       "end;\n"
       "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_inc<uint8_t>((&p_c))"));
   CHECK(contains(out.impl,
-                 "::rt::p_inc(::rt::tp2cc_reinterpret_storage_ref<uint8_t>(p_c))"));
-  CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<uint8_t>(p_c) = 66;"));
+                 "::rt::tp2cc_reinterpret_store<uint8_t>((&p_c), 66);"));
   CHECK(contains(out.impl, "reinterpret_cast<uint8_t*>((&p_c))"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_storage_ref<uint8_t>(p_c)"));
 }
 
 void test_ord_storage_view_for_shortstring_length_byte() {
@@ -1193,7 +1193,9 @@ void test_ord_storage_view_for_shortstring_length_byte() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_dec(::rt::tp2cc_reinterpret_storage_ref<uint8_t>(p_s[0]))"));
+                 "::rt::tp2cc_reinterpret_dec<uint8_t>((&p_s[0]))"));
+  CHECK(!contains(out.impl,
+                  "tp2cc_reinterpret_storage_ref<uint8_t>(p_s[0])"));
 }
 
 void test_chr_storage_view_for_byte_assignment_inc_and_var_arg() {
@@ -1215,13 +1217,15 @@ void test_chr_storage_view_for_byte_assignment_inc_and_var_arg() {
       "end.\n");
   CHECK(contains(
       out.impl,
-      "::rt::tp2cc_reinterpret_storage_ref<::rt::p_char>(p_b) = ::rt::tp2cc_char_of('B');"));
+      "::rt::tp2cc_reinterpret_store<::rt::p_char>((&p_b), ::rt::tp2cc_char_of('B'));"));
   CHECK(contains(
       out.impl,
-      "::rt::p_inc(::rt::tp2cc_reinterpret_storage_ref<::rt::p_char>(p_b))"));
+      "::rt::tp2cc_reinterpret_inc<::rt::p_char>((&p_b))"));
   CHECK(contains(
       out.impl,
-      "p_take(::rt::tp2cc_reinterpret_storage_ref<::rt::p_char>(p_b));"));
+      "p_take(::rt::tp2cc_reinterpret_ref<::rt::p_char>((&p_b)));"));
+  CHECK(!contains(out.impl,
+                  "tp2cc_reinterpret_storage_ref<::rt::p_char>(p_b)"));
 }
 
 void test_ord_char_value_has_byte_result_type() {
@@ -3702,7 +3706,7 @@ void test_inc_untyped_primitive_cast_reinterprets_storage_by_byte_copy() {
   CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_inc<int32_t>(p_b)"));
 }
 
-void test_inc_primitive_cast_reinterprets_storage() {
+void test_inc_primitive_cast_uses_byte_copy_storage() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -3713,8 +3717,8 @@ void test_inc_primitive_cast_reinterprets_storage() {
       "  inc(longint(p));\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl,
-                 "::rt::p_inc(::rt::tp2cc_reinterpret_storage_ref<int32_t>(p_p))"));
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_inc<int32_t>((&p_p))"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_storage_ref<int32_t>(p_p)"));
   CHECK(!contains(out.impl, "p_p = ((int32_t)(p_p) + 1)"));
 }
 
@@ -11021,7 +11025,7 @@ void test_val_var_arg_typecast_reinterprets_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<uint32_t>(p_result)"));
+                 "::rt::tp2cc_reinterpret_ref<uint32_t>((&p_result))"));
 }
 
 void test_var_arg_class_cast_reinterprets_storage_slot() {
@@ -11674,7 +11678,7 @@ int main() {
   RUN_TEST(test_primitive_cast_read_reinterprets_storage);
   RUN_TEST(test_addr_of_primitive_cast_returns_typed_pointer);
   RUN_TEST(test_inc_untyped_primitive_cast_reinterprets_storage_by_byte_copy);
-  RUN_TEST(test_inc_primitive_cast_reinterprets_storage);
+  RUN_TEST(test_inc_primitive_cast_uses_byte_copy_storage);
   RUN_TEST(test_untyped_array_view_index_uses_byte_load_store);
   RUN_TEST(test_aggregate_to_primitive_cast_reinterprets_bytes);
   RUN_TEST(test_nested_aggregate_to_primitive_cast_reinterprets_source_bytes);

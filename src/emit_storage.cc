@@ -403,6 +403,14 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
                 packed->void_ptr_text, view->target_cxx);
           }
         }
+        // Primitive storage views only need the source bytes. Model them as
+        // byte-addressed storage so assignment and Inc/Dec use memcpy helpers
+        // instead of binding a C++ reference of the cast target type.
+        return view->source_is_unaligned_bytewise_storage
+                   ? EmitStorageDesignator::unaligned_bytewise(
+                         view->source_ptr_cxx, view->target_cxx)
+                   : EmitStorageDesignator::bytewise(view->source_ptr_cxx,
+                                                     view->target_cxx);
       }
       // In a storage context, `T(x)` aliases the original Pascal variable
       // designator as type `T`. This reference path is only for ordinary
