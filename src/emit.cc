@@ -423,10 +423,10 @@ struct Emitter : ResolveNameProvider,
   void emit_forward_struct_decls(
       const std::vector<ast::DeclPtr>& decls) override;
 
-  // Expression-type deduction. Returns the Pascal TypeExpr when this analysis
-  // layer has enough context; otherwise nullptr. Consults the TypeRegistry for
-  // globals and the current scope tables for locals/self-class.
-  const ast::TypeExpr* deduce_type(const ast::Expr& e);
+  // Plain analysis typing, before selected call/operator result substitution.
+  // Use this for source/designator classification; value consumers that depend
+  // on overload resolution use type_for_overload().
+  const ast::TypeExpr* plain_expr_type(const ast::Expr& e);
   const ast::TypeExpr* type_for_overload(const ast::Expr& e) override;
   const ast::TypeExpr* compute_type_for_overload(const ast::Expr& e);
   const ast::TypeExpr* type_for_resolved_call(
@@ -672,7 +672,7 @@ struct Emitter : ResolveNameProvider,
 // decisions like "is `obj.name` a method call or a field read?" come
 // from the actual type tree, not name-matching heuristics.
 
-const TypeExpr* Emitter::deduce_type(const Expr& e) {
+const TypeExpr* Emitter::plain_expr_type(const Expr& e) {
   return analysis_.deduce_type(e);
 }
 
@@ -743,7 +743,7 @@ const TypeExpr* Emitter::compute_type_for_overload(const Expr& e) {
     const auto& c = static_cast<const Call&>(e);
     if (c.callee->kind == Kind::Ident &&
         static_cast<const Ident&>(*c.callee).name == "ord") {
-      if (const TypeExpr* t = analysis_.deduce_type(e)) return t;
+      if (const TypeExpr* t = plain_expr_type(e)) return t;
     }
     if (const TypeExpr* t = type_for_resolved_call(c)) {
       return t;
@@ -761,7 +761,7 @@ const TypeExpr* Emitter::compute_type_for_overload(const Expr& e) {
       }
     }
   }
-  return analysis_.deduce_type(e);
+  return plain_expr_type(e);
 }
 
 std::string Emitter::value_class_alias(const Expr& e) {
@@ -1775,7 +1775,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       const auto& d = static_cast<const Deref&>(e);
       if (auto storage = storage_.storage_designator(*d.operand);
           storage && storage->is_bytewise() &&
-          storage_.type_is_pointerish(deduce_type(*d.operand))) {
+          storage_.type_is_pointerish(plain_expr_type(*d.operand))) {
         // A byte-addressed pointer slot contains a pointer value. Load that
         // value by bytes, then dereference the pointee; do not turn packed or
         // variant payload storage itself into a typed C++ receiver.
@@ -1822,7 +1822,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
         if (registry && m.base) {
           const std::string metaclass =
-              metaclass_target_name(deduce_type(*m.base));
+              metaclass_target_name(plain_expr_type(*m.base));
           if (!metaclass.empty()) {
             bool class_method = false;
             if (const auto* methods =
@@ -1874,7 +1874,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       suppress_packed_scalar_value_load = saved_suppress;
       is_callee_context_ = saved;
       if (!a.double_addr && registry) {
-        const TypeExpr* ot = deduce_type(*a.operand);
+        const TypeExpr* ot = plain_expr_type(*a.operand);
         if (ot) ot = registry->canonicalize(ot, current_unit_name);
         if (ot && ot->kind == Kind::TyArray &&
             static_cast<const TyArray&>(*ot).array_kind == ArrayKind::Fixed) {
@@ -2585,7 +2585,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     case Kind::Index: {
       const auto& i = static_cast<const Index&>(e);
       if (auto use = direct_packed_aggregate_field_use(*i.base);
-          use && !type_is_byte_aligned_packed_index_carrier(deduce_type(*i.base))) {
+          use && !type_is_byte_aligned_packed_index_carrier(
+                     plain_expr_type(*i.base))) {
         report_packed_aggregate_subobject_use(i.loc, "indexing", *use);
       }
       std::vector<const Expr*> indices;
