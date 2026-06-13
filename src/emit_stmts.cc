@@ -110,6 +110,16 @@ EmitStmts::EmitStmts(const TypeRegistry* registry, ScopeStateView& scope,
       properties_(properties),
       stmt_ops_(stmt_ops) {}
 
+const TypeExpr* EmitStmts::selected_value_type(const Expr& expr) {
+  // Query a value expression after overload/operator selection. Use this only
+  // for statement dispatch that depends on the produced value type. Assignment
+  // targets need lvalue storage identity for writes, var/out checks, range
+  // checks, and byte-addressed packed/variant slots. `with` receivers need the
+  // bound receiver's storage/member-access form, not only the type of a value
+  // produced by an expression.
+  return overload_types_.type_for_overload(expr);
+}
+
 bool EmitStmts::stmt_autocalls_procvar(const Expr& expr) {
   switch (expr.kind) {
     case Kind::Ident:
@@ -729,7 +739,7 @@ void EmitStmts::emit_case_stmt(const CaseStmt& cs) {
     selector += "_";
   }
 
-  const TypeExpr* selector_type = analysis_.deduce_type(*cs.selector);
+  const TypeExpr* selector_type = selected_value_type(*cs.selector);
   bool scope_inserted = scope_.local_scope.insert(selector).second;
   bool type_inserted = false;
   if (selector_type) {
@@ -1058,7 +1068,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_string(
     const For& f, const std::string& var) {
   if (!f.in_expr) return ForInEmitResult::NotMatched;
   const TypeExpr* in_type =
-      analysis_.canonicalize_type(analysis_.deduce_type(*f.in_expr));
+      analysis_.canonicalize_type(selected_value_type(*f.in_expr));
   bool is_string = in_type && in_type->kind == Kind::TyString;
   if (!is_string && in_type && in_type->kind == Kind::TyName) {
     const std::string name =
@@ -1106,7 +1116,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_array(
     const For& f, const std::string& var) {
   if (!f.in_expr) return ForInEmitResult::NotMatched;
   const TypeExpr* in_type =
-      analysis_.canonicalize_type(analysis_.deduce_type(*f.in_expr));
+      analysis_.canonicalize_type(selected_value_type(*f.in_expr));
   if (!(in_type && in_type->kind == Kind::TyArray)) {
     return ForInEmitResult::NotMatched;
   }
@@ -1164,7 +1174,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_set(
     const For& f, const std::string& var) {
   if (!f.in_expr) return ForInEmitResult::NotMatched;
   const TypeExpr* in_type =
-      analysis_.canonicalize_type(analysis_.deduce_type(*f.in_expr));
+      analysis_.canonicalize_type(selected_value_type(*f.in_expr));
   if (!(in_type && in_type->kind == Kind::TySet)) {
     return ForInEmitResult::NotMatched;
   }

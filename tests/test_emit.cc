@@ -4692,6 +4692,39 @@ void test_string_case_statement_with_builtin_upcase_selector() {
       "else if ((::rt::tp2cc_string_compare(p_tp2cc_case_1,"));
 }
 
+void test_string_case_statement_with_operator_result_selector() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = record\n"
+      "    v : longint;\n"
+      "  end;\n"
+      "operator + (const a,b : tbox) : string;\n"
+      "procedure demo(a,b : tbox; var i : longint);\n"
+      "implementation\n"
+      "operator + (const a,b : tbox) : string;\n"
+      "begin\n"
+      "  result := 'ok';\n"
+      "end;\n"
+      "procedure demo(a,b : tbox; var i : longint);\n"
+      "begin\n"
+      "  case a + b of\n"
+      "    'ok': i := 1;\n"
+      "  else\n"
+      "    i := 0;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(!contains(out.impl, "switch ("));
+  CHECK(!contains(out.impl, "p_ord("));
+  CHECK(contains(out.impl, "auto p_tp2cc_case_1 = (p_a + p_b);"));
+  CHECK(contains(
+      out.impl,
+      "if ((::rt::tp2cc_string_compare(p_tp2cc_case_1, "
+      "::rt::tp2cc_shortstring_literal<255>("));
+}
+
 void test_runtime_upcase_uses_typed_overload_results() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -9451,6 +9484,34 @@ void test_for_in_operator_enumerator_precedes_builtin_set() {
   CHECK(!contains(out.impl, "auto tp2cc_set_"));
 }
 
+void test_for_in_binary_operator_result_uses_builtin_set_loop() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = record\n"
+      "    v : longint;\n"
+      "  end;\n"
+      "  tregs = set of 0..3;\n"
+      "operator + (const a,b : tbox) : tregs;\n"
+      "procedure p;\n"
+      "implementation\n"
+      "operator + (const a,b : tbox) : tregs;\n"
+      "begin\n"
+      "  result := [0,2];\n"
+      "end;\n"
+      "procedure p;\n"
+      "var a,b : tbox; j : integer;\n"
+      "begin\n"
+      "  for j in a + b do\n"
+      "    j := j + 1;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "auto tp2cc_set_"));
+  CHECK(contains(out.impl, "(p_a + p_b)"));
+  CHECK(contains(out.impl, ".contains(tp2cc_item_"));
+}
+
 void test_for_in_own_getenumerator_uses_movenext_and_current() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -11539,6 +11600,7 @@ int main() {
   RUN_TEST(test_string_case_statement_with_char_label_uses_string_compare);
   RUN_TEST(test_string_case_statement_with_upcase_selector);
   RUN_TEST(test_string_case_statement_with_builtin_upcase_selector);
+  RUN_TEST(test_string_case_statement_with_operator_result_selector);
   RUN_TEST(test_runtime_upcase_uses_typed_overload_results);
   RUN_TEST(test_char_case_statement_uses_direct_comparison);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
@@ -11723,6 +11785,7 @@ int main() {
   RUN_TEST(test_set_for_in_lowers_to_ordered_membership_scan);
   RUN_TEST(test_type_for_in_lowers_to_ordinal_bounds_loop);
   RUN_TEST(test_for_in_operator_enumerator_precedes_builtin_set);
+  RUN_TEST(test_for_in_binary_operator_result_uses_builtin_set_loop);
   RUN_TEST(test_for_in_own_getenumerator_uses_movenext_and_current);
   RUN_TEST(test_for_in_open_array_uses_value_length_bounds);
   RUN_TEST(test_for_in_dynamic_array_property_uses_value_length_bounds);

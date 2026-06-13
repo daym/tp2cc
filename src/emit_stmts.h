@@ -104,6 +104,7 @@ class EmitStmts {
   ForInEmitResult emit_for_in_enumerator_provider(
       const ast::For& f, const std::string& var,
       const ForInEnumeratorProvider& provider);
+  const ast::TypeExpr* selected_value_type(const ast::Expr& expr);
   std::optional<std::string> for_in_type_rhs_name(const ast::Expr& e);
   std::string for_in_class_type_name(
       const ast::TypeExpr* type,
