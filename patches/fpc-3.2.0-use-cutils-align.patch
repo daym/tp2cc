@@ -54,3 +54,13 @@ call sites.
  
    constructor tcpuprocinfo.create(aparent: tprocinfo);
      begin
+--- a/compiler/powerpc64/cpupara.pas
++++ b/compiler/powerpc64/cpupara.pas
+@@ -65,6 +65,7 @@ implementation
+ 
+ uses
+   verbose, systems,
++  cutils,
+   defutil,symtable,symcpu,
+   procinfo, cpupi;
+ 
