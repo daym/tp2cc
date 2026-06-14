@@ -1304,6 +1304,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"inttostr",   1, true,  false, "shortstring"},
       {"strtoint",   1, true,  false, "longint"},
       {"stringofchar", 2, true, false, "ansistring"},
+      {"comparetext", 2, true, false, "longint"},
       {"strlen",     1, true,  false, "longint"},
       {"strpcopy",   2, true,  false, "pchar"},
       {"strrscan",   2, true,  false, "pchar"},
@@ -1368,6 +1369,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"findclose",  1, false, false, ""},
       {"flush",      1, false, false, ""},
       {"erase",      1, false, false, ""},
+      {"chdir",      1, false, false, ""},
       {"mkdir",      1, false, false, ""},
       {"rmdir",      1, false, false, ""},
       {"getdir",     2, false, false, ""},
@@ -1420,6 +1422,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"filesize",   1, true,  false, "longint"},
       {"disksize",   1, true,  false, "longint"},
       {"seek",       2, false, false, ""},
+      {"truncate",   1, false, false, ""},
       {"rename",     2, false, false, ""},
       {"renamefile", 2, true,  false, "boolean"},
       {"exec",       2, false, false, ""},
@@ -1500,6 +1503,10 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
                          runtime_int_literal(0x01));
   register_runtime_const(rt_exports, "hidden", runtime_type_name("longint"),
                          runtime_int_literal(0x02));
+  register_runtime_const(rt_exports, "sysfile", runtime_type_name("longint"),
+                         runtime_int_literal(0x04));
+  register_runtime_const(rt_exports, "volumeid", runtime_type_name("longint"),
+                         runtime_int_literal(0x08));
   register_runtime_const(rt_exports, "directory",
                          runtime_type_name("longint"),
                          runtime_int_literal(0x10));
@@ -1557,6 +1564,8 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       runtime_record_field("attr", runtime_type_name("byte")),
       runtime_record_field("name", runtime_type_name("shortstring")),
   }));
+  register_runtime_alias(*this, rt_exports, "tsearchrec",
+                         runtime_type_name("searchrec"));
   register_runtime_alias(*this, rt_exports, "stat", runtime_record_type({
       runtime_record_field("mtime", runtime_type_name("longint")),
       runtime_record_field("st_mtime", runtime_type_name("longint")),
@@ -1575,6 +1584,16 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   }));
   register_runtime_alias(*this, rt_exports, "tdatetime",
                          runtime_type_name("double"));
+  register_runtime_alias(*this, rt_exports, "tsystemtime", runtime_record_type({
+      runtime_record_field("year", runtime_type_name("word")),
+      runtime_record_field("month", runtime_type_name("word")),
+      runtime_record_field("dayofweek", runtime_type_name("word")),
+      runtime_record_field("day", runtime_type_name("word")),
+      runtime_record_field("hour", runtime_type_name("word")),
+      runtime_record_field("minute", runtime_type_name("word")),
+      runtime_record_field("second", runtime_type_name("word")),
+      runtime_record_field("millisecond", runtime_type_name("word")),
+  }));
   register_runtime_alias(*this, rt_exports, "dirstr",
                          runtime_type_name("shortstring"));
   register_runtime_alias(*this, rt_exports, "namestr",
@@ -1602,6 +1621,9 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   register_runtime_alias(
       *this, rt_exports, "pansichar",
       runtime_pointer_type(runtime_type_name("ansichar")));
+  register_runtime_alias(
+      *this, rt_exports, "pansistring",
+      runtime_pointer_type(runtime_type_name("ansistring")));
   register_runtime_alias(
       *this, rt_exports, "pcardinal",
       runtime_pointer_type(runtime_type_name("cardinal")));

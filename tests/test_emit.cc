@@ -3088,6 +3088,24 @@ void test_blockwrite_fixed_array_uses_const_storage_address() {
   CHECK(!contains(out.impl, "::rt::p_blockwrite(p_f, p_buf, p_count)"));
 }
 
+void test_system_truncate_resolves_as_runtime_file_proc() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var\n"
+      "  f : file;\n"
+      "begin\n"
+      "  System.Truncate(f);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::rt::p_truncate(p_f)"));
+}
+
 void test_byte_array_typecast_index_read_builds_value() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -11652,6 +11670,7 @@ int main() {
   RUN_TEST(test_string_index_char_coerces_to_shortstring_formal);
   RUN_TEST(test_block_io_string_index_uses_storage_addresses);
   RUN_TEST(test_blockwrite_fixed_array_uses_const_storage_address);
+  RUN_TEST(test_system_truncate_resolves_as_runtime_file_proc);
   RUN_TEST(test_byte_array_typecast_index_read_builds_value);
   RUN_TEST(test_local_byte_array_typecast_index_read_builds_value);
   RUN_TEST(test_array_typecast_index_assignment_uses_storage_view);
