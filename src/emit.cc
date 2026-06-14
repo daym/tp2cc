@@ -1589,6 +1589,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // rules, so this branch can emit the qualified symbol directly.
       if (auto unit_member = analysis_.resolve_unit_qualified_member(m)) {
         const ResolveResult& rr = unit_member->resolved;
+        if (rr.kind == ResolvedKind::Unknown) {
+          report_error(m.loc, "unresolved identifier `" +
+                                  unit_member->unit_name + "." + m.name + "`");
+          return {};
+        }
         if (rr.kind == ResolvedKind::UnitType) {
           const std::string qualified =
               unit_member->unit_name + "." + m.name;

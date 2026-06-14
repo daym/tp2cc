@@ -1885,10 +1885,10 @@ bool EmitAnalysis::is_visible_unit_qualifier(std::string_view name_in) {
   // synthetic `__rt__` unit so unqualified runtime lookup and `System.name`
   // qualification use the same symbol table.
   if (name == "system") return registry_->units.count("__rt__") > 0;
-  // TypeRegistry includes parsed units plus empty semantic stubs for missing
-  // external RTL units that main.cc will emit with write_external_stub. A
-  // qualified unit name is still only in Pascal scope for the current unit
-  // itself or a unit named by the current unit's own `uses` list.
+  // TypeRegistry includes parsed units plus explicit runtime-backed units such
+  // as Dos/SysUtils. A qualified unit name is still only in Pascal scope for
+  // the current unit itself or a unit named by the current unit's own `uses`
+  // list.
   if (name == scope_.current_unit_name) {
     return registry_->units.count(name) > 0;
   }

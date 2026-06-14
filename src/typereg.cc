@@ -8,6 +8,7 @@
 
 #include "diag.h"
 #include "emit_support.h"
+#include "runtime_units.h"
 
 namespace tp2cc {
 
@@ -916,13 +917,96 @@ void register_runtime_class(TypeRegistry& r, std::string name,
                 .default_property_name = {}};
 }
 
-void register_external_stub_unit(TypeRegistry& r, std::string used_name) {
+void register_runtime_backed_unit(TypeRegistry& r, std::string used_name) {
   const std::string low = lc(std::move(used_name));
   if (low == "__rt__" || r.units.count(low) > 0) return;
-  // UnitGraph/main.cc emits empty headers for missing RTL-style `uses` entries.
-  // The registry needs matching no-export units so qualified `Unit.Name`
-  // expressions can still lower to the generated stub namespace.
-  r.units[low] = unit_info_for(low);
+  const RuntimeUnitModel* model = runtime_unit_model(low);
+  if (!model) return;
+  auto rt = r.units.find("__rt__");
+  if (rt == r.units.end()) {
+    report_error(Location{}, "runtime-backed unit `" + low +
+                             "` cannot be registered before runtime exports");
+    return;
+  }
+
+  UnitInfo unit = unit_info_for(low);
+  for (const RuntimeUnitExport& export_info : model->exports) {
+    const std::string name = lc(std::string(export_info.name));
+    switch (export_info.kind) {
+      case RuntimeUnitExportKind::TypeAlias: {
+        TypeSymbol* symbol = r.lookup_type_symbol_exact_mut("__rt__", name);
+        if (!symbol) {
+          report_error(Location{}, "runtime-backed unit `" + low +
+                                   "` references missing runtime type `" +
+                                   name + "`");
+          continue;
+        }
+        unit.iface_types[name] = symbol;
+        break;
+      }
+      case RuntimeUnitExportKind::RuntimeClass: {
+        auto cls = r.rt_classes.find(name);
+        if (cls == r.rt_classes.end()) {
+          report_error(Location{}, "runtime-backed unit `" + low +
+                                   "` references missing runtime class `" +
+                                   name + "`");
+          continue;
+        }
+        ClassInfo info = cls->second;
+        info.defining_unit = low;
+        TypeSymbol& symbol = r.type_symbols.emplace_back(
+            name, low, static_cast<const TypeExpr*>(nullptr),
+            TypeSymbolPayload{std::move(info)});
+        unit.iface_types[name] = &symbol;
+        break;
+      }
+      case RuntimeUnitExportKind::Proc: {
+        if (export_info.param_count >= 0) {
+          unit.iface_procs[name].push_back(ProcInfo{
+              .defining_unit = low,
+              .decl = nullptr,
+              .param_count = static_cast<size_t>(export_info.param_count),
+              .is_function = export_info.is_function,
+              .accepts_zero_args = export_info.param_count == 0,
+              .return_type_name = std::string(export_info.return_type_name)});
+          break;
+        }
+        const std::vector<ProcInfo>* procs =
+            rt->second.find_export_procs(name);
+        if (!procs) {
+          report_error(Location{}, "runtime-backed unit `" + low +
+                                   "` references missing runtime proc `" +
+                                   name + "`");
+          continue;
+        }
+        unit.iface_procs[name] = *procs;
+        break;
+      }
+      case RuntimeUnitExportKind::Var: {
+        const VarInfo* var = rt->second.find_export_var(name);
+        if (!var) {
+          report_error(Location{}, "runtime-backed unit `" + low +
+                                   "` references missing runtime var `" +
+                                   name + "`");
+          continue;
+        }
+        unit.iface_vars[name] = *var;
+        break;
+      }
+      case RuntimeUnitExportKind::Const: {
+        const ConstInfo* constant = rt->second.find_export_const(name);
+        if (!constant) {
+          report_error(Location{}, "runtime-backed unit `" + low +
+                                   "` references missing runtime const `" +
+                                   name + "`");
+          continue;
+        }
+        unit.iface_consts[name] = *constant;
+        break;
+      }
+    }
+  }
+  r.units[low] = std::move(unit);
 }
 
 class SeenClassChain {
@@ -1724,10 +1808,10 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   for (const auto* u : us) {
     if (!u) continue;
     for (const auto& nm : u->interface_uses) {
-      register_external_stub_unit(*this, nm);
+      register_runtime_backed_unit(*this, nm);
     }
     for (const auto& nm : u->impl_uses) {
-      register_external_stub_unit(*this, nm);
+      register_runtime_backed_unit(*this, nm);
     }
   }
 

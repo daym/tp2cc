@@ -261,8 +261,8 @@ void EmitStmts::emit_try_stmt(const Try& t) {
     } else {
       // Pascal `on E: TException do` only matches exception classes, so the
       // translated `dynamic_cast` target must be a pointer type even when the
-      // name comes from the `sysutils` stub alias and does not resolve through
-      // the normal class registry.
+      // name comes from the runtime-backed SysUtils shim and does not resolve
+      // through the normal class registry.
       TyName handler_type(h.class_name);
       std::string handler_cxx = types_.type_to_cxx(handler_type);
       if (handler_cxx.empty() || handler_cxx.back() != '*') {

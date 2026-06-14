@@ -7,6 +7,7 @@
 #include "diag.h"
 #include "lexer.h"
 #include "parser.h"
+#include "runtime_units.h"
 
 namespace fs = std::filesystem;
 
@@ -66,17 +67,24 @@ fs::path UnitGraph::find_unit_path(std::string_view name) {
   return it->second;
 }
 
-std::vector<fs::path> UnitGraph::unit_paths_to_discover(
-    const std::vector<std::string>& uses) {
-  std::vector<fs::path> paths;
+int UnitGraph::unit_paths_to_discover(
+    const ast::UnitNode& owner, const std::vector<std::string>& uses,
+    std::vector<fs::path>* paths) {
+  int errors = 0;
   for (const auto& dep : uses) {
     std::string dep_name = to_lower(dep);
     if (units_.count(dep_name)) continue;
     fs::path dep_path = find_unit_path(dep_name);
-    if (dep_path.empty()) continue;  // external RTL / unavailable unit
-    paths.push_back(std::move(dep_path));
+    if (dep_path.empty()) {
+      if (has_runtime_unit_model(dep_name)) continue;
+      report_error(owner.loc, "unresolved unit `" + dep_name +
+                                  "` used by `" + owner.name + "`");
+      ++errors;
+      continue;
+    }
+    paths->push_back(std::move(dep_path));
   }
-  return paths;
+  return errors;
 }
 
 int UnitGraph::parse_recursive(const fs::path& path) {
@@ -121,12 +129,16 @@ int UnitGraph::parse_recursive(const fs::path& path) {
     return errors > 0 ? errors : 1;
   }
 
-  for (const auto& dep_path :
-       unit_paths_to_discover(key_it->second.ast->interface_uses)) {
+  std::vector<fs::path> deps;
+  errors += unit_paths_to_discover(
+      *key_it->second.ast, key_it->second.ast->interface_uses, &deps);
+  for (const auto& dep_path : deps) {
     errors += parse_recursive(dep_path);
   }
-  for (const auto& dep_path :
-       unit_paths_to_discover(key_it->second.ast->impl_uses)) {
+  deps.clear();
+  errors += unit_paths_to_discover(
+      *key_it->second.ast, key_it->second.ast->impl_uses, &deps);
+  for (const auto& dep_path : deps) {
     errors += parse_recursive(dep_path);
   }
   return errors;
@@ -148,8 +160,9 @@ void UnitGraph::add_topo_dependency(
     std::unordered_map<std::string, int>& indeg, const std::string& from,
     std::string_view to) {
   std::string canonical_to = to_lower(to);
-  // Topology is only for units parsed from source; external RTL/runtime units
-  // are resolved during type registration and emission.
+  // Topology is only for units parsed from source. Runtime-backed units are
+  // registered as ordinary UnitInfos later, but they do not add source files to
+  // the translation graph.
   if (!units.count(canonical_to)) return;
   if (deps[from].insert(canonical_to).second) {
     indeg[from] += 1;

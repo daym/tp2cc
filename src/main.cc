@@ -17,6 +17,7 @@
 #include "emit_makefile.h"
 #include "lexer.h"
 #include "parser.h"
+#include "runtime_units.h"
 #include "source.h"
 #include "typereg.h"
 #include "units.h"
@@ -116,8 +117,48 @@ void collect_unit_init_order(const UnitGraph& g,
   }
 }
 
-void write_external_stub(std::ostream& h, std::string_view unit_name) {
-  h << "// tp2cc: RTL stub for external unit '" << unit_name << "'.\n";
+std::string runtime_type_cxx_name(std::string_view name) {
+  return "t_" + to_lower(name);
+}
+
+std::string runtime_value_cxx_name(std::string_view name) {
+  return "p_" + to_lower(name);
+}
+
+void write_runtime_unit_exports(
+    std::ostream& h, const RuntimeUnitModel& model,
+    const std::unordered_set<std::string>& skipped_runtime_classes = {}) {
+  for (const RuntimeUnitExport& export_info : model.exports) {
+    const std::string name = to_lower(export_info.name);
+    switch (export_info.kind) {
+      case RuntimeUnitExportKind::TypeAlias:
+        h << "using " << runtime_type_cxx_name(name) << " = ::rt::"
+          << runtime_type_cxx_name(name) << ";\n";
+        break;
+      case RuntimeUnitExportKind::RuntimeClass:
+        if (!skipped_runtime_classes.count(name)) {
+          h << "using " << runtime_type_cxx_name(name) << " = ::rt::"
+            << runtime_type_cxx_name(name) << ";\n";
+        }
+        break;
+      case RuntimeUnitExportKind::Proc:
+      case RuntimeUnitExportKind::Var:
+      case RuntimeUnitExportKind::Const:
+        h << "using ::rt::" << runtime_value_cxx_name(name) << ";\n";
+        break;
+    }
+  }
+}
+
+void write_runtime_unit_shim(std::ostream& h, std::string_view unit_name) {
+  const RuntimeUnitModel* model = runtime_unit_model(unit_name);
+  if (!model) {
+    report_error(Location{}, "internal error: no runtime-backed model for unit `" +
+                             std::string(unit_name) + "`");
+    return;
+  }
+
+  h << "// tp2cc: runtime-backed Pascal unit '" << unit_name << "'.\n";
   h << "#pragma once\n";
   h << "#include \"tp2cc_rt/prelude.h\"\n";
 
@@ -131,53 +172,14 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
     h << "  return ::rt::tp2cc_metaclass_value_t_exception();\n";
     h << "}\n";
     h << "\n";
-    h << "// Re-export the Pascal-visible SysUtils declarations that the compiler\n";
-    h << "// reaches through qualified unit names when SysUtils itself stays an\n";
-    h << "// external RTL stub.\n";
-    static constexpr const char* kSysutilsTypeAliases[] = {
-        "t_tdatetime",
-        "t_texecuteflags",
-        "t_tsyscharset",
-        "t_tsystemtime",
-        "t_hresult",
-        "t_pansistring",
-        "t_pdword",
-        "t_plongword",
-        "t_pqword",
-        "t_pshortstring",
-    };
-    for (const char* name : kSysutilsTypeAliases) {
-      h << "using " << name << " = ::rt::" << name << ";\n";
-    }
-    static constexpr const char* kSysutilsValueAliases[] = {
-        "p_changefileext",
-        "p_getenvironmentvariable",
-        "p_expandfilename",
-        "p_setdirseparators",
-        "p_executeprocess",
-        "p_getlocaltime",
-        "p_decodetime",
-        "p_decodedate",
-        "p_filedatetodatetime",
-        "p_time",
-        "p_date",
-        "p_fileexists",
-        "p_directoryexists",
-        "p_trim",
-        "p_renamefile",
-        "p_filegetdate",
-        "p_filesetdate",
-        "p_fileage",
-        "p_getfilehandle",
-        "p_inttostr",
-        "p_stringofchar",
-        "p_comparetext",
-        "p_ansicomparefilename",
-        "p_strpas",
-    };
-    for (const char* name : kSysutilsValueAliases) {
-      h << "using ::rt::" << name << ";\n";
-    }
+    h << "// Re-export the Pascal-visible SysUtils declarations listed in\n";
+    h << "// runtime_units.cc. The exception hierarchy below is handled separately\n";
+    h << "// because EOSError has a shim-only ErrorCode field.\n";
+    write_runtime_unit_exports(
+        h, *model,
+        {"exception", "eexternal", "einterror", "einouterror",
+         "eheapmemoryerror", "eheapexception", "eoutofmemory",
+         "eintoverflow", "erangeerror", "edivbyzero", "eoserror"});
     h << "\n";
     h << "// Compiler units catch a small SysUtils exception hierarchy even\n";
     h << "// when the full SysUtils unit is not translated. The exception\n";
@@ -210,16 +212,19 @@ void write_external_stub(std::ostream& h, std::string_view unit_name) {
     return;
   }
 
-  h << "namespace rt {}\n";
-  h << "namespace p_" << unit_name << " = ::rt;\n";
+  h << "namespace p_" << unit_name << " {\n";
+  write_runtime_unit_exports(h, *model);
+  h << "}  // namespace p_" << unit_name << "\n";
 }
 
-std::vector<std::string> external_unit_refs_in_uses(
+std::vector<std::string> runtime_unit_refs_in_uses(
     const UnitGraph& g, const std::vector<std::string>& uses) {
   std::vector<std::string> refs;
   for (const auto& unit_name : uses) {
     std::string canonical = to_lower(unit_name);
-    if (!g.lookup(canonical)) refs.push_back(std::move(canonical));
+    if (!g.lookup(canonical) && runtime_unit_model(canonical)) {
+      refs.push_back(std::move(canonical));
+    }
   }
   return refs;
 }
@@ -484,17 +489,17 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
     if (pu->ast->is_program && program_name.empty()) {
       program_name = name;
     }
-    for (auto ref : external_unit_refs_in_uses(g, pu->ast->interface_uses)) {
+    for (auto ref : runtime_unit_refs_in_uses(g, pu->ast->interface_uses)) {
       rtl_refs.insert(std::move(ref));
     }
-    for (auto ref : external_unit_refs_in_uses(g, pu->ast->impl_uses)) {
+    for (auto ref : runtime_unit_refs_in_uses(g, pu->ast->impl_uses)) {
       rtl_refs.insert(std::move(ref));
     }
     ++emitted;
   }
   for (const auto& u : rtl_refs) {
     std::ofstream h(fs::path(outdir) / ("p_" + u + ".h"));
-    write_external_stub(h, u);
+    write_runtime_unit_shim(h, u);
     headers.push_back("p_" + u + ".h");
   }
   if (opts.emit_makefile) {
@@ -511,7 +516,7 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
     mk << emit_makefile(manifest);
   }
   std::printf("emit-all: %d emitted, %d failed (of %zu units), "
-              "%zu rtl stubs\n",
+              "%zu runtime unit shims\n",
               emitted, failed, g.units().size(), rtl_refs.size());
   return failed == 0 ? 0 : 1;
 }

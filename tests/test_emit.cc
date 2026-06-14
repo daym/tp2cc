@@ -1753,7 +1753,7 @@ void test_unit_qualified_variable_assignment_is_storage_designator() {
   CHECK(contains(out.impl, "::p_dep::p_internalerror = (&p_internalerror);"));
 }
 
-void test_external_used_unit_qualified_call_keeps_namespace_cxx_name() {
+void test_runtime_backed_unit_qualified_call_uses_shim_namespace() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1768,6 +1768,83 @@ void test_external_used_unit_qualified_call_keeps_namespace_cxx_name() {
       "end.\n");
   CHECK_EQ(error_count(), before);
   CHECK(contains(out.impl, "::p_dos::p_getenv("));
+
+  out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "uses linux;\n"
+      "procedure run;\n"
+      "var\n"
+      "  p : pchar;\n"
+      "begin\n"
+      "  p := linux.getenv('PATH');\n"
+      "  linux.shell('true');\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::p_linux::p_getenv("));
+  CHECK(contains(out.impl, "::p_linux::p_shell("));
+
+  out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "uses unix;\n"
+      "procedure run;\n"
+      "var\n"
+      "  p : pchar;\n"
+      "  rc : longint;\n"
+      "begin\n"
+      "  p := unix.getenv('PATH');\n"
+      "  unix.shell('true');\n"
+      "  rc := unix.fpsystem('true');\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::p_unix::p_getenv("));
+  CHECK(contains(out.impl, "::p_unix::p_shell("));
+  CHECK(contains(out.impl, "::p_unix::p_fpsystem("));
+
+  out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "uses baseunix;\n"
+      "procedure run;\n"
+      "var\n"
+      "  p : pchar;\n"
+      "  rc : longint;\n"
+      "begin\n"
+      "  p := baseunix.fpgetenv('PATH');\n"
+      "  rc := fpchmod('x', 493);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::p_baseunix::p_fpgetenv("));
+  CHECK(contains(out.impl, "::p_baseunix::p_fpchmod("));
+}
+
+void test_runtime_backed_unit_unknown_member_reports_error() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "uses sysutils;\n"
+      "procedure run;\n"
+      "var\n"
+      "  i : longint;\n"
+      "begin\n"
+      "  i := sysutils.NoSuchHelper;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+  CHECK(!contains(out.impl, "::p_sysutils::p_nosuchhelper"));
 }
 
 void test_method_pointer_trailing_default_nil_is_lowered_as_empty_value() {
@@ -5784,7 +5861,7 @@ void test_sysutils_setdirseparators_resolves_qualified_and_unqualified() {
       "end;\n"
       "end.\n");
   CHECK(error_count() == before);
-  CHECK(contains(out.impl, "::rt::p_setdirseparators("));
+  CHECK(!contains(out.impl, "::rt::p_setdirseparators("));
   CHECK(contains(out.impl, "::p_sysutils::p_setdirseparators("));
   CHECK(contains(out.impl, "::p_sysutils::p_strpas("));
 }
@@ -11613,7 +11690,8 @@ int main() {
   RUN_TEST(test_imported_nil_default_argument_qualifies_procedural_type);
   RUN_TEST(test_imported_default_argument_qualifies_declaring_unit_const);
   RUN_TEST(test_unit_qualified_variable_assignment_is_storage_designator);
-  RUN_TEST(test_external_used_unit_qualified_call_keeps_namespace_cxx_name);
+  RUN_TEST(test_runtime_backed_unit_qualified_call_uses_shim_namespace);
+  RUN_TEST(test_runtime_backed_unit_unknown_member_reports_error);
   RUN_TEST(test_method_pointer_trailing_default_nil_is_lowered_as_empty_value);
   RUN_TEST(test_singleton_typed_array_const);
   RUN_TEST(test_nested_array_type);

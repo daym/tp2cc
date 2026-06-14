@@ -1049,13 +1049,6 @@ In the table, ~S~ denotes any tp2cc-supported string value (typically ~String~, 
 | ~StrToInt~ | ~StrToInt(S): LongInt~ | Parses a decimal or supported prefixed integer string. |
 | ~StringOfChar~ | ~StringOfChar(C, Count): AnsiString~ | Builds a string by repeating one character. |
 | ~Trim~ | ~Trim(S): AnsiString~ | Removes leading and trailing ASCII whitespace. |
-| ~StrLen~ | ~StrLen(P): LongInt~ | Length of a NUL-terminated character pointer or ansistring. |
-| ~StrPas~ | ~StrPas(P): ShortString~ | Converts a NUL-terminated character pointer to a short string. |
-| ~StrPCopy~ | ~StrPCopy(Dest, Source): PChar~ | Copies a Pascal string to a NUL-terminated character buffer. |
-| ~StrComp~ | ~StrComp(A, B): LongInt~ | Compares two NUL-terminated character pointers. |
-| ~StrRScan~ | ~StrRScan(P, C): PChar~ | Finds the last occurrence of character ~C~ in a NUL-terminated character pointer. |
-| ~StrNew~ | ~StrNew(P): PChar~ | Allocates a copy of a NUL-terminated character pointer. |
-| ~StrDispose~ | ~StrDispose(var P)~ | Frees a pointer allocated by ~StrNew~ and clears the caller's pointer. |
 | ~Write~, ~Writeln~ | ~Write([F,] Args...)~, ~Writeln([F,] Args...)~ | Writes values to stdout or to a ~Text~ file; ~Writeln~ appends a newline. |
 | ~Read~, ~ReadLn~ | ~ReadLn(F, var S)~ and no-file console forms | File line input into strings is implemented.  No-file console input is a stub: it is accepted and performs no input. |
 | ~Assign~ | ~Assign(var F, Name)~ | Associates a text, typed, or untyped file variable with a path. |
@@ -1214,6 +1207,21 @@ System implements these type names beyond the basic scalar/string/pointer types 
 | ~FpSystem(Command)~ | returns ~LongInt~ | Runs ~Command~ through the host shell and returns the recorded process status. |
 | ~POpen(var F, Command, Mode)~ | procedure | Opens a pipe for a ~Text~ file.  The generic ~File~ overload is a stub and does not open a pipe. |
 | ~PClose(var F)~ | returns ~LongInt~ | Closes a pipe-backed ~Text~ file and returns the process status.  The generic ~File~ overload is a stub returning 0. |
+
+** Strings
+~Strings~ provides these names:
+| Name | Interface | Use |
+| ~StrLen(P)~ | returns ~LongInt~ | Returns the length of a NUL-terminated character pointer. |
+| ~StrPas(P)~ | returns ~ShortString~ | Converts a NUL-terminated character pointer to a short string. |
+| ~StrPCopy(Dest, Source)~ | returns ~PChar~ | Copies a Pascal string to a NUL-terminated character buffer. |
+| ~StrComp(A, B)~ | returns ~LongInt~ | Compares two NUL-terminated character pointers. |
+| ~StrRScan(P, C)~ | returns ~PChar~ | Finds the last occurrence of character ~C~ in a NUL-terminated character pointer. |
+| ~StrNew(P)~ | returns ~PChar~ | Allocates a copy of a NUL-terminated character pointer. |
+| ~StrDispose(var P)~ | procedure | Frees a pointer allocated by ~StrNew~ and clears the caller's pointer. |
+
+** Math
+~Math~ is accepted as a runtime-backed unit name but currently provides no exports.  It exists so that FPC source units that ~use Math~ do not trigger unresolved-unit errors.
+
 The ~Stat~ record used by ~Linux~ and ~BaseUnix~ has exactly these fields: ~mtime~, ~st_mtime~, ~mode~, ~st_mode~, ~size~, and ~st_size~.
 
 * Known limitations worth remembering

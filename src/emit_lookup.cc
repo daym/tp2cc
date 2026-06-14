@@ -173,10 +173,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         }
       }
     }
-    // RTL unit unavailable to translation. Keep the Pascal unit qualifier in
-    // the emitted text and let the runtime's stub namespace alias own that
-    // lookup.
-    return resolved_value(ResolvedKind::Unknown, unit_cxx);
+    return resolved_value(ResolvedKind::Unknown, {});
   }
   if (qk == QualifierKind::Class) {
     const std::string member_cxx = mangle(name);

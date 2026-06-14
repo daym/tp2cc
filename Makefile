@@ -24,7 +24,7 @@ OBJDIR   := $(BUILD)/obj
 BINDIR   := $(BUILD)/bin
 LIBDIR   := $(BUILD)/lib
 
-LIB_SRCS := src/diag.cc src/source.cc src/lexer.cc src/parser.cc src/units.cc src/typereg.cc src/emit_support.cc src/emit_analysis.cc src/emit_lookup.cc src/emit_resolution.cc src/emit_types.cc src/emit_storage.cc src/emit_calls.cc src/emit_properties.cc src/emit_values.cc src/emit_decls.cc src/emit_procs.cc src/emit_stmts.cc src/emit_units.cc src/emit_makefile.cc src/emit.cc
+LIB_SRCS := src/diag.cc src/source.cc src/lexer.cc src/parser.cc src/runtime_units.cc src/units.cc src/typereg.cc src/emit_support.cc src/emit_analysis.cc src/emit_lookup.cc src/emit_resolution.cc src/emit_types.cc src/emit_storage.cc src/emit_calls.cc src/emit_properties.cc src/emit_values.cc src/emit_decls.cc src/emit_procs.cc src/emit_stmts.cc src/emit_units.cc src/emit_makefile.cc src/emit.cc
 LIB_OBJS := $(patsubst src/%.cc,$(OBJDIR)/%.o,$(LIB_SRCS))
 RUNTIME_OBJS := $(OBJDIR)/tp2cc_rt/fenv_shim.o
 RUNTIME_LIB := $(LIBDIR)/libtp2cc_rt.a

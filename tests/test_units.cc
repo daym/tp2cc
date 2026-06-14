@@ -14,6 +14,9 @@
 #include <string_view>
 #include <vector>
 
+#include <unistd.h>
+
+#include "diag.h"
 #include "test_util.h"
 #include "units.h"
 
@@ -149,19 +152,32 @@ void test_case_insensitive() {
   fs::remove_all(d);
 }
 
-void test_external_uses_ignored() {
-  // A unit that references something not in the search path (e.g. `dos`
-  // from the RTL) should not create a phantom cycle; the graph just
-  // won't include a node for that name.
-  auto d = make_tmpdir("external");
-  write_unit(d, "solo", "dos, strings, linux");
+void test_runtime_backed_uses_do_not_require_source() {
+  // Runtime-backed units have declared exports but no source file in the
+  // translated graph. They are allowed by name; arbitrary missing units are not.
+  auto d = make_tmpdir("runtime_units");
+  int before = error_count();
+  write_unit(d, "solo", "baseunix, dos, linux, math, strings, sysutils, unix");
   auto prog = write_program(d, "main", "solo");
   UnitGraph g;
   g.add_search_root(d);
   CHECK_EQ(g.discover_from_entry(prog), 0);
+  CHECK_EQ(error_count(), before);
   auto tr = g.topo_sort();
   CHECK_EQ(tr.order.size(), size_t{2});
   CHECK(tr.cycle_edges.empty());
+  fs::remove_all(d);
+}
+
+void test_missing_uses_reports_error() {
+  auto d = make_tmpdir("missing_unit");
+  int before = error_count();
+  write_unit(d, "solo", "not_a_runtime_unit");
+  auto prog = write_program(d, "main", "solo");
+  UnitGraph g;
+  g.add_search_root(d);
+  CHECK(g.discover_from_entry(prog) > 0);
+  CHECK(error_count() > before);
   fs::remove_all(d);
 }
 
@@ -290,7 +306,8 @@ int main() {
   RUN_TEST(test_linear_chain);
   RUN_TEST(test_diamond);
   RUN_TEST(test_case_insensitive);
-  RUN_TEST(test_external_uses_ignored);
+  RUN_TEST(test_runtime_backed_uses_do_not_require_source);
+  RUN_TEST(test_missing_uses_reports_error);
   RUN_TEST(test_cycle_detected);
   RUN_TEST(test_discover_from_entry_only_reachable_units);
   RUN_TEST(test_current_directory_is_implicit_unit_search_root);

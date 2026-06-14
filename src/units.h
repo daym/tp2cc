@@ -94,8 +94,9 @@ class UnitGraph {
       std::vector<std::filesystem::path>& indexed_roots);
   void build_unit_path_index();
   std::filesystem::path find_unit_path(std::string_view name);
-  std::vector<std::filesystem::path> unit_paths_to_discover(
-      const std::vector<std::string>& uses);
+  int unit_paths_to_discover(const ast::UnitNode& owner,
+                             const std::vector<std::string>& uses,
+                             std::vector<std::filesystem::path>* paths);
   int parse_recursive(const std::filesystem::path& path);
   static void add_topo_dependency(
       const std::unordered_map<std::string, ParsedUnit>& units,
