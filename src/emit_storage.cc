@@ -675,15 +675,33 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
         expr_ops_.expr_to_cxx(e), expr_ops_.expr_to_cxx(*d.operand),
         type_cxx);
   }
-  if (e.kind != Kind::Ident) return std::nullopt;
-  {
+  if (e.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(e);
     if (auto storage = resolved_bytewise_with_field_storage(
             resolve_name_provider_.resolve_name(id.name))) {
       return storage;
     }
+    return EmitStorageDesignator::ordinary(expr_ops_.expr_to_cxx(e), type_cxx);
   }
-  return EmitStorageDesignator::ordinary(expr_ops_.expr_to_cxx(e), type_cxx);
+  if (e.kind == Kind::Member) {
+    const auto& m = static_cast<const Member&>(e);
+    const std::string owner = analysis_.deduce_class_alias(*m.base);
+    if (owner.empty()) return std::nullopt;
+    if (!registry_->lookup_class_field(owner, m.name,
+                                       scope_.current_unit_name) &&
+        !registry_->lookup_record_field(owner, m.name,
+                                        scope_.current_unit_name)) {
+      return std::nullopt;
+    }
+    // Only registered fields reach this fallback. Use their generated member
+    // expression address as raw storage for memcpy-style typecast stores such
+    // as `byte(obj.EnumField) := value`.
+    const std::string text = expr_ops_.expr_to_cxx(*m.base) +
+                             member_access_op(*m.base) +
+                             registry_->field_cxx_name(m.name);
+    return EmitStorageDesignator::ordinary(text, type_cxx);
+  }
+  return std::nullopt;
 }
 
 std::string EmitStorage::reference_class_cast_pointer_cxx(

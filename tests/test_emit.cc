@@ -3754,6 +3754,27 @@ void test_primitive_cast_assign_reinterprets_storage() {
   CHECK(!contains(out.impl, "p_b = ((int32_t)(p_l));"));
 }
 
+void test_primitive_cast_assign_to_class_field_uses_field_address() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TKind = (ka, kb);\n"
+      "  TObj = class\n"
+      "  public\n"
+      "    IType : TKind;\n"
+      "  end;\n"
+      "procedure load(o : TObj; b : byte);\n"
+      "implementation\n"
+      "procedure load(o : TObj; b : byte);\n"
+      "begin\n"
+      "  byte(o.IType) := b;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_store<uint8_t>((&p_o->p_itype), p_b);"));
+}
+
 void test_primitive_cast_read_reinterprets_storage() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -11772,6 +11793,7 @@ int main() {
   RUN_TEST(test_unit_type_value_duplicates_across_sections_report_error);
   RUN_TEST(test_sizeof_own_implementation_private_qualified_names);
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
+  RUN_TEST(test_primitive_cast_assign_to_class_field_uses_field_address);
   RUN_TEST(test_primitive_cast_read_reinterprets_storage);
   RUN_TEST(test_addr_of_primitive_cast_returns_typed_pointer);
   RUN_TEST(test_inc_untyped_primitive_cast_reinterprets_storage_by_byte_copy);
