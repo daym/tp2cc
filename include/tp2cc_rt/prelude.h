@@ -5,10 +5,6 @@
 // This header is deliberately small -- we only provide the pieces the
 // translator currently emits references to.
 //
-// Target: Linux 32-bit. Translated Pascal primitive types map to fixed-width
-// C++ types (see emit.cc's primitive_type_map); short strings, sets, and a
-// few I/O helpers are implemented here.
-//
 // Runtime design rule: do not add user-declared C++ constructors or
 // constructor-based implicit conversions for the Pascal carrier types in this
 // header.
@@ -19,6 +15,8 @@
 // for packed-layout decisions.
 
 #include <algorithm>
+#include <iterator>
+#include <span>
 #include <array>
 #include <bit>
 #include <cerrno>
@@ -1899,15 +1897,15 @@ using t_namestr = tp2cc_ShortString<255>;
 using t_extstr  = tp2cc_ShortString<255>;
 using t_pathstr = tp2cc_ShortString<255>;
 using t_comstr  = tp2cc_ShortString<255>;
-// The current tp2cc bootstrap runtime targets 32-bit hosts only. Match
-// FPC's CPU32 aliases here so translated compiler code sees pointer-sized
-// integers as `longint`/`dword` equivalents.
+// Pointer-sized integers follow the target ABI so emitted C++ matches
+// FPC's CPU64/CPU32 PtrInt/PtrUInt/SizeInt/SizeUInt on whatever target
+// the emitted code is compiled for.
 using t_longint  = int32_t;
 using t_dword    = uint32_t;
-using t_sizeint  = t_longint;
-using t_sizeuint = t_dword;
-using t_ptrint   = t_longint;
-using t_ptruint  = t_dword;
+using t_sizeint  = std::make_signed_t<std::size_t>;
+using t_sizeuint = std::size_t;
+using t_ptrint   = intptr_t;
+using t_ptruint  = uintptr_t;
 
 // objects unit
 using t_sw_integer = int32_t;
