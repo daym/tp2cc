@@ -170,6 +170,7 @@ struct Emitter : ResolveNameProvider,
   // program's `begin..end.` body. tp2cc_Set by the driver only when
   // emitting the `program` unit.
   const std::vector<std::string>* unit_init_order = nullptr;
+  TargetInfo target;
   ScopeStateView scope_state_;
   EmitAnalysis analysis_;
   EmitTypes types_;
@@ -184,10 +185,12 @@ struct Emitter : ResolveNameProvider,
   EmitStmts stmts_;
   EmitUnits units_;
 
-  Emitter(const TypeRegistry* registry_in = nullptr,
-          const std::vector<std::string>* unit_init_order_in = nullptr)
+  Emitter(const TypeRegistry* registry_in,
+          const std::vector<std::string>* unit_init_order_in,
+          TargetInfo target_in)
       : registry(registry_in),
         unit_init_order(unit_init_order_in),
+        target(target_in),
         scope_state_{current_class_name,
                      current_unit_name,
                      lookup_emission_unit_name,
@@ -217,10 +220,10 @@ struct Emitter : ResolveNameProvider,
                      outer_result_name,
                      outer_result_slot_name,
                      outer_result_type},
-        analysis_(registry, scope_state_, *this, *this),
+        analysis_(registry, scope_state_, *this, *this, target),
         types_(registry, scope_state_, analysis_, *this, *this, *this),
         storage_(registry, scope_state_, analysis_, types_, *this, *this),
-        resolution_(registry, scope_state_, analysis_, *this, *this),
+        resolution_(registry, scope_state_, analysis_, *this, *this, target),
         calls_(registry, scope_state_, analysis_, types_, storage_,
                resolution_, *this, *this),
         properties_(registry, analysis_, *this),
@@ -890,7 +893,7 @@ bool Emitter::expr_is_signed_integer_operand(const Expr& x) {
 }
 
 const PrimitiveInfo* Emitter::shift_carrier_for_expr(const Expr& x) {
-  return shift_carrier_primitive(integer_primitive_for_expr(x));
+  return shift_carrier_primitive(integer_primitive_for_expr(x), target);
 }
 
 std::optional<std::string> Emitter::member_base_ident(const Member& m) {
@@ -2805,8 +2808,9 @@ void Emitter::emit_unit(const UnitNode& u) {
 }  // namespace
 
 EmittedUnit emit_unit(const UnitNode& u, const TypeRegistry* registry,
-                      const std::vector<std::string>* unit_init_order) {
-  Emitter e(registry, unit_init_order);
+                      const std::vector<std::string>* unit_init_order,
+                      TargetInfo target) {
+  Emitter e(registry, unit_init_order, target);
   e.emit_unit(u);
   return {std::move(e.header), std::move(e.impl)};
 }

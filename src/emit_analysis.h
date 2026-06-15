@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <memory>
 #include <string>
@@ -11,6 +12,7 @@
 #include "emit_context.h"
 #include "emit_resolution_types.h"
 #include "emit_support.h"
+#include "target_info.h"
 
 namespace tp2cc {
 
@@ -71,7 +73,14 @@ class EmitAnalysis {
  public:
   EmitAnalysis(const TypeRegistry* registry, ScopeStateView& scope,
                ResolveNameProvider& resolve_name_provider,
-               CallTypeProvider& call_type_provider);
+               CallTypeProvider& call_type_provider, TargetInfo target);
+
+  std::string_view current_unit_name() const { return scope_.current_unit_name; }
+
+  // Resolve a primitive integer type's bit width.  For pointer-sized
+  // primitives (ptrint/ptruint/sizeint/sizeuint), returns the target
+  // pointer width; for everything else, returns the fixed table width.
+  [[nodiscard]] uint8_t resolved_primitive_bits(const PrimitiveInfo& info) const;
 
   // Canonicalize Pascal type aliases/distinct wrappers to the underlying type
   // view the emitter should reason about for layout and conversion questions.
@@ -88,7 +97,6 @@ class EmitAnalysis {
   bool type_is_reference_class(const ast::TypeExpr* t);
   bool type_is_interface(const ast::TypeExpr* t);
   bool type_is_value_object(const ast::TypeExpr* t);
-  std::string_view current_unit_name() const { return scope_.current_unit_name; }
 
   // Constant folding for Pascal integer expressions. These routines answer in
   // Pascal's type/value model, not C++'s promotion rules, so later emit-time
@@ -236,6 +244,7 @@ class EmitAnalysis {
   ScopeStateView& scope_;
   ResolveNameProvider& resolve_name_provider_;
   CallTypeProvider& call_type_provider_;
+  TargetInfo target_;
   struct SynthesizedSetKey {
     const ast::TypeExpr* element = nullptr;
     bool has_explicit_bounds = false;

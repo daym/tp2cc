@@ -2,9 +2,12 @@
 
 #include <cstdio>
 #include <limits>
+#include <stdexcept>
+#include <string>
 #include <unordered_map>
 
 #include "ast.h"
+#include "target_info.h"
 #include "typereg.h"
 
 namespace tp2cc {
@@ -332,42 +335,42 @@ std::string enum_bound_name(std::string_view type_name, std::string_view which) 
 
 const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
   static const std::unordered_map<std::string, PrimitiveInfo> m = {
-      {"integer", {"int32_t", PrimitiveIntKind::Signed, 32}},
-      {"longint", {"int32_t", PrimitiveIntKind::Signed, 32}},
-      {"cardinal", {"uint32_t", PrimitiveIntKind::Unsigned, 32}},
-      {"longword", {"uint32_t", PrimitiveIntKind::Unsigned, 32}},
-      {"smallint", {"int16_t", PrimitiveIntKind::Signed, 16}},
-      {"word", {"uint16_t", PrimitiveIntKind::Unsigned, 16}},
-      {"shortint", {"int8_t", PrimitiveIntKind::Signed, 8}},
-      {"byte", {"uint8_t", PrimitiveIntKind::Unsigned, 8}},
-      {"char", {"::rt::p_char", PrimitiveIntKind::None, 0}},
-      {"ansichar", {"::rt::p_char", PrimitiveIntKind::None, 0}},
-      {"widechar", {"uint16_t", PrimitiveIntKind::Unsigned, 16}},
-      {"boolean", {"bool", PrimitiveIntKind::None, 0}},
-      {"bytebool", {"uint8_t", PrimitiveIntKind::Unsigned, 8}},
-      {"wordbool", {"uint16_t", PrimitiveIntKind::Unsigned, 16}},
-      {"longbool", {"uint32_t", PrimitiveIntKind::Unsigned, 32}},
-      {"single", {"float", PrimitiveIntKind::None, 0}},
-      {"double", {"double", PrimitiveIntKind::None, 0}},
-      {"real", {"double", PrimitiveIntKind::None, 0}},
-      {"extended", {"long double", PrimitiveIntKind::None, 0}},
-      {"comp", {"long double", PrimitiveIntKind::None, 0}},
-      {"pointer", {"void*", PrimitiveIntKind::None, 0}},
-      {"pchar", {"::rt::p_char*", PrimitiveIntKind::None, 0}},
-      {"pansichar", {"::rt::p_char*", PrimitiveIntKind::None, 0}},
-      {"ppchar", {"::rt::p_char**", PrimitiveIntKind::None, 0}},
-      {"text", {"::rt::tp2cc_TextFile", PrimitiveIntKind::None, 0}},
-      {"int64", {"int64_t", PrimitiveIntKind::Signed, 64}},
-      {"qword", {"uint64_t", PrimitiveIntKind::Unsigned, 64}},
-      {"dword", {"uint32_t", PrimitiveIntKind::Unsigned, 32}},
-      {"currency", {"::rt::t_currency", PrimitiveIntKind::Signed, 64}},
-      {"ptrint", {"::rt::t_ptrint", PrimitiveIntKind::Signed, 32}},
-      {"ptruint", {"::rt::t_ptruint", PrimitiveIntKind::Unsigned, 32}},
-      {"sizeint", {"::rt::t_sizeint", PrimitiveIntKind::Signed, 32}},
-      {"sizeuint", {"::rt::t_sizeuint", PrimitiveIntKind::Unsigned, 32}},
-      {"shortstring", {"::rt::tp2cc_ShortString<>", PrimitiveIntKind::None, 0}},
-      {"ansistring", {"::rt::tp2cc_AnsiString", PrimitiveIntKind::None, 0}},
-      {"utf8string", {"::rt::tp2cc_AnsiString", PrimitiveIntKind::None, 0}},
+      {"integer",      {.cxx = "int32_t",              .int_kind = PrimitiveIntKind::Signed,   .bits = 32, .pointer_sized = false}},
+      {"longint",      {.cxx = "int32_t",              .int_kind = PrimitiveIntKind::Signed,   .bits = 32, .pointer_sized = false}},
+      {"cardinal",     {.cxx = "uint32_t",             .int_kind = PrimitiveIntKind::Unsigned, .bits = 32, .pointer_sized = false}},
+      {"longword",     {.cxx = "uint32_t",             .int_kind = PrimitiveIntKind::Unsigned, .bits = 32, .pointer_sized = false}},
+      {"smallint",     {.cxx = "int16_t",              .int_kind = PrimitiveIntKind::Signed,   .bits = 16, .pointer_sized = false}},
+      {"word",         {.cxx = "uint16_t",             .int_kind = PrimitiveIntKind::Unsigned, .bits = 16, .pointer_sized = false}},
+      {"shortint",     {.cxx = "int8_t",               .int_kind = PrimitiveIntKind::Signed,   .bits = 8, .pointer_sized = false}},
+      {"byte",         {.cxx = "uint8_t",              .int_kind = PrimitiveIntKind::Unsigned, .bits = 8, .pointer_sized = false}},
+      {"char",         {.cxx = "::rt::p_char",         .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"ansichar",     {.cxx = "::rt::p_char",         .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"widechar",     {.cxx = "uint16_t",             .int_kind = PrimitiveIntKind::Unsigned, .bits = 16, .pointer_sized = false}},
+      {"boolean",      {.cxx = "bool",                 .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"bytebool",     {.cxx = "uint8_t",              .int_kind = PrimitiveIntKind::Unsigned, .bits = 8, .pointer_sized = false}},
+      {"wordbool",     {.cxx = "uint16_t",             .int_kind = PrimitiveIntKind::Unsigned, .bits = 16, .pointer_sized = false}},
+      {"longbool",     {.cxx = "uint32_t",             .int_kind = PrimitiveIntKind::Unsigned, .bits = 32, .pointer_sized = false}},
+      {"single",       {.cxx = "float",                .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"double",       {.cxx = "double",               .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"real",         {.cxx = "double",               .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"extended",     {.cxx = "long double",          .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"comp",         {.cxx = "long double",          .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"pointer",      {.cxx = "void*",                .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"pchar",        {.cxx = "::rt::p_char*",        .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"pansichar",    {.cxx = "::rt::p_char*",        .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"ppchar",       {.cxx = "::rt::p_char**",       .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"text",         {.cxx = "::rt::tp2cc_TextFile", .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"int64",        {.cxx = "int64_t",              .int_kind = PrimitiveIntKind::Signed,   .bits = 64, .pointer_sized = false}},
+      {"qword",        {.cxx = "uint64_t",             .int_kind = PrimitiveIntKind::Unsigned, .bits = 64, .pointer_sized = false}},
+      {"dword",        {.cxx = "uint32_t",             .int_kind = PrimitiveIntKind::Unsigned, .bits = 32, .pointer_sized = false}},
+      {"currency",     {.cxx = "::rt::t_currency",     .int_kind = PrimitiveIntKind::Signed,   .bits = 64, .pointer_sized = false}},
+      {"ptrint",       {.cxx = "::rt::t_ptrint",       .int_kind = PrimitiveIntKind::Signed,   .pointer_sized = true}},
+      {"ptruint",      {.cxx = "::rt::t_ptruint",      .int_kind = PrimitiveIntKind::Unsigned, .pointer_sized = true}},
+      {"sizeint",      {.cxx = "::rt::t_sizeint",      .int_kind = PrimitiveIntKind::Signed,   .pointer_sized = true}},
+      {"sizeuint",     {.cxx = "::rt::t_sizeuint",     .int_kind = PrimitiveIntKind::Unsigned, .pointer_sized = true}},
+      {"shortstring",  {.cxx = "::rt::tp2cc_ShortString<>", .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"ansistring",   {.cxx = "::rt::tp2cc_AnsiString",    .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
+      {"utf8string",   {.cxx = "::rt::tp2cc_AnsiString",    .int_kind = PrimitiveIntKind::None, .pointer_sized = false}},
   };
   return m;
 }
@@ -473,8 +476,61 @@ std::string primitive_type_cxx(std::string_view lowname) {
 }
 
 uint64_t low_bits(uint64_t value, uint8_t bits) {
-  if (bits >= 64) return value;
+  // A resolved width must be in [1, 64].
+  if (bits == 0 || bits > 64) {
+    throw std::logic_error("low_bits: bit width " + std::to_string(bits) +
+                           " out of range [1, 64]");
+  }
+  if (bits == 64) return value;
   return value & ((uint64_t{1} << bits) - 1);
+}
+
+uint8_t primitive_bits(const PrimitiveInfo& info, TargetInfo target) {
+  if (info.int_kind == PrimitiveIntKind::None) {
+    throw std::logic_error(
+        "primitive_bits: non-integer primitive has no integer bit width");
+  }
+  if (info.pointer_sized) {
+    if (target.pointer_bits != 32 && target.pointer_bits != 64) {
+      throw std::logic_error(
+          "primitive_bits: target pointer width must be 32 or 64, got " +
+          std::to_string(target.pointer_bits));
+    }
+    return target.pointer_bits;
+  }
+  if (info.bits == 0 || info.bits > 64) {
+    throw std::logic_error(
+        "primitive_bits: fixed-width integer primitive has invalid width " +
+        std::to_string(info.bits));
+  }
+  return info.bits;
+}
+
+uint64_t unsigned_mask_for_bits(uint8_t bits) {
+  if (bits == 0 || bits > 64) {
+    throw std::logic_error("unsigned_mask_for_bits: bit width " +
+                           std::to_string(bits) + " out of range [1, 64]");
+  }
+  if (bits == 64) return UINT64_MAX;
+  return (uint64_t{1} << bits) - 1;
+}
+
+int64_t signed_min_for_bits(uint8_t bits) {
+  if (bits == 0 || bits > 64) {
+    throw std::logic_error("signed_min_for_bits: bit width " +
+                           std::to_string(bits) + " out of range [1, 64]");
+  }
+  if (bits == 64) return std::numeric_limits<int64_t>::min();
+  return -(int64_t{1} << (bits - 1));
+}
+
+int64_t signed_max_for_bits(uint8_t bits) {
+  if (bits == 0 || bits > 64) {
+    throw std::logic_error("signed_max_for_bits: bit width " +
+                           std::to_string(bits) + " out of range [1, 64]");
+  }
+  if (bits == 64) return std::numeric_limits<int64_t>::max();
+  return (int64_t{1} << (bits - 1)) - 1;
 }
 
 std::string uint64_literal_text(uint64_t value) {
@@ -486,15 +542,19 @@ std::string uint64_literal_text(uint64_t value) {
   return buf;
 }
 
-std::string signed_bits_literal_text(uint64_t bits, const PrimitiveInfo& info) {
-  if (info.bits == 0) return "0";
-  uint64_t sign_bit = uint64_t{1} << (info.bits - 1);
+std::string signed_bits_literal_text(uint64_t bits, uint8_t width,
+                                     std::string_view cxx) {
+  if (width == 0 || width > 64) {
+    throw std::logic_error("signed_bits_literal_text: bit width " +
+                           std::to_string(width) + " out of range [1, 64]");
+  }
+  uint64_t sign_bit = uint64_t{1} << (width - 1);
   if ((bits & sign_bit) == 0) return uint64_literal_text(bits);
-  if (info.bits == 64 && bits == sign_bit) {
-    return "::std::numeric_limits<" + std::string(info.cxx) + ">::min()";
+  if (width == 64 && bits == sign_bit) {
+    return "::std::numeric_limits<" + std::string(cxx) + ">::min()";
   }
   uint64_t magnitude =
-      (info.bits == 64) ? (uint64_t{0} - bits) : low_bits(~bits + 1, info.bits);
+      (width == 64) ? (uint64_t{0} - bits) : low_bits(~bits + 1, width);
   return "-" + uint64_literal_text(magnitude);
 }
 
@@ -559,9 +619,10 @@ const ast::TyName* builtin_integer_type(const PrimitiveInfo* info) {
   return nullptr;
 }
 
-const PrimitiveInfo* shift_carrier_primitive(const PrimitiveInfo* info) {
+const PrimitiveInfo* shift_carrier_primitive(const PrimitiveInfo* info,
+                                             TargetInfo target) {
   if (!info || info->int_kind == PrimitiveIntKind::None) return nullptr;
-  if (info->bits >= 64) return info;
+  if (primitive_bits(*info, target) >= 64) return info;
   return (info->int_kind == PrimitiveIntKind::Unsigned)
              ? primitive_info("cardinal")
              : primitive_info("longint");
@@ -654,14 +715,13 @@ namespace {
 
 bool checked_pascal_shift_int64_impl(int64_t a, const PrimitiveInfo* carrier,
                                      int64_t shift, bool shift_left,
-                                     int64_t* out) {
-  carrier = shift_carrier_primitive(carrier);
-  if (!carrier || carrier->int_kind == PrimitiveIntKind::None ||
-      carrier->bits == 0 || carrier->bits > 64) {
+                                     int64_t* out, TargetInfo target) {
+  carrier = shift_carrier_primitive(carrier, target);
+  if (!carrier || carrier->int_kind == PrimitiveIntKind::None) {
     return false;
   }
 
-  const uint8_t bits = carrier->bits;
+  const uint8_t bits = primitive_bits(*carrier, target);
   const uint64_t amount =
       static_cast<uint64_t>(shift) & static_cast<uint64_t>(bits - 1);
   uint64_t value_bits = low_bits(static_cast<uint64_t>(a), bits);
@@ -689,13 +749,15 @@ bool checked_pascal_shift_int64_impl(int64_t a, const PrimitiveInfo* carrier,
 }  // namespace
 
 bool checked_pascal_shl_int64(int64_t a, const PrimitiveInfo* carrier,
-                              int64_t shift, int64_t* out) {
-  return checked_pascal_shift_int64_impl(a, carrier, shift, true, out);
+                              int64_t shift, int64_t* out,
+                              TargetInfo target) {
+  return checked_pascal_shift_int64_impl(a, carrier, shift, true, out, target);
 }
 
 bool checked_pascal_shr_int64(int64_t a, const PrimitiveInfo* carrier,
-                              int64_t shift, int64_t* out) {
-  return checked_pascal_shift_int64_impl(a, carrier, shift, false, out);
+                              int64_t shift, int64_t* out,
+                              TargetInfo target) {
+  return checked_pascal_shift_int64_impl(a, carrier, shift, false, out, target);
 }
 
 bool tyname_is(const ast::TypeExpr* t, std::string_view expected) {

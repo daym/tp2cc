@@ -42,12 +42,14 @@ ResolvedCall unresolved_call(std::string member_name = {}) {
 EmitResolution::EmitResolution(const TypeRegistry* registry,
                                ScopeStateView& scope, EmitAnalysis& analysis,
                                ResolutionTypeOps& type_ops,
-                               OverloadTypeProvider& overload_types)
+                               OverloadTypeProvider& overload_types,
+                               TargetInfo target)
     : registry_(registry),
       scope_(scope),
       analysis_(analysis),
       type_ops_(type_ops),
-      overload_types_(overload_types) {}
+      overload_types_(overload_types),
+      target_(target) {}
 
 std::vector<EmitResolution::AnyCand> EmitResolution::class_method_cands(
     const std::string& cls, const std::string& name) {
@@ -285,23 +287,21 @@ EmitResolution::integer_actual_domain_for_type(const TypeExpr* t) {
                                   : PrimitiveIntKind::Unsigned};
   }
   const PrimitiveInfo* pi = primitive_for_type(t);
-  if (!pi || pi->int_kind == PrimitiveIntKind::None || pi->bits == 0) {
-    return std::nullopt;
-  }
+  if (!pi || pi->int_kind == PrimitiveIntKind::None) return std::nullopt;
+  const uint8_t width = primitive_bits(*pi, target_);
   if (pi->int_kind == PrimitiveIntKind::Unsigned) {
     return IntegerActualDomain{
         .low = 0,
-        .high = pi->bits >= 64 ? std::numeric_limits<uint64_t>::max()
-                               : ((uint64_t{1} << pi->bits) - 1),
+        .high = width >= 64
+                    ? std::numeric_limits<uint64_t>::max()
+                    : unsigned_mask_for_bits(width),
         .preferred_kind = PrimitiveIntKind::Unsigned};
   }
   return IntegerActualDomain{
-      .low = pi->bits >= 64
-                 ? std::numeric_limits<int64_t>::min()
-                 : -(int64_t{1} << (pi->bits - 1)),
-      .high = pi->bits >= 64
+      .low = signed_min_for_bits(width),
+      .high = width >= 64
                   ? static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
-                  : ((uint64_t{1} << (pi->bits - 1)) - 1),
+                  : static_cast<uint64_t>(signed_max_for_bits(width)),
       .preferred_kind = PrimitiveIntKind::Signed};
 }
 
@@ -371,23 +371,17 @@ EmitResolution::integer_actual_domain_for_expr(const Expr& arg) {
 
 bool EmitResolution::integer_domain_fits_primitive(
     const IntegerActualDomain& domain, const PrimitiveInfo& formal) const {
-  if (formal.int_kind == PrimitiveIntKind::None || formal.bits == 0) {
-    return false;
-  }
+  if (formal.int_kind == PrimitiveIntKind::None) return false;
+  const uint8_t width = primitive_bits(formal, target_);
   if (formal.int_kind == PrimitiveIntKind::Unsigned) {
     if (domain.low < 0) return false;
-    const uint64_t max =
-        formal.bits >= 64 ? std::numeric_limits<uint64_t>::max()
-                          : ((uint64_t{1} << formal.bits) - 1);
+    const uint64_t max = unsigned_mask_for_bits(width);
     return domain.high <= max;
   }
-  const int64_t min =
-      formal.bits >= 64 ? std::numeric_limits<int64_t>::min()
-                        : -(int64_t{1} << (formal.bits - 1));
+  const int64_t min = signed_min_for_bits(width);
   const uint64_t max =
-      formal.bits >= 64
-          ? static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
-          : ((uint64_t{1} << (formal.bits - 1)) - 1);
+      width >= 64 ? static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
+                  : static_cast<uint64_t>(signed_max_for_bits(width));
   return domain.low >= min && domain.high <= max;
 }
 
@@ -409,11 +403,9 @@ ConvScore EmitResolution::rank_integer_domain_conversion(
   if (var_param) return {};
   const TypeExpr* p = analysis_.canonicalize_type(param);
   const PrimitiveInfo* formal = primitive_for_type(p);
-  if (!formal || formal->int_kind == PrimitiveIntKind::None ||
-      formal->bits == 0) {
-    return {};
-  }
+  if (!formal || formal->int_kind == PrimitiveIntKind::None) return {};
   if (!integer_domain_fits_primitive(domain, *formal)) return {};
+  const uint8_t width = primitive_bits(*formal, target_);
   // FPC chooses the smallest integer formal that can represent the Pascal
   // source domain, then uses signedness only to break equal-width ties. This is
   // why `byte` binds to `longint` rather than `qword` when no `cardinal`
@@ -421,7 +413,7 @@ ConvScore EmitResolution::rank_integer_domain_conversion(
   const int sign_mismatch =
       domain.preferred_kind == formal->int_kind ? 0 : 1;
   return {ConvRank::IntDomainCompatible,
-          static_cast<int>(formal->bits) * 2 + sign_mismatch};
+          static_cast<int>(width) * 2 + sign_mismatch};
 }
 
 std::optional<PickResult> EmitResolution::pick_integer_domain_overload(
@@ -461,8 +453,7 @@ std::optional<PickResult> EmitResolution::pick_integer_domain_overload(
       }
       const TypeExpr* formal_type = analysis_.canonicalize_type(flat[i].type);
       const PrimitiveInfo* formal = primitive_for_type(formal_type);
-      if (!formal || formal->int_kind == PrimitiveIntKind::None ||
-          formal->bits == 0) {
+      if (!formal || formal->int_kind == PrimitiveIntKind::None) {
         // Integer actuals may also fit non-primitive overloads through
         // assignment operators. FPC still ranks the primitive integer candidates
         // as their own set first; operator candidates remain available only if
@@ -580,10 +571,13 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
   if (const auto* ai = primitive_for_type(a);
       ai && ai->int_kind != PrimitiveIntKind::None) {
     if (const auto* pi = primitive_for_type(p);
-        pi && pi->int_kind == ai->int_kind && pi->bits >= ai->bits &&
-        pi->bits != 0 && ai->bits != 0) {
+        pi && pi->int_kind == ai->int_kind) {
+      const uint8_t aw = primitive_bits(*ai, target_);
+      const uint8_t pw = primitive_bits(*pi, target_);
+      if (pw >= aw) {
       return {ConvRank::IntWideningSameSign,
-              static_cast<int>(pi->bits) - static_cast<int>(ai->bits)};
+                static_cast<int>(pw) - static_cast<int>(aw)};
+      }
     }
   }
 
@@ -635,10 +629,13 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
   if (const auto* ai = primitive_for_type(a);
       ai && ai->int_kind != PrimitiveIntKind::None) {
     if (const auto* pi = primitive_for_type(p);
-        pi && pi->int_kind != PrimitiveIntKind::None && pi->bits >= ai->bits &&
-        pi->bits != 0 && ai->bits != 0) {
+        pi && pi->int_kind != PrimitiveIntKind::None) {
+      const uint8_t aw = primitive_bits(*ai, target_);
+      const uint8_t pw = primitive_bits(*pi, target_);
+      if (pw >= aw) {
       return {ConvRank::OrdinalSignChange,
-              static_cast<int>(pi->bits) - static_cast<int>(ai->bits)};
+                static_cast<int>(pw) - static_cast<int>(aw)};
+      }
     }
   }
 
@@ -648,10 +645,13 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
     // with range checking; the picker must rank it as viable but worse than
     // widening or sign-preserving matches.
     if (const auto* pi = primitive_for_type(p);
-        pi && pi->int_kind != PrimitiveIntKind::None &&
-        pi->bits != 0 && ai->bits != 0 && pi->bits < ai->bits) {
+        pi && pi->int_kind != PrimitiveIntKind::None) {
+      const uint8_t aw = primitive_bits(*ai, target_);
+      const uint8_t pw = primitive_bits(*pi, target_);
+      if (pw < aw) {
       return {ConvRank::IntNarrowing,
-              static_cast<int>(ai->bits) - static_cast<int>(pi->bits)};
+                static_cast<int>(aw) - static_cast<int>(pw)};
+      }
     }
   }
 

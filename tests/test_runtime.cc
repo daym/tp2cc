@@ -109,15 +109,6 @@ void test_val_keeps_leading_zero_decimals_decimal() {
   CHECK_EQ(v, 1012u);
 }
 
-void test_bootstrap_pointer_sized_aliases_are_32bit() {
-  static_assert(std::is_same_v<t_sizeint, int32_t>);
-  static_assert(std::is_same_v<t_sizeuint, uint32_t>);
-  static_assert(std::is_same_v<t_ptrint, int32_t>);
-  static_assert(std::is_same_v<t_ptruint, uint32_t>);
-
-  CHECK_EQ(p_maxint, std::numeric_limits<int32_t>::max());
-}
-
 void test_pascal_shift_helpers_mask_count_and_shr_logically() {
   CHECK_EQ(p_shl<int32_t>(1, 33), 2);
   CHECK_EQ(p_shr<int32_t>(0xFFFF, 33), 32767);
@@ -1592,7 +1583,6 @@ int main() {
   RUN_TEST(test_val_accepts_decimal_min_longint);
   RUN_TEST(test_val_handles_bootstrap_integer_forms);
   RUN_TEST(test_val_keeps_leading_zero_decimals_decimal);
-  RUN_TEST(test_bootstrap_pointer_sized_aliases_are_32bit);
   RUN_TEST(test_pascal_shift_helpers_mask_count_and_shr_logically);
   RUN_TEST(test_signed_wrap_helpers_avoid_ub);
   RUN_TEST(test_runtime_path_helpers_match_compiler_expectations);

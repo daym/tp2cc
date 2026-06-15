@@ -15,11 +15,17 @@ using namespace ast;
 
 EmitAnalysis::EmitAnalysis(const TypeRegistry* registry, ScopeStateView& scope,
                            ResolveNameProvider& resolve_name_provider,
-                           CallTypeProvider& call_type_provider)
+                           CallTypeProvider& call_type_provider,
+                           TargetInfo target)
     : registry_(registry),
       scope_(scope),
       resolve_name_provider_(resolve_name_provider),
-      call_type_provider_(call_type_provider) {}
+      call_type_provider_(call_type_provider),
+      target_(target) {}
+
+uint8_t EmitAnalysis::resolved_primitive_bits(const PrimitiveInfo& info) const {
+  return primitive_bits(info, target_);
+}
 
 static const TypeSymbol* local_type_symbol(const ScopeStateView& scope,
                                            std::string_view name) {
@@ -562,20 +568,16 @@ std::optional<EmitAnalysis::OrdinalDomain> EmitAnalysis::ordinal_domain_for_type
   }
   if (const auto* info = primitive_info(low);
       info && info->int_kind != PrimitiveIntKind::None) {
+    const uint8_t width = resolved_primitive_bits(*info);
     int64_t domain_low = 0;
     int64_t domain_high = 0;
     if (info->int_kind == PrimitiveIntKind::Unsigned) {
-      if (info->bits >= 63) {
-        domain_high = std::numeric_limits<int64_t>::max();
-      } else {
-        domain_high = (int64_t{1} << info->bits) - 1;
-      }
-    } else if (info->bits >= 64) {
-      domain_low = std::numeric_limits<int64_t>::min();
-      domain_high = std::numeric_limits<int64_t>::max();
+      domain_high = width >= 64
+                        ? std::numeric_limits<int64_t>::max()
+                        : static_cast<int64_t>(unsigned_mask_for_bits(width));
     } else {
-      domain_low = -(int64_t{1} << (info->bits - 1));
-      domain_high = (int64_t{1} << (info->bits - 1)) - 1;
+      domain_low = signed_min_for_bits(width);
+      domain_high = signed_max_for_bits(width);
     }
     return OrdinalDomain{.family = OrdinalFamily::Integer,
                          .low = domain_low,
@@ -799,36 +801,27 @@ std::optional<ConvertedConstInt> EmitAnalysis::convert_const_int_value(
   auto* info = primitive_info(name);
   if (!info || info->int_kind == PrimitiveIntKind::None) return std::nullopt;
 
+  const uint8_t width = resolved_primitive_bits(*info);
   const bool source_is_unsigned =
       value.type && value.type->int_kind == PrimitiveIntKind::Unsigned;
   bool fits = true;
   if (info->int_kind == PrimitiveIntKind::Unsigned) {
     if (source_is_unsigned) {
-      fits = info->bits >= 64 ||
-             value.bits <= ((uint64_t{1} << info->bits) - 1);
+      fits = width >= 64 || value.bits <= unsigned_mask_for_bits(width);
     } else if (value.value < 0) {
       fits = false;
-    } else if (info->bits < 64) {
-      fits = static_cast<uint64_t>(value.value) <=
-             ((uint64_t{1} << info->bits) - 1);
+    } else if (width < 64) {
+      fits = static_cast<uint64_t>(value.value) <= unsigned_mask_for_bits(width);
     }
   } else {
     if (source_is_unsigned) {
       const uint64_t hi =
-          info->bits >= 64
-              ? static_cast<uint64_t>(INT64_MAX)
-              : ((uint64_t{1} << (info->bits - 1)) - 1);
+          width >= 64 ? static_cast<uint64_t>(INT64_MAX)
+                      : static_cast<uint64_t>(signed_max_for_bits(width));
       fits = value.bits <= hi;
     } else {
-      int64_t lo = 0;
-      int64_t hi = 0;
-      if (info->bits == 64) {
-        lo = INT64_MIN;
-        hi = INT64_MAX;
-      } else {
-        lo = -(int64_t{1} << (info->bits - 1));
-        hi = (int64_t{1} << (info->bits - 1)) - 1;
-      }
+      const int64_t lo = signed_min_for_bits(width);
+      const int64_t hi = signed_max_for_bits(width);
       fits = value.value >= lo && value.value <= hi;
     }
   }
@@ -836,22 +829,22 @@ std::optional<ConvertedConstInt> EmitAnalysis::convert_const_int_value(
     report_warning(where, "range check error while evaluating constants");
   }
 
-  const uint64_t bits = low_bits(value.bits, info->bits);
+  const uint64_t bits = low_bits(value.bits, width);
   if (info->int_kind == PrimitiveIntKind::Unsigned) {
     return ConvertedConstInt{.value = static_cast<int64_t>(bits),
                              .bits = bits,
                              .type = info};
   }
-  if (info->bits == 64) {
+  if (width == 64) {
     return ConvertedConstInt{.value = static_cast<int64_t>(bits),
                              .bits = bits,
                              .type = info};
   }
-  uint64_t sign_bit = uint64_t{1} << (info->bits - 1);
+  uint64_t sign_bit = uint64_t{1} << (width - 1);
   const int64_t converted_value =
       (bits & sign_bit) == 0
           ? static_cast<int64_t>(bits)
-          : static_cast<int64_t>(bits | ~low_bits(UINT64_MAX, info->bits));
+          : static_cast<int64_t>(bits | ~low_bits(UINT64_MAX, width));
   return ConvertedConstInt{.value = converted_value, .bits = bits, .type = info};
 }
 
@@ -1012,7 +1005,7 @@ const TypeExpr* EmitAnalysis::deduce_binary_expr_type(const Binary& b) {
       const PrimitiveInfo* rp = primitive_info_for_type(rt);
       if (lp && rp && lp->int_kind != PrimitiveIntKind::None &&
           rp->int_kind != PrimitiveIntKind::None) {
-        return (lp->bits >= rp->bits) ? lt : rt;
+        return (primitive_bits(*lp, target_) >= primitive_bits(*rp, target_)) ? lt : rt;
       }
       return lt ? lt : rt;
     }
@@ -1127,15 +1120,15 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
           if (!checked_mod_int64(lhs->value, rhs->value, &value)) return std::nullopt;
           break;
         case BinOp::Shl:
-          if (!checked_pascal_shl_int64(lhs->value, lhs->type, rhs->value, &value)) {
+          if (!checked_pascal_shl_int64(lhs->value, lhs->type, rhs->value, &value, target_)) {
             return std::nullopt;
           }
-          return ConstIntExprInfo{value, shift_carrier_primitive(lhs->type)};
+          return ConstIntExprInfo{value, shift_carrier_primitive(lhs->type, target_)};
         case BinOp::Shr:
-          if (!checked_pascal_shr_int64(lhs->value, lhs->type, rhs->value, &value)) {
+          if (!checked_pascal_shr_int64(lhs->value, lhs->type, rhs->value, &value, target_)) {
             return std::nullopt;
           }
-          return ConstIntExprInfo{value, shift_carrier_primitive(lhs->type)};
+          return ConstIntExprInfo{value, shift_carrier_primitive(lhs->type, target_)};
         case BinOp::And:
           value = static_cast<int64_t>(static_cast<uint64_t>(lhs->value) &
                                        static_cast<uint64_t>(rhs->value));
@@ -1269,8 +1262,8 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         if (lt && lt->kind == Kind::TyName) {
           const auto& tn = static_cast<const TyName&>(*lt);
           if (const PrimitiveInfo* pi = primitive_info(ascii_lower(tn.name));
-              pi && shift_carrier_primitive(pi)) {
-            return builtin_integer_type(shift_carrier_primitive(pi));
+              pi && shift_carrier_primitive(pi, target_)) {
+            return builtin_integer_type(shift_carrier_primitive(pi, target_));
           }
         }
       }

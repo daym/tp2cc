@@ -21,6 +21,7 @@
 #include "source.h"
 #include "typereg.h"
 #include "units.h"
+#include "target_info.h"
 
 namespace fs = std::filesystem;
 using namespace tp2cc;
@@ -35,6 +36,32 @@ std::string to_lower(std::string_view s) {
   return r;
 }
 
+TargetInfo target_info_for_cpu(std::string_view cpu) {
+  if (cpu.empty()) return default_target_info();
+  std::string lower(cpu);
+  for (auto& c : lower) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  // 32-bit CPUs
+  if (lower == "i386" || lower == "m68k" || lower == "powerpc" ||
+      lower == "sparc" || lower == "mips" || lower == "mipsel" ||
+      lower == "arm" || lower == "i8086" || lower == "avr" ||
+      lower == "vm" || lower == "jvm" || lower == "wasm") {
+    return {.pointer_bits = 32};
+  }
+  // 64-bit CPUs
+  if (lower == "x86_64" || lower == "aarch64" || lower == "powerpc64" ||
+      lower == "sparc64" || lower == "ia64" || lower == "alpha") {
+    return {.pointer_bits = 64};
+  }
+  std::fprintf(stderr,
+               "unsupported target CPU: %s\n"
+               "supported: i386 m68k powerpc sparc mips mipsel arm i8086 avr "
+               "vm jvm wasm x86_64 aarch64 powerpc64 sparc64 ia64 alpha\n",
+               std::string(cpu).c_str());
+  std::exit(2);
+}
+
 struct CliOptions {
   std::vector<std::string> defines;
   std::vector<fs::path> unit_paths;     // -Fu<dir>
@@ -46,6 +73,7 @@ struct CliOptions {
   bool overflow_check = false;
   bool range_check = false;
   bool emit_makefile = false;
+  std::string cpu;  // -P<cpu>: target CPU
 };
 
 // Reserved extension point: if tp2cc ever needs to predefine symbols
@@ -424,7 +452,7 @@ int cmd_parse_all(const CliOptions& opts,
 }
 
 int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
-                 const std::string& outdir) {
+                 const std::string& outdir, TargetInfo target) {
   UnitGraph g{};
   configure_graph(g, opts);
   fs::path input = input_path;
@@ -468,7 +496,7 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
       init_order = &init_list;
     }
     int errs_before = error_count();
-    auto out = emit_unit(*pu->ast, &reg, init_order);
+    auto out = emit_unit(*pu->ast, &reg, init_order, target);
     int errs = error_count() - errs_before;
     if (errs != 0) {
       std::printf("FAIL %s (%d emit errors)\n", name.c_str(), errs);
@@ -522,7 +550,7 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
 }
 
 int cmd_emit(const CliOptions& opts, const std::string& path,
-             const std::string& outdir) {
+             const std::string& outdir, TargetInfo target) {
   auto lex = make_lexer(path, opts);
   if (!lex) { std::fprintf(stderr, "cannot read %s\n", path.c_str()); return 2; }
   Parser parser(*lex);
@@ -536,7 +564,7 @@ int cmd_emit(const CliOptions& opts, const std::string& path,
   std::vector<const ast::UnitNode*> units{u.get()};
   reg.build(units);
   int errs_before = error_count();
-  auto out = emit_unit(*u, &reg);
+  auto out = emit_unit(*u, &reg, nullptr, target);
   if (error_count() != errs_before) return 1;
   fs::create_directories(outdir);
   std::string stem = u->name;
@@ -616,6 +644,8 @@ void usage() {
     "  -m           also emit a Makefile in the output directory\n"
     "  -dSYMBOL[:=TEXT]\n"
     "               predefine SYMBOL, optionally with text for {$if}\n"
+    "  -P<cpu>     target CPU (i386, x86_64, arm, aarch64, powerpc,\n"
+    "              powerpc64, mipsel, ...; determines pointer width)\n"
     "  -Fu<dir>     add <dir> to unit search path (for `uses`)\n"
     "  -Fi<dir>     add <dir> to include search path (for {$I})\n"
     "  --           end of options (subsequent args are positional)\n");
@@ -635,6 +665,7 @@ int main(int argc, char** argv) {
   bool overflow_check = false;
   bool range_check = false;
   bool emit_makefile = false;
+  std::string cpu;
   std::vector<std::string> positional;
   bool end_of_opts = false;
   for (int i = 2; i < argc; ++i) {
@@ -668,6 +699,11 @@ int main(int argc, char** argv) {
         regen_cli_args.emplace_back(argv[i]);
         continue;
       }
+      if (a.size() > 2 && a[0] == '-' && a[1] == 'P') {
+        cpu = std::string(a.substr(2));
+        regen_cli_args.emplace_back(argv[i]);
+        continue;
+      }
       if (!a.empty() && a[0] == '-') {
         std::fprintf(stderr, "unknown option: %s\n", argv[i]);
         usage();
@@ -684,7 +720,8 @@ int main(int argc, char** argv) {
                         .invoked_as = argv[0],
                         .overflow_check = overflow_check,
                         .range_check = range_check,
-                        .emit_makefile = emit_makefile};
+                        .emit_makefile = emit_makefile,
+                        .cpu = cpu};
 
   if (cmd == "lex")       return cmd_lex(opts, positional);
   if (cmd == "lex-all")   return cmd_lex_all(opts, positional);
@@ -693,11 +730,13 @@ int main(int argc, char** argv) {
   if (cmd == "topo")      return cmd_topo(opts, positional);
   if (cmd == "emit") {
     if (positional.size() != 2) { usage(); return 2; }
-    return cmd_emit(opts, positional[0], positional[1]);
+    TargetInfo target = target_info_for_cpu(cpu);
+    return cmd_emit(opts, positional[0], positional[1], target);
   }
   if (cmd == "emit-all") {
     if (positional.size() != 2) { usage(); return 2; }
-    return cmd_emit_all(opts, positional[0], positional[1]);
+    TargetInfo target = target_info_for_cpu(cpu);
+    return cmd_emit_all(opts, positional[0], positional[1], target);
   }
   std::fprintf(stderr, "unknown subcommand: %s\n", cmd.c_str());
   usage();

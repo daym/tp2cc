@@ -6,6 +6,8 @@
 #include <string_view>
 #include <vector>
 
+#include "target_info.h"
+
 namespace tp2cc::ast {
 enum class BinOp : uint8_t;
 struct ProcDecl;
@@ -70,6 +72,9 @@ struct PrimitiveInfo {
   const char* cxx = nullptr;
   PrimitiveIntKind int_kind = PrimitiveIntKind::None;
   uint8_t bits = 0;
+  // True for PtrInt/PtrUInt/SizeInt/SizeUInt: width is the target pointer
+  // width, and `bits` is not read.
+  bool pointer_sized;
 };
 
 // Runtime named types and reference-class helpers for stubs / builtins that do
@@ -85,12 +90,28 @@ bool is_primitive_type(std::string_view lowname);
 std::string primitive_type_cxx(std::string_view lowname);
 uint64_t low_bits(uint64_t value, uint8_t bits);
 std::string uint64_literal_text(uint64_t value);
-std::string signed_bits_literal_text(uint64_t bits, const PrimitiveInfo& info);
+
+// Resolve a primitive integer type's bit width.  For pointer-sized
+// primitives (ptrint/ptruint/sizeint/sizeuint), returns the target pointer
+// width; for everything else, returns the fixed table width.
+// Throws std::logic_error if `info` is not an integer primitive.
+[[nodiscard]] uint8_t primitive_bits(const PrimitiveInfo& info,
+                                     TargetInfo target);
+
+// Range/mask math for a *resolved* width in [1, 64]. Each throws
+// std::logic_error on an out-of-range width.
+[[nodiscard]] uint64_t unsigned_mask_for_bits(uint8_t bits);
+[[nodiscard]] int64_t signed_min_for_bits(uint8_t bits);
+[[nodiscard]] int64_t signed_max_for_bits(uint8_t bits);
+
+std::string signed_bits_literal_text(uint64_t bits, uint8_t width,
+                                     std::string_view cxx);
 std::string primitive_low_high_expr(std::string_view lowname, bool want_low);
 const ast::TyName* builtin_integer_type(std::string_view lowname);
 const PrimitiveInfo* primitive_info_for_value(int64_t value);
 const ast::TyName* builtin_integer_type(const PrimitiveInfo* info);
-const PrimitiveInfo* shift_carrier_primitive(const PrimitiveInfo* info);
+const PrimitiveInfo* shift_carrier_primitive(const PrimitiveInfo* info,
+                                             TargetInfo target);
 
 // Checked Pascal integer arithmetic helpers. These are about Pascal overflow
 // semantics, not generic C++ math convenience.
@@ -103,9 +124,11 @@ bool checked_shift_count(int64_t shift);
 bool checked_shl_int64(int64_t a, int64_t shift, int64_t* out);
 bool checked_shr_int64(int64_t a, int64_t shift, int64_t* out);
 bool checked_pascal_shl_int64(int64_t a, const PrimitiveInfo* carrier,
-                              int64_t shift, int64_t* out);
+                              int64_t shift, int64_t* out,
+                              TargetInfo target);
 bool checked_pascal_shr_int64(int64_t a, const PrimitiveInfo* carrier,
-                              int64_t shift, int64_t* out);
+                              int64_t shift, int64_t* out,
+                              TargetInfo target);
 bool tyname_is(const ast::TypeExpr* t, std::string_view expected);
 bool primitive_name_is_charish(std::string_view lowname);
 bool tyname_is_charish(const ast::TypeExpr* t);

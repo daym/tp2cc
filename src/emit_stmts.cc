@@ -491,7 +491,7 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
             wrap = true;
           } else if (src && (src->int_kind == PrimitiveIntKind::Signed ||
                              src->int_kind == PrimitiveIntKind::Unsigned)) {
-            if (src->bits > dst->bits || src->int_kind != dst->int_kind) {
+            if (analysis_.resolved_primitive_bits(*src) > analysis_.resolved_primitive_bits(*dst) || src->int_kind != dst->int_kind) {
               wrap = true;
             }
           }

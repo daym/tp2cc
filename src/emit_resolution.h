@@ -10,6 +10,7 @@
 #include "emit_analysis.h"
 #include "emit_context.h"
 #include "emit_resolution_types.h"
+#include "target_info.h"
 
 namespace tp2cc {
 
@@ -71,8 +72,8 @@ struct MethodValueBinding {
 class EmitResolution {
  public:
   EmitResolution(const TypeRegistry* registry, ScopeStateView& scope,
-                 EmitAnalysis& analysis, ResolutionTypeOps& type_ops,
-                 OverloadTypeProvider& overload_types);
+                  EmitAnalysis& analysis, ResolutionTypeOps& type_ops,
+                  OverloadTypeProvider& overload_types, TargetInfo target);
 
   // Pascal/FPC overload-resolution conversion ranks. Lower is better.
   // `NotViable` means no implicit conversion exists, so the candidate drops
@@ -236,6 +237,7 @@ class EmitResolution {
   EmitAnalysis& analysis_;
   ResolutionTypeOps& type_ops_;
   OverloadTypeProvider& overload_types_;
+  TargetInfo target_;
 };
 
 }  // namespace tp2cc

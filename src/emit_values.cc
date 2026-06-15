@@ -354,12 +354,13 @@ std::optional<std::string> EmitValues::maybe_convert_const_int_expr(
   auto converted = analysis_.convert_const_int_value(
       e.loc, *value, target, explicit_conversion, /*diagnose=*/true);
   if (!converted || !converted->type) return std::nullopt;
+  const uint8_t width = analysis_.resolved_primitive_bits(*converted->type);
   std::string literal =
       (converted->type->int_kind == PrimitiveIntKind::Unsigned)
           ? uint64_literal_text(converted->bits)
-          : ::tp2cc::signed_bits_literal_text(converted->bits,
-                                              *converted->type);
-  if (converted->type->bits == 64) {
+          : ::tp2cc::signed_bits_literal_text(converted->bits, width,
+                                              converted->type->cxx);
+  if (width == 64) {
     literal = "((" + std::string(converted->type->cxx) + ")(" + literal + "))";
   }
   return literal;

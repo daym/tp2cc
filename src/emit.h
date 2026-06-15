@@ -19,6 +19,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "target_info.h"
+
 #include "ast.h"
 
 namespace tp2cc {
@@ -31,11 +33,12 @@ struct EmittedUnit {
 };
 
 EmittedUnit emit_unit(const ast::UnitNode& u,
-                      const TypeRegistry* registry = nullptr,
+                      const TypeRegistry* registry,
                       // When emitting a `program`, the ordered list of
                       // unit names (excluding the program itself) whose
                       // unit lifecycle hooks should run before the
                       // program body.
-                      const std::vector<std::string>* unit_init_order = nullptr);
+                      const std::vector<std::string>* unit_init_order,
+                      TargetInfo target);
 
 }  // namespace tp2cc
