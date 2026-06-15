@@ -3331,9 +3331,9 @@ inline double      p_ln(double x)           { return std::log(x); }
 inline double      p_exp(double x)          { return std::exp(x); }
 inline double      p_arctan(double x)       { return std::atan(x); }
 inline int32_t     p_trunc(double x)        { return static_cast<int32_t>(x); }
-inline int32_t     p_round(double x)        { return static_cast<int32_t>(std::lround(x)); }
-inline double      p_int(double x)          { return std::trunc(x); }
-inline double      p_frac(double x)         { return x - std::trunc(x); }
+inline int32_t     p_round(double x)        { using namespace std; return static_cast<int32_t>(lround(x)); }
+inline double      p_int(double x)          { using namespace std; return trunc(x); }
+inline double      p_frac(double x)         { using namespace std; return x - trunc(x); }
 
 template <typename T> inline T p_succ(T x) { return tp2cc_ord_wrap_add(x, 1); }
 template <typename T> inline T p_pred(T x) { return tp2cc_ord_wrap_sub(x, 1); }
@@ -4174,7 +4174,8 @@ inline void tp2cc_decode_tdatetime(t_tdatetime value, int32_t& year,
                                    uint32_t& month, uint32_t& day,
                                    uint32_t& hour, uint32_t& minute,
                                    uint32_t& second, uint32_t& millisecond) {
-  double day_part = std::floor(value);
+  using namespace std;
+  double day_part = floor(value);
   double frac = value - day_part;
   if (frac < 0) {
     frac += 1.0;
@@ -4184,7 +4185,7 @@ inline void tp2cc_decode_tdatetime(t_tdatetime value, int32_t& year,
   tp2cc_civil_from_days(days, year, month, day);
 
   uint64_t total_msec = static_cast<uint64_t>(
-      std::llround(frac * static_cast<double>(tp2cc_milliseconds_per_day)));
+      llround(frac * static_cast<double>(tp2cc_milliseconds_per_day)));
   if (total_msec >= tp2cc_milliseconds_per_day) {
     total_msec = 0;
     tp2cc_civil_from_days(days + 1, year, month, day);
@@ -5320,16 +5321,18 @@ inline void p_val(const tp2cc_AnsiString& s, double& out, Code& code) {
 }
 template <int N>
 inline void p_val(const tp2cc_ShortString<N>& s, long double& out, int32_t& code) {
-  std::string buf = tp2cc_to_std_string(s);
+  using namespace std;
+  string buf = tp2cc_to_std_string(s);
   char* end = nullptr;
-  long double v = std::strtold(buf.c_str(), &end);
+  long double v = strtold(buf.c_str(), &end);
   if (end && *end == '\0') { out = v; code = 0; }
   else { code = static_cast<int32_t>(end - buf.c_str()) + 1; }
 }
 inline void p_val(const tp2cc_AnsiString& s, long double& out, int32_t& code) {
-  std::string buf = tp2cc_to_std_string(s);
+  using namespace std;
+  string buf = tp2cc_to_std_string(s);
   char* end = nullptr;
-  long double v = std::strtold(buf.c_str(), &end);
+  long double v = strtold(buf.c_str(), &end);
   if (end && *end == '\0') { out = v; code = 0; }
   else { code = static_cast<int32_t>(end - buf.c_str()) + 1; }
 }
