@@ -989,12 +989,8 @@ class tp2cc_AnsiString {
     data = fresh;
   }
 
-  explicit operator int32_t() const {
-    return static_cast<int32_t>(reinterpret_cast<std::uintptr_t>(data));
-  }
-
-  explicit operator uint32_t() const {
-    return static_cast<uint32_t>(reinterpret_cast<std::uintptr_t>(data));
+  explicit operator intptr_t() const {
+    return reinterpret_cast<intptr_t>(data);
   }
 
   operator const p_char*() const { return data; }
