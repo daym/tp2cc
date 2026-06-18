@@ -2109,8 +2109,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         } else if (c.args.size() == 1 && n != "inc" && n != "dec") {
           PascalTypecastTarget target = classify_pascal_typecast_target(n);
           if (target.known && target.kind == PascalTypecastKind::Metaclass) {
-            std::string source = const_value_to_cxx(*c.args[0], target.type,
-                                                    /*explicit_conversion=*/true);
+            std::string source = single_call_arg_cxx(c);
             std::string coerced = coerce_pointer_like_text(
                 type_name_text_to_cxx(n), target.type,
                 type_for_overload(*c.args[0]),
