@@ -1923,40 +1923,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       //                                                   the C++ type is
       //                                                   compound
       //   * `new(...)` / `dispose(...)`                 -> placement form
-      // `system.low(...)` / `system.high(...)`: Pascal sometimes spells
-      // these intrinsics with an explicit `system.` qualifier. System is
-      // the implicit unit, so semantically these are identical to the
-      // bare-name form -- forward to the same low/high lowering instead
-      // of falling through to a runtime call.
-      if (c.callee->kind == Kind::Member) {
-        const auto& mem = static_cast<const Member&>(*c.callee);
-        const bool system_unit_qualifier =
-            analysis_.resolve_unit_qualified_member(mem).has_value() ||
-            (!registry && mem.base->kind == Kind::Ident &&
-             ascii_lower(static_cast<const Ident&>(*mem.base).name) == "system");
-        if (system_unit_qualifier &&
-            (mem.name == "low" || mem.name == "high") && c.args.size() == 1) {
-          const bool want_low = (mem.name == "low");
-          if (c.args[0]->kind == Kind::Ident) {
-            const auto& a = static_cast<const Ident&>(*c.args[0]);
-            if (std::string rewrite =
-                    low_high_expr_for_named_type(a.name, want_low);
-                !rewrite.empty()) {
-              return rewrite;
-            }
-          }
-          if (const TypeExpr* at = type_for_overload(*c.args[0])) {
-            if (std::string rewrite = low_high_expr_for_type(at, want_low);
-                !rewrite.empty()) {
-              return rewrite;
-            }
-          }
-        }
-      }
-      if (c.callee->kind == Kind::Ident) {
-        const auto& id = static_cast<const Ident&>(*c.callee);
-        const std::string& n = id.name;
-
+      // Pascal intrinsics accept both `low(t)` and `system.low(t)` spellings.
+      // intrinsic_call_name normalises both forms so the lowering below runs
+      // once instead of being duplicated across Ident-callee and Member-callee
+      // branches.
+      if (auto intrinsic = analysis_.intrinsic_call_name(*c.callee)) {
+        const std::string& n = *intrinsic;
         // Pascal `low` / `high` are type-driven:
         //   `high(longint)`   -> max value of the type
         //   `high(a)`         -> max value of a's type
@@ -2011,7 +1983,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           if (inner.empty()) inner = "sizeof(" + expr_to_cxx(*c.args[0]) + ")";
           return "static_cast<int32_t>(" + inner + ")";
-        } else if (n == "unaligned" && c.args.size() == 1) {
+        }
+      }
+      if (c.callee->kind == Kind::Ident) {
+        const auto& id = static_cast<const Ident&>(*c.callee);
+        const std::string& n = id.name;
+
+        if (n == "unaligned" && c.args.size() == 1) {
           // Pascal `unaligned(x)` is an explicit bytewise load/store view,
           // not permission to manufacture a misaligned `T&`. When the
           // argument denotes storage, load it via memcpy from the storage

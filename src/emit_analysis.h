@@ -150,6 +150,14 @@ class EmitAnalysis {
   // not each recurse into the qualifier as if it were an expression.
   std::optional<UnitQualifiedMemberLookup> resolve_unit_qualified_member(
       const ast::Member& mem);
+  // A compiler intrinsic can be spelled either as a bare call (`low(t)`,
+  // `sizeof(x)`) or as a system-unit-qualified call (`system.low(t)`). Both
+  // forms denote the same intrinsic; this helper returns the intrinsic name
+  // for either spelling so dispatch tables in deduce_type and the emitter do
+  // not need a parallel Ident-callee / Member-callee copy of every intrinsic.
+  // Returns nullopt when the callee is neither form (e.g. `self.foo(...)`,
+  // `rec.field(...)`, or a plain function-pointer call).
+  std::optional<std::string> intrinsic_call_name(const ast::Expr& callee);
   const VarInfo* find_visible_unit_var(const std::string& name);
   const ConstInfo* find_visible_unit_const(const std::string& name);
   const EnumInfoReg* find_visible_enum_info_for_member(const std::string& name);

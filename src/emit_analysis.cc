@@ -1537,37 +1537,18 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
     }
     case Kind::Call: {
       const auto& c = static_cast<const Call&>(e);
-      if (c.callee->kind == Kind::Ident) {
-        const auto& id = static_cast<const Ident&>(*c.callee);
-        if ((primitive_name_is_charish(id.name) || id.name == "chr") &&
-            c.args.size() == 1) {
+      // Intrinsics that work the same whether spelled `low(t)` or
+      // `system.low(t)` are dispatched through intrinsic_call_name so the
+      // Ident-callee and system-unit-Member-callee spellings share one table.
+      if (auto intrinsic = intrinsic_call_name(*c.callee)) {
+        const std::string& n = *intrinsic;
+        if ((primitive_name_is_charish(n) || n == "chr") && c.args.size() == 1) {
           return builtin_char_type();
         }
-        if (id.name == "ord" && c.args.size() == 1) {
+        if (n == "ord" && c.args.size() == 1) {
           return ord_result_type_for_operand(*c.args[0]);
         }
-      }
-      const TypeExpr* callee_type = deduce_type(*c.callee);
-      if (callee_type) callee_type = canonicalize_type(callee_type);
-      if (callee_type && callee_type->kind == Kind::TyProcedural) {
-        const auto& p = static_cast<const TyProcedural&>(*callee_type);
-        if (p.is_function) return p.return_type.get();
-      }
-      // `system.low(t)`, `system.high(t)`, etc.: same intrinsic as the bare
-      // name, but the callee is a unit-qualified Member rather than an Ident.
-      // Without this branch deduce_type returns null for the whole call, which
-      // then breaks any expression that embeds it (e.g. `system.low(int64)
-      // div 2`) and starves overload resolution of the static type it needs to
-      // pick a user-defined `operator :=`.
-      if (c.callee->kind == Kind::Member) {
-        const auto& mem = static_cast<const Member&>(*c.callee);
-        const bool system_unit_qualifier =
-            resolve_unit_qualified_member(mem).has_value() ||
-            (!registry_ && mem.base->kind == Kind::Ident &&
-             ascii_lower(static_cast<const Ident&>(*mem.base).name) ==
-                 "system");
-        if (system_unit_qualifier &&
-            (mem.name == "low" || mem.name == "high") && c.args.size() == 1) {
+        if ((n == "low" || n == "high") && c.args.size() == 1) {
           if (c.args[0]->kind == Kind::Ident) {
             const auto& arg_id = static_cast<const Ident&>(*c.args[0]);
             if (const TypeExpr* named = lookup_named_type_expr(arg_id.name)) {
@@ -1579,13 +1560,39 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           }
           return deduce_low_high_result_type(deduce_type(*c.args[0]));
         }
+        if (n == "sizeof" && c.args.size() == 1) {
+          return builtin_integer_type("longint");
+        }
+        if (n == "pointer" && c.args.size() == 1) {
+          return named_pascal_type("pointer");
+        }
+        if ((n == "pchar" || n == "pansichar") && c.args.size() == 1) {
+          return builtin_pchar_type();
+        }
+        if ((n == "succ" || n == "pred" ||
+             n == "abs" || n == "sqr" ||
+             n == "swapendian" || n == "beton" ||
+             n == "leton" || n == "ntobe" ||
+             n == "ntole") &&
+            c.args.size() == 1) {
+          return deduce_type(*c.args[0]);
+        }
+        if ((n == "shortstring" || n == "ansistring" ||
+             n == "utf8string") && c.args.size() == 1) {
+          return named_pascal_type(n);
+        }
       }
+      const TypeExpr* callee_type = deduce_type(*c.callee);
+      if (callee_type) callee_type = canonicalize_type(callee_type);
+      if (callee_type && callee_type->kind == Kind::TyProcedural) {
+        const auto& p = static_cast<const TyProcedural&>(*callee_type);
+        if (p.is_function) return p.return_type.get();
+      }
+      // Typecast `T(expr)` and alias-call forms only apply when the callee is
+      // a bare identifier, since `system.T(expr)` would be a unit-qualified
+      // access rather than a typecast in user code.
       if (c.callee->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*c.callee);
-        if ((id.name == "shortstring" || id.name == "ansistring" ||
-             id.name == "utf8string") && c.args.size() == 1) {
-          return named_pascal_type(id.name);
-        }
         if (c.args.size() == 1) {
           // A one-argument call whose callee is a type name is a Pascal
           // typecast. The result type is the named type even when value
@@ -1606,36 +1613,6 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
               (symbol && symbol->record_info())) {
             return named_pascal_type(id.name);
           }
-        }
-        if ((id.name == "low" || id.name == "high") && c.args.size() == 1) {
-          if (c.args[0]->kind == Kind::Ident) {
-            const auto& arg_id = static_cast<const Ident&>(*c.args[0]);
-            if (const TypeExpr* named = lookup_named_type_expr(arg_id.name)) {
-              return deduce_low_high_result_type(named);
-            }
-            if (const TyName* int_ty = builtin_integer_type(arg_id.name)) {
-              return int_ty;
-            }
-          }
-          return deduce_low_high_result_type(deduce_type(*c.args[0]));
-        }
-        if (id.name == "sizeof" && c.args.size() == 1) {
-          return builtin_integer_type("longint");
-        }
-        if (id.name == "pointer" && c.args.size() == 1) {
-          return named_pascal_type("pointer");
-        }
-        if ((id.name == "pchar" || id.name == "pansichar") &&
-            c.args.size() == 1) {
-          return builtin_pchar_type();
-        }
-        if ((id.name == "succ" || id.name == "pred" ||
-             id.name == "abs" || id.name == "sqr" ||
-             id.name == "swapendian" || id.name == "beton" ||
-             id.name == "leton" || id.name == "ntobe" ||
-             id.name == "ntole") &&
-            c.args.size() == 1) {
-          return deduce_type(*c.args[0]);
         }
         auto nit = scope_.local_nested_fns.find(id.name);
         if (nit != scope_.local_nested_fns.end() && nit->second.size() == 1 &&
@@ -1942,6 +1919,22 @@ EmitAnalysis::resolve_unit_qualified_member(const ast::Member& mem) {
       resolve_name_provider_.resolve_name(mem.name, QualifierKind::Unit,
                                           lookup_unit_name);
   return UnitQualifiedMemberLookup{lookup_unit_name, mem.name, rr};
+}
+
+std::optional<std::string>
+EmitAnalysis::intrinsic_call_name(const Expr& callee) {
+  if (callee.kind == Kind::Ident) {
+    return static_cast<const Ident&>(callee).name;
+  }
+  if (callee.kind == Kind::Member) {
+    const auto& mem = static_cast<const Member&>(callee);
+    const bool system_unit_qualifier =
+        resolve_unit_qualified_member(mem).has_value() ||
+        (!registry_ && mem.base && mem.base->kind == Kind::Ident &&
+         ascii_lower(static_cast<const Ident&>(*mem.base).name) == "system");
+    if (system_unit_qualifier) return mem.name;
+  }
+  return std::nullopt;
 }
 
 const VarInfo* EmitAnalysis::find_visible_unit_var(const std::string& name) {
