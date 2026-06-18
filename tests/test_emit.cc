@@ -11626,6 +11626,61 @@ void test_multiple_case_blocks_in_record_errors_out() {
   CHECK(error_count() > before);
 }
 
+// Reproduces the FPC-3.2.0 stage1 failure at compiler/symdef.pas:2917-2920.
+// Pascal source has:
+//   if (ordtype = u64bit) or
+//      ((ordtype = s64bit) and
+//       ((low <= (system.low(int64) div 2)) or
+//        (high > (system.high(int64) div 2)))) then
+// where `low`/`high` are tconstexprint method results and only
+// `operator <= (const a,b: tconstexprint): boolean` exists; the int64 RHS
+// has to be bridged via `operator := (const s: int64): tconstexprint`.
+// The bug: tp2cc emits the conversion wrap for `>= 0` (literal RHS) but
+// not for `<= system.low(int64) div 2` (complex-int RHS). The translated
+// C++ then has `t_tconstexprint <= long int` which g++ rejects.
+//
+// This test uses an analogous single-unit shape (record + `:=` from int64 +
+// `<=` on the record) and checks that the complex-int RHS is wrapped in the
+// assignment-operator conversion helper, matching what the literal RHS path
+// already produces.
+void test_record_leq_complex_int_rhs_uses_assignment_operator_conversion() {
+  auto out = compile_snippet_with_registry(
+      "unit ops;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    svalue : int64;\n"
+      "  end;\n"
+      "operator := (const s : int64) : trec;\n"
+      "operator <= (const a, b : trec) : boolean;\n"
+      "procedure test;\n"
+      "implementation\n"
+      "operator := (const s : int64) : trec;\n"
+      "begin\n"
+      "  result.svalue := s;\n"
+      "end;\n"
+      "operator <= (const a, b : trec) : boolean;\n"
+      "begin\n"
+      "  result := a.svalue <= b.svalue;\n"
+      "end;\n"
+      "procedure test;\n"
+      "var r : trec; cond : boolean;\n"
+      "begin\n"
+      "  cond := r <= system.low(int64) div 2;\n"
+      "end;\n"
+      "end.\n");
+  // Sanity: the conversion helper for int64 -> trec is emitted.
+  CHECK(contains(out.header,
+                "t_trec tp2cc_operator_assign_params_const_name_int64_ret_name_trec(int64_t p_s);"));
+  // The bug: RHS `system.low(int64) div 2` must be wrapped in that helper
+  // so the existing `operator<=(t_trec, t_trec)` resolves. Without the wrap
+  // g++ sees `t_trec <= long int` and rejects it.
+  CHECK(contains(
+      out.impl,
+      "(p_r <= ::p_ops::tp2cc_operator_assign_params_const_name_int64_ret_name_trec("
+      "::rt::tp2cc_int_div(::std::numeric_limits<int64_t>::min(), 2)))"));
+}
+
 }  // namespace
 
 int main() {
@@ -11751,6 +11806,7 @@ int main() {
   RUN_TEST(test_var_ansistring_call_keeps_lvalue_storage);
   RUN_TEST(test_overloaded_string_and_bool_call_keeps_boolean_argument_raw);
   RUN_TEST(test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers);
+  RUN_TEST(test_record_leq_complex_int_rhs_uses_assignment_operator_conversion);
   RUN_TEST(test_imported_assignment_operator_handles_explicit_qword_constant_cast);
   RUN_TEST(test_overloaded_call_result_type_uses_selected_decl);
   RUN_TEST(test_nested_overload_result_type_is_used_for_outer_overload);

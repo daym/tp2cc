@@ -1553,6 +1553,33 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         const auto& p = static_cast<const TyProcedural&>(*callee_type);
         if (p.is_function) return p.return_type.get();
       }
+      // `system.low(t)`, `system.high(t)`, etc.: same intrinsic as the bare
+      // name, but the callee is a unit-qualified Member rather than an Ident.
+      // Without this branch deduce_type returns null for the whole call, which
+      // then breaks any expression that embeds it (e.g. `system.low(int64)
+      // div 2`) and starves overload resolution of the static type it needs to
+      // pick a user-defined `operator :=`.
+      if (c.callee->kind == Kind::Member) {
+        const auto& mem = static_cast<const Member&>(*c.callee);
+        const bool system_unit_qualifier =
+            resolve_unit_qualified_member(mem).has_value() ||
+            (!registry_ && mem.base->kind == Kind::Ident &&
+             ascii_lower(static_cast<const Ident&>(*mem.base).name) ==
+                 "system");
+        if (system_unit_qualifier &&
+            (mem.name == "low" || mem.name == "high") && c.args.size() == 1) {
+          if (c.args[0]->kind == Kind::Ident) {
+            const auto& arg_id = static_cast<const Ident&>(*c.args[0]);
+            if (const TypeExpr* named = lookup_named_type_expr(arg_id.name)) {
+              return deduce_low_high_result_type(named);
+            }
+            if (const TyName* int_ty = builtin_integer_type(arg_id.name)) {
+              return int_ty;
+            }
+          }
+          return deduce_low_high_result_type(deduce_type(*c.args[0]));
+        }
+      }
       if (c.callee->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*c.callee);
         if ((id.name == "shortstring" || id.name == "ansistring" ||
