@@ -1297,10 +1297,14 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         // a naked C++ `void*` assignment.
         return named_pascal_type("pointer");
       }
-      // Self is handled structurally elsewhere; returning nullptr here keeps
-      // member-access deduction on the Pascal-facing class-name path.
+      // `self` inside a method has the surrounding class as its type. Pascal
+      // passes records/objects by reference and classes by implicit pointer,
+      // but those subtleties are an emit-time concern; for type deduction the
+      // class name is what every other path (member lookup, meta-class target,
+      // etc.) already uses, so returning it here keeps deduce_type consistent
+      // instead of silently dropping the type.
       if (id.name == "self" && !scope_.current_class_name.empty()) {
-        return nullptr;
+        return named_pascal_type(scope_.current_class_name);
       }
       if (scope_.current_fn_is_function && scope_.current_fn_result_type &&
           !scope_.current_fn_name.empty() && id.name == scope_.current_fn_name) {
@@ -1637,10 +1641,10 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
     case Kind::SetLit:
       return deduce_set_literal_type(static_cast<const SetLit&>(e));
     case Kind::AddrOf:
-      // Keep `@array` intentionally untyped: the emitter still needs to pick
-      // between pointer-to-array and pointer-to-first-element at the use site.
-      // Everything else can expose its typed pointer result here so later
-      // pointer-slot coercion sees the actual Pascal pointee type.
+      // Pascal `@x` yields `^T` where `T` is x's type. `@arr` is therefore
+      // pointer-to-array and `@arr[0]` is pointer-to-element: same runtime
+      // address but distinct C++ pointer types (different stride, different
+      // type-checked APIs), so deduce_type must not conflate them.
       if (const auto& a = static_cast<const AddrOf&>(e); a.operand) {
         if (a.operand->kind == Kind::Ident) {
           const auto& id = static_cast<const Ident&>(*a.operand);
@@ -1649,8 +1653,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           }
         }
         const TypeExpr* operand_ty = deduce_type(*a.operand);
-        const TypeExpr* canon = canonicalize_type(operand_ty);
-        if (operand_ty && canon && canon->kind != Kind::TyArray) {
+        if (operand_ty) {
           return synthesize_pointer_type(operand_ty);
         }
       }
