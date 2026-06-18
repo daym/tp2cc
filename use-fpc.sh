@@ -18,6 +18,12 @@ LD="${LD:-ld}"
 if [ "${STARTUP_AS+x}" != x ]; then
   STARTUP_AS="$ROOT/../rpm/rtl/linux/i386/prt0.as"
 fi
+if [ "${STARTUP_ASFLAGS+x}" != x ]; then
+  case "$STARTUP_AS" in
+    */x86_64/*) STARTUP_ASFLAGS="--64" ;;
+    *) STARTUP_ASFLAGS="--32" ;;
+  esac
+fi
 KEEP_WORK="${KEEP_TP2CC_WORK:-0}"
 FORCE_BUILD_FLAG="-B"
 if [ "${USE_FPC_FORCE_BUILD:-1}" = "0" ]; then
@@ -118,7 +124,7 @@ fi
 chmod +x "$pp_script"
 
 if [ -n "$STARTUP_AS" ]; then
-  "$AS" --32 -o "$startup_obj" "$STARTUP_AS"
+  "$AS" $STARTUP_ASFLAGS -o "$startup_obj" "$STARTUP_AS"
 fi
 
 sh "$pp_script"

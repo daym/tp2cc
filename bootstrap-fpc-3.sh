@@ -42,14 +42,133 @@ fpc_compiler_version_defines() {
     -dVER2 -dVER2_6 -dVER2_6_0
 }
 
+# Pick the stage1 target CPU.  Override with TARGET_CPU=...; otherwise read
+# `$CXX -dumpmachine` so the translated compiler matches the g++ that will
+# link it.  Supported values: i386, x86_64.
+detect_target_cpu() {
+  machine="$($CXX -dumpmachine 2>/dev/null || true)"
+  case "$machine" in
+    i?86-*) echo i386 ;;
+    x86_64-*|amd64-*) echo x86_64 ;;
+    *)
+      echo "error: cannot infer TARGET_CPU from '$machine' (expected i?86-* or x86_64-*; set TARGET_CPU explicitly)" >&2
+      exit 1
+      ;;
+  esac
+}
+TARGET_CPU="${TARGET_CPU:-$(detect_target_cpu)}"
+case "$TARGET_CPU" in
+  i386|x86_64) ;;
+  *)
+    echo "error: TARGET_CPU='$TARGET_CPU' not supported (use i386 or x86_64)" >&2
+    exit 1
+    ;;
+esac
+echo "stage1 target CPU: $TARGET_CPU"
+
+# Stage1 conditional-compile defines shared by every CPU target.  These are
+# source-language symbols that FPC's option parser would normally define after
+# it starts; tp2cc must provide them before parsing because it evaluates
+# {$ifdef} while translating the compiler.
+fpc_stage1_shared_defines() {
+  printf '%s ' \
+    -dFPC \
+    $(fpc_compiler_version_defines) \
+    -dEXTERN_MSG \
+    -dLINUX -dUNIX -dHASUNIX \
+    -dFPC_HAS_OPERATOR_ENUMERATOR -dFPC_HAS_CONSTREF \
+    -dFPC_STATICRIPFIXED \
+    -dFPC_HAS_UNICODESTRING -dFPC_RTTI_PACKSET1 \
+    -dFPC_HAS_CEXTENDED -dFPC_HAS_INTERNAL_ABS_LONG \
+    -dFPC_HAS_INTERNAL_SAR -dFPC_HAS_MEMBAR -dFPC_SETBASE_USED \
+    -dSTR_CONCAT_PROCS -dFPC_HAS_FEATURE_SUPPORT \
+    -dFPC_HAS_TYPE_DOUBLE -dFPC_HAS_TYPE_SINGLE \
+    -dFPC_LINK_STATIC \
+    -dFPC_HAS_FEATURE_HEAP -dFPC_HAS_FEATURE_INITFINAL \
+    -dFPC_HAS_FEATURE_RTTI -dFPC_HAS_FEATURE_CLASSES \
+    -dFPC_HAS_FEATURE_EXCEPTIONS -dFPC_HAS_FEATURE_EXITCODE \
+    -dFPC_HAS_FEATURE_ANSISTRINGS -dFPC_HAS_FEATURE_WIDESTRINGS \
+    -dFPC_HAS_FEATURE_TEXTIO -dFPC_HAS_FEATURE_CONSOLEIO \
+    -dFPC_HAS_FEATURE_FILEIO -dFPC_HAS_FEATURE_RANDOM \
+    -dFPC_HAS_FEATURE_VARIANTS -dFPC_HAS_FEATURE_OBJECTS \
+    -dFPC_HAS_FEATURE_DYNARRAYS -dFPC_HAS_FEATURE_THREADING \
+    -dFPC_HAS_FEATURE_COMMANDARGS -dFPC_HAS_FEATURE_PROCESSES \
+    -dFPC_HAS_FEATURE_STACKCHECK -dFPC_HAS_FEATURE_DYNLIBS \
+    -dFPC_HAS_FEATURE_RESOURCES \
+    -dFPC_WIDESTRING_EQUAL_UNICODESTRING \
+    -dFPC_VARIANTCOPY_FIXED -dFPC_DYNARRAYCOPY_FIXED \
+    -dFPC_HAS_RESSTRINITS -dFPC_HAS_FEATURE_UNICODESTRINGS
+}
+
+fpc_stage1_source_version_defines() {
+  case "$(fpc_source_version)" in
+    3.0.*)
+      # FPC 3.0.x compiler/options.pas defines these system macros at runtime,
+      # and 3.0.x compiler/RTL sources still use them in conditional
+      # compilation.  tp2cc evaluates those conditionals before the translated
+      # compiler can run options.pas, so the bootstrap must provide the same
+      # source-version-specific feature symbols up front.  FPC 3.2.0 no longer
+      # consumes them, so do not leak them into the 3.2 branch.
+      printf '%s ' \
+        -dRESSTRSECTIONS \
+        -dFPC_HASFIXED64BITVARIANT \
+        -dFPC_HASINTERNALOLEVARIANT2VARIANTCAST \
+        -dFPC_HAS_VARSETS \
+        -dFPC_HAS_VALGRINDBOOL \
+        -dFPC_HAS_STR_CURRENCY \
+        -dFPC_REAL2REAL_FIXED \
+        -dFPC_STRTOCHARARRAYPROC \
+        -dFPC_STRTOSHORTSTRINGPROC \
+        -dFPC_OBJFPC_EXTENDED_IF
+      ;;
+    3.2.*)
+      ;;
+  esac
+}
+
+# CPU-specific stage1 defines + extra per-CPU helper symbols.  Values that are
+# Pascal constants in FPC sources, such as first_mm_imreg, are repeated here as
+# textual preprocessor inputs because {$if ...} cannot see unit constants.
+fpc_stage1_cpu_defines() {
+  case "$TARGET_CPU" in
+    i386)
+      printf '%s ' \
+        -dI386 -dCPU86 -dCPU87 -dCPU386 \
+        -dCPUI386 -dCPU32 -dCPUX86 \
+        -dFPC_HAS_TYPE_EXTENDED \
+        -dINTERNAL_BACKTRACE -dREGCALL \
+        -dFPC_HAS_INTERNAL_ABS_INT64 \
+        -dFPC_HAS_INTERNAL_BSF -dFPC_HAS_INTERNAL_BSR \
+        -dfirst_mm_imreg:=8 \
+        -dNOAG386NSM -d__NOWINPECOFF__ \
+        -dENDIAN_LITTLE -dFPC_LITTLE_ENDIAN \
+        -dFPC_HAS_INTERNAL_ROX -dFPC_HAS_INTERNAL_ABS_LONG
+      ;;
+    x86_64)
+      printf '%s ' \
+        -dx86_64 -dCPUX86_64 -dCPUAMD64 -dCPU64 -dCPUX64 \
+        -dFPC_HAS_TYPE_EXTENDED \
+        -dINTERNAL_BACKTRACE -dREGCALL \
+        -dFPC_HAS_INTERNAL_ABS_INT64 -dFPC_HAS_RIP_RELATIVE \
+        -dFPC_HAS_INTERNAL_BSF -dFPC_HAS_INTERNAL_BSR \
+        -dfirst_mm_imreg:=16 \
+        -dNOAGX86_64NSM \
+        -dENDIAN_LITTLE -dFPC_LITTLE_ENDIAN \
+        -dFPC_HAS_INTERNAL_ROX -dFPC_HAS_INTERNAL_ABS_LONG
+      ;;
+  esac
+}
+
 fpc_target_prune_win_defines() {
   case "$(fpc_source_version)" in
     3.*)
       # NOTARGETWIN removes Win/COFF target units such as ogcoff from the
-      # compiler target registry.  FPC 3.x i386 still has one Win32 stack-probe
-      # branch guarded by __NOWINPECOFF__ instead, so define both symbols to
-      # prune the target unit and the matching backend code together.
-      printf '%s' "-dNOTARGETWIN -dNOTARGETWIN32 -dNOTARGETWINCE -d__NOWINPECOFF__"
+      # compiler target registry, and is read by shared x86 code in
+      # compiler/x86/cgx86.pas.  NOTARGETWINCE is the same gate for the
+      # ARM WinCE backend in compiler/arm/cputarg.pas.  i386 also needs
+      # __NOWINPECOFF__ (consumed only by compiler/i386/cgcpu.pas); that
+      # symbol is emitted via fpc_stage1_cpu_defines for i386, not here.
+      printf '%s' "-dNOTARGETWIN -dNOTARGETWINCE"
       ;;
     *)
       echo "error: bootstrap-fpc-3.sh has no Win target-prune rule for FPC $(fpc_source_version)" >&2
@@ -100,39 +219,38 @@ STAGE1_LOGDIR="$BOOT_ROOT/compile-logs-stage1"
 SAN_LOGDIR="$BOOT_ROOT/sanitizer-logs"
 ENTRY_FILE="$SOURCE_DIR/compiler/pp.pas"
 MSG_FILE="$SOURCE_DIR/compiler/msg/errore.msg"
-case "$(fpc_source_version)" in
-  3.2.*)
-    # FPC 3.2 i386-linux moved startup code from external loader files into
-    # sysinit units: si_prc.pp, si_c.pp, si_c21.pp, si_dll.pp, and si_uc.pp
-    # include rtl/linux/i386/si_*.inc files that define the relevant `_start`
-    # entry points. rtl/linux/Makefile.fpc therefore sets LOADERS= for
-    # ARCH=i386, leaving no external prt0.as/cprt0.as to assemble here.
-    STARTUP_AS=
-    ;;
-  *)
-    STARTUP_AS="$CLEAN_SRC/rtl/linux/i386/prt0.as"
-    ;;
-esac
+
+startup_asm_path() {
+  case "$(fpc_source_version):$TARGET_CPU" in
+    3.2.*:i386)
+      # FPC 3.2 i386-linux moved startup code from external loader files into
+      # sysinit units: si_prc.pp, si_c.pp, si_c21.pp, si_dll.pp, and si_uc.pp
+      # include rtl/linux/i386/si_*.inc files that define the relevant `_start`
+      # entry points. rtl/linux/Makefile.fpc therefore sets LOADERS= for
+      # ARCH=i386, leaving no external prt0.as/cprt0.as to assemble here.
+      ;;
+    *)
+      printf '%s\n' "$CLEAN_SRC/rtl/linux/$TARGET_CPU/prt0.as"
+      ;;
+  esac
+}
+
+startup_asflags() {
+  case "$TARGET_CPU" in
+    i386) printf '%s\n' "--32" ;;
+    x86_64) printf '%s\n' "--64" ;;
+  esac
+}
+
+STARTUP_AS="$(startup_asm_path)"
+STARTUP_ASFLAGS="$(startup_asflags)"
 RUNTIME_SHIM="$ROOT/include/tp2cc_rt/fenv_shim.c"
 
 compiler_dir_flags() {
   printf '%s ' "-Fu$CLEAN_SRC/compiler" "-Fi$CLEAN_SRC/compiler"
-  printf '%s ' "-Fu$CLEAN_SRC/compiler/i386" "-Fi$CLEAN_SRC/compiler/i386"
+  printf '%s ' "-Fu$CLEAN_SRC/compiler/$TARGET_CPU" "-Fi$CLEAN_SRC/compiler/$TARGET_CPU"
   printf '%s ' "-Fu$CLEAN_SRC/compiler/x86" "-Fi$CLEAN_SRC/compiler/x86"
   printf '%s ' "-Fu$CLEAN_SRC/compiler/systems" "-Fi$CLEAN_SRC/compiler/systems"
-}
-
-require_i386_toolchain() {
-  machine="$($CXX -dumpmachine 2>/dev/null || true)"
-  case "$machine" in
-    i?86-*|i86pc-*)
-      ;;
-    *)
-      echo "error: CXX='$CXX' targets '$machine', expected an i386/i686 toolchain" >&2
-      echo "hint: guix shell --system=i686-linux binutils gcc-toolchain -- ./bootstrap-fpc-3.sh" >&2
-      exit 1
-      ;;
-  esac
 }
 
 build_translator() {
@@ -156,28 +274,32 @@ copy_clean_source() {
 write_bootstrap_cfg() {
   # FPC looks for `fpc.cfg` under PPC_CONFIG_PATH; `ppc386.cfg` is only the
   # legacy fallback name.
+  case "$TARGET_CPU" in
+    i386)    cpu_define="-dI386" ;;
+    x86_64)  cpu_define="-dx86_64" ;;
+  esac
   cat > "$STAGE1_DIR/fpc.cfg" <<EOF
-; generated by bootstrap-fpc-3.sh for translated FPC 3
-; Exclude dbgdwarf for the current i386-linux bootstrap. This target's default
-; debug format is still stabs, so dbgdwarf is not needed to build the compiler,
-; and the dbgdwarf unit still uses array of const, which tp2cc does not yet
+; generated by bootstrap-fpc-3.sh for translated FPC 3 (TARGET_CPU=$TARGET_CPU)
+; Exclude dbgdwarf for the current bootstrap. This target's default debug
+; format is still stabs, so dbgdwarf is not needed to build the compiler, and
+; the dbgdwarf unit still uses array of const, which tp2cc does not yet
 ; support. Keep the define active from the start because cputarg.pas
 ; conditionally uses dbgdwarf when NoDbgDwarf is absent.
--dI386
+$cpu_define
 -dNoDbgDwarf
 -dEXTERN_MSG
 -Sg
 -Fi$CLEAN_SRC/rtl/inc
--Fi$CLEAN_SRC/rtl/i386
+-Fi$CLEAN_SRC/rtl/$TARGET_CPU
 -Fi$CLEAN_SRC/rtl/linux
--Fi$CLEAN_SRC/rtl/linux/i386
+-Fi$CLEAN_SRC/rtl/linux/$TARGET_CPU
 -Fi$CLEAN_SRC/rtl/unix
 -Fi$CLEAN_SRC/rtl/objpas
 -Fi$CLEAN_SRC/rtl/objpas/sysutils
 -Fu$CLEAN_SRC/rtl/inc
 -Fu$CLEAN_SRC/rtl/linux
--Fu$CLEAN_SRC/rtl/i386
--Fu$CLEAN_SRC/rtl/linux/i386
+-Fu$CLEAN_SRC/rtl/$TARGET_CPU
+-Fu$CLEAN_SRC/rtl/linux/$TARGET_CPU
 -Fu$CLEAN_SRC/rtl/unix
 -Fu$CLEAN_SRC/rtl/objpas
 EOF
@@ -226,7 +348,11 @@ run_logged() {
 }
 
 needs_sysinit_units() {
-  return 0
+  # FPC 3.2+ i386-linux moved startup code from external loader files into
+  # sysinit units (si_prc.pp etc.), which the bootstrap has to prebuild so
+  # the later stages can use them.  x86_64-linux still ships rtl/linux/x86_64/
+  # prt0.as, so use-fpc.sh can assemble the external startup object directly.
+  [ "$TARGET_CPU" = "i386" ]
 }
 
 build_sysinit_units() {
@@ -279,75 +405,28 @@ stage_force_build() {
 }
 
 build_stage1() {
-  echo "== [3/7] translate FPC 3 compiler to C++ =="
+  echo "== [3/7] translate FPC 3 compiler to C++ (TARGET_CPU=$TARGET_CPU) =="
   rm -rf "$STAGE1_DIR" "$STAGE1_LOGDIR"
   mkdir -p "$STAGE1_DIR"
 
   # Provide the conditional-compile macros that the Pascal compiler defines
-  # for an i386-linux target. tp2cc evaluates conditional compilation while
+  # for the selected target. tp2cc evaluates conditional compilation while
   # translating the sources, before the translated compiler's option parser
   # can call `def_system_macro' / `set_system_macro' at runtime, so these
   # definitions must be present here to select the same source branches.
   #
-  # Sources (compiler/options.pas):
-  #   - target shortname + extradefines: TargetOptions
-  #   - endian/abi/feature/cpu/fpu macros: same procedure
-  #   - global VER*, FPC_*, FPC_HAS_TYPE_*, FPC_HAS_FEATURE_*: read_arguments
-  #   - FPC_LINK_STATIC default: top of file
-  fpc_auto_defines="\
--dFPC \
-$(fpc_compiler_version_defines) \
--dEXTERN_MSG \
--dLINUX -dUNIX -dHASUNIX \
--dENDIAN_LITTLE -dFPC_LITTLE_ENDIAN \
--dFPC_ABI_DEFAULT \
--dRESSTRSECTIONS \
--dFPC_HASFIXED64BITVARIANT -dFPC_HASINTERNALOLEVARIANT2VARIANTCAST \
--dFPC_HAS_VARSETS -dFPC_HAS_VALGRINDBOOL -dFPC_HAS_STR_CURRENCY \
--dFPC_REAL2REAL_FIXED \
--dFPC_STRTOCHARARRAYPROC -dFPC_STRTOSHORTSTRINGPROC \
--dFPC_OBJFPC_EXTENDED_IF \
--dFPC_HAS_OPERATOR_ENUMERATOR -dFPC_HAS_CONSTREF \
--dFPC_STATICRIPFIXED -dFPC_VARIANTCOPY_FIXED -dFPC_DYNARRAYCOPY_FIXED \
--dFPC_HAS_INTERNAL_ABS_LONG \
--dFPC_HAS_UNICODESTRING -dFPC_RTTI_PACKSET1 \
--dFPC_HAS_CEXTENDED -dFPC_HAS_RESSTRINITS \
--dFPC_HAS_INTERNAL_SAR -dFPC_HAS_MEMBAR -dFPC_SETBASE_USED \
--dINTERNAL_BACKTRACE -dSTR_CONCAT_PROCS -dREGCALL \
--dFPC_HAS_FEATURE_SUPPORT \
--dCPU86 -dCPU87 -dCPU386 -dCPUI386 -dCPU32 -dCPUX86 -dI386 \
--dCPUPENTIUM -dFPUX87 \
--dFPC_HAS_TYPE_EXTENDED -dFPC_HAS_TYPE_DOUBLE -dFPC_HAS_TYPE_SINGLE \
--dFPC_LINK_STATIC -dFPC_WIDESTRING_EQUAL_UNICODESTRING \
--dFPC_HAS_FEATURE_HEAP -dFPC_HAS_FEATURE_INITFINAL \
--dFPC_HAS_FEATURE_RTTI -dFPC_HAS_FEATURE_CLASSES \
--dFPC_HAS_FEATURE_EXCEPTIONS -dFPC_HAS_FEATURE_EXITCODE \
--dFPC_HAS_FEATURE_ANSISTRINGS -dFPC_HAS_FEATURE_WIDESTRINGS \
--dFPC_HAS_FEATURE_TEXTIO -dFPC_HAS_FEATURE_CONSOLEIO \
--dFPC_HAS_FEATURE_FILEIO -dFPC_HAS_FEATURE_RANDOM \
--dFPC_HAS_FEATURE_VARIANTS -dFPC_HAS_FEATURE_OBJECTS \
--dFPC_HAS_FEATURE_DYNARRAYS -dFPC_HAS_FEATURE_THREADING \
--dFPC_HAS_FEATURE_COMMANDARGS -dFPC_HAS_FEATURE_PROCESSES \
--dFPC_HAS_FEATURE_STACKCHECK -dFPC_HAS_FEATURE_DYNLIBS \
--dFPC_HAS_FEATURE_RESOURCES -dFPC_HAS_FEATURE_UNICODESTRINGS"
-
-  # Generic code tests `first_mm_imreg` in `{$if}` to handle targets with no
-  # real MM/SIMD registers.  On i386, compiler/x86/cpubase.pas numbers XMM0
-  # through XMM7 as 0..7 and sets the first compiler-internal imaginary MM
-  # register to 8, so `{$if first_mm_imreg = 0}` is false.  Conditional
-  # compilation uses preprocessor symbols, not Pascal declarations imported
-  # from units, so the bootstrap must provide this target constant as
-  # text-valued conditional input.
-  fpc_target_consts="\
--dfirst_mm_imreg:=8"
+  # The shared + per-CPU lists model the source branches selected by FPC's
+  # runtime option parser for the chosen stage1 target.  Keep them explicit:
+  # emitting a translated compiler runs before options.pas can define these
+  # symbols itself.
 
   # tp2cc-specific knobs: prune target backends we don't translate, and
   # force the dwarf debug-info backend off (it pulls array-of-const
-  # parsing tp2cc doesn't yet handle). The i386 NASM backend is not needed
-  # for this bootstrap; leaving it enabled makes emit-all translate OMF-only
-  # units such as omfbase even though all OMF targets are pruned.
+  # parsing tp2cc doesn't yet handle).  The NASM/OMF gate is per-CPU:
+  # NOAG386NSM on i386, NOAGX86_64NSM on x86_64; fpc_stage1_cpu_defines
+  # already emits the right one, so this list does not.
   tp2cc_target_prune="\
--dNoDbgDwarf -dNOAG386NSM \
+-dNoDbgDwarf \
 -dNOTARGETAIX -dNOTARGETAMIGA -dNOTARGETAROS -dNOTARGETATARI \
 -dNOTARGETBEOS -dNOTARGETBSD -dNOTARGETDARWIN -dNOTARGETEMX \
 -dNOTARGETFREEBSD -dNOTARGETGO32V1 -dNOTARGETGO32V2 \
@@ -361,12 +440,13 @@ $(fpc_target_prune_win_defines) \
 -dNOTARGETANDROID -dNOTARGETGBA -dNOTARGETEMBEDDED"
 
   "$HOST_BUILD/bin/tp2cc" emit-all \
-    $fpc_auto_defines \
-    $fpc_target_consts \
+    $(fpc_stage1_shared_defines) \
+    $(fpc_stage1_source_version_defines) \
+    $(fpc_stage1_cpu_defines) \
     $tp2cc_target_prune \
     $(compiler_dir_flags) \
     -Fi"$CLEAN_SRC/rtl/inc" \
-    -Fi"$CLEAN_SRC/rtl/i386" \
+    -Fi"$CLEAN_SRC/rtl/$TARGET_CPU" \
     -Fi"$CLEAN_SRC/rtl/linux" \
     "$CLEAN_SRC/compiler/pp.pas" "$STAGE1_DIR"
   write_bootstrap_cfg
@@ -406,6 +486,7 @@ compile_pp_stage() {
         PPC_CONFIG_PATH="$cfg_dir" \
         FPCDIR="$CLEAN_SRC" \
         STARTUP_AS="$STARTUP_AS" \
+        STARTUP_ASFLAGS="$STARTUP_ASFLAGS" \
         USE_FPC_FORCE_BUILD="$(stage_force_build)" \
       "$ROOT/use-fpc.sh" \
         $(compiler_dir_flags) \
@@ -459,7 +540,6 @@ if [ ! -f "$RUNTIME_SHIM" ]; then
   exit 1
 fi
 
-require_i386_toolchain
 build_translator
 copy_clean_source
 build_stage1
