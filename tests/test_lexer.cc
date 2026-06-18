@@ -470,6 +470,27 @@ void test_ifopt_tracks_h_mode() {
   }
 }
 
+void test_typedaddress_switch_rejects_enabled_mode() {
+  int before = tp2cc::error_count();
+  auto ts = lex_all(
+      "{$T-}{$ifopt T-}default{$else}wrong{$endif}\n"
+      "{$TYPEDADDRESS-}still_default\n");
+  CHECK_EQ(tp2cc::error_count() - before, 0);
+  CHECK_EQ(ts.size(), size_t{2});
+  if (ts.size() >= 2) {
+    CHECK_EQ(ts[0].text, std::string("default"));
+    CHECK_EQ(ts[1].text, std::string("still_default"));
+  }
+
+  before = tp2cc::error_count();
+  (void)lex_all("{$T+}x\n");
+  CHECK_EQ(tp2cc::error_count() - before, 1);
+
+  before = tp2cc::error_count();
+  (void)lex_all("{$TYPEDADDRESS+}x\n");
+  CHECK_EQ(tp2cc::error_count() - before, 1);
+}
+
 void test_enum_and_set_of_type() {
   auto ts = lex_all(
       "type\n"
@@ -605,6 +626,7 @@ int main() {
   RUN_TEST(test_directive_builtin_macro_expands_deterministically);
   RUN_TEST(test_directive_ignored_configs);
   RUN_TEST(test_ifopt_tracks_h_mode);
+  RUN_TEST(test_typedaddress_switch_rejects_enabled_mode);
   RUN_TEST(test_enum_and_set_of_type);
   RUN_TEST(test_set_literal_and_in);
   RUN_TEST(test_object_declaration_syntax);

@@ -1233,3 +1233,4 @@ Some limitations are good to know:
 - Anonymous inline records and objects are not equally strong in every type position; prefer named types.
 - Packed aggregate access (especially via pointers) is intentionally restricted.
 - ~reintroduce~ is accepted as a directive, but you will get an error in (most useful) cases.
+- ~{$T-}~ / ~{$TYPEDADDRESS-}~ is the supported address-operator mode.  ~{$T+}~ / ~{$TYPEDADDRESS+}~ is rejected because it changes the type of ~@expr~, and p2cc does not yet implement that model.

@@ -135,6 +135,10 @@ class Lexer {
   // snapshots it onto each arithmetic node.
   bool q_check_ = false;
   bool r_check_ = false;
+  // Live `{$T+/-}` / `{$TYPEDADDRESS+/-}` state.  p2cc currently implements
+  // the default untyped-address semantics only; `{$T+}` would change the type
+  // of `@expr`, so it is rejected instead of being silently ignored.
+  bool t_typed_addresses_ = false;
   // FPC defaults to `{$PACKENUM 4}` outside TP mode. We don't track mode
   // directives yet, but we do honor explicit `{$PACKENUM ...}`,
   // `{$MINENUMSIZE ...}`, and `{$Z1/$Z2/$Z4}` switches at the point where an

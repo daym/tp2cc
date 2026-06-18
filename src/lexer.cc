@@ -621,6 +621,8 @@ void Lexer::handle_directive(std::string_view body, Location where) {
     else if (opt == "r-" || opt == "rangechecks-") cond = !r_check_;
     else if (opt == "h+" || opt == "longstrings+") cond = h_long_strings_;
     else if (opt == "h-" || opt == "longstrings-") cond = !h_long_strings_;
+    else if (opt == "t+") cond = t_typed_addresses_;
+    else if (opt == "t-") cond = !t_typed_addresses_;
     const bool accepting_branch = parent_ok && cond;
     ifdef_stack_.push_back(IfdefFrame{.accepting = accepting_branch,
                                       .any_taken = accepting_branch,
@@ -738,6 +740,26 @@ void Lexer::handle_directive(std::string_view body, Location where) {
   }
   if (head == "h-" || head == "longstrings-") {
     h_long_strings_ = false;
+    return;
+  }
+  if (head == "t-" || head == "typedaddress-") {
+    t_typed_addresses_ = false;
+    return;
+  }
+  if (head == "t+" || head == "typedaddress+") {
+    report_error(where, "{$T+} typed address operator mode is not supported");
+    return;
+  }
+  if (head == "typedaddress") {
+    std::string mode = lower(trim(rest));
+    if (mode == "-") {
+      t_typed_addresses_ = false;
+    } else if (mode == "+") {
+      report_error(where,
+                   "{$TYPEDADDRESS+} typed address operator mode is not supported");
+    } else {
+      report_error(where, "illegal {$typedaddress} value: " + trim(rest));
+    }
     return;
   }
   if (head == "longstrings") {
