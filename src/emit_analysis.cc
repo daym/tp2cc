@@ -1570,10 +1570,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           return builtin_pchar_type();
         }
         if ((n == "succ" || n == "pred" ||
-             n == "abs" || n == "sqr" ||
-             n == "swapendian" || n == "beton" ||
-             n == "leton" || n == "ntobe" ||
-             n == "ntole") &&
+             n == "abs" || n == "sqr") &&
             c.args.size() == 1) {
           return deduce_type(*c.args[0]);
         }
