@@ -7,20 +7,50 @@ Several compiler units call bare integer `align(...)`; the compiler-side
 helper is declared in `cutils.pas`.  Import `cutils` explicitly at those
 call sites.
 
+In machoutils.AlignAddr additionally wrap the second argument in
+`qword(...)`.  cutils.align is overloaded on (longint,longint),
+(int64,int64) and (qword,qword); calling it with (PtrUInt, integer)
+without the wrap makes the overload resolver rank candidates, and FPC
+and tp2cc have different ranking models that do not necessarily agree
+on the winner.
+
+FPC (compiler/htypechk.pas:is_better_candidate) assigns each parameter
+one of the conversion levels te_exact, te_equal, te_convert_l1..l6,
+te_convert_operator, te_incompatible (defined in compiler/symconst.pas,
+assigned in compiler/defcmp.pas), then compares two candidates by
+per-level parameter counts in priority order, with exact_count
+preferring more and ordinal_distance preferring less.
+
+tp2cc (src/emit_resolution_types.h:ConvRank) scores each parameter with
+a (rank, distance) pair on its own 14-level ladder, then compares
+candidates per parameter.
+
+Wrapping md[...] in qword(...) makes both arguments exact-fit for
+align(qword,qword), so neither ranking model is exercised.
+
 --- a/compiler/machoutils.pas
 +++ b/compiler/machoutils.pas
 @@ -30,6 +30,7 @@
  interface
- 
+
  uses
 +  cutils,
    macho;
- 
+
    type
+@@ -502,7 +503,7 @@
+       p   : PtrUInt;
+     begin
+       p:=addr;
+-      p:=align(p, md[cputarget and CPU_ARCH_ABI64 > 0]);
++      p:=align(p, qword(md[cputarget and CPU_ARCH_ABI64 > 0]));
+       Result:=qword(p);
+     end;
+
 --- a/compiler/ogmacho.pas
 +++ b/compiler/ogmacho.pas
 @@ -27,6 +27,7 @@
- 
+
  uses
    cclasses,
 +  cutils,
@@ -29,7 +59,7 @@ call sites.
    aasmbase, assemble,
 @@ -1249,4 +1250,3 @@
  {$endif i386}
- 
+
  end.
 -
 --- a/compiler/i386/hlcgcpu.pas
@@ -45,22 +75,22 @@ call sites.
 --- a/compiler/aarch64/cpupi.pas
 +++ b/compiler/aarch64/cpupi.pas
 @@ -39,7 +39,8 @@
- 
+
    uses
      tgobj,
 -    cpubase;
 +    cpubase,
 +    cutils;
- 
+
    constructor tcpuprocinfo.create(aparent: tprocinfo);
      begin
 --- a/compiler/powerpc64/cpupara.pas
 +++ b/compiler/powerpc64/cpupara.pas
 @@ -65,6 +65,7 @@ implementation
- 
+
  uses
    verbose, systems,
 +  cutils,
    defutil,symtable,symcpu,
    procinfo, cpupi;
- 
+
