@@ -30,7 +30,14 @@ bool is_nonmethod_procedural_type(const TypeExpr* t) {
 }
 
 bool is_plain_pointer_type(const TypeExpr* t) {
-  return t && tyname_is(t, "pointer");
+  if (tyname_is(t, "pointer")) return true;
+  return t && t->kind == Kind::TyPointer &&
+         !static_cast<const TyPointer&>(*t).target;
+}
+
+bool is_runtime_pointer_primitive_type(const TypeExpr* t) {
+  return tyname_is(t, "pointer") || tyname_is(t, "pchar") ||
+         tyname_is(t, "pansichar") || tyname_is(t, "ppchar");
 }
 
 std::string reference_class_name(const TypeExpr* t) {
@@ -1312,8 +1319,8 @@ bool EmitStorage::type_is_pointerish(const TypeExpr* t) {
   if (type_is_reference_class(t)) return true;
   if (analysis_.type_is_interface(t)) return true;
   if (t->kind == Kind::TyPointer) return true;
-  return tyname_is(t, "pointer") || tyname_is(t, "pchar") ||
-         tyname_is(t, "pansichar") || tyname_is(t, "ppchar");
+  if (is_runtime_pointer_primitive_type(t)) return true;
+  return false;
 }
 
 bool EmitStorage::type_is_open_array(const TypeExpr* t) {
@@ -1321,6 +1328,47 @@ bool EmitStorage::type_is_open_array(const TypeExpr* t) {
   t = analysis_.canonicalize_type(t);
   return t && t->kind == Kind::TyArray &&
          static_cast<const TyArray&>(*t).array_kind == ArrayKind::Open;
+}
+
+bool EmitStorage::fixed_array_pointer_can_decay_to_element_pointer(
+    const TypeExpr* src_type, const TypeExpr* dst_type) {
+  const TypeExpr* src = analysis_.canonicalize_type(src_type);
+  const TypeExpr* dst = analysis_.canonicalize_type(dst_type);
+  if (!src || src->kind != Kind::TyPointer || !dst) return false;
+
+  const TypeExpr* src_pointee = analysis_.canonicalize_type(
+      static_cast<const TyPointer&>(*src).target.get());
+  if (!src_pointee || src_pointee->kind != Kind::TyArray ||
+      static_cast<const TyArray&>(*src_pointee).array_kind !=
+          ArrayKind::Fixed) {
+    return false;
+  }
+  const TypeExpr* src_elem = analysis_.canonicalize_type(
+      static_cast<const TyArray&>(*src_pointee).element.get());
+  if (!src_elem) return false;
+
+  const TypeExpr* dst_elem = nullptr;
+  if (dst->kind == Kind::TyPointer) {
+    dst_elem = analysis_.canonicalize_type(
+        static_cast<const TyPointer&>(*dst).target.get());
+  } else if (type_is_pcharish(dst)) {
+    dst_elem = builtin_char_type();
+  }
+  if (!dst_elem) return false;
+  return types_.type_to_cxx(*src_elem) == types_.type_to_cxx(*dst_elem);
+}
+
+std::string EmitStorage::lower_pointer_to_fixed_array_to_element(
+    const TypeExpr* src_type, const std::string& source_cxx) {
+  const TypeExpr* src = analysis_.canonicalize_type(src_type);
+  if (!src || src->kind != Kind::TyPointer) return source_cxx;
+  const TypeExpr* pointee = analysis_.canonicalize_type(
+      static_cast<const TyPointer&>(*src).target.get());
+  if (!pointee || pointee->kind != Kind::TyArray ||
+      static_cast<const TyArray&>(*pointee).array_kind != ArrayKind::Fixed) {
+    return source_cxx;
+  }
+  return "(" + source_cxx + ")->data";
 }
 
 std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
@@ -1351,6 +1399,13 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
 
   const bool dst_void_ptr = is_plain_pointer_type(dst);
   const bool src_void_ptr = is_plain_pointer_type(src);
+
+  // `^fixed_array of T -> ^T`: lower via the shared element-pointer helper.
+  // The destination must be a typed pointer whose pointee matches the source
+  // array's element type; otherwise the conversion is not value-preserving.
+  if (fixed_array_pointer_can_decay_to_element_pointer(src, dst)) {
+    return lower_pointer_to_fixed_array_to_element(src, source_cxx);
+  }
 
   if (dst_proc && src_void_ptr) {
     return "::rt::tp2cc_funptr_from_bits<" + dst_cxx + ">(" + source_cxx +

@@ -1700,8 +1700,13 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
                          runtime_set_type(runtime_type_name("char")));
   register_runtime_alias(*this, rt_exports, "hresult",
                          runtime_type_name("longint"));
+  register_runtime_alias(*this, rt_exports, "pointer",
+                         runtime_pointer_type());
   register_runtime_alias(*this, rt_exports, "ansichar",
                          runtime_type_name("char"));
+  register_runtime_alias(
+      *this, rt_exports, "pchar",
+      runtime_pointer_type(runtime_type_name("char")));
   register_runtime_alias(
       *this, rt_exports, "pansichar",
       runtime_pointer_type(runtime_type_name("ansichar")));

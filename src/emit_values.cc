@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "emit_analysis.h"
 #include "diag.h"
@@ -209,8 +210,101 @@ std::string EmitValues::pchar_string_literal_to_cxx(const StringLit& lit) {
   return out;
 }
 
+bool EmitValues::source_is_const_untyped_storage_arg(const Expr& e) const {
+  if (e.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(e);
+    return scope_.local_untyped_params.count(id.name) &&
+           scope_.local_const_params.count(id.name);
+  }
+  if (e.kind == Kind::AddrOf) {
+    const auto& addr = static_cast<const AddrOf&>(e);
+    if (addr.operand && addr.operand->kind == Kind::Ident) {
+      const auto& id = static_cast<const Ident&>(*addr.operand);
+      return scope_.local_untyped_params.count(id.name) &&
+             scope_.local_const_params.count(id.name);
+    }
+  }
+  return false;
+}
+
+std::string EmitValues::apply_target_pointer_conversion(
+    const Expr& e, const TypeExpr* target, const TypeExpr* source_type,
+    std::string out, bool explicit_conversion) {
+  if (!target || !source_type) return out;
+  // This is the target-value conversion point shared by assignment RHSs,
+  // value call arguments, returns, variable initializers, and typed-const
+  // leaves. Keep pointer-like adaptation here instead of repeating it at
+  // individual use sites; storage contexts and explicit Pascal casts have
+  // their own callers because they bind different language constructs.
+  const std::string dst_cxx = types_.type_to_cxx(*target);
+  return storage_.coerce_pointer_like_text(
+      dst_cxx, target, source_type, out, explicit_conversion,
+      source_is_const_untyped_storage_arg(e));
+}
+
+std::optional<std::string> EmitValues::maybe_lower_target_pointer_arithmetic(
+    const Expr& e, const TypeExpr* target, bool explicit_conversion,
+    bool typed_const_initializer) {
+  const TypeExpr* canon_target = analysis_.canonicalize_type(target);
+  if (!canon_target || !storage_.type_is_pointerish(canon_target) ||
+      e.kind != Kind::Binary) {
+    return std::nullopt;
+  }
+
+  const auto& b = static_cast<const Binary&>(e);
+  if (b.op != BinOp::Add && b.op != BinOp::Sub) return std::nullopt;
+  if (!b.lhs || !b.rhs) return std::nullopt;
+
+  const TypeExpr* lhs_type =
+      analysis_.canonicalize_type(overload_types_.type_for_overload(*b.lhs));
+  const TypeExpr* rhs_type =
+      analysis_.canonicalize_type(overload_types_.type_for_overload(*b.rhs));
+  auto integer_type = [](const TypeExpr* t) {
+    if (!t || t->kind != Kind::TyName) return false;
+    const PrimitiveInfo* pi =
+        primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
+    return pi && pi->int_kind != PrimitiveIntKind::None;
+  };
+
+  const bool lhs_ptr = storage_.type_is_pointerish(lhs_type);
+  const bool rhs_ptr = storage_.type_is_pointerish(rhs_type);
+  const bool lhs_int = integer_type(lhs_type);
+  const bool rhs_int = integer_type(rhs_type);
+  const char* op = b.op == BinOp::Add ? " + " : " - ";
+
+  // Pointer arithmetic is a target-typed value context for its pointer
+  // operand: `pchar := @fixed_array + n` first adapts `@fixed_array` to
+  // `pchar`, then applies C++ pointer arithmetic to that element pointer.
+  // The actual pointer adaptation remains in coerce_pointer_like_text.
+  if (lhs_ptr && rhs_int) {
+    return "(" + const_value_to_cxx_impl(*b.lhs, target, explicit_conversion,
+                                         typed_const_initializer) +
+           op + expr_ops_.expr_to_cxx(*b.rhs) + ")";
+  }
+  if (b.op == BinOp::Add && lhs_int && rhs_ptr) {
+    return "(" + expr_ops_.expr_to_cxx(*b.lhs) + op +
+           const_value_to_cxx_impl(*b.rhs, target, explicit_conversion,
+                                   typed_const_initializer) +
+           ")";
+  }
+  return std::nullopt;
+}
+
 std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target,
                                            bool explicit_conversion) {
+  return const_value_to_cxx_impl(e, target, explicit_conversion,
+                                 /*typed_const_initializer=*/false);
+}
+
+std::string EmitValues::typed_const_value_to_cxx(
+    const Expr& e, const TypeExpr* target, bool explicit_conversion) {
+  return const_value_to_cxx_impl(e, target, explicit_conversion,
+                                 /*typed_const_initializer=*/true);
+}
+
+std::string EmitValues::const_value_to_cxx_impl(
+    const Expr& e, const TypeExpr* target, bool explicit_conversion,
+    bool typed_const_initializer) {
   if (!target) return expr_ops_.expr_to_cxx(e);
   if (e.kind == Kind::StringLit) {
     const auto& lit = static_cast<const StringLit&>(e);
@@ -273,8 +367,9 @@ std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target
     std::string out = "{";
     for (size_t i = 0; i < ac.elements.size(); ++i) {
       if (i) out += ", ";
-      out += const_value_to_cxx(*ac.elements[i], elem_type,
-                                explicit_conversion);
+      out += const_value_to_cxx_impl(*ac.elements[i], elem_type,
+                                     explicit_conversion,
+                                     typed_const_initializer);
     }
     out += "}";
     if (canon && canon->kind == Kind::TyArray) return "{.data = " + out + "}";
@@ -290,15 +385,21 @@ std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target
       const std::string field_name =
           registry_ ? registry_->field_cxx_name(rc.fields[i].first)
                     : mangle(rc.fields[i].first);
-      out += "." + field_name + " = " +
-             const_value_to_cxx(*rc.fields[i].second, field_type,
-                                explicit_conversion);
+      std::string field_val =
+          const_value_to_cxx_impl(*rc.fields[i].second, field_type,
+                                  explicit_conversion,
+                                  typed_const_initializer);
+      out += "." + field_name + " = " + field_val;
     }
     out += "}";
     return out;
   }
   if (e.kind == Kind::SetLit) {
     return set_literal_to_cxx(static_cast<const SetLit&>(e), target);
+  }
+  if (auto text = maybe_lower_target_pointer_arithmetic(
+          e, target, explicit_conversion, typed_const_initializer)) {
+    return *text;
   }
   if (auto text = maybe_convert_const_int_expr(e, target, explicit_conversion)) {
     return *text;
@@ -311,6 +412,16 @@ std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target
   }
   std::string out = expr_ops_.expr_to_cxx(e);
   const TypeExpr* source_type = overload_types_.type_for_overload(e);
+  if (e.kind == Kind::Call) {
+    const auto& call = static_cast<const Call&>(e);
+    if (call.args.size() == 1 && call.callee->kind == Kind::Ident) {
+      const auto& id = static_cast<const Ident&>(*call.callee);
+      if (const TypeExpr* cast_type = analysis_.lookup_named_type_expr(id.name)) {
+        source_type = cast_type;
+      }
+    }
+  }
+  if (!source_type) source_type = analysis_.deduce_type(e);
   if (source_type) source_type = analysis_.canonicalize_type(source_type);
   if (source_type && canon_target) {
     if (auto conv = resolution_.find_assignment_operator(source_type, target);
@@ -322,6 +433,8 @@ std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target
       return fn + "(" + out + ")";
     }
   }
+  out = apply_target_pointer_conversion(e, target, source_type, std::move(out),
+                                        explicit_conversion);
   if (source_type && canon_target && source_type->kind == Kind::TySet &&
       canon_target->kind == Kind::TySet &&
       analysis_.classify_set_conversion(source_type, canon_target) !=
@@ -417,6 +530,13 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
     switch (e.kind) {
       case Kind::Ident:
       case Kind::Member:
+        if (const TypeExpr* source = overload_types_.type_for_overload(e);
+            storage_.type_is_pointerish(
+                analysis_.canonicalize_type(source ? source
+                                                   : analysis_.deduce_type(e)))) {
+          return std::nullopt;
+        }
+        return expr_ops_.expr_to_cxx_no_autocall(e);
       case Kind::AddrOf:
         return expr_ops_.expr_to_cxx_no_autocall(e);
       default:

@@ -506,27 +506,6 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
       }
     }
   }
-  if (target_ty) {
-    bool source_is_const_storage = false;
-    if (a.value->kind == Kind::Ident) {
-      const auto& id = static_cast<const Ident&>(*a.value);
-      source_is_const_storage =
-          scope_.local_untyped_params.count(id.name) &&
-          scope_.local_const_params.count(id.name);
-    } else if (a.value->kind == Kind::AddrOf) {
-      const auto& addr = static_cast<const AddrOf&>(*a.value);
-      if (addr.operand && addr.operand->kind == Kind::Ident) {
-        const auto& id = static_cast<const Ident&>(*addr.operand);
-        source_is_const_storage =
-            scope_.local_untyped_params.count(id.name) &&
-            scope_.local_const_params.count(id.name);
-      }
-    }
-    rhs_cxx = storage_.coerce_pointer_like_text(
-        types_.type_to_cxx(*target_ty), target_ty,
-        overload_types_.type_for_overload(*a.value), rhs_cxx,
-        /*explicit_pascal_cast=*/false, source_is_const_storage);
-  }
   stmt_ops_.emitln(target_cxx + " = " + rhs_cxx + ";");
 }
 

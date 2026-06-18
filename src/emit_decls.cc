@@ -558,7 +558,10 @@ void EmitDecls::emit_const_decl(const ConstDecl& cd, bool in_header) {
   (void)in_header;
   const std::string name = mangle(cd.name);
   emit_enum_carrier_decls(cd.type.get());
-  std::string val = values_.const_value_to_cxx(*cd.value, cd.type.get());
+  std::string val = cd.type
+                        ? values_.typed_const_value_to_cxx(*cd.value,
+                                                           cd.type.get())
+                        : values_.const_value_to_cxx(*cd.value);
 
   // Two things drive the qualifiers:
   //   `inline` -- required on definitions at namespace scope in a header so

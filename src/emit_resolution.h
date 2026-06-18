@@ -222,6 +222,12 @@ class EmitResolution {
   std::string value_metaclass_target(const ast::Expr& e);
   std::string receiver_class_for_member_call(const ast::Expr& callee);
   bool operand_type_allows_operator_lookup(const ast::TypeExpr* t);
+  bool operands_are_pointer_nil_comparison(const ast::Expr& lhs,
+                                           const ast::TypeExpr* lhs_type,
+                                           const ast::Expr& rhs,
+                                           const ast::TypeExpr* rhs_type);
+  bool operands_are_both_pcharish(const ast::TypeExpr* lhs,
+                                  const ast::TypeExpr* rhs);
   ConvScore score_conversion(const ast::TypeExpr* arg,
                              const ast::TypeExpr* param,
                              bool var_param,

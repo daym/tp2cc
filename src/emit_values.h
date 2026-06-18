@@ -38,18 +38,40 @@ class EmitValues {
 
   std::string set_literal_to_cxx(const ast::SetLit& s,
                                  const ast::TypeExpr* target = nullptr);
+  // Lower a constant expression in contexts that may still apply their own
+  // target conversion phase afterward, such as assignment RHSs and call
+  // arguments.
   std::string const_value_to_cxx(const ast::Expr& e,
                                  const ast::TypeExpr* target = nullptr,
                                  bool explicit_conversion = false);
+  // Lower a full typed-const initializer. There is no later assignment/call
+  // conversion phase for `const x: T = ...`, so aggregate fields/elements keep
+  // this mode while passing their own target types down to initializer leaves.
+  std::string typed_const_value_to_cxx(const ast::Expr& e,
+                                       const ast::TypeExpr* target,
+                                       bool explicit_conversion = false);
   std::optional<std::string> maybe_convert_const_int_expr(
       const ast::Expr& e, const ast::TypeExpr* target,
       bool explicit_conversion);
 
  private:
+  std::string const_value_to_cxx_impl(const ast::Expr& e,
+                                      const ast::TypeExpr* target,
+                                      bool explicit_conversion,
+                                      bool typed_const_initializer);
   std::optional<std::string> maybe_convert_proc_value(
       const ast::Expr& e, const ast::TypeExpr* target);
   std::optional<std::string> maybe_lower_metaclass_value(
       const ast::Expr& e, const ast::TypeExpr* target);
+  bool source_is_const_untyped_storage_arg(const ast::Expr& e) const;
+  std::string apply_target_pointer_conversion(const ast::Expr& e,
+                                              const ast::TypeExpr* target,
+                                              const ast::TypeExpr* source_type,
+                                              std::string out,
+                                              bool explicit_conversion);
+  std::optional<std::string> maybe_lower_target_pointer_arithmetic(
+      const ast::Expr& e, const ast::TypeExpr* target,
+      bool explicit_conversion, bool typed_const_initializer);
   std::string pchar_string_literal_to_cxx(const ast::StringLit& lit);
   const ast::TypeExpr* set_literal_member_source_type(const ast::Expr& e);
   const ast::TypeExpr* metaclass_value_base_type(const ast::Expr& e);

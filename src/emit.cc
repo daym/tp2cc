@@ -857,13 +857,22 @@ bool Emitter::call_arg_already_pins_formal_type(const Expr& arg,
 
 std::string Emitter::binary_operand_to_cxx(const Expr& operand,
                                            const Expr& other) {
-  // A Pascal set literal is target-typed. In binary expressions the other
-  // operand supplies that target when it is a set type.
-  if (operand.kind != Kind::SetLit) return expr_to_cxx(operand);
   const TypeExpr* other_ty = type_for_overload(other);
   const TypeExpr* canon = canonicalize_type(other_ty);
-  if (canon && canon->kind == Kind::TySet) {
+  // A Pascal set literal is target-typed. In binary expressions the other
+  // operand supplies that target when it is a set type.
+  if (operand.kind == Kind::SetLit && canon && canon->kind == Kind::TySet) {
     return set_literal_to_cxx(static_cast<const SetLit&>(operand), other_ty);
+  }
+  const TypeExpr* operand_ty = type_for_overload(operand);
+  // Binary pointer operators infer a common pointer target from the other
+  // operand.  Emit fixed-array addresses through the normal typed value path so
+  // that C++ arithmetic sees the element pointer, e.g. `(&buf)->data + n`.
+  // The actual array-to-element pointer rule remains in EmitStorage.
+  if (canon && storage_.type_is_pointerish(canon) &&
+      storage_.fixed_array_pointer_can_decay_to_element_pointer(operand_ty,
+                                                                other_ty)) {
+    return const_value_to_cxx(operand, other_ty);
   }
   return expr_to_cxx(operand);
 }
@@ -912,7 +921,10 @@ std::optional<std::string> Emitter::untyped_pointer_deref_address(
   if (e.kind != Kind::Deref) return std::nullopt;
   const auto& d = static_cast<const Deref&>(e);
   const TypeExpr* operand_ty = canonicalize_type(type_for_overload(*d.operand));
-  if (!tyname_is(operand_ty, "pointer")) return std::nullopt;
+  if (!operand_ty || operand_ty->kind != Kind::TyPointer ||
+      static_cast<const TyPointer&>(*operand_ty).target) {
+    return std::nullopt;
+  }
   // Pascal `pointer` has no pointee type. In `T(p^)`, the explicit typecast
   // supplies that missing type, so value lowering must load T's bytes from p
   // instead of first emitting `p^` as the runtime's byte-sized placeholder.
@@ -1881,28 +1893,6 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       storage_view_context = saved_storage_view;
       suppress_packed_scalar_value_load = saved_suppress;
       is_callee_context_ = saved;
-      if (!a.double_addr && registry) {
-        const TypeExpr* ot = plain_expr_type(*a.operand);
-        if (ot) ot = registry->canonicalize(ot, current_unit_name);
-        if (ot && ot->kind == Kind::TyArray &&
-            static_cast<const TyArray&>(*ot).array_kind == ArrayKind::Fixed) {
-          // Keep raw `@arr` as an address proxy that can convert to both
-          // `^array` and `^element` forms. Native FPC accepts both
-          // assignments and reports ambiguity when both overloads are
-          // equally viable; hardwiring a decay here miscompiles one side.
-          std::string array_addr_arg = inner;
-          if (storage && (!storage->ptr_cxx.empty() ||
-                          storage->raw_address_needs_typed_cast() ||
-                          storage->text.empty())) {
-            // The array-address proxy needs a storage address when the array
-            // lvalue is not safely expressible in C++: `p^` already has the
-            // pointer value, and variant/packed storage is byte-addressed.
-            array_addr_arg =
-                storage_.storage_designator_typed_address_value(*storage);
-          }
-          return "::rt::tp2cc_array_addr(" + array_addr_arg + ")";
-        }
-      }
       if (storage) {
         return storage_.storage_designator_typed_address_value(*storage);
       }

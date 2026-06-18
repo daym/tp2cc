@@ -864,8 +864,8 @@ ConvScore EmitResolution::score_argument_conversion(
   // returns null for `@array`: the emitter chooses pointer-to-array versus
   // pointer-to-first-element at the use site. Recognize AddrOf directly so the
   // picker doesn't reject `foo(@arr, ...)` against a pointer slot.
-  if (canon_param && canon_param->kind == Kind::TyName &&
-      static_cast<const TyName&>(*canon_param).name == "pointer") {
+  if (canon_param && canon_param->kind == Kind::TyPointer &&
+      !static_cast<const TyPointer&>(*canon_param).target) {
     if (arg.kind == Kind::AddrOf) {
       return {ConvRank::Exact, 0};
     }
@@ -1225,12 +1225,35 @@ bool EmitResolution::operand_type_allows_operator_lookup(const TypeExpr* t) {
          t->kind == Kind::TyArray || t->kind == Kind::TyMetaclass;
 }
 
+bool EmitResolution::operands_are_both_pcharish(const TypeExpr* lhs,
+                                               const TypeExpr* rhs) {
+  return type_ops_.type_is_pcharish(lhs) && type_ops_.type_is_pcharish(rhs);
+}
+
+bool EmitResolution::operands_are_pointer_nil_comparison(
+    const Expr& lhs, const TypeExpr* lhs_type, const Expr& rhs,
+    const TypeExpr* rhs_type) {
+  return (lhs.kind == Kind::NilLit && type_ops_.type_is_pointerish(rhs_type)) ||
+         (rhs.kind == Kind::NilLit && type_ops_.type_is_pointerish(lhs_type));
+}
+
 BinaryOperatorResult EmitResolution::find_binary_operator(
     const std::string& op, const Expr& lhs, const Expr& rhs) {
   if (!registry_) return {};
 
   const TypeExpr* lhs_type = overload_types_.type_for_overload(lhs);
   const TypeExpr* rhs_type = overload_types_.type_for_overload(rhs);
+  // `nil` is the built-in null value for pointer-compatible operands. It should
+  // not make overload resolution target-type the other operand through unrelated
+  // pointer/string conversions.
+  if (operands_are_pointer_nil_comparison(lhs, lhs_type, rhs, rhs_type)) {
+    return {};
+  }
+  // PChar is pointer storage. Explicit/string-targeted contexts may convert it
+  // by reading a NUL-terminated string, but binary operators on two PChar-like
+  // operands must not use that conversion as an overload-resolution bridge:
+  // `a < b` compares pointer values, not the strings at those addresses.
+  if (operands_are_both_pcharish(lhs_type, rhs_type)) return {};
   const bool overloadable_context =
       operand_type_allows_operator_lookup(lhs_type) ||
       operand_type_allows_operator_lookup(rhs_type);

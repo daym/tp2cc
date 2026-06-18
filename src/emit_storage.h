@@ -287,6 +287,8 @@ class EmitStorage {
   bool type_is_stringish(const ast::TypeExpr* t);
   bool type_is_pointerish(const ast::TypeExpr* t);
   bool type_is_open_array(const ast::TypeExpr* t);
+  bool fixed_array_pointer_can_decay_to_element_pointer(
+      const ast::TypeExpr* src_type, const ast::TypeExpr* dst_type);
   // Central pointer-like coercion policy used by explicit typecasts, plain
   // assignments, and value call arguments. Pascal is more permissive than C++
   // about:
@@ -300,6 +302,12 @@ class EmitStorage {
                                        const std::string& source_cxx,
                                        bool explicit_pascal_cast,
                                        bool source_is_const_storage = false);
+  // Target-typed contexts may accept the same fixed-array address as either
+  // `^array` or `^element`. When the destination is the element pointer form,
+  // lower the wrapper pointer to its `T*` data member. Returns source_cxx
+  // unchanged for any other shape.
+  std::string lower_pointer_to_fixed_array_to_element(
+      const ast::TypeExpr* src_type, const std::string& source_cxx);
   std::string reinterpret_ref_text(const std::string& ty_cxx,
                                    const std::string& source_cxx,
                                    bool pointee_view);

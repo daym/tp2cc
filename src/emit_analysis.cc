@@ -160,12 +160,7 @@ static const TypeExpr* method_result_type(const MethodSig* method) {
 }
 
 static bool type_is_pointer_arithmetic_operand(const TypeExpr* t) {
-  if (!t) return false;
-  if (t->kind == Kind::TyPointer) return true;
-  if (t->kind != Kind::TyName) return false;
-  const std::string name = ascii_lower(static_cast<const TyName&>(*t).name);
-  return name == "pointer" || name == "pchar" || name == "pansichar" ||
-         name == "ppchar";
+  return t && t->kind == Kind::TyPointer;
 }
 
 static bool type_is_integer_arithmetic_operand(const TypeExpr* t) {

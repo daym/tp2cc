@@ -1075,6 +1075,101 @@ void test_single_record_array_typed_const_wraps_array_storage() {
                  "::rt::tp2cc_shortstring_literal<20>(), .p_size = 0}}};"));
 }
 
+void test_typed_const_pchar_from_fixed_array_address_uses_data_pointer() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuf = array[0..3] of char;\n"
+      "const\n"
+      "  buf : tbuf = 'abc';\n"
+      "  text : pchar = @buf;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "inline ::rt::p_char* p_text = ((&p_buf))->data;"));
+  CHECK(!contains(out.header, "p_text = (&p_buf)"));
+  CHECK(!contains(out.header, "tp2cc_array_addr"));
+}
+
+void test_array_const_pchar_elements_from_fixed_array_address_use_data_pointer() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuf = array[0..3] of char;\n"
+      "  ttexts = array[0..1] of pchar;\n"
+      "const\n"
+      "  buf : tbuf = 'abc';\n"
+      "  texts : ttexts = (@buf, @buf);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "inline ::rt::tp2cc_Array<::rt::p_char*, 0, ((1) - (0) + 1)> "
+                 "p_texts = {.data = {((&p_buf))->data, ((&p_buf))->data}};"));
+  CHECK(!contains(out.header, "p_texts = {.data = {(&p_buf)}}"));
+  CHECK(!contains(out.header, "tp2cc_array_addr"));
+}
+
+void test_record_const_pchar_field_from_fixed_array_address_uses_data_pointer() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuf = array[0..3] of char;\n"
+      "  trec = record\n"
+      "    text : pchar;\n"
+      "  end;\n"
+      "const\n"
+      "  buf : tbuf = 'abc';\n"
+      "  rec : trec = (text: @buf);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "inline t_trec p_rec = {.p_text = ((&p_buf))->data};"));
+  CHECK(!contains(out.header, ".p_text = (&p_buf)"));
+  CHECK(!contains(out.header, "tp2cc_array_addr"));
+}
+
+void test_record_const_array_pointer_field_from_fixed_array_address_keeps_array_pointer() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuf = array[0..3] of char;\n"
+      "  pbuf = ^tbuf;\n"
+      "  trec = record\n"
+      "    data : pbuf;\n"
+      "  end;\n"
+      "const\n"
+      "  buf : tbuf = 'abc';\n"
+      "  rec : trec = (data: @buf);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "inline t_trec p_rec = {.p_data = (&p_buf)};"));
+  CHECK(!contains(out.header, ".p_data = ((&p_buf))->data"));
+  CHECK(!contains(out.header, "tp2cc_array_addr"));
+}
+
+void test_nested_record_const_pointer_fields_from_fixed_array_address_use_field_targets() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuf = array[0..3] of char;\n"
+      "  pbuf = ^tbuf;\n"
+      "  trec = record\n"
+      "    text : pchar;\n"
+      "    data : pbuf;\n"
+      "  end;\n"
+      "const\n"
+      "  buf : tbuf = 'abc';\n"
+      "  items : array[0..0] of trec = ((text: @buf; data: @buf));\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "p_items = {.data = {{.p_text = ((&p_buf))->data, .p_data = (&p_buf)}}};"));
+  CHECK(!contains(out.header, "tp2cc_array_addr"));
+}
+
 void test_named_type_alias() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -1477,7 +1572,7 @@ void test_const_fixed_array_parameter_stays_value_abi() {
       "end.\n");
   CHECK(contains(out.header, "void p_take(t_tarr p_a);"));
   CHECK(contains(out.impl, "void p_take(t_tarr p_a) {"));
-  CHECK(contains(out.impl, "p_p = ::rt::tp2cc_array_addr(p_a);"));
+  CHECK(contains(out.impl, "p_p = (&p_a);"));
   CHECK(contains(out.impl, "if ((p_a[0] != 0))"));
 }
 
@@ -1502,7 +1597,7 @@ void test_const_fixed_record_array_parameter_stays_value_abi() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.header, "void p_take(t_tarr p_a);"));
-  CHECK(contains(out.impl, "p_p = ::rt::tp2cc_array_addr(p_a);"));
+  CHECK(contains(out.impl, "p_p = (&p_a);"));
   CHECK(contains(out.impl, "if ((p_a[0].p_x != 0))"));
 }
 
@@ -1525,7 +1620,7 @@ void test_const_fixed_classref_array_parameter_stays_value_abi() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.header, "void p_take(t_tarr p_a);"));
-  CHECK(contains(out.impl, "p_p = ::rt::tp2cc_array_addr(p_a);"));
+  CHECK(contains(out.impl, "p_p = (&p_a);"));
   CHECK(contains(out.impl, "if ((p_a[0] != nullptr))"));
 }
 
@@ -3393,6 +3488,8 @@ void test_pointer_builtin_cast_still_coerces_to_typed_pointer_slot() {
       "procedure demo;\n"
       "implementation\n"
       "procedure demo;\n"
+      "type\n"
+      "  ppchar = ^pchar;\n"
       "var\n"
       "  raw : pointer;\n"
       "  p : ppchar;\n"
@@ -3566,6 +3663,24 @@ void test_string_comparison_uses_runtime_operator_resolution() {
                  "::rt::tp2cc_string_compare(::rt::tp2cc_deref(p_ps), p_s) == 0"));
   CHECK(!contains(out.impl, "p_s != ::rt::tp2cc_deref(p_ps)"));
   CHECK(!contains(out.impl, "::rt::tp2cc_deref(p_ps) == p_s"));
+}
+
+void test_pchar_comparison_stays_pointer_comparison() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run(a, b : pchar);\n"
+      "implementation\n"
+      "procedure run(a, b : pchar);\n"
+      "begin\n"
+      "  if a < b then ;\n"
+      "  if a = b then ;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "if ((p_a < p_b))"));
+  CHECK(contains(out.impl, "if ((p_a == p_b))"));
+  CHECK(!contains(out.impl, "tp2cc_string_compare"));
+  CHECK(!contains(out.impl, "tp2cc_shortstring_of"));
 }
 
 void test_tmethod_type_name_is_explicitly_qualified() {
@@ -6118,7 +6233,7 @@ void test_addr_of_pointer_deref_field_uses_offsetof_arithmetic() {
   CHECK(!contains(out.impl, "&::rt::tp2cc_deref(p_p).p_b"));
 }
 
-void test_addr_of_array_value_uses_context_selecting_proxy() {
+void test_addr_of_array_value_lowered_per_target_type() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -6137,16 +6252,97 @@ void test_addr_of_array_value_uses_context_selecting_proxy() {
       "  pa := @buf;\n"
       "end;\n"
       "end.\n");
-  // Native FPC accepts the same raw `@buf` in both pointer-to-element and
-  // pointer-to-array contexts. Preserve that as one proxy value instead of
-  // hardwiring `@buf` to `@buf[0]` or `^tbuf`.
-  CHECK_EQ(count_substring(out.impl, "::rt::tp2cc_array_addr(p_buf)"),
-           static_cast<size_t>(2));
-  CHECK(!contains(out.impl, "((::rt::p_char*)(p_buf))"));
-  CHECK(!contains(out.impl, "(&p_buf)"));
+  // FPC accepts the same `@buf` for both pointer-to-element (pchar) and
+  // pointer-to-array (pbuf) targets. p2cc lowers each by its destination:
+  // pchar gets the array's `data` member (element pointer); pbuf gets the
+  // address of the wrapper (array pointer). Both originate from the same
+  // `(&p_buf)` source expression.
+  CHECK(contains(out.impl, "p_pc = ((&p_buf))->data;"));
+  CHECK(contains(out.impl, "p_pa = (&p_buf);"));
+  CHECK(!contains(out.impl, "tp2cc_array_addr"));
 }
 
-void test_addr_of_pointer_deref_array_field_uses_offsetof_proxy() {
+void test_addr_of_array_value_typecasts_lower_without_proxy() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuf = array[0..3] of char;\n"
+      "  plongint = ^longint;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  buf : tbuf;\n"
+      "  raw : pointer;\n"
+      "  bits : ptrint;\n"
+      "  ints : plongint;\n"
+      "begin\n"
+      "  raw := pointer(@buf);\n"
+      "  bits := ptrint(@buf);\n"
+      "  ints := plongint(@buf);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_raw = static_cast<void*>((&p_buf));"));
+  CHECK(contains(out.impl, "p_bits = ((::rt::t_ptrint)((&p_buf)));"));
+  CHECK(contains(out.impl, "p_ints = reinterpret_cast<t_plongint>((&p_buf));"));
+  CHECK(!contains(out.impl, "tp2cc_array_addr"));
+}
+
+void test_addr_of_array_pointer_arithmetic_uses_element_pointer() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuf = array[0..3] of char;\n"
+      "  pbuf = ^tbuf;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  buf : tbuf;\n"
+      "  pc : pchar;\n"
+      "  pa : pbuf;\n"
+      "  n : longint;\n"
+      "  b : boolean;\n"
+      "begin\n"
+      "  b := pc > @buf;\n"
+      "  pc := @buf + 1;\n"
+      "  b := pc > @buf + n;\n"
+      "  b := @buf + n > pc;\n"
+      "  pa := @buf;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_b = (p_pc > ((&p_buf))->data);"));
+  CHECK(contains(out.impl, "p_pc = (((&p_buf))->data + 1);"));
+  CHECK(contains(out.impl, "p_b = (p_pc > (((&p_buf))->data + p_n));"));
+  CHECK(contains(out.impl, "p_b = ((((&p_buf))->data + p_n) > p_pc);"));
+  CHECK(contains(out.impl, "p_pa = (&p_buf);"));
+  CHECK(!contains(out.impl, "(&p_buf) + p_n"));
+  CHECK(!contains(out.impl, "((&p_buf) + p_n)"));
+  CHECK(!contains(out.impl, "->data)->data"));
+}
+
+void test_typed_array_pointer_nil_comparison_keeps_pointer_value() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuf = array[0..3] of char;\n"
+      "  pbuf = ^tbuf;\n"
+      "function empty(p : pbuf) : boolean;\n"
+      "implementation\n"
+      "function empty(p : pbuf) : boolean;\n"
+      "begin\n"
+      "  empty := p = nil;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = (p_p == nullptr);"));
+  CHECK(!contains(out.impl, "p_p)->data"));
+  CHECK(!contains(out.impl, "tp2cc_array_addr"));
+}
+
+void test_addr_of_pointer_deref_array_field_uses_offsetof_addressing() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -6165,13 +6361,15 @@ void test_addr_of_pointer_deref_array_field_uses_offsetof_proxy() {
       "  pa := @p^.code;\n"
       "end;\n"
       "end.\n");
-  // `@p^.code` must keep the nil-safe `uintptr_t + offsetof` lowering, but
-  // it also has to stay usable as both `pchar` and `^tcode`. The runtime
-  // proxy keeps that address ambiguity until the use site converts it.
+  // `@p^.code` must keep the nil-safe uintptr_t + offsetof lowering for the
+  // pointer walk, and then convert per destination: pchar takes the array's
+  // `data` member, pcode keeps the typed pointer-to-array.
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_array_addr(reinterpret_cast<t_tcode*>(::rt::tp2cc_pointer_byte_offset(p_p, offsetof("));
+                 "(reinterpret_cast<t_tcode*>(::rt::tp2cc_pointer_byte_offset(p_p, offsetof(t_trec, p_code))))->data"));
+  CHECK(contains(out.impl,
+                 "p_pa = reinterpret_cast<t_tcode*>(::rt::tp2cc_pointer_byte_offset(p_p, offsetof(t_trec, p_code)));"));
   CHECK(!contains(out.impl, "&::rt::tp2cc_deref(p_p).p_code"));
-  CHECK(!contains(out.impl, "((::rt::p_char*)("));
+  CHECK(!contains(out.impl, "tp2cc_array_addr"));
 }
 
 void test_addr_of_pointer_deref_array_index_uses_pointer_offset() {
@@ -7884,7 +8082,7 @@ void test_variant_payload_object_array_index_method_keeps_payload_storage() {
                                 ").p_reset()"));
 }
 
-void test_variant_record_payload_array_address_uses_payload_address_proxy() {
+void test_variant_record_payload_array_address_uses_payload_addressing() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -7904,10 +8102,14 @@ void test_variant_record_payload_array_address_uses_payload_address_proxy() {
       "  pa := @view.items;\n"
       "end;\n"
       "end.\n");
-  CHECK_EQ(count_substring(out.impl,
-                           "::rt::tp2cc_array_addr(reinterpret_cast<t_tarr*>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items))))"),
-           static_cast<size_t>(2));
-  CHECK(!contains(out.impl, "::rt::tp2cc_array_addr()"));
+  // Variant-record payload addressing stays nil-safe via uintptr_t + offsetof,
+  // then converts per destination: pchar takes `data`, ptarr keeps the typed
+  // pointer-to-array.
+  CHECK(contains(out.impl,
+                 "(reinterpret_cast<t_tarr*>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items))))->data"));
+  CHECK(contains(out.impl,
+                 "p_pa = reinterpret_cast<t_tarr*>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)));"));
+  CHECK(!contains(out.impl, "tp2cc_array_addr"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tarr>"));
 }
 
@@ -11735,6 +11937,11 @@ int main() {
   RUN_TEST(test_char_array_assignment_uses_explicit_array_literal_helper);
   RUN_TEST(test_nested_array_typed_const_initializes_each_array_data_member);
   RUN_TEST(test_single_record_array_typed_const_wraps_array_storage);
+  RUN_TEST(test_typed_const_pchar_from_fixed_array_address_uses_data_pointer);
+  RUN_TEST(test_array_const_pchar_elements_from_fixed_array_address_use_data_pointer);
+  RUN_TEST(test_record_const_pchar_field_from_fixed_array_address_uses_data_pointer);
+  RUN_TEST(test_record_const_array_pointer_field_from_fixed_array_address_keeps_array_pointer);
+  RUN_TEST(test_nested_record_const_pointer_fields_from_fixed_array_address_use_field_targets);
   RUN_TEST(test_typed_const_shortstring_literals_use_target_capacity);
   RUN_TEST(test_shortstring_length_literal_capacity_is_constant_folded);
   RUN_TEST(test_named_type_alias);
@@ -11841,6 +12048,7 @@ int main() {
   RUN_TEST(test_tdatetime_and_runtime_date_time_lower_through_rt);
   RUN_TEST(test_runtime_aliases_cover_currency_systemtime_and_pansistring);
   RUN_TEST(test_string_comparison_uses_runtime_operator_resolution);
+  RUN_TEST(test_pchar_comparison_stays_pointer_comparison);
   RUN_TEST(test_tmethod_type_name_is_explicitly_qualified);
   RUN_TEST(test_unknown_type_name_reports_error_instead_of_emitting_fallback);
   RUN_TEST(test_local_enum_members_do_not_fall_back_to_runtime);
@@ -11942,8 +12150,11 @@ int main() {
   RUN_TEST(test_shift_ops_lower_through_pascal_helpers);
   RUN_TEST(test_integer_div_mod_lower_through_pascal_helpers);
   RUN_TEST(test_addr_of_pointer_deref_field_uses_offsetof_arithmetic);
-  RUN_TEST(test_addr_of_array_value_uses_context_selecting_proxy);
-  RUN_TEST(test_addr_of_pointer_deref_array_field_uses_offsetof_proxy);
+  RUN_TEST(test_addr_of_array_value_lowered_per_target_type);
+  RUN_TEST(test_addr_of_array_value_typecasts_lower_without_proxy);
+  RUN_TEST(test_addr_of_array_pointer_arithmetic_uses_element_pointer);
+  RUN_TEST(test_typed_array_pointer_nil_comparison_keeps_pointer_value);
+  RUN_TEST(test_addr_of_pointer_deref_array_field_uses_offsetof_addressing);
   RUN_TEST(test_addr_of_pointer_deref_array_index_uses_pointer_offset);
   RUN_TEST(test_addr_of_dynamic_array_targets_array_handle_not_data_proxy);
   RUN_TEST(test_set_to_int_cast_uses_endian_safe_helper);
@@ -12013,7 +12224,7 @@ int main() {
   RUN_TEST(test_variant_record_payload_storage_composes_through_indexes);
   RUN_TEST(test_variant_record_payload_index_read_address_and_untyped_actual);
   RUN_TEST(test_variant_payload_object_array_index_method_keeps_payload_storage);
-  RUN_TEST(test_variant_record_payload_array_address_uses_payload_address_proxy);
+  RUN_TEST(test_variant_record_payload_array_address_uses_payload_addressing);
   RUN_TEST(test_variant_record_payload_shortstring_index_stays_on_storage);
   RUN_TEST(test_variant_record_pointer_payload_passes_slot_to_allocation_builtins);
   RUN_TEST(test_shadowed_getmem_does_not_use_runtime_slot_helper);

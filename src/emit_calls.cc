@@ -494,28 +494,6 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
     return storage_.reinterpret_ref_text(types_.type_to_cxx(*param_type),
                                          expr_ops_.expr_to_cxx(arg), false);
   }
-  if (param_type && arg_type) {
-    const std::string arg_cxx = expr_ops_.expr_to_cxx(arg);
-    bool source_is_const_storage = false;
-    if (arg.kind == Kind::Ident) {
-      const auto& id = static_cast<const Ident&>(arg);
-      source_is_const_storage =
-          scope_.local_untyped_params.count(id.name) &&
-          scope_.local_const_params.count(id.name);
-    } else if (arg.kind == Kind::AddrOf) {
-      const auto& addr = static_cast<const AddrOf&>(arg);
-      if (addr.operand && addr.operand->kind == Kind::Ident) {
-        const auto& id = static_cast<const Ident&>(*addr.operand);
-        source_is_const_storage =
-            scope_.local_untyped_params.count(id.name) &&
-            scope_.local_const_params.count(id.name);
-      }
-    }
-    const std::string coerced = storage_.coerce_pointer_like_text(
-        types_.type_to_cxx(*param_type), param_type, arg_type, arg_cxx,
-        /*explicit_pascal_cast=*/false, source_is_const_storage);
-    if (coerced != arg_cxx) return coerced;
-  }
   if (canon_param_type && storage_.type_is_stringish(canon_param_type)) {
     if (mutable_ref_arg && arg_type &&
         types_.shortstring_capacity_to_cxx(param_type) &&
