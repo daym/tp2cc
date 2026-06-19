@@ -680,8 +680,8 @@ bool EmitResolution::procedural_signatures_match(const ProcDecl& decl,
       return false;
     }
   }
-  return type_ops_.procedural_param_types_to_cxx(decl.params) ==
-         type_ops_.procedural_param_types_to_cxx(proc.params);
+  return type_ops_.formal_param_types_to_cxx(decl.params) ==
+         type_ops_.formal_param_types_to_cxx(proc.params);
 }
 
 EmitResolution::InstanceMethodLookup
@@ -785,6 +785,63 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
   }
   return MethodValueBinding::via_member(lookup.decl, std::move(cls),
                                         method_base);
+}
+
+std::optional<PlainProcValueBinding>
+EmitResolution::resolve_plain_proc_value_binding(const Expr& arg,
+                                                 const TyProcedural& proc) {
+  if (proc.is_method || !registry_) return std::nullopt;
+
+  const Expr* value = &arg;
+  if (arg.kind == Kind::AddrOf) {
+    const auto& addr = static_cast<const AddrOf&>(arg);
+    if (addr.double_addr || !addr.operand) return std::nullopt;
+    value = addr.operand.get();
+  }
+
+  std::vector<AnyCand> candidates;
+  if (value->kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(*value);
+    if (scope_.local_scope.count(id.name) || scope_.local_types.count(id.name) ||
+        scope_.local_consts.count(id.name)) {
+      return std::nullopt;
+    }
+    candidates = gather_callable_in_pascal_scope(id.name);
+  } else if (value->kind == Kind::Member) {
+    const auto& mem = static_cast<const Member&>(*value);
+    if (auto unit_member = analysis_.resolve_unit_qualified_member(mem)) {
+      auto uit = registry_->units.find(unit_member->unit_name);
+      if (uit == registry_->units.end()) return std::nullopt;
+      const bool own_unit = unit_member->unit_name == scope_.current_unit_name;
+      const std::vector<ProcInfo>* procs =
+          own_unit ? uit->second.find_procs(mem.name)
+                   : uit->second.find_export_procs(mem.name);
+      if (procs) {
+        for (const auto& pi : *procs) {
+          candidates.push_back({pi.decl.get(), pi.param_count,
+                                pi.accepts_zero_args, unit_member->unit_name,
+                                pi.defining_unit, {}, pi.return_type_name});
+        }
+      }
+    }
+  } else {
+    return std::nullopt;
+  }
+
+  const ProcDecl* match = nullptr;
+  for (const auto& candidate : candidates) {
+    if (!candidate.decl) continue;
+    // An instance method needs a Self slot and cannot be represented by a plain
+    // procedure variable. Procedure-of-object binding handles that path.
+    if (!candidate.decl->of_type.empty() && !candidate.decl->is_class_method) {
+      continue;
+    }
+    if (!procedural_signatures_match(*candidate.decl, proc)) continue;
+    if (match) return std::nullopt;
+    match = candidate.decl;
+  }
+  if (!match) return std::nullopt;
+  return PlainProcValueBinding{match};
 }
 
 const TypeExpr* EmitResolution::method_value_member_base_type(

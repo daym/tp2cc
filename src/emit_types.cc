@@ -1045,39 +1045,102 @@ std::string EmitTypes::array_type_to_cxx(const TyArray& a) {
   return ty;
 }
 
+std::string EmitTypes::formal_param_type_to_cxx(const Param& pp) {
+  std::string pt;
+  if (!pp.type) {
+    pt = (pp.mode == Param::Const || pp.mode == Param::ConstRef)
+             ? "const void*"
+             : "void*";
+  } else if (const TypeExpr* canon = analysis_.canonicalize_type(pp.type.get());
+             canon && canon->kind == Kind::TyArray &&
+             static_cast<const TyArray&>(*canon).array_kind ==
+                 ArrayKind::Open) {
+    pt = open_array_type_to_cxx(*pp.type);
+  } else if (param_uses_shortstring_ref(pp.type.get(), pp.mode)) {
+    pt = shortstring_ref_type_to_cxx(pp.type.get());
+  } else {
+    pt = type_to_cxx(*pp.type);
+  }
+  if (pp.type) {
+    if (param_uses_shortstring_ref(pp.type.get(), pp.mode)) {
+      // Mutable shortstrings are storage proxies, not C++ references; this
+      // keeps virtual/interface method signatures capacity-agnostic.
+    } else if (pp.mode == Param::ConstRef) {
+      pt = "const " + pt + "&";
+    } else if (pp.mode == Param::Var || pp.mode == Param::Out) {
+      pt += "&";
+    } else if (pp.mode == Param::Const) {
+      if (analysis_.const_param_needs_mutable_ref(pp.type.get())) pt += "&";
+      else if (analysis_.const_param_needs_const_ref(pp.type.get()))
+        pt = "const " + pt + "&";
+    }
+  }
+  return pt;
+}
+
+std::string EmitTypes::formal_param_types_to_cxx(
+    const std::vector<Param>& params) {
+  std::string out;
+  bool first = true;
+  for (const auto& pp : params) {
+    std::string pt = formal_param_type_to_cxx(pp);
+    size_t repeats = pp.names.empty() ? 1 : pp.names.size();
+    for (size_t i = 0; i < repeats; ++i) {
+      if (!first) out += ", ";
+      first = false;
+      out += pt;
+    }
+  }
+  return out;
+}
+
+bool EmitTypes::procedural_param_uses_pointer_carrier(const Param& pp) {
+  if (!pp.type) return false;
+  if (pp.mode == Param::Var || pp.mode == Param::Out ||
+      pp.mode == Param::ConstRef) {
+    return false;
+  }
+  if (pp.mode == Param::Const &&
+      (analysis_.const_param_needs_mutable_ref(pp.type.get()) ||
+       analysis_.const_param_needs_const_ref(pp.type.get()))) {
+    return false;
+  }
+
+  const TypeExpr* canon = analysis_.canonicalize_type(pp.type.get());
+  if (!canon) return false;
+  if (canon->kind == Kind::TyProcedural) return false;
+  if (canon->kind == Kind::TyPointer || canon->kind == Kind::TyMetaclass) {
+    return true;
+  }
+  if (analysis_.type_is_reference_class(canon) ||
+      analysis_.type_is_interface(canon)) {
+    return true;
+  }
+  if (canon->kind == Kind::TyName) {
+    const std::string low =
+        ascii_lower(static_cast<const TyName&>(*canon).name);
+    return low == "pointer" || low == "pchar" || low == "pansichar" ||
+           low == "ppchar";
+  }
+  return false;
+}
+
+std::string EmitTypes::procedural_param_type_to_cxx(const Param& pp) {
+  // Procvar calls are indirect C++ calls. By-value Pascal pointer-like slots
+  // use `void*` as the carrier so compatible callback casts such as
+  // `procedure(TObject; Pointer)` <-> `procedure(Pointer; Pointer)` do not call
+  // through mismatched C++ function types. The real Pascal type is restored in
+  // the generated adapter/thunk before calling the actual routine.
+  if (procedural_param_uses_pointer_carrier(pp)) return "void*";
+  return formal_param_type_to_cxx(pp);
+}
+
 std::string EmitTypes::procedural_param_types_to_cxx(
     const std::vector<Param>& params) {
   std::string out;
   bool first = true;
   for (const auto& pp : params) {
-    std::string pt;
-    if (!pp.type) {
-      pt = (pp.mode == Param::Const || pp.mode == Param::ConstRef)
-               ? "const void*"
-               : "void*";
-    } else if (const TypeExpr* canon = analysis_.canonicalize_type(pp.type.get());
-               canon && canon->kind == Kind::TyArray &&
-               static_cast<const TyArray&>(*canon).array_kind ==
-                   ArrayKind::Open) {
-      pt = open_array_type_to_cxx(*pp.type);
-    } else if (param_uses_shortstring_ref(pp.type.get(), pp.mode)) {
-      pt = shortstring_ref_type_to_cxx(pp.type.get());
-    } else {
-      pt = type_to_cxx(*pp.type);
-    }
-    if (pp.type) {
-      if (param_uses_shortstring_ref(pp.type.get(), pp.mode)) {
-        // Mutable shortstrings are storage proxies, not C++ references; this
-        // keeps virtual/interface method signatures capacity-agnostic.
-      } else if (pp.mode == Param::ConstRef) {
-        pt = "const " + pt + "&";
-      } else if (pp.mode == Param::Var || pp.mode == Param::Out) pt += "&";
-      else if (pp.mode == Param::Const) {
-        if (analysis_.const_param_needs_mutable_ref(pp.type.get())) pt += "&";
-        else if (analysis_.const_param_needs_const_ref(pp.type.get()))
-          pt = "const " + pt + "&";
-      }
-    }
+    std::string pt = procedural_param_type_to_cxx(pp);
     size_t repeats = pp.names.empty() ? 1 : pp.names.size();
     for (size_t i = 0; i < repeats; ++i) {
       if (!first) out += ", ";

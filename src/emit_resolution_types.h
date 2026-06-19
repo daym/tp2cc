@@ -268,12 +268,11 @@ class ResolutionTypeOps {
   // etc.). The picker uses it to recognize Pascal nil-compatible slots
   // without re-listing the cases at the call site.
   virtual bool type_is_pointerish(const ast::TypeExpr* t) = 0;
-  // The procedure-of-object signature comparison must agree byte-for-byte
-  // between the picker (scoring `@method` against the of-object slot) and
-  // the emitter (binding `@method` to a `tp2cc_MethodPtr` constructor).
-  // Routing both through this one shared C++ text form avoids the dual-source
-  // definitions diverging on edge cases like var/const mode adornments.
-  virtual std::string procedural_param_types_to_cxx(
+  // Method binding compares the real Pascal formal surface. Procvar carrier
+  // signatures may intentionally normalize pointer-like value parameters for
+  // safe indirect C++ calls, but overload/method identity must not collapse
+  // `TObject` and `Pointer` into the same signature.
+  virtual std::string formal_param_types_to_cxx(
       const std::vector<ast::Param>& params) = 0;
 };
 

@@ -35,6 +35,10 @@ struct UnaryOperatorResult {
   bool ambiguous = false;
 };
 
+struct PlainProcValueBinding {
+  const ast::ProcDecl* decl = nullptr;
+};
+
 // Result of resolving an `@method` / nil / bare-ident expression against a
 // `procedure of object` target. One source of truth for both the overload
 // picker (scoring `@method` against a procedural-typed parameter slot) and
@@ -128,6 +132,8 @@ class EmitResolution {
   // Returns nullopt when the expression is not one of those forms, or when the
   // target is an ordinary procedural type that cannot carry `Self`.
   std::optional<MethodValueBinding> resolve_method_value_binding(
+      const ast::Expr& arg, const ast::TyProcedural& proc);
+  std::optional<PlainProcValueBinding> resolve_plain_proc_value_binding(
       const ast::Expr& arg, const ast::TyProcedural& proc);
 
  private:

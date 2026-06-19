@@ -125,6 +125,11 @@ class EmitTypes {
   // lowering here must preserve those bounds rather than silently normalizing
   // everything to zero-based storage.
   std::string array_type_to_cxx(const ast::TyArray& a);
+  std::string formal_param_type_to_cxx(const ast::Param& param);
+  std::string formal_param_types_to_cxx(
+      const std::vector<ast::Param>& params);
+  bool procedural_param_uses_pointer_carrier(const ast::Param& param);
+  std::string procedural_param_type_to_cxx(const ast::Param& param);
   std::string procedural_param_types_to_cxx(
       const std::vector<ast::Param>& params);
   std::string method_pointer_helper_name(const ast::ProcDecl& pd);

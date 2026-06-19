@@ -5162,6 +5162,122 @@ void test_method_value_cast_base_field_expression() {
   CHECK(!contains(out.impl, "tp2cc_byte_offset"));
 }
 
+void test_method_pointer_callback_uses_pointer_carrier_thunk() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class end;\n"
+      "  tcallback = procedure(p:titem; arg:pointer) of object;\n"
+      "  thost = class\n"
+      "    cb : tcallback;\n"
+      "    procedure visit(p:titem; arg:pointer);\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure thost.visit(p:titem; arg:pointer); begin end;\n"
+      "procedure thost.run;\n"
+      "begin\n"
+      "  cb := @visit;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "using t_tcallback = ::rt::tp2cc_MethodPtr<void(void*, void*)>;"));
+  CHECK(contains(out.header,
+                 "static void tp2cc_methodptr_visit"));
+  CHECK(contains(out.header,
+                 "(void* tp2cc_self, void* p_p, void* p_arg)"));
+  CHECK(contains(out.header,
+                 "static_cast<t_thost*>(tp2cc_self)->p_visit("
+                 "static_cast<t_titem*>(p_p), p_arg);"));
+}
+
+void test_plain_proc_callback_uses_pointer_carrier_adapter() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class end;\n"
+      "  titemcallback = procedure(p:titem; arg:pointer);\n"
+      "  tlistcallback = procedure(p:pointer; arg:pointer);\n"
+      "var\n"
+      "  cb : titemcallback;\n"
+      "  listcb : tlistcallback;\n"
+      "procedure visit(p:titem; arg:pointer);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure visit(p:titem; arg:pointer); begin end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  cb := @visit;\n"
+      "  listcb := tlistcallback(cb);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "using t_titemcallback = void (*)(void*, void*);"));
+  CHECK(contains(out.header, "using t_tlistcallback = void (*)(void*, void*);"));
+  CHECK(contains(out.impl,
+                 "p_cb = +[](void* p_p, void* p_arg) -> void { "
+                 "p_visit(static_cast<t_titem*>(p_p), p_arg); };"));
+  CHECK(contains(out.impl, "p_listcb = p_cb;"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_copy"));
+}
+
+void test_plain_proc_explicit_callback_typecast_uses_pointer_carrier_adapter() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class end;\n"
+      "  titemcallback = procedure(p:titem; arg:pointer);\n"
+      "var\n"
+      "  cb : titemcallback;\n"
+      "procedure visit(p:titem; arg:pointer);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure visit(p:titem; arg:pointer); begin end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  cb := titemcallback(@visit);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "using t_titemcallback = void (*)(void*, void*);"));
+  CHECK(contains(out.impl,
+                 "p_cb = +[](void* p_p, void* p_arg) -> void { "
+                 "p_visit(static_cast<t_titem*>(p_p), p_arg); };"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_copy"));
+  CHECK(!contains(out.impl, "p_cb = (&p_visit)"));
+}
+
+void test_method_procvar_cast_between_pointer_carriers_is_noop() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class end;\n"
+      "  titemcallback = procedure(p:titem; arg:pointer) of object;\n"
+      "  tlistcallback = procedure(p:pointer; arg:pointer) of object;\n"
+      "  tlist = class\n"
+      "    procedure foreachcall(cb:tlistcallback; arg:pointer);\n"
+      "  end;\n"
+      "  tobjectlist = class\n"
+      "    list : tlist;\n"
+      "    procedure foreachcall(cb:titemcallback; arg:pointer);\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tlist.foreachcall(cb:tlistcallback; arg:pointer); begin end;\n"
+      "procedure tobjectlist.foreachcall(cb:titemcallback; arg:pointer);\n"
+      "begin\n"
+      "  list.foreachcall(tlistcallback(cb), arg);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "using t_titemcallback = ::rt::tp2cc_MethodPtr<void(void*, void*)>;"));
+  CHECK(contains(out.header,
+                 "using t_tlistcallback = ::rt::tp2cc_MethodPtr<void(void*, void*)>;"));
+  CHECK(contains(out.impl, "p_list->p_foreachcall(p_cb, p_arg);"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_copy"));
+}
+
 void test_const_object_param_uses_mutable_ref() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -12295,6 +12411,10 @@ int main() {
   RUN_TEST(test_class_field_shadows_unit_name_in_member_call);
   RUN_TEST(test_method_value_typecast_base_uses_method_code_binding);
   RUN_TEST(test_method_value_cast_base_field_expression);
+  RUN_TEST(test_method_pointer_callback_uses_pointer_carrier_thunk);
+  RUN_TEST(test_plain_proc_callback_uses_pointer_carrier_adapter);
+  RUN_TEST(test_plain_proc_explicit_callback_typecast_uses_pointer_carrier_adapter);
+  RUN_TEST(test_method_procvar_cast_between_pointer_carriers_is_noop);
   RUN_TEST(test_record_field_named_like_type_keeps_pascal_type_lookup);
   RUN_TEST(test_member_base_local_record_shadows_same_named_type);
   RUN_TEST(test_member_base_local_class_shadows_same_named_type);

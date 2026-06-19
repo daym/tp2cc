@@ -71,6 +71,7 @@ class EmitDecls {
   struct MethodPointerThunkParam {
     std::string type;
     std::string name;
+    std::string call_arg;
   };
 
   struct PendingReferenceClassSupport {

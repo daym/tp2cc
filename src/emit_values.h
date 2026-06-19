@@ -61,6 +61,12 @@ class EmitValues {
                                       bool typed_const_initializer);
   std::optional<std::string> maybe_convert_proc_value(
       const ast::Expr& e, const ast::TypeExpr* target);
+  std::optional<std::string> maybe_convert_plain_proc_value(
+      const ast::Expr& e, const ast::TyProcedural& proc);
+  std::string plain_proc_callee_text(const ast::Expr& e);
+  std::string plain_proc_adapter_value(const ast::Expr& e,
+                                       const ast::TyProcedural& proc,
+                                       const ast::ProcDecl& decl);
   std::optional<std::string> maybe_lower_metaclass_value(
       const ast::Expr& e, const ast::TypeExpr* target);
   bool source_is_const_untyped_storage_arg(const ast::Expr& e) const;

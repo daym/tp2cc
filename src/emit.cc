@@ -318,8 +318,8 @@ struct Emitter : ResolveNameProvider,
   std::string procedural_type_to_cxx(const TyProcedural& p) {
     return types_.procedural_type_to_cxx(p);
   }
-  std::string procedural_param_types_to_cxx(const std::vector<Param>& params) {
-    return types_.procedural_param_types_to_cxx(params);
+  std::string formal_param_types_to_cxx(const std::vector<Param>& params) {
+    return types_.formal_param_types_to_cxx(params);
   }
   std::string named_type_to_cxx(const TypeExpr* t, std::string_view name,
                                 std::string_view name_prefix = {}) {

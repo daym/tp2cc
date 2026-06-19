@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "emit_analysis.h"
 #include "diag.h"
@@ -36,6 +37,35 @@ std::string string_literal_body_char_to_cxx(char c) {
     return out;
   }
   return std::string(1, c);
+}
+
+struct FlatProcParamUse {
+  const Param* param = nullptr;
+  std::string name;
+};
+
+std::vector<FlatProcParamUse> flatten_proc_params_with_names(
+    const std::vector<Param>& params) {
+  std::vector<FlatProcParamUse> out;
+  int unnamed_index = 0;
+  for (const auto& param : params) {
+    if (param.names.empty()) {
+      out.push_back(
+          FlatProcParamUse{&param, "tp2cc_arg" + std::to_string(++unnamed_index)});
+      continue;
+    }
+    for (const auto& name : param.names) {
+      out.push_back(FlatProcParamUse{&param, mangle(name)});
+    }
+  }
+  return out;
+}
+
+const Expr* strip_single_addr_of(const Expr& e) {
+  if (e.kind != Kind::AddrOf) return &e;
+  const auto& addr = static_cast<const AddrOf&>(e);
+  if (addr.double_addr || !addr.operand) return &e;
+  return addr.operand.get();
 }
 
 }  // namespace
@@ -526,6 +556,9 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
 
   if (!proc.is_method) {
     if (reject_metaclass_member_as_plain_proc_value(e)) return "nullptr";
+    if (auto adapted = maybe_convert_plain_proc_value(e, proc)) {
+      return *adapted;
+    }
 
     switch (e.kind) {
       case Kind::Ident:
@@ -568,6 +601,64 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
                     : "(void*)(&(" + base_cxx + "))";
   }
   return target_cxx + "(" + code_text + ", " + self_expr + ")";
+}
+
+std::optional<std::string> EmitValues::maybe_convert_plain_proc_value(
+    const Expr& e, const TyProcedural& proc) {
+  auto bind = resolution_.resolve_plain_proc_value_binding(e, proc);
+  if (!bind || !bind->decl) return std::nullopt;
+  const ProcDecl& decl = *bind->decl;
+  const std::string source_sig = types_.formal_param_types_to_cxx(decl.params);
+  const std::string target_sig = types_.procedural_param_types_to_cxx(proc.params);
+  if (source_sig == target_sig) return expr_ops_.expr_to_cxx_no_autocall(e);
+  return plain_proc_adapter_value(e, proc, decl);
+}
+
+std::string EmitValues::plain_proc_callee_text(const Expr& e) {
+  return expr_ops_.expr_to_cxx_no_autocall(*strip_single_addr_of(e));
+}
+
+std::string EmitValues::plain_proc_adapter_value(const Expr& e,
+                                                 const TyProcedural& proc,
+                                                 const ProcDecl& decl) {
+  const std::string ret =
+      proc.is_function ? types_.type_to_cxx(*proc.return_type) : "void";
+  const auto target_params = flatten_proc_params_with_names(proc.params);
+  const auto source_params = flatten_proc_params_with_names(decl.params);
+  if (target_params.size() != source_params.size()) {
+    expr_ops_.report_error(e.loc,
+                           "internal error: procedural adapter arity mismatch");
+    return "nullptr";
+  }
+  std::string lambda_params;
+  std::string call_args;
+  for (size_t i = 0; i < target_params.size(); ++i) {
+    const FlatProcParamUse& target = target_params[i];
+    const FlatProcParamUse& source = source_params[i];
+    if (i) {
+      lambda_params += ", ";
+      call_args += ", ";
+    }
+    std::string carrier = types_.procedural_param_type_to_cxx(*target.param);
+    lambda_params += carrier + " " + target.name;
+    if (types_.procedural_param_uses_pointer_carrier(*target.param) &&
+        source.param->type) {
+      std::string actual = types_.type_to_cxx(*source.param->type);
+      if (actual == carrier) {
+        call_args += target.name;
+      } else {
+        call_args += "static_cast<" + actual + ">(" + target.name + ")";
+      }
+    } else {
+      call_args += target.name;
+    }
+  }
+
+  std::string out = "+[](" + lambda_params + ") -> " + ret + " { ";
+  if (proc.is_function) out += "return ";
+  out += plain_proc_callee_text(e) + "(" + call_args + ");";
+  out += " }";
+  return out;
 }
 
 std::string EmitValues::concrete_class_name_for_metaclass_value(

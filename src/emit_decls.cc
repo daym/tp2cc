@@ -322,7 +322,7 @@ bool EmitDecls::metaclass_callable_matches_impl(
 std::string EmitDecls::method_sig_param_types(const MethodSig& sig) {
   if (!sig.decl) return {};
   ScopedSignatureLookupUnit lookup_unit(scope_, registry_, &sig);
-  return types_.procedural_param_types_to_cxx(sig.decl->params);
+  return types_.formal_param_types_to_cxx(sig.decl->params);
 }
 
 std::string EmitDecls::method_sig_param_list(const MethodSig& sig) {
@@ -1222,35 +1222,7 @@ std::string EmitDecls::proc_attributes_to_cxx(const ProcDecl& pd) {
 }
 
 std::string EmitDecls::method_pointer_thunk_param_type(const Param& par) {
-  if (!par.type) {
-    return (par.mode == Param::Const || par.mode == Param::ConstRef)
-               ? "const void*"
-               : "void*";
-  }
-
-  std::string pt;
-  if (storage_.type_is_open_array(par.type.get())) {
-    pt = types_.open_array_type_to_cxx(*par.type);
-  } else if (types_.param_uses_shortstring_ref(par.type.get(), par.mode)) {
-    pt = types_.shortstring_ref_type_to_cxx(par.type.get());
-  } else {
-    pt = types_.type_to_cxx(*par.type);
-  }
-
-  if (types_.param_uses_shortstring_ref(par.type.get(), par.mode)) {
-    return pt;
-  }
-  if (par.mode == Param::ConstRef) return "const " + pt + "&";
-  if (par.mode == Param::Var || par.mode == Param::Out) return pt + "&";
-  if (par.mode == Param::Const &&
-      analysis_.const_param_needs_mutable_ref(par.type.get())) {
-    return pt + "&";
-  }
-  if (par.mode == Param::Const &&
-      analysis_.const_param_needs_const_ref(par.type.get())) {
-    return "const " + pt + "&";
-  }
-  return pt;
+  return types_.procedural_param_type_to_cxx(par);
 }
 
 std::vector<EmitDecls::MethodPointerThunkParam>
@@ -1259,14 +1231,22 @@ EmitDecls::method_pointer_thunk_params(const ProcDecl& pd) {
   int unnamed_index = 0;
   for (const auto& par : pd.params) {
     std::string pt = method_pointer_thunk_param_type(par);
+    auto call_arg_for = [&](const std::string& name) {
+      if (!types_.procedural_param_uses_pointer_carrier(par)) return name;
+      std::string actual = types_.type_to_cxx(*par.type);
+      if (actual == pt) return name;
+      return "static_cast<" + actual + ">(" + name + ")";
+    };
     if (par.names.empty()) {
+      std::string name = "tp2cc_arg" + std::to_string(++unnamed_index);
       out.push_back(MethodPointerThunkParam{
-          .type = pt,
-          .name = "tp2cc_arg" + std::to_string(++unnamed_index)});
+          .type = pt, .name = name, .call_arg = call_arg_for(name)});
       continue;
     }
     for (const auto& pn : par.names) {
-      out.push_back(MethodPointerThunkParam{.type = pt, .name = mangle(pn)});
+      std::string name = mangle(pn);
+      out.push_back(MethodPointerThunkParam{
+          .type = pt, .name = name, .call_arg = call_arg_for(name)});
     }
   }
   return out;
@@ -1284,11 +1264,15 @@ void EmitDecls::emit_method_pointer_thunk(const std::string& owner_name,
   std::string helper_args;
   std::vector<MethodPointerThunkParam> thunk_params =
       method_pointer_thunk_params(pd);
+  // `tp2cc_MethodPtr<Sig>::operator()` casts the stored code slot to exactly
+  // `Ret (*)(void*, Sig...)` before calling it. Therefore the helper's C++
+  // signature is the procvar carrier signature, and pointer-like Pascal
+  // formals are cast back to the method's real formal types inside the helper.
   for (size_t i = 0; i < thunk_params.size(); ++i) {
     const auto& param = thunk_params[i];
     helper_params += ", " + param.type + " " + param.name;
     if (i != 0) helper_args += ", ";
-    helper_args += param.name;
+    helper_args += param.call_arg;
   }
 
   std::string call = "static_cast<" + owner_name + "*>(tp2cc_self)->" +
