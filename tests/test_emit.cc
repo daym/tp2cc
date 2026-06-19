@@ -9125,6 +9125,37 @@ void test_overload_picks_method_callback_for_current_method_address() {
   CHECK(!contains(out.impl, "p_foreachcall((&p_visit)"));
 }
 
+void test_explicit_method_typecast_binds_current_method_address() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class end;\n"
+      "  tcallback = procedure(p : titem; arg : pointer) of object;\n"
+      "  tlist = class\n"
+      "    procedure foreachcall(cb : tcallback; arg : pointer);\n"
+      "  end;\n"
+      "  tholder = class\n"
+      "    list : tlist;\n"
+      "    procedure visit(p : titem; arg : pointer);\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tlist.foreachcall(cb : tcallback; arg : pointer); begin end;\n"
+      "procedure tholder.visit(p : titem; arg : pointer); begin end;\n"
+      "procedure tholder.run;\n"
+      "begin\n"
+      "  list.foreachcall(tcallback(@visit), nil);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_list->p_foreachcall(::rt::tp2cc_MethodPtr"));
+  CHECK(contains(out.impl, "::rt::tp2cc_method_code<&t_tholder::"));
+  CHECK(contains(out.impl, "(void*)(&((*this)))"));
+  CHECK(!contains(out.impl, "p_foreachcall(::rt::tp2cc_reinterpret_copy"));
+  CHECK(!contains(out.impl, "p_foreachcall((&p_visit)"));
+}
+
 void test_class_field_shadows_unit_name_in_member_call() {
   // When a class field name happens to match a unit name visible
   // through `uses` (here: `symtable` is both a unit and a field on
@@ -12260,6 +12291,7 @@ int main() {
   RUN_TEST(test_overload_ambiguous_two_default_arg_overloads_reports_error);
   RUN_TEST(test_overload_default_arg_extends_arity_disambiguates_cleanly);
   RUN_TEST(test_overload_picks_method_callback_for_current_method_address);
+  RUN_TEST(test_explicit_method_typecast_binds_current_method_address);
   RUN_TEST(test_class_field_shadows_unit_name_in_member_call);
   RUN_TEST(test_method_value_typecast_base_uses_method_code_binding);
   RUN_TEST(test_method_value_cast_base_field_expression);

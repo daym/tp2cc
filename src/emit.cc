@@ -404,7 +404,7 @@ struct Emitter : ResolveNameProvider,
   bool visible_type_name_for_intrinsic(std::string_view type_name);
   bool visible_class_or_record_type_name(std::string_view type_name);
   std::string visible_class_or_record_type_path(std::string_view type_name);
-  bool type_is_aggregate_cast_source(const ast::TypeExpr* t);
+  bool type_uses_reinterpret_copy_for_scalar_cast(const ast::TypeExpr* t);
   std::optional<std::string> sizeof_type_operand_cxx(const ast::Expr& expr);
   std::optional<std::string> unit_qualified_type_name(const ast::Expr& expr);
   tp2cc::ResolvedCall resolve_new_constructor_call(
@@ -440,6 +440,7 @@ struct Emitter : ResolveNameProvider,
     Metaclass,
     Pointer,
     Set,
+    Procedural,
     ReferenceClass,
     Aggregate,
     Scalar,
@@ -1076,12 +1077,13 @@ Emitter::PascalTypecastTarget Emitter::classify_pascal_typecast_target(
     out.kind = PascalTypecastKind::Pointer;
   } else if (out.type->kind == Kind::TySet) {
     out.kind = PascalTypecastKind::Set;
+  } else if (out.type->kind == Kind::TyProcedural) {
+    out.kind = PascalTypecastKind::Procedural;
   } else if (type_is_reference_class(out.type)) {
     out.kind = PascalTypecastKind::ReferenceClass;
   } else if (out.type->kind == Kind::TyArray ||
              out.type->kind == Kind::TyRecord ||
-             out.type->kind == Kind::TyObject ||
-             out.type->kind == Kind::TyProcedural) {
+             out.type->kind == Kind::TyObject) {
     out.kind = PascalTypecastKind::Aggregate;
   } else {
     out.kind = PascalTypecastKind::Scalar;
@@ -1089,7 +1091,7 @@ Emitter::PascalTypecastTarget Emitter::classify_pascal_typecast_target(
   return out;
 }
 
-bool Emitter::type_is_aggregate_cast_source(const TypeExpr* t) {
+bool Emitter::type_uses_reinterpret_copy_for_scalar_cast(const TypeExpr* t) {
   t = canonicalize_type(t);
   if (!t) return false;
   if (t->kind == Kind::TyArray || t->kind == Kind::TyRecord ||
@@ -2095,12 +2097,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                   maybe_convert_const_int_expr(*c.args[0], &target, true)) {
             return *lit;
           }
-          if (type_is_aggregate_cast_source(type_for_overload(*c.args[0]))) {
-            // FPC accepts same-size aggregate-to-scalar casts as
-            // representation casts when no user-defined conversion owns the
-            // source/target pair. This is a value context, so first build the
-            // source value, then copy its bytes into the scalar target; storage
-            // contexts request storage views before reaching this branch.
+          if (type_uses_reinterpret_copy_for_scalar_cast(
+                  type_for_overload(*c.args[0]))) {
+            // Some explicit scalar casts are representation casts over the
+            // source value's bytes: records/objects/arrays, and procedural
+            // values such as procvars. Procedural target casts are handled
+            // earlier as target-typed procvar conversions, so reaching this
+            // branch only means "copy source representation into scalar".
             return "::rt::tp2cc_reinterpret_copy<" + primitive_type_cxx(n) +
                    ">(" + single_call_arg_cxx(c) + ")";
           }
@@ -2142,6 +2145,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
             return "::rt::tp2cc_set_cast<" + type_to_cxx(*target.type) + ">(" +
                    single_call_arg_cxx(c) + ")";
+          }
+          if (target.known && target.kind == PascalTypecastKind::Procedural) {
+            // A procedural typecast is target-typed. In particular,
+            // `TMethodType(@instance_method)` must bind the method code and
+            // the current Self pointer; treating the procedural value as an
+            // aggregate byte reinterpretation leaves an invalid C++ member
+            // function address.
+            return const_value_to_cxx(*c.args[0], target.type,
+                                      /*explicit_conversion=*/true);
           }
           if (target.known) {
             TyName target(n);
@@ -2384,6 +2396,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                 unit_member->unit_name + "." + mem.name;
             const TypeExpr* cast_ty = lookup_named_type_expr(qualified);
             if (cast_ty) cast_ty = canonicalize_type(cast_ty);
+            if (cast_ty && cast_ty->kind == Kind::TyProcedural) {
+              // Unit-qualified procedural casts are the same Pascal operation
+              // as unqualified ones: the target procedural type controls
+              // method-value binding and plain procedure-pointer conversion.
+              return const_value_to_cxx(*c.args[0], cast_ty,
+                                        /*explicit_conversion=*/true);
+            }
             if (cast_ty && cast_ty->kind == Kind::TyPointer) {
               // Pointer casts are still Pascal value conversions, but their
               // source may be a typed storage view such as `T(x)`. Peel only
