@@ -167,6 +167,19 @@ std::string type_symbol_path(const TypeSymbol& symbol) {
   return join_path(path);
 }
 
+std::string nested_type_symbol_key(std::string_view unit,
+                                   const std::vector<std::string>& owner_path,
+                                   std::string_view name) {
+  std::string out = lc(std::string(unit));
+  out += "$";
+  for (const auto& owner : owner_path) {
+    out += lc(owner);
+    out += ".";
+  }
+  out += lc(std::string(name));
+  return out;
+}
+
 void index_type_expr_unit(TypeRegistry& r, const TypeExpr* type,
                           const std::string& unit);
 
@@ -414,7 +427,7 @@ TypeSymbol* find_unit_type_symbol(UnitInfo& ui, const std::string& name) {
   return mit == ui.impl_types.end() ? nullptr : mit->second;
 }
 
-void populate_nested_types(TypeSymbol& symbol);
+void populate_nested_types(TypeRegistry& r, TypeSymbol& symbol);
 
 TypeSymbol* upsert_unit_type_symbol(TypeRegistry& r, UnitInfo* ui,
                                     bool is_interface,
@@ -434,7 +447,7 @@ TypeSymbol* upsert_unit_type_symbol(TypeRegistry& r, UnitInfo* ui,
       *stored = std::move(new_symbol);
     }
   }
-  populate_nested_types(*stored);
+  populate_nested_types(r, *stored);
   if (ui) {
     if (is_interface || ui->iface_types.count(low_name)) {
       ui->iface_types[low_name] = stored;
@@ -676,14 +689,32 @@ TypeSymbol make_type_symbol_for_type_with_owner(
     std::shared_ptr<const TypeExpr> type,
     std::vector<std::string> owner_path);
 
-void populate_nested_types(TypeSymbol& symbol) {
-  if (!symbol.type) return;
-  if (auto* nested = nested_type_map_mut(symbol)) {
-    // A forward class symbol can later be replaced by its full declaration.
-    // Rebuild child type symbols from the current AST so old nested aliases or
-    // classes cannot survive that replacement.
-    nested->clear();
+std::shared_ptr<TypeSymbol> upsert_nested_type_symbol(
+    TypeRegistry& r, TypeSymbol& owner, const TypeDecl& td,
+    const std::vector<std::string>& child_owner_path) {
+  // The registry is the lifetime owner for nested type symbols. Owner
+  // ClassInfo/RecordInfo maps and emitter scope frames only keep shared/ref
+  // indexes to this symbol, so a nested declaration has one semantic identity
+  // across declaration lookup, type rendering, and alias canonicalization.
+  const std::string key =
+      nested_type_symbol_key(owner.defining_unit, child_owner_path, td.name);
+  TypeSymbol next = make_type_symbol_for_type_with_owner(
+      owner.defining_unit, td.name, td.type, child_owner_path);
+  auto& slot = r.nested_type_symbols[key];
+  if (!slot) {
+    slot = std::make_shared<TypeSymbol>(std::move(next));
+  } else {
+    *slot = std::move(next);
   }
+  populate_nested_types(r, *slot);
+  return slot;
+}
+
+void populate_nested_types(TypeRegistry& r, TypeSymbol& symbol) {
+  if (!symbol.type) return;
+  auto* nested = nested_type_map_mut(symbol);
+  if (!nested) return;
+
   std::vector<std::shared_ptr<TypeDecl>> nested_decls;
   if (symbol.type->kind == Kind::TyObject) {
     const auto& obj = static_cast<const TyObject&>(*symbol.type);
@@ -701,15 +732,22 @@ void populate_nested_types(TypeSymbol& symbol) {
 
   std::vector<std::string> child_owner_path = symbol.owner_path;
   child_owner_path.push_back(symbol.name);
+  std::unordered_set<std::string> wanted;
   for (const auto& td : nested_decls) {
     if (!td || !td->type) continue;
-    auto child = std::make_shared<TypeSymbol>(
-        make_type_symbol_for_type_with_owner(symbol.defining_unit, td->name,
-                                             td->type, child_owner_path));
+    auto child = upsert_nested_type_symbol(r, symbol, *td, child_owner_path);
+    wanted.insert(child->name);
     if (ClassInfo* ci = symbol.mutable_class_info()) {
       ci->nested_types.insert_or_assign(child->name, child);
     } else if (RecordInfo* ri = symbol.mutable_record_info()) {
       ri->nested_types.insert_or_assign(child->name, child);
+    }
+  }
+  for (auto it = nested->begin(); it != nested->end();) {
+    if (wanted.count(it->first)) {
+      ++it;
+    } else {
+      it = nested->erase(it);
     }
   }
 }
@@ -747,7 +785,6 @@ TypeSymbol make_type_symbol_for_type_with_owner(
   }
   TypeSymbol symbol(low_name, low_unit, std::move(type), std::move(payload));
   symbol.owner_path = std::move(owner_path);
-  populate_nested_types(symbol);
   return symbol;
 }
 
@@ -1271,6 +1308,238 @@ void register_decl_list(TypeRegistry& r, const std::string& unit,
           register_enums_in_type(r, ui, is_interface, unit, *cd.type,
                                  lc(cd.name), nullptr);
         }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+}
+
+TypeLookupContext* make_type_lookup_context(
+    TypeRegistry& r, std::string_view unit, const TypeLookupContext* parent) {
+  r.type_lookup_context_storage.push_back(
+      TypeLookupContext{.unit = lc(std::string(unit)),
+                        .parent = parent,
+                        .type_symbols = {}});
+  return &r.type_lookup_context_storage.back();
+}
+
+void insert_type_ref(TypeLookupContext& context, const TypeSymbol* symbol) {
+  if (!symbol) return;
+  context.type_symbols.insert_or_assign(symbol->name, symbol);
+}
+
+const TypeLookupContext* make_unit_type_context(TypeRegistry& r,
+                                                std::string_view unit,
+                                                bool is_interface) {
+  TypeLookupContext* context = make_type_lookup_context(r, unit, nullptr);
+  auto uit = r.units.find(lc(std::string(unit)));
+  if (uit == r.units.end()) return context;
+  for (const auto& [_, symbol] : uit->second.iface_types) {
+    insert_type_ref(*context, symbol);
+  }
+  if (!is_interface) {
+    for (const auto& [_, symbol] : uit->second.impl_types) {
+      insert_type_ref(*context, symbol);
+    }
+  }
+  return context;
+}
+
+const TypeLookupContext* make_type_member_context(
+    TypeRegistry& r, const TypeSymbol* symbol,
+    const TypeLookupContext* parent) {
+  if (!symbol) return parent;
+  // Member declarations are looked up in the enclosing type's lexical scope
+  // first, then in the unit/import scope represented by the parent context.
+  TypeLookupContext* context =
+      make_type_lookup_context(r, symbol->defining_unit, parent);
+  if (const auto* nested = nested_type_map(*symbol)) {
+    for (const auto& [_, child] : *nested) {
+      insert_type_ref(*context, child.get());
+    }
+  }
+  return context;
+}
+
+void index_type_expr_context(TypeRegistry& r, const TypeExpr* type,
+                             const TypeLookupContext* context,
+                             const TypeSymbol* symbol = nullptr);
+
+void index_param_type_contexts(TypeRegistry& r, const std::vector<Param>& params,
+                               const TypeLookupContext* context) {
+  for (const auto& param : params) {
+    index_type_expr_context(r, param.type.get(), context);
+  }
+}
+
+void index_proc_signature_context(TypeRegistry& r, const ProcDecl& proc,
+                                  const TypeLookupContext* context) {
+  index_param_type_contexts(r, proc.params, context);
+  index_type_expr_context(r, proc.return_type.get(), context);
+}
+
+void index_variant_type_contexts(TypeRegistry& r,
+                                 const std::shared_ptr<VariantPart>& variant,
+                                 const TypeLookupContext* context) {
+  if (!variant) return;
+  index_type_expr_context(r, variant->tag_type.get(), context);
+  for (const auto& vcase : variant->cases) {
+    for (const auto& field : vcase.fields) {
+      index_type_expr_context(r, field.type.get(), context);
+    }
+    index_variant_type_contexts(r, vcase.variant_part, context);
+  }
+}
+
+const TypeSymbol* nested_type_symbol_for_decl(const TypeSymbol* owner,
+                                              const TypeDecl& td) {
+  if (!owner) return nullptr;
+  const auto* nested = nested_type_map(*owner);
+  if (!nested) return nullptr;
+  auto it = nested->find(lc(td.name));
+  return it == nested->end() ? nullptr : it->second.get();
+}
+
+void index_type_decl_context(TypeRegistry& r, const TypeDecl& td,
+                             const TypeLookupContext* context,
+                             const TypeSymbol* symbol) {
+  index_type_expr_context(r, td.type.get(), context, symbol);
+}
+
+void index_object_member_type_context(TypeRegistry& r,
+                                      const ObjectMember& member,
+                                      const TypeLookupContext* context,
+                                      const TypeSymbol* owner_symbol) {
+  switch (member.kind) {
+    case ObjectMemberKind::Field:
+      index_type_expr_context(r, member.field_type.get(), context);
+      break;
+    case ObjectMemberKind::Method:
+      if (member.method) {
+        index_proc_signature_context(r, *member.method, context);
+      }
+      break;
+    case ObjectMemberKind::Property:
+      index_param_type_contexts(r, member.property.params, context);
+      index_type_expr_context(r, member.property.type.get(), context);
+      break;
+    case ObjectMemberKind::Type:
+      if (member.type_decl) {
+        index_type_decl_context(
+            r, *member.type_decl, context,
+            nested_type_symbol_for_decl(owner_symbol, *member.type_decl));
+      }
+      break;
+  }
+}
+
+void index_type_expr_context(TypeRegistry& r, const TypeExpr* type,
+                             const TypeLookupContext* context,
+                             const TypeSymbol* symbol) {
+  if (!type || !context) return;
+  r.type_lookup_contexts.try_emplace(type, context);
+  switch (type->kind) {
+    case Kind::TyArray: {
+      const auto& a = static_cast<const TyArray&>(*type);
+      for (const auto& dim : a.dims) {
+        index_type_expr_context(r, dim.get(), context);
+      }
+      index_type_expr_context(r, a.element.get(), context);
+      break;
+    }
+    case Kind::TyRecord: {
+      const auto& rec = static_cast<const TyRecord&>(*type);
+      const TypeLookupContext* member_context =
+          make_type_member_context(r, symbol, context);
+      for (const auto& field : rec.fields) {
+        index_type_expr_context(r, field.type.get(), member_context);
+      }
+      for (const auto& nested : rec.nested_types) {
+        if (!nested) continue;
+        index_type_decl_context(
+            r, *nested, member_context,
+            nested_type_symbol_for_decl(symbol, *nested));
+      }
+      index_variant_type_contexts(r, rec.variant_part, member_context);
+      break;
+    }
+    case Kind::TyObject: {
+      const auto& obj = static_cast<const TyObject&>(*type);
+      const TypeLookupContext* member_context =
+          make_type_member_context(r, symbol, context);
+      for (const auto& member : obj.members) {
+        index_object_member_type_context(r, member, member_context, symbol);
+      }
+      break;
+    }
+    case Kind::TyInterface: {
+      const auto& intf = static_cast<const TyInterface&>(*type);
+      for (const auto& member : intf.members) {
+        index_object_member_type_context(r, member, context, symbol);
+      }
+      break;
+    }
+    case Kind::TySet:
+      index_type_expr_context(
+          r, static_cast<const TySet&>(*type).element.get(), context);
+      break;
+    case Kind::TyFile:
+      index_type_expr_context(
+          r, static_cast<const TyFile&>(*type).element.get(), context);
+      break;
+    case Kind::TyPointer:
+      index_type_expr_context(
+          r, static_cast<const TyPointer&>(*type).target.get(), context);
+      break;
+    case Kind::TyDistinct:
+      index_type_expr_context(
+          r, static_cast<const TyDistinct&>(*type).underlying.get(), context);
+      break;
+    case Kind::TyProcedural: {
+      const auto& proc = static_cast<const TyProcedural&>(*type);
+      index_param_type_contexts(r, proc.params, context);
+      index_type_expr_context(r, proc.return_type.get(), context);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+void index_decl_list_contexts(TypeRegistry& r, const std::string& unit,
+                              const std::vector<DeclPtr>& decls,
+                              const TypeLookupContext* context) {
+  for (const auto& d : decls) {
+    if (!d) continue;
+    switch (d->kind) {
+      case Kind::TypeDecl: {
+        const auto& td = static_cast<const TypeDecl&>(*d);
+        index_type_decl_context(r, td, context,
+                                r.lookup_type_symbol_exact(unit, td.name));
+        break;
+      }
+      case Kind::ProcDecl: {
+        const auto& pd = static_cast<const ProcDecl&>(*d);
+        const TypeLookupContext* proc_context = context;
+        if (!pd.of_type.empty()) {
+          if (const TypeSymbol* owner =
+                  r.lookup_type_symbol(pd.of_type, unit)) {
+            proc_context = make_type_member_context(r, owner, context);
+          }
+        }
+        index_proc_signature_context(r, pd, proc_context);
+        break;
+      }
+      case Kind::VarDecl: {
+        const auto& vd = static_cast<const VarDecl&>(*d);
+        index_type_expr_context(r, vd.type.get(), context);
+        break;
+      }
+      case Kind::ConstDecl: {
+        const auto& cd = static_cast<const ConstDecl&>(*d);
+        index_type_expr_context(r, cd.type.get(), context);
         break;
       }
       default:
@@ -1861,6 +2130,15 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
                        /*is_interface=*/true);
     register_decl_list(*this, lc(u->name), u->impl_decls,
                        /*is_interface=*/false);
+    const std::string unit_name = lc(u->name);
+    const TypeLookupContext* interface_context =
+        make_unit_type_context(*this, unit_name, /*is_interface=*/true);
+    index_decl_list_contexts(*this, unit_name, u->interface_decls,
+                             interface_context);
+    const TypeLookupContext* implementation_context =
+        make_unit_type_context(*this, unit_name, /*is_interface=*/false);
+    index_decl_list_contexts(*this, unit_name, u->impl_decls,
+                             implementation_context);
     report_type_value_collisions(units[lc(u->name)]);
   }
 
@@ -2094,6 +2372,55 @@ std::string_view TypeRegistry::declaration_unit_for_type(
   return it == source_file_units.end() ? std::string_view{} : it->second;
 }
 
+const TypeLookupContext* TypeRegistry::lookup_context_for_type(
+    const TypeExpr* type) const {
+  if (!type) return nullptr;
+  auto it = type_lookup_contexts.find(type);
+  return it == type_lookup_contexts.end() ? nullptr : it->second;
+}
+
+const TypeSymbol* TypeRegistry::lookup_type_symbol_in_context(
+    std::string_view name, const TypeLookupContext* context) const {
+  if (!context) return lookup_type_symbol(name, {});
+  const std::string low = lc(std::string(name));
+  if (auto dot = low.find('.'); dot != std::string::npos) {
+    const std::string root_name = low.substr(0, dot);
+    if (const TypeSymbol* root =
+            lookup_type_symbol_in_context(root_name, context)) {
+      if (const TypeSymbol* nested =
+              lookup_nested_type_symbol_path(root, low, dot + 1)) {
+        return nested;
+      }
+    }
+    return lookup_type_symbol_exact(root_name, low.substr(dot + 1));
+  }
+
+  for (const TypeLookupContext* frame = context; frame;
+       frame = frame->parent) {
+    auto it = frame->type_symbols.find(low);
+    if (it != frame->type_symbols.end()) return it->second;
+  }
+
+  const std::string unit_name = lc(context->unit);
+  auto uit = units.find(unit_name);
+  if (uit == units.end()) return nullptr;
+
+  const TypeSymbol* runtime = nullptr;
+  for (auto use = uit->second.uses.rbegin(); use != uit->second.uses.rend();
+       ++use) {
+    auto used = units.find(*use);
+    if (used == units.end()) continue;
+    const TypeSymbol* exported = used->second.find_export_type(low);
+    if (!exported) continue;
+    if (*use == "__rt__") {
+      runtime = exported;
+      continue;
+    }
+    return exported;
+  }
+  return runtime;
+}
+
 const TyEnum* TypeRegistry::lookup_enum_member_in_unit(
     std::string_view unit, std::string_view member) const {
   auto uit = enum_members_by_unit.find(lc(std::string(unit)));
@@ -2119,6 +2446,30 @@ const TypeExpr* TypeRegistry::canonicalize(
     }
     te = alias->target.get();
     current_unit = symbol->defining_unit;
+  }
+  return te;
+}
+
+const TypeExpr* TypeRegistry::canonicalize(
+    const TypeExpr* te, const TypeLookupContext* context) const {
+  int hops = 0;
+  while (te && te->kind == Kind::TyName) {
+    if (hops++ >= kMaxAliasChainHops) {
+      throw std::runtime_error(
+          "TypeRegistry::canonicalize: alias chain exceeds "
+          "kMaxAliasChainHops; cycle or registry corruption");
+    }
+    const auto& n = static_cast<const TyName&>(*te);
+    const TypeSymbol* symbol = lookup_type_symbol_in_context(n.name, context);
+    const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
+    if (!alias || !alias->target) {
+      return te;
+    }
+    te = alias->target.get();
+    if (const TypeLookupContext* alias_context =
+            lookup_context_for_type(te)) {
+      context = alias_context;
+    }
   }
   return te;
 }
@@ -2168,7 +2519,7 @@ const FieldInfo* TypeRegistry::lookup_class_field(
   while (ci && seen.mark(ci)) {
     auto fit = ci->fields.find(key);
     if (fit != ci->fields.end()) return &fit->second;
-    ci = ci->parent.empty() ? nullptr : lookup_class(ci->parent, ci->defining_unit);
+    ci = lookup_parent_class(*ci);
   }
   return nullptr;
 }
@@ -2181,7 +2532,7 @@ bool TypeRegistry::class_has_enum_member(
   SeenClassChain seen;
   while (ci && seen.mark(ci)) {
     if (ci->enum_members.count(key)) return true;
-    ci = ci->parent.empty() ? nullptr : lookup_class(ci->parent, ci->defining_unit);
+    ci = lookup_parent_class(*ci);
   }
   return false;
 }
@@ -2201,27 +2552,10 @@ const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
     return mit == interface->methods.end() ? nullptr : &mit->second;
   }
   SeenClassChain seen;
-  std::string rt_name;
   while (ci && seen.mark(ci)) {
     auto mit = ci->methods.find(key);
     if (mit != ci->methods.end()) return &mit->second;
-    if (ci->parent.empty() && ci->is_reference_type) {
-      rt_name = "tobject";
-      break;
-    }
-    const ClassInfo* next = lookup_class(ci->parent, ci->defining_unit);
-    if (!next) {
-      rt_name = ci->parent;
-      break;
-    }
-    ci = next;
-  }
-  while (!rt_name.empty()) {
-    auto cit = rt_classes.find(rt_name);
-    if (cit == rt_classes.end() || !seen.mark(&cit->second)) break;
-    auto mit = cit->second.methods.find(key);
-    if (mit != cit->second.methods.end()) return &mit->second;
-    rt_name = cit->second.parent;
+    ci = lookup_parent_class(*ci);
   }
   return nullptr;
 }
@@ -2235,7 +2569,7 @@ const PropertyInfo* TypeRegistry::lookup_class_property(
   while (ci && seen.mark(ci)) {
     auto pit = ci->properties.find(key);
     if (pit != ci->properties.end()) return &pit->second;
-    ci = ci->parent.empty() ? nullptr : lookup_class(ci->parent, ci->defining_unit);
+    ci = lookup_parent_class(*ci);
   }
   return nullptr;
 }
@@ -2249,7 +2583,7 @@ const PropertyInfo* TypeRegistry::lookup_default_property(
       auto pit = ci->properties.find(ci->default_property_name);
       if (pit != ci->properties.end()) return &pit->second;
     }
-    ci = ci->parent.empty() ? nullptr : lookup_class(ci->parent, ci->defining_unit);
+    ci = lookup_parent_class(*ci);
   }
   return nullptr;
 }

@@ -303,6 +303,19 @@ struct TypeSymbol {
 using TypeSymbolScopeMap =
     std::unordered_map<std::string, TypeSymbol, StringViewHash,
                        StringViewEqual>;
+using TypeSymbolRefScopeMap =
+    std::unordered_map<std::string, const TypeSymbol*, StringViewHash,
+                       StringViewEqual>;
+
+// Lexical type lookup context for a TypeExpr as written in Pascal source.
+// Entries point at registry-owned TypeSymbols; they are not copied into this
+// tree. This lets a field/member/signature type keep the unit and enclosing
+// type scope that declared it even when rendered or canonicalized elsewhere.
+struct TypeLookupContext {
+  std::string unit;
+  const TypeLookupContext* parent = nullptr;
+  TypeSymbolRefScopeMap type_symbols;
+};
 
 struct UnitInfo {
   std::string name;
@@ -412,6 +425,11 @@ struct TypeRegistry {
   // Unit-level Pascal type declarations. UnitInfo maps point into this deque;
   // deque references stay stable as new symbols are registered.
   std::deque<TypeSymbol> type_symbols;
+  // Nested Pascal type declarations have the same stable identity requirement
+  // as unit-level declarations. Owner nested-type maps are lookup indexes into
+  // this store, not the owner of child symbol lifetime.
+  std::unordered_map<std::string, std::shared_ptr<TypeSymbol>>
+      nested_type_symbols;
   // rt-side reference classes (tobject, exception, ...). Method lookups
   // (`lookup_class_method[s]`) consult this when a translated class chain
   // reaches a runtime parent, so a source class that inherits Create from
@@ -430,6 +448,12 @@ struct TypeRegistry {
   std::unordered_map<std::string,
                      std::unordered_map<std::string, const ast::TyEnum*>>
       enum_members_by_unit;
+  // TypeExpr nodes that require more than source-file unit lookup are indexed
+  // to their lexical declaration context. The context tree models unit scope
+  // plus enclosing class/object/record type scopes using TypeSymbol refs.
+  std::deque<TypeLookupContext> type_lookup_context_storage;
+  std::unordered_map<const ast::TypeExpr*, const TypeLookupContext*>
+      type_lookup_contexts;
   // Type syntax can be rendered after its declaring unit has finished
   // emitting. `Location::file` identifies the parsed source buffer that
   // contributed that syntax, including include-file buffers, so this map keeps
@@ -439,8 +463,12 @@ struct TypeRegistry {
 
   // Fill from all parsed UnitNodes.
   void build(const std::vector<const ast::UnitNode*>& units);
+  const TypeLookupContext* lookup_context_for_type(
+      const ast::TypeExpr* type) const;
   std::string_view declaration_unit_for_type(
       const ast::TypeExpr* type) const;
+  const TypeSymbol* lookup_type_symbol_in_context(
+      std::string_view name, const TypeLookupContext* context) const;
   const TypeSymbol* lookup_type_symbol_exact(std::string_view unit,
                                              std::string_view name) const;
   TypeSymbol* lookup_type_symbol_exact_mut(std::string_view unit,
@@ -483,6 +511,9 @@ struct TypeRegistry {
   const ast::TypeExpr* canonicalize(
       const ast::TypeExpr* te,
       std::string_view current_unit = {}) const;
+  const ast::TypeExpr* canonicalize(
+      const ast::TypeExpr* te,
+      const TypeLookupContext* context) const;
 
   // If `te` canonicalizes to a pointer to a class/record, return its
   // type-alias name (lowercased). Otherwise empty string.
