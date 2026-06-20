@@ -5326,6 +5326,70 @@ void test_plain_proc_mismatched_callback_argument_needs_explicit_cast() {
   CHECK(!contains(out.impl, "p_visit(static_cast<t_titem*>"));
 }
 
+void test_single_candidate_call_rejects_wrong_value_argument_type() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure take(i : longint);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure take(i : longint); begin end;\n"
+      "procedure run;\n"
+      "var\n"
+      "  s : string;\n"
+      "begin\n"
+      "  take(s);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+  CHECK(contains(out.impl, "no matching call to 'take'"));
+  CHECK(!contains(out.impl, "p_take(p_s);"));
+}
+
+void test_single_candidate_call_accepts_derived_class_argument() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class end;\n"
+      "  tchild = class(tbase) end;\n"
+      "procedure take(o : tbase);\n"
+      "procedure run(c : tchild);\n"
+      "implementation\n"
+      "procedure take(o : tbase); begin end;\n"
+      "procedure run(c : tchild);\n"
+      "begin\n"
+      "  take(c);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'take'"));
+  CHECK(contains(out.impl, "p_take(p_c);"));
+}
+
+void test_single_candidate_call_accepts_fixed_array_as_open_array() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tintarray = array[0..2] of longint;\n"
+      "procedure take(const xs : array of longint);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure take(const xs : array of longint); begin end;\n"
+      "procedure run;\n"
+      "var\n"
+      "  xs : tintarray;\n"
+      "begin\n"
+      "  take(xs);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(!contains(out.impl, "no matching call to 'take'"));
+  CHECK(contains(out.impl, "p_take(::rt::tp2cc_open_array<int32_t>(p_xs));"));
+}
+
 void test_method_procvar_cast_between_pointer_carriers_is_noop() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -12526,6 +12590,9 @@ int main() {
   RUN_TEST(test_explicit_plain_proc_callback_argument_uses_pointer_carrier_adapter);
   RUN_TEST(test_plain_proc_overload_prefers_exact_callback_signature);
   RUN_TEST(test_plain_proc_mismatched_callback_argument_needs_explicit_cast);
+  RUN_TEST(test_single_candidate_call_rejects_wrong_value_argument_type);
+  RUN_TEST(test_single_candidate_call_accepts_derived_class_argument);
+  RUN_TEST(test_single_candidate_call_accepts_fixed_array_as_open_array);
   RUN_TEST(test_method_procvar_cast_between_pointer_carriers_is_noop);
   RUN_TEST(test_record_cast_to_method_pointer_reports_error);
   RUN_TEST(test_record_field_named_like_type_keeps_pascal_type_lookup);

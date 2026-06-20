@@ -249,6 +249,10 @@ struct ResolvedCall {
   // `static_cast<param_type>(...)` so C++ overload resolution lands on the
   // same overload Pascal picked.
   bool needs_arg_casts = false;
+  // True for a single arity-matching declaration that did not go through
+  // overload ranking. Arity alone is not a Pascal call, so call emission still
+  // validates each actual against the chosen formal conversion rules.
+  bool needs_arg_validation = false;
   // Set when two or more arity-viable candidates were mutually incomparable.
   // Call emission must report a Pascal ambiguity instead of silently picking one
   // candidate.

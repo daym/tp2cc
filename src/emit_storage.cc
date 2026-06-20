@@ -1371,12 +1371,57 @@ std::string EmitStorage::lower_pointer_to_fixed_array_to_element(
   return "(" + source_cxx + ")->data";
 }
 
+bool EmitStorage::pointer_like_conversion_is_valid(
+    const TypeExpr* dst_type, const TypeExpr* src_type,
+    bool explicit_pascal_cast) {
+  const TypeExpr* raw_dst = dst_type;
+  const TypeExpr* raw_src = src_type;
+  const TypeExpr* dst = analysis_.canonicalize_type(dst_type);
+  const TypeExpr* src = analysis_.canonicalize_type(src_type);
+  if (!dst || !src) return false;
+
+  const bool dst_proc = is_nonmethod_procedural_type(dst);
+  const bool src_proc = is_nonmethod_procedural_type(src);
+  const bool dst_ptr = type_is_pointerish(dst);
+  const bool src_ptr = type_is_pointerish(src);
+  if (!(dst_ptr || dst_proc) || !(src_ptr || src_proc)) return false;
+
+  if (types_.type_to_cxx(*dst) == types_.type_to_cxx(*src)) return true;
+
+  const bool dst_void_ptr = is_plain_pointer_type(dst);
+  const bool src_void_ptr = is_plain_pointer_type(src);
+  if (fixed_array_pointer_can_decay_to_element_pointer(src, dst)) return true;
+  if ((dst_proc && src_void_ptr) || (dst_void_ptr && src_proc)) return true;
+  if (src_void_ptr || dst_void_ptr) return true;
+
+  const bool dst_ref_class = type_is_reference_class(dst);
+  const bool src_ref_class = type_is_reference_class(src);
+  if (dst_ref_class && src_ref_class) {
+    std::string dst_name = reference_class_name(raw_dst);
+    if (dst_name.empty()) dst_name = reference_class_name(dst);
+    std::string src_name = reference_class_name(raw_src);
+    if (src_name.empty()) src_name = reference_class_name(src);
+    if ((!dst_name.empty() && !src_name.empty()) &&
+        (reference_classes_related(dst_name, src_name) ||
+         reference_classes_related(src_name, dst_name))) {
+      return true;
+    }
+    return explicit_pascal_cast;
+  }
+
+  return explicit_pascal_cast || (dst_ptr && src_ptr);
+}
+
 std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
                                                   const TypeExpr* dst_type,
                                                   const TypeExpr* src_type,
                                                   const std::string& source_cxx,
                                                   bool explicit_pascal_cast,
                                                   bool source_is_const_storage) {
+  if (!pointer_like_conversion_is_valid(dst_type, src_type,
+                                        explicit_pascal_cast)) {
+    return source_cxx;
+  }
   const TypeExpr* dst = analysis_.canonicalize_type(dst_type);
   const TypeExpr* src = analysis_.canonicalize_type(src_type);
   if (!dst || !src) return source_cxx;
@@ -1430,8 +1475,10 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
   const bool dst_ref_class = type_is_reference_class(dst);
   const bool src_ref_class = type_is_reference_class(src);
   if (dst_ref_class && src_ref_class) {
-    const std::string dst_name = reference_class_name(dst);
-    const std::string src_name = reference_class_name(src);
+    std::string dst_name = reference_class_name(dst_type);
+    if (dst_name.empty()) dst_name = reference_class_name(dst);
+    std::string src_name = reference_class_name(src_type);
+    if (src_name.empty()) src_name = reference_class_name(src);
     if ((!dst_name.empty() && !src_name.empty()) &&
         (reference_classes_related(dst_name, src_name) ||
          reference_classes_related(src_name, dst_name))) {

@@ -42,6 +42,9 @@ class EmitCallExprOps {
   virtual std::string const_value_to_cxx(
       const ast::Expr& e, const ast::TypeExpr* target,
       bool explicit_conversion) = 0;
+  virtual bool can_convert_value_to_type(const ast::Expr& e,
+                                         const ast::TypeExpr* target,
+                                         bool explicit_conversion) = 0;
   virtual void report_error(Location where, const std::string& msg) = 0;
 };
 
@@ -64,6 +67,12 @@ class EmitCalls {
       const std::vector<const ast::Expr*>& explicit_args,
       std::string_view default_arg_unit = {},
       std::string_view signature_declaring_type = {});
+
+  // Validate an already-planned call against the chosen formal slots. This is
+  // the single-candidate counterpart to overload picking: arity alone is not a
+  // Pascal call, and the accepted conversions must be the same conversions
+  // lower_call_arg will emit.
+  bool validate_call_arguments(const CallArgumentPlan& plan);
 
   // Lower one Pascal actual argument into the C++ form required by the
   // chosen formal parameter slot: open-array constructors, typed/mutable
@@ -110,6 +119,8 @@ class EmitCalls {
   static std::vector<CallArgumentSlot>
   call_slots_with_builtin_memory_helper_info(
       std::string_view name, std::vector<CallArgumentSlot> slots);
+  bool slot_accepts_argument(const CallArgumentSlot& slot,
+                             std::string_view default_arg_unit);
   std::vector<CallArgumentSlot> call_slots_with_builtin_helper_param_info(
       const ast::Expr& callee, std::vector<CallArgumentSlot> slots);
   std::vector<CallArgumentSlot> call_slots_with_procedural_callee_param_info(

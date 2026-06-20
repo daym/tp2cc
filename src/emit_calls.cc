@@ -102,6 +102,44 @@ std::shared_ptr<TyName> qualified_signature_type_name(
   return qualified;
 }
 
+struct EffectiveParamType {
+  const TypeExpr* type = nullptr;
+  std::shared_ptr<TyName> signature_qualified;
+  std::shared_ptr<TyName> default_qualified;
+};
+
+EffectiveParamType effective_call_param_type(
+    const TypeRegistry* registry, ScopeStateView& scope,
+    const TypeExpr* param_type, std::string_view param_unit,
+    std::string_view param_declaring_type, std::string_view default_arg_unit) {
+  EffectiveParamType out;
+  out.type = param_type;
+  out.signature_qualified = qualified_signature_type_name(
+      registry, scope, param_type, param_unit, param_declaring_type);
+  if (out.signature_qualified) out.type = out.signature_qualified.get();
+
+  if (!default_arg_unit.empty() && default_arg_unit != scope.current_unit_name &&
+      out.type && out.type->kind == Kind::TyName) {
+    const auto& tn = static_cast<const TyName&>(*out.type);
+    if (tn.name.find('.') == std::string::npos &&
+        !is_primitive_type(tn.name) && tn.name != "nil" &&
+        runtime_named_type_cxx(tn.name).empty()) {
+      if (std::string unit =
+              visible_type_unit_from(tn.name, default_arg_unit, registry);
+          !unit.empty()) {
+        // Default argument expressions are resolved as if they were still in
+        // the declaring unit. The generated argument text is inserted at the
+        // caller, so a named formal type from that declaration must keep its
+        // defining unit in the emitted C++ type name.
+        out.default_qualified = std::make_shared<TyName>(tn);
+        out.default_qualified->name = unit + "." + tn.name;
+        out.type = out.default_qualified.get();
+      }
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 void EmitCalls::mark_call_slot(std::vector<CallArgumentSlot>& slots,
@@ -360,39 +398,60 @@ CallArgumentPlan EmitCalls::plan_call_arguments(
                           .default_arg_unit = std::string(default_arg_unit)};
 }
 
+bool EmitCalls::slot_accepts_argument(const CallArgumentSlot& slot,
+                                      std::string_view default_arg_unit) {
+  if (!slot.expr || slot.defaulted) return true;
+  EffectiveParamType effective = effective_call_param_type(
+      registry_, scope_, slot.param_type, slot.param_unit,
+      slot.param_declaring_type, default_arg_unit);
+  const TypeExpr* param_type = effective.type;
+  if (!param_type || slot.untyped_arg != UntypedArgKind::None) return true;
+
+  if (slot.mutable_ref_arg) {
+    if (!storage_.expr_is_storage_lvalue(*slot.expr) &&
+        !storage_.storage_designator(*slot.expr)) {
+      return false;
+    }
+    const TypeExpr* arg_type = overload_types_.type_for_overload(*slot.expr);
+    if (!arg_type) arg_type = analysis_.deduce_type(*slot.expr);
+    if (arg_type) arg_type = analysis_.canonicalize_type(arg_type);
+    const TypeExpr* canon_param = analysis_.canonicalize_type(param_type);
+    if (!arg_type || !canon_param) return true;
+    if (storage_.type_is_stringish(canon_param) &&
+        storage_.type_is_stringish(arg_type) &&
+        storage_.expr_is_storage_lvalue(*slot.expr)) {
+      return true;
+    }
+    if (resolution_.rank_conversion(arg_type, param_type,
+                                    /*var_param=*/true)
+            .viable()) {
+      return true;
+    }
+    return storage_.type_is_pointerish(canon_param) &&
+           storage_.type_is_pointerish(arg_type);
+  }
+
+  return expr_ops_.can_convert_value_to_type(*slot.expr, param_type,
+                                             /*explicit_conversion=*/false);
+}
+
+bool EmitCalls::validate_call_arguments(const CallArgumentPlan& plan) {
+  for (const CallArgumentSlot& slot : plan.slots) {
+    if (!slot_accepts_argument(slot, plan.default_arg_unit)) return false;
+  }
+  return true;
+}
+
 std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_type,
                                       UntypedArgKind untyped_arg,
                                       bool mutable_ref_arg,
                                       std::string_view default_arg_unit,
                                       std::string_view param_unit,
                                       std::string_view param_declaring_type) {
-  std::shared_ptr<TyName> qualified_signature_param_type =
-      qualified_signature_type_name(registry_, scope_, param_type, param_unit,
-                                    param_declaring_type);
-  if (qualified_signature_param_type) {
-    param_type = qualified_signature_param_type.get();
-  }
-  std::shared_ptr<TyName> qualified_default_param_type;
-  if (!default_arg_unit.empty() && default_arg_unit != scope_.current_unit_name &&
-      param_type &&
-      param_type->kind == Kind::TyName) {
-    const auto& tn = static_cast<const TyName&>(*param_type);
-    if (tn.name.find('.') == std::string::npos &&
-        !is_primitive_type(tn.name) && tn.name != "nil" &&
-        runtime_named_type_cxx(tn.name).empty()) {
-      if (std::string unit =
-              visible_type_unit_from(tn.name, default_arg_unit, registry_);
-          !unit.empty()) {
-        // Default argument expressions are resolved as if they were still in
-        // the declaring unit. The generated argument text is inserted at the
-        // caller, so a named formal type from that declaration must keep its
-        // defining unit in the emitted C++ type name.
-        qualified_default_param_type = std::make_shared<TyName>(tn);
-        qualified_default_param_type->name = unit + "." + tn.name;
-        param_type = qualified_default_param_type.get();
-      }
-    }
-  }
+  EffectiveParamType effective = effective_call_param_type(
+      registry_, scope_, param_type, param_unit, param_declaring_type,
+      default_arg_unit);
+  param_type = effective.type;
   DefaultArgumentUnitScope default_scope(scope_.current_unit_name,
                                          scope_.lookup_emission_unit_name,
                                          default_arg_unit);

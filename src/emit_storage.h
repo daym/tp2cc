@@ -296,6 +296,9 @@ class EmitStorage {
   //   - raw data-pointer reinterpretation
   //   - function pointer <-> `pointer`
   // so all pointer-like assignments and arguments share one coercion rule.
+  bool pointer_like_conversion_is_valid(const ast::TypeExpr* dst_type,
+                                        const ast::TypeExpr* src_type,
+                                        bool explicit_pascal_cast);
   std::string coerce_pointer_like_text(std::string_view dst_cxx,
                                        const ast::TypeExpr* dst_type,
                                        const ast::TypeExpr* src_type,

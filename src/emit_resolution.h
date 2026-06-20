@@ -141,6 +141,8 @@ class EmitResolution {
   std::optional<PlainProcValueBinding> resolve_plain_proc_value_binding(
       const ast::Expr& arg, const ast::TyProcedural& proc,
       bool allow_pointer_carrier_adapters = false);
+  bool procedural_types_match(const ast::TyProcedural& source,
+                              const ast::TyProcedural& target);
 
  private:
   // One row in a callable-name lookup result. `decl` is null only for
@@ -219,8 +221,6 @@ class EmitResolution {
   bool type_is_char_type(const ast::TypeExpr* t) const;
   bool procedural_signatures_match(const ast::ProcDecl& decl,
                                    const ast::TyProcedural& proc);
-  bool procedural_types_match(const ast::TyProcedural& source,
-                              const ast::TyProcedural& target);
   std::optional<int> procedural_value_signature_distance(
       const ast::ProcDecl& decl, const ast::TyProcedural& proc,
       bool allow_pointer_carrier_adapters);

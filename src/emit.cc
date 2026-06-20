@@ -371,6 +371,10 @@ struct Emitter : ResolveNameProvider,
   std::string const_value_to_cxx(const Expr& e,
                                  const TypeExpr* target = nullptr,
                                  bool explicit_conversion = false);
+  bool can_convert_value_to_type(const Expr& e, const TypeExpr* target,
+                                 bool explicit_conversion) override {
+    return values_.can_convert_value_to_type(e, target, explicit_conversion);
+  }
   std::string set_literal_to_cxx(const SetLit& s,
                                  const TypeExpr* target = nullptr);
   // If `e` is an integer constant expression and `target` is an
@@ -2478,6 +2482,18 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       CallArgumentPlan call_plan = plan_call_arguments(
           call_decl, c.callee.get(), call_args, resolved.default_arg_unit,
           resolved.signature_declaring_type);
+      if (resolved.needs_arg_validation &&
+          !calls_.validate_call_arguments(call_plan)) {
+        std::string name;
+        if (c.callee->kind == Kind::Ident) {
+          name = static_cast<const Ident&>(*c.callee).name;
+        } else if (c.callee->kind == Kind::Member) {
+          name = static_cast<const Member&>(*c.callee).name;
+        }
+        report_error(c.loc, "no matching call to '" + name +
+                                "': incompatible argument types");
+        return "/* no matching call to '" + name + "' */";
+      }
       if (c.args.empty() && c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         if (auto free_call = maybe_lower_class_free_member(*mem.base, mem.name)) {

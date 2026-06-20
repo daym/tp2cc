@@ -37,12 +37,6 @@ ResolvedCall unresolved_call(std::string member_name = {}) {
                       .ambiguous = false};
 }
 
-ResolvedCall no_matching_call(std::string member_name = {}) {
-  ResolvedCall out = unresolved_call(std::move(member_name));
-  out.no_match = true;
-  return out;
-}
-
 std::vector<const Param*> flatten_proc_param_slots(
     const std::vector<Param>& params) {
   std::vector<const Param*> out;
@@ -252,12 +246,14 @@ const TypeExpr* EmitResolution::strip_conversion_wrapper(const TypeExpr* t) {
 ConvScore EmitResolution::class_hierarchy_conversion_score(
     const TypeExpr* arg, const TypeExpr* param) {
   if (!registry_) return {};
-  if (!arg || !param || arg->kind != Kind::TyName ||
-      param->kind != Kind::TyName) {
-    return {};
-  }
-  const auto& arg_name = static_cast<const TyName&>(*arg).name;
-  const auto& param_name = static_cast<const TyName&>(*param).name;
+  auto class_name_for_type = [&](const TypeExpr* t) -> std::string {
+    if (!t) return {};
+    if (t->kind == Kind::TyName) return static_cast<const TyName&>(*t).name;
+    return registry_->direct_type_name(t, scope_.current_unit_name);
+  };
+  const std::string arg_name = class_name_for_type(arg);
+  const std::string param_name = class_name_for_type(param);
+  if (arg_name.empty() || param_name.empty()) return {};
   const auto* arg_class = analysis_.class_info_for_type_name(arg_name);
   const auto* param_class = analysis_.class_info_for_type_name(param_name);
   if (!arg_class || !param_class) return {};
@@ -541,6 +537,8 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
                                           const TypeExpr* param,
                                           bool var_param) {
   if (!arg || !param) return {};
+  const TypeExpr* raw_arg = arg;
+  const TypeExpr* raw_param = param;
   const TypeExpr* a = analysis_.canonicalize_type(arg);
   const TypeExpr* p = analysis_.canonicalize_type(param);
   if (!a || !p) return {};
@@ -575,6 +573,10 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
     // `var`/`out` params only accept identity/equal-or-wrapper matches, plus
     // class-hierarchy aliasing for reference types. Anything else would pass a
     // temporary or layout-incompatible slot by reference.
+    if (ConvScore score = class_hierarchy_conversion_score(raw_arg, raw_param);
+        score.viable()) {
+      return score;
+    }
     if (ConvScore score = class_hierarchy_conversion_score(a, p);
         score.viable()) {
       return score;
@@ -584,6 +586,10 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
 
   // 3. Class hierarchy: a derived class may pass where an ancestor is expected.
   // Fewer parent hops means the closer Pascal match.
+  if (ConvScore score = class_hierarchy_conversion_score(raw_arg, raw_param);
+      score.viable()) {
+    return score;
+  }
   if (ConvScore score = class_hierarchy_conversion_score(a, p); score.viable()) {
     return score;
   }
@@ -1332,25 +1338,14 @@ ResolvedCall EmitResolution::resolve_call(
   }
 
   if (arity_ok.size() == 1) {
-    if (arity_ok[0].decl) {
-      std::vector<FlatCallParamInfo> flat =
-          flatten_call_param_info(arity_ok[0].decl);
-      for (size_t i = 0; i < args.size() && i < flat.size(); ++i) {
-        const TypeExpr* canon_type =
-            flat[i].type ? analysis_.canonicalize_type(flat[i].type) : nullptr;
-        if (!(canon_type && canon_type->kind == Kind::TyProcedural)) continue;
-        if (!score_argument_conversion(
-                 *args[i], flat[i],
-                 /*allow_assignment_operator_conversions=*/true)
-                 .viable()) {
-          return no_matching_call(member_name);
-        }
-      }
-    }
     // Single arity-viable candidate. C++ does not need help choosing the
-    // overload, but we still record the defining unit so the printer spells
-    // the callee through the same Pascal lookup path.
-    return resolved_call_from_candidate(member_name, arity_ok[0], false);
+    // overload, but arity is not enough to make a Pascal call valid. Defer
+    // actual/formal conversion validation to call lowering so the accepted
+    // conversions and the emitted conversions stay one model.
+    ResolvedCall resolved =
+        resolved_call_from_candidate(member_name, arity_ok[0], false);
+    resolved.needs_arg_validation = arity_ok[0].decl != nullptr;
+    return resolved;
   }
 
   if (arity_ok.size() > 1) {

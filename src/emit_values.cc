@@ -327,6 +327,42 @@ std::optional<std::string> EmitValues::maybe_lower_target_pointer_arithmetic(
   return std::nullopt;
 }
 
+bool EmitValues::can_lower_target_pointer_arithmetic(
+    const Expr& e, const TypeExpr* target, bool explicit_conversion) {
+  const TypeExpr* canon_target = analysis_.canonicalize_type(target);
+  if (!canon_target || !storage_.type_is_pointerish(canon_target) ||
+      e.kind != Kind::Binary) {
+    return false;
+  }
+
+  const auto& b = static_cast<const Binary&>(e);
+  if (b.op != BinOp::Add && b.op != BinOp::Sub) return false;
+  if (!b.lhs || !b.rhs) return false;
+
+  const TypeExpr* lhs_type =
+      analysis_.canonicalize_type(overload_types_.type_for_overload(*b.lhs));
+  const TypeExpr* rhs_type =
+      analysis_.canonicalize_type(overload_types_.type_for_overload(*b.rhs));
+  auto integer_type = [](const TypeExpr* t) {
+    if (!t || t->kind != Kind::TyName) return false;
+    const PrimitiveInfo* pi =
+        primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
+    return pi && pi->int_kind != PrimitiveIntKind::None;
+  };
+
+  const bool lhs_ptr = storage_.type_is_pointerish(lhs_type);
+  const bool rhs_ptr = storage_.type_is_pointerish(rhs_type);
+  const bool lhs_int = integer_type(lhs_type);
+  const bool rhs_int = integer_type(rhs_type);
+  if (lhs_ptr && rhs_int) {
+    return can_convert_value_to_type(*b.lhs, target, explicit_conversion);
+  }
+  if (b.op == BinOp::Add && lhs_int && rhs_ptr) {
+    return can_convert_value_to_type(*b.rhs, target, explicit_conversion);
+  }
+  return false;
+}
+
 std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target,
                                            bool explicit_conversion) {
   return const_value_to_cxx_impl(e, target, explicit_conversion,
@@ -337,6 +373,209 @@ std::string EmitValues::typed_const_value_to_cxx(
     const Expr& e, const TypeExpr* target, bool explicit_conversion) {
   return const_value_to_cxx_impl(e, target, explicit_conversion,
                                  /*typed_const_initializer=*/true);
+}
+
+bool EmitValues::can_convert_proc_value(const Expr& e, const TypeExpr* target,
+                                        bool explicit_conversion) {
+  if (!target) return false;
+  const TypeExpr* canon = analysis_.canonicalize_type(target);
+  if (!(canon && canon->kind == Kind::TyProcedural)) return false;
+  const auto& proc = static_cast<const TyProcedural&>(*canon);
+
+  if (proc.is_method && e.kind == Kind::NilLit) return true;
+
+  const TypeExpr* source_type = overload_types_.type_for_overload(e);
+  if (!source_type) source_type = analysis_.deduce_type(e);
+  source_type = analysis_.canonicalize_type(source_type);
+  if (source_type && source_type->kind == Kind::TyProcedural) {
+    return resolution_.procedural_types_match(
+        static_cast<const TyProcedural&>(*source_type), proc);
+  }
+
+  if (proc.is_method) {
+    auto bind =
+        resolution_.resolve_method_value_binding(e, proc, explicit_conversion);
+    return bind && bind->has_matching_decl();
+  }
+
+  TyProcedural method_view = proc;
+  method_view.is_method = true;
+  if (resolution_.resolve_method_value_binding(e, method_view)) return false;
+  auto bind =
+      resolution_.resolve_plain_proc_value_binding(e, proc, explicit_conversion);
+  return bind && bind->decl;
+}
+
+bool EmitValues::can_convert_reference_class_value(const Expr& e,
+                                                   const TypeExpr* source_type,
+                                                   const TypeExpr* target) {
+  if (!registry_) return false;
+  // Class values can canonicalize to a TyObject body, which no longer carries
+  // the Pascal class name needed for hierarchy checks. Recover the source and
+  // target names here, then delegate the actual compatibility rule to
+  // rank_conversion so value validation does not grow its own class model.
+  std::string source_name = analysis_.deduce_class_alias(e);
+  if (source_name.empty() && source_type) {
+    if (source_type->kind == Kind::TyName) {
+      source_name = static_cast<const TyName&>(*source_type).name;
+    } else {
+      source_name =
+          registry_->direct_type_name(source_type, scope_.current_unit_name);
+    }
+  }
+  std::string target_name;
+  if (target) {
+    if (target->kind == Kind::TyName) {
+      target_name = static_cast<const TyName&>(*target).name;
+    } else {
+      target_name =
+          registry_->direct_type_name(target, scope_.current_unit_name);
+    }
+  }
+  if (source_name.empty() || target_name.empty()) return false;
+  if (!analysis_.type_is_reference_class(named_pascal_type(source_name)) ||
+      !analysis_.type_is_reference_class(named_pascal_type(target_name))) {
+    return false;
+  }
+  return resolution_
+      .rank_conversion(named_pascal_type(source_name),
+                       named_pascal_type(target_name),
+                       /*var_param=*/false)
+      .viable();
+}
+
+bool EmitValues::can_convert_value_to_type(const Expr& e,
+                                           const TypeExpr* target,
+                                           bool explicit_conversion) {
+  if (!target) return true;
+  const TypeExpr* canon_target = analysis_.canonicalize_type(target);
+  if (!canon_target) return true;
+
+  if (e.kind == Kind::NilLit) {
+    return storage_.type_is_pointerish(canon_target);
+  }
+
+  if (e.kind == Kind::StringLit) {
+    if (storage_.type_is_pcharish(target) ||
+        types_.shortstring_capacity_to_cxx(target)) {
+      return true;
+    }
+    if (canon_target->kind == Kind::TyArray) {
+      const auto& arr = static_cast<const TyArray&>(*canon_target);
+      const TypeExpr* elem =
+          arr.element ? analysis_.canonicalize_type(arr.element.get()) : nullptr;
+      if (arr.array_kind == ArrayKind::Fixed && arr.dims.size() == 1 && elem &&
+          (tyname_is_charish(elem) || tyname_is(elem, "byte"))) {
+        return types_.array_dim_bounds_to_cxx(*arr.dims[0]).has_value();
+      }
+    }
+  }
+
+  if (e.kind == Kind::SetLit) {
+    const auto& set = static_cast<const SetLit&>(e);
+    if (canon_target->kind == Kind::TySet) return true;
+    if (storage_.type_is_open_array(canon_target)) {
+      for (const auto& element : set.elements) {
+        if (element->kind == Kind::Range) return false;
+      }
+      return true;
+    }
+  }
+
+  if (e.kind == Kind::ArrayConst) return canon_target->kind == Kind::TyArray;
+  if (e.kind == Kind::RecordConst) return canon_target->kind == Kind::TyRecord;
+
+  if (can_lower_target_pointer_arithmetic(e, target, explicit_conversion)) {
+    return true;
+  }
+
+  if (auto value = analysis_.eval_const_int_expr(e)) {
+    if (analysis_.convert_const_int_value(e.loc, *value, target,
+                                          explicit_conversion,
+                                          /*diagnose=*/false)) {
+      return true;
+    }
+  }
+
+  if (canon_target->kind == Kind::TyProcedural) {
+    return can_convert_proc_value(e, target, explicit_conversion);
+  }
+
+  const bool target_is_tclass =
+      tyname_is(target, "tclass") || tyname_is(canon_target, "tclass");
+  if ((!analysis_.metaclass_target_name(target).empty() || target_is_tclass) &&
+      !concrete_class_name_for_metaclass_value(e).empty()) {
+    return true;
+  }
+
+  const TypeExpr* source_type = overload_types_.type_for_overload(e);
+  if (e.kind == Kind::Call) {
+    const auto& call = static_cast<const Call&>(e);
+    if (call.args.size() == 1) {
+      if (call.callee->kind == Kind::Ident) {
+        const auto& id = static_cast<const Ident&>(*call.callee);
+        if (const TypeExpr* cast_type =
+                analysis_.lookup_named_type_expr(id.name)) {
+          source_type = cast_type;
+        }
+      } else if (call.callee->kind == Kind::Member) {
+        const auto& mem = static_cast<const Member&>(*call.callee);
+        if (auto unit_member = analysis_.resolve_unit_qualified_member(mem);
+            unit_member &&
+            unit_member->resolved.kind == ResolvedKind::UnitType) {
+          const std::string qualified =
+              unit_member->unit_name + "." + mem.name;
+          if (const TypeExpr* cast_type =
+                  analysis_.lookup_named_type_expr(qualified)) {
+            source_type = cast_type;
+          }
+        }
+      }
+    }
+  }
+  if (!source_type) source_type = analysis_.deduce_type(e);
+  const TypeExpr* raw_source_type = source_type;
+  const TypeExpr* canon_source_type = analysis_.canonicalize_type(source_type);
+  if (!raw_source_type || !canon_source_type) return false;
+
+  if (can_convert_reference_class_value(e, raw_source_type, target)) {
+    return true;
+  }
+
+  if (resolution_.rank_conversion(raw_source_type, target,
+                                  /*var_param=*/false)
+          .viable()) {
+    return true;
+  }
+  if (resolution_.find_assignment_operator(canon_source_type, target).decl) {
+    return true;
+  }
+  if (storage_.pointer_like_conversion_is_valid(target, raw_source_type,
+                                                explicit_conversion)) {
+    return true;
+  }
+  if (canon_target->kind == Kind::TySet &&
+      canon_source_type->kind == Kind::TySet &&
+      analysis_.classify_set_conversion(canon_source_type, canon_target) !=
+          SetConversionKind::Incompatible) {
+    return true;
+  }
+  if (types_.shortstring_capacity_to_cxx(target) &&
+      (storage_.type_is_stringish(canon_source_type) ||
+       storage_.type_is_pcharish(canon_source_type) ||
+       storage_.expr_is_charish(e))) {
+    return true;
+  }
+  if (tyname_is(canon_target, "ansistring") ||
+      tyname_is(canon_target, "utf8string")) {
+    return storage_.type_is_stringish(canon_source_type) ||
+           storage_.type_is_pcharish(canon_source_type) ||
+           storage_.expr_is_charish(e);
+  }
+  if (storage_.type_is_open_array(canon_target)) {
+    return canon_source_type->kind == Kind::TyArray;
+  }
+  return false;
 }
 
 std::string EmitValues::const_value_to_cxx_impl(
@@ -708,6 +947,18 @@ std::string EmitValues::concrete_class_name_for_metaclass_value(
         ci && ci->is_reference_type) {
       return id.name;
     }
+    if (const TypeExpr* named = analysis_.lookup_named_type_expr(id.name);
+        named && registry_) {
+      const std::string direct =
+          registry_->direct_type_name(named, scope_.current_unit_name);
+      if (const auto* ci = analysis_.class_info_for_type_name(direct);
+          ci && ci->is_reference_type) {
+        return direct;
+      }
+    }
+    if (auto cls = analysis_.deduce_class_alias(src); !cls.empty()) {
+      return cls;
+    }
     return {};
   }
   if (src.kind == Kind::Member) {
@@ -718,6 +969,9 @@ std::string EmitValues::concrete_class_name_for_metaclass_value(
     if (const auto* ci = analysis_.class_info_for_type_name(qualified);
         ci && ci->is_reference_type) {
       return qualified;
+    }
+    if (auto cls = analysis_.deduce_class_alias(src); !cls.empty()) {
+      return cls;
     }
   }
   return {};

@@ -50,6 +50,9 @@ class EmitValues {
   std::string typed_const_value_to_cxx(const ast::Expr& e,
                                        const ast::TypeExpr* target,
                                        bool explicit_conversion = false);
+  bool can_convert_value_to_type(const ast::Expr& e,
+                                 const ast::TypeExpr* target,
+                                 bool explicit_conversion = false);
   std::optional<std::string> maybe_convert_const_int_expr(
       const ast::Expr& e, const ast::TypeExpr* target,
       bool explicit_conversion);
@@ -76,6 +79,11 @@ class EmitValues {
   std::optional<std::string> maybe_lower_metaclass_value(
       const ast::Expr& e, const ast::TypeExpr* target);
   bool source_is_const_untyped_storage_arg(const ast::Expr& e) const;
+  bool can_convert_proc_value(const ast::Expr& e, const ast::TypeExpr* target,
+                              bool explicit_conversion);
+  bool can_convert_reference_class_value(const ast::Expr& e,
+                                         const ast::TypeExpr* source_type,
+                                         const ast::TypeExpr* target);
   std::string apply_target_pointer_conversion(const ast::Expr& e,
                                               const ast::TypeExpr* target,
                                               const ast::TypeExpr* source_type,
@@ -84,6 +92,9 @@ class EmitValues {
   std::optional<std::string> maybe_lower_target_pointer_arithmetic(
       const ast::Expr& e, const ast::TypeExpr* target,
       bool explicit_conversion, bool typed_const_initializer);
+  bool can_lower_target_pointer_arithmetic(const ast::Expr& e,
+                                           const ast::TypeExpr* target,
+                                           bool explicit_conversion);
   std::string pchar_string_literal_to_cxx(const ast::StringLit& lit);
   const ast::TypeExpr* set_literal_member_source_type(const ast::Expr& e);
   const ast::TypeExpr* metaclass_value_base_type(const ast::Expr& e);
