@@ -606,6 +606,13 @@ std::string class_default_property_name(const TyObject& to) {
   return {};
 }
 
+std::vector<std::string> lower_names(const std::vector<std::string>& names) {
+  std::vector<std::string> out;
+  out.reserve(names.size());
+  for (const auto& name : names) out.push_back(lc(name));
+  return out;
+}
+
 std::unordered_map<std::string, std::vector<MethodSig>> interface_methods(
     const std::string& defining_unit, const TyInterface& ti) {
   std::unordered_map<std::string, std::vector<MethodSig>> methods;
@@ -637,6 +644,7 @@ ClassInfo class_info_for(const std::string& unit, const std::string& name,
                    .is_reference_type = to.is_reference_type,
                    .is_abstract = to.is_abstract,
                    .is_forward = to.is_forward,
+                   .interfaces = lower_names(to.interfaces),
                    .fields = class_fields(to),
                    .methods = class_methods(unit, declaring_type, to),
                    .properties = class_properties(to),
@@ -929,6 +937,7 @@ void register_runtime_class(TypeRegistry& r, std::string name,
                 .is_reference_type = true,
                 .is_abstract = false,
                 .is_forward = false,
+                .interfaces = {},
                 .fields = {},
                 .methods = std::move(method_map),
                 .properties = {},
@@ -1982,6 +1991,42 @@ const ClassInfo* TypeRegistry::lookup_class(std::string_view name,
   return symbol->class_info();
 }
 
+const ClassInfo* TypeRegistry::lookup_parent_class(
+    const ClassInfo& class_info) const {
+  if (!class_info.parent.empty()) {
+    if (const ClassInfo* parent =
+            lookup_class(class_info.parent, class_info.defining_unit)) {
+      return parent;
+    }
+    auto runtime_parent = rt_classes.find(class_info.parent);
+    if (runtime_parent != rt_classes.end()) return &runtime_parent->second;
+    return nullptr;
+  }
+  if (!class_info.is_reference_type) return nullptr;
+  auto runtime_tobject = rt_classes.find("tobject");
+  if (runtime_tobject == rt_classes.end() ||
+      &runtime_tobject->second == &class_info) {
+    return nullptr;
+  }
+  return &runtime_tobject->second;
+}
+
+bool TypeRegistry::class_implements_interface(
+    std::string_view class_name, const InterfaceInfo& interface_info,
+    std::string_view current_unit) const {
+  const ClassInfo* cls = lookup_class(class_name, current_unit);
+  SeenClassChain seen;
+  while (cls && seen.mark(cls)) {
+    for (const auto& implemented_name : cls->interfaces) {
+      const InterfaceInfo* implemented =
+          lookup_interface(implemented_name, cls->defining_unit);
+      if (implemented == &interface_info) return true;
+    }
+    cls = lookup_parent_class(*cls);
+  }
+  return false;
+}
+
 const InterfaceInfo* TypeRegistry::lookup_interface_exact(
     std::string_view unit, std::string_view name) const {
   const TypeSymbol* symbol = lookup_type_symbol_exact(unit, name);
@@ -1998,6 +2043,21 @@ const InterfaceInfo* TypeRegistry::lookup_interface(
     return nullptr;
   }
   return symbol->interface_info();
+}
+
+const InterfaceInfo* TypeRegistry::interface_info_for_type(
+    const TypeExpr* type, std::string_view current_unit) const {
+  if (!type || type->kind != Kind::TyName) return nullptr;
+  const auto& named = static_cast<const TyName&>(*type);
+  const TypeSymbol* symbol = lookup_type_symbol(named.name, current_unit);
+  if (!symbol) return nullptr;
+  if (const InterfaceInfo* interface = symbol->interface_info()) {
+    return interface;
+  }
+  if (const AliasInfo* alias = symbol->alias_info()) {
+    return interface_info_for_type(alias->target.get(), alias->defining_unit);
+  }
+  return nullptr;
 }
 
 const RecordInfo* TypeRegistry::lookup_record_exact(

@@ -133,6 +133,7 @@ struct ClassInfo {
   bool is_reference_type = false;
   bool is_abstract = false;
   bool is_forward = false;
+  std::vector<std::string> interfaces;  // lowercased direct implements list
   std::unordered_map<std::string, FieldInfo> fields;
   // Pascal allows overloaded methods (multiple `procedure foo(...)`
   // declarations on the same class), so the registry tracks the full set
@@ -456,6 +457,14 @@ struct TypeRegistry {
                                 std::string_view current_unit) const;
   const ClassInfo* lookup_class_exact(std::string_view unit,
                                       std::string_view name) const;
+  // Pascal class ancestry for semantic lookup/conversion. Root reference
+  // classes implicitly inherit runtime TObject, matching emitted C++ bases.
+  const ClassInfo* lookup_parent_class(const ClassInfo& class_info) const;
+  bool class_implements_interface(std::string_view class_name,
+                                  const InterfaceInfo& interface_info,
+                                  std::string_view current_unit) const;
+  const InterfaceInfo* interface_info_for_type(
+      const ast::TypeExpr* type, std::string_view current_unit) const;
   const InterfaceInfo* lookup_interface(std::string_view name,
                                         std::string_view current_unit) const;
   const InterfaceInfo* lookup_interface_exact(std::string_view unit,
