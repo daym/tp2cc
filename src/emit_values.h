@@ -60,9 +60,15 @@ class EmitValues {
                                       bool explicit_conversion,
                                       bool typed_const_initializer);
   std::optional<std::string> maybe_convert_proc_value(
-      const ast::Expr& e, const ast::TypeExpr* target);
+      const ast::Expr& e, const ast::TypeExpr* target,
+      bool explicit_conversion);
+  std::optional<std::string> reject_method_pointer_record_cast(
+      const ast::Expr& e, const ast::TypeExpr* target,
+      const ast::TyProcedural& proc, const ast::TypeExpr* source_type,
+      bool explicit_conversion);
   std::optional<std::string> maybe_convert_plain_proc_value(
-      const ast::Expr& e, const ast::TyProcedural& proc);
+      const ast::Expr& e, const ast::TyProcedural& proc,
+      bool explicit_conversion);
   std::string plain_proc_callee_text(const ast::Expr& e);
   std::string plain_proc_adapter_value(const ast::Expr& e,
                                        const ast::TyProcedural& proc,

@@ -253,6 +253,9 @@ struct ResolvedCall {
   // Call emission must report a Pascal ambiguity instead of silently picking one
   // candidate.
   bool ambiguous = false;
+  // Set when a callable name was found but no arity-matching declaration accepts
+  // the actual argument types.
+  bool no_match = false;
 };
 
 class ResolutionTypeOps {
@@ -274,6 +277,10 @@ class ResolutionTypeOps {
   // `TObject` and `Pointer` into the same signature.
   virtual std::string formal_param_types_to_cxx(
       const std::vector<ast::Param>& params) = 0;
+  virtual bool procedural_param_uses_pointer_carrier(
+      const ast::Param& param) = 0;
+  virtual std::string procedural_param_type_to_cxx(
+      const ast::Param& param) = 0;
 };
 
 }  // namespace tp2cc

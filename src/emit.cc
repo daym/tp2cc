@@ -321,6 +321,12 @@ struct Emitter : ResolveNameProvider,
   std::string formal_param_types_to_cxx(const std::vector<Param>& params) {
     return types_.formal_param_types_to_cxx(params);
   }
+  bool procedural_param_uses_pointer_carrier(const ast::Param& param) override {
+    return types_.procedural_param_uses_pointer_carrier(param);
+  }
+  std::string procedural_param_type_to_cxx(const ast::Param& param) override {
+    return types_.procedural_param_type_to_cxx(param);
+  }
   std::string named_type_to_cxx(const TypeExpr* t, std::string_view name,
                                 std::string_view name_prefix = {}) {
     return types_.named_type_to_cxx(t, name, name_prefix);
@@ -2440,6 +2446,18 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       call_args.reserve(c.args.size());
       for (const auto& arg : c.args) call_args.push_back(arg.get());
       ResolvedCall resolved = resolve_call(*c.callee, call_args);
+      if (resolved.no_match) {
+        std::string name;
+        if (c.callee->kind == Kind::Ident) {
+          name = static_cast<const Ident&>(*c.callee).name;
+        } else if (c.callee->kind == Kind::Member) {
+          name = static_cast<const Member&>(*c.callee).name;
+        }
+        report_error(c.loc,
+                     "no matching call to '" + name +
+                         "': incompatible argument types");
+        return "/* no matching call to '" + name + "' */";
+      }
       if (resolved.ambiguous) {
         // Pascal-level ambiguous call: two or more overloads were
         // mutually incomparable on the conversion-rank vector. Report

@@ -37,6 +37,28 @@ ResolvedCall unresolved_call(std::string member_name = {}) {
                       .ambiguous = false};
 }
 
+ResolvedCall no_matching_call(std::string member_name = {}) {
+  ResolvedCall out = unresolved_call(std::move(member_name));
+  out.no_match = true;
+  return out;
+}
+
+std::vector<const Param*> flatten_proc_param_slots(
+    const std::vector<Param>& params) {
+  std::vector<const Param*> out;
+  for (const Param& param : params) {
+    size_t count = param.names.empty() ? 1 : param.names.size();
+    for (size_t i = 0; i < count; ++i) out.push_back(&param);
+  }
+  return out;
+}
+
+std::vector<Param> single_slot_param_vector(const Param& param) {
+  Param copy = param;
+  copy.names = {"tp2cc_slot"};
+  return {std::move(copy)};
+}
+
 }  // namespace
 
 EmitResolution::EmitResolution(const TypeRegistry* registry,
@@ -684,27 +706,113 @@ bool EmitResolution::procedural_signatures_match(const ProcDecl& decl,
          type_ops_.formal_param_types_to_cxx(proc.params);
 }
 
+bool EmitResolution::procedural_types_match(const TyProcedural& source,
+                                            const TyProcedural& target) {
+  if (source.is_function != target.is_function ||
+      source.is_method != target.is_method || source.is_cdecl != target.is_cdecl) {
+    return false;
+  }
+  if (source.is_function) {
+    if (!source.return_type || !target.return_type) return false;
+    if (type_ops_.type_to_cxx(*source.return_type) !=
+        type_ops_.type_to_cxx(*target.return_type)) {
+      return false;
+    }
+  }
+  // Compare the Pascal formal surface, not the procvar call carrier. Procvar
+  // calls deliberately normalize pointer-like value parameters to `void*` for
+  // defined indirect C++ calls, but Pascal still distinguishes
+  // `procedure(TItem; Pointer)` from `procedure(Pointer; Pointer)` unless the
+  // source writes an explicit procedural cast.
+  return type_ops_.formal_param_types_to_cxx(source.params) ==
+         type_ops_.formal_param_types_to_cxx(target.params);
+}
+
+std::optional<int> EmitResolution::procedural_value_signature_distance(
+    const ProcDecl& decl, const TyProcedural& proc,
+    bool allow_pointer_carrier_adapters) {
+  // Procedural-value binding needs more information than exact/not-exact when
+  // the caller allows explicit pointer-like callback casts. Given overloads
+  // accepting `procedure(TItem; Pointer)` and `procedure(Pointer; Pointer)`, a
+  // `procedure(TItem; Pointer)` value must prefer the exact overload; the
+  // pointer overload is adapter-viable only for an explicit procedural cast.
+  // Return the number of adapter-needed parameter slots so exact callbacks rank
+  // before adapted callbacks and equally adapted candidates stay ambiguous.
+  if ((decl.pkind == ProcKind::Function) != proc.is_function) return std::nullopt;
+  if (proc.is_function) {
+    if (!proc.return_type || !decl.return_type) return std::nullopt;
+    if (type_ops_.type_to_cxx(*proc.return_type) !=
+        type_ops_.type_to_cxx(*decl.return_type)) {
+      return std::nullopt;
+    }
+  }
+  if (procedural_signatures_match(decl, proc)) return 0;
+  if (!allow_pointer_carrier_adapters) return std::nullopt;
+
+  const std::vector<const Param*> source_params =
+      flatten_proc_param_slots(decl.params);
+  const std::vector<const Param*> target_params =
+      flatten_proc_param_slots(proc.params);
+  if (source_params.size() != target_params.size()) return std::nullopt;
+
+  int distance = 0;
+  for (size_t i = 0; i < source_params.size(); ++i) {
+    const Param& source = *source_params[i];
+    const Param& target = *target_params[i];
+    const std::string source_formal =
+        type_ops_.formal_param_types_to_cxx(single_slot_param_vector(source));
+    const std::string target_formal =
+        type_ops_.formal_param_types_to_cxx(single_slot_param_vector(target));
+    if (source_formal == target_formal) continue;
+
+    if (!type_ops_.procedural_param_uses_pointer_carrier(source) ||
+        !type_ops_.procedural_param_uses_pointer_carrier(target)) {
+      return std::nullopt;
+    }
+    if (type_ops_.procedural_param_type_to_cxx(source) !=
+        type_ops_.procedural_param_type_to_cxx(target)) {
+      return std::nullopt;
+    }
+    ++distance;
+  }
+  return distance;
+}
+
 EmitResolution::InstanceMethodLookup
 EmitResolution::pick_instance_method_decl(
     const std::string& cls, const std::string& name,
-    const TyProcedural& proc) {
+    const TyProcedural& proc, bool allow_pointer_carrier_adapters) {
   const auto* methods =
       registry_->lookup_class_methods(cls, name, scope_.current_unit_name);
   if (!methods) return InstanceMethodLookup::no_instance_method();
   bool saw_instance = false;
+  const ProcDecl* match = nullptr;
+  int best_distance = std::numeric_limits<int>::max();
+  bool ambiguous = false;
   for (const auto& method : *methods) {
     if (!method.decl || method.decl->is_class_method) continue;
     saw_instance = true;
-    if (procedural_signatures_match(*method.decl, proc)) {
-      return InstanceMethodLookup::match(method.decl.get());
+    auto distance = procedural_value_signature_distance(
+        *method.decl, proc, allow_pointer_carrier_adapters);
+    if (!distance) continue;
+    if (*distance < best_distance) {
+      match = method.decl.get();
+      best_distance = *distance;
+      ambiguous = false;
+    } else if (*distance == best_distance) {
+      ambiguous = true;
     }
+  }
+  if (match && !ambiguous) {
+    return InstanceMethodLookup::match(match, best_distance);
   }
   if (saw_instance) return InstanceMethodLookup::signature_mismatch();
   return InstanceMethodLookup::no_instance_method();
 }
 
 std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
-    const Expr& arg, const TyProcedural& proc) {
+    const Expr& arg, const TyProcedural& proc,
+    bool allow_pointer_carrier_adapters) {
   if (!proc.is_method || !registry_) return std::nullopt;
 
   // Strip an optional address-of (`@method`); both bare ident-form (`method`)
@@ -720,7 +828,7 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
     if (scope_.current_class_name.empty()) return std::nullopt;
     InstanceMethodLookup lookup = pick_instance_method_decl(
         scope_.current_class_name, static_cast<const Ident&>(*value).name,
-        proc);
+        proc, allow_pointer_carrier_adapters);
     if (lookup.kind == InstanceMethodLookup::Kind::NoInstanceMethod) {
       return std::nullopt;
     }
@@ -728,7 +836,8 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
       return MethodValueBinding::signature_mismatch(scope_.current_class_name,
                                                     nullptr);
     }
-    return MethodValueBinding::via_self(lookup.decl, scope_.current_class_name);
+    return MethodValueBinding::via_self(lookup.decl, scope_.current_class_name,
+                                        lookup.distance);
   }
 
   if (value->kind != Kind::Member) return std::nullopt;
@@ -776,20 +885,22 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
   if (cls.empty()) cls = analysis_.deduce_class_alias(*member.base);
   if (cls.empty()) return std::nullopt;
 
-  InstanceMethodLookup lookup = pick_instance_method_decl(cls, member.name, proc);
+  InstanceMethodLookup lookup = pick_instance_method_decl(
+      cls, member.name, proc, allow_pointer_carrier_adapters);
   if (lookup.kind == InstanceMethodLookup::Kind::NoInstanceMethod) {
     return std::nullopt;
   }
   if (lookup.kind == InstanceMethodLookup::Kind::SignatureMismatch) {
     return MethodValueBinding::signature_mismatch(std::move(cls), method_base);
   }
-  return MethodValueBinding::via_member(lookup.decl, std::move(cls),
-                                        method_base);
+  return MethodValueBinding::via_member(lookup.decl, std::move(cls), method_base,
+                                        lookup.distance);
 }
 
 std::optional<PlainProcValueBinding>
 EmitResolution::resolve_plain_proc_value_binding(const Expr& arg,
-                                                 const TyProcedural& proc) {
+                                                 const TyProcedural& proc,
+                                                 bool allow_pointer_carrier_adapters) {
   if (proc.is_method || !registry_) return std::nullopt;
 
   const Expr* value = &arg;
@@ -829,6 +940,8 @@ EmitResolution::resolve_plain_proc_value_binding(const Expr& arg,
   }
 
   const ProcDecl* match = nullptr;
+  int best_distance = std::numeric_limits<int>::max();
+  bool ambiguous = false;
   for (const auto& candidate : candidates) {
     if (!candidate.decl) continue;
     // An instance method needs a Self slot and cannot be represented by a plain
@@ -836,12 +949,19 @@ EmitResolution::resolve_plain_proc_value_binding(const Expr& arg,
     if (!candidate.decl->of_type.empty() && !candidate.decl->is_class_method) {
       continue;
     }
-    if (!procedural_signatures_match(*candidate.decl, proc)) continue;
-    if (match) return std::nullopt;
-    match = candidate.decl;
+    auto distance = procedural_value_signature_distance(
+        *candidate.decl, proc, allow_pointer_carrier_adapters);
+    if (!distance) continue;
+    if (*distance < best_distance) {
+      match = candidate.decl;
+      best_distance = *distance;
+      ambiguous = false;
+    } else if (*distance == best_distance) {
+      ambiguous = true;
+    }
   }
-  if (!match) return std::nullopt;
-  return PlainProcValueBinding{match};
+  if (!match || ambiguous) return std::nullopt;
+  return PlainProcValueBinding{match, best_distance};
 }
 
 const TypeExpr* EmitResolution::method_value_member_base_type(
@@ -860,7 +980,7 @@ std::optional<ConvScore> EmitResolution::score_procedural_argument_conversion(
   if (proc.is_method) {
     auto bind = resolve_method_value_binding(arg, proc);
     if (!bind) return std::nullopt;
-    return bind->has_matching_decl() ? ConvScore{ConvRank::Exact, 0}
+    return bind->has_matching_decl() ? ConvScore{ConvRank::Exact, bind->distance}
                                      : ConvScore{};
   }
   // Plain `procedure(...)` slot: an instance-method value is not admissible
@@ -871,6 +991,9 @@ std::optional<ConvScore> EmitResolution::score_procedural_argument_conversion(
   method_view.is_method = true;
   if (resolve_method_value_binding(arg, method_view)) {
     return ConvScore{};
+  }
+  if (auto bind = resolve_plain_proc_value_binding(arg, proc)) {
+    return ConvScore{ConvRank::Exact, bind->distance};
   }
   return std::nullopt;
 }
@@ -935,10 +1058,25 @@ ConvScore EmitResolution::score_argument_conversion(
     }
   }
   if (canon_param && canon_param->kind == Kind::TyProcedural) {
+    const auto& proc = static_cast<const TyProcedural&>(*canon_param);
+    if (const TypeExpr* arg_type = overload_types_.type_for_overload(arg)) {
+      const TypeExpr* canon_arg = analysis_.canonicalize_type(arg_type);
+      if (canon_arg && canon_arg->kind == Kind::TyProcedural) {
+        return procedural_types_match(
+                   static_cast<const TyProcedural&>(*canon_arg), proc)
+                   ? ConvScore{ConvRank::Exact, 0}
+                   : ConvScore{};
+      }
+    }
     if (auto score = score_procedural_argument_conversion(
-            arg, static_cast<const TyProcedural&>(*canon_param))) {
+            arg, proc)) {
       return *score;
     }
+    // Do not fall through to rank_conversion here: procedural values can share
+    // the same erased C++ callback carrier even when their Pascal signatures are
+    // not assignment-compatible.  The procedural scorer above is the Pascal
+    // type rule for this formal.
+    return {};
   }
   const TypeExpr* arg_type = overload_types_.type_for_overload(arg);
   ConvScore direct = rank_conversion(arg_type, param.type, param.mutable_ref);
@@ -1194,6 +1332,21 @@ ResolvedCall EmitResolution::resolve_call(
   }
 
   if (arity_ok.size() == 1) {
+    if (arity_ok[0].decl) {
+      std::vector<FlatCallParamInfo> flat =
+          flatten_call_param_info(arity_ok[0].decl);
+      for (size_t i = 0; i < args.size() && i < flat.size(); ++i) {
+        const TypeExpr* canon_type =
+            flat[i].type ? analysis_.canonicalize_type(flat[i].type) : nullptr;
+        if (!(canon_type && canon_type->kind == Kind::TyProcedural)) continue;
+        if (!score_argument_conversion(
+                 *args[i], flat[i],
+                 /*allow_assignment_operator_conversions=*/true)
+                 .viable()) {
+          return no_matching_call(member_name);
+        }
+      }
+    }
     // Single arity-viable candidate. C++ does not need help choosing the
     // overload, but we still record the defining unit so the printer spells
     // the callee through the same Pascal lookup path.

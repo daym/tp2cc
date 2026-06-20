@@ -68,6 +68,13 @@ const Expr* strip_single_addr_of(const Expr& e) {
   return addr.operand.get();
 }
 
+bool record_has_pointer_field(EmitAnalysis& analysis, EmitStorage& storage,
+                              const TypeExpr* record,
+                              std::string_view field_name) {
+  return storage.type_is_pointerish(
+      analysis.lookup_record_field_type_in_type(record, field_name));
+}
+
 }  // namespace
 
 EmitValues::EmitValues(const TypeRegistry* registry, ScopeStateView& scope,
@@ -437,10 +444,9 @@ std::string EmitValues::const_value_to_cxx_impl(
   if (auto text = maybe_lower_metaclass_value(e, target)) {
     return *text;
   }
-  if (auto text = maybe_convert_proc_value(e, target)) {
+  if (auto text = maybe_convert_proc_value(e, target, explicit_conversion)) {
     return *text;
   }
-  std::string out = expr_ops_.expr_to_cxx(e);
   const TypeExpr* source_type = overload_types_.type_for_overload(e);
   if (e.kind == Kind::Call) {
     const auto& call = static_cast<const Call&>(e);
@@ -453,6 +459,14 @@ std::string EmitValues::const_value_to_cxx_impl(
   }
   if (!source_type) source_type = analysis_.deduce_type(e);
   if (source_type) source_type = analysis_.canonicalize_type(source_type);
+  if (canon_target && canon_target->kind == Kind::TyProcedural) {
+    const auto& proc = static_cast<const TyProcedural&>(*canon_target);
+    if (auto text = reject_method_pointer_record_cast(
+            e, target, proc, source_type, explicit_conversion)) {
+      return *text;
+    }
+  }
+  std::string out = expr_ops_.expr_to_cxx(e);
   if (source_type && canon_target) {
     if (auto conv = resolution_.find_assignment_operator(source_type, target);
         conv.decl) {
@@ -544,7 +558,7 @@ bool EmitValues::reject_metaclass_member_as_plain_proc_value(
 }
 
 std::optional<std::string> EmitValues::maybe_convert_proc_value(
-    const Expr& e, const TypeExpr* target) {
+    const Expr& e, const TypeExpr* target, bool explicit_conversion) {
   if (!target) return std::nullopt;
   const TypeExpr* canon = analysis_.canonicalize_type(target);
   if (!(canon && canon->kind == Kind::TyProcedural)) return std::nullopt;
@@ -556,7 +570,8 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
 
   if (!proc.is_method) {
     if (reject_metaclass_member_as_plain_proc_value(e)) return "nullptr";
-    if (auto adapted = maybe_convert_plain_proc_value(e, proc)) {
+    if (auto adapted = maybe_convert_plain_proc_value(e, proc,
+                                                      explicit_conversion)) {
       return *adapted;
     }
 
@@ -581,7 +596,8 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
   // by construction on which method a `@expr` resolves to. If we get a
   // binding, format the `tp2cc_MethodPtr` constructor; otherwise nullopt
   // and the caller falls back to plain expr_to_cxx.
-  auto bind = resolution_.resolve_method_value_binding(e, proc);
+  auto bind =
+      resolution_.resolve_method_value_binding(e, proc, explicit_conversion);
   if (!bind || !bind->has_matching_decl()) return std::nullopt;
   const ast::ProcDecl& method_decl = bind->matching_decl();
 
@@ -603,9 +619,32 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
   return target_cxx + "(" + code_text + ", " + self_expr + ")";
 }
 
+std::optional<std::string> EmitValues::reject_method_pointer_record_cast(
+    const Expr& e, const TypeExpr* target, const TyProcedural& proc,
+    const TypeExpr* source_type, bool explicit_conversion) {
+  if (!explicit_conversion || !proc.is_method || !source_type) {
+    return std::nullopt;
+  }
+  const TypeExpr* source = analysis_.canonicalize_type(source_type);
+  if (!(source && source->kind == Kind::TyRecord)) return std::nullopt;
+
+  if (!record_has_pointer_field(analysis_, storage_, source, "proc") ||
+      !record_has_pointer_field(analysis_, storage_, source, "obj")) {
+    return std::nullopt;
+  }
+
+  // Do not infer procedure-of-object semantics from an arbitrary record layout.
+  // `TMethod` is the Pascal representation whose Code/Data fields explicitly
+  // describe a method-pointer carrier.
+  expr_ops_.report_error(
+      e.loc, "cannot cast record to procedure-of-object value; use TMethod");
+  return types_.type_to_cxx(*target) + "{}";
+}
+
 std::optional<std::string> EmitValues::maybe_convert_plain_proc_value(
-    const Expr& e, const TyProcedural& proc) {
-  auto bind = resolution_.resolve_plain_proc_value_binding(e, proc);
+    const Expr& e, const TyProcedural& proc, bool explicit_conversion) {
+  auto bind =
+      resolution_.resolve_plain_proc_value_binding(e, proc, explicit_conversion);
   if (!bind || !bind->decl) return std::nullopt;
   const ProcDecl& decl = *bind->decl;
   const std::string source_sig = types_.formal_param_types_to_cxx(decl.params);
