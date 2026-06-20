@@ -932,13 +932,8 @@ struct TyPointer : TypeExpr {
       : TypeExpr(Kind::TyPointer, loc_in), target(std::move(target_in)) {}
 };
 
-// Delphi distinct-type alias: `T = type <Underlying>'.  Creates a new
-// type that is layout-compatible with its underlying but NOT
-// assignment-compatible -- Pascal rejects `var x:T; var i:Integer;
-// i:=x' without an explicit `Integer(x)' cast.  Emit-time target is a
-// C++ wrapper struct with an `explicit' constructor and an `explicit
-// operator Underlying()' so implicit conversions are rejected at
-// compile time, preserving the type discipline the author intended.
+// Dormant representation for a future strong-distinct type model. The parser
+// currently treats `T = type <Underlying>' as an alias.
 struct TyDistinct : TypeExpr {
   TypePtr underlying;
   TyDistinct() : TypeExpr(Kind::TyDistinct) {}

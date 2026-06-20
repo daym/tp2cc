@@ -1075,15 +1075,10 @@ TypePtr Parser::parse_type() {
   if (accept(Tok::Caret)) {
     return std::make_shared<TyPointer>(loc, parse_type());
   }
-  // Delphi distinct-type alias: `T = type <Underlying>;'.  Creates
-  // a new type that is layout-compatible with its underlying but
-  // NOT assignment-compatible without an explicit cast.  We keep a
-  // TyDistinct wrapper node so emit-time can produce a C++ struct
-  // with an explicit ctor and explicit conversion operator,
-  // preserving Pascal's type discipline (an integer variable can
-  // NOT silently receive a TSuperRegister value).
+  // Treat this spelling as an alias until the dormant TyDistinct AST
+  // model has complete assignment, overload, storage, and range semantics.
   if (accept(Tok::KwType)) {
-    return std::make_shared<TyDistinct>(loc, parse_type());
+    return parse_type();
   }
   bool packed = false;
   if (accept(Tok::KwPacked)) packed = true;

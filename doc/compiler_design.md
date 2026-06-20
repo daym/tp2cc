@@ -489,7 +489,7 @@ Anonymous inline `record`/`object` types in arbitrary type positions are not ful
 
 ### 3.3 Distinct types are not fully nominal yet
 
-The parser and AST have a notion of distinct types, but the emitter still mostly lowers them as their underlying type. So today they are not enforced as strong nominal wrapper types throughout generated C++.
+The AST has a dormant notion of distinct types, but the parser currently treats `T = type U` as an alias. Strong nominal support would have to cover assignment, overload ranking, storage, range checks, casts, constants, and set/ordinal operations together; partial support is worse than no support.
 
 ### 3.4 Externals
 
