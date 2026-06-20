@@ -1,0 +1,89 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-19
+Subject: Use TMethod for procedure-of-object conversion carriers
+License: expat
+
+`compiler/ncnv.pas` manually builds procedure-of-object values by writing a
+code/data pair through anonymous packed records and casting those records to a
+method type.  Teaching p2cc to accept that pattern would make record layout
+drive method-pointer semantics, which is too broad for a translator rule:
+ordinary records must not become procedure-of-object values just because their
+fields happen to look like a code/data pair.
+
+Patch the Pascal source instead.  The compiler already has the standard carrier
+for this representation, `TMethod`, so the conversion helpers can spell the
+operation directly without adding a p2cc-side record-to-method-pointer special
+case.
+
+--- a/compiler/ncnv.pas
++++ b/compiler/ncnv.pas
+@@ -2347,18 +2347,13 @@
+       type
+          tprocedureofobject = function : tnode of object;
+       var
+-         r : packed record
+-                proc : pointer;
+-                obj : pointer;
+-             end;
++         m : TMethod;
+       begin
+          result:=nil;
+-         { this is a little bit dirty but it works }
+-         { and should be quite portable too        }
+-         r.proc:=resultdefconvert[c];
+-         r.obj:=self;
+-         if assigned(r.proc) then
+-          result:=tprocedureofobject(r)();
++         m.Code:=resultdefconvert[c];
++         m.Data:=self;
++         if assigned(m.Code) then
++          result:=tprocedureofobject(m)();
+       end;
+ 
+ 
+@@ -3922,18 +3917,13 @@
+       type
+          tprocedureofobject = function : tnode of object;
+       var
+-         r : packed record
+-                proc : pointer;
+-                obj : pointer;
+-             end;
++         m : TMethod;
+       begin
+-         { this is a little bit dirty but it works }
+-         { and should be quite portable too        }
+-         r.proc:=firstconvert[c];
+-         r.obj:=self;
+-         if not assigned(r.proc) then
++         m.Code:=firstconvert[c];
++         m.Data:=self;
++         if not assigned(m.Code) then
+            internalerror(200312081);
+-         first_call_helper:=tprocedureofobject(r)()
++         first_call_helper:=tprocedureofobject(m)()
+       end;
+ 
+ 
+@@ -4203,17 +4193,12 @@
+          tprocedureofobject = procedure of object;
+ 
+       var
+-         r : packed record
+-                proc : pointer;
+-                obj : pointer;
+-             end;
++         m : TMethod;
+ 
+       begin
+-         { this is a little bit dirty but it works }
+-         { and should be quite portable too        }
+-         r.proc:=secondconvert[c];
+-         r.obj:=self;
+-         tprocedureofobject(r)();
++         m.Code:=secondconvert[c];
++         m.Data:=self;
++         tprocedureofobject(m)();
+       end;
+ 
+ {*****************************************************************************
