@@ -80,6 +80,7 @@ struct MethodSig {
   bool is_function = false;       // returns a value
   bool is_virtual = false;
   bool is_final = false;
+  std::string return_type_name;    // Pascal-facing result type, if any
   std::shared_ptr<const ast::ProcDecl> decl;
 };
 

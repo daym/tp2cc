@@ -535,6 +535,8 @@ MethodSig method_sig_for(std::string defining_unit,
                          std::string declaring_type,
                          std::shared_ptr<const ProcDecl> method) {
   const auto& pd = *method;
+  std::string result_type =
+      pd.pkind == ProcKind::Constructor ? declaring_type : std::string{};
   return MethodSig{.kind = method_kind_for(pd),
                    .defining_unit = std::move(defining_unit),
                    .declaring_type = std::move(declaring_type),
@@ -543,6 +545,7 @@ MethodSig method_sig_for(std::string defining_unit,
                    .is_function = (pd.pkind == ProcKind::Function),
                    .is_virtual = pd.modifiers.is_virtual || pd.modifiers.is_abstract || pd.modifiers.is_override,
                    .is_final = pd.modifiers.is_final,
+                   .return_type_name = std::move(result_type),
                    .decl = std::move(method)};
 }
 
@@ -618,6 +621,7 @@ std::unordered_map<std::string, std::vector<MethodSig>> interface_methods(
         .is_function = (pd.pkind == ProcKind::Function),
         .is_virtual = false,
         .is_final = false,
+        .return_type_name = {},
         .decl = m.method});
   }
   return methods;
@@ -902,6 +906,7 @@ MethodSig runtime_method_sig(std::string name, ProcKind pkind,
       .is_function = (pkind == ProcKind::Function),
       .is_virtual = false,
       .is_final = false,
+      .return_type_name = {},
       .decl = std::move(pd)};
 }
 
@@ -910,6 +915,9 @@ void register_runtime_class(TypeRegistry& r, std::string name,
                             std::vector<MethodSig> methods) {
   std::unordered_map<std::string, std::vector<MethodSig>> method_map;
   for (auto& m : methods) {
+    if (m.kind == SymKind::Constructor && m.return_type_name.empty()) {
+      m.return_type_name = name;
+    }
     const std::string method_name = m.decl->name;
     method_map[method_name].push_back(std::move(m));
   }
