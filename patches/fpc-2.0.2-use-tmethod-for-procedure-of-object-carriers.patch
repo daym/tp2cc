@@ -3,16 +3,21 @@ Date: 2026-04-23
 Subject: Use TMethod for procedure-of-object conversion carriers
 License: expat
 
-`compiler/ncnv.pas` builds method-pointer carriers by writing a code/data
-pair through anonymous packed records.  The bootstrap compiler already
-has a standard Pascal (Delphi) carrier for that shape: `TMethod`.
+`compiler/ncnv.pas` manually builds procedure-of-object values by writing a
+code/data pair through anonymous packed records and casting those records to a
+method type.  Teaching p2cc to accept that pattern would make record layout
+drive method-pointer semantics, which is too broad for a translator rule:
+ordinary records must not become procedure-of-object values just because their
+fields happen to look like a code/data pair.
 
-Route the conversion hooks through `TMethod` instead of anonymous packed
-records so the procedure-of-object representation stays explicit.
+Patch the Pascal source instead.  The compiler already has the standard carrier
+for this representation, `TMethod`, so the conversion helpers can spell the
+operation directly without adding a p2cc-side record-to-method-pointer special
+case.
 
 --- a/compiler/ncnv.pas
 +++ b/compiler/ncnv.pas
-@@ -1368,18 +1368,16 @@
+@@ -1368,18 +1368,13 @@
        type
           tprocedureofobject = function : tnode of object;
        var
@@ -29,9 +34,6 @@ records so the procedure-of-object representation stays explicit.
 -         r.obj:=self;
 -         if assigned(r.proc) then
 -          result:=tprocedureofobject(r)();
-+         { Route the code/data pair through TMethod instead of an anonymous
-+           packed record so the compiler and translator both see the standard
-+           "procedure of object" carrier. }
 +         m.Code:=resulttypeconvert[c];
 +         m.Data:=self;
 +         if assigned(m.Code) then
@@ -39,7 +41,7 @@ records so the procedure-of-object representation stays explicit.
        end;
  
  
-@@ -2215,19 +2213,14 @@
+@@ -2215,19 +2210,14 @@
           tprocedureofobject = function : tnode of object;
  
        var
@@ -64,7 +66,7 @@ records so the procedure-of-object representation stays explicit.
        end;
  
  
-@@ -2459,17 +2452,12 @@
+@@ -2459,17 +2449,12 @@
           tprocedureofobject = procedure of object;
  
        var
