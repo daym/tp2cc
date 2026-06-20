@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -871,6 +872,17 @@ void register_runtime_proc(UnitInfo& rt_exports, ProcKind pkind,
   rt_exports.iface_procs[lc(pd->name)].push_back(make_proc_info("__rt__", pd));
 }
 
+void register_runtime_same_type_unary_overloads(
+    UnitInfo& rt_exports, std::string_view name,
+    std::span<const std::string_view> types) {
+  for (std::string_view type : types) {
+    register_runtime_proc(
+        rt_exports, ProcKind::Function, std::string(name),
+        {runtime_const_param("value", runtime_type_name(std::string(type)))},
+        runtime_type_name(std::string(type)));
+  }
+}
+
 MethodSig runtime_method_sig(std::string name, ProcKind pkind,
                              std::vector<Param> params,
                              TypePtr return_type = nullptr,
@@ -915,6 +927,14 @@ void register_runtime_class(TypeRegistry& r, std::string name,
                 .nested_types = {},
                 .enum_members = {},
                 .default_property_name = {}};
+}
+
+void register_runtime_class_field(TypeRegistry& r, std::string class_name,
+                                  std::string field_name, TypePtr type) {
+  auto it = r.rt_classes.find(lc(std::move(class_name)));
+  if (it == r.rt_classes.end()) return;
+  it->second.fields[lc(std::move(field_name))] =
+      FieldInfo{.type = std::move(type), .is_class_var = false};
 }
 
 void register_runtime_backed_unit(TypeRegistry& r, std::string used_name) {
@@ -1461,7 +1481,6 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"directoryexists", 1, true, false, "boolean"},
       {"fsearch",    2, true,  false, "shortstring"},
       {"fsplit",     4, false, false, ""},
-      {"fexpand",    1, true,  false, "shortstring"},
       {"extractfilepath", 1, true, false, "ansistring"},
       {"extractfiledir", 1, true, false, "ansistring"},
       {"extractfilename", 1, true, false, "ansistring"},
@@ -1520,6 +1539,7 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       {"swapvectors",0, false, false, ""},
       {"runerror",   1, false, true,  ""},
       {"hexstr",     1, true,  false, "shortstring"},
+      {"hexstr",     2, true,  false, "shortstring"},
       {"freeandnil", 1, false, false, ""},
       {"getexceptionmask", 0, true, false, "tfpuexceptionmask"},
       {"setexceptionmask", 1, true, false, "tfpuexceptionmask"},
@@ -1560,6 +1580,17 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
       rt_exports, ProcKind::Function, "upcase",
       {runtime_const_param("s", runtime_type_name("ansistring"))},
       runtime_type_name("ansistring"));
+  register_runtime_proc(
+      rt_exports, ProcKind::Function, "fexpand",
+      {runtime_const_param("path", runtime_type_name("pathstr"))},
+      runtime_type_name("pathstr"));
+  static constexpr std::string_view endian_ordinals[] = {
+      "smallint", "word", "longint", "dword", "int64", "qword"};
+  for (std::string_view helper :
+       {"beton", "leton", "ntobe", "ntole", "swapendian"}) {
+    register_runtime_same_type_unary_overloads(rt_exports, helper,
+                                               endian_ordinals);
+  }
 
   // Runtime globals/constants that old compiler trees refer to directly.
   register_runtime_var(rt_exports, "doserror", runtime_type_name("longint"));
@@ -1792,6 +1823,12 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
   register_runtime_class(*this, "erangeerror", "einterror", {});
   register_runtime_class(*this, "edivbyzero", "einterror", {});
   register_runtime_class(*this, "eoserror", "exception", {});
+  register_runtime_class_field(*this, "exception", "message",
+                               runtime_type_name("ansistring"));
+  register_runtime_class_field(*this, "einouterror", "errorcode",
+                               runtime_type_name("longint"));
+  register_runtime_class_field(*this, "eoserror", "errorcode",
+                               runtime_type_name("longint"));
 
   for (const auto* u : us) {
     if (!u) continue;
