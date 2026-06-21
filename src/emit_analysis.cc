@@ -1509,14 +1509,12 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       if (!bt) return nullptr;
       bt = canonicalize_type(bt);
       if (bt && bt->kind == Kind::TyString) return builtin_char_type();
-      if (tyname_is(bt, "shortstring") || tyname_is(bt, "ansistring") ||
-          tyname_is(bt, "utf8string")) {
+      if (type_is_string_like(bt)) {
         return builtin_char_type();
       }
-      if (tyname_is(bt, "pchar") || tyname_is(bt, "pansichar")) {
+      if (bt == named_pascal_type("pchar") || bt == named_pascal_type("pansichar")) {
         return builtin_char_type();
       }
-      if (tyname_is(bt, "ppchar")) return builtin_pchar_type();
       if (bt && bt->kind == Kind::TyArray) {
         return static_cast<const TyArray&>(*bt).element.get();
       }
@@ -1573,9 +1571,11 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
             c.args.size() == 1) {
           return deduce_type(*c.args[0]);
         }
-        if ((n == "shortstring" || n == "ansistring" ||
-             n == "utf8string") && c.args.size() == 1) {
-          return named_pascal_type(n);
+        if (c.args.size() == 1) {
+          const TypeExpr* cast_type = canonicalize_type(named_pascal_type(n));
+          if (type_is_string_like(cast_type)) {
+            return cast_type;
+          }
         }
       }
       const TypeExpr* callee_type = deduce_type(*c.callee);

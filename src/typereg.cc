@@ -1629,6 +1629,45 @@ void register_type_symbols_for_owner(
 }
 
 void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
+  // Intern canonical descriptors for every built-in type literal (atom) in
+  // the Pascal language. Pascal is nominal: a type's identity is its
+  // declaration identity. Atoms are one declaration per atom, so each gets
+  // one stable TypeSymbol whose `type` pointer is that declaration's
+  // canonical representative. `canonicalize` then promotes terminal TyName
+  // occurrences of these names to that canonical pointer; the emitter tests
+  // type identity as pointer equality on `const ast::TypeExpr*`, which is
+  // exactly "same declaration". The builtin-literal set is the
+  // primitive_type_map (single source of truth for which Pascal names lower
+  // to runtime carriers); each entry is an atom.
+  for (const auto& [name, _] : primitive_type_map()) {
+    // The atom's canonical AST representative is the named_pascal_type
+    // singleton. The same singleton is what builtin_*_type() and
+    // named_pascal_type() hand out elsewhere, so every site that resolves
+    // a builtin name (parser/emitter/registry) lands on one pointer.
+    const ast::TyName* atom_type = named_pascal_type(name);
+    AliasInfo info;
+    info.defining_unit = "__builtin__";
+    info.target = nullptr;
+    type_symbols.emplace_back(name, "__builtin__", atom_type,
+                              std::move(info));
+    builtin_literal_descriptors[name] = &type_symbols.back();
+  }
+  // Runtime-side named types (tclass, tmethod, currency, ...) are also atoms:
+  // each is a single declaration in the runtime that every translated unit
+  // refers to by name. Interning them lets emitter identity checks use the
+  // same pointer-equality path as primitive atoms. Names that overlap with
+  // primitive_type_map (currency, ptrint, sizeint, ...) land on the same
+  // singleton, so the two tables share identity for shared names.
+  for (const auto& [name, _] : runtime_named_type_map()) {
+    if (builtin_literal_descriptors.count(name)) continue;
+    const ast::TyName* atom_type = named_pascal_type(name);
+    AliasInfo info;
+    info.defining_unit = "__builtin__";
+    info.target = nullptr;
+    type_symbols.emplace_back(name, "__builtin__", atom_type,
+                              std::move(info));
+    builtin_literal_descriptors[name] = &type_symbols.back();
+  }
   // rt:: builtins that live in `tp2cc_rt/prelude.h` rather than a
   // Pascal unit. Model them as ProcInfos so deduce_type / is_bool
   // / auto-call decisions go through the same lookup path as real
@@ -2442,10 +2481,15 @@ const TypeExpr* TypeRegistry::canonicalize(
     const TypeSymbol* symbol = lookup_type_symbol(n.name, current_unit);
     const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
     if (!alias || !alias->target) {
-      return te;
+      break;
     }
     te = alias->target.get();
     current_unit = symbol->defining_unit;
+  }
+  if (te && te->kind == Kind::TyName) {
+    const auto& n = static_cast<const TyName&>(*te);
+    auto it = builtin_literal_descriptors.find(n.name);
+    if (it != builtin_literal_descriptors.end()) return it->second->type;
   }
   return te;
 }
@@ -2463,7 +2507,7 @@ const TypeExpr* TypeRegistry::canonicalize(
     const TypeSymbol* symbol = lookup_type_symbol_in_context(n.name, context);
     const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
     if (!alias || !alias->target) {
-      return te;
+      break;
     }
     te = alias->target.get();
     if (const TypeLookupContext* alias_context =
@@ -2471,7 +2515,17 @@ const TypeExpr* TypeRegistry::canonicalize(
       context = alias_context;
     }
   }
+  if (te && te->kind == Kind::TyName) {
+    const auto& n = static_cast<const TyName&>(*te);
+    auto it = builtin_literal_descriptors.find(n.name);
+    if (it != builtin_literal_descriptors.end()) return it->second->type;
+  }
   return te;
+}
+
+const TypeSymbol* TypeRegistry::builtin_literal(std::string_view name) const {
+  auto it = builtin_literal_descriptors.find(name);
+  return it == builtin_literal_descriptors.end() ? nullptr : it->second;
 }
 
 std::string TypeRegistry::pointer_target_type_name(

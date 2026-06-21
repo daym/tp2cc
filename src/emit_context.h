@@ -20,17 +20,21 @@ namespace tp2cc {
 
 struct TypeScopeFrame {
   TypeScopeFrame* parent = nullptr;
-  // Type deduction probes local scopes very frequently while emitting large
-  // units. The map owns stable lowercase strings, but lookup must not allocate
-  // a temporary key on every probe.
+  // Owned entries are procedure-local declarations synthesized during emission.
+  // Unit and nested type declarations are owned by TypeRegistry; scope frames
+  // keep references to those stable symbols so nested-type identity is not
+  // rebuilt as transient copies.
   TypeSymbolScopeMap symbols;
+  TypeSymbolRefScopeMap symbol_refs;
 
   explicit TypeScopeFrame(TypeScopeFrame* parent_in = nullptr)
       : parent(parent_in) {}
 
   const TypeSymbol* find_here_lower(std::string_view lower_name) const {
     auto it = symbols.find(lower_name);
-    return it == symbols.end() ? nullptr : &it->second;
+    if (it != symbols.end()) return &it->second;
+    auto ref = symbol_refs.find(lower_name);
+    return ref == symbol_refs.end() ? nullptr : ref->second;
   }
 
   TypeSymbol* find_here_lower_mut(std::string_view lower_name) {
@@ -40,8 +44,9 @@ struct TypeScopeFrame {
 
   const TypeSymbol* find_lower(std::string_view lower_name) const {
     for (const TypeScopeFrame* frame = this; frame; frame = frame->parent) {
-      auto it = frame->symbols.find(lower_name);
-      if (it != frame->symbols.end()) return &it->second;
+      if (const TypeSymbol* symbol = frame->find_here_lower(lower_name)) {
+        return symbol;
+      }
     }
     return nullptr;
   }
@@ -56,6 +61,10 @@ struct TypeScopeFrame {
 
   void insert_or_assign(TypeSymbol symbol) {
     symbols.insert_or_assign(symbol.name, std::move(symbol));
+  }
+
+  void insert_ref(const TypeSymbol& symbol) {
+    symbol_refs.insert_or_assign(symbol.name, &symbol);
   }
 };
 

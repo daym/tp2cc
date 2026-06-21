@@ -80,7 +80,7 @@ class ScopedNestedTypeScope {
     // refer to enclosing-type and unit-visible types after these children.
     for (const auto& [name, symbol] : *nested_types) {
       (void)name;
-      if (symbol) frame_.insert_or_assign(*symbol);
+      if (symbol) frame_.insert_ref(*symbol);
     }
     scope_.type_scope = &frame_;
     active_ = true;

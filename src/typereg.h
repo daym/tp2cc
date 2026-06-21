@@ -461,6 +461,19 @@ struct TypeRegistry {
   // an entry for every TypeExpr node.
   std::unordered_map<const SourceFile*, std::string> source_file_units;
 
+  // Canonical descriptors for built-in type literals (atoms). Pascal is
+  // nominal: a type's identity is its declaration identity. Atoms like
+  // `integer`, `char`, `ansistring` are one declaration per atom, so they
+  // have one identity independent of where they appear in source. Each atom
+  // is interned once at build() time as a stable TypeSymbol whose `type`
+  // pointer is that declaration's canonical representative. `canonicalize`
+  // promotes terminal TyName occurrences of these names to that canonical
+  // pointer; the emitter then tests type identity as pointer equality on
+  // `const ast::TypeExpr*`, which is exactly "same declaration".
+  std::unordered_map<std::string, const TypeSymbol*, StringViewHash,
+                     StringViewEqual>
+      builtin_literal_descriptors;
+
   // Fill from all parsed UnitNodes.
   void build(const std::vector<const ast::UnitNode*>& units);
   const TypeLookupContext* lookup_context_for_type(
@@ -514,6 +527,12 @@ struct TypeRegistry {
   const ast::TypeExpr* canonicalize(
       const ast::TypeExpr* te,
       const TypeLookupContext* context) const;
+
+  // Returns the canonical TypeSymbol for a built-in type literal (lowercased
+  // Pascal name), or nullptr if `name` is not a builtin atom. The symbol's
+  // `type` field is the canonical AST representative; pointer equality on it
+  // is type identity.
+  const TypeSymbol* builtin_literal(std::string_view name) const;
 
   // If `te` canonicalizes to a pointer to a class/record, return its
   // type-alias name (lowercased). Otherwise empty string.

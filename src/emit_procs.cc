@@ -48,7 +48,7 @@ void seed_owner_nested_types(TypeScopeFrame& frame, const ClassInfo* owner) {
   if (!owner) return;
   for (const auto& [name, symbol] : owner->nested_types) {
     (void)name;
-    if (symbol) frame.insert_or_assign(*symbol);
+    if (symbol) frame.insert_ref(*symbol);
   }
 }
 
