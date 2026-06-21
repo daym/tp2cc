@@ -39,20 +39,24 @@ fpc_source_version() {
 }
 echo "FPC source: $SOURCE_DIR (version $(fpc_source_version))"
 
-# Keep the translated compiler under sanitizer instrumentation.  UBSan must be
-# recoverable by default so one bootstrap run reports the whole visible surface
-# instead of stopping at the first bad cast/overflow and forcing a rebuild loop.
-# ASan still aborts on memory-corruption classes where continuing is unsafe.
-SAN="${SAN:--fsanitize=address,undefined -fsanitize-recover=undefined -fno-omit-frame-pointer}"
-CXXFLAGS="-std=gnu++20 -I. -O0 -g -pipe -Wno-narrowing -Wno-invalid-offsetof $SAN"
-CFLAGS="-std=gnu11 -O0 -g -pipe $SAN"
+# Keep the translated compiler under sanitizer instrumentation.  Default to
+# UBSan-only: the i386 translated compiler is large enough that ASan can fail
+# before Pascal code starts because its shadow range overlaps the executable
+# mapping.  Set SAN explicitly to include address if testing a layout where
+# that runtime can start.
+SAN="${SAN:--fsanitize=undefined -fsanitize-recover=undefined -fno-omit-frame-pointer}"
+CXXFLAGS="-std=gnu++20 -I. -O3 -g -pipe -Wno-narrowing -Wno-invalid-offsetof $SAN"
+CFLAGS="-std=gnu11 -O3 -g -pipe $SAN"
 export CXXFLAGS
 export CFLAGS
 
-# FPC frees most global state only at process exit. Disable leak checking.
-# UBSan reports are recoverable; stage compiler invocations below are logged so
-# every emitted report survives even if the compiler later exits successfully.
-export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1}"
+# FPC frees most global state only at process exit. If ASan is explicitly
+# enabled, disable leak checking. UBSan reports are recoverable; stage compiler
+# invocations below are logged so every emitted report survives even if the
+# compiler later exits successfully.
+if printf '%s' "$SAN" | tr ',' ' ' | grep -qw "address"; then
+  export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1}"
+fi
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=0:print_stacktrace=1}"
 
 BOOT_ROOT="${BOOTSTRAP_ROOT:-$ROOT/build/fpc-2-bootstrap}"
@@ -276,7 +280,7 @@ build_stage1() {
   (
     cd "$STAGE1_DIR"
     "$CC" $CFLAGS -c "$RUNTIME_SHIM" -o tp2cc_fenv_shim.o
-    "$CXX" -O0 -g3 $SAN p_*.o tp2cc_fenv_shim.o -lm -o pp
+    "$CXX" -O3 -g3 $SAN p_*.o tp2cc_fenv_shim.o -lm -o pp
   )
 }
 
