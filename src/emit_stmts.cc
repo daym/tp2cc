@@ -472,8 +472,7 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
     if (tcanon && tcanon->kind == Kind::TyName) {
       const PrimitiveInfo* dst =
           primitive_info(ascii_lower(static_cast<const TyName&>(*tcanon).name));
-      if (dst && (dst->int_kind == PrimitiveIntKind::Signed ||
-                  dst->int_kind == PrimitiveIntKind::Unsigned)) {
+      if (dst && (dst->int_kind != PrimitiveIntKind::None)) {
         const TypeExpr* src_ty = overload_types_.type_for_overload(*a.value);
         if (src_ty) src_ty = analysis_.canonicalize_type(src_ty);
         const PrimitiveInfo* src = nullptr;
@@ -489,8 +488,7 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
           bool wrap = false;
           if (src_is_real) {
             wrap = true;
-          } else if (src && (src->int_kind == PrimitiveIntKind::Signed ||
-                             src->int_kind == PrimitiveIntKind::Unsigned)) {
+          } else if (src && (src->int_kind != PrimitiveIntKind::None)) {
             if (analysis_.resolved_primitive_bits(*src) > analysis_.resolved_primitive_bits(*dst) || src->int_kind != dst->int_kind) {
               wrap = true;
             }

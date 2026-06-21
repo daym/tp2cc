@@ -30,14 +30,16 @@ bool is_nonmethod_procedural_type(const TypeExpr* t) {
 }
 
 bool is_plain_pointer_type(const TypeExpr* t) {
-  if (tyname_is(t, "pointer")) return true;
+  if (t == named_pascal_type("pointer")) return true;
   return t && t->kind == Kind::TyPointer &&
          !static_cast<const TyPointer&>(*t).target;
 }
 
 bool is_runtime_pointer_primitive_type(const TypeExpr* t) {
-  return tyname_is(t, "pointer") || tyname_is(t, "pchar") ||
-         tyname_is(t, "pansichar") || tyname_is(t, "ppchar");
+  if (!t || t->kind != Kind::TyName) return false;
+  const PrimitiveInfo* pi = primitive_info(
+      ascii_lower(static_cast<const TyName&>(*t).name));
+  return pi && pi->is_pointer_primitive();
 }
 
 std::string reference_class_name(const TypeExpr* t) {
@@ -169,9 +171,11 @@ bool EmitStorage::chr_source_has_byte_storage(const Expr& source) {
   const TypeExpr* source_type = canonical_storage_expr_type(source);
   if (!source_type) return false;
   if (source_type->kind == Kind::TyName) {
-    const std::string lower =
-        ascii_lower(static_cast<const TyName&>(*source_type).name);
-    if (lower == "byte" || lower == "shortint") return true;
+    const TypeExpr* canon = analysis_.canonicalize_type(source_type);
+    if (canon == named_pascal_type("byte") ||
+        canon == named_pascal_type("shortint")) {
+      return true;
+    }
   }
   if (source_type->kind == Kind::TySubrange) {
     const std::string cxx = types_.type_to_cxx(*source_type);
@@ -528,6 +532,7 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
                               : reference_class_cast_pointer_cxx(*m.base);
       std::string owner = analysis_.deduce_class_alias(*m.base);
       std::string member_cxx = mangle(m.name);
+      bool field_backed_property = false;
       if (registry_ && !owner.empty()) {
         if (const auto* prop = registry_->lookup_class_property(
                 owner, m.name, scope_.current_unit_name)) {
@@ -541,6 +546,7 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
             return std::nullopt;
           }
           member_cxx = prop->read.cxx_path;
+          field_backed_property = true;
         } else if (registry_->lookup_class_field(owner, m.name,
                                                  scope_.current_unit_name) ||
                    registry_->lookup_record_field(
@@ -658,6 +664,37 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
                                                        field_ptr_cxx,
                                                        field_cxx);
       }
+
+      if (field_backed_property) {
+        // Field-backed properties are Pascal storage aliases. Getter-backed
+        // properties are rejected above, but a read accessor that names a
+        // backing field can satisfy reference-style contexts such as
+        // `var`/`out` and old-object `const` formals through the same
+        // designator path as ordinary fields.
+        return EmitStorageDesignator::ordinary(text,
+                                               storage_type_cxx(field_type));
+      }
+    }
+  }
+
+  if (e.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(e);
+    if (auto found = analysis_.find_implicit_class_property(id.name);
+        found && found->prop && found->prop->params.empty() &&
+        found->prop->read.kind == PropertyAccessorKind::FieldPath) {
+      // A bare property in a method body, such as `Prop` for `self.Prop`, can
+      // be used as storage only when its read accessor names backing storage.
+      // Getter-backed properties stay values and must not satisfy var/out or
+      // reference-style const arguments.
+      const ClassInfo* ci =
+          analysis_.class_info_for_type_name(found->class_name);
+      const std::string access =
+          (ci && ci->is_reference_type) ? "->" : ".";
+      const std::string text = found->base_cxx + access +
+                               found->prop->read.cxx_path;
+      const TypeExpr* t = found->prop->type.get();
+      return EmitStorageDesignator::ordinary(
+          text, t ? types_.type_to_cxx(*t) : std::string{});
     }
   }
 
@@ -1234,12 +1271,15 @@ bool EmitStorage::expr_is_charish(const Expr& e) {
 
 bool EmitStorage::type_is_pcharish(const TypeExpr* t) {
   if (!t) return false;
-  if (tyname_is(t, "pchar") || tyname_is(t, "pansichar")) return true;
   t = analysis_.canonicalize_type(t);
   if (!t) return false;
-  if (tyname_is(t, "pchar") || tyname_is(t, "pansichar")) return true;
-  return t->kind == Kind::TyPointer &&
-         tyname_is_charish(static_cast<const TyPointer&>(*t).target.get());
+  if (t == named_pascal_type("pchar") || t == named_pascal_type("pansichar")) {
+    return true;
+  }
+  if (t->kind != Kind::TyPointer) return false;
+  const TypeExpr* target =
+      analysis_.canonicalize_type(static_cast<const TyPointer&>(*t).target.get());
+  return tyname_is_charish(target);
 }
 
 bool EmitStorage::type_is_metaclass(const TypeExpr* t) {
@@ -1303,12 +1343,7 @@ std::string EmitStorage::member_access_op(const Expr& e) {
 }
 
 bool EmitStorage::type_is_stringish(const TypeExpr* t) {
-  if (!t) return false;
-  t = analysis_.canonicalize_type(t);
-  if (!t) return false;
-  if (t->kind == Kind::TyString) return true;
-  return tyname_is(t, "shortstring") || tyname_is(t, "ansistring") ||
-         tyname_is(t, "utf8string");
+  return analysis_.type_is_string_like(t);
 }
 
 bool EmitStorage::type_is_pointerish(const TypeExpr* t) {
@@ -1358,6 +1393,19 @@ bool EmitStorage::fixed_array_pointer_can_decay_to_element_pointer(
   return types_.type_to_cxx(*src_elem) == types_.type_to_cxx(*dst_elem);
 }
 
+bool EmitStorage::fixed_char_array_value_can_decay_to_pchar(
+    const TypeExpr* src_type, const TypeExpr* dst_type) {
+  const TypeExpr* src = analysis_.canonicalize_type(src_type);
+  if (!src || src->kind != Kind::TyArray ||
+      static_cast<const TyArray&>(*src).array_kind != ArrayKind::Fixed) {
+    return false;
+  }
+  const auto& arr = static_cast<const TyArray&>(*src);
+  if (arr.dims.size() != 1 || !type_is_pcharish(dst_type)) return false;
+  const TypeExpr* elem = analysis_.canonicalize_type(arr.element.get());
+  return tyname_is_charish(elem);
+}
+
 std::string EmitStorage::lower_pointer_to_fixed_array_to_element(
     const TypeExpr* src_type, const std::string& source_cxx) {
   const TypeExpr* src = analysis_.canonicalize_type(src_type);
@@ -1371,7 +1419,16 @@ std::string EmitStorage::lower_pointer_to_fixed_array_to_element(
   return "(" + source_cxx + ")->data";
 }
 
-bool EmitStorage::pointer_like_conversion_is_valid(
+std::string EmitStorage::lower_fixed_char_array_value_to_pchar(
+    const TypeExpr* src_type, const TypeExpr* dst_type,
+    const std::string& source_cxx) {
+  if (!fixed_char_array_value_can_decay_to_pchar(src_type, dst_type)) {
+    return source_cxx;
+  }
+  return "(" + source_cxx + ").data";
+}
+
+bool EmitStorage::pointer_value_conversion_is_valid(
     const TypeExpr* dst_type, const TypeExpr* src_type,
     bool explicit_pascal_cast) {
   const TypeExpr* raw_dst = dst_type;
@@ -1391,6 +1448,8 @@ bool EmitStorage::pointer_like_conversion_is_valid(
   const bool dst_void_ptr = is_plain_pointer_type(dst);
   const bool src_void_ptr = is_plain_pointer_type(src);
   if (fixed_array_pointer_can_decay_to_element_pointer(src, dst)) return true;
+  if (pointer_to_object_upcast_is_valid(raw_dst, raw_src)) return true;
+  if (class_to_interface_conversion_is_valid(raw_dst, raw_src)) return true;
   if ((dst_proc && src_void_ptr) || (dst_void_ptr && src_proc)) return true;
   if (src_void_ptr || dst_void_ptr) return true;
 
@@ -1401,15 +1460,14 @@ bool EmitStorage::pointer_like_conversion_is_valid(
     if (dst_name.empty()) dst_name = reference_class_name(dst);
     std::string src_name = reference_class_name(raw_src);
     if (src_name.empty()) src_name = reference_class_name(src);
-    if ((!dst_name.empty() && !src_name.empty()) &&
-        (reference_classes_related(dst_name, src_name) ||
-         reference_classes_related(src_name, dst_name))) {
+    if (!dst_name.empty() && !src_name.empty() &&
+        pascal_parent_chain_contains(dst_name, src_name)) {
       return true;
     }
     return explicit_pascal_cast;
   }
 
-  return explicit_pascal_cast || (dst_ptr && src_ptr);
+  return explicit_pascal_cast;
 }
 
 std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
@@ -1418,8 +1476,8 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
                                                   const std::string& source_cxx,
                                                   bool explicit_pascal_cast,
                                                   bool source_is_const_storage) {
-  if (!pointer_like_conversion_is_valid(dst_type, src_type,
-                                        explicit_pascal_cast)) {
+  if (!pointer_value_conversion_is_valid(dst_type, src_type,
+                                         explicit_pascal_cast)) {
     return source_cxx;
   }
   const TypeExpr* dst = analysis_.canonicalize_type(dst_type);
@@ -1452,6 +1510,13 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
     return lower_pointer_to_fixed_array_to_element(src, source_cxx);
   }
 
+  if (pointer_to_object_upcast_is_valid(dst_type, src_type)) {
+    return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
+  }
+  if (class_to_interface_conversion_is_valid(dst_type, src_type)) {
+    return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
+  }
+
   if (dst_proc && src_void_ptr) {
     return "::rt::tp2cc_funptr_from_bits<" + dst_cxx + ">(" + source_cxx +
            ")";
@@ -1479,9 +1544,13 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
     if (dst_name.empty()) dst_name = reference_class_name(dst);
     std::string src_name = reference_class_name(src_type);
     if (src_name.empty()) src_name = reference_class_name(src);
-    if ((!dst_name.empty() && !src_name.empty()) &&
-        (reference_classes_related(dst_name, src_name) ||
-         reference_classes_related(src_name, dst_name))) {
+    const bool related_upcast =
+        !dst_name.empty() && !src_name.empty() &&
+        pascal_parent_chain_contains(dst_name, src_name);
+    const bool related_downcast =
+        !dst_name.empty() && !src_name.empty() &&
+        pascal_parent_chain_contains(src_name, dst_name);
+    if (related_upcast || (explicit_pascal_cast && related_downcast)) {
       return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
     }
     if (!explicit_pascal_cast) return source_cxx;
@@ -1493,8 +1562,44 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
   return source_cxx;
 }
 
-bool EmitStorage::reference_classes_related(std::string_view ancestor,
-                                            std::string current) {
+bool EmitStorage::pointer_to_object_upcast_is_valid(const TypeExpr* dst_type,
+                                                    const TypeExpr* src_type) {
+  if (!registry_) return false;
+  const std::string dst_name =
+      registry_->pointer_target_type_name(dst_type, scope_.current_unit_name);
+  const std::string src_name =
+      registry_->pointer_target_type_name(src_type, scope_.current_unit_name);
+  if (dst_name.empty() || src_name.empty()) return false;
+  const ClassInfo* dst_class =
+      analysis_.class_info_for_type_name(dst_name);
+  const ClassInfo* src_class =
+      analysis_.class_info_for_type_name(src_name);
+  if (!dst_class || !src_class) return false;
+  if (dst_class->is_reference_type || src_class->is_reference_type) {
+    return false;
+  }
+  return pascal_parent_chain_contains(dst_name, src_name);
+}
+
+bool EmitStorage::class_to_interface_conversion_is_valid(
+    const TypeExpr* dst_type, const TypeExpr* src_type) {
+  if (!registry_) return false;
+  const InterfaceInfo* interface =
+      registry_->interface_info_for_type(dst_type, scope_.current_unit_name);
+  if (!interface) return false;
+
+  const TypeExpr* src = analysis_.canonicalize_type(src_type);
+  if (!type_is_reference_class(src)) return false;
+
+  std::string class_name = reference_class_name(src_type);
+  if (class_name.empty()) class_name = reference_class_name(src);
+  if (class_name.empty()) return false;
+  return registry_->class_implements_interface(class_name, *interface,
+                                               scope_.current_unit_name);
+}
+
+bool EmitStorage::pascal_parent_chain_contains(std::string_view ancestor,
+                                               std::string current) {
   const std::string ancestor_key = ascii_lower(std::string(ancestor));
   while (!current.empty()) {
     if (ascii_lower(current) == ancestor_key) return true;

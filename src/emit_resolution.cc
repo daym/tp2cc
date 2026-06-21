@@ -273,9 +273,39 @@ ConvScore EmitResolution::class_hierarchy_conversion_score(
       return {ConvRank::ClassHierarchy, depth};
     }
     seen.insert(identity);
-    cur = cur->parent.empty()
-              ? nullptr
-              : registry_->lookup_class(cur->parent, cur->defining_unit);
+    cur = registry_->lookup_parent_class(*cur);
+    ++depth;
+  }
+  return {};
+}
+
+ConvScore EmitResolution::object_pointer_hierarchy_conversion_score(
+    const TypeExpr* arg, const TypeExpr* param) {
+  if (!registry_) return {};
+  const std::string arg_name =
+      registry_->pointer_target_type_name(arg, scope_.current_unit_name);
+  const std::string param_name =
+      registry_->pointer_target_type_name(param, scope_.current_unit_name);
+  if (arg_name.empty() || param_name.empty()) return {};
+  const auto* arg_class = analysis_.class_info_for_type_name(arg_name);
+  const auto* param_class = analysis_.class_info_for_type_name(param_name);
+  if (!arg_class || !param_class) return {};
+  if (arg_class->is_reference_type || param_class->is_reference_type) {
+    return {};
+  }
+
+  std::unordered_set<std::string> seen;
+  const ClassInfo* cur = arg_class;
+  int depth = 0;
+  while (cur) {
+    const std::string identity = cur->defining_unit + "." + cur->name;
+    if (seen.count(identity)) break;
+    if (cur->name == param_class->name &&
+        cur->defining_unit == param_class->defining_unit) {
+      return {ConvRank::ClassHierarchy, depth};
+    }
+    seen.insert(identity);
+    cur = registry_->lookup_parent_class(*cur);
     ++depth;
   }
   return {};
@@ -648,6 +678,20 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
       return score;
     }
     return {};
+  }
+
+  // Pointer aliases to TP-style `object` values participate in the same
+  // source-language parent chain as the object values themselves. This permits
+  // passing `^ChildObject` to a value formal of type `^BaseObject`, while
+  // keeping unrelated typed pointers distinct.
+  if (ConvScore score = object_pointer_hierarchy_conversion_score(raw_arg,
+                                                                  raw_param);
+      score.viable()) {
+    return score;
+  }
+  if (ConvScore score = object_pointer_hierarchy_conversion_score(a, p);
+      score.viable()) {
+    return score;
   }
 
   // 3. Class hierarchy: a derived class may pass where an ancestor is expected.

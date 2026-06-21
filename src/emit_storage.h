@@ -289,16 +289,21 @@ class EmitStorage {
   bool type_is_open_array(const ast::TypeExpr* t);
   bool fixed_array_pointer_can_decay_to_element_pointer(
       const ast::TypeExpr* src_type, const ast::TypeExpr* dst_type);
-  // Central pointer-like coercion policy used by explicit typecasts, plain
-  // assignments, and value call arguments. Pascal is more permissive than C++
-  // about:
-  //   - `pointer`/`void*` <-> typed data pointers
-  //   - raw data-pointer reinterpretation
-  //   - function pointer <-> `pointer`
-  // so all pointer-like assignments and arguments share one coercion rule.
-  bool pointer_like_conversion_is_valid(const ast::TypeExpr* dst_type,
-                                        const ast::TypeExpr* src_type,
-                                        bool explicit_pascal_cast);
+  bool fixed_char_array_value_can_decay_to_pchar(
+      const ast::TypeExpr* src_type, const ast::TypeExpr* dst_type);
+  bool pointer_to_object_upcast_is_valid(const ast::TypeExpr* dst_type,
+                                         const ast::TypeExpr* src_type);
+  bool class_to_interface_conversion_is_valid(const ast::TypeExpr* dst_type,
+                                              const ast::TypeExpr* src_type);
+  // Central pointer-value coercion policy used by explicit typecasts, plain
+  // assignments, and value call arguments. Implicit Pascal pointer conversions
+  // are concrete conversions such as `pointer`/`void*` <-> typed data pointers,
+  // fixed-array pointer decay, pointer-to-object upcasts, and related
+  // class-reference pointers; unrelated typed-pointer reinterpretation requires
+  // an explicit Pascal cast.
+  bool pointer_value_conversion_is_valid(const ast::TypeExpr* dst_type,
+                                         const ast::TypeExpr* src_type,
+                                         bool explicit_pascal_cast);
   std::string coerce_pointer_like_text(std::string_view dst_cxx,
                                        const ast::TypeExpr* dst_type,
                                        const ast::TypeExpr* src_type,
@@ -311,6 +316,9 @@ class EmitStorage {
   // unchanged for any other shape.
   std::string lower_pointer_to_fixed_array_to_element(
       const ast::TypeExpr* src_type, const std::string& source_cxx);
+  std::string lower_fixed_char_array_value_to_pchar(
+      const ast::TypeExpr* src_type, const ast::TypeExpr* dst_type,
+      const std::string& source_cxx);
   std::string reinterpret_ref_text(const std::string& ty_cxx,
                                    const std::string& source_cxx,
                                    bool pointee_view);
@@ -351,8 +359,8 @@ class EmitStorage {
   std::string storage_type_cxx(const ast::TypeExpr* t);
   std::string scalar_storage_type_cxx(const ast::TypeExpr* t);
   std::string reference_class_cast_pointer_cxx(const ast::Expr& base_expr);
-  bool reference_classes_related(std::string_view ancestor,
-                                 std::string current);
+  bool pascal_parent_chain_contains(std::string_view ancestor,
+                                    std::string current);
   EmitAbsoluteTargetInfo absolute_target_info(
       const std::string& target_cxx, const ast::TypeExpr* type,
       bool is_const_storage = false);
