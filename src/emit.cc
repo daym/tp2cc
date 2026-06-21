@@ -161,6 +161,22 @@ struct Emitter : ResolveNameProvider,
   std::unordered_set<const ast::Expr*> overload_type_in_progress;
   std::unordered_map<const ast::Expr*, const ast::TypeExpr*> overload_type_cache;
   size_t overload_type_query_depth = 0;
+  size_t overload_type_expr_emit_depth = 0;
+
+  struct OverloadTypeExprCacheScope {
+    Emitter& emitter;
+    bool outer = false;
+
+    explicit OverloadTypeExprCacheScope(Emitter& e) : emitter(e) {
+      outer = emitter.overload_type_expr_emit_depth++ == 0;
+      if (outer) emitter.overload_type_cache.clear();
+    }
+
+    ~OverloadTypeExprCacheScope() {
+      --emitter.overload_type_expr_emit_depth;
+      if (outer) emitter.overload_type_cache.clear();
+    }
+  };
 
   // Reified type/symbol tree spanning all parsed units. tp2cc_Set by the
   // driver. Drives member-access and ident-call decisions.
@@ -238,8 +254,8 @@ struct Emitter : ResolveNameProvider,
                loop_label_counter, loop_break_labels, loop_continue_labels,
                analysis_, types_, storage_, *this, resolution_, *this, calls_,
                properties_, *this),
-        units_(scope_state_, block_depth, unit_init_order, kUnitInitName,
-               kUnitFiniName, *this) {}
+        units_(registry, scope_state_, block_depth, unit_init_order,
+               kUnitInitName, kUnitFiniName, *this) {}
 
   void set_header() { out = &header; }
   void set_impl()   { out = &impl; }
@@ -496,7 +512,7 @@ struct Emitter : ResolveNameProvider,
   const ast::Expr* peel_primitive_casts(const ast::Expr* e) {
     return storage_.peel_primitive_casts(e);
   }
-  bool expr_is_storage_lvalue(const ast::Expr& e) {
+  bool expr_is_storage_lvalue(const ast::Expr& e) override {
     return storage_.expr_is_storage_lvalue(e);
   }
   bool expr_is_untyped_storage_ref(const ast::Expr& e) {
@@ -507,7 +523,8 @@ struct Emitter : ResolveNameProvider,
   bool expr_is_charish(const ast::Expr& e) {
     const ast::TypeExpr* t = type_for_overload(e);
     if (!t) return false;
-    return tyname_is_charish(canonicalize_type(t));
+    const PrimitiveInfo* pi = analysis_.primitive_info_for_type(t);
+    return pi && pi->is_char();
   }
   bool type_is_pcharish(const ast::TypeExpr* t) override {
     return storage_.type_is_pcharish(t);
@@ -529,6 +546,17 @@ struct Emitter : ResolveNameProvider,
   }
   bool type_is_pointerish(const ast::TypeExpr* t) override {
     return storage_.type_is_pointerish(t);
+  }
+  bool fixed_char_array_value_can_decay_to_pchar(
+      const ast::TypeExpr* src_type, const ast::TypeExpr* dst_type) override {
+    return storage_.fixed_char_array_value_can_decay_to_pchar(src_type,
+                                                              dst_type);
+  }
+  bool pointer_value_conversion_is_valid(const ast::TypeExpr* dst_type,
+                                         const ast::TypeExpr* src_type,
+                                         bool explicit_pascal_cast) override {
+    return storage_.pointer_value_conversion_is_valid(dst_type, src_type,
+                                                      explicit_pascal_cast);
   }
   bool type_is_open_array(const ast::TypeExpr* t) {
     return storage_.type_is_open_array(t);
@@ -697,7 +725,8 @@ std::string Emitter::ordinal_value_to_cxx(const Expr& e,
   const TypeExpr* result_type =
       analysis_.ord_result_type_for_type(operand_type);
   if (!result_type) return value_cxx;
-  if (tyname_is_charish(operand_type)) {
+  const PrimitiveInfo* pi = analysis_.primitive_info_for_type(operand_type);
+  if (pi && pi->is_char()) {
     return "::rt::tp2cc_char_byte(" + value_cxx + ")";
   }
   if (!ordinal_value_needs_explicit_cast(e)) return value_cxx;
@@ -705,6 +734,18 @@ std::string Emitter::ordinal_value_to_cxx(const Expr& e,
 }
 
 const TypeExpr* Emitter::type_for_resolved_call(const Call& c) {
+  if (c.callee->kind == Kind::Ident &&
+      ascii_lower(static_cast<const Ident&>(*c.callee).name) == "new" &&
+      !c.args.empty()) {
+    if (c.args[0]->kind == Kind::Ident) {
+      return lookup_named_type_expr(static_cast<const Ident&>(*c.args[0]).name);
+    }
+    if (auto qualified = unit_qualified_type_name(*c.args[0])) {
+      return lookup_named_type_expr(*qualified);
+    }
+    return nullptr;
+  }
+
   std::vector<const Expr*> args;
   args.reserve(c.args.size());
   for (const auto& arg : c.args) args.push_back(arg.get());
@@ -720,21 +761,23 @@ const TypeExpr* Emitter::type_for_resolved_call(const Call& c) {
   }
   const std::string low = ascii_lower(resolved.return_type_name);
   if (const TyName* int_ty = builtin_integer_type(low)) return int_ty;
-  if (low == "boolean") return builtin_boolean_type();
-  if (primitive_name_is_charish(low)) return builtin_char_type();
-  if (low == "pointer") return named_pascal_type("pointer");
   if (low == "string" || low == "shortstring") return builtin_string_type();
-  if (low == "pchar" || low == "pansichar") return builtin_pchar_type();
+  if (is_primitive_type(low) || !runtime_named_type_cxx(low).empty()) {
+    return named_pascal_type(low);
+  }
   return nullptr;
 }
 
 const TypeExpr* Emitter::type_for_overload(const Expr& e) {
   const bool root_query = overload_type_query_depth == 0;
-  if (root_query) overload_type_cache.clear();
+  const bool expression_emit_scope_active = overload_type_expr_emit_depth != 0;
+  if (root_query && !expression_emit_scope_active) overload_type_cache.clear();
   ++overload_type_query_depth;
   auto finish = [&](const TypeExpr* result) {
     --overload_type_query_depth;
-    if (root_query) overload_type_cache.clear();
+    if (root_query && !expression_emit_scope_active) {
+      overload_type_cache.clear();
+    }
     return result;
   };
 
@@ -825,12 +868,8 @@ std::string Emitter::char_concat_operand_cxx(const Expr& x,
 }
 
 bool Emitter::type_is_boolean_value_type(const TypeExpr* t) {
-  if (!t) return false;
-  t = registry->canonicalize(t, current_unit_name);
-  if (!t || t->kind != Kind::TyName) return false;
-  std::string nm = ascii_lower(static_cast<const TyName&>(*t).name);
-  return nm == "boolean" || nm == "bytebool" || nm == "wordbool" ||
-         nm == "longbool";
+  const PrimitiveInfo* pi = analysis_.primitive_info_for_type(t);
+  return pi && pi->is_bool();
 }
 
 bool Emitter::expr_is_boolean_value(const Expr& x) {
@@ -847,7 +886,10 @@ bool Emitter::ordinal_value_needs_explicit_cast(const Expr& operand) {
   const TypeExpr* result_type =
       analysis_.ord_result_type_for_type(operand_type);
   if (!operand_type || !result_type) return false;
-  if (tyname_is_charish(operand_type)) return false;
+  if (const PrimitiveInfo* pi = analysis_.primitive_info_for_type(operand_type);
+      pi && pi->is_char()) {
+    return false;
+  }
   const std::string operand_cxx = type_to_cxx(*operand_type);
   const std::string result_cxx = type_to_cxx(*result_type);
   return !operand_cxx.empty() && !result_cxx.empty() &&
@@ -896,8 +938,7 @@ const PrimitiveInfo* Emitter::integer_primitive_for_expr(const Expr& x) {
   const PrimitiveInfo* pi =
       primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
   if (!pi) return nullptr;
-  if (pi->int_kind == PrimitiveIntKind::Signed ||
-      pi->int_kind == PrimitiveIntKind::Unsigned) {
+  if (pi->int_kind != PrimitiveIntKind::None) {
     return pi;
   }
   return nullptr;
@@ -1210,6 +1251,12 @@ std::string Emitter::set_literal_to_cxx(const SetLit& s,
 }
 
 std::string Emitter::expr_to_cxx(const Expr& e) {
+  // Overload-aware type queries are context-sensitive, so the cache cannot live
+  // beyond the expression currently being emitted.  Keeping it for the whole
+  // expression still prevents nested boolean/integer operator chains from
+  // recomputing the same operand subtrees repeatedly while choosing built-in vs
+  // overloaded operator lowering.
+  OverloadTypeExprCacheScope overload_type_cache_scope(*this);
   switch (e.kind) {
     case Kind::IntLit: {
       const auto& n = static_cast<const IntLit&>(e);
@@ -1700,21 +1747,21 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (const auto* methods =
                   registry->lookup_class_methods(metaclass, m.name,
                                                  current_unit_name)) {
-            std::vector<const ProcDecl*> candidates;
+            std::vector<MethodSig> candidates;
             bool callable_metaclass_member = false;
             for (const auto& method : *methods) {
               if ((method.kind == SymKind::Constructor ||
                    method.kind == SymKind::ClassMethod) &&
                   method.decl) {
                 callable_metaclass_member = true;
-                candidates.push_back(method.decl.get());
+                candidates.push_back(method);
               }
             }
             std::string text = base_cxx + "->" + mangle(m.name);
             if (is_callee_context_ && callable_metaclass_member) {
               return text;
             }
-            PickResult picked = resolution_.pick_overload(candidates, {});
+            PickResult picked = resolution_.pick_method_overload(candidates, {});
             if (!picked.ambiguous && picked.decl) {
               const MethodSig* sig = method_sig_for_decl(*methods, picked.decl);
               return !is_callee_context_
@@ -1788,11 +1835,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (bcls.empty()) return text;
       if (const auto* methods =
               registry->lookup_class_methods(bcls, m.name, current_unit_name)) {
-        std::vector<const ProcDecl*> candidates;
-        for (const auto& method : *methods) {
-          if (method.decl) candidates.push_back(method.decl.get());
-        }
-        PickResult picked = resolution_.pick_overload(candidates, {});
+        PickResult picked = resolution_.pick_method_overload(*methods, {});
         if (!picked.ambiguous && picked.decl) {
           const MethodSig* sig = method_sig_for_decl(*methods, picked.decl);
           text = lower_implicit_zero_arg_call(
@@ -2026,9 +2069,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "::rt::tp2cc_shortstring_of<>(" +
                    single_call_arg_cxx(c) + ")";
           }
-          if (n == "ansistring" || n == "utf8string") {
-            return "::rt::tp2cc_ansistring_of(" +
-                   single_call_arg_cxx(c) + ")";
+          if (const TypeSymbol* atom =
+                  registry ? registry->builtin_literal(n) : nullptr) {
+            if (analysis_.type_is_long_string(atom->type)) {
+              return "::rt::tp2cc_ansistring_of(" +
+                     single_call_arg_cxx(c) + ")";
+            }
           }
           if (n == "text") {
             if (auto view = storage_.typecast_storage_view(c)) {
@@ -2051,8 +2097,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
           }
           if (const PrimitiveInfo* info = primitive_info(n);
-              info && (info->int_kind == PrimitiveIntKind::Signed ||
-                       info->int_kind == PrimitiveIntKind::Unsigned)) {
+              info && (info->int_kind != PrimitiveIntKind::None)) {
             const TypeExpr* source_ty =
                 canonicalize_type(type_for_overload(*c.args[0]));
             bool source_is_set =
@@ -2066,11 +2111,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                      ">(" + single_call_arg_cxx(c) + ")";
             }
           }
-          if (primitive_name_is_charish(n)) {
+          if (const PrimitiveInfo* pi_char = primitive_info(n);
+              pi_char && pi_char->is_char()) {
             return "::rt::p_chr(" + single_call_arg_cxx(c) + ")";
           }
-          if (n == "pointer" || n == "pchar" || n == "pansichar" ||
-              n == "ppchar") {
+          if (n == "pointer" || n == "pchar" || n == "pansichar") {
             TyName cast_name(n);
             std::string source =
                 (peeled && expr_is_storage_lvalue(*c.args[0]))
@@ -2210,16 +2255,20 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               const auto& arr = static_cast<const TyArray&>(*target.type);
               const TypeExpr* elem =
                   arr.element ? canonicalize_type(arr.element.get()) : nullptr;
-              if (arr.dims.size() == 1 &&
-                  (tyname_is(elem, "byte") || tyname_is_charish(elem))) {
-                if (storage_view && storage_view->source_is_untyped_storage) {
-                  return "::rt::tp2cc_reinterpret_load<" +
+              if (arr.dims.size() == 1) {
+                const PrimitiveInfo* pi_elem =
+                    analysis_.primitive_info_for_type(elem);
+                if (elem == named_pascal_type("byte") ||
+                    (pi_elem && pi_elem->is_char())) {
+                  if (storage_view && storage_view->source_is_untyped_storage) {
+                    return "::rt::tp2cc_reinterpret_load<" +
+                           type_name_text_to_cxx(n) + ">(" +
+                           storage_view->source_cxx + ")";
+                  }
+                  return "::rt::tp2cc_reinterpret_bytes<" +
                          type_name_text_to_cxx(n) + ">(" +
-                         storage_view->source_cxx + ")";
+                         single_call_arg_cxx(c) + ")";
                 }
-                return "::rt::tp2cc_reinterpret_bytes<" +
-                       type_name_text_to_cxx(n) + ">(" +
-                       single_call_arg_cxx(c) + ")";
               }
             }
             if (storage_view && storage_view->source_is_untyped_storage) {
@@ -2348,8 +2397,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if (id.name == "pointer") {
           cast_to_pointer = true;
           cast_type_cxx = "void*";
-          static TyName pointer_type_name("pointer");
-          pointer_cast_ty = &pointer_type_name;
+          pointer_cast_ty = named_pascal_type("pointer");
         } else {
           const TypeExpr* tgt = nullptr;
           if (const TypeSymbol* local_symbol =

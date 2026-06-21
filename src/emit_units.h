@@ -31,7 +31,8 @@ class EmitUnitOps {
 // expression/statement/procedure semantics.
 class EmitUnits {
  public:
-  EmitUnits(ScopeStateView& scope, int& block_depth,
+  EmitUnits(const TypeRegistry* registry, ScopeStateView& scope,
+            int& block_depth,
             const std::vector<std::string>* unit_init_order,
             std::string_view unit_init_name, std::string_view unit_fini_name,
             EmitUnitOps& ops);
@@ -50,6 +51,7 @@ class EmitUnits {
                       const std::vector<const ast::ProcDecl*>& after_body);
   void emit_tpexcept_unit(const ast::UnitNode& u);
 
+  const TypeRegistry* registry_;
   ScopeStateView& scope_;
   int& block_depth_;
   const std::vector<std::string>* unit_init_order_;

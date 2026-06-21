@@ -274,8 +274,15 @@ std::string EmitValues::apply_target_pointer_conversion(
   // individual use sites; storage contexts and explicit Pascal casts have
   // their own callers because they bind different language constructs.
   const std::string dst_cxx = types_.type_to_cxx(*target);
+  // p2cc accepts only Pascal's default {$T-} address mode today; the lexer
+  // rejects {$T+}. Under {$T-}, `@expr` is an untyped address value that may be
+  // converted by its target pointer slot. Do not use this as a general typed
+  // pointer compatibility rule for non-address expressions.
+  const bool address_value_conversion =
+      e.kind == Kind::AddrOf && storage_.type_is_pointerish(target);
   return storage_.coerce_pointer_like_text(
-      dst_cxx, target, source_type, out, explicit_conversion,
+      dst_cxx, target, source_type, out,
+      explicit_conversion || address_value_conversion,
       source_is_const_untyped_storage_arg(e));
 }
 
@@ -384,8 +391,7 @@ bool EmitValues::can_convert_proc_value(const Expr& e, const TypeExpr* target,
 
   if (proc.is_method && e.kind == Kind::NilLit) return true;
 
-  const TypeExpr* source_type = overload_types_.type_for_overload(e);
-  if (!source_type) source_type = analysis_.deduce_type(e);
+  const TypeExpr* source_type = proc_value_source_type(e);
   source_type = analysis_.canonicalize_type(source_type);
   if (source_type && source_type->kind == Kind::TyProcedural) {
     return resolution_.procedural_types_match(
@@ -468,7 +474,7 @@ bool EmitValues::can_convert_value_to_type(const Expr& e,
       const TypeExpr* elem =
           arr.element ? analysis_.canonicalize_type(arr.element.get()) : nullptr;
       if (arr.array_kind == ArrayKind::Fixed && arr.dims.size() == 1 && elem &&
-          (tyname_is_charish(elem) || tyname_is(elem, "byte"))) {
+          (tyname_is_charish(elem) || elem == named_pascal_type("byte"))) {
         return types_.array_dim_bounds_to_cxx(*arr.dims[0]).has_value();
       }
     }
@@ -531,8 +537,19 @@ bool EmitValues::can_convert_value_to_type(const Expr& e,
   if (resolution_.find_assignment_operator(canon_source_type, target).decl) {
     return true;
   }
-  if (storage_.pointer_like_conversion_is_valid(target, raw_source_type,
-                                                explicit_conversion)) {
+  // See apply_target_pointer_conversion: this is the supported {$T-}
+  // target-typed address rule. Enabled typed-address mode is rejected by the
+  // lexer until p2cc models it explicitly.
+  if (e.kind == Kind::AddrOf && storage_.type_is_pointerish(canon_target)) {
+    return true;
+  }
+  if (storage_.pointer_value_conversion_is_valid(target, raw_source_type,
+                                                 explicit_conversion)) {
+    return true;
+  }
+  if (storage_.expr_is_storage_lvalue(e) &&
+      storage_.fixed_char_array_value_can_decay_to_pchar(raw_source_type,
+                                                         target)) {
     return true;
   }
   if (canon_target->kind == Kind::TySet &&
@@ -547,8 +564,7 @@ bool EmitValues::can_convert_value_to_type(const Expr& e,
        storage_.expr_is_charish(e))) {
     return true;
   }
-  if (tyname_is(canon_target, "ansistring") ||
-      tyname_is(canon_target, "utf8string")) {
+  if (analysis_.type_is_long_string(canon_target)) {
     return storage_.type_is_stringish(canon_source_type) ||
            storage_.type_is_pcharish(canon_source_type) ||
            storage_.expr_is_charish(e);
@@ -574,7 +590,7 @@ std::string EmitValues::const_value_to_cxx_impl(
       const TypeExpr* elem =
           arr.element ? analysis_.canonicalize_type(arr.element.get()) : nullptr;
       if (arr.array_kind == ArrayKind::Fixed && arr.dims.size() == 1 && elem &&
-          (tyname_is_charish(elem) || tyname_is(elem, "byte"))) {
+          (tyname_is_charish(elem) || elem == named_pascal_type("byte"))) {
         auto bounds = types_.array_dim_bounds_to_cxx(*arr.dims[0]);
         if (bounds) {
           return "::rt::tp2cc_array_literal<" + types_.type_to_cxx(*elem) +
@@ -697,6 +713,11 @@ std::string EmitValues::const_value_to_cxx_impl(
       return fn + "(" + out + ")";
     }
   }
+  if (storage_.expr_is_storage_lvalue(e) &&
+      storage_.fixed_char_array_value_can_decay_to_pchar(source_type, target)) {
+    out = storage_.lower_fixed_char_array_value_to_pchar(source_type, target,
+                                                         out);
+  }
   out = apply_target_pointer_conversion(e, target, source_type, std::move(out),
                                         explicit_conversion);
   if (source_type && canon_target && source_type->kind == Kind::TySet &&
@@ -711,12 +732,8 @@ std::string EmitValues::const_value_to_cxx_impl(
       cap && !(source_type && storage_.type_is_stringish(source_type))) {
     out = "::rt::tp2cc_shortstring_of<" + *cap + ">(" + out + ")";
   }
-  if (canon_target &&
-      (tyname_is(canon_target, "ansistring") ||
-       tyname_is(canon_target, "utf8string"))) {
-    if (!(source_type &&
-          (tyname_is(source_type, "ansistring") ||
-           tyname_is(source_type, "utf8string")))) {
+  if (analysis_.type_is_long_string(canon_target)) {
+    if (!analysis_.type_is_long_string(source_type)) {
       out = "::rt::tp2cc_ansistring_of(" + out + ")";
     }
   }

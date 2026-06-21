@@ -100,9 +100,9 @@ class ScopedTypeBoundUnit {
     saved_local_const_params_.swap(scope.local_const_params);
     saved_with_stack_.swap(scope.with_stack);
     saved_type_scope_ = scope.type_scope;
-    // Array-bound expressions are parsed in the type declaration's unit, but
-    // the same TypeExpr can be rendered later while emitting another unit's
-    // code. Resolve names through the declaration unit while still qualifying
+    // Type-bound expressions are parsed in the type declaration's unit, but the
+    // same TypeExpr can be rendered later while emitting another unit's code.
+    // Resolve names through the declaration unit while still qualifying
     // generated C++ for the real output namespace.
     active_ = true;
     scope_.lookup_emission_unit_name =
@@ -309,12 +309,22 @@ std::string EmitTypes::type_name_to_cxx(const TyName& n) {
   }
   if (is_primitive_type(n.name)) return primitive_type_cxx(n.name);
   if (n.name == "nil") return "std::nullptr_t";
-  if (n.name == "ansistring" || n.name == "utf8string") {
-    return "::rt::tp2cc_AnsiString";
-  }
-  if (n.name == "text") return "::rt::tp2cc_TextFile";
-  if (n.name == "shortstring") {
-    return "::rt::tp2cc_ShortString<>";
+  if (registry_) {
+    if (const TypeLookupContext* context =
+            registry_->lookup_context_for_type(&n)) {
+      if (const TypeSymbol* symbol =
+              registry_->lookup_type_symbol_in_context(n.name, context);
+          symbol && symbol->defining_unit != "__rt__") {
+        if (const ClassInfo* ci = symbol->class_info();
+            ci && ci->is_reference_type) {
+          return type_symbol_struct_cxx(*symbol) + "*";
+        }
+        if (symbol->interface_info()) {
+          return type_symbol_struct_cxx(*symbol) + "*";
+        }
+        return type_symbol_struct_cxx(*symbol);
+      }
+    }
   }
   // Runtime aliases are also registered for analysis, but their emitted names
   // are fixed by the runtime. Only non-runtime translated declarations use
@@ -712,45 +722,38 @@ std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
       return ArrayDimBounds(std::move(lo), std::move(size_expr));
     }
   }
-  if (tn.name == "boolean" || tn.name == "bytebool") {
-    return ArrayDimBounds("false", "2");
+  // Canonicalize for atom-identity comparisons and metadata-driven dispatch.
+  const TypeExpr* canon_dim = analysis_.canonicalize_type(dim);
+  if (!canon_dim || canon_dim->kind != Kind::TyName) return std::nullopt;
+  const PrimitiveInfo* info = analysis_.primitive_info_for_type(canon_dim);
+  if (!info) return std::nullopt;
+  // Pascal boolean atoms share a two-value ordinal domain regardless of
+  // carrier width.
+  if (info->is_bool()) return ArrayDimBounds("false", "2");
+  // Char and WideChar atoms occupy the full value space of their width.
+  if (info->is_char()) return ArrayDimBounds(std::move(lo), "256");
+  if (info->is_widechar()) return ArrayDimBounds(std::move(lo), "65536");
+  // Integer atoms: derive (lo, size) from primitive metadata. The element
+  // count is 2^bits, which must fit in size_t (max 2^pointer_bits - 1); a
+  // width equal to or exceeding pointer_bits names an array too large to
+  // address.
+  if (info->int_kind == PrimitiveIntKind::None || info->pointer_sized) {
+    return std::nullopt;
   }
-  if (std::string lowname = ascii_lower(tn.name); is_primitive_type(lowname)) {
-    // Match the old i386 FPC parser's fixed-array index whitelist:
-    //   uchar/u8/u16/s8/s16/s32/bool*/widechar
-    // and reject dword/cardinal/qword/int64 rather than silently decaying to
-    // pointer semantics or inventing a wider-than-Pascal domain.
-    if (primitive_name_is_charish(lowname) || lowname == "byte") {
-      return ArrayDimBounds(std::move(lo), "256");
-    }
-    if (lowname == "shortint") {
-      return ArrayDimBounds("::std::numeric_limits<int8_t>::min()", "256");
-    }
-    if (lowname == "word") {
-      return ArrayDimBounds(std::move(lo), "65536");
-    }
-    if (lowname == "smallint") {
-      return ArrayDimBounds("::std::numeric_limits<int16_t>::min()", "65536");
-    }
-    if (lowname == "longint" || lowname == "integer") {
-      lo = "::std::numeric_limits<int32_t>::min()";
-      size_expr =
-          "((" +
-          ordinal_value_text("::std::numeric_limits<int32_t>::max()") +
-          ") - (" +
-          ordinal_value_text("::std::numeric_limits<int32_t>::min()") +
-          ") + 1)";
-      return ArrayDimBounds(std::move(lo), std::move(size_expr));
-    }
-    if (lowname == "widechar") {
-      return ArrayDimBounds(std::move(lo), "65536");
-    }
-    if (lowname == "wordbool" || lowname == "longbool" ||
-        lowname == "qwordbool") {
-      return ArrayDimBounds("false", "2");
-    }
+  if (!info || info->int_kind == PrimitiveIntKind::None ||
+      info->pointer_sized) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  const uint8_t bits = analysis_.resolved_primitive_bits(*info);
+  if (bits >= analysis_.target().pointer_bits) return std::nullopt;
+  const uint64_t count = uint64_t{1} << bits;
+  std::string size = std::to_string(count);
+  if (info->int_kind == PrimitiveIntKind::Unsigned) {
+    return ArrayDimBounds(std::move(lo), std::move(size));
+  }
+  std::string low =
+      "::std::numeric_limits<" + std::string(info->cxx) + ">::min()";
+  return ArrayDimBounds(std::move(low), std::move(size));
 }
 
 std::string EmitTypes::array_bound_ordinal_to_cxx(const Expr& e) {
@@ -867,17 +870,31 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
        is_single_char_string_literal(r.hi.get()))) {
     return primitive_type_cxx("char");
   }
-  if (tyname_is(lo_type, "widechar") && tyname_is(hi_type, "widechar")) {
+  if (lo_type == named_pascal_type("widechar") &&
+      hi_type == named_pascal_type("widechar")) {
     return primitive_type_cxx("widechar");
   }
 
-  auto lo_value = analysis_.eval_const_int_expr(*r.lo);
-  auto hi_value = analysis_.eval_const_int_expr(*r.hi);
-  if (!lo_value || !hi_value) return "int32_t";
+  // Subrange bounds belong to the type declaration's lexical context. Use the
+  // analysis domain query here so C++ carrier selection agrees with overload
+  // checks and set-literal conversion for imported aliases such as
+  // `set of 0..MaxRegister`.
+  auto domain = analysis_.ordinal_domain_for_type(&r);
+  if (!domain) return "int32_t";
 
-  int64_t lo = lo_value->value;
-  int64_t hi = hi_value->value;
-  if (lo > hi) std::swap(lo, hi);
+  if (domain->family == OrdinalFamily::Boolean) {
+    return primitive_type_cxx("boolean");
+  }
+  if (domain->family == OrdinalFamily::Char) {
+    return primitive_type_cxx("char");
+  }
+  if (domain->family == OrdinalFamily::WideChar) {
+    return primitive_type_cxx("widechar");
+  }
+  if (domain->family != OrdinalFamily::Integer) return "int32_t";
+
+  int64_t lo = domain->low;
+  int64_t hi = domain->high;
 
   // Match old FPC's ordinal subrange storage rule:
   // - 0..255 -> byte
@@ -915,6 +932,11 @@ std::string EmitTypes::enum_bound_cxx_name(std::string_view enum_name,
 }
 
 std::string EmitTypes::string_type_to_cxx(const TyString& s) {
+  std::string_view declaration_unit;
+  if (registry_) {
+    declaration_unit = registry_->declaration_unit_for_type(&s);
+  }
+  ScopedTypeBoundUnit type_bound_scope(scope_, declaration_unit);
   if (s.max_length) {
     if (auto value = analysis_.eval_const_int_expr(*s.max_length)) {
       return "::rt::tp2cc_ShortString<" + std::to_string(value->value) + ">";
@@ -928,10 +950,18 @@ std::string EmitTypes::string_type_to_cxx(const TyString& s) {
 std::optional<std::string> EmitTypes::shortstring_capacity_to_cxx(
     const TypeExpr* t) {
   const TypeExpr* canon = analysis_.canonicalize_type(t);
-  if (tyname_is(canon, "shortstring")) {
+  if (canon == builtin_string_type()) {
     return std::string("255");
   }
   if (!(canon && canon->kind == Kind::TyString)) return std::nullopt;
+  std::string_view declaration_unit;
+  if (registry_) {
+    declaration_unit = registry_->declaration_unit_for_type(canon);
+    if (declaration_unit.empty()) {
+      declaration_unit = registry_->declaration_unit_for_type(t);
+    }
+  }
+  ScopedTypeBoundUnit type_bound_scope(scope_, declaration_unit);
   const auto& s = static_cast<const TyString&>(*canon);
   if (s.max_length) {
     if (auto value = analysis_.eval_const_int_expr(*s.max_length)) {
@@ -1117,10 +1147,8 @@ bool EmitTypes::procedural_param_uses_pointer_carrier(const Param& pp) {
     return true;
   }
   if (canon->kind == Kind::TyName) {
-    const std::string low =
-        ascii_lower(static_cast<const TyName&>(*canon).name);
-    return low == "pointer" || low == "pchar" || low == "pansichar" ||
-           low == "ppchar";
+    const PrimitiveInfo* pi = analysis_.primitive_info_for_type(canon);
+    return pi && pi->is_pointer_primitive();
   }
   return false;
 }

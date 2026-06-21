@@ -224,11 +224,13 @@ std::vector<const Decl*> ordered_type_decls(const std::vector<const Decl*>& in) 
 
 }  // namespace
 
-EmitUnits::EmitUnits(ScopeStateView& scope, int& block_depth,
+EmitUnits::EmitUnits(const TypeRegistry* registry, ScopeStateView& scope,
+                     int& block_depth,
                      const std::vector<std::string>* unit_init_order,
                      std::string_view unit_init_name,
                      std::string_view unit_fini_name, EmitUnitOps& ops)
-    : scope_(scope),
+    : registry_(registry),
+      scope_(scope),
       block_depth_(block_depth),
       unit_init_order_(unit_init_order),
       unit_init_name_(unit_init_name),
@@ -241,8 +243,19 @@ void EmitUnits::seed_unit_type_scope(const std::vector<DeclPtr>& decls) {
     if (d->kind != Kind::TypeDecl) continue;
     const auto& td = static_cast<const TypeDecl&>(*d);
     if (!td.type) continue;
-    scope_.type_scope->insert_or_assign(
-        make_type_symbol_for_type(scope_.current_unit_name, td.name, td.type));
+    if (registry_) {
+      if (const TypeSymbol* symbol =
+              registry_->lookup_type_symbol_exact(scope_.current_unit_name,
+                                                  td.name)) {
+        scope_.type_scope->insert_ref(*symbol);
+      } else {
+        scope_.type_scope->insert_or_assign(make_type_symbol_for_type(
+            scope_.current_unit_name, td.name, td.type));
+      }
+    } else {
+      scope_.type_scope->insert_or_assign(make_type_symbol_for_type(
+          scope_.current_unit_name, td.name, td.type));
+    }
     if (td.type->kind != Kind::TyEnum) {
       register_type_symbols_for_owner(scope_.type_scope->symbols, td.type,
                                       td.name);
