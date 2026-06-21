@@ -222,12 +222,17 @@ MSG_FILE="$SOURCE_DIR/compiler/msg/errore.msg"
 
 startup_asm_path() {
   case "$(fpc_source_version):$TARGET_CPU" in
-    3.2.*:i386)
-      # FPC 3.2 i386-linux moved startup code from external loader files into
-      # sysinit units: si_prc.pp, si_c.pp, si_c21.pp, si_dll.pp, and si_uc.pp
-      # include rtl/linux/i386/si_*.inc files that define the relevant `_start`
-      # entry points. rtl/linux/Makefile.fpc therefore sets LOADERS= for
-      # ARCH=i386, leaving no external prt0.as/cprt0.as to assemble here.
+    3.0.*:i386|3.2.*:i386)
+      # These linux targets are in compiler/systems.pas systems_internal_sysinit.
+      # Their entry code comes from RTL sysinit units loaded by the compiler
+      # itself, so an external prt0 object must not be injected by use-fpc.sh.
+      ;;
+    3.2.*:x86_64)
+      # x86_64-linux also uses an internal sysinit unit for the entry code, but
+      # rtl/linux/Makefile.fpc still adds the abitag loader object. The linker
+      # script names that object directly, so provide abitag.o without adding
+      # an external prt0 entry object.
+      printf '%s\n' "$CLEAN_SRC/rtl/linux/$TARGET_CPU/abitag.as"
       ;;
     *)
       printf '%s\n' "$CLEAN_SRC/rtl/linux/$TARGET_CPU/prt0.as"
@@ -348,11 +353,14 @@ run_logged() {
 }
 
 needs_sysinit_units() {
-  # FPC 3.2+ i386-linux moved startup code from external loader files into
-  # sysinit units (si_prc.pp etc.), which the bootstrap has to prebuild so
-  # the later stages can use them.  x86_64-linux still ships rtl/linux/x86_64/
-  # prt0.as, so use-fpc.sh can assemble the external startup object directly.
-  [ "$TARGET_CPU" = "i386" ]
+  case "$(fpc_source_version):$TARGET_CPU" in
+    3.0.*:i386|3.2.*:i386|3.2.*:x86_64)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 build_sysinit_units() {
@@ -394,9 +402,10 @@ stage_extra_unit_flags() {
 }
 
 stage_force_build() {
-  # FPC 3 i386 sysinit is prebuilt above so late unit injection loads
-  # si_prc.ppu. Passing -B here would force source compilation again and
-  # change the stage module list.
+  # FPC prunes the unused resource unit before adding the internal sysinit unit.
+  # Forcing a source build at that point makes the compiler load si_prc.pas
+  # after loaded_units has a deliberate hole, which violates tmodule.updatemaps'
+  # moduleid/list-index invariant. Prebuild the sysinit PPU and load it instead.
   if needs_sysinit_units; then
     printf '0'
   else

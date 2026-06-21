@@ -87,7 +87,6 @@ esac
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/tp2cc-use-fpc.XXXXXX")
 build_dir="$work_dir/out"
-startup_obj="$build_dir/prt0.o"
 pp_stdout="$work_dir/pp.stdout"
 pp_script="$build_dir/ppas.sh"
 link_res="$build_dir/link.res"
@@ -124,7 +123,21 @@ fi
 chmod +x "$pp_script"
 
 if [ -n "$STARTUP_AS" ]; then
+  startup_base=${STARTUP_AS##*/}
+  startup_obj_name="${startup_base%.*}.o"
+  startup_obj="$build_dir/$startup_obj_name"
   "$AS" $STARTUP_ASFLAGS -o "$startup_obj" "$STARTUP_AS"
+
+  # FPC writes linker scripts relative to the compiler invocation directory,
+  # including relative object paths for already-built units.  Keep that cwd for
+  # ppas.sh, but make the wrapper-provided startup object explicit so it is not
+  # searched as a file in the invocation directory.
+  tmp_link_res="$link_res.tmp"
+  awk -v name="$startup_obj_name" -v path="$startup_obj" '
+    $0 == name { print path; next }
+    { print }
+  ' "$link_res" >"$tmp_link_res"
+  mv "$tmp_link_res" "$link_res"
 fi
 
 sh "$pp_script"
