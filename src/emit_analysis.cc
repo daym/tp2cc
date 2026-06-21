@@ -34,6 +34,23 @@ static const TypeSymbol* local_type_symbol(const ScopeStateView& scope,
              : nullptr;
 }
 
+static const EnumInfoReg* local_enum_info_for_member(
+    const ScopeStateView& scope, std::string_view name) {
+  const std::string member = ascii_lower(name);
+  for (const TypeScopeFrame* frame = scope.type_scope; frame;
+       frame = frame->parent) {
+    for (const auto& [symbol_name, symbol] : frame->symbols) {
+      (void)symbol_name;
+      const EnumInfoReg* info = symbol.enum_info();
+      if (!info) continue;
+      for (const auto& enum_member : info->members) {
+        if (enum_member == member) return info;
+      }
+    }
+  }
+  return nullptr;
+}
+
 static std::string type_symbol_source_name(const TypeSymbol& symbol) {
   std::string out;
   for (const auto& owner : symbol.owner_path) {
@@ -155,7 +172,11 @@ static bool variant_part_has_payload_field(
 }
 
 static const TypeExpr* method_result_type(const MethodSig* method) {
-  if (!method || !method->decl || !method->decl->return_type) return nullptr;
+  if (!method) return nullptr;
+  if (!method->return_type_name.empty()) {
+    return named_pascal_type(method->return_type_name);
+  }
+  if (!method->decl || !method->decl->return_type) return nullptr;
   return method->decl->return_type.get();
 }
 
@@ -263,7 +284,7 @@ const TypeExpr* EmitAnalysis::ord_result_type_for_type(const TypeExpr* t) {
     if (lower == "boolean64") return builtin_integer_type("qword");
     if (const PrimitiveInfo* info = primitive_info(lower);
         info && info->int_kind != PrimitiveIntKind::None) {
-      return builtin_integer_type(info);
+      return builtin_integer_type(lower);
     }
     if (const TypeSymbol* symbol = local_type_symbol(scope_, lower);
         symbol && symbol->enum_info()) {
@@ -353,6 +374,32 @@ const TypeExpr* EmitAnalysis::lookup_named_type_expr(std::string_view name) {
     }
     return named_pascal_type(symbol->defining_unit + "." + symbol->name);
   }
+  return nullptr;
+}
+
+const TypeExpr* EmitAnalysis::explicit_typecast_result_type(const Expr& e) {
+  if (e.kind != Kind::Call) return nullptr;
+  const auto& c = static_cast<const Call&>(e);
+  if (c.args.size() != 1 || !c.callee) return nullptr;
+
+  if (c.callee->kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(*c.callee);
+    if (const TypeExpr* named = lookup_named_type_expr(id.name)) return named;
+    if (const TyName* int_ty = builtin_integer_type(id.name)) return int_ty;
+    if (const TypeExpr* primitive = primitive_type_expr_for_name(id.name)) {
+      return primitive;
+    }
+    return nullptr;
+  }
+
+  if (c.callee->kind == Kind::Member) {
+    const auto& mem = static_cast<const Member&>(*c.callee);
+    if (auto unit_member = resolve_unit_qualified_member(mem);
+        unit_member && unit_member->resolved.kind == ResolvedKind::UnitType) {
+      return lookup_named_type_expr(unit_member->unit_name + "." + mem.name);
+    }
+  }
+
   return nullptr;
 }
 
@@ -490,12 +537,38 @@ bool EmitAnalysis::same_type_ast(const TypeExpr* a, const TypeExpr* b) {
   if (a == b) return true;
   if (a->kind != b->kind) return false;
   switch (a->kind) {
-    case Kind::TyName:
-      return ascii_lower(static_cast<const TyName&>(*a).name) ==
-             ascii_lower(static_cast<const TyName&>(*b).name);
+    case Kind::TyName: {
+      const std::string an =
+          ascii_lower(static_cast<const TyName&>(*a).name);
+      const std::string bn =
+          ascii_lower(static_cast<const TyName&>(*b).name);
+      if (an == bn) return true;
+
+      // Pascal named-type equality is symbol identity after alias expansion.
+      // Imported signatures may carry `unit.T` while expressions in the
+      // importing unit carry unqualified `T`; those are the same type only
+      // when normal Pascal type lookup resolves both spellings to one symbol.
+      const TypeSymbol* as = local_type_symbol(scope_, an);
+      const TypeSymbol* bs = local_type_symbol(scope_, bn);
+      if (registry_) {
+        if (!as) {
+          as = registry_->lookup_type_symbol(an, scope_.current_unit_name);
+        }
+        if (!bs) {
+          bs = registry_->lookup_type_symbol(bn, scope_.current_unit_name);
+        }
+      }
+      return as && as == bs;
+    }
     case Kind::TyDistinct:
       return same_type_ast(static_cast<const TyDistinct&>(*a).underlying.get(),
                              static_cast<const TyDistinct&>(*b).underlying.get());
+    case Kind::TyPointer: {
+      const auto& ap = static_cast<const TyPointer&>(*a);
+      const auto& bp = static_cast<const TyPointer&>(*b);
+      if (!ap.target || !bp.target) return !ap.target && !bp.target;
+      return same_type_ast(ap.target.get(), bp.target.get());
+    }
     case Kind::TySubrange: {
       const auto& as = static_cast<const TySubrange&>(*a);
       const auto& bs = static_cast<const TySubrange&>(*b);
@@ -694,7 +767,8 @@ std::optional<OrdinalDomain> EmitAnalysis::ordinal_domain_for_type(
   }
   if (!registry_) return std::nullopt;
   const TypeSymbol* symbol =
-      registry_->lookup_type_symbol(low, scope_.current_unit_name);
+      context ? registry_->lookup_type_symbol_in_context(low, context)
+              : registry_->lookup_type_symbol(low, scope_.current_unit_name);
   const EnumInfoReg* info = symbol ? symbol->enum_info() : nullptr;
   if (!info || !info->type) {
     return std::nullopt;
@@ -1030,11 +1104,18 @@ const ConstInfo* EmitAnalysis::find_const_for_fold_in_unit(
 }
 
 bool EmitAnalysis::type_is_string_like(const TypeExpr* t) {
+  t = canonicalize_type(t);
   if (!t) return false;
   if (t->kind == Kind::TyString) return true;
-  if (t->kind == Kind::TyName) {
-    const auto& nm = ascii_lower(static_cast<const TyName&>(*t).name);
-    return nm == "string" || nm == "shortstring" || nm == "ansistring";
+  if (!registry_) return false;
+  if (const TypeSymbol* ss = registry_->builtin_literal("shortstring")) {
+    if (t == ss->type) return true;
+  }
+  if (const TypeSymbol* as = registry_->builtin_literal("ansistring")) {
+    if (t == as->type) return true;
+  }
+  if (const TypeSymbol* u8 = registry_->builtin_literal("utf8string")) {
+    if (t == u8->type) return true;
   }
   return false;
 }
@@ -1052,13 +1133,9 @@ const PrimitiveInfo* EmitAnalysis::primitive_info_for_type(const TypeExpr* t) {
 }
 
 bool EmitAnalysis::type_is_numeric_primitive(const TypeExpr* t) {
-  t = canonicalize_type(t);
-  if (!t || t->kind != Kind::TyName) return false;
-  const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
-  const PrimitiveInfo* pi = primitive_info(name);
-  return pi && (pi->int_kind != PrimitiveIntKind::None || name == "single" ||
-                name == "double" || name == "real" || name == "extended" ||
-                name == "comp");
+  const PrimitiveInfo* pi = primitive_info_for_type(t);
+  return pi && (pi->int_kind != PrimitiveIntKind::None ||
+                pi->float_tier != PrimitiveFloatTier::None);
 }
 
 bool EmitAnalysis::binop_is_comparison(BinOp op) {
@@ -1068,14 +1145,22 @@ bool EmitAnalysis::binop_is_comparison(BinOp op) {
 
 bool EmitAnalysis::binop_is_arithmetic_like(BinOp op) {
   return op == BinOp::Add || op == BinOp::Sub || op == BinOp::Mul ||
-         op == BinOp::IntDiv || op == BinOp::Mod || op == BinOp::Shl ||
-         op == BinOp::Shr || op == BinOp::And || op == BinOp::Or ||
-         op == BinOp::Xor;
+         op == BinOp::RealDiv || op == BinOp::IntDiv || op == BinOp::Mod ||
+         op == BinOp::Shl || op == BinOp::Shr || op == BinOp::And ||
+         op == BinOp::Or || op == BinOp::Xor;
 }
 
-bool EmitAnalysis::type_is_ansistring(const TypeExpr* t) {
-  return t && t->kind == Kind::TyName &&
-         ascii_lower(static_cast<const TyName&>(*t).name) == "ansistring";
+bool EmitAnalysis::type_is_long_string(const TypeExpr* t) {
+  if (!registry_) return false;
+  t = canonicalize_type(t);
+  if (!t) return false;
+  if (const TypeSymbol* as = registry_->builtin_literal("ansistring")) {
+    if (t == as->type) return true;
+  }
+  if (const TypeSymbol* u8 = registry_->builtin_literal("utf8string")) {
+    if (t == u8->type) return true;
+  }
+  return false;
 }
 
 const TypeExpr* EmitAnalysis::deduce_binary_expr_type(const Binary& b) {
@@ -1097,6 +1182,24 @@ const TypeExpr* EmitAnalysis::deduce_binary_expr_type(const Binary& b) {
 
   if (binop_is_comparison(b.op)) return builtin_boolean_type();
   if (binop_is_arithmetic_like(b.op)) {
+    if (b.op == BinOp::RealDiv) {
+      if (same_type_ast(lt, rt) && type_is_numeric_primitive(lt)) {
+        const TypeExpr* canon = canonicalize_type(lt);
+        if (canon && canon->kind == Kind::TyName) {
+          const PrimitiveInfo* pi = primitive_info(
+              ascii_lower(static_cast<const TyName&>(*canon).name));
+          if (pi && pi->int_kind == PrimitiveIntKind::None) return lt;
+        }
+      }
+      if (type_is_numeric_primitive(lt) && type_is_numeric_primitive(rt)) {
+        const PrimitiveInfo* lp = primitive_info_for_type(lt);
+        const PrimitiveInfo* rp = primitive_info_for_type(rt);
+        if (lp && lp->int_kind == PrimitiveIntKind::None) return lt;
+        if (rp && rp->int_kind == PrimitiveIntKind::None) return rt;
+        return named_pascal_type("real");
+      }
+      return nullptr;
+    }
     // Pascal pointer arithmetic preserves the pointer type for `p+n`,
     // `n+p`, and `p-n`. Type deduction must keep that fact here because
     // a later dereference (`(p+n)^`) needs the pointee type; without it,
@@ -1135,7 +1238,7 @@ const TypeExpr* EmitAnalysis::deduce_binary_expr_type(const Binary& b) {
   if (b.op == BinOp::Add &&
       (type_is_string_like(lt) || type_is_string_like(rt) ||
        b.lhs->kind == Kind::StringLit || b.rhs->kind == Kind::StringLit)) {
-    if (type_is_ansistring(lt) || type_is_ansistring(rt)) {
+    if (type_is_long_string(lt) || type_is_long_string(rt)) {
       return named_pascal_type("ansistring");
     }
     return named_pascal_type("shortstring");
@@ -1166,6 +1269,10 @@ const TypeExpr* EmitAnalysis::deduce_low_high_result_type(const TypeExpr* t) {
     if (arr.array_kind == ArrayKind::Fixed && !arr.dims.empty()) {
       return arr.dims.front().get();
     }
+    // Open and dynamic arrays have no declared Pascal index subrange in the
+    // type. The emitted `high(a)` value is derived from runtime length, whose
+    // runtime helper uses the compiler's LongInt carrier.
+    return builtin_integer_type("longint");
   }
   return t;
 }
@@ -1361,6 +1468,11 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
   switch (e.kind) {
     case Kind::BoolLit:
       return builtin_boolean_type();
+    case Kind::RealLit:
+      // A real literal is target-convertible, but its standalone Pascal type is
+      // `Real`; call validation then applies the normal real-widening rank for
+      // `Single`/`Double`/`Extended` formals.
+      return named_pascal_type("real");
     case Kind::IntLit:
       if (auto info = eval_const_int_expr(e); info && info->type) {
         return builtin_integer_type(info->type);
@@ -1433,6 +1545,10 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       if (scope_.outer_result_type && !scope_.outer_result_name.empty() &&
           id.name == scope_.outer_result_name) {
         return scope_.outer_result_type;
+      }
+      if (const EnumInfoReg* info = local_enum_info_for_member(scope_, id.name);
+          info && info->type) {
+        return info->type;
       }
       // Class member lookup inside a known method body.
       if (registry_ && !scope_.current_class_name.empty()) {
@@ -1527,10 +1643,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       const TypeExpr* t = deduce_type(*d.operand);
       if (!t) return nullptr;
       t = canonicalize_type(t);
-      if (tyname_is(t, "pchar") || tyname_is(t, "pansichar")) {
+      if (t == named_pascal_type("pchar") || t == named_pascal_type("pansichar")) {
         return builtin_char_type();
       }
-      if (tyname_is(t, "ppchar")) return builtin_pchar_type();
       if (t && t->kind == Kind::TyPointer) {
         return static_cast<const TyPointer&>(*t).target.get();
       }
@@ -1679,6 +1794,20 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           }
           return deduce_low_high_result_type(deduce_type(*c.args[0]));
         }
+        if ((n == "lo" || n == "hi") && c.args.size() == 1) {
+          const TypeExpr* arg_type = deduce_type(*c.args[0]);
+          if (const TypeExpr* ord_type = ord_result_type_for_type(arg_type)) {
+            arg_type = ord_type;
+          }
+          arg_type = canonicalize_type(arg_type);
+          if (arg_type && arg_type->kind == Kind::TyName) {
+            const PrimitiveInfo* pi = primitive_info(
+                ascii_lower(static_cast<const TyName&>(*arg_type).name));
+            if (pi && pi->int_kind != PrimitiveIntKind::None) {
+              return lo_hi_result_type_for_bits(primitive_bits(*pi, target_));
+            }
+          }
+        }
         if (n == "sizeof" && c.args.size() == 1) {
           return builtin_integer_type("longint");
         }
@@ -1721,6 +1850,9 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           }
           if (const TyName* int_ty = builtin_integer_type(id.name)) {
             return int_ty;
+          }
+          if (const TypeExpr* primitive = primitive_type_expr_for_name(id.name)) {
+            return primitive;
           }
           const TypeSymbol* symbol =
               registry_ ? registry_->lookup_type_symbol(
@@ -1815,6 +1947,54 @@ std::string EmitAnalysis::deduce_class_alias(const Expr& e) {
     return cls;
   }
   return registry_->direct_type_name(canon, scope_.current_unit_name);
+}
+
+std::string EmitAnalysis::concrete_class_name_for_metaclass_value(
+    const Expr& e) {
+  if (e.kind == Kind::Ident) {
+    const auto& id = static_cast<const Ident&>(e);
+    if (identifier_is_shadowed_value(id.name)) return {};
+    if (const auto* ci = class_info_for_type_name(id.name);
+        ci && ci->is_reference_type) {
+      return id.name;
+    }
+    if (const TypeExpr* named = lookup_named_type_expr(id.name);
+        named && registry_) {
+      const std::string direct =
+          registry_->direct_type_name(named, scope_.current_unit_name);
+      if (const auto* ci = class_info_for_type_name(direct);
+          ci && ci->is_reference_type) {
+        return direct;
+      }
+    }
+    return {};
+  }
+
+  if (e.kind == Kind::Member) {
+    const auto& mem = static_cast<const Member&>(e);
+    if (!mem.base || mem.base->kind != Kind::Ident) return {};
+    const auto& base = static_cast<const Ident&>(*mem.base);
+    const std::string qualified = base.name + "." + mem.name;
+    if (const auto* ci = class_info_for_type_name(qualified);
+        ci && ci->is_reference_type) {
+      return qualified;
+    }
+    if (auto unit_member = resolve_unit_qualified_member(mem);
+        unit_member && unit_member->resolved.kind == ResolvedKind::UnitType &&
+        registry_) {
+      if (const TypeExpr* named =
+              lookup_named_type_expr(unit_member->unit_name + "." + mem.name)) {
+        const std::string direct =
+            registry_->direct_type_name(named, scope_.current_unit_name);
+        if (const auto* ci = class_info_for_type_name(direct);
+            ci && ci->is_reference_type) {
+          return direct;
+        }
+      }
+    }
+  }
+
+  return {};
 }
 
 std::string EmitAnalysis::canonical_method_owner_type_name(
@@ -2096,6 +2276,9 @@ const EnumInfoReg* EmitAnalysis::find_enum_info_in_unit(
 
 const EnumInfoReg* EmitAnalysis::find_visible_enum_info_for_member(
     const std::string& name) {
+  if (const EnumInfoReg* local = local_enum_info_for_member(scope_, name)) {
+    return local;
+  }
   if (!registry_) return nullptr;
 
   if (const auto* info = find_enum_info_in_unit(scope_.current_unit_name, name)) {

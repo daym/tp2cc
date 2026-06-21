@@ -69,6 +69,26 @@ enum class SetConversionKind : uint8_t {
   Compatible,
 };
 
+enum class OrdinalFamily : uint8_t {
+  Invalid,
+  Integer,
+  Boolean,
+  Char,
+  WideChar,
+  Enum,
+};
+
+struct OrdinalDomain {
+  OrdinalFamily family = OrdinalFamily::Invalid;
+  int64_t low = 0;
+  int64_t high = 0;
+  // Enum identity for `OrdinalFamily::Enum`. The TyEnum AST node IS the enum's
+  // identity: there's one per Pascal `type T = (...)` declaration, and the
+  // registry stores it (EnumInfoReg::type). Using the pointer directly avoids
+  // string-key aliasing across aliases and unit-qualified names.
+  const ast::TyEnum* enum_key = nullptr;
+};
+
 class EmitAnalysis {
  public:
   EmitAnalysis(const TypeRegistry* registry, ScopeStateView& scope,
@@ -117,18 +137,33 @@ class EmitAnalysis {
       const ast::SetLit& s, const ast::TypeExpr* target = nullptr);
   SetConversionKind classify_set_conversion(const ast::TypeExpr* source,
                                             const ast::TypeExpr* target);
+  std::optional<OrdinalDomain> ordinal_domain_for_type(
+      const ast::TypeExpr* t);
 
   // Best-effort Pascal static type for an expression. A null result means this
   // analysis layer does not have enough context to type the expression; it is
   // not by itself a diagnostic, and callers that need an error must own that
   // language rule explicitly.
   const ast::TypeExpr* deduce_type(const ast::Expr& e);
+  // Pascal type identity after alias/distinct canonicalization. Overload
+  // ranking needs this source-language identity before it falls back to emitted
+  // C++ carrier text, because unrelated Pascal pointer aliases may lower to
+  // the same C++ representation.
+  bool same_type_ast(const ast::TypeExpr* a, const ast::TypeExpr* b);
+  // Pascal explicit typecasts are call-shaped in the AST. This returns the
+  // source-language result type for `T(x)` / `unit.T(x)` when the callee is a
+  // visible type name; null means the call is not a typecast.
+  const ast::TypeExpr* explicit_typecast_result_type(const ast::Expr& e);
   // `Ord` is lowered by the compiler, not by a runtime helper. Its result type
   // follows the operand's ordinal domain so `Ord(Char)` stays byte-sized while
   // enums and integer subranges keep their own storage width.
   const ast::TypeExpr* ord_result_type_for_operand(const ast::Expr& operand);
   const ast::TypeExpr* ord_result_type_for_type(const ast::TypeExpr* t);
   std::string deduce_class_alias(const ast::Expr& e);
+  // Class identifiers and class aliases are values when passed to TClass or a
+  // `class of ...` formal. Return the concrete class denoted by that source
+  // expression; null string means the expression is not such a value.
+  std::string concrete_class_name_for_metaclass_value(const ast::Expr& e);
   std::string canonical_method_owner_type_name(std::string_view owner);
   const ast::TypeExpr* lookup_record_field_type_in_type(
       const ast::TypeExpr* type, std::string_view field_name);
@@ -168,29 +203,19 @@ class EmitAnalysis {
   std::optional<ImplicitPropertyLookup> find_implicit_class_property(
       std::string_view name);
 
+  // Type-identity predicates. Canonicalize the input first, then compare by
+  // pointer equality against the registered builtin-literal descriptor's
+  // `type` field. Pascal is nominal: same declaration == same canonical
+  // pointer == same type.
+  bool type_is_string_like(const ast::TypeExpr* t);
+  bool type_is_long_string(const ast::TypeExpr* t);
+
+  // Primitive metadata and target access for callers that drive dispatch
+  // from the canonical atom rather than its name string.
+  const PrimitiveInfo* primitive_info_for_type(const ast::TypeExpr* t);
+  TargetInfo target() const { return target_; }
+
  private:
-  enum class OrdinalFamily : uint8_t {
-    Invalid,
-    Integer,
-    Boolean,
-    Char,
-    WideChar,
-    Enum,
-  };
-
-  struct OrdinalDomain {
-    OrdinalFamily family = OrdinalFamily::Invalid;
-    int64_t low = 0;
-    int64_t high = 0;
-    // Enum identity for `OrdinalFamily::Enum`. The TyEnum AST node IS the
-    // enum's identity: there's one per Pascal `type T = (...)` declaration,
-    // and the registry stores it (EnumInfoReg::type). Using the pointer
-    // directly avoids string-key aliasing: every path to the same enum (raw
-    // TyEnum from deduce_type of an enum-member ident, or TyName canonicalised
-    // through the registry) ends at the same pointer.
-    const ast::TyEnum* enum_key = nullptr;
-  };
-
   struct SetLiteralOrdinalSummary {
     OrdinalFamily family;
     const ast::TyEnum* enum_key;

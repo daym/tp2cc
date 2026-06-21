@@ -502,37 +502,15 @@ bool EmitValues::can_convert_value_to_type(const Expr& e,
   }
 
   const bool target_is_tclass =
-      tyname_is(target, "tclass") || tyname_is(canon_target, "tclass");
+      target == named_pascal_type("tclass") ||
+      canon_target == named_pascal_type("tclass");
   if ((!analysis_.metaclass_target_name(target).empty() || target_is_tclass) &&
       !concrete_class_name_for_metaclass_value(e).empty()) {
     return true;
   }
 
-  const TypeExpr* source_type = overload_types_.type_for_overload(e);
-  if (e.kind == Kind::Call) {
-    const auto& call = static_cast<const Call&>(e);
-    if (call.args.size() == 1) {
-      if (call.callee->kind == Kind::Ident) {
-        const auto& id = static_cast<const Ident&>(*call.callee);
-        if (const TypeExpr* cast_type =
-                analysis_.lookup_named_type_expr(id.name)) {
-          source_type = cast_type;
-        }
-      } else if (call.callee->kind == Kind::Member) {
-        const auto& mem = static_cast<const Member&>(*call.callee);
-        if (auto unit_member = analysis_.resolve_unit_qualified_member(mem);
-            unit_member &&
-            unit_member->resolved.kind == ResolvedKind::UnitType) {
-          const std::string qualified =
-              unit_member->unit_name + "." + mem.name;
-          if (const TypeExpr* cast_type =
-                  analysis_.lookup_named_type_expr(qualified)) {
-            source_type = cast_type;
-          }
-        }
-      }
-    }
-  }
+  const TypeExpr* source_type = analysis_.explicit_typecast_result_type(e);
+  if (!source_type) source_type = overload_types_.type_for_overload(e);
   if (!source_type) source_type = analysis_.deduce_type(e);
   const TypeExpr* raw_source_type = source_type;
   const TypeExpr* canon_source_type = analysis_.canonicalize_type(source_type);
@@ -941,40 +919,7 @@ std::string EmitValues::plain_proc_adapter_value(const Expr& e,
 
 std::string EmitValues::concrete_class_name_for_metaclass_value(
     const Expr& src) {
-  if (src.kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(src);
-    if (const auto* ci = analysis_.class_info_for_type_name(id.name);
-        ci && ci->is_reference_type) {
-      return id.name;
-    }
-    if (const TypeExpr* named = analysis_.lookup_named_type_expr(id.name);
-        named && registry_) {
-      const std::string direct =
-          registry_->direct_type_name(named, scope_.current_unit_name);
-      if (const auto* ci = analysis_.class_info_for_type_name(direct);
-          ci && ci->is_reference_type) {
-        return direct;
-      }
-    }
-    if (auto cls = analysis_.deduce_class_alias(src); !cls.empty()) {
-      return cls;
-    }
-    return {};
-  }
-  if (src.kind == Kind::Member) {
-    const auto& mem = static_cast<const Member&>(src);
-    if (!mem.base || mem.base->kind != Kind::Ident) return {};
-    const auto& base = static_cast<const Ident&>(*mem.base);
-    const std::string qualified = base.name + "." + mem.name;
-    if (const auto* ci = analysis_.class_info_for_type_name(qualified);
-        ci && ci->is_reference_type) {
-      return qualified;
-    }
-    if (auto cls = analysis_.deduce_class_alias(src); !cls.empty()) {
-      return cls;
-    }
-  }
-  return {};
+  return analysis_.concrete_class_name_for_metaclass_value(src);
 }
 
 std::optional<std::string> EmitValues::maybe_lower_metaclass_value(
