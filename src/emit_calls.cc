@@ -390,6 +390,16 @@ bool EmitCalls::slot_accepts_argument(const CallArgumentSlot& slot,
   const TypeExpr* param_type = effective.type;
   if (!param_type || slot.untyped_arg != UntypedArgKind::None) return true;
 
+  auto scored_conversion_is_viable = [&] {
+    FlatCallParamInfo formal(param_type, /*untyped_in=*/false,
+                             slot.mutable_ref_arg,
+                             /*default_value_in=*/nullptr);
+    return resolution_
+        .score_argument_conversion(*slot.expr, formal,
+                                   /*allow_assignment_operator_conversions=*/true)
+        .viable();
+  };
+
   if (slot.mutable_ref_arg) {
     if (!storage_.expr_is_storage_lvalue(*slot.expr) &&
         !storage_.storage_designator(*slot.expr)) {
@@ -405,17 +415,19 @@ bool EmitCalls::slot_accepts_argument(const CallArgumentSlot& slot,
         storage_.expr_is_storage_lvalue(*slot.expr)) {
       return true;
     }
-    if (resolution_.rank_conversion(arg_type, param_type,
-                                    /*var_param=*/true)
-            .viable()) {
+    if (storage_.expr_is_storage_lvalue(*slot.expr) &&
+        storage_.type_is_pointerish(canon_param) &&
+        storage_.type_is_pointerish(arg_type) &&
+        (is_plain_pointer_type(canon_param) || is_plain_pointer_type(arg_type))) {
       return true;
     }
-    return storage_.type_is_pointerish(canon_param) &&
-           storage_.type_is_pointerish(arg_type);
+    if (scored_conversion_is_viable()) {
+      return true;
+    }
+    return false;
   }
 
-  return expr_ops_.can_convert_value_to_type(*slot.expr, param_type,
-                                             /*explicit_conversion=*/false);
+  return scored_conversion_is_viable();
 }
 
 bool EmitCalls::validate_call_arguments(const CallArgumentPlan& plan) {

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <unordered_set>
 #include <utility>
 
 #include "emit_signature_scope.h"
@@ -76,14 +77,9 @@ std::vector<EmitResolution::AnyCand> EmitResolution::class_method_cands(
   if (!set) return candidates;
   for (const auto& ms : *set) {
     if (!ms.decl) continue;
-    // Pascal constructor calls are expressions whose result is the constructed
-    // class reference. The emitted constructor method body itself returns
-    // bool, so call-type deduction needs this Pascal-facing result metadata.
-    std::string return_type_name =
-        ms.kind == SymKind::Constructor ? cls : std::string{};
     candidates.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args,
                           {}, ms.defining_unit, ms.declaring_type,
-                          std::move(return_type_name)});
+                          ms.return_type_name});
   }
   return candidates;
 }
@@ -100,14 +96,9 @@ std::vector<EmitResolution::AnyCand> EmitResolution::metaclass_method_cands(
     if (ms.kind != SymKind::Constructor && ms.kind != SymKind::ClassMethod) {
       continue;
     }
-    // Pascal constructor calls are expressions whose result is the constructed
-    // class reference. The emitted constructor method body itself returns
-    // bool, so call-type deduction needs this Pascal-facing result metadata.
-    std::string return_type_name =
-        ms.kind == SymKind::Constructor ? cls : std::string{};
     candidates.push_back({ms.decl.get(), ms.param_count, ms.accepts_zero_args,
                           {}, ms.defining_unit, ms.declaring_type,
-                          std::move(return_type_name)});
+                          ms.return_type_name});
   }
   return candidates;
 }
@@ -170,13 +161,22 @@ EmitResolution::gather_callable_in_pascal_scope(
     }
     return candidates;
   }
+  std::vector<AnyCand> runtime_candidates;
   for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
        ++it) {
     std::vector<AnyCand> unit_candidates = unit_export_proc_cands(*it, name);
+    if (*it == "__rt__") {
+      // `__rt__` models implicit System/runtime helpers. Explicit units,
+      // including runtime-backed stubs such as Dos and SysUtils, are the
+      // Pascal surface and must own their exports when they provide the name.
+      runtime_candidates = std::move(unit_candidates);
+      continue;
+    }
     candidates.insert(candidates.end(),
                       std::make_move_iterator(unit_candidates.begin()),
                       std::make_move_iterator(unit_candidates.end()));
   }
+  if (candidates.empty()) return runtime_candidates;
   return candidates;
 }
 
@@ -420,6 +420,59 @@ bool EmitResolution::set_literal_can_construct_open_array(
   return true;
 }
 
+bool EmitResolution::target_pointer_arithmetic_can_convert(
+    const Expr& arg, const TypeExpr* param,
+    bool allow_assignment_operator_conversions) {
+  const TypeExpr* canon_param = analysis_.canonicalize_type(param);
+  if (!canon_param || !type_ops_.type_is_pointerish(canon_param) ||
+      arg.kind != Kind::Binary) {
+    return false;
+  }
+
+  const auto& b = static_cast<const Binary&>(arg);
+  if (b.op != BinOp::Add && b.op != BinOp::Sub) return false;
+  if (!b.lhs || !b.rhs) return false;
+
+  const TypeExpr* lhs_type =
+      analysis_.canonicalize_type(argument_source_type_for_conversion(*b.lhs));
+  const TypeExpr* rhs_type =
+      analysis_.canonicalize_type(argument_source_type_for_conversion(*b.rhs));
+  auto integer_type = [](const TypeExpr* t) {
+    if (!t || t->kind != Kind::TyName) return false;
+    const PrimitiveInfo* pi =
+        primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
+    return pi && pi->int_kind != PrimitiveIntKind::None;
+  };
+
+  FlatCallParamInfo pointer_operand(param, /*untyped_in=*/false,
+                                    /*mutable_ref_in=*/false,
+                                    /*default_value_in=*/nullptr);
+  if (type_ops_.type_is_pointerish(lhs_type) && integer_type(rhs_type)) {
+    return score_argument_conversion(*b.lhs, pointer_operand,
+                                     allow_assignment_operator_conversions)
+        .viable();
+  }
+  if (b.op == BinOp::Add && integer_type(lhs_type) &&
+      type_ops_.type_is_pointerish(rhs_type)) {
+    return score_argument_conversion(*b.rhs, pointer_operand,
+                                     allow_assignment_operator_conversions)
+        .viable();
+  }
+  return false;
+}
+
+const TypeExpr* EmitResolution::argument_source_type_for_conversion(
+    const Expr& arg) {
+  if (const TypeExpr* cast_type =
+          analysis_.explicit_typecast_result_type(arg)) {
+    return cast_type;
+  }
+  if (const TypeExpr* overload_type = overload_types_.type_for_overload(arg)) {
+    return overload_type;
+  }
+  return analysis_.deduce_type(arg);
+}
+
 ConvScore EmitResolution::rank_integer_domain_conversion(
     const IntegerActualDomain& domain, const TypeExpr* param, bool var_param) {
   if (var_param) return {};
@@ -458,10 +511,12 @@ std::optional<PickResult> EmitResolution::pick_integer_domain_overload(
   for (const ScoredCandidate& candidate : viable) {
     if (!candidate.decl) continue;
     std::vector<FlatCallParamInfo> flat =
-        flatten_call_param_info(candidate.decl);
+        flatten_call_param_info(candidate.decl, candidate.declaration_unit,
+                                candidate.declaring_type);
     if (args.size() > flat.size()) continue;
 
-    ScoredCandidate scored{candidate.decl, candidate.scores};
+    ScoredCandidate scored{candidate.decl, candidate.declaration_unit,
+                           candidate.declaring_type, candidate.scores};
     bool fits_all = true;
     for (size_t i = 0; i < args.size(); ++i) {
       if (!domains[i]) continue;
@@ -513,10 +568,8 @@ std::optional<PickResult> EmitResolution::pick_integer_domain_overload(
 }
 
 int EmitResolution::real_conversion_rank(std::string_view name) const {
-  if (name == "single") return 1;
-  if (name == "double" || name == "real") return 2;
-  if (name == "extended" || name == "comp") return 3;
-  return 0;
+  const PrimitiveInfo* info = primitive_info(name);
+  return info ? info->float_rank() : 0;
 }
 
 bool EmitResolution::type_is_shortstring_family(const TypeExpr* t) const {
@@ -527,14 +580,12 @@ bool EmitResolution::type_is_shortstring_family(const TypeExpr* t) const {
   return n == "shortstring";
 }
 
-bool EmitResolution::type_is_ansistring(const TypeExpr* t) const {
-  return t && t->kind == Kind::TyName &&
-         ascii_lower(static_cast<const TyName&>(*t).name) == "ansistring";
+bool EmitResolution::type_is_longstring_family(const TypeExpr* t) const {
+  return analysis_.type_is_long_string(t);
 }
 
 bool EmitResolution::type_is_char_type(const TypeExpr* t) const {
-  return t && t->kind == Kind::TyName &&
-         ascii_lower(static_cast<const TyName&>(*t).name) == "char";
+  return t && t == named_pascal_type("char");
 }
 
 ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
@@ -546,6 +597,10 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
   const TypeExpr* a = analysis_.canonicalize_type(arg);
   const TypeExpr* p = analysis_.canonicalize_type(param);
   if (!a || !p) return {};
+
+  if (analysis_.same_type_ast(raw_arg, raw_param)) {
+    return {ConvRank::Exact, 0};
+  }
 
   if (a->kind == Kind::TySet || p->kind == Kind::TySet) {
     switch (analysis_.classify_set_conversion(a, p)) {
@@ -560,15 +615,22 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
 
   std::string a_cxx = type_cxx_or_empty(a);
   std::string p_cxx = type_cxx_or_empty(p);
-  // 1. Exact identity after canonicalization.
-  if (!a_cxx.empty() && a_cxx == p_cxx) return {ConvRank::Exact, 0};
+  // 1. Exact identity after canonicalization. Do not use emitted C++ carrier
+  // equality for pointer-like Pascal values: `Pointer`, typed pointers,
+  // reference-class values, and callback carriers may share a representation
+  // while still having distinct Pascal conversion ranks.
+  const bool pointer_like_pair =
+      type_ops_.type_is_pointerish(a) || type_ops_.type_is_pointerish(p);
+  if (!pointer_like_pair && !a_cxx.empty() && a_cxx == p_cxx) {
+    return {ConvRank::Exact, 0};
+  }
 
   const TypeExpr* a_under = strip_conversion_wrapper(a);
   const TypeExpr* p_under = strip_conversion_wrapper(p);
   // 2. Equal modulo distinct/subrange wrappers. Distinct types still lower to
   // the same underlying storage for overload ranking, and subranges adopt
   // their base integer type here.
-  if (a_under && p_under &&
+  if (!pointer_like_pair && a_under && p_under &&
       type_cxx_or_empty(a_under) == type_cxx_or_empty(p_under)) {
     return {ConvRank::Equal, 0};
   }
@@ -621,6 +683,7 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
     int pr =
         real_conversion_rank(ascii_lower(static_cast<const TyName&>(*p).name));
     if (ar > 0 && pr > 0 && pr >= ar) return {ConvRank::RealWidening, pr - ar};
+    if (ar > 0 && pr > 0) return {ConvRank::RealNarrowing, ar - pr};
   }
 
   // 6. Same-family ShortString widening.
@@ -629,9 +692,9 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
   }
 
   const bool param_is_shortstring = type_is_shortstring_family(p);
-  const bool param_is_ansistring = type_is_ansistring(p);
+  const bool param_is_ansistring = type_is_longstring_family(p);
   const bool arg_is_shortstring = type_is_shortstring_family(a);
-  const bool arg_is_ansistring = type_is_ansistring(a);
+  const bool arg_is_ansistring = type_is_longstring_family(a);
   // 7-8. Cross-family string conversions stay split because under `{$H-}`
   // Pascal prefers ShortString-targeted overloads over AnsiString-targeted
   // ones when both otherwise accept the same source.
@@ -685,6 +748,16 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
                 static_cast<int>(aw) - static_cast<int>(pw)};
       }
     }
+  }
+
+  // 11. Integer value expressions can feed real value formals. Keep this worse
+  // than every integer-formal conversion so integer overloads still win for
+  // integer actuals; within real formals, prefer the lower-precision target.
+  if (const auto* ai = primitive_for_type(a);
+      ai && ai->int_kind != PrimitiveIntKind::None && p->kind == Kind::TyName) {
+    int pr =
+        real_conversion_rank(ascii_lower(static_cast<const TyName&>(*p).name));
+    if (pr > 0) return {ConvRank::IntegerToReal, pr};
   }
 
   return {};
@@ -1021,6 +1094,19 @@ ConvScore EmitResolution::score_argument_conversion(
       static_cast<const SetLit&>(arg).elements.empty()) {
     return {ConvRank::Exact, 0};
   }
+  if (arg.kind == Kind::SetLit && canon_param &&
+      canon_param->kind == Kind::TySet) {
+    const TypeExpr* literal_type =
+        analysis_.deduce_set_literal_type(static_cast<const SetLit&>(arg));
+    switch (analysis_.classify_set_conversion(literal_type, canon_param)) {
+      case SetConversionKind::Exact:
+        return {ConvRank::Exact, 0};
+      case SetConversionKind::Compatible:
+        return param.mutable_ref ? ConvScore{} : ConvScore{ConvRank::SetCompatible, 0};
+      case SetConversionKind::Incompatible:
+        return {};
+    }
+  }
   if (arg.kind == Kind::SetLit &&
       set_literal_can_construct_open_array(
           static_cast<const SetLit&>(arg), param.type)) {
@@ -1029,6 +1115,30 @@ ConvScore EmitResolution::score_argument_conversion(
     // set value. Score it here so overload selection reaches the existing
     // open-array argument lowering instead of emitting a set literal too early.
     return {ConvRank::Exact, 0};
+  }
+  if (canon_param && canon_param->kind == Kind::TyArray &&
+      static_cast<const TyArray&>(*canon_param).array_kind == ArrayKind::Open) {
+    const TypeExpr* arg_type = argument_source_type_for_conversion(arg);
+    const TypeExpr* canon_arg = analysis_.canonicalize_type(arg_type);
+    if (canon_arg && canon_arg->kind == Kind::TyArray) {
+      return {ConvRank::Exact, 0};
+    }
+  }
+  if (target_pointer_arithmetic_can_convert(
+          arg, param.type, allow_assignment_operator_conversions)) {
+    return {ConvRank::Exact, 0};
+  }
+  if (!param.mutable_ref && canon_param &&
+      type_ops_.expr_is_storage_lvalue(arg)) {
+    if (const TypeExpr* arg_type = argument_source_type_for_conversion(arg);
+        type_ops_.fixed_char_array_value_can_decay_to_pchar(arg_type,
+                                                            param.type)) {
+      return {ConvRank::PointerValueConversion, 0};
+    }
+  }
+  if (arg.kind == Kind::AddrOf && canon_param &&
+      type_ops_.type_is_pointerish(canon_param)) {
+    return {ConvRank::PointerValueConversion, 0};
   }
   // `nil` has no standalone type; deduce_type(NilLit) returns null, so
   // rank_conversion bails with Not-Viable. Without this case the picker
@@ -1043,12 +1153,10 @@ ConvScore EmitResolution::score_argument_conversion(
       type_ops_.type_is_pointerish(canon_param)) {
     return {ConvRank::Exact, 0};
   }
-  // Pascal's `pointer` is the universal pointer type: any typed-pointer
-  // value (including `@var` results and reference-class values) is freely
-  // assignable to a `pointer` parameter without a cast. rank_conversion
-  // doesn't model this implicit narrowing, so the picker rejects e.g.
-  // `foo(@s, ...)` against a `pointer` slot when there's a competing
-  // overload. Score it Exact here so the picker sees the call as viable.
+  // Pascal's `Pointer` is the universal pointer type: typed-pointer values
+  // (including `@var` results and reference-class values) can pass to a
+  // `Pointer` formal without an explicit cast. FPC ranks that as a conversion,
+  // not as identity, so an exact typed-pointer formal still wins.
   //
   // `@expr` always yields a pointer in Pascal, but deduce_type intentionally
   // returns null for `@array`: the emitter chooses pointer-to-array versus
@@ -1056,20 +1164,23 @@ ConvScore EmitResolution::score_argument_conversion(
   // picker doesn't reject `foo(@arr, ...)` against a pointer slot.
   if (canon_param && canon_param->kind == Kind::TyPointer &&
       !static_cast<const TyPointer&>(*canon_param).target) {
-    if (arg.kind == Kind::AddrOf) {
+    if (const TypeExpr* arg_type = argument_source_type_for_conversion(arg);
+        analysis_.same_type_ast(arg_type, param.type)) {
       return {ConvRank::Exact, 0};
     }
-    if (const TypeExpr* arg_type =
-            overload_types_.type_for_overload(arg)) {
+    if (arg.kind == Kind::AddrOf) {
+      return {ConvRank::PointerValueConversion, 0};
+    }
+    if (const TypeExpr* arg_type = argument_source_type_for_conversion(arg)) {
       const TypeExpr* canon_arg = analysis_.canonicalize_type(arg_type);
       if (canon_arg && type_ops_.type_is_pointerish(canon_arg)) {
-        return {ConvRank::Exact, 0};
+        return {ConvRank::PointerValueConversion, 0};
       }
     }
   }
   if (canon_param && canon_param->kind == Kind::TyProcedural) {
     const auto& proc = static_cast<const TyProcedural&>(*canon_param);
-    if (const TypeExpr* arg_type = overload_types_.type_for_overload(arg)) {
+    if (const TypeExpr* arg_type = argument_source_type_for_conversion(arg)) {
       const TypeExpr* canon_arg = analysis_.canonicalize_type(arg_type);
       if (canon_arg && canon_arg->kind == Kind::TyProcedural) {
         return procedural_types_match(
@@ -1088,9 +1199,26 @@ ConvScore EmitResolution::score_argument_conversion(
     // type rule for this formal.
     return {};
   }
-  const TypeExpr* arg_type = overload_types_.type_for_overload(arg);
+  const TypeExpr* arg_type = argument_source_type_for_conversion(arg);
+  if (!param.mutable_ref && canon_param) {
+    const bool target_is_tclass =
+        param.type == named_pascal_type("tclass") ||
+        canon_param == named_pascal_type("tclass");
+    if ((!analysis_.metaclass_target_name(canon_param).empty() ||
+         target_is_tclass) &&
+        !analysis_.concrete_class_name_for_metaclass_value(arg).empty()) {
+      return {ConvRank::ClassValueConversion, 0};
+    }
+  }
   ConvScore direct = rank_conversion(arg_type, param.type, param.mutable_ref);
   if (direct.rank == ConvRank::Exact) return direct;
+  if (!param.mutable_ref && arg_type &&
+      type_ops_.pointer_value_conversion_is_valid(
+          param.type, arg_type,
+          /*explicit_pascal_cast=*/analysis_.explicit_typecast_result_type(arg) !=
+              nullptr)) {
+    return {ConvRank::PointerValueConversion, 0};
+  }
   if (auto domain = integer_actual_domain_for_expr(arg)) {
     if (ConvScore ordinal =
             rank_integer_domain_conversion(*domain, param.type,
@@ -1129,16 +1257,34 @@ bool EmitResolution::conversion_candidate_dominates(
   return any_strict;
 }
 
-PickResult EmitResolution::pick_overload(
-    const std::vector<const ProcDecl*>& candidates,
+PickResult EmitResolution::pick_method_overload(
+    const std::vector<MethodSig>& candidates,
+    const std::vector<const Expr*>& args,
+    bool allow_assignment_operator_conversions) {
+  std::vector<AnyCand> wrapped;
+  wrapped.reserve(candidates.size());
+  for (const MethodSig& method : candidates) {
+    if (!method.decl) continue;
+    wrapped.push_back({method.decl.get(), method.param_count,
+                       method.accepts_zero_args, {}, method.defining_unit,
+                       method.declaring_type, method.return_type_name});
+  }
+  return pick_overload_from_candidates(
+      wrapped, args, allow_assignment_operator_conversions);
+}
+
+PickResult EmitResolution::pick_overload_from_candidates(
+    const std::vector<AnyCand>& candidates,
     const std::vector<const Expr*>& args,
     bool allow_assignment_operator_conversions) {
   if (candidates.empty()) return {};
 
   std::vector<ScoredCandidate> viable;
-  for (const ProcDecl* decl : candidates) {
+  for (const AnyCand& candidate : candidates) {
+    const ProcDecl* decl = candidate.decl;
     if (!decl) continue;
-    std::vector<FlatCallParamInfo> flat = flatten_call_param_info(decl);
+    std::vector<FlatCallParamInfo> flat = flatten_call_param_info(
+        decl, candidate.declaration_unit, candidate.declaring_type);
     // First filter by arity plus default-argument slack.
     if (args.size() > flat.size()) continue;
     bool ok = true;
@@ -1150,7 +1296,8 @@ PickResult EmitResolution::pick_overload(
     }
     if (!ok) continue;
 
-    ScoredCandidate s{decl, {}};
+    ScoredCandidate s{decl, candidate.declaration_unit,
+                      candidate.declaring_type, {}};
     s.scores.reserve(args.size());
     for (size_t i = 0; i < args.size(); ++i) {
       ConvScore r = score_argument_conversion(
@@ -1328,7 +1475,8 @@ ResolvedCall EmitResolution::resolve_call(
     if (args.size() > a.param_count) continue;
     if (args.size() < a.param_count && !a.accepts_zero_args) {
       if (!a.decl) continue;
-      std::vector<FlatCallParamInfo> flat = flatten_call_param_info(a.decl);
+      std::vector<FlatCallParamInfo> flat = flatten_call_param_info(
+          a.decl, a.declaration_unit, a.declaring_type);
       bool ok = true;
       for (size_t i = args.size(); i < flat.size(); ++i) {
         if (!flat[i].default_value) {
@@ -1356,14 +1504,14 @@ ResolvedCall EmitResolution::resolve_call(
     // Multiple arity-viable candidates: run the Pascal conversion-rank picker
     // on the decl-backed subset. We do not silently pick among tied
     // incomparables; the caller reports the ambiguity as a Pascal error.
-    std::vector<const ProcDecl*> with_decl;
+    std::vector<AnyCand> with_decl;
     for (const auto& a : arity_ok) {
-      if (a.decl) with_decl.push_back(a.decl);
+      if (a.decl) with_decl.push_back(a);
     }
     if (with_decl.empty()) {
       return unresolved_call(member_name);
     }
-    PickResult pr = pick_overload(
+    PickResult pr = pick_overload_from_candidates(
         with_decl, args, /*allow_assignment_operator_conversions=*/true);
     if (pr.ambiguous) {
       return ResolvedCall{.decl = nullptr,
@@ -1471,16 +1619,17 @@ BinaryOperatorResult EmitResolution::find_binary_operator(
   std::vector<AnyCand> cands = gather_operator_in_pascal_scope(op);
   if (cands.empty()) return {};
 
-  std::vector<const ProcDecl*> arity_ok;
+  std::vector<AnyCand> arity_ok;
   for (const auto& c : cands) {
     if (!c.decl) continue;
-    std::vector<FlatCallParamInfo> flat = flatten_call_param_info(c.decl);
-    if (flat.size() == 2) arity_ok.push_back(c.decl);
+    std::vector<FlatCallParamInfo> flat =
+        flatten_call_param_info(c.decl, c.declaration_unit, c.declaring_type);
+    if (flat.size() == 2) arity_ok.push_back(c);
   }
   if (arity_ok.empty()) return {};
 
   std::vector<const Expr*> args{&lhs, &rhs};
-  PickResult pr = pick_overload(
+  PickResult pr = pick_overload_from_candidates(
       arity_ok, args, /*allow_assignment_operator_conversions=*/true);
   if (pr.ambiguous) return {nullptr, {}, true};
   if (!pr.decl) return {};
@@ -1496,16 +1645,17 @@ UnaryOperatorResult EmitResolution::find_unary_operator(
   std::vector<AnyCand> cands = gather_operator_in_pascal_scope(op);
   if (cands.empty()) return {};
 
-  std::vector<const ProcDecl*> arity_ok;
+  std::vector<AnyCand> arity_ok;
   for (const auto& c : cands) {
     if (!c.decl) continue;
-    std::vector<FlatCallParamInfo> flat = flatten_call_param_info(c.decl);
-    if (flat.size() == 1) arity_ok.push_back(c.decl);
+    std::vector<FlatCallParamInfo> flat =
+        flatten_call_param_info(c.decl, c.declaration_unit, c.declaring_type);
+    if (flat.size() == 1) arity_ok.push_back(c);
   }
   if (arity_ok.empty()) return {};
 
   std::vector<const Expr*> args{&operand};
-  PickResult pr = pick_overload(
+  PickResult pr = pick_overload_from_candidates(
       arity_ok, args, /*allow_assignment_operator_conversions=*/true);
   if (pr.ambiguous) return {nullptr, {}, true};
   if (!pr.decl) return {};
@@ -1556,19 +1706,17 @@ AssignmentOperatorResult EmitResolution::find_assignment_operator(
   ConvScore best_score{};
   bool have_best = false;
   bool ambiguous = false;
-  for (const ProcDecl* pd : viable) {
-    std::vector<FlatCallParamInfo> flat = flatten_call_param_info(pd);
+  for (const AnyCand& candidate : viable) {
+    const ProcDecl* pd = candidate.decl;
+    std::vector<FlatCallParamInfo> flat =
+        flatten_call_param_info(pd, candidate.declaration_unit,
+                                candidate.declaring_type);
     ConvScore score = rank_conversion(source, flat[0].type, flat[0].mutable_ref);
     if (!score.viable()) continue;
     if (!have_best || score.rank < best_score.rank ||
         (score.rank == best_score.rank && score.distance < best_score.distance)) {
       best = pd;
-      for (const auto& c : cands) {
-        if (c.decl == pd) {
-          best_unit = c.callee_unit;
-          break;
-        }
-      }
+      best_unit = candidate.callee_unit;
       best_score = score;
       have_best = true;
       ambiguous = false;

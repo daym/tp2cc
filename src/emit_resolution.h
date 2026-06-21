@@ -90,14 +90,20 @@ class EmitResolution {
                             const ast::TypeExpr* param,
                             bool var_param);
 
-  // Pick the Pascal-best ProcDecl from a list of candidates given the
-  // call-site argument expressions. Used by both free-function overload
-  // sets (built from `ProcInfo::decl`) and class-method overload sets
-  // (built from `MethodSig::decl`); the picker only needs the decls.
-  // Result `ambiguous=true` means multiple viable candidates were mutually
-  // incomparable, so the caller must diagnose a Pascal-level ambiguity.
-  PickResult pick_overload(
-      const std::vector<const ast::ProcDecl*>& candidates,
+  // Shared actual/formal conversion model for call arguments. Overload
+  // picking uses the score to rank candidates; single-candidate validation uses
+  // the same score so arity-only calls cannot accept or reject a different
+  // language than overload sets. Caller-storage checks for `var`/`out` remain
+  // in EmitCalls because they depend on designator lowering, not type ranking.
+  ConvScore score_argument_conversion(
+      const ast::Expr& arg, const FlatCallParamInfo& param,
+      bool allow_assignment_operator_conversions);
+
+  // Pick the Pascal-best method from complete signature metadata. A ProcDecl
+  // pointer alone is not enough: formal type names are resolved in the unit and
+  // declaring type where the signature was declared.
+  PickResult pick_method_overload(
+      const std::vector<MethodSig>& candidates,
       const std::vector<const ast::Expr*>& args,
       bool allow_assignment_operator_conversions = false);
 
@@ -160,11 +166,17 @@ class EmitResolution {
   };
   struct ScoredCandidate {
     const ast::ProcDecl* decl = nullptr;
+    std::string declaration_unit;
+    std::string declaring_type;
     std::vector<ConvScore> scores;
   };
   struct IntegerActualDomain {
     int64_t low = 0;
     uint64_t high = 0;
+    // Preferred signedness for a representative integer atom that fits this
+    // domain. None means no preference; Signed means signed; Unsigned means
+    // unsigned. This is a value-choice tracker for overload resolution, not a
+    // type-identity tag.
     PrimitiveIntKind preferred_kind = PrimitiveIntKind::None;
   };
   struct InstanceMethodLookup {
@@ -218,7 +230,7 @@ class EmitResolution {
       const std::vector<const ast::Expr*>& args);
   int real_conversion_rank(std::string_view name) const;
   bool type_is_shortstring_family(const ast::TypeExpr* t) const;
-  bool type_is_ansistring(const ast::TypeExpr* t) const;
+  bool type_is_longstring_family(const ast::TypeExpr* t) const;
   bool type_is_char_type(const ast::TypeExpr* t) const;
   bool procedural_signatures_match(const ast::ProcDecl& decl,
                                    const ast::TyProcedural& proc);
@@ -235,6 +247,10 @@ class EmitResolution {
   bool conversion_score_less(const ConvScore& a, const ConvScore& b) const;
   bool conversion_candidate_dominates(const ScoredCandidate& a,
                                       const ScoredCandidate& b) const;
+  PickResult pick_overload_from_candidates(
+      const std::vector<AnyCand>& candidates,
+      const std::vector<const ast::Expr*>& args,
+      bool allow_assignment_operator_conversions);
   ResolvedCall resolved_call_from_candidate(const std::string& member_name,
                                             const AnyCand& chosen,
                                             bool ran_type_picker) const;

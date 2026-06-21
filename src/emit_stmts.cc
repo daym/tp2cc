@@ -689,11 +689,7 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
         if (!cls.empty()) {
           if (const auto* methods = registry_->lookup_class_methods(
                   cls, mem.name, scope_.current_unit_name)) {
-            std::vector<const ProcDecl*> candidates;
-            for (const auto& method : *methods) {
-              if (method.decl) candidates.push_back(method.decl.get());
-            }
-            PickResult picked = resolution_.pick_overload(candidates, {});
+            PickResult picked = resolution_.pick_method_overload(*methods, {});
             stmt_autocalls_member = !picked.ambiguous && picked.decl;
           } else if (ascii_lower(mem.name) == "destroy") {
             if (const auto* ci = analysis_.class_info_for_type_name(cls)) {
@@ -927,11 +923,7 @@ const MethodSig* EmitStmts::for_in_zero_arg_method(
       class_name, method_name, scope_.current_unit_name);
   if (!methods) return nullptr;
 
-  std::vector<const ProcDecl*> candidates;
-  for (const auto& method : *methods) {
-    if (method.decl) candidates.push_back(method.decl.get());
-  }
-  PickResult picked = resolution_.pick_overload(candidates, {});
+  PickResult picked = resolution_.pick_method_overload(*methods, {});
   if (picked.ambiguous) {
     stmt_ops_.report_error(loc, "ambiguous " + method_name + " method");
     return nullptr;
@@ -1047,7 +1039,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
   }
   const TypeExpr* move_ret = move->decl ? move->decl->return_type.get() : nullptr;
   move_ret = analysis_.canonicalize_type(move_ret);
-  if (!move->is_function || !tyname_is(move_ret, "boolean")) {
+  if (!move->is_function || move_ret != builtin_boolean_type()) {
     stmt_ops_.report_error(provider.loc,
                            "enumerator MoveNext must return Boolean");
     return ForInEmitResult::Error;
@@ -1108,11 +1100,8 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_string(
   const TypeExpr* in_type =
       analysis_.canonicalize_type(selected_value_type(*f.in_expr));
   bool is_string = in_type && in_type->kind == Kind::TyString;
-  if (!is_string && in_type && in_type->kind == Kind::TyName) {
-    const std::string name =
-        ascii_lower(static_cast<const TyName&>(*in_type).name);
-    is_string =
-        name == "string" || name == "shortstring" || name == "ansistring";
+  if (!is_string && in_type) {
+    is_string = analysis_.type_is_string_like(in_type);
   }
   if (!is_string) return ForInEmitResult::NotMatched;
 

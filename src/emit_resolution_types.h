@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -160,14 +161,18 @@ class CallTypeProvider {
 //    5   | IntDomainCompatible     | 0..255 -> byte/cardinal/longint
 //    6   | IntWideningSameSign     | byte -> word -> qword
 //    7   | RealWidening            | single -> double -> extended
-//    8   | StringSameTagWiden      | ShortString<N> -> ShortString<M>, M >= N
-//    9   | StringToShortString     | Char/PChar/AnsiString -> ShortString
-//   10   | StringToAnsiString      | Char/PChar/ShortString -> AnsiString;
+//    8   | RealNarrowing           | extended -> double -> single
+//    9   | StringSameTagWiden      | ShortString<N> -> ShortString<M>, M >= N
+//   10   | StringToShortString     | Char/PChar/AnsiString -> ShortString
+//   11   | StringToAnsiString      | Char/PChar/ShortString -> AnsiString;
 //        |                         | ShortString/AnsiString -> PChar
-//   11   | OrdinalSignChange       | longint -> longword (or back)
-//   12   | IntNarrowing            | longint -> shortint, etc.
-//   13   | Operator                | FPC operator := conversion
-//   14   | Variant                 | anything <-> variant
+//   12   | OrdinalSignChange       | longint -> longword (or back)
+//   13   | IntNarrowing            | longint -> shortint, etc.
+//   14   | IntegerToReal           | longint -> real/double/extended
+//   15   | PointerValueConversion  | ^T -> Pointer, fixed char array -> PChar
+//   16   | ClassValueConversion    | TChild identifier -> TClass/class of TBase
+//   17   | Operator                | FPC operator := conversion
+//   18   | Variant                 | anything <-> variant
 //    -   | NotViable               | no implicit conversion exists
 //
 // The ShortString and AnsiString ranks stay split because the bootstrap compiler
@@ -182,13 +187,20 @@ enum class ConvRank : uint8_t {
   IntDomainCompatible = 5,
   IntWideningSameSign = 6,
   RealWidening = 7,
-  StringSameTagWiden = 8,
-  StringToShortString = 9,
-  StringToAnsiString = 10,
-  OrdinalSignChange = 11,
-  IntNarrowing = 12,
-  Operator = 13,
-  Variant = 14,
+  RealNarrowing = 8,
+  StringSameTagWiden = 9,
+  StringToShortString = 10,
+  StringToAnsiString = 11,
+  OrdinalSignChange = 12,
+  IntNarrowing = 13,
+  IntegerToReal = 14,
+  // Pascal value conversions among concrete pointer-compatible types. This is
+  // viable for calls, but worse than an exact declared pointer type match.
+  PointerValueConversion = 15,
+  // Class identifiers/class aliases as values passed to TClass/class-of slots.
+  ClassValueConversion = 16,
+  Operator = 17,
+  Variant = 18,
   NotViable = 255,
 };
 
@@ -212,15 +224,26 @@ struct PickResult {
 // row per call-site argument position.
 struct FlatCallParamInfo {
   const ast::TypeExpr* type = nullptr;
+  std::shared_ptr<const ast::TypeExpr> owned_type;
   bool untyped = false;
   bool mutable_ref = false;
   const ast::Expr* default_value = nullptr;
+  std::string param_unit;
+  std::string param_declaring_type;
   FlatCallParamInfo(const ast::TypeExpr* type_in, bool untyped_in,
-                    bool mutable_ref_in, const ast::Expr* default_value_in)
+                    bool mutable_ref_in, const ast::Expr* default_value_in,
+                    std::string param_unit_in = {},
+                    std::string param_declaring_type_in = {},
+                    std::shared_ptr<const ast::TypeExpr> owned_type_in = {})
       : type(type_in),
+        owned_type(std::move(owned_type_in)),
         untyped(untyped_in),
         mutable_ref(mutable_ref_in),
-        default_value(default_value_in) {}
+        default_value(default_value_in),
+        param_unit(std::move(param_unit_in)),
+        param_declaring_type(std::move(param_declaring_type_in)) {
+    if (owned_type) type = owned_type.get();
+  }
 };
 
 enum class ResolvedCalleeKind {
@@ -275,6 +298,12 @@ class ResolutionTypeOps {
   // etc.). The picker uses it to recognize Pascal nil-compatible slots
   // without re-listing the cases at the call site.
   virtual bool type_is_pointerish(const ast::TypeExpr* t) = 0;
+  virtual bool expr_is_storage_lvalue(const ast::Expr& e) = 0;
+  virtual bool fixed_char_array_value_can_decay_to_pchar(
+      const ast::TypeExpr* src_type, const ast::TypeExpr* dst_type) = 0;
+  virtual bool pointer_value_conversion_is_valid(
+      const ast::TypeExpr* dst_type, const ast::TypeExpr* src_type,
+      bool explicit_pascal_cast) = 0;
   // Method binding compares the real Pascal formal surface. Procvar carrier
   // signatures may intentionally normalize pointer-like value parameters for
   // safe indirect C++ calls, but overload/method identity must not collapse
