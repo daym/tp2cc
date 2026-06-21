@@ -830,6 +830,174 @@ void test_imported_const_array_bounds_use_declaring_unit_scope() {
   CHECK(!contains(out.impl, "max_operands"));
 }
 
+void test_imported_const_shortstring_bound_uses_declaring_unit_scope() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit useglob;\n"
+      "interface\n"
+      "uses globtype;\n"
+      "procedure put(var s : stringid);\n"
+      "implementation\n"
+      "procedure put(var s : stringid);\n"
+      "begin\n"
+      "end;\n"
+      "end.\n",
+      {{"globtype.pas",
+        "unit globtype;\n"
+        "interface\n"
+        "const maxidlen = 64;\n"
+        "type stringid = string[maxidlen];\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.header, "void p_put(::rt::tp2cc_ShortStringPtrRef<64> p_s);"));
+  CHECK(!contains(out.header, "maxidlen"));
+}
+
+void test_imported_proc_formal_alias_uses_signature_unit_at_call_site() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit tcadd;\n"
+      "interface\n"
+      "uses tree;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "uses globtype;\n"
+      "procedure run;\n"
+      "var\n"
+      "  lvd, rvd : bestreal;\n"
+      "  def : pdef;\n"
+      "  t : ptree;\n"
+      "begin\n"
+      "  t := genrealconstnode(lvd/rvd, def);\n"
+      "  t := genrealconstnode(1.0, def);\n"
+      "end;\n"
+      "end.\n",
+      {{"globtype.pas",
+        "unit globtype;\n"
+        "interface\n"
+        "type bestreal = extended;\n"
+        "implementation\n"
+        "end.\n"},
+       {"tree.pas",
+        "unit tree;\n"
+        "interface\n"
+        "uses globtype;\n"
+        "type\n"
+        "  pdef = pointer;\n"
+        "  ptree = pointer;\n"
+        "function genrealconstnode(v : bestreal; def : pdef) : ptree;\n"
+        "implementation\n"
+        "function genrealconstnode(v : bestreal; def : pdef) : ptree;\n"
+        "begin\n"
+        "  result := nil;\n"
+        "end;\n"
+        "end.\n"}});
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::p_tree::p_genrealconstnode("));
+  CHECK(!contains(out.impl, "error: no matching call"));
+}
+
+void test_imported_object_property_matches_const_formal_type_symbol() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit use_symtype;\n"
+      "interface\n"
+      "uses symtype;\n"
+      "type\n"
+      "  tbase = object\n"
+      "  private\n"
+      "    _vartype : ttype;\n"
+      "  public\n"
+      "    property vartype : ttype read _vartype write _vartype;\n"
+      "  end;\n"
+      "  tchild = object(tbase)\n"
+      "    procedure writeit(var f : tcompilerppufile);\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tchild.writeit(var f : tcompilerppufile);\n"
+      "begin\n"
+      "  f.puttype(vartype);\n"
+      "end;\n"
+      "end.\n",
+      {{"symtype.pas",
+        "unit symtype;\n"
+        "interface\n"
+        "type\n"
+        "  ttype = object\n"
+        "    p : pointer;\n"
+        "  end;\n"
+        "  tcompilerppufile = object\n"
+        "    procedure puttype(const t : ttype);\n"
+        "  end;\n"
+        "implementation\n"
+        "procedure tcompilerppufile.puttype(const t : ttype);\n"
+        "begin\n"
+        "end;\n"
+        "end.\n"}});
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_f.p_puttype("));
+  CHECK(!contains(out.impl, "error: no matching call"));
+}
+
+void test_inherited_class_field_and_property_match_var_const_formals() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class\n"
+      "  end;\n"
+      "  ttype = object\n"
+      "    p : pointer;\n"
+      "  end;\n"
+      "  tabstractvarsym = class\n"
+      "  private\n"
+      "    _vartype : ttype;\n"
+      "    procedure setvartype(const newtype : ttype);\n"
+      "  public\n"
+      "    property vartype : ttype read _vartype write setvartype;\n"
+      "  end;\n"
+      "  tparavarsym = class(tabstractvarsym)\n"
+      "  end;\n"
+      "  tunarynode = class\n"
+      "  public\n"
+      "    left : tnode;\n"
+      "  end;\n"
+      "  tcallparanode = class(tunarynode)\n"
+      "  public\n"
+      "    parasym : tparavarsym;\n"
+      "    procedure insert_typeconv;\n"
+      "  end;\n"
+      "procedure takevar(var p : tnode);\n"
+      "procedure takeconst(const t : ttype);\n"
+      "procedure inserttypeconv(var p : tnode; const t : ttype);\n"
+      "implementation\n"
+      "procedure tabstractvarsym.setvartype(const newtype : ttype);\n"
+      "begin\n"
+      "  _vartype := newtype;\n"
+      "end;\n"
+      "procedure takevar(var p : tnode);\n"
+      "begin\n"
+      "end;\n"
+      "procedure takeconst(const t : ttype);\n"
+      "begin\n"
+      "end;\n"
+      "procedure inserttypeconv(var p : tnode; const t : ttype);\n"
+      "begin\n"
+      "end;\n"
+      "procedure tcallparanode.insert_typeconv;\n"
+      "begin\n"
+      "  takevar(left);\n"
+      "  takeconst(parasym.vartype);\n"
+      "  inserttypeconv(left, parasym.vartype);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_inserttypeconv("));
+  CHECK(!contains(out.impl, "error: no matching call"));
+}
+
 void test_unsupported_fixed_array_index_reports_error_and_stays_array_typed() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -864,7 +1032,7 @@ void test_low_high_use_resolved_pascal_type() {
       "end.\n");
   CHECK(contains(out.header, "using t_tindex = uint16_t;"));
   CHECK(contains(out.header,
-                 "const auto p_maxindex = ::std::numeric_limits<uint16_t>::max();"));
+                 "p_maxindex = ::std::numeric_limits<uint16_t>::max();"));
   CHECK(contains(out.impl,
                  "if ((p_a == ::std::numeric_limits<uint16_t>::max()))"));
   // Array `low`/`high` lower to the dim's literal bounds (recursing
@@ -1091,6 +1259,31 @@ void test_typed_const_pchar_from_fixed_array_address_uses_data_pointer() {
   CHECK(!contains(out.header, "tp2cc_array_addr"));
 }
 
+void test_fixed_char_array_value_argument_converts_to_pchar_data() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuf = array[0..127] of char;\n"
+      "procedure store(index : cardinal; name : pchar; isdata : longbool);\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "var\n"
+      "  cstring : tbuf;\n"
+      "  ordinal : word;\n"
+      "  isdata : longbool;\n"
+      "procedure store(index : cardinal; name : pchar; isdata : longbool);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  store(succ(ordinal), cstring, isdata);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_store(::rt::p_succ(p_ordinal), (p_cstring).data, p_isdata);"));
+  CHECK(!contains(out.impl, "no matching call to 'store'"));
+}
+
 void test_array_const_pchar_elements_from_fixed_array_address_use_data_pointer() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1198,6 +1391,31 @@ void test_ansistring_builtin_maps_to_runtime_type() {
   CHECK(contains(out.header, "extern ::rt::tp2cc_AnsiString p_s;"));
   CHECK(contains(out.header, "void p_take(::rt::tp2cc_AnsiString p_x);"));
   CHECK(!contains(out.header, "p_ansistring"));
+}
+
+void test_runtime_ansistring_result_validates_against_alias_formal() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit cresstr;\n"
+      "interface\n"
+      "uses sysutils;\n"
+      "type\n"
+      "  TMsgStr = AnsiString;\n"
+      "  TPathStr = AnsiString;\n"
+      "procedure Message1(w : longint; const s1 : TMsgStr);\n"
+      "procedure Run(const fn : TPathStr);\n"
+      "implementation\n"
+      "procedure Message1(w : longint; const s1 : TMsgStr);\n"
+      "begin\n"
+      "end;\n"
+      "procedure Run(const fn : TPathStr);\n"
+      "begin\n"
+      "  Message1(1, ExtractFileName(fn));\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.impl, "p_message1(1,"));
+  CHECK(contains(out.impl, "p_extractfilename("));
 }
 
 void test_widechar_builtin_maps_to_16bit_ordinal() {
@@ -2417,6 +2635,57 @@ void test_sysutils_exception_handlers_are_qualified_and_pointer_bound() {
   CHECK(!contains(out.impl, "p_e.p_message"));
 }
 
+void test_two_arg_hexstr_is_typed_as_shortstring() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure message1(w : longint; const s1 : string);\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure message1(w : longint; const s1 : string);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  message1(1, hexstr(42, 8));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_message1(1, ::rt::p_hexstr(42, 8));"));
+}
+
+void test_eoserror_errorcode_is_typed_for_nested_calls() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses sysutils;\n"
+      "procedure message1(w : longint; const s1 : string);\n"
+      "function tostr(i : longint) : string;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure message1(w : longint; const s1 : string);\n"
+      "begin\n"
+      "end;\n"
+      "function tostr(i : longint) : string;\n"
+      "begin\n"
+      "  tostr := '';\n"
+      "end;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  try\n"
+      "    raise exception.create('x');\n"
+      "  except\n"
+      "    on E : EOSError do\n"
+      "      message1(1, tostr(E.ErrorCode));\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "auto p_e = tp2cc_match_1_0;"));
+  CHECK(contains(out.impl, "p_message1(1, "));
+  CHECK(contains(out.impl, "p_tostr("));
+  CHECK(contains(out.impl, "p_e->p_errorcode"));
+  CHECK(!contains(out.impl, "p_e.p_errorcode"));
+}
+
 void test_char_plus_cast_uses_string_concat() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -3481,7 +3750,7 @@ void test_pointer_assignment_from_pointer_result_gets_explicit_cast() {
                  "p_buf = static_cast<::rt::p_char*>(::rt::p_allocmem(4));"));
 }
 
-void test_pointer_builtin_cast_still_coerces_to_typed_pointer_slot() {
+void test_user_defined_ppchar_alias_cast_uses_named_type() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -3497,8 +3766,9 @@ void test_pointer_builtin_cast_still_coerces_to_typed_pointer_slot() {
       "  p := pointer(raw);\n"
       "end;\n"
       "end.\n");
+  CHECK(contains(out.impl, "using t_ppchar = ::rt::p_char**;"));
   CHECK(contains(out.impl,
-                 "p_p = static_cast<::rt::p_char**>(((void*)(p_raw)));"));
+                 "p_p = static_cast<t_ppchar>(((void*)(p_raw)));"));
 }
 
 void test_addr_of_untyped_param_keeps_pointer_slot_semantics() {
@@ -4025,7 +4295,7 @@ void test_named_record_to_primitive_cast_reinterprets_bytes() {
   CHECK(contains(out.impl,
                  "p_bits = ::rt::tp2cc_reinterpret_copy<uint32_t>(p_r);"));
   CHECK(contains(out.impl,
-                 "p_r = ::rt::tp2cc_reinterpret_copy<::p_types::t_twordrec>(::rt::p_ntole(::rt::tp2cc_reinterpret_copy<uint32_t>(p_r)));"));
+                 "p_r = ::rt::tp2cc_reinterpret_copy<::p_types::t_twordrec>(::rt::p_ntole(static_cast<uint32_t>(::rt::tp2cc_reinterpret_copy<uint32_t>(p_r))));"));
   CHECK(!contains(out.impl, "p_bits = ((uint32_t)(p_r));"));
   CHECK(!contains(out.impl, "::rt::p_ntole(((uint32_t)(p_r)))"));
 }
@@ -5347,6 +5617,241 @@ void test_single_candidate_call_rejects_wrong_value_argument_type() {
   CHECK(!contains(out.impl, "p_take(p_s);"));
 }
 
+void test_single_candidate_call_accepts_integer_to_real_value_argument() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type bestreal = extended;\n"
+      "procedure take(r : bestreal);\n"
+      "procedure run(i : longint);\n"
+      "implementation\n"
+      "procedure take(r : bestreal); begin end;\n"
+      "procedure run(i : longint);\n"
+      "begin\n"
+      "  take(0);\n"
+      "  take(i);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_take(0);"));
+  CHECK(contains(out.impl, "p_take(p_i);"));
+}
+
+void test_single_candidate_call_accepts_type_keyword_ordinal_alias() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsuperregister = type word;\n"
+      "const\n"
+      "  RS_EAX = $00;\n"
+      "procedure take(r : tsuperregister);\n"
+      "procedure run(w : word);\n"
+      "implementation\n"
+      "procedure take(r : tsuperregister); begin end;\n"
+      "procedure run(w : word);\n"
+      "begin\n"
+      "  take(RS_EAX);\n"
+      "  take(w);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'take'"));
+  CHECK(contains(out.header, "using t_tsuperregister = uint16_t;"));
+}
+
+void test_single_candidate_call_accepts_primitive_cast_result_types() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure take_cardinal(c : cardinal);\n"
+      "procedure take_double(d : double);\n"
+      "procedure run(p : pointer; e : extended);\n"
+      "implementation\n"
+      "procedure take_cardinal(c : cardinal); begin end;\n"
+      "procedure take_double(d : double); begin end;\n"
+      "procedure run(p : pointer; e : extended);\n"
+      "begin\n"
+      "  take_cardinal(ptruint(p));\n"
+      "  take_double(e);\n"
+      "  take_double(double(e));\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'take_cardinal'"));
+  CHECK(!contains(out.impl, "no matching call to 'take_double'"));
+}
+
+void test_single_candidate_call_accepts_lo_hi_ordinal_results() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure take_word(w : word);\n"
+      "procedure take_cardinal(c : cardinal);\n"
+      "procedure run(i : longint; q : int64);\n"
+      "implementation\n"
+      "procedure take_word(w : word); begin end;\n"
+      "procedure take_cardinal(c : cardinal); begin end;\n"
+      "procedure run(i : longint; q : int64);\n"
+      "begin\n"
+      "  take_word(hi(i));\n"
+      "  take_word(lo(i));\n"
+      "  take_cardinal(hi(q));\n"
+      "  take_cardinal(lo(q));\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'take_word'"));
+  CHECK(!contains(out.impl, "no matching call to 'take_cardinal'"));
+}
+
+void test_overload_integer_formal_beats_real_formal_for_integer_actual() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type bestreal = extended;\n"
+      "function pick(i : longint) : longint; overload;\n"
+      "function pick(r : bestreal) : longint; overload;\n"
+      "procedure run(i : longint; var out_i : longint);\n"
+      "implementation\n"
+      "function pick(i : longint) : longint; begin pick := 1; end;\n"
+      "function pick(r : bestreal) : longint; begin pick := 2; end;\n"
+      "procedure run(i : longint; var out_i : longint);\n"
+      "begin\n"
+      "  out_i := pick(i);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_pick(static_cast<int32_t>(p_i))"));
+  CHECK(!contains(out.impl, "p_pick(static_cast<t_bestreal>(p_i))"));
+}
+
+void test_single_candidate_call_rejects_unrelated_typed_pointer_argument() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pint = ^longint;\n"
+      "  pother = ^byte;\n"
+      "procedure take(p : pint);\n"
+      "procedure run(b : pother);\n"
+      "implementation\n"
+      "procedure take(p : pint); begin end;\n"
+      "procedure run(b : pother);\n"
+      "begin\n"
+      "  take(b);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+  CHECK(contains(out.impl, "no matching call to 'take'"));
+  CHECK(!contains(out.impl, "p_take(reinterpret_cast<t_pint>(p_b));"));
+}
+
+void test_explicit_typed_pointer_cast_allows_unrelated_pointer_argument() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pint = ^longint;\n"
+      "  pother = ^byte;\n"
+      "procedure take(p : pint);\n"
+      "procedure run(b : pother);\n"
+      "implementation\n"
+      "procedure take(p : pint); begin end;\n"
+      "procedure run(b : pother);\n"
+      "begin\n"
+      "  take(pint(b));\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_take(reinterpret_cast<t_pint>(p_b));"));
+}
+
+void test_single_candidate_call_accepts_object_pointer_upcast() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = object\n"
+      "  end;\n"
+      "  tchild = object(tbase)\n"
+      "  end;\n"
+      "  pbase = ^tbase;\n"
+      "  pchild = ^tchild;\n"
+      "procedure take(p : pbase);\n"
+      "procedure run(c : pchild);\n"
+      "implementation\n"
+      "procedure take(p : pbase); begin end;\n"
+      "procedure run(c : pchild);\n"
+      "begin\n"
+      "  take(c);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_take(static_cast<t_pbase>(p_c));"));
+}
+
+void test_single_candidate_call_accepts_new_object_pointer_upcast() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = object\n"
+      "  end;\n"
+      "  tchild = object(tbase)\n"
+      "    constructor init(n : longint);\n"
+      "  end;\n"
+      "  pbase = ^tbase;\n"
+      "  pchild = ^tchild;\n"
+      "procedure take(p : pbase);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "constructor tchild.init(n : longint); begin end;\n"
+      "procedure take(p : pbase); begin end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  take(new(pchild, init(1)));\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_take(static_cast<t_pbase>(([&]"));
+}
+
+void test_var_param_rejects_object_pointer_upcast_slot() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = object\n"
+      "  end;\n"
+      "  tchild = object(tbase)\n"
+      "  end;\n"
+      "  pbase = ^tbase;\n"
+      "  pchild = ^tchild;\n"
+      "procedure take(var p : pbase);\n"
+      "procedure run(c : pchild);\n"
+      "implementation\n"
+      "procedure take(var p : pbase); begin end;\n"
+      "procedure run(c : pchild);\n"
+      "begin\n"
+      "  take(c);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+  CHECK(contains(out.impl, "no matching call to 'take'"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_storage_ref<t_pbase>"));
+}
+
 void test_single_candidate_call_accepts_derived_class_argument() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -5367,6 +5872,337 @@ void test_single_candidate_call_accepts_derived_class_argument() {
   CHECK_EQ(error_count(), before);
   CHECK(!contains(out.impl, "no matching call to 'take'"));
   CHECK(contains(out.impl, "p_take(p_c);"));
+}
+
+void test_single_candidate_call_accepts_constructor_result_as_tobject() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class\n"
+      "    constructor create(n : longint);\n"
+      "    constructor make;\n"
+      "  end;\n"
+      "procedure take(o : tobject);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "constructor tnode.create(n : longint); begin end;\n"
+      "constructor tnode.make; begin end;\n"
+      "procedure take(o : tobject); begin end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  take(tnode.create(1));\n"
+      "  take(tnode.make);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'take'"));
+  CHECK(contains(out.impl, "p_take(([&]{ auto tp2cc_ptr = new t_tnode{};"));
+  CHECK(contains(out.impl, "tp2cc_ptr->p_make();"));
+}
+
+void test_single_candidate_call_accepts_long_string_alias_concat() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "{$H+}\n"
+      "interface\n"
+      "type\n"
+      "  TCmdStr = AnsiString;\n"
+      "  TScript = class\n"
+      "    procedure Add(const s : TCmdStr);\n"
+      "  end;\n"
+      "  TLinkRes = class(TScript)\n"
+      "    procedure AddFileName(const s : TCmdStr);\n"
+      "  end;\n"
+      "var DirSep : char;\n"
+      "implementation\n"
+      "procedure TScript.Add(const s : TCmdStr); begin end;\n"
+      "procedure TLinkRes.AddFileName(const s : TCmdStr);\n"
+      "begin\n"
+      "  inherited Add('.' + DirSep + s);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.impl, "inherited::p_add("));
+  CHECK(!contains(out.impl, "no matching call to 'add'"));
+}
+
+void test_single_candidate_constructor_accepts_enum_and_set_actuals() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TRegisterType = (rt_int);\n"
+      "  TRegSet = set of byte;\n"
+      "  TUsedRegs = class\n"
+      "    constructor Create_Regset(aTyp : TRegisterType; const Regs : TRegSet);\n"
+      "    function GetUsedRegs : TRegSet;\n"
+      "  end;\n"
+      "  TAllUsedRegs = array[TRegisterType] of TUsedRegs;\n"
+      "var UsedRegs : TAllUsedRegs;\n"
+      "procedure CopyUsedRegs(var dest : TAllUsedRegs);\n"
+      "implementation\n"
+      "constructor TUsedRegs.Create_Regset(aTyp : TRegisterType; const Regs : TRegSet);\n"
+      "begin\n"
+      "end;\n"
+      "function TUsedRegs.GetUsedRegs : TRegSet;\n"
+      "begin\n"
+      "  Result := [];\n"
+      "end;\n"
+      "procedure CopyUsedRegs(var dest : TAllUsedRegs);\n"
+      "var i : TRegisterType;\n"
+      "begin\n"
+      "  dest[i] := TUsedRegs.Create_Regset(i, UsedRegs[i].GetUsedRegs);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.impl, "p_create_regset("));
+  CHECK(!contains(out.impl, "no matching call to 'create_regset'"));
+}
+
+void test_single_candidate_call_accepts_local_enum_actual() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  thost = class\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure thost.run;\n"
+      "type\n"
+      "  tterminationkind = (term_none, term_string);\n"
+      "procedure newstatement(kind : tterminationkind);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  newstatement(term_none);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(!contains(out.impl, "no matching call to 'newstatement'"));
+}
+
+void test_single_candidate_constructor_accepts_register_set_literal() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses rgcpu, cgbase, cpuinfo;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var rg : trgobj;\n"
+      "begin\n"
+      "  rg := trgcpu.create(r_intregister, sub_whole,\n"
+      "    [rs_eax, rs_edx], $10, [rs_ebp]);\n"
+      "  rg.alloccpuregisters(r_intregister, [rs_function_result_reg]);\n"
+      "end;\n"
+      "end.\n",
+      {{"cgbase.pas",
+        "unit cgbase;\n"
+        "interface\n"
+        "type\n"
+        "  tsuperregister = type word;\n"
+        "  tsubregister = (sub_none, sub_whole);\n"
+        "  tregistertype = (r_intregister);\n"
+        "implementation\n"
+        "end.\n"},
+       {"cgutils.pas",
+        "unit cgutils;\n"
+        "interface\n"
+        "uses cpubase;\n"
+        "const\n"
+        "  tmpmaxcpufpuintreg = first_int_imreg +\n"
+        "    ((first_fpu_imreg - first_int_imreg) *\n"
+        "     ord(first_int_imreg < first_fpu_imreg));\n"
+        "  maxcpuregister = (tmpmaxcpufpuintreg +\n"
+        "    ((first_mm_imreg - tmpmaxcpufpuintreg) *\n"
+        "     ord(tmpmaxcpufpuintreg < first_mm_imreg)))-1;\n"
+        "type\n"
+        "  tcpuregisterset = set of 0..maxcpuregister;\n"
+        "implementation\n"
+        "end.\n"},
+       {"cpubase.pas",
+        "unit cpubase;\n"
+        "interface\n"
+        "const\n"
+        "  first_int_imreg = $10;\n"
+        "  first_fpu_imreg = $09;\n"
+        "  first_mm_imreg = $10;\n"
+        "implementation\n"
+        "end.\n"},
+       {"cpuinfo.pas",
+        "unit cpuinfo;\n"
+        "interface\n"
+        "const\n"
+        "  rs_eax = $00;\n"
+        "  rs_edx = $02;\n"
+        "  rs_ebp = $06;\n"
+        "  rs_function_return_reg = rs_eax;\n"
+        "  rs_function_result_reg = rs_function_return_reg;\n"
+        "implementation\n"
+        "end.\n"},
+       {"rgobj.pas",
+        "unit rgobj;\n"
+        "interface\n"
+        "uses cgbase, cgutils;\n"
+        "type\n"
+        "  trgobj = class\n"
+        "    constructor create(rt : tregistertype; sub : tsubregister;\n"
+        "      const usable : array of tsuperregister; first : tsuperregister;\n"
+        "      preserved : tcpuregisterset);\n"
+        "    procedure alloccpuregisters(rt : tregistertype;\n"
+        "      const regs : tcpuregisterset);\n"
+        "  end;\n"
+        "implementation\n"
+        "constructor trgobj.create(rt : tregistertype; sub : tsubregister;\n"
+        "  const usable : array of tsuperregister; first : tsuperregister;\n"
+        "  preserved : tcpuregisterset);\n"
+        "begin\n"
+        "end;\n"
+        "procedure trgobj.alloccpuregisters(rt : tregistertype;\n"
+        "  const regs : tcpuregisterset);\n"
+        "begin\n"
+        "end;\n"
+        "end.\n"},
+       {"rgcpu.pas",
+        "unit rgcpu;\n"
+        "interface\n"
+        "uses rgobj;\n"
+        "type\n"
+        "  trgcpu = class(trgobj)\n"
+        "  end;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(!contains(out.impl, "no matching call to 'create'"));
+  CHECK(!contains(out.impl, "no matching call to 'alloccpuregisters'"));
+}
+
+void test_class_set_field_assignment_uses_declared_field_type() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses nbas, cpubase;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var asmstat : tasmnode;\n"
+      "begin\n"
+      "  asmstat.used_regs_fpu := [0..first_fpu_imreg-1];\n"
+      "end;\n"
+      "end.\n",
+      {{"cpubase.pas",
+        "unit cpubase;\n"
+        "interface\n"
+        "const\n"
+        "  first_int_imreg = $10;\n"
+        "  first_fpu_imreg = $09;\n"
+        "  first_mm_imreg = $10;\n"
+        "implementation\n"
+        "end.\n"},
+       {"cgutils.pas",
+        "unit cgutils;\n"
+        "interface\n"
+        "uses cpubase;\n"
+        "const\n"
+        "  tmpmaxcpufpuintreg = first_int_imreg +\n"
+        "    ((first_fpu_imreg - first_int_imreg) *\n"
+        "     ord(first_int_imreg < first_fpu_imreg));\n"
+        "  maxcpuregister = (tmpmaxcpufpuintreg +\n"
+        "    ((first_mm_imreg - tmpmaxcpufpuintreg) *\n"
+        "     ord(tmpmaxcpufpuintreg < first_mm_imreg)))-1;\n"
+        "type\n"
+        "  tcpuregisterset = set of 0..maxcpuregister;\n"
+        "implementation\n"
+        "end.\n"},
+       {"nbas.pas",
+        "unit nbas;\n"
+        "interface\n"
+        "uses cgutils;\n"
+        "type\n"
+        "  tasmnode = class\n"
+        "    used_regs_fpu : tcpuregisterset;\n"
+        "  end;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.impl, "p_asmstat->p_used_regs_fpu ="));
+  CHECK(contains(out.impl, "::rt::tp2cc_Set<uint8_t> tp2cc_set{}"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_Set<int32_t> tp2cc_set{}"));
+}
+
+void test_nested_var_param_accepts_outer_value_parameter_slot() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pcaselabel = ^tcaselabel;\n"
+      "  tcaselabel = record\n"
+      "    less : pcaselabel;\n"
+      "    greater : pcaselabel;\n"
+      "  end;\n"
+      "  tlabelarrayentry = record\n"
+      "    caselabel : pcaselabel;\n"
+      "  end;\n"
+      "  tlabelarray = array of tlabelarrayentry;\n"
+      "  tcgcasenode = class\n"
+      "    procedure genjmptree(root : pcaselabel);\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tcgcasenode.genjmptree(root : pcaselabel);\n"
+      "var\n"
+      "  labelarray : tlabelarray;\n"
+      "procedure rebuild(first,last : int64; var p : pcaselabel);\n"
+      "begin\n"
+      "  p := labelarray[first].caselabel;\n"
+      "end;\n"
+      "begin\n"
+      "  setlength(labelarray,1);\n"
+      "  rebuild(0,high(labelarray),root);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(!contains(out.impl, "no matching call to 'rebuild'"));
+  CHECK(contains(out.impl, "::rt::p_length(p_labelarray)"));
+  CHECK(contains(out.impl, "p_root"));
+}
+
+void test_out_typed_pointer_accepts_pointer_storage_slot() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pwide = ^twide;\n"
+      "  twide = record\n"
+      "    len : longint;\n"
+      "  end;\n"
+      "  tvalue = record\n"
+      "    valueptr : pointer;\n"
+      "  end;\n"
+      "procedure init(out r : pwide);\n"
+      "procedure run(var value : tvalue);\n"
+      "implementation\n"
+      "procedure init(out r : pwide);\n"
+      "begin\n"
+      "  r := nil;\n"
+      "end;\n"
+      "procedure run(var value : tvalue);\n"
+      "begin\n"
+      "  init(value.valueptr);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(!contains(out.impl, "no matching call to 'init'"));
+  CHECK(contains(out.impl, "tp2cc_reinterpret_storage_ref<t_pwide>"));
 }
 
 void test_single_candidate_call_accepts_fixed_array_as_open_array() {
@@ -5418,6 +6254,34 @@ void test_method_procvar_cast_between_pointer_carriers_is_noop() {
                  "using t_tlistcallback = ::rt::tp2cc_MethodPtr<void(void*, void*)>;"));
   CHECK(contains(out.impl, "p_list->p_foreachcall(p_cb, p_arg);"));
   CHECK(!contains(out.impl, "tp2cc_reinterpret_copy"));
+}
+
+void test_tmethod_cast_to_method_pointer_constructs_carrier() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class end;\n"
+      "  thost = class\n"
+      "    function callit:tnode;\n"
+      "  end;\n"
+      "implementation\n"
+      "function thost.callit:tnode;\n"
+      "type\n"
+      "  tprocedureofobject = function:tnode of object;\n"
+      "var\n"
+      "  m : TMethod;\n"
+      "begin\n"
+      "  m.Code := nil;\n"
+      "  m.Data := self;\n"
+      "  if assigned(m.Code) then\n"
+      "    result := tprocedureofobject(m)();\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_method_ptr_from_tmethod<"));
+  CHECK(contains(out.impl, "(p_m)()"));
+  CHECK(!contains(out.impl, "p_result = p_m();"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_copy<"));
 }
 
 void test_record_cast_to_method_pointer_reports_error() {
@@ -6182,6 +7046,35 @@ void test_runtime_endian_helpers_resolve_explicitly() {
   CHECK(contains(out.impl, "::rt::p_leton("));
 }
 
+void test_runtime_endian_helper_result_passes_to_alias_formal() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  uint32_t = longword;\n"
+      "  twriter = class\n"
+      "    procedure writeuint32(i : uint32_t);\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure twriter.writeuint32(i : uint32_t); begin end;\n"
+      "procedure twriter.run;\n"
+      "var\n"
+      "  m : longword;\n"
+      "begin\n"
+      "  writeuint32(ntole(m));\n"
+      "  writeuint32(ntobe(m));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(!contains(out.impl, "no matching call to 'writeuint32'"));
+  CHECK(contains(out.impl,
+                 "p_writeuint32(::rt::p_ntole(static_cast<uint32_t>(p_m)));"));
+  CHECK(contains(out.impl,
+                 "p_writeuint32(::rt::p_ntobe(static_cast<uint32_t>(p_m)));"));
+}
+
 void test_runtime_rotate_helpers_resolve_explicitly() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -6268,6 +7161,29 @@ void test_runtime_string_and_memory_helpers_resolve_explicitly() {
   CHECK(contains(out.impl,
                  "p_p = static_cast<::rt::p_char*>(::rt::p_reallocmem(p_p, p_x));"));
   CHECK(contains(out.impl, "::rt::p_strrscan("));
+}
+
+void test_dos_fexpand_has_typed_signature_for_call_validation() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses dos;\n"
+      "function fixpath(s : string; allowdot : boolean) : string;\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "function fixpath(s : string; allowdot : boolean) : string;\n"
+      "begin\n"
+      "  fixpath := s;\n"
+      "end;\n"
+      "procedure demo;\n"
+      "var p : string;\n"
+      "begin\n"
+      "  p := fixpath(fexpand(p), false);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "::p_dos::p_fexpand("));
 }
 
 void test_sysutils_setdirseparators_resolves_qualified_and_unqualified() {
@@ -7347,6 +8263,131 @@ void test_corba_interface_emits_pure_virtual_base_and_pointer_calls() {
                  "p_reader->p_next(::rt::tp2cc_shortstring_ref<255>(p_s));"));
 }
 
+void test_class_actual_converts_to_implemented_interface_formal() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "{$interfaces corba}\n"
+      "type\n"
+      "  ireader = interface ['{11111111-1111-1111-1111-111111111111}']\n"
+      "    procedure next;\n"
+      "  end;\n"
+      "  treader = class(tobject, ireader)\n"
+      "    procedure next;\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "procedure take(reader : ireader);\n"
+      "implementation\n"
+      "procedure treader.next;\n"
+      "begin\n"
+      "end;\n"
+      "procedure take(reader : ireader);\n"
+      "begin\n"
+      "end;\n"
+      "procedure treader.run;\n"
+      "begin\n"
+      "  take(self);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_take(static_cast<t_ireader*>(this));"));
+}
+
+void test_class_value_assigns_to_implemented_interface_variable() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "{$interfaces corba}\n"
+      "type\n"
+      "  ireader = interface ['{11111111-1111-1111-1111-111111111111}']\n"
+      "    procedure next;\n"
+      "  end;\n"
+      "  treader = class(tobject, ireader)\n"
+      "    procedure next;\n"
+      "  end;\n"
+      "procedure run(r : treader);\n"
+      "implementation\n"
+      "procedure treader.next;\n"
+      "begin\n"
+      "end;\n"
+      "procedure run(r : treader);\n"
+      "var i : ireader;\n"
+      "begin\n"
+      "  i := r;\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_i = static_cast<t_ireader*>(p_r);"));
+}
+
+void test_class_actual_converts_to_inherited_interface_formal() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "{$interfaces corba}\n"
+      "type\n"
+      "  ireader = interface ['{11111111-1111-1111-1111-111111111111}']\n"
+      "    procedure next;\n"
+      "  end;\n"
+      "  tbase = class(tobject, ireader)\n"
+      "    procedure next;\n"
+      "  end;\n"
+      "  treader = class(tbase)\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "procedure take(reader : ireader);\n"
+      "implementation\n"
+      "procedure tbase.next;\n"
+      "begin\n"
+      "end;\n"
+      "procedure take(reader : ireader);\n"
+      "begin\n"
+      "end;\n"
+      "procedure treader.run;\n"
+      "begin\n"
+      "  take(self);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_take(static_cast<t_ireader*>(this));"));
+}
+
+void test_class_actual_rejects_unimplemented_interface_formal() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "{$interfaces corba}\n"
+      "type\n"
+      "  ireader = interface ['{11111111-1111-1111-1111-111111111111}']\n"
+      "    procedure next;\n"
+      "  end;\n"
+      "  iwriter = interface ['{22222222-2222-2222-2222-222222222222}']\n"
+      "    procedure write;\n"
+      "  end;\n"
+      "  treader = class(tobject, ireader)\n"
+      "    procedure next;\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "procedure take(writer : iwriter);\n"
+      "implementation\n"
+      "procedure treader.next;\n"
+      "begin\n"
+      "end;\n"
+      "procedure take(writer : iwriter);\n"
+      "begin\n"
+      "end;\n"
+      "procedure treader.run;\n"
+      "begin\n"
+      "  take(self);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
 void test_class_constructor_call_allocates_instance() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -7520,6 +8561,55 @@ void test_imported_proc_formal_alias_uses_declaration_unit_at_call_site() {
         "end.\n"}});
   CHECK(error_count() == before);
   CHECK(contains(out.impl, "::p_globals::p_get_real_sign(p_value_real);"));
+}
+
+void test_inherited_field_alias_uses_declaring_unit_context() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit nx;\n"
+      "interface\n"
+      "uses ncon, globals;\n"
+      "type\n"
+      "  tx = class(treal)\n"
+      "    procedure check;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure tx.check;\n"
+      "begin\n"
+      "  if is_number_float(value_real) then\n"
+      "    ;\n"
+      "end;\n"
+      "end.\n",
+      {{"cpuinfo.pas",
+        "unit cpuinfo;\n"
+        "interface\n"
+        "type\n"
+        "  bestreal = double;\n"
+        "implementation\n"
+        "end.\n"},
+       {"globals.pas",
+        "unit globals;\n"
+        "interface\n"
+        "function is_number_float(d : double) : boolean;\n"
+        "implementation\n"
+        "function is_number_float(d : double) : boolean;\n"
+        "begin\n"
+        "  is_number_float := true;\n"
+        "end;\n"
+        "end.\n"},
+       {"ncon.pas",
+        "unit ncon;\n"
+        "interface\n"
+        "uses cpuinfo;\n"
+        "type\n"
+        "  treal = class\n"
+        "  protected\n"
+        "    value_real : bestreal;\n"
+        "  end;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "::p_globals::p_is_number_float(p_value_real)"));
 }
 
 void test_metaclass_method_nested_formal_uses_declaring_type_at_call_site() {
@@ -7944,6 +9034,29 @@ void test_metaclass_cast_keeps_concrete_descriptor() {
   CHECK(contains(out.impl, "p_basecls = tp2cc_metaclass_value_t_tchild();"));
   CHECK(contains(out.impl,
                  "p_childcls = reinterpret_cast<t_tchildclass>(p_basecls);"));
+}
+
+void test_metaclass_formal_assignment_preserves_source_value() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tabstractlinker = class\n"
+      "  end;\n"
+      "  tabstractlinkerclass = class of tabstractlinker;\n"
+      "  tsysteminfo = record\n"
+      "    linkextern : tabstractlinkerclass;\n"
+      "  end;\n"
+      "procedure registerexternallinker(var system_info : tsysteminfo; c : tabstractlinkerclass);\n"
+      "implementation\n"
+      "procedure registerexternallinker(var system_info : tsysteminfo; c : tabstractlinkerclass);\n"
+      "begin\n"
+      "  system_info.linkextern := c;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_system_info.p_linkextern = p_c;"));
+  CHECK(!contains(out.impl,
+                  "p_system_info.p_linkextern = tp2cc_metaclass_value_t_tabstractlinker();"));
 }
 
 void test_metaclass_value_can_flow_through_pointer_storage() {
@@ -9301,18 +10414,16 @@ void test_overload_picks_unsigned_widening_over_sign_change() {
 }
 
 void test_overload_aggregates_candidates_across_uses_chain() {
-  // When the SAME callable name is declared in multiple visible units
-  // with different arities (e.g. `FileExists(name)` in sysutils/rt and
-  // `FileExists(name, allowcache)` in cfileutils), the picker must see
-  // both candidates so arity filtering can pick correctly. The bug was
-  // returning on the first non-empty match, so __rt__'s 1-arg
-  // `fileexists` shadowed cfileutils' 2-arg version and 2-arg call
-  // sites failed to match.
+  // When the same callable name is declared in multiple visible units with
+  // different arities, the picker must see all explicit unit candidates so
+  // arity filtering can pick correctly. Runtime-backed units such as SysUtils
+  // are first-class Pascal surfaces here; `__rt__` is only the implementation
+  // fallback when no explicit unit provides the name.
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
       "uses\n"
-      "  cfileutils;\n"
+      "  sysutils, cfileutils;\n"
       "procedure run;\n"
       "implementation\n"
       "procedure run;\n"
@@ -9331,8 +10442,8 @@ void test_overload_aggregates_candidates_across_uses_chain() {
         "  fileexists := false;\n"
         "end;\n"
         "end.\n"}});
-  // 1-arg call resolves to rt's sysutils-side fileexists.
-  CHECK(contains(out.impl, "::rt::p_fileexists("));
+  // 1-arg call resolves to SysUtils' runtime-backed unit surface.
+  CHECK(contains(out.impl, "::p_sysutils::p_fileexists("));
   // 2-arg call resolves to cfileutils' overload, not the rt one.
   CHECK(contains(out.impl, "p_cfileutils::p_fileexists("));
 }
@@ -9661,6 +10772,37 @@ void test_overload_exact_match_dominates_widening_alternatives() {
   CHECK(!contains(out.impl, "static_cast<int64_t>"));
   CHECK(!contains(out.impl, "static_cast<uint32_t>"));
   CHECK(!contains(out.impl, "static_cast<uint64_t>"));
+}
+
+void test_overload_exact_typed_pointer_beats_pointer_conversion() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pint = ^longint;\n"
+      "function pick(p : pointer) : longint; overload;\n"
+      "function pick(p : pint) : longint; overload;\n"
+      "procedure run(raw : pointer; typed : pint; var a, b : longint);\n"
+      "implementation\n"
+      "function pick(p : pointer) : longint;\n"
+      "begin\n"
+      "  pick := 1;\n"
+      "end;\n"
+      "function pick(p : pint) : longint;\n"
+      "begin\n"
+      "  pick := 2;\n"
+      "end;\n"
+      "procedure run(raw : pointer; typed : pint; var a, b : longint);\n"
+      "begin\n"
+      "  a := pick(raw);\n"
+      "  b := pick(typed);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_a = ::p_u::p_pick(static_cast<void*>(p_raw));"));
+  CHECK(contains(out.impl, "p_b = ::p_u::p_pick(static_cast<t_pint>(p_typed));"));
+  CHECK(!contains(out.impl, "p_b = ::p_u::p_pick(static_cast<void*>(p_typed));"));
 }
 
 void test_overload_picks_narrowest_widening_target() {
@@ -12245,6 +13387,11 @@ int main() {
   RUN_TEST(test_signed_ordinal_array_bounds_preserve_negative_low);
   RUN_TEST(test_imported_const_array_bounds_are_folded);
   RUN_TEST(test_imported_const_array_bounds_use_declaring_unit_scope);
+  RUN_TEST(test_imported_const_shortstring_bound_uses_declaring_unit_scope);
+  RUN_TEST(test_imported_proc_formal_alias_uses_signature_unit_at_call_site);
+  RUN_TEST(test_imported_object_property_matches_const_formal_type_symbol);
+  RUN_TEST(test_inherited_class_field_and_property_match_var_const_formals);
+  RUN_TEST(test_class_set_field_assignment_uses_declared_field_type);
   RUN_TEST(test_unsupported_fixed_array_index_reports_error_and_stays_array_typed);
   RUN_TEST(test_low_high_use_resolved_pascal_type);
   RUN_TEST(test_low_high_on_set_type_uses_element_bounds);
@@ -12258,6 +13405,7 @@ int main() {
   RUN_TEST(test_nested_array_typed_const_initializes_each_array_data_member);
   RUN_TEST(test_single_record_array_typed_const_wraps_array_storage);
   RUN_TEST(test_typed_const_pchar_from_fixed_array_address_uses_data_pointer);
+  RUN_TEST(test_fixed_char_array_value_argument_converts_to_pchar_data);
   RUN_TEST(test_array_const_pchar_elements_from_fixed_array_address_use_data_pointer);
   RUN_TEST(test_record_const_pchar_field_from_fixed_array_address_uses_data_pointer);
   RUN_TEST(test_record_const_array_pointer_field_from_fixed_array_address_keeps_array_pointer);
@@ -12266,6 +13414,7 @@ int main() {
   RUN_TEST(test_shortstring_length_literal_capacity_is_constant_folded);
   RUN_TEST(test_named_type_alias);
   RUN_TEST(test_ansistring_builtin_maps_to_runtime_type);
+  RUN_TEST(test_runtime_ansistring_result_validates_against_alias_formal);
   RUN_TEST(test_widechar_builtin_maps_to_16bit_ordinal);
   RUN_TEST(test_ansichar_and_pansichar_builtin_maps_to_char_carriers);
   RUN_TEST(test_ord_storage_view_for_char_assignment_inc_and_address);
@@ -12320,6 +13469,8 @@ int main() {
   RUN_TEST(test_raise_at_address_and_frame_metadata_is_accepted_and_discarded);
   RUN_TEST(test_try_except_multiple_handlers_start_with_if_and_base_pointer_cast);
   RUN_TEST(test_sysutils_exception_handlers_are_qualified_and_pointer_bound);
+  RUN_TEST(test_two_arg_hexstr_is_typed_as_shortstring);
+  RUN_TEST(test_eoserror_errorcode_is_typed_for_nested_calls);
   RUN_TEST(test_char_plus_cast_uses_string_concat);
   RUN_TEST(test_nul_char_plus_cast_uses_string_concat);
   RUN_TEST(test_embedded_nul_string_literal_uses_explicit_length_builder);
@@ -12457,9 +13608,11 @@ int main() {
   RUN_TEST(test_unresolved_free_identifier_reports_error_without_rt_fallback);
   RUN_TEST(test_runtime_math_surface_resolves_explicitly);
   RUN_TEST(test_runtime_endian_helpers_resolve_explicitly);
+  RUN_TEST(test_runtime_endian_helper_result_passes_to_alias_formal);
   RUN_TEST(test_runtime_rotate_helpers_resolve_explicitly);
   RUN_TEST(test_runtime_bitscan_helpers_resolve_explicitly);
   RUN_TEST(test_runtime_string_and_memory_helpers_resolve_explicitly);
+  RUN_TEST(test_dos_fexpand_has_typed_signature_for_call_validation);
   RUN_TEST(test_sysutils_setdirseparators_resolves_qualified_and_unqualified);
   RUN_TEST(test_and_with_not_of_xor_short_circuits);
   RUN_TEST(test_r_plus_routes_narrowing_assignment_through_range_check);
@@ -12509,12 +13662,17 @@ int main() {
   RUN_TEST(test_pointer_sized_integer_aliases_lower_through_rt);
   RUN_TEST(test_tclass_alias_lowers_through_rt);
   RUN_TEST(test_corba_interface_emits_pure_virtual_base_and_pointer_calls);
+  RUN_TEST(test_class_actual_converts_to_implemented_interface_formal);
+  RUN_TEST(test_class_value_assigns_to_implemented_interface_variable);
+  RUN_TEST(test_class_actual_converts_to_inherited_interface_formal);
+  RUN_TEST(test_class_actual_rejects_unimplemented_interface_formal);
   RUN_TEST(test_class_constructor_call_allocates_instance);
   RUN_TEST(test_nested_record_type_emits_inside_owner_scope);
   RUN_TEST(test_nested_class_type_emits_qualified_owner_and_method_scope);
   RUN_TEST(test_inherited_class_method_signature_keeps_declaring_type_scope);
   RUN_TEST(test_class_method_signature_uses_own_nested_type_scope);
   RUN_TEST(test_imported_proc_formal_alias_uses_declaration_unit_at_call_site);
+  RUN_TEST(test_inherited_field_alias_uses_declaring_unit_context);
   RUN_TEST(test_metaclass_method_nested_formal_uses_declaring_type_at_call_site);
   RUN_TEST(test_class_lifecycle_methods_run_from_unit_hooks);
   RUN_TEST(test_abstract_class_constructor_call_warns);
@@ -12531,6 +13689,7 @@ int main() {
   RUN_TEST(test_static_class_method_address_keeps_plain_function_pointer);
   RUN_TEST(test_metaclass_class_method_proc_value_reports_error);
   RUN_TEST(test_metaclass_cast_keeps_concrete_descriptor);
+  RUN_TEST(test_metaclass_formal_assignment_preserves_source_value);
   RUN_TEST(test_metaclass_value_can_flow_through_pointer_storage);
   RUN_TEST(test_class_identifier_value_lowers_to_metaclass_descriptor);
   RUN_TEST(test_inline_anonymous_enum_class_field_resolves_members);
@@ -12591,9 +13750,27 @@ int main() {
   RUN_TEST(test_plain_proc_overload_prefers_exact_callback_signature);
   RUN_TEST(test_plain_proc_mismatched_callback_argument_needs_explicit_cast);
   RUN_TEST(test_single_candidate_call_rejects_wrong_value_argument_type);
+  RUN_TEST(test_single_candidate_call_accepts_integer_to_real_value_argument);
+  RUN_TEST(test_single_candidate_call_accepts_type_keyword_ordinal_alias);
+  RUN_TEST(test_single_candidate_call_accepts_primitive_cast_result_types);
+  RUN_TEST(test_single_candidate_call_accepts_lo_hi_ordinal_results);
+  RUN_TEST(test_overload_integer_formal_beats_real_formal_for_integer_actual);
+  RUN_TEST(test_single_candidate_call_rejects_unrelated_typed_pointer_argument);
+  RUN_TEST(test_explicit_typed_pointer_cast_allows_unrelated_pointer_argument);
+  RUN_TEST(test_single_candidate_call_accepts_object_pointer_upcast);
+  RUN_TEST(test_single_candidate_call_accepts_new_object_pointer_upcast);
+  RUN_TEST(test_var_param_rejects_object_pointer_upcast_slot);
   RUN_TEST(test_single_candidate_call_accepts_derived_class_argument);
+  RUN_TEST(test_single_candidate_call_accepts_constructor_result_as_tobject);
+  RUN_TEST(test_single_candidate_call_accepts_long_string_alias_concat);
+  RUN_TEST(test_single_candidate_constructor_accepts_enum_and_set_actuals);
+  RUN_TEST(test_single_candidate_call_accepts_local_enum_actual);
+  RUN_TEST(test_single_candidate_constructor_accepts_register_set_literal);
+  RUN_TEST(test_nested_var_param_accepts_outer_value_parameter_slot);
+  RUN_TEST(test_out_typed_pointer_accepts_pointer_storage_slot);
   RUN_TEST(test_single_candidate_call_accepts_fixed_array_as_open_array);
   RUN_TEST(test_method_procvar_cast_between_pointer_carriers_is_noop);
+  RUN_TEST(test_tmethod_cast_to_method_pointer_constructs_carrier);
   RUN_TEST(test_record_cast_to_method_pointer_reports_error);
   RUN_TEST(test_record_field_named_like_type_keeps_pascal_type_lookup);
   RUN_TEST(test_member_base_local_record_shadows_same_named_type);
@@ -12601,6 +13778,7 @@ int main() {
   RUN_TEST(test_forward_decl_does_not_create_duplicate_overload_candidate);
   RUN_TEST(test_overload_local_unit_shadows_uses_chain_overloads);
   RUN_TEST(test_overload_exact_match_dominates_widening_alternatives);
+  RUN_TEST(test_overload_exact_typed_pointer_beats_pointer_conversion);
   RUN_TEST(test_overload_picks_narrowest_widening_target);
   RUN_TEST(test_overload_small_unsigned_domain_prefers_longint_without_cardinal);
   RUN_TEST(test_overload_untyped_constant_keeps_longint_domain_in_mixed_call);
@@ -12641,7 +13819,7 @@ int main() {
   RUN_TEST(test_property_read_returning_class_then_default_index_chains_through_getter);
   RUN_TEST(test_implicit_pointer_call_argument_gets_explicit_cast);
   RUN_TEST(test_pointer_assignment_from_pointer_result_gets_explicit_cast);
-  RUN_TEST(test_pointer_builtin_cast_still_coerces_to_typed_pointer_slot);
+  RUN_TEST(test_user_defined_ppchar_alias_cast_uses_named_type);
   RUN_TEST(test_addr_of_untyped_param_keeps_pointer_slot_semantics);
   RUN_TEST(test_addr_of_member_assignment_to_typed_pointer_slot_gets_explicit_cast);
   RUN_TEST(test_pointer_function_slot_assignment_uses_funptr_helpers);
