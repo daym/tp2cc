@@ -180,6 +180,11 @@ constexpr tp2cc_MethodPtr<Sig> tp2cc_method_ptr(void* code, void* self) {
   return {code, self};
 }
 
+template <typename MethodPtr>
+constexpr MethodPtr tp2cc_method_ptr_from_tmethod(const t_tmethod& method) {
+  return {method.p_code, method.p_data};
+}
+
 template <auto Fn>
 inline void* tp2cc_method_code() {
   return tp2cc_funptr_bits(Fn);

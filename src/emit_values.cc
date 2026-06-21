@@ -393,6 +393,9 @@ bool EmitValues::can_convert_proc_value(const Expr& e, const TypeExpr* target,
   }
 
   if (proc.is_method) {
+    if (explicit_conversion && source_is_runtime_tmethod(source_type)) {
+      return true;
+    }
     auto bind =
         resolution_.resolve_method_value_binding(e, proc, explicit_conversion);
     return bind && bind->has_matching_decl();
@@ -809,6 +812,11 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
     }
   }
 
+  if (auto method = maybe_convert_tmethod_value(e, target, proc,
+                                                explicit_conversion)) {
+    return *method;
+  }
+
   // Picker and emitter share `resolve_method_value_binding` so they agree
   // by construction on which method a `@expr` resolves to. If we get a
   // binding, format the `tp2cc_MethodPtr` constructor; otherwise nullopt
@@ -834,6 +842,37 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
                     : "(void*)(&(" + base_cxx + "))";
   }
   return target_cxx + "(" + code_text + ", " + self_expr + ")";
+}
+
+const TypeExpr* EmitValues::proc_value_source_type(const Expr& e) {
+  if (const TypeExpr* t = analysis_.explicit_typecast_result_type(e)) {
+    return t;
+  }
+  if (const TypeExpr* t = overload_types_.type_for_overload(e)) {
+    return t;
+  }
+  return analysis_.deduce_type(e);
+}
+
+bool EmitValues::source_is_runtime_tmethod(const TypeExpr* source_type) {
+  const TypeExpr* source = analysis_.canonicalize_type(source_type);
+  return source && types_.type_to_cxx(*source) == "::rt::t_tmethod";
+}
+
+std::optional<std::string> EmitValues::maybe_convert_tmethod_value(
+    const Expr& e, const TypeExpr* target, const TyProcedural& proc,
+    bool explicit_conversion) {
+  if (!explicit_conversion || !proc.is_method) return std::nullopt;
+  if (!source_is_runtime_tmethod(proc_value_source_type(e))) {
+    return std::nullopt;
+  }
+
+  // `TMethod` is Pascal's standard Code/Data carrier for method values.
+  // An explicit cast from that carrier to `procedure/function ... of object`
+  // constructs the target method pointer from those named slots; arbitrary
+  // same-layout records still go through reject_method_pointer_record_cast.
+  return "::rt::tp2cc_method_ptr_from_tmethod<" + types_.type_to_cxx(*target) +
+         ">(" + expr_ops_.expr_to_cxx(e) + ")";
 }
 
 std::optional<std::string> EmitValues::reject_method_pointer_record_cast(

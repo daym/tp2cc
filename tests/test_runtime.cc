@@ -1215,6 +1215,21 @@ void test_tmethod_storage_matches_two_pointer_slots() {
   CHECK_EQ(counter.value, 5);
 }
 
+void test_method_ptr_constructs_from_tmethod_carrier() {
+  MethodPtrCounter counter;
+  t_tmethod raw{};
+
+  raw.p_code = tp2cc_method_code<&method_ptr_add>();
+  raw.p_data = &counter;
+
+  auto cb =
+      tp2cc_method_ptr_from_tmethod<tp2cc_MethodPtr<void(int32_t)>>(raw);
+
+  CHECK(cb != nullptr);
+  cb(6);
+  CHECK_EQ(counter.value, 6);
+}
+
 void test_ppointer_alias_updates_pointer_slot() {
   void* slot = nullptr;
   int value = 0;
@@ -1591,6 +1606,7 @@ int main() {
   RUN_TEST(test_method_ptr_calls_bound_thunk);
   RUN_TEST(test_method_ptr_storage_matches_two_pointer_slots);
   RUN_TEST(test_tmethod_storage_matches_two_pointer_slots);
+  RUN_TEST(test_method_ptr_constructs_from_tmethod_carrier);
   RUN_TEST(test_ppointer_alias_updates_pointer_slot);
   RUN_TEST(test_class_free_accepts_null_pointer);
   RUN_TEST(test_class_free_dispatches_virtual_destroy);

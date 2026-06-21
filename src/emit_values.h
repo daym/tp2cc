@@ -65,6 +65,11 @@ class EmitValues {
   std::optional<std::string> maybe_convert_proc_value(
       const ast::Expr& e, const ast::TypeExpr* target,
       bool explicit_conversion);
+  const ast::TypeExpr* proc_value_source_type(const ast::Expr& e);
+  bool source_is_runtime_tmethod(const ast::TypeExpr* source_type);
+  std::optional<std::string> maybe_convert_tmethod_value(
+      const ast::Expr& e, const ast::TypeExpr* target,
+      const ast::TyProcedural& proc, bool explicit_conversion);
   std::optional<std::string> reject_method_pointer_record_cast(
       const ast::Expr& e, const ast::TypeExpr* target,
       const ast::TyProcedural& proc, const ast::TypeExpr* source_type,
