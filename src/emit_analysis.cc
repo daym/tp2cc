@@ -170,7 +170,54 @@ static bool type_is_integer_arithmetic_operand(const TypeExpr* t) {
   return pi && pi->int_kind != PrimitiveIntKind::None;
 }
 
+class ScopedAnalysisUnit {
+ public:
+  ScopedAnalysisUnit(ScopeStateView& scope, std::string_view unit)
+      : scope_(scope),
+        saved_current_unit_(scope.current_unit_name),
+        saved_lookup_emission_unit_(scope.lookup_emission_unit_name) {
+    if (unit.empty() || unit == scope.current_unit_name) return;
+    scope_.lookup_emission_unit_name =
+        saved_lookup_emission_unit_.empty() ? saved_current_unit_
+                                            : saved_lookup_emission_unit_;
+    scope_.current_unit_name = std::string(unit);
+    active_ = true;
+  }
+
+  ScopedAnalysisUnit(const ScopedAnalysisUnit&) = delete;
+  ScopedAnalysisUnit& operator=(const ScopedAnalysisUnit&) = delete;
+
+  ~ScopedAnalysisUnit() {
+    if (!active_) return;
+    scope_.current_unit_name = saved_current_unit_;
+    scope_.lookup_emission_unit_name = saved_lookup_emission_unit_;
+  }
+
+ private:
+  ScopeStateView& scope_;
+  std::string saved_current_unit_;
+  std::string saved_lookup_emission_unit_;
+  bool active_ = false;
+};
+
+static const TypeExpr* primitive_type_expr_for_name(std::string_view name) {
+  const std::string low = ascii_lower(name);
+  return is_primitive_type(low) ? named_pascal_type(low) : nullptr;
+}
+
+static const TypeExpr* lo_hi_result_type_for_bits(uint8_t bits) {
+  if (bits <= 16) return builtin_integer_type("byte");
+  if (bits <= 32) return builtin_integer_type("word");
+  return builtin_integer_type("cardinal");
+}
+
 const TypeExpr* EmitAnalysis::canonicalize_type(const TypeExpr* t) {
+  if (registry_) {
+    if (const TypeLookupContext* context =
+            registry_->lookup_context_for_type(t)) {
+      return registry_->canonicalize(t, context);
+    }
+  }
   int hops = 0;
   while (t && t->kind == Kind::TyName) {
     if (hops++ >= kMaxAliasChainHops) {
@@ -513,24 +560,90 @@ EmitAnalysis::eval_ordinal_expr(const Expr& e) {
       }
     }
   }
+  if (e.kind == Kind::Binary) {
+    const auto& b = static_cast<const Binary&>(e);
+    if (binop_is_comparison(b.op)) {
+      auto lhs = eval_ordinal_expr(*b.lhs);
+      auto rhs = eval_ordinal_expr(*b.rhs);
+      if (!lhs || !rhs || lhs->family != rhs->family ||
+          lhs->enum_key != rhs->enum_key) {
+        return std::nullopt;
+      }
+      bool value = false;
+      switch (b.op) {
+        case BinOp::Eq:
+          value = lhs->value == rhs->value;
+          break;
+        case BinOp::NotEq:
+          value = lhs->value != rhs->value;
+          break;
+        case BinOp::Lt:
+          value = lhs->value < rhs->value;
+          break;
+        case BinOp::Gt:
+          value = lhs->value > rhs->value;
+          break;
+        case BinOp::LtEq:
+          value = lhs->value <= rhs->value;
+          break;
+        case BinOp::GtEq:
+          value = lhs->value >= rhs->value;
+          break;
+        default:
+          return std::nullopt;
+      }
+      return OrdinalExprValue{value ? 1 : 0, OrdinalFamily::Boolean, nullptr};
+    }
+  }
   if (auto info = eval_const_int_expr(e)) {
     return OrdinalExprValue{info->value, OrdinalFamily::Integer, nullptr};
   }
   return std::nullopt;
 }
 
-std::optional<EmitAnalysis::OrdinalDomain> EmitAnalysis::ordinal_domain_for_type(
+std::optional<OrdinalDomain> EmitAnalysis::ordinal_domain_for_type(
     const TypeExpr* t) {
-  t = canonicalize_type(t);
+  const TypeLookupContext* context =
+      registry_ ? registry_->lookup_context_for_type(t) : nullptr;
+  return ordinal_domain_for_type(t, context);
+}
+
+std::optional<EmitAnalysis::OrdinalExprValue>
+EmitAnalysis::eval_ordinal_expr(const Expr& e,
+                                const TypeLookupContext* context) {
+  if (!context) return eval_ordinal_expr(e);
+  // Bound expressions inside a type declaration are lexical Pascal source, not
+  // caller-context expressions. Evaluate unqualified constants such as
+  // `set of 0..MaxRegister` in the unit that declared the type.
+  ScopedAnalysisUnit scoped_unit(scope_, context->unit);
+  return eval_ordinal_expr(e);
+}
+
+std::optional<OrdinalDomain> EmitAnalysis::ordinal_domain_for_type(
+    const TypeExpr* t, const TypeLookupContext* context) {
+  if (registry_) {
+    if (const TypeLookupContext* own_context =
+            registry_->lookup_context_for_type(t)) {
+      context = own_context;
+    }
+  }
+  t = (registry_ && context) ? registry_->canonicalize(t, context)
+                             : canonicalize_type(t);
+  if (registry_) {
+    if (const TypeLookupContext* canon_context =
+            registry_->lookup_context_for_type(t)) {
+      context = canon_context;
+    }
+  }
   if (!t) return std::nullopt;
   if (t->kind == Kind::TyDistinct) {
     return ordinal_domain_for_type(
-        static_cast<const TyDistinct&>(*t).underlying.get());
+        static_cast<const TyDistinct&>(*t).underlying.get(), context);
   }
   if (t->kind == Kind::TySubrange) {
     const auto& sr = static_cast<const TySubrange&>(*t);
-    auto lo = eval_ordinal_expr(*sr.lo);
-    auto hi = eval_ordinal_expr(*sr.hi);
+    auto lo = eval_ordinal_expr(*sr.lo, context);
+    auto hi = eval_ordinal_expr(*sr.hi, context);
     if (!lo || !hi || lo->family != hi->family ||
         lo->enum_key != hi->enum_key) {
       return std::nullopt;
@@ -600,12 +713,21 @@ std::optional<EmitAnalysis::OrdinalDomain> EmitAnalysis::ordinal_domain_for_type
       .enum_key = info->type};
 }
 
-std::optional<EmitAnalysis::OrdinalDomain>
+std::optional<OrdinalDomain>
 EmitAnalysis::ordinal_domain_for_set_type(const TypeExpr* t) {
-  t = canonicalize_type(t);
+  const TypeLookupContext* context =
+      registry_ ? registry_->lookup_context_for_type(t) : nullptr;
+  t = (registry_ && context) ? registry_->canonicalize(t, context)
+                             : canonicalize_type(t);
+  if (registry_) {
+    if (const TypeLookupContext* canon_context =
+            registry_->lookup_context_for_type(t)) {
+      context = canon_context;
+    }
+  }
   if (!t || t->kind != Kind::TySet) return std::nullopt;
   const auto& s = static_cast<const TySet&>(*t);
-  auto dom = ordinal_domain_for_type(s.element.get());
+  auto dom = ordinal_domain_for_type(s.element.get(), context);
   if (!dom) return std::nullopt;
   if (s.has_explicit_bounds) {
     dom->low = s.explicit_low;

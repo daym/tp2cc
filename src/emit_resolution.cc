@@ -210,18 +210,22 @@ EmitResolution::gather_operator_in_pascal_scope(
 }
 
 std::vector<FlatCallParamInfo> EmitResolution::flatten_call_param_info(
-    const ProcDecl* decl) {
+    const ProcDecl* decl, std::string_view param_unit,
+    std::string_view param_declaring_type) {
   std::vector<FlatCallParamInfo> flat_params;
   if (!decl) return flat_params;
   for (const auto& p : decl->params) {
     size_t count = p.names.empty() ? 1 : p.names.size();
     for (size_t i = 0; i < count; ++i) {
+      std::shared_ptr<TyName> qualified = qualified_signature_type_name(
+          registry_, scope_, p.type.get(), param_unit, param_declaring_type);
       flat_params.emplace_back(
           p.type.get(), !p.type,
           p.mode == Param::Var || p.mode == Param::Out ||
               (p.mode == Param::Const &&
                analysis_.const_param_needs_mutable_ref(p.type.get())),
-          p.default_value.get());
+          p.default_value.get(), std::string(param_unit),
+          std::string(param_declaring_type), std::move(qualified));
     }
   }
   return flat_params;
@@ -1520,24 +1524,27 @@ AssignmentOperatorResult EmitResolution::find_assignment_operator(
   if (target_cxx.empty()) return {};
 
   std::vector<AnyCand> cands = gather_operator_in_pascal_scope(":=");
-  std::vector<const ProcDecl*> viable;
+  std::vector<AnyCand> viable;
   for (const auto& c : cands) {
     const ProcDecl* pd = c.decl;
     if (!pd || pd->params.size() != 1 || !pd->return_type) continue;
-    const TypeExpr* ret = analysis_.canonicalize_type(pd->return_type.get());
+    std::shared_ptr<TyName> qualified_ret = qualified_signature_type_name(
+        registry_, scope_, pd->return_type.get(), c.declaration_unit,
+        c.declaring_type);
+    const TypeExpr* ret_type =
+        qualified_ret ? qualified_ret.get() : pd->return_type.get();
+    const TypeExpr* ret = analysis_.canonicalize_type(ret_type);
     if (!ret || type_ops_.type_to_cxx(*ret) != target_cxx) continue;
-    std::vector<FlatCallParamInfo> flat = flatten_call_param_info(pd);
+    std::vector<FlatCallParamInfo> flat =
+        flatten_call_param_info(pd, c.declaration_unit, c.declaring_type);
     if (flat.size() != 1) continue;
     if (rank_conversion(source, flat[0].type, flat[0].mutable_ref).viable()) {
-      viable.push_back(pd);
+      viable.push_back(c);
     }
   }
   if (viable.empty()) return {};
   if (viable.size() == 1) {
-    for (const auto& c : cands) {
-      if (c.decl == viable.front()) return {viable.front(), c.callee_unit};
-    }
-    return {viable.front(), {}};
+    return {viable.front().decl, viable.front().callee_unit};
   }
 
   // Reuse the normal picker by synthesizing the source type as an expression

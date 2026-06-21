@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "emit_context.h"
+#include "emit_support.h"
 #include "typereg.h"
 
 namespace tp2cc {
@@ -108,7 +109,7 @@ class ScopedSignatureLookupUnit {
     auto frame = std::make_unique<TypeScopeFrame>(parent);
     for (const auto& [name, nested] : *nested_types) {
       (void)name;
-      if (nested) frame->insert_or_assign(*nested);
+      if (nested) frame->insert_ref(*nested);
     }
     frames_.push_back(std::move(frame));
   }
@@ -141,5 +142,28 @@ class ScopedSignatureLookupUnit {
   std::vector<std::unique_ptr<TypeScopeFrame>> frames_;
   bool changed_ = false;
 };
+
+inline std::shared_ptr<ast::TyName> qualified_signature_type_name(
+    const TypeRegistry* registry, ScopeStateView& scope,
+    const ast::TypeExpr* param_type, std::string_view param_unit,
+    std::string_view param_declaring_type) {
+  if (!param_type || param_type->kind != ast::Kind::TyName) return nullptr;
+  const auto& tn = static_cast<const ast::TyName&>(*param_type);
+  if (tn.name == "nil" || is_primitive_type(tn.name) ||
+      !runtime_named_type_cxx(tn.name).empty()) {
+    return nullptr;
+  }
+  ScopedSignatureLookupUnit signature_scope(scope, registry, param_unit,
+                                            param_declaring_type);
+  const TypeSymbol* symbol =
+      signature_type_symbol_for(registry, scope, tn.name);
+  if (!symbol || symbol->defining_unit.empty() ||
+      symbol->defining_unit == "__rt__") {
+    return nullptr;
+  }
+  auto qualified = std::make_shared<ast::TyName>(tn);
+  qualified->name = type_symbol_unit_pascal_path(*symbol);
+  return qualified;
+}
 
 }  // namespace tp2cc

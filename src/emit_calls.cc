@@ -79,34 +79,17 @@ std::string visible_type_unit_from(std::string_view type_name,
   return {};
 }
 
-std::shared_ptr<TyName> qualified_signature_type_name(
-    const TypeRegistry* registry, ScopeStateView& scope,
-    const TypeExpr* param_type, std::string_view param_unit,
-    std::string_view param_declaring_type) {
-  if (!param_type || param_type->kind != Kind::TyName) return nullptr;
-  const auto& tn = static_cast<const TyName&>(*param_type);
-  if (tn.name == "nil" || is_primitive_type(tn.name) ||
-      !runtime_named_type_cxx(tn.name).empty()) {
-    return nullptr;
-  }
-  ScopedSignatureLookupUnit signature_scope(scope, registry, param_unit,
-                                            param_declaring_type);
-  const TypeSymbol* symbol =
-      signature_type_symbol_for(registry, scope, tn.name);
-  if (!symbol || symbol->defining_unit.empty() ||
-      symbol->defining_unit == "__rt__") {
-    return nullptr;
-  }
-  auto qualified = std::make_shared<TyName>(tn);
-  qualified->name = type_symbol_unit_pascal_path(*symbol);
-  return qualified;
-}
-
 struct EffectiveParamType {
   const TypeExpr* type = nullptr;
   std::shared_ptr<TyName> signature_qualified;
   std::shared_ptr<TyName> default_qualified;
 };
+
+bool is_plain_pointer_type(const TypeExpr* t) {
+  if (t == named_pascal_type("pointer")) return true;
+  return t && t->kind == Kind::TyPointer &&
+         !static_cast<const TyPointer&>(*t).target;
+}
 
 EffectiveParamType effective_call_param_type(
     const TypeRegistry* registry, ScopeStateView& scope,

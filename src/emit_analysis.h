@@ -212,24 +212,23 @@ class EmitAnalysis {
       std::optional<std::pair<int64_t, int64_t>> explicit_bounds);
   const ast::TyPointer* synthesize_pointer_type(
       const ast::TypeExpr* target);
-  bool same_type_ast(const ast::TypeExpr* a, const ast::TypeExpr* b);
-  std::optional<OrdinalDomain> ordinal_domain_for_type(const ast::TypeExpr* t);
+  std::optional<OrdinalDomain> ordinal_domain_for_type(
+      const ast::TypeExpr* t, const TypeLookupContext* context);
   std::optional<OrdinalDomain> ordinal_domain_for_set_type(
       const ast::TypeExpr* t);
   std::optional<OrdinalExprValue> eval_ordinal_expr(const ast::Expr& e);
+  std::optional<OrdinalExprValue> eval_ordinal_expr(
+      const ast::Expr& e, const TypeLookupContext* context);
   std::optional<SetLiteralOrdinalSummary>
   extend_set_literal_ordinal_summary(
       std::optional<SetLiteralOrdinalSummary> summary, const ast::Expr& e);
   std::optional<SetLiteralOrdinalSummary> summarize_set_literal_ordinals(
       const ast::SetLit& s);
   const ast::TypeExpr* const_intrinsic_type_arg(const ast::Expr& arg);
-  bool type_is_string_like(const ast::TypeExpr* t);
   const ast::TypeExpr* canonical_set_type(const ast::TypeExpr* t);
-  const PrimitiveInfo* primitive_info_for_type(const ast::TypeExpr* t);
   bool type_is_numeric_primitive(const ast::TypeExpr* t);
   static bool binop_is_comparison(ast::BinOp op);
   static bool binop_is_arithmetic_like(ast::BinOp op);
-  bool type_is_ansistring(const ast::TypeExpr* t);
   const ast::TypeExpr* deduce_binary_expr_type(const ast::Binary& b);
   const ast::TypeExpr* deduce_low_high_result_type(const ast::TypeExpr* t);
   const ast::TypeExpr* deduce_own_unit_value_type(const UnitInfo& u,

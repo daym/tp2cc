@@ -114,7 +114,8 @@ class EmitResolution {
   // parameter declaration become one row per actual argument position so the
   // picker and default-argument expansion reason in call-site order.
   std::vector<FlatCallParamInfo> flatten_call_param_info(
-      const ast::ProcDecl* decl);
+      const ast::ProcDecl* decl, std::string_view param_unit = {},
+      std::string_view param_declaring_type = {});
 
   // Resolve a Pascal binary operator overload by Pascal operator token and
   // operand expressions. The caller decides whether the chosen declaration is
