@@ -1,0 +1,54 @@
+  1. Candidate collection:
+      - Look up same-named callable candidates in Pascal scope.
+      - Current unit declarations shadow uses imports for the same name.
+      - Class/with/nested candidates are collected before imported unit candidates.
+      - Filter candidates by arity: explicit args must not exceed flattened formal slots; omitted trailing slots must have defaults.
+  2. Per-argument viability/scoring, in order:
+      - Empty set literal [] to a set formal: Exact.
+      - nil to pointer-compatible formal: Exact.
+      - Argument to formal pointer: @expr is Exact; any typed-pointer/reference-class/pchar-ish actual is Exact.
+      - Procedural formal:
+          - procedure-of-object formal accepts nil as Exact.
+          - procedure-of-object formal accepts a matching current/self/member method value as Exact.
+          - plain procedural formal rejects instance-method values.
+          - otherwise it falls through to ordinary type scoring.
+      - Set type to set type:
+          - exact same set type: Exact.
+          - compatible set element domain: SetCompatible, except not for var/out.
+          - incompatible set: not viable.
+      - Same canonical C++ type: Exact.
+      - Same type after stripping distinct/subrange wrappers: Equal.
+      - For var/out/mutable const-ref: only the above plus class-hierarchy reference conversion is viable; no widening, narrowing, operator conversion, or
+      - Primitive integer same-signed widening: IntWideningSameSign, distance is bit-width gap.
+      - Real widening: single < double/real < extended/comp, scored as RealWidening.
+      - ShortString-family to ShortString-family: StringSameTagWiden.
+      - AnsiString/Char/PChar-ish to ShortString: StringToShortString.
+      - ShortString/Char/PChar-ish to AnsiString: StringToAnsiString.
+      - ShortString/AnsiString to PChar-ish: StringToAnsiString.
+      - Primitive integer signedness change with enough width: OrdinalSignChange.
+      - Primitive integer narrowing for value/const params: IntNarrowing.
+      - If assignment-operator conversions are enabled for this call kind, operator := from actual type to formal type: Operator.
+      - Otherwise: not viable.
+  3. Integer-domain overlay:
+      - For integer actuals, p2cc computes Pascal source domain:
+          - untyped integer constants in LongInt range use LongInt domain, not the smallest literal storage type.
+          - typed primitive integers use their signed/unsigned bit domain.
+          - subranges use declared low/high bounds.
+          - distinct wrappers recurse to the underlying domain.
+      - For primitive integer formals, a candidate is viable if the formal can represent that domain.
+      - Its score is IntDomainCompatible, with distance formal_bits * 2 + signedness_mismatch.
+      - This overlay is per argument position. Non-integer positions keep their already-computed score.
+      - Candidates whose integer actual would require a non-primitive formal are excluded from this primitive-integer overlay; operator candidates remain
+        fallback only if no primitive-integer candidate wins.
+  4. Candidate comparison:
+      - Compare the full score vector over explicit arguments.
+      - Lower rank is better; within equal rank, lower distance is better.
+      - Candidate A dominates B iff A is no worse in every argument position and strictly better in at least one.
+      - If no candidate dominates all others, the call is ambiguous.
+      - Exact neutral extra parameters, such as the same const r: trec added to every overload, remain in the vector as equal scores and do not disable ranking
+        on integer positions.
+  5. Defined rank order:
+     Exact < Equal < SetCompatible < ClassHierarchy < IntDomainCompatible < IntWideningSameSign < RealWidening < StringSameTagWiden < StringToShortString <
+     StringToAnsiString < OrdinalSignChange < IntNarrowing < Operator < Variant < NotViable.
+
+  Variant exists in the rank enum, but unused.
