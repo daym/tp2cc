@@ -13345,6 +13345,135 @@ void test_record_leq_complex_int_rhs_uses_assignment_operator_conversion() {
       "::rt::tp2cc_int_div(::std::numeric_limits<int64_t>::min(), 2)))"));
 }
 
+void test_deref_array_of_pointer_element_as_const_value_param() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit aoptbase;\n"
+      "interface\n"
+      "uses cpubase, aoptcpub, aasmtai;\n"
+      "function reginop(reg : tregister; const op : toper) : boolean;\n"
+      "procedure run(p1 : tai; count : aword);\n"
+      "implementation\n"
+      "function reginop(reg : tregister; const op : toper) : boolean;\n"
+      "begin\n"
+      "  reginop := reg = op.reg;\n"
+      "end;\n"
+      "procedure run(p1 : tai; count : aword);\n"
+      "var\n"
+      "  tmpresult : boolean;\n"
+      "begin\n"
+      "  tmpresult := reginop(0, pinstr(p1)^.oper[count]^);\n"
+      "end;\n"
+      "end.\n",
+      {{"cpubase.pas",
+        "unit cpubase;\n"
+        "interface\n"
+        "type\n"
+        "  tregister = longint;\n"
+        "  aword = longint;\n"
+        "const max_operands = 4;\n"
+        "implementation\n"
+        "end.\n"},
+       {"aasmtai.pas",
+        "unit aasmtai;\n"
+        "interface\n"
+        "type\n"
+        "  tai = class\n"
+        "    typ : longint;\n"
+        "  end;\n"
+        "implementation\n"
+        "end.\n"},
+       {"aoptcpub.pas",
+        "unit aoptcpub;\n"
+        "interface\n"
+        "uses cpubase;\n"
+        "type\n"
+        "  toper = record\n"
+        "    typ : longint;\n"
+        "    reg : tregister;\n"
+        "  end;\n"
+        "  poper = ^toper;\n"
+        "  tai_cpu_abstract = class\n"
+        "    oper : array[0..max_operands-1] of poper;\n"
+        "  end;\n"
+        "  taicpu = class(tai_cpu_abstract)\n"
+        "  end;\n"
+        "  tinstr = taicpu;\n"
+        "  pinstr = ^tinstr;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_reginop("));
+}
+
+void test_subrange_field_arithmetic_in_call_argument() {
+  // Variant record fields of subrange type used in arithmetic expressions
+  // passed as call arguments must not fail type deduction.  This mirrors
+  // cgppc.pas:750  a_jmp(list,A_BC,c.cond,c.cr-RS_CR0,l)
+  // where c.cr is typed RS_CR0..RS_CR7 (a subrange).
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  RS_CR0 = 1;\n"
+      "  RS_CR7 = 8;\n"
+      "type\n"
+      "  TCR = RS_CR0..RS_CR7;\n"
+      "  TRec = record\n"
+      "    cr: TCR;\n"
+      "  end;\n"
+      "procedure take(v: longint);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure take(v: longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run;\n"
+      "var r: TRec;\n"
+      "begin\n"
+      "  take(r.cr - RS_CR0);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_take("));
+  CHECK(!contains(out.impl, "no matching call"));
+}
+
+void test_subrange_field_nested_arithmetic_in_call_argument() {
+  // Nested arithmetic on a subrange field in a call argument must not fail
+  // type deduction.  This mirrors cgppc.pas:989
+  //   taicpu.op_reg_reg_const_const_const(..., ((f.cr-RS_CR0)*4+3) and 31, ...)
+  // where f.cr is typed RS_CR0..RS_CR7.
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  RS_CR0 = 1;\n"
+      "  RS_CR7 = 8;\n"
+      "type\n"
+      "  TCR = RS_CR0..RS_CR7;\n"
+      "  TRec = record\n"
+      "    cr: TCR;\n"
+      "  end;\n"
+      "procedure take(v: longint);\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure take(v: longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run;\n"
+      "var r: TRec;\n"
+      "begin\n"
+      "  take(((r.cr - RS_CR0) * 4 + 3) and 31);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_take("));
+  CHECK(!contains(out.impl, "no matching call"));
+}
+
 }  // namespace
 
 int main() {
@@ -13869,6 +13998,9 @@ int main() {
   RUN_TEST(test_reference_class_typecast_field_assignment_uses_assignment_operator);
   RUN_TEST(test_is_as_use_pointer_target_types);
   RUN_TEST(test_cxx_reserved_word_identifiers);
+  RUN_TEST(test_deref_array_of_pointer_element_as_const_value_param);
+  RUN_TEST(test_subrange_field_arithmetic_in_call_argument);
+  RUN_TEST(test_subrange_field_nested_arithmetic_in_call_argument);
 
   int n = tp2cc_test::failures();
   std::printf("%s: %d failure%s\n", (n == 0 ? "PASS" : "FAIL"), n,
