@@ -107,8 +107,7 @@ class ScopedSignatureLookupUnit {
     if (!nested_types || nested_types->empty()) return;
     TypeScopeFrame* parent = frames_.empty() ? nullptr : frames_.back().get();
     auto frame = std::make_unique<TypeScopeFrame>(parent);
-    for (const auto& [name, nested] : *nested_types) {
-      (void)name;
+    for (const auto& [_, nested] : *nested_types) {
       if (nested) frame->insert_ref(*nested);
     }
     frames_.push_back(std::move(frame));
