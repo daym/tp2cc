@@ -94,3 +94,14 @@ align(qword,qword), so neither ranking model is exercised.
    defutil,symtable,symcpu,
    procinfo, cpupi;
 
+--- a/compiler/aarch64/cpupara.pas
++++ b/compiler/aarch64/cpupara.pas
+@@ -620,7 +620,7 @@
+                     case we're on Darwin and have allocated a non-variadic argument
+                     < 8 bytes previously }
+                   if target_info.abi=abi_aarch64_darwin then
+-                    curstackoffset:=align(curstackoffset,paraloc^.def.alignment);
++                    curstackoffset:=align(qword(curstackoffset),qword(paraloc^.def.alignment));
+
+                   { on Darwin, non-variadic arguments take up their actual size
+
