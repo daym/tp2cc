@@ -241,7 +241,10 @@ const TypeExpr* EmitResolution::strip_conversion_wrapper(const TypeExpr* t) {
       t = analysis_.canonicalize_type(
           static_cast<const TyDistinct&>(*t).underlying.get());
     } else {
-      return builtin_integer_type("longint");
+      // Resolve subrange to its host integer primitive using the same
+      // domain-to-primitive mapping as canonicalize_for_arithmetic so
+      // type deduction and overload ranking stay consistent.
+      return analysis_.canonicalize_for_arithmetic(t);
     }
   }
   return t;

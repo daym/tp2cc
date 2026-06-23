@@ -1163,6 +1163,32 @@ bool EmitAnalysis::type_is_long_string(const TypeExpr* t) {
   return false;
 }
 
+const TypeExpr* EmitAnalysis::canonicalize_for_arithmetic(const TypeExpr* t) {
+  if (!t || t->kind != Kind::TySubrange) return t;
+  auto domain = ordinal_domain_for_type(t);
+  if (!domain || domain->family != OrdinalFamily::Integer) return t;
+  // Map integer ordinal domain bounds to the smallest Pascal primitive
+  // that can represent them. This matches the logic in
+  // EmitResolution::integer_actual_domain_for_type and
+  // EmitResolution::strip_conversion_wrapper so that type deduction
+  // and overload ranking use the same host-type mapping for subranges.
+  const int64_t low = domain->low;
+  const int64_t high = static_cast<int64_t>(domain->high);
+  if (low < 0) {
+    if (high <= signed_max_for_bits(8)) return builtin_integer_type("shortint");
+    if (high <= signed_max_for_bits(16)) return builtin_integer_type("smallint");
+    if (high <= signed_max_for_bits(32)) return builtin_integer_type("longint");
+    return builtin_integer_type("int64");
+  }
+  if (high <= static_cast<int64_t>(unsigned_mask_for_bits(8)))
+    return builtin_integer_type("byte");
+  if (high <= static_cast<int64_t>(unsigned_mask_for_bits(16)))
+    return builtin_integer_type("word");
+  if (high <= static_cast<int64_t>(unsigned_mask_for_bits(32)))
+    return builtin_integer_type("cardinal");
+  return builtin_integer_type("qword");
+}
+
 const TypeExpr* EmitAnalysis::deduce_binary_expr_type(const Binary& b) {
   if (b.op == BinOp::Is) return builtin_boolean_type();
   if (b.op == BinOp::In) return builtin_boolean_type();
@@ -1177,8 +1203,8 @@ const TypeExpr* EmitAnalysis::deduce_binary_expr_type(const Binary& b) {
 
   const TypeExpr* lt = deduce_type(*b.lhs);
   const TypeExpr* rt = deduce_type(*b.rhs);
-  const TypeExpr* ltc = canonicalize_type(lt);
-  const TypeExpr* rtc = canonicalize_type(rt);
+  const TypeExpr* ltc = canonicalize_for_arithmetic(canonicalize_type(lt));
+  const TypeExpr* rtc = canonicalize_for_arithmetic(canonicalize_type(rt));
 
   if (binop_is_comparison(b.op)) return builtin_boolean_type();
   if (binop_is_arithmetic_like(b.op)) {
@@ -1219,15 +1245,15 @@ const TypeExpr* EmitAnalysis::deduce_binary_expr_type(const Binary& b) {
       if (lptr && rptr) return named_pascal_type("ptrint");
       if (lptr || rptr) return nullptr;
     }
-    if (same_type_ast(lt, rt)) return lt ? lt : rt;
-    if (type_is_numeric_primitive(lt) && type_is_numeric_primitive(rt)) {
-      const PrimitiveInfo* lp = primitive_info_for_type(lt);
-      const PrimitiveInfo* rp = primitive_info_for_type(rt);
+    if (same_type_ast(ltc, rtc)) return ltc ? ltc : rtc;
+    if (type_is_numeric_primitive(ltc) && type_is_numeric_primitive(rtc)) {
+      const PrimitiveInfo* lp = primitive_info_for_type(ltc);
+      const PrimitiveInfo* rp = primitive_info_for_type(rtc);
       if (lp && rp && lp->int_kind != PrimitiveIntKind::None &&
           rp->int_kind != PrimitiveIntKind::None) {
-        return (primitive_bits(*lp, target_) >= primitive_bits(*rp, target_)) ? lt : rt;
+        return (primitive_bits(*lp, target_) >= primitive_bits(*rp, target_)) ? ltc : rtc;
       }
-      return lt ? lt : rt;
+      return ltc ? ltc : rtc;
     }
   }
 
@@ -1487,7 +1513,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       const auto& b = static_cast<const Binary&>(e);
       if (b.op == BinOp::Shl || b.op == BinOp::Shr) {
         const TypeExpr* lt = deduce_type(*b.lhs);
-        if (lt) lt = canonicalize_type(lt);
+        if (lt) lt = canonicalize_for_arithmetic(canonicalize_type(lt));
         if (lt && lt->kind == Kind::TyName) {
           const auto& tn = static_cast<const TyName&>(*lt);
           if (const PrimitiveInfo* pi = primitive_info(ascii_lower(tn.name));

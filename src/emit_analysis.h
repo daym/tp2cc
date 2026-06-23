@@ -160,6 +160,7 @@ class EmitAnalysis {
   const ast::TypeExpr* ord_result_type_for_operand(const ast::Expr& operand);
   const ast::TypeExpr* ord_result_type_for_type(const ast::TypeExpr* t);
   std::string deduce_class_alias(const ast::Expr& e);
+  std::string resolve_class_alias_name(std::string_view name);
   // Class identifiers and class aliases are values when passed to TClass or a
   // `class of ...` formal. Return the concrete class denoted by that source
   // expression; null string means the expression is not such a value.
@@ -214,6 +215,13 @@ class EmitAnalysis {
   // from the canonical atom rather than its name string.
   const PrimitiveInfo* primitive_info_for_type(const ast::TypeExpr* t);
   TargetInfo target() const { return target_; }
+
+  // Resolve TySubrange to its host integer primitive type for arithmetic
+  // contexts. Uses the same ordinal-domain-to-primitive mapping as
+  // EmitResolution::integer_actual_domain_for_type so type deduction and
+  // overload ranking stay consistent. Returns the input unchanged for
+  // non-subrange types.
+  const ast::TypeExpr* canonicalize_for_arithmetic(const ast::TypeExpr* t);
 
  private:
   struct SetLiteralOrdinalSummary {
