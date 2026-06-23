@@ -615,6 +615,7 @@ struct ProcModifiers {
   bool is_noreturn = false;
   bool is_external = false;
   bool is_assembler = false;
+  bool is_overload = false;
   std::string external_lib;
   std::string external_name;
 };

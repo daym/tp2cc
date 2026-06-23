@@ -29,6 +29,7 @@ class Parser {
     Cdecl,
     Noreturn,
     Assembler,
+    Overload,
   };
 
   // ---- token stream ----

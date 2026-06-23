@@ -131,6 +131,7 @@ ast::ProcModifiers Parser::combine_proc_modifiers(ProcModifiers base,
       base.is_noreturn || delta.is_noreturn,
       base.is_external || delta.is_external,
       base.is_assembler || delta.is_assembler,
+      base.is_overload || delta.is_overload,
       delta.external_lib.empty() ? std::move(base.external_lib)
                                  : std::move(delta.external_lib),
       delta.external_name.empty() ? std::move(base.external_name)
@@ -141,31 +142,34 @@ ast::ProcModifiers Parser::proc_modifier(ProcModifierFlag flag) {
   switch (flag) {
     case ProcModifierFlag::Virtual:
       return ProcModifiers{true, false, false, false, false, false,
-                           false, false, false, false, "", ""};
+                           false, false, false, false, false, "", ""};
     case ProcModifierFlag::Abstract:
       return ProcModifiers{false, true, false, false, false, false,
-                           false, false, false, false, "", ""};
+                           false, false, false, false, false, "", ""};
     case ProcModifierFlag::Override:
       return ProcModifiers{false, false, true, false, false, false,
-                           false, false, false, false, "", ""};
+                           false, false, false, false, false, "", ""};
     case ProcModifierFlag::Final:
       return ProcModifiers{false, false, false, true, false, false,
-                           false, false, false, false, "", ""};
+                           false, false, false, false, false, "", ""};
     case ProcModifierFlag::Forward:
       return ProcModifiers{false, false, false, false, true, false,
-                           false, false, false, false, "", ""};
+                           false, false, false, false, false, "", ""};
     case ProcModifierFlag::Inline:
       return ProcModifiers{false, false, false, false, false, true,
-                           false, false, false, false, "", ""};
+                           false, false, false, false, false, "", ""};
     case ProcModifierFlag::Cdecl:
       return ProcModifiers{false, false, false, false, false, false,
-                           true, false, false, false, "", ""};
+                           true, false, false, false, false, "", ""};
     case ProcModifierFlag::Noreturn:
       return ProcModifiers{false, false, false, false, false, false,
-                           false, true, false, false, "", ""};
+                           false, true, false, false, false, "", ""};
     case ProcModifierFlag::Assembler:
       return ProcModifiers{false, false, false, false, false, false,
-                           false, false, false, true, "", ""};
+                           false, false, false, true, false, "", ""};
+    case ProcModifierFlag::Overload:
+      return ProcModifiers{false, false, false, false, false, false,
+                           false, false, false, false, true, "", ""};
   }
   return ProcModifiers{};
 }
@@ -181,6 +185,7 @@ ast::ProcModifiers Parser::external_proc_modifier(
                        false,
                        false,
                        true,
+                       false,
                        false,
                        std::move(external_lib),
                        std::move(external_name)};
@@ -821,6 +826,7 @@ std::optional<ast::ProcModifiers> Parser::parse_proc_modifier(
     // `overload` is declarative: it permits a same-name overload set, but the
     // chosen declaration is still selected later by Pascal overload ranking.
     advance();
+    return proc_modifier(ProcModifierFlag::Overload);
   }
   else if (is_directive("reintroduce")) {
     // `reintroduce' hides an inherited virtual method at this

@@ -80,6 +80,7 @@ struct MethodSig {
   bool is_function = false;       // returns a value
   bool is_virtual = false;
   bool is_final = false;
+  bool is_overload = false;       // Pascal `overload` directive
   std::string return_type_name;    // Pascal-facing result type, if any
   std::shared_ptr<const ast::ProcDecl> decl;
 };
@@ -473,6 +474,14 @@ struct TypeRegistry {
   std::unordered_map<std::string, const TypeSymbol*, StringViewHash,
                      StringViewEqual>
       builtin_literal_descriptors;
+
+  // Merged method overload sets across the class hierarchy, keyed by
+  // (current_unit, class_name, member_lowered) packed with NUL separators.
+  // Populated on demand by `lookup_class_methods` during emission; the
+  // registry is fully built before emission starts so this cache is safe
+  // without invalidation.  Mutable so the const lookup can populate it.
+  mutable std::unordered_map<std::string, std::vector<MethodSig>>
+      merged_method_cache;
 
   // Fill from all parsed UnitNodes.
   void build(const std::vector<const ast::UnitNode*>& units);

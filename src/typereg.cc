@@ -558,6 +558,7 @@ MethodSig method_sig_for(std::string defining_unit,
                    .is_function = (pd.pkind == ProcKind::Function),
                    .is_virtual = pd.modifiers.is_virtual || pd.modifiers.is_abstract || pd.modifiers.is_override,
                    .is_final = pd.modifiers.is_final,
+                   .is_overload = pd.modifiers.is_overload,
                    .return_type_name = std::move(result_type),
                    .decl = std::move(method)};
 }
@@ -2605,13 +2606,43 @@ const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
     auto mit = interface->methods.find(key);
     return mit == interface->methods.end() ? nullptr : &mit->second;
   }
+  if (!ci) return nullptr;
+  // Cache key: current_unit + NUL + class_name + NUL + member_lowered.
+  std::string cache_key;
+  cache_key.reserve(current_unit.size() + 1 + class_name_in.size() + 1 +
+                    key.size());
+  cache_key.append(current_unit);
+  cache_key.push_back('\0');
+  cache_key.append(class_name_in);
+  cache_key.push_back('\0');
+  cache_key.append(key);
+  auto cache_it = merged_method_cache.find(cache_key);
+  if (cache_it != merged_method_cache.end()) {
+    return cache_it->second.empty() ? nullptr : &cache_it->second;
+  }
+  std::vector<MethodSig> merged;
   SeenClassChain seen;
   while (ci && seen.mark(ci)) {
     auto mit = ci->methods.find(key);
-    if (mit != ci->methods.end()) return &mit->second;
+    if (mit != ci->methods.end()) {
+      merged.insert(merged.end(), mit->second.begin(), mit->second.end());
+      // Check if ALL overloads at this class have is_overload=true. If so,
+      // continue walking to merge parent overloads. Otherwise stop (name
+      // hiding); parent overloads are hidden.
+      bool all_overload = true;
+      for (const auto& sig : mit->second) {
+        if (!sig.is_overload) {
+          all_overload = false;
+          break;
+        }
+      }
+      if (!all_overload) break;
+    }
     ci = lookup_parent_class(*ci);
   }
-  return nullptr;
+  auto [it, _] =
+      merged_method_cache.emplace(std::move(cache_key), std::move(merged));
+  return it->second.empty() ? nullptr : &it->second;
 }
 
 const PropertyInfo* TypeRegistry::lookup_class_property(
