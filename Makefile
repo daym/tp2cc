@@ -7,7 +7,7 @@
 #   make clean
 
 CXX      ?= g++
-CXXFLAGS ?= -std=c++20 -O0 -g -Wall -Wextra -Wpedantic -Wno-unused-parameter \
+CXXFLAGS ?= -std=c++20 -O0 -g -Wall -Wextra -Wpedantic \
             -fsanitize=address,undefined -fno-omit-frame-pointer
 CFLAGS   ?= -std=gnu11 -O0 -g -Wall -Wextra -Wpedantic \
             -fsanitize=address,undefined -fno-omit-frame-pointer
