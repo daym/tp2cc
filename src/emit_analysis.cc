@@ -1666,9 +1666,11 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
     }
     case Kind::Deref: {
       const auto& d = static_cast<const Deref&>(e);
-      const TypeExpr* t = deduce_type(*d.operand);
-      if (!t) return nullptr;
-      t = canonicalize_type(t);
+      const TypeExpr* operand_raw = deduce_type(*d.operand);
+      if (!operand_raw) {
+        return nullptr;
+      }
+      const TypeExpr* t = canonicalize_type(operand_raw);
       if (t == named_pascal_type("pchar") || t == named_pascal_type("pansichar")) {
         return builtin_char_type();
       }
@@ -1939,6 +1941,36 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
   return nullptr;
 }
 
+std::string EmitAnalysis::resolve_class_alias_name(std::string_view name) {
+  if (!registry_ || name.empty()) return std::string(name);
+  // Already a registered class or interface?
+  if (class_info_for_type_name(name)) return std::string(name);
+  if (registry_->lookup_interface(name, scope_.current_unit_name))
+    return std::string(name);
+  // Look up the type symbol; if it is itself a class (object-style), the
+  // class_info payload is set directly.
+  const TypeSymbol* sym =
+      registry_->lookup_type_symbol(name, scope_.current_unit_name);
+  if (!sym) return std::string(name);
+  if (sym->class_info()) return std::string(name);
+  // Follow the alias target.  A TyName target may itself be an alias, so
+  // recurse with a depth guard.
+  for (int depth = 0; depth < 8 && sym && sym->type; ++depth) {
+    if (sym->type->kind == Kind::TyName) {
+      const auto& target =
+          static_cast<const ast::TyName&>(*sym->type);
+      if (target.name == name) break;
+      if (class_info_for_type_name(target.name)) return target.name;
+      sym = registry_->lookup_type_symbol(target.name,
+                                           scope_.current_unit_name);
+      if (sym && sym->class_info()) return std::string(target.name);
+      continue;
+    }
+    break;
+  }
+  return std::string(name);
+}
+
 std::string EmitAnalysis::deduce_class_alias(const Expr& e) {
   if (!registry_) return {};
   if (e.kind == Kind::Ident) {
@@ -1982,7 +2014,11 @@ std::string EmitAnalysis::concrete_class_name_for_metaclass_value(
     if (identifier_is_shadowed_value(id.name)) return {};
     if (const auto* ci = class_info_for_type_name(id.name);
         ci && ci->is_reference_type) {
-      return id.name;
+      // When the lookup follows an alias chain (e.g.
+      // `texportalias = texportbase`), the ClassInfo's name is the
+      // canonical class, not the alias. Return that so the metaclass
+      // value function resolves to the real class.
+      return ci->name;
     }
     if (const TypeExpr* named = lookup_named_type_expr(id.name);
         named && registry_) {

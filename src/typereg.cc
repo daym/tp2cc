@@ -2303,10 +2303,24 @@ const ClassInfo* TypeRegistry::lookup_class_exact(std::string_view unit,
 const ClassInfo* TypeRegistry::lookup_class(std::string_view name,
                                             std::string_view current_unit) const {
   const TypeSymbol* symbol = lookup_type_symbol(name, current_unit);
-  if (!symbol || !symbol->class_info()) {
-    return nullptr;
+  if (!symbol) return nullptr;
+  if (const ClassInfo* ci = symbol->class_info()) return ci;
+  // Follow alias chains: `type tinstr = taicpu` stores AliasInfo on the
+  // tinstr symbol but the ClassInfo lives on the taicpu symbol.
+  for (int depth = 0; depth < 8 && symbol && symbol->type; ++depth) {
+    if (symbol->type->kind == Kind::TyName) {
+      const auto& target = static_cast<const ast::TyName&>(*symbol->type);
+      if (target.name == name) break;
+      const TypeSymbol* next =
+          lookup_type_symbol(target.name, current_unit);
+      if (!next) break;
+      if (const ClassInfo* ci = next->class_info()) return ci;
+      symbol = next;
+      continue;
+    }
+    break;
   }
-  return symbol->class_info();
+  return nullptr;
 }
 
 const ClassInfo* TypeRegistry::lookup_parent_class(
@@ -2595,10 +2609,18 @@ bool TypeRegistry::class_has_enum_member(
 const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
     const std::string& class_name_in, const std::string& member,
     std::string_view current_unit) const {
-  // Walk the class chain looking for `member`, consulting translated type
-  // symbols first; when the chain bottoms out into a runtime parent such as
-  // `Exception`, continue into `rt_classes` so inherited runtime methods still
-  // resolve.
+  // FPC's overload resolution is two-phase:
+  //   1. Name lookup: Walk the class chain from derived to parent. At each
+  //      class, if the name is found, add those methods to the candidate set.
+  //      If ALL overloads at this class have `is_overload=true`, continue
+  //      walking to merge parent overloads. Otherwise stop (name hiding).
+  //   2. Argument matching: Run overload ranking on the collected set.
+  //
+  // This correctly handles:
+  //   - No overload: stops at the first class with the name (name hiding).
+  //   - Unbroken overload chain: merges parent + child overloads.
+  //   - Broken chain: parent without `overload` hides grandparent; child with
+  //     `overload` only sees the parent's overloads.
   const ClassInfo* ci = lookup_class(class_name_in, current_unit);
   std::string key = lc(member);
   if (const InterfaceInfo* interface =
