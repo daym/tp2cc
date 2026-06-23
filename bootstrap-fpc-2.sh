@@ -39,24 +39,22 @@ fpc_source_version() {
 }
 echo "FPC source: $SOURCE_DIR (version $(fpc_source_version))"
 
-# Keep the translated compiler under sanitizer instrumentation.  Default to
-# UBSan-only: the i386 translated compiler is large enough that ASan can fail
-# before Pascal code starts because its shadow range overlaps the executable
-# mapping.  Set SAN explicitly to include address if testing a layout where
-# that runtime can start.
-SAN="${SAN:--fsanitize=undefined -fsanitize-recover=undefined -fno-omit-frame-pointer}"
+# Keep the translated compiler under sanitizer instrumentation.  UBSan must be
+# recoverable by default so one bootstrap run reports the whole visible surface
+# instead of stopping at the first bad cast/overflow and forcing a rebuild loop.
+# ASan still aborts on memory-corruption classes where continuing is unsafe.
+SAN="${SAN:--fsanitize=address,undefined -fsanitize-recover=undefined -fno-omit-frame-pointer}"
 CXXFLAGS="-std=gnu++20 -I. -O3 -g -pipe -Wno-narrowing -Wno-invalid-offsetof $SAN"
-CFLAGS="-std=gnu11 -O3 -g -pipe $SAN"
+CFLAGS="-std=gnu11 -O3 -g -pipe $SAN -fPIE"
+LDFLAGS="${LDFLAGS:-} $SAN -pie"
 export CXXFLAGS
 export CFLAGS
+export LDFLAGS
 
-# FPC frees most global state only at process exit. If ASan is explicitly
-# enabled, disable leak checking. UBSan reports are recoverable; stage compiler
-# invocations below are logged so every emitted report survives even if the
-# compiler later exits successfully.
-if printf '%s' "$SAN" | tr ',' ' ' | grep -qw "address"; then
-  export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1}"
-fi
+# FPC frees most global state only at process exit. Disable leak checking.
+# UBSan reports are recoverable; stage compiler invocations below are logged so
+# every emitted report survives even if the compiler later exits successfully.
+export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=0:abort_on_error=0:print_stacktrace=1}"
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=0:print_stacktrace=1}"
 
 BOOT_ROOT="${BOOTSTRAP_ROOT:-$ROOT/build/fpc-2-bootstrap}"
@@ -280,8 +278,16 @@ build_stage1() {
   (
     cd "$STAGE1_DIR"
     "$CC" $CFLAGS -c "$RUNTIME_SHIM" -o tp2cc_fenv_shim.o
-    "$CXX" -O3 -g3 $SAN p_*.o tp2cc_fenv_shim.o -lm -o pp
+    "$CXX" -O3 -g3 $LDFLAGS p_*.o tp2cc_fenv_shim.o -lm -o pp
   )
+}
+
+fail_on_sanitizer_reports() {
+  log_file="$1"
+  if grep -qE ': runtime error:|ERROR: AddressSanitizer:|ERROR: LeakSanitizer:' "$log_file"; then
+    echo "error: sanitizer report found; see $log_file" >&2
+    exit 1
+  fi
 }
 
 compile_pp_stage() {
@@ -313,6 +319,7 @@ compile_pp_stage() {
     cat "$log_file" >&2
     exit 1
   fi
+  fail_on_sanitizer_reports "$log_file"
   install_support_files "$out_dir"
 }
 
