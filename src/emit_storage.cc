@@ -15,11 +15,10 @@ using namespace ast;
 
 namespace {
 
-const TypeSymbol* local_type_symbol(const ScopeStateView& scope,
+const TypeSymbol* local_type_symbol(const TypeRegistry* registry,
+                                    const ScopeStateView& scope,
                                     std::string_view name) {
-  return scope.type_scope
-             ? scope.type_scope->find_lower(ascii_lower(name))
-             : nullptr;
+  return lexical_type_symbol_in_context(registry, scope, name);
 }
 
 bool is_nonmethod_procedural_type(const TypeExpr* t) {
@@ -81,7 +80,7 @@ std::string EmitStorage::offsetof_base_type_cxx(
   // C++ type text.
   if (t && t->kind == Kind::TyName) {
     const auto& n = static_cast<const TyName&>(*t);
-    if (local_type_symbol(scope_, n.name)) {
+    if (local_type_symbol(registry_, scope_, n.name)) {
       return types_.named_type_struct_cxx(n.name);
     }
   }
@@ -965,7 +964,8 @@ bool EmitStorage::type_is_packed_record(const TypeExpr* t) {
   if (!t) return false;
   if (t->kind == Kind::TyName) {
     const auto& n = static_cast<const TyName&>(*t);
-    if (const TypeSymbol* symbol = local_type_symbol(scope_, n.name);
+    if (const TypeSymbol* symbol =
+            local_type_symbol(registry_, scope_, n.name);
         symbol && symbol->record_info()) {
       return symbol->record_info()->is_packed;
     }
@@ -987,7 +987,7 @@ bool EmitStorage::type_is_direct_packed_aggregate(const TypeExpr* t) {
   if (!t) return false;
   if (t->kind == Kind::TyName) {
     const std::string low = ascii_lower(static_cast<const TyName&>(*t).name);
-    const TypeSymbol* symbol = local_type_symbol(scope_, low);
+    const TypeSymbol* symbol = local_type_symbol(registry_, scope_, low);
     if (!symbol && registry_) {
       symbol = registry_->lookup_type_symbol(low, scope_.current_unit_name);
     }

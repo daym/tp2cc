@@ -24,14 +24,7 @@ namespace {
 const TypeSymbol* visible_type_symbol(const TypeRegistry* registry,
                                       const ScopeStateView& scope,
                                       std::string_view name) {
-  const std::string lower = ascii_lower(name);
-  if (scope.type_scope) {
-    if (const TypeSymbol* local = scope.type_scope->find_lower(lower)) {
-      return local;
-    }
-  }
-  return registry ? registry->lookup_type_symbol(lower, scope.current_unit_name)
-                  : nullptr;
+  return visible_type_symbol_in_context(registry, scope, name);
 }
 
 std::string nested_proc_cxx_name(const ScopeStateView& scope,
@@ -56,47 +49,28 @@ std::string type_symbol_source_name(const TypeSymbol& symbol) {
   return out;
 }
 
-const std::unordered_map<std::string, std::shared_ptr<TypeSymbol>>*
-nested_type_symbols(const TypeSymbol* symbol) {
-  if (!symbol) return nullptr;
-  if (const ClassInfo* ci = symbol->class_info()) return &ci->nested_types;
-  if (const RecordInfo* ri = symbol->record_info()) return &ri->nested_types;
-  return nullptr;
-}
-
-class ScopedNestedTypeScope {
+class ScopedTypeExprContext {
  public:
-  ScopedNestedTypeScope(
-      ScopeStateView& scope,
-      const std::unordered_map<std::string, std::shared_ptr<TypeSymbol>>*
-          nested_types)
-      : scope_(scope),
-        saved_type_scope_(scope.type_scope),
-        frame_(scope.type_scope) {
-    if (!nested_types || nested_types->empty()) return;
-    // Inside a Pascal type declaration, names from that type's nested `type'
-    // section are lexical children of the owner and hide unit-level names.
-    // Link the frame to the previous type scope so nested members can still
-    // refer to enclosing-type and unit-visible types after these children.
-    for (const auto& [name, symbol] : *nested_types) {
-      (void)name;
-      if (symbol) frame_.insert_ref(*symbol);
-    }
-    scope_.type_scope = &frame_;
+  ScopedTypeExprContext(ScopeStateView& scope, const TypeRegistry* registry,
+                        const TypeExpr* type)
+      : scope_(scope), saved_type_scope_(scope.type_scope) {
+    if (!registry || !type) return;
+    const TypeLookupContext* context = registry->lookup_context_for_type(type);
+    if (!context) return;
+    scope_.type_scope = context;
     active_ = true;
   }
 
-  ScopedNestedTypeScope(const ScopedNestedTypeScope&) = delete;
-  ScopedNestedTypeScope& operator=(const ScopedNestedTypeScope&) = delete;
+  ScopedTypeExprContext(const ScopedTypeExprContext&) = delete;
+  ScopedTypeExprContext& operator=(const ScopedTypeExprContext&) = delete;
 
-  ~ScopedNestedTypeScope() {
+  ~ScopedTypeExprContext() {
     if (active_) scope_.type_scope = saved_type_scope_;
   }
 
  private:
   ScopeStateView& scope_;
-  TypeScopeFrame* saved_type_scope_ = nullptr;
-  TypeScopeFrame frame_;
+  const TypeLookupContext* saved_type_scope_ = nullptr;
   bool active_ = false;
 };
 
@@ -650,6 +624,7 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool in_header,
                                     std::vector<PendingReferenceClassSupport>&
                                         pending_support) {
   (void)in_header;
+  ScopedTypeExprContext type_context(scope_, registry_, td.type.get());
   const std::string name = type_mangle(td.name);
 
   if (td.type && td.type->kind == Kind::TyEnum) {
@@ -662,8 +637,6 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool in_header,
 
   if (td.type && td.type->kind == Kind::TyRecord) {
     const auto& tr = static_cast<const TyRecord&>(*td.type);
-    const TypeSymbol* symbol = visible_type_symbol(registry_, scope_, td.name);
-    ScopedNestedTypeScope nested_scope(scope_, nested_type_symbols(symbol));
     const auto layout = types_.compute_record_layout(tr);
     std::string open = "struct ";
     if (tr.is_packed) open += "[[gnu::packed]] ";
@@ -719,7 +692,6 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool in_header,
         symbol ? type_symbol_source_name(*symbol) : ascii_lower(td.name);
     const std::string qualified_cxx_name =
         symbol ? types_.type_symbol_struct_cxx(*symbol) : name;
-    ScopedNestedTypeScope nested_scope(scope_, nested_type_symbols(symbol));
     auto inherited_virtual_with_same_cxx_signature =
         [&](const ProcDecl& pd) -> const MethodSig* {
       if (!registry_ || pd.is_class_method || to.parent.empty()) return nullptr;
@@ -1051,7 +1023,7 @@ void EmitDecls::emit_pending_reference_class_support(
       registry_ ? registry_->lookup_type_symbol(source_name,
                                                 scope_.current_unit_name)
                 : nullptr;
-  ScopedNestedTypeScope nested_scope(scope_, nested_type_symbols(symbol));
+  (void)symbol;
   // Pascal reference classes need namespace-scope C++ helper definitions for
   // `class of' values and TObject virtual metadata. The declaration pass
   // records them while class scopes are open; the containing type drains the

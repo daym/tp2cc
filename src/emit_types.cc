@@ -143,38 +143,41 @@ class ScopedTypeBoundUnit {
   std::unordered_set<std::string> saved_local_nested_forwards_;
   std::unordered_set<std::string> saved_local_const_params_;
   std::vector<ScopeStateView::WithBind> saved_with_stack_;
-  TypeScopeFrame* saved_type_scope_ = nullptr;
+  const TypeLookupContext* saved_type_scope_ = nullptr;
   bool active_ = false;
 };
 
-const TypeSymbol* local_type_symbol(const ScopeStateView& scope,
+const TypeSymbol* local_type_symbol(const TypeRegistry* registry,
+                                    const ScopeStateView& scope,
                                     std::string_view name) {
-  return scope.type_scope
-             ? scope.type_scope->find_lower(ascii_lower(name))
-             : nullptr;
+  return lexical_type_symbol_in_context(registry, scope, name);
 }
 
-const EnumInfoReg* local_enum_info_for_type(const ScopeStateView& scope,
+const EnumInfoReg* local_enum_info_for_type(const TypeRegistry* registry,
+                                            const ScopeStateView& scope,
                                             const TyEnum& e) {
-  for (const TypeScopeFrame* frame = scope.type_scope; frame;
+  if (!registry) return nullptr;
+  for (const TypeLookupContext* frame = scope.type_scope; frame;
        frame = frame->parent) {
-    for (const auto& [name, symbol] : frame->symbols) {
-      (void)name;
-      const EnumInfoReg* info = symbol.enum_info();
+    for (const auto& [_, symbol] : frame->type_symbols) {
+      if (!symbol) continue;
+      const EnumInfoReg* info = symbol->enum_info();
       if (info && info->type == &e) return info;
     }
   }
   return nullptr;
 }
 
-const EnumInfoReg* local_enum_info_for_member(const ScopeStateView& scope,
+const EnumInfoReg* local_enum_info_for_member(const TypeRegistry* registry,
+                                              const ScopeStateView& scope,
                                               std::string_view name) {
+  if (!registry) return nullptr;
   const std::string member = ascii_lower(name);
-  for (const TypeScopeFrame* frame = scope.type_scope; frame;
+  for (const TypeLookupContext* frame = scope.type_scope; frame;
        frame = frame->parent) {
-    for (const auto& [symbol_name, symbol] : frame->symbols) {
-      (void)symbol_name;
-      const EnumInfoReg* info = symbol.enum_info();
+    for (const auto& [_, symbol] : frame->type_symbols) {
+      if (!symbol) continue;
+      const EnumInfoReg* info = symbol->enum_info();
       if (!info) continue;
       for (const auto& enum_member : info->members) {
         if (enum_member == member) return info;
@@ -331,7 +334,8 @@ std::string EmitTypes::type_name_to_cxx(const TyName& n) {
   // generated `t_*` C++ type names.
   if (registry_knows_translated_type(n.name)) {
     auto lookup_name = ascii_lower(n.name);
-    if (const TypeSymbol* local = local_type_symbol(scope_, lookup_name)) {
+    if (const TypeSymbol* local =
+            local_type_symbol(registry_, scope_, lookup_name)) {
       if (const ClassInfo* ci = local->class_info();
           ci && ci->is_reference_type) {
         return named_type_struct_cxx(n.name) + "*";
@@ -405,7 +409,7 @@ std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
     return cls;
   }
   const std::string low = ascii_lower(name);
-  if (const TypeSymbol* local = local_type_symbol(scope_, low)) {
+  if (const TypeSymbol* local = local_type_symbol(registry_, scope_, low)) {
     // Pascal local and nested type declarations are lexical symbols. Emitting
     // the resolved symbol path keeps the same lookup result usable both inside
     // the declaring C++ class and from namespace-scope helper declarations.
@@ -424,7 +428,7 @@ std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
 std::string EmitTypes::visible_type_prefix(std::string_view name) {
   if (!registry_) return {};
   std::string lower = ascii_lower(std::string(name));
-  if (local_type_symbol(scope_, lower)) {
+  if (local_type_symbol(registry_, scope_, lower)) {
     return {};
   }
   if (const TypeSymbol* symbol =
@@ -438,7 +442,7 @@ std::string EmitTypes::visible_type_prefix(std::string_view name) {
 
 bool EmitTypes::registry_knows_translated_type(std::string_view name) {
   std::string lower = ascii_lower(std::string(name));
-  if (local_type_symbol(scope_, lower)) {
+  if (local_type_symbol(registry_, scope_, lower)) {
     return true;
   }
   if (!registry_) return false;
@@ -453,7 +457,8 @@ bool EmitTypes::registry_knows_translated_type(std::string_view name) {
 std::string EmitTypes::metaclass_struct_cxx(std::string_view class_name) {
   std::string tail = std::string(class_name);
   std::string prefix;
-  if (const TypeSymbol* symbol = local_type_symbol(scope_, class_name)) {
+  if (const TypeSymbol* symbol =
+          local_type_symbol(registry_, scope_, class_name)) {
     tail.clear();
     for (const auto& owner : symbol->owner_path) {
       if (!tail.empty()) tail += "_";
@@ -492,7 +497,8 @@ std::string EmitTypes::metaclass_struct_cxx(std::string_view class_name) {
 std::string EmitTypes::metaclass_value_fn_cxx(std::string_view class_name) {
   std::string tail = std::string(class_name);
   std::string prefix;
-  if (const TypeSymbol* symbol = local_type_symbol(scope_, class_name)) {
+  if (const TypeSymbol* symbol =
+          local_type_symbol(registry_, scope_, class_name)) {
     tail.clear();
     for (const auto& owner : symbol->owner_path) {
       if (!tail.empty()) tail += "_";
@@ -685,7 +691,8 @@ std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
   if (dim->kind != Kind::TyName) return std::nullopt;
   const auto& tn = static_cast<const TyName&>(*dim);
   const std::string type_name = ascii_lower(tn.name);
-  if (const TypeSymbol* symbol = local_type_symbol(scope_, type_name);
+  if (const TypeSymbol* symbol =
+          local_type_symbol(registry_, scope_, type_name);
       symbol && symbol->enum_info()) {
     const TyEnum* local_enum = symbol->enum_info()->type;
     if (!local_enum) return std::nullopt;
@@ -775,7 +782,8 @@ const TypeExpr* EmitTypes::subrange_bound_canonical_type(const Expr* e) {
 }
 
 std::string EmitTypes::visible_enum_type_for_member(std::string_view name) {
-  if (const EnumInfoReg* info = local_enum_info_for_member(scope_, name)) {
+  if (const EnumInfoReg* info =
+          local_enum_info_for_member(registry_, scope_, name)) {
     return info->cxx_name;
   }
   if (!registry_) return {};
@@ -791,7 +799,7 @@ std::string EmitTypes::visible_enum_type_for_member(std::string_view name) {
 
 std::string EmitTypes::visible_enum_type_for_type_name(std::string_view name) {
   const std::string low = ascii_lower(name);
-  if (const TypeSymbol* symbol = local_type_symbol(scope_, low);
+  if (const TypeSymbol* symbol = local_type_symbol(registry_, scope_, low);
       symbol && symbol->enum_info()) {
     return type_name_text_to_cxx(low);
   }
@@ -995,7 +1003,8 @@ std::string EmitTypes::set_type_to_cxx(const TySet& s) {
 
 std::optional<std::string> EmitTypes::enum_carrier_type_to_cxx(
     const TyEnum& e) {
-  if (const EnumInfoReg* info = local_enum_info_for_type(scope_, e)) {
+  if (const EnumInfoReg* info =
+          local_enum_info_for_type(registry_, scope_, e)) {
     return info->cxx_name;
   }
   if (!registry_) return std::nullopt;
@@ -1334,7 +1343,8 @@ std::string EmitTypes::low_high_expr_for_named_type(std::string_view name,
     return {};
   }
 
-  if (const TypeSymbol* symbol = local_type_symbol(scope_, lower)) {
+  if (const TypeSymbol* symbol =
+          local_type_symbol(registry_, scope_, lower)) {
     if (symbol->enum_info()) {
       return enum_bound_cxx_name(symbol->name, symbol->defining_unit, want_low);
     }

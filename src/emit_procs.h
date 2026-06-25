@@ -15,6 +15,7 @@ class EmitAnalysis;
 class EmitCalls;
 class EmitDecls;
 class EmitTypes;
+struct TypeRegistry;
 
 class EmitProcOps {
  public:
@@ -35,7 +36,8 @@ class EmitProcOps {
 // routine emit paths.
 class EmitProcs {
  public:
-  EmitProcs(ScopeStateView& scope, int& block_depth, EmitAnalysis& analysis,
+  EmitProcs(const TypeRegistry* registry, ScopeStateView& scope,
+            int& block_depth, EmitAnalysis& analysis,
             EmitTypes& types, EmitCalls& calls, EmitDecls& decls,
             EmitProcOps& emit_ops);
 
@@ -63,7 +65,7 @@ class EmitProcs {
         local_nested_fns;
     std::unordered_set<std::string> local_nested_forwards;
     std::unordered_set<std::string> local_untyped_params;
-    TypeScopeFrame* type_scope = nullptr;
+    const TypeLookupContext* type_scope = nullptr;
     std::unordered_set<std::string> local_const_params;
     int block_depth = 0;
   };
@@ -76,6 +78,7 @@ class EmitProcs {
   std::string nested_proc_cxx_name(const ast::ProcDecl& pd) const;
   std::string nested_proc_signature_types(const ast::ProcDecl& pd);
 
+  const TypeRegistry* registry_ = nullptr;
   ScopeStateView& scope_;
   int& block_depth_;
   EmitAnalysis& analysis_;

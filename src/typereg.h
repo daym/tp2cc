@@ -455,6 +455,14 @@ struct TypeRegistry {
   std::deque<TypeLookupContext> type_lookup_context_storage;
   std::unordered_map<const ast::TypeExpr*, const TypeLookupContext*>
       type_lookup_contexts;
+  std::unordered_map<std::string, const TypeLookupContext*>
+      unit_interface_type_contexts;
+  std::unordered_map<std::string, const TypeLookupContext*>
+      unit_implementation_type_contexts;
+  std::unordered_map<const ast::ProcDecl*, const TypeLookupContext*>
+      proc_signature_type_contexts;
+  std::unordered_map<const ast::ProcDecl*, const TypeLookupContext*>
+      proc_body_type_contexts;
   // Type syntax can be rendered after its declaring unit has finished
   // emitting. `Location::file` identifies the parsed source buffer that
   // contributed that syntax, including include-file buffers, so this map keeps
@@ -487,9 +495,17 @@ struct TypeRegistry {
   void build(const std::vector<const ast::UnitNode*>& units);
   const TypeLookupContext* lookup_context_for_type(
       const ast::TypeExpr* type) const;
+  const TypeLookupContext* lookup_unit_context(
+      std::string_view unit, bool implementation) const;
+  const TypeLookupContext* lookup_proc_signature_context(
+      const ast::ProcDecl* proc) const;
+  const TypeLookupContext* lookup_proc_body_context(
+      const ast::ProcDecl* proc) const;
   std::string_view declaration_unit_for_type(
       const ast::TypeExpr* type) const;
   const TypeSymbol* lookup_type_symbol_in_context(
+      std::string_view name, const TypeLookupContext* context) const;
+  const TypeSymbol* lookup_type_symbol_in_scope_chain(
       std::string_view name, const TypeLookupContext* context) const;
   const TypeSymbol* lookup_type_symbol_exact(std::string_view unit,
                                              std::string_view name) const;

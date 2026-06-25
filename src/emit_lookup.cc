@@ -289,11 +289,11 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     return resolved_value(ResolvedKind::Local, mangle(name));
   }
   const std::string low_name = ascii_lower(name);
-  for (const TypeScopeFrame* frame = scope_.type_scope; frame;
+  for (const TypeLookupContext* frame = scope_.type_scope; frame;
        frame = frame->parent) {
-    for (const auto& [symbol_name, symbol] : frame->symbols) {
-      (void)symbol_name;
-      const EnumInfoReg* info = symbol.enum_info();
+    for (const auto& [_, symbol] : frame->type_symbols) {
+      if (!symbol) continue;
+      const EnumInfoReg* info = symbol->enum_info();
       if (!info || !info->type) continue;
       for (const auto& member : info->type->members) {
         if (ascii_lower(member.name) == low_name) {

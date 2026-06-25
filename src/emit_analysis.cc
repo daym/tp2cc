@@ -27,21 +27,22 @@ uint8_t EmitAnalysis::resolved_primitive_bits(const PrimitiveInfo& info) const {
   return primitive_bits(info, target_);
 }
 
-static const TypeSymbol* local_type_symbol(const ScopeStateView& scope,
+static const TypeSymbol* local_type_symbol(const TypeRegistry* registry,
+                                           const ScopeStateView& scope,
                                            std::string_view name) {
-  return scope.type_scope
-             ? scope.type_scope->find_lower(ascii_lower(name))
-             : nullptr;
+  return lexical_type_symbol_in_context(registry, scope, name);
 }
 
 static const EnumInfoReg* local_enum_info_for_member(
-    const ScopeStateView& scope, std::string_view name) {
+    const TypeRegistry* registry, const ScopeStateView& scope,
+    std::string_view name) {
+  if (!registry) return nullptr;
   const std::string member = ascii_lower(name);
-  for (const TypeScopeFrame* frame = scope.type_scope; frame;
+  for (const TypeLookupContext* frame = scope.type_scope; frame;
        frame = frame->parent) {
-    for (const auto& [symbol_name, symbol] : frame->symbols) {
-      (void)symbol_name;
-      const EnumInfoReg* info = symbol.enum_info();
+    for (const auto& [_, symbol] : frame->type_symbols) {
+      if (!symbol) continue;
+      const EnumInfoReg* info = symbol->enum_info();
       if (!info) continue;
       for (const auto& enum_member : info->members) {
         if (enum_member == member) return info;
@@ -62,11 +63,12 @@ static std::string type_symbol_source_name(const TypeSymbol& symbol) {
   return out;
 }
 
-static bool is_local_type_name(const ScopeStateView& scope,
+static bool is_local_type_name(const TypeRegistry* registry,
+                               const ScopeStateView& scope,
                                const TypeExpr* type) {
   if (!type || type->kind != Kind::TyName) return false;
   const auto& name = static_cast<const TyName&>(*type).name;
-  return local_type_symbol(scope, name) != nullptr;
+  return local_type_symbol(registry, scope, name) != nullptr;
 }
 
 // Method bodies are emitted outside the Pascal class declaration, but an
@@ -74,10 +76,11 @@ static bool is_local_type_name(const ScopeStateView& scope,
 // of the method owner. Return the full source owner path so class/member lookup
 // walks `TOuter.TInner' rather than treating `TInner' as a unit-level type.
 static std::string local_member_owner_type_name(
-    const ScopeStateView& scope, const TypeExpr* type) {
+    const TypeRegistry* registry, const ScopeStateView& scope,
+    const TypeExpr* type) {
   if (!type || type->kind != Kind::TyName) return {};
   const auto& name = static_cast<const TyName&>(*type).name;
-  const TypeSymbol* symbol = local_type_symbol(scope, name);
+  const TypeSymbol* symbol = local_type_symbol(registry, scope, name);
   if (!symbol) return {};
   if (!symbol->class_info() && !symbol->record_info() &&
       !symbol->interface_info()) {
@@ -247,7 +250,7 @@ const TypeExpr* EmitAnalysis::canonicalize_type(const TypeExpr* t) {
           "kMaxAliasChainHops; cycle or registry corruption");
     }
     const auto& n = static_cast<const TyName&>(*t);
-    const TypeSymbol* local_symbol = local_type_symbol(scope_, n.name);
+    const TypeSymbol* local_symbol = local_type_symbol(registry_, scope_, n.name);
     const AliasInfo* local_alias =
         local_symbol ? local_symbol->alias_info() : nullptr;
     if (local_alias && local_alias->target &&
@@ -286,7 +289,7 @@ const TypeExpr* EmitAnalysis::ord_result_type_for_type(const TypeExpr* t) {
         info && info->int_kind != PrimitiveIntKind::None) {
       return builtin_integer_type(lower);
     }
-    if (const TypeSymbol* symbol = local_type_symbol(scope_, lower);
+    if (const TypeSymbol* symbol = local_type_symbol(registry_, scope_, lower);
         symbol && symbol->enum_info()) {
       return builtin_integer_type("longint");
     }
@@ -315,7 +318,7 @@ const TypeExpr* EmitAnalysis::ord_result_type_for_operand(
 
 const ClassInfo* EmitAnalysis::class_info_for_type_name(std::string_view name) {
   std::string low = ascii_lower(name);
-  if (const TypeSymbol* local = local_type_symbol(scope_, low)) {
+  if (const TypeSymbol* local = local_type_symbol(registry_, scope_, low)) {
     // Method bodies and nested type declarations can resolve class names
     // through the current lexical type scope before unit-visible symbols.
     if (const ClassInfo* ci = local->class_info()) return ci;
@@ -349,7 +352,7 @@ const ClassInfo* EmitAnalysis::class_info_for_type_name(std::string_view name) {
 const TypeExpr* EmitAnalysis::lookup_named_type_expr(std::string_view name) {
   std::string low = ascii_lower(name);
 
-  if (const TypeSymbol* symbol = local_type_symbol(scope_, low)) {
+  if (const TypeSymbol* symbol = local_type_symbol(registry_, scope_, low)) {
     if (const AliasInfo* alias = symbol->alias_info();
         alias && alias->target) {
       return alias->target.get();
@@ -548,8 +551,8 @@ bool EmitAnalysis::same_type_ast(const TypeExpr* a, const TypeExpr* b) {
       // Imported signatures may carry `unit.T` while expressions in the
       // importing unit carry unqualified `T`; those are the same type only
       // when normal Pascal type lookup resolves both spellings to one symbol.
-      const TypeSymbol* as = local_type_symbol(scope_, an);
-      const TypeSymbol* bs = local_type_symbol(scope_, bn);
+      const TypeSymbol* as = local_type_symbol(registry_, scope_, an);
+      const TypeSymbol* bs = local_type_symbol(registry_, scope_, bn);
       if (registry_) {
         if (!as) {
           as = registry_->lookup_type_symbol(an, scope_.current_unit_name);
@@ -1062,7 +1065,7 @@ const TypeExpr* EmitAnalysis::const_intrinsic_type_arg(const Expr& arg) {
   if (arg.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(arg);
     const std::string low = ascii_lower(id.name);
-    if (const TypeSymbol* symbol = local_type_symbol(scope_, low)) {
+    if (const TypeSymbol* symbol = local_type_symbol(registry_, scope_, low)) {
       if (const AliasInfo* alias = symbol->alias_info();
           alias && alias->target) {
         return alias->target.get();
@@ -1572,7 +1575,8 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           id.name == scope_.outer_result_name) {
         return scope_.outer_result_type;
       }
-      if (const EnumInfoReg* info = local_enum_info_for_member(scope_, id.name);
+      if (const EnumInfoReg* info =
+              local_enum_info_for_member(registry_, scope_, id.name);
           info && info->type) {
         return info->type;
       }
@@ -1943,27 +1947,43 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
 
 std::string EmitAnalysis::resolve_class_alias_name(std::string_view name) {
   if (!registry_ || name.empty()) return std::string(name);
-  // Already a registered class or interface?
-  if (class_info_for_type_name(name)) return std::string(name);
-  if (registry_->lookup_interface(name, scope_.current_unit_name))
+  const TypeSymbol* sym = local_type_symbol(registry_, scope_, name);
+  if (!sym) {
+    sym = registry_->lookup_type_symbol(name, scope_.current_unit_name);
+  }
+  if (!sym) {
+    if (class_info_for_type_name(name)) return std::string(name);
+    if (registry_->lookup_interface(name, scope_.current_unit_name)) {
+      return std::string(name);
+    }
     return std::string(name);
-  // Look up the type symbol; if it is itself a class (object-style), the
-  // class_info payload is set directly.
-  const TypeSymbol* sym =
-      registry_->lookup_type_symbol(name, scope_.current_unit_name);
-  if (!sym) return std::string(name);
-  if (sym->class_info()) return std::string(name);
-  // Follow the alias target.  A TyName target may itself be an alias, so
-  // recurse with a depth guard.
+  }
+  if (sym->class_info() || sym->interface_info()) {
+    return type_symbol_source_name(*sym);
+  }
+
+  std::string lookup_unit = sym->defining_unit.empty()
+                                ? scope_.current_unit_name
+                                : sym->defining_unit;
   for (int depth = 0; depth < 8 && sym && sym->type; ++depth) {
     if (sym->type->kind == Kind::TyName) {
       const auto& target =
           static_cast<const ast::TyName&>(*sym->type);
       if (target.name == name) break;
+      if (const TypeSymbol* target_symbol =
+              scope_.type_scope
+                  ? registry_->lookup_type_symbol_in_context(target.name,
+                                                             scope_.type_scope)
+                  : registry_->lookup_type_symbol(target.name, lookup_unit)) {
+        sym = target_symbol;
+        lookup_unit = sym->defining_unit.empty() ? lookup_unit
+                                                 : sym->defining_unit;
+        if (sym->class_info() || sym->interface_info()) {
+          return type_symbol_source_name(*sym);
+        }
+        continue;
+      }
       if (class_info_for_type_name(target.name)) return target.name;
-      sym = registry_->lookup_type_symbol(target.name,
-                                           scope_.current_unit_name);
-      if (sym && sym->class_info()) return std::string(target.name);
       continue;
     }
     break;
@@ -1993,15 +2013,17 @@ std::string EmitAnalysis::deduce_class_alias(const Expr& e) {
   // alias recovery on the source-language path instead of canonicalized class
   // bodies. That matters for casts, `self`, and chained member accesses.
   if (auto cls = metaclass_target_name(t); !cls.empty()) return cls;
-  if (auto cls = local_member_owner_type_name(scope_, t); !cls.empty()) {
+  if (auto cls = local_member_owner_type_name(registry_, scope_, t);
+      !cls.empty()) {
     return cls;
   }
-  if (!is_local_type_name(scope_, t)) {
+  if (!is_local_type_name(registry_, scope_, t)) {
     if (auto cls = registry_->direct_type_name(t, scope_.current_unit_name);
         !cls.empty()) return cls;
   }
   const TypeExpr* canon = canonicalize_type(t);
-  if (auto cls = local_member_owner_type_name(scope_, canon); !cls.empty()) {
+  if (auto cls = local_member_owner_type_name(registry_, scope_, canon);
+      !cls.empty()) {
     return cls;
   }
   return registry_->direct_type_name(canon, scope_.current_unit_name);
@@ -2064,7 +2086,7 @@ std::string EmitAnalysis::canonical_method_owner_type_name(
   const std::string original = ascii_lower(owner);
   if (!registry_ || original.empty()) return original;
 
-  const TypeSymbol* symbol = local_type_symbol(scope_, original);
+  const TypeSymbol* symbol = local_type_symbol(registry_, scope_, original);
   if (!symbol) {
     symbol = registry_->lookup_type_symbol(original, scope_.current_unit_name);
   }
@@ -2121,7 +2143,8 @@ const TypeExpr* EmitAnalysis::lookup_record_field_type_in_type(
   }
   if (type->kind == Kind::TyName) {
     const auto& tn = static_cast<const TyName&>(*type);
-    if (const TypeSymbol* symbol = local_type_symbol(scope_, tn.name);
+    if (const TypeSymbol* symbol =
+            local_type_symbol(registry_, scope_, tn.name);
         symbol && symbol->record_info()) {
       const RecordInfo* record = symbol->record_info();
       auto it = record->fields.find(ascii_lower(field_name));
@@ -2159,7 +2182,8 @@ bool EmitAnalysis::record_field_is_variant_in_type(
   }
   if (type->kind == Kind::TyName) {
     const auto& tn = static_cast<const TyName&>(*type);
-    if (const TypeSymbol* symbol = local_type_symbol(scope_, tn.name);
+    if (const TypeSymbol* symbol =
+            local_type_symbol(registry_, scope_, tn.name);
         symbol && symbol->record_info()) {
       const RecordInfo* record = symbol->record_info();
       auto it = record->fields.find(ascii_lower(field_name));
@@ -2338,7 +2362,8 @@ const EnumInfoReg* EmitAnalysis::find_enum_info_in_unit(
 
 const EnumInfoReg* EmitAnalysis::find_visible_enum_info_for_member(
     const std::string& name) {
-  if (const EnumInfoReg* local = local_enum_info_for_member(scope_, name)) {
+  if (const EnumInfoReg* local =
+          local_enum_info_for_member(registry_, scope_, name)) {
     return local;
   }
   if (!registry_) return nullptr;

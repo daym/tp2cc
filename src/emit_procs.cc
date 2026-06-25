@@ -18,46 +18,14 @@ namespace {
 constexpr const char* kPascalResultSlotName = "p_result";
 constexpr const char* kCtorStatusSlotName = "tp2cc_ctor_ok";
 
-void upsert_current_type_symbol(TypeScopeFrame& frame, TypeSymbol symbol) {
-  TypeSymbol* existing = frame.find_here_lower_mut(symbol.name);
-  if (!existing) {
-    frame.insert_or_assign(std::move(symbol));
-    return;
-  }
-
-  if (const ClassInfo* next_class = symbol.class_info()) {
-    if (ClassInfo* current_class = existing->mutable_class_info();
-        current_class && next_class->is_forward && !current_class->is_forward) {
-      return;
-    }
-  }
-  *existing = std::move(symbol);
-}
-
-void register_type_decl_in_current_scope(TypeScopeFrame& frame,
-                                         const TypeDecl& td) {
-  if (!td.type) return;
-  upsert_current_type_symbol(
-      frame, make_type_symbol_for_type({}, td.name, td.type));
-  if (td.type->kind != Kind::TyEnum) {
-    register_type_symbols_for_owner(frame.symbols, td.type, td.name);
-  }
-}
-
-void seed_owner_nested_types(TypeScopeFrame& frame, const ClassInfo* owner) {
-  if (!owner) return;
-  for (const auto& [name, symbol] : owner->nested_types) {
-    (void)name;
-    if (symbol) frame.insert_ref(*symbol);
-  }
-}
-
 }  // namespace
 
-EmitProcs::EmitProcs(ScopeStateView& scope, int& block_depth,
+EmitProcs::EmitProcs(const TypeRegistry* registry, ScopeStateView& scope,
+                     int& block_depth,
                      EmitAnalysis& analysis, EmitTypes& types,
                      EmitCalls& calls, EmitDecls& decls, EmitProcOps& emit_ops)
-    : scope_(scope),
+    : registry_(registry),
+      scope_(scope),
       block_depth_(block_depth),
       analysis_(analysis),
       types_(types),
@@ -203,10 +171,6 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
         if (!insert_proc_local_name(vd.loc, nm)) continue;
         if (vd.type) scope_.local_types[nm] = vd.type.get();
       }
-      if (vd.type && !vd.names.empty()) {
-        register_type_symbols_for_owner(scope_.type_scope->symbols, vd.type,
-                                        vd.names.front());
-      }
     } else if (l->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
       if (!insert_proc_local_name(cd.loc, cd.name)) continue;
@@ -214,11 +178,8 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
       if (const TypeExpr* ct = analysis_.deduce_const_decl_type(cd)) {
         scope_.local_types[cd.name] = ct;
       }
-      register_type_symbols_for_owner(scope_.type_scope->symbols, cd.type,
-                                      cd.name);
     } else if (l->kind == Kind::TypeDecl) {
-      const auto& td = static_cast<const TypeDecl&>(*l);
-      register_type_decl_in_current_scope(*scope_.type_scope, td);
+      continue;
     } else if (l->kind == Kind::ProcDecl) {
       const auto& npd = static_cast<const ProcDecl&>(*l);
       if (!insert_proc_local_name(npd.loc, npd.name)) continue;
@@ -262,16 +223,15 @@ std::string EmitProcs::nested_proc_signature_types(const ProcDecl& pd) {
 
 void EmitProcs::emit_proc_body(const ProcDecl& pd) {
   std::string method_owner;
-  TypeScopeFrame signature_type_scope(scope_.type_scope);
-  TypeScopeFrame* saved_signature_type_scope = scope_.type_scope;
+  const TypeLookupContext* saved_signature_type_scope = scope_.type_scope;
   if (!pd.of_type.empty()) {
     method_owner = analysis_.canonical_method_owner_type_name(pd.of_type);
-    scope_.type_scope = &signature_type_scope;
     // A Pascal method implementation is written outside the class declaration,
     // but its signature still resolves unqualified nested type names through
     // the owner class scope.
-    seed_owner_nested_types(
-        signature_type_scope, analysis_.class_info_for_type_name(method_owner));
+    if (registry_) {
+      scope_.type_scope = registry_->lookup_proc_signature_context(&pd);
+    }
   }
 
   // Header line: ret ClassName::Method(args) or ret Method(args).
@@ -298,14 +258,10 @@ void EmitProcs::emit_proc_body(const ProcDecl& pd) {
   }
 
   SavedProcState saved = save_proc_state();
-  TypeScopeFrame proc_type_scope(scope_.type_scope);
-  scope_.type_scope = &proc_type_scope;
-  setup_proc_frame(pd, /*nested_lambda=*/false);
-  if (!scope_.current_class_name.empty()) {
-    seed_owner_nested_types(
-        proc_type_scope,
-        analysis_.class_info_for_type_name(scope_.current_class_name));
+  if (registry_) {
+    scope_.type_scope = registry_->lookup_proc_body_context(&pd);
   }
+  setup_proc_frame(pd, /*nested_lambda=*/false);
   seed_proc_scope(pd);
 
   // `Result` is a Pascal-visible implicit variable in functions, so it uses
@@ -355,8 +311,9 @@ void EmitProcs::emit_nested_proc_lambda(const ProcDecl& pd) {
   emit_ops_.indent();
 
   SavedProcState saved = save_proc_state();
-  TypeScopeFrame proc_type_scope(scope_.type_scope);
-  scope_.type_scope = &proc_type_scope;
+  if (registry_) {
+    scope_.type_scope = registry_->lookup_proc_body_context(&pd);
+  }
   setup_proc_frame(pd, /*nested_lambda=*/true);
   seed_proc_scope(pd);
 

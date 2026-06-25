@@ -5,6 +5,7 @@
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -137,10 +138,9 @@ struct Emitter : ResolveNameProvider,
   std::unordered_set<std::string> local_nested_forwards;
   std::vector<std::string> current_fn_param_names;
 
-  // Pascal type lookup is lexical: the current declaration block shadows its
-  // parent, then lookup falls through to unit/use visibility in TypeRegistry.
-  TypeScopeFrame root_type_scope;
-  TypeScopeFrame* current_type_scope = &root_type_scope;
+  // Pascal type lookup is lexical. The current pointer names a
+  // TypeRegistry-owned frame; lookup walks that frame's parent chain.
+  const TypeLookupContext* current_type_scope = nullptr;
   // `const` parameters stay read-only storage. An `absolute` alias over one
   // must therefore bind a `const T&`, not a mutable `T&`, or C++ rejects the
   // alias and Pascal source that only reads through it stops compiling.
@@ -248,8 +248,8 @@ struct Emitter : ResolveNameProvider,
                 resolution_, *this, *this),
         decls_(registry, scope_state_, analysis_, types_, storage_, values_,
                *this),
-        procs_(scope_state_, block_depth, analysis_, types_, calls_, decls_,
-               *this),
+        procs_(registry, scope_state_, block_depth, analysis_, types_, calls_,
+               decls_, *this),
         stmts_(registry, scope_state_, except_handler_depth, try_stmt_counter,
                loop_label_counter, loop_break_labels, loop_continue_labels,
                analysis_, types_, storage_, *this, resolution_, *this, calls_,
@@ -1001,14 +1001,7 @@ bool Emitter::expr_is_const_untyped_storage_arg(const Expr& e) {
 }
 
 const TypeSymbol* Emitter::visible_type_symbol(std::string_view type_name) {
-  const std::string low = ascii_lower(type_name);
-  if (current_type_scope) {
-    if (const TypeSymbol* local = current_type_scope->find_lower(low)) {
-      return local;
-    }
-  }
-  return registry ? registry->lookup_type_symbol(low, current_unit_name)
-                  : nullptr;
+  return visible_type_symbol_in_context(registry, scope_state_, type_name);
 }
 
 bool Emitter::visible_type_name_for_intrinsic(std::string_view type_name) {
@@ -1346,9 +1339,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return storage_designator_value_or_member_base(n.loc, *storage);
       }
       if (rr.kind == ResolvedKind::UnitType) {
-        if (const auto* ci = class_info_for_type_name(n.name);
+        const std::string class_name =
+            analysis_.resolve_class_alias_name(n.name);
+        if (const auto* ci = class_info_for_type_name(class_name);
             ci && ci->is_reference_type) {
-          return metaclass_value_fn_cxx(n.name) + "()";
+          return metaclass_value_fn_cxx(class_name) + "()";
         }
         // Type aliases of reference classes (`texportlibwdosx = texportlibwin`)
         // appear in value position to mean the underlying class's metaclass.
@@ -2401,9 +2396,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         } else {
           const TypeExpr* tgt = nullptr;
           if (const TypeSymbol* local_symbol =
-                  current_type_scope
-                      ? current_type_scope->find_lower(id.name)
-                      : nullptr;
+                  lexical_type_symbol_in_context(registry, scope_state_,
+                                                 id.name);
               local_symbol && local_symbol->alias_info() &&
               local_symbol->alias_info()->target) {
             tgt = canonicalize_type(local_symbol->alias_info()->target.get());
@@ -2878,6 +2872,9 @@ void Emitter::emit_unit(const UnitNode& u) {
 EmittedUnit emit_unit(const UnitNode& u, const TypeRegistry* registry,
                       const std::vector<std::string>* unit_init_order,
                       TargetInfo target) {
+  if (!registry) {
+    throw std::invalid_argument("emit_unit requires a TypeRegistry");
+  }
   Emitter e(registry, unit_init_order, target);
   e.emit_unit(u);
   return {std::move(e.header), std::move(e.impl)};

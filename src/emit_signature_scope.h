@@ -47,14 +47,7 @@ inline const TypeSymbol* signature_type_symbol_for(
   // emitters may render the signature from another unit or helper context, so
   // resolve through the saved nested-type scope before falling back to ordinary
   // unit visibility.
-  const std::string lower = ascii_lower(type_name);
-  if (scope.type_scope) {
-    if (const TypeSymbol* local = scope.type_scope->find_lower(lower)) {
-      return local;
-    }
-  }
-  return registry ? registry->lookup_type_symbol(lower, scope.current_unit_name)
-                  : nullptr;
+  return visible_type_symbol_in_context(registry, scope, type_name);
 }
 
 class ScopedSignatureLookupUnit {
@@ -77,9 +70,7 @@ class ScopedSignatureLookupUnit {
       scope_.current_unit_name = std::string(defining_unit);
       scope_.type_scope = nullptr;
     }
-    if (!declaring_type.empty()) {
-      seed_declaring_type_scope(declaring_type);
-    }
+    (void)declaring_type;
   }
 
   explicit ScopedSignatureLookupUnit(ScopeStateView& scope,
@@ -102,43 +93,11 @@ class ScopedSignatureLookupUnit {
   }
 
  private:
-  void push_nested_scope_for(const TypeSymbol* symbol) {
-    const auto* nested_types = signature_nested_types_for(symbol);
-    if (!nested_types || nested_types->empty()) return;
-    TypeScopeFrame* parent = frames_.empty() ? nullptr : frames_.back().get();
-    auto frame = std::make_unique<TypeScopeFrame>(parent);
-    for (const auto& [_, nested] : *nested_types) {
-      if (nested) frame->insert_ref(*nested);
-    }
-    frames_.push_back(std::move(frame));
-  }
-
-  void seed_declaring_type_scope(std::string_view declaring_type) {
-    if (!registry_) return;
-    const TypeSymbol* owner =
-        registry_->lookup_type_symbol(declaring_type, scope_.current_unit_name);
-    if (!owner) return;
-
-    std::string path;
-    for (const auto& segment : owner->owner_path) {
-      if (!path.empty()) path += ".";
-      path += segment;
-      push_nested_scope_for(
-          registry_->lookup_type_symbol(path, scope_.current_unit_name));
-    }
-    push_nested_scope_for(owner);
-    if (!frames_.empty()) {
-      scope_.type_scope = frames_.back().get();
-      changed_ = true;
-    }
-  }
-
   ScopeStateView& scope_;
   const TypeRegistry* registry_ = nullptr;
   std::string saved_unit_;
   std::string saved_lookup_emission_unit_;
-  TypeScopeFrame* saved_type_scope_ = nullptr;
-  std::vector<std::unique_ptr<TypeScopeFrame>> frames_;
+  const TypeLookupContext* saved_type_scope_ = nullptr;
   bool changed_ = false;
 };
 
@@ -154,8 +113,16 @@ inline std::shared_ptr<ast::TyName> qualified_signature_type_name(
   }
   ScopedSignatureLookupUnit signature_scope(scope, registry, param_unit,
                                             param_declaring_type);
+  const TypeLookupContext* saved_context = scope.type_scope;
+  if (registry) {
+    if (const TypeLookupContext* context =
+            registry->lookup_context_for_type(param_type)) {
+      scope.type_scope = context;
+    }
+  }
   const TypeSymbol* symbol =
       signature_type_symbol_for(registry, scope, tn.name);
+  scope.type_scope = saved_context;
   if (!symbol || symbol->defining_unit.empty() ||
       symbol->defining_unit == "__rt__") {
     return nullptr;

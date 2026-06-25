@@ -18,56 +18,6 @@ struct ProcDecl;
 
 namespace tp2cc {
 
-struct TypeScopeFrame {
-  TypeScopeFrame* parent = nullptr;
-  // Owned entries are procedure-local declarations synthesized during emission.
-  // Unit and nested type declarations are owned by TypeRegistry; scope frames
-  // keep references to those stable symbols so nested-type identity is not
-  // rebuilt as transient copies.
-  TypeSymbolScopeMap symbols;
-  TypeSymbolRefScopeMap symbol_refs;
-
-  explicit TypeScopeFrame(TypeScopeFrame* parent_in = nullptr)
-      : parent(parent_in) {}
-
-  const TypeSymbol* find_here_lower(std::string_view lower_name) const {
-    auto it = symbols.find(lower_name);
-    if (it != symbols.end()) return &it->second;
-    auto ref = symbol_refs.find(lower_name);
-    return ref == symbol_refs.end() ? nullptr : ref->second;
-  }
-
-  TypeSymbol* find_here_lower_mut(std::string_view lower_name) {
-    auto it = symbols.find(lower_name);
-    return it == symbols.end() ? nullptr : &it->second;
-  }
-
-  const TypeSymbol* find_lower(std::string_view lower_name) const {
-    for (const TypeScopeFrame* frame = this; frame; frame = frame->parent) {
-      if (const TypeSymbol* symbol = frame->find_here_lower(lower_name)) {
-        return symbol;
-      }
-    }
-    return nullptr;
-  }
-
-  TypeSymbol* find_lower_mut(std::string_view lower_name) {
-    for (TypeScopeFrame* frame = this; frame; frame = frame->parent) {
-      auto it = frame->symbols.find(lower_name);
-      if (it != frame->symbols.end()) return &it->second;
-    }
-    return nullptr;
-  }
-
-  void insert_or_assign(TypeSymbol symbol) {
-    symbols.insert_or_assign(symbol.name, std::move(symbol));
-  }
-
-  void insert_ref(const TypeSymbol& symbol) {
-    symbol_refs.insert_or_assign(symbol.name, &symbol);
-  }
-};
-
 // Shared view of the current Pascal semantic environment while emitting one
 // routine or unit. This is intentionally a view over Emitter-owned state, not
 // a second source of truth.
@@ -169,7 +119,7 @@ struct ScopeStateView {
   std::unordered_set<std::string>& local_untyped_params;
   std::unordered_map<std::string, std::vector<NestedFn>>& local_nested_fns;
   std::unordered_set<std::string>& local_nested_forwards;
-  TypeScopeFrame*& type_scope;
+  const TypeLookupContext*& type_scope;
   std::unordered_set<std::string>& local_const_params;
   std::vector<WithBind>& with_stack;
 
@@ -187,5 +137,22 @@ struct ScopeStateView {
   std::string& outer_result_slot_name;
   const ast::TypeExpr*& outer_result_type;
 };
+
+inline const TypeSymbol* visible_type_symbol_in_context(
+    const TypeRegistry* registry, const ScopeStateView& scope,
+    std::string_view name) {
+  if (!registry) return nullptr;
+  if (scope.type_scope) {
+    return registry->lookup_type_symbol_in_context(name, scope.type_scope);
+  }
+  return registry->lookup_type_symbol(name, scope.current_unit_name);
+}
+
+inline const TypeSymbol* lexical_type_symbol_in_context(
+    const TypeRegistry* registry, const ScopeStateView& scope,
+    std::string_view name) {
+  if (!registry || !scope.type_scope) return nullptr;
+  return registry->lookup_type_symbol_in_scope_chain(name, scope.type_scope);
+}
 
 }  // namespace tp2cc

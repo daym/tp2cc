@@ -34,12 +34,6 @@ std::shared_ptr<UnitNode> parse_unit(std::string path, std::string text) {
   return p.parse();
 }
 
-EmittedUnit compile_snippet(std::string text) {
-  auto u = parse_unit("<mem>", std::move(text));
-  if (!u) return {};
-  return emit_unit(*u, nullptr, nullptr, default_target_info());
-}
-
 EmittedUnit compile_snippet_with_registry(
     std::string text,
     std::vector<std::pair<std::string, std::string>> extra_units = {}) {
@@ -62,6 +56,10 @@ EmittedUnit compile_snippet_with_registry(
   return emit_unit(*u, &reg, nullptr, default_target_info());
 }
 
+EmittedUnit compile_snippet(std::string text) {
+  return compile_snippet_with_registry(std::move(text));
+}
+
 EmittedUnit compile_snippet_with_init_order(
     std::string text, std::vector<std::string> init_order) {
   auto sf = std::make_unique<SourceFile>();
@@ -71,7 +69,10 @@ EmittedUnit compile_snippet_with_init_order(
   Parser p(lx);
   auto u = p.parse();
   if (!u) return {};
-  return emit_unit(*u, nullptr, &init_order, default_target_info());
+  TypeRegistry reg;
+  std::vector<const UnitNode*> units{u.get()};
+  reg.build(units);
+  return emit_unit(*u, &reg, &init_order, default_target_info());
 }
 
 bool contains(const std::string& s, std::string_view needle) {
