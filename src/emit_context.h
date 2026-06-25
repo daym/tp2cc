@@ -139,20 +139,19 @@ struct ScopeStateView {
 };
 
 inline const TypeSymbol* visible_type_symbol_in_context(
-    const TypeRegistry* registry, const ScopeStateView& scope,
+    const TypeRegistry& registry, const ScopeStateView& scope,
     std::string_view name) {
-  if (!registry) return nullptr;
   if (scope.type_scope) {
-    return registry->lookup_type_symbol_in_context(name, scope.type_scope);
+    return registry.lookup_type_symbol_in_context(name, scope.type_scope);
   }
-  return registry->lookup_type_symbol(name, scope.current_unit_name);
+  return registry.lookup_type_symbol(name, scope.current_unit_name);
 }
 
 inline const TypeSymbol* lexical_type_symbol_in_context(
-    const TypeRegistry* registry, const ScopeStateView& scope,
+    const TypeRegistry& registry, const ScopeStateView& scope,
     std::string_view name) {
-  if (!registry || !scope.type_scope) return nullptr;
-  return registry->lookup_type_symbol_in_scope_chain(name, scope.type_scope);
+  if (!scope.type_scope) return nullptr;
+  return registry.lookup_type_symbol_in_scope_chain(name, scope.type_scope);
 }
 
 }  // namespace tp2cc

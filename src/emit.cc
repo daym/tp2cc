@@ -5,7 +5,6 @@
 #include <cstring>
 #include <memory>
 #include <optional>
-#include <stdexcept>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -180,7 +179,7 @@ struct Emitter : ResolveNameProvider,
 
   // Reified type/symbol tree spanning all parsed units. tp2cc_Set by the
   // driver. Drives member-access and ident-call decisions.
-  const TypeRegistry* registry = nullptr;
+  const TypeRegistry& registry;
 
   // Ordered unit names whose lifecycle hooks must run before the
   // program's `begin..end.` body. tp2cc_Set by the driver only when
@@ -201,7 +200,7 @@ struct Emitter : ResolveNameProvider,
   EmitStmts stmts_;
   EmitUnits units_;
 
-  Emitter(const TypeRegistry* registry_in,
+  Emitter(const TypeRegistry& registry_in,
           const std::vector<std::string>* unit_init_order_in,
           TargetInfo target_in)
       : registry(registry_in),
@@ -242,7 +241,7 @@ struct Emitter : ResolveNameProvider,
         resolution_(registry, scope_state_, analysis_, *this, *this, target),
         calls_(registry, scope_state_, analysis_, types_, storage_,
                resolution_, *this, *this),
-        properties_(registry, analysis_, *this),
+        properties_(analysis_, *this),
         lookup_(registry, scope_state_, analysis_, properties_),
         values_(registry, scope_state_, analysis_, types_, storage_,
                 resolution_, *this, *this),
@@ -833,16 +832,14 @@ std::string Emitter::value_class_alias(const Expr& e) {
   }
   if (const TypeExpr* t = type_for_overload(e)) {
     if (auto cls = metaclass_target_name(t); !cls.empty()) return cls;
-    if (registry) {
-      if (auto cls = registry->direct_type_name(t, current_unit_name);
+    if (auto cls = registry.direct_type_name(t, current_unit_name);
+        !cls.empty()) {
+      return cls;
+    }
+    if (const TypeExpr* canon = canonicalize_type(t)) {
+      if (auto cls = registry.direct_type_name(canon, current_unit_name);
           !cls.empty()) {
         return cls;
-      }
-      if (const TypeExpr* canon = canonicalize_type(t)) {
-        if (auto cls = registry->direct_type_name(canon, current_unit_name);
-            !cls.empty()) {
-          return cls;
-        }
       }
     }
   }
@@ -873,7 +870,6 @@ bool Emitter::type_is_boolean_value_type(const TypeExpr* t) {
 }
 
 bool Emitter::expr_is_boolean_value(const Expr& x) {
-  if (!registry) return false;
   // Pascal `and` / `or` are selected from operand types. Keep that decision on
   // the same typed-expression path used for call and operator overload ranking,
   // so a call operand's result type comes from the selected Pascal callee instead
@@ -1153,7 +1149,7 @@ bool Emitter::type_uses_reinterpret_copy_for_scalar_cast(const TypeExpr* t) {
 }
 
 std::optional<std::string> Emitter::unit_qualified_type_name(const Expr& expr) {
-  if (!registry || expr.kind != Kind::Member) return std::nullopt;
+  if (expr.kind != Kind::Member) return std::nullopt;
   const auto& mem = static_cast<const Member&>(expr);
   auto unit_member = analysis_.resolve_unit_qualified_member(mem);
   if (!unit_member || unit_member->resolved.kind != ResolvedKind::UnitType) {
@@ -1348,20 +1344,18 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         // Type aliases of reference classes (`texportlibwdosx = texportlibwin`)
         // appear in value position to mean the underlying class's metaclass.
         // Follow the alias chain to its concrete class and emit that metaclass.
-        if (registry) {
-          const TypeSymbol* symbol =
-              registry->lookup_type_symbol(n.name, current_unit_name);
-          const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
-          if (alias && alias->target) {
-            const TypeExpr* canon =
-                registry->canonicalize(alias->target.get(), current_unit_name);
-            if (canon && canon->kind == Kind::TyName) {
-              const std::string& target =
-                  static_cast<const TyName&>(*canon).name;
-              if (const auto* tci = class_info_for_type_name(target);
-                  tci && tci->is_reference_type) {
-                return metaclass_value_fn_cxx(target) + "()";
-              }
+        const TypeSymbol* symbol =
+            registry.lookup_type_symbol(n.name, current_unit_name);
+        const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
+        if (alias && alias->target) {
+          const TypeExpr* canon =
+              registry.canonicalize(alias->target.get(), current_unit_name);
+          if (canon && canon->kind == Kind::TyName) {
+            const std::string& target =
+                static_cast<const TyName&>(*canon).name;
+            if (const auto* tci = class_info_for_type_name(target);
+                tci && tci->is_reference_type) {
+              return metaclass_value_fn_cxx(target) + "()";
             }
           }
         }
@@ -1623,9 +1617,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // inherited = Parent;` alias).
       if (base_ident && *base_ident == "inherited") {
         std::string parent;
-        if (registry && !current_class_name.empty()) {
-          const ClassInfo* ci = registry->lookup_class(current_class_name,
-                                                       current_unit_name);
+        if (!current_class_name.empty()) {
+          const ClassInfo* ci = registry.lookup_class(current_class_name,
+                                                      current_unit_name);
           if (ci) {
             parent = ci->parent;
             if (parent.empty() && ci->is_reference_type) {
@@ -1675,7 +1669,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             !is_callee_context_ && rr.is_callable && rr.accepts_zero_args;
         return want_call ? rr.cxx + "()" : rr.cxx;
       }
-      if (registry && base_ident) {
+      if (base_ident) {
         const std::string& base_name = *base_ident;
         const std::string base_type_path =
             analysis_.identifier_is_shadowed_value(base_name)
@@ -1726,10 +1720,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // A `class of T` value is a pointer to a metaclass descriptor. Constructor
       // and class-method members are stored as descriptor function slots, not as
       // fields of an instance.
-      if (registry) {
-        const std::string metaclass =
-            metaclass_target_name(type_for_overload(*m.base));
-        if (!metaclass.empty()) {
+      const std::string metaclass =
+          metaclass_target_name(type_for_overload(*m.base));
+      if (!metaclass.empty()) {
           // Member's base is an *object-position* expression, not a callee.
           // Suppress callee-context auto-call suppression while emitting it
           // so e.g. `TBaseClass(classtype).Create(...)` lowers the inner
@@ -1740,8 +1733,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           std::string base_cxx = expr_to_cxx(*m.base);
           is_callee_context_ = saved_callee;
           if (const auto* methods =
-                  registry->lookup_class_methods(metaclass, m.name,
-                                                 current_unit_name)) {
+                  registry.lookup_class_methods(metaclass, m.name,
+                                                current_unit_name)) {
             std::vector<MethodSig> candidates;
             bool callable_metaclass_member = false;
             for (const auto& method : *methods) {
@@ -1774,7 +1767,6 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           report_error(m.loc, "unsupported metaclass member '" + m.name + "'");
           return base_cxx + "->" + mangle(m.name);
-        }
       }
 
       // Otherwise: object/record field/method access. Emit `base.name`
@@ -1810,8 +1802,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return is_callee_context_ ? text : text + "()";
         }
       }
-      if (registry && !bcls.empty()) {
-        if (auto* prop = registry->lookup_class_property(
+      if (!bcls.empty()) {
+        if (auto* prop = registry.lookup_class_property(
                 bcls, m.name, current_unit_name)) {
           if (prop->params.empty()) {
             std::vector<const Expr*> no_indices;
@@ -1820,16 +1812,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
       }
       std::string member_cxx = mangle(m.name);
-      if (registry && !bcls.empty() &&
-          (registry->lookup_class_field(bcls, m.name, current_unit_name) ||
-           registry->lookup_record_field(bcls, m.name, current_unit_name))) {
-        member_cxx = registry->field_cxx_name(m.name);
+      if (!bcls.empty() &&
+          (registry.lookup_class_field(bcls, m.name, current_unit_name) ||
+           registry.lookup_record_field(bcls, m.name, current_unit_name))) {
+        member_cxx = registry.field_cxx_name(m.name);
       }
       std::string text = base_cxx + member_access_op(*m.base) + member_cxx;
-      if (is_callee_context_ || !registry) return text;
+      if (is_callee_context_) return text;
       if (bcls.empty()) return text;
       if (const auto* methods =
-              registry->lookup_class_methods(bcls, m.name, current_unit_name)) {
+              registry.lookup_class_methods(bcls, m.name, current_unit_name)) {
         PickResult picked = resolution_.pick_method_overload(*methods, {});
         if (!picked.ambiguous && picked.decl) {
           const MethodSig* sig = method_sig_for_decl(*methods, picked.decl);
@@ -1868,12 +1860,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         const auto& m = static_cast<const Member&>(*a.operand);
         if (m.base && m.base->kind == Kind::Ident) {
           const auto& id = static_cast<const Ident&>(*m.base);
-          if (registry && !analysis_.identifier_is_shadowed_value(id.name) &&
+          if (!analysis_.identifier_is_shadowed_value(id.name) &&
               visible_class_or_record_type_name(id.name)) {
             const ProcDecl* selected = nullptr;
             if (const auto* methods =
-                    registry->lookup_class_methods(id.name, m.name,
-                                                   current_unit_name)) {
+                    registry.lookup_class_methods(id.name, m.name,
+                                                  current_unit_name)) {
               for (const auto& method : *methods) {
                 if (!method.decl || method.decl->is_class_method) continue;
                 if (selected) {
@@ -1890,14 +1882,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
           }
         }
-        if (registry && m.base) {
+        if (m.base) {
           const std::string metaclass =
               metaclass_target_name(plain_expr_type(*m.base));
           if (!metaclass.empty()) {
             bool class_method = false;
             if (const auto* methods =
-                    registry->lookup_class_methods(metaclass, m.name,
-                                                   current_unit_name)) {
+                    registry.lookup_class_methods(metaclass, m.name,
+                                                  current_unit_name)) {
               for (const auto& method : *methods) {
                 if (method.kind == SymKind::ClassMethod ||
                     method.kind == SymKind::Constructor) {
@@ -2040,7 +2032,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           return "::rt::p_unaligned(" + single_call_arg_cxx(c) + ")";
         } else if (n == "typeof" && c.args.size() == 1 &&
-                   c.args[0]->kind == Kind::Ident && registry) {
+                   c.args[0]->kind == Kind::Ident) {
           // Pascal `typeof(T)` takes a TYPE NAME, not a value. In C++
           // we have no VMT-by-type-name runtime object; stub as
           // `nullptr` with a dummy template-arg tag so the expression
@@ -2064,8 +2056,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "::rt::tp2cc_shortstring_of<>(" +
                    single_call_arg_cxx(c) + ")";
           }
-          if (const TypeSymbol* atom =
-                  registry ? registry->builtin_literal(n) : nullptr) {
+          if (const TypeSymbol* atom = registry.builtin_literal(n)) {
             if (analysis_.type_is_long_string(atom->type)) {
               return "::rt::tp2cc_ansistring_of(" +
                      single_call_arg_cxx(c) + ")";
@@ -2401,13 +2392,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               local_symbol && local_symbol->alias_info() &&
               local_symbol->alias_info()->target) {
             tgt = canonicalize_type(local_symbol->alias_info()->target.get());
-          } else if (registry) {
+          } else {
             const TypeSymbol* symbol =
-                registry->lookup_type_symbol(id.name, current_unit_name);
+                registry.lookup_type_symbol(id.name, current_unit_name);
             const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
             if (alias && alias->target) {
-              tgt = registry->canonicalize(alias->target.get(),
-                                           current_unit_name);
+              tgt = registry.canonicalize(alias->target.get(),
+                                          current_unit_name);
             }
           }
           if (tgt && tgt->kind == Kind::TyPointer) {
@@ -2433,7 +2424,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return "((" + cast_type_cxx + ")(" + expr_to_cxx(*c.args[0]) + "))";
         }
       }
-      if (c.args.size() == 1 && c.callee->kind == Kind::Member && registry) {
+      if (c.args.size() == 1 && c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         // Same `Member` AST node as a call, but semantically this can be a
         // unit-qualified typecast: `Unit.Type(expr)`.
@@ -2544,7 +2535,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       if (c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
-        if (mem.base->kind == Kind::Ident && registry) {
+        if (mem.base->kind == Kind::Ident) {
           const auto& id = static_cast<const Ident&>(*mem.base);
           const std::string class_type_path =
               analysis_.identifier_is_shadowed_value(id.name)
@@ -2562,7 +2553,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       std::string callee_text = format_resolved_callee(resolved, *c.callee);
       bool is_tpexcept_setjmp = false;
       if (c.args.size() == 1) {
-        if (c.callee->kind == Kind::Ident && registry) {
+        if (c.callee->kind == Kind::Ident) {
           const auto& id = static_cast<const Ident&>(*c.callee);
           if (id.name == "setjmp") {
             ResolveResult rr = resolve_name(id.name);
@@ -2661,7 +2652,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       std::vector<const Expr*> indices;
       for (const auto& idx : i.indices) indices.push_back(idx.get());
-      if (registry && i.base->kind == Kind::Member) {
+      if (i.base->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*i.base);
         std::string cls;
         if (mem.base->kind == Kind::Ident &&
@@ -2671,7 +2662,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           cls = value_class_alias(*mem.base);
         }
         if (!cls.empty()) {
-          if (auto* prop = registry->lookup_class_property(
+          if (auto* prop = registry.lookup_class_property(
                   cls, mem.name, current_unit_name)) {
             if (!prop->params.empty()) {
               return lower_property_read(i.loc, expr_to_cxx(*mem.base), cls,
@@ -2680,7 +2671,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
         }
       }
-      if (registry && i.base->kind == Kind::Ident) {
+      if (i.base->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*i.base);
         if (auto found = find_implicit_class_property(id.name);
             found && found->prop && !found->prop->params.empty()) {
@@ -2688,14 +2679,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                                      *found->prop, indices);
         }
       }
-      if (registry) {
-        std::string cls = value_class_alias(*i.base);
-        if (!cls.empty()) {
-          if (auto* prop = registry->lookup_default_property(
-                  cls, current_unit_name)) {
-            return lower_property_read(i.loc, expr_to_cxx(*i.base), cls, *prop,
-                                       indices);
-          }
+      std::string cls = value_class_alias(*i.base);
+      if (!cls.empty()) {
+        if (auto* prop = registry.lookup_default_property(cls,
+                                                          current_unit_name)) {
+          return lower_property_read(i.loc, expr_to_cxx(*i.base), cls, *prop,
+                                     indices);
         }
       }
       if (auto storage = storage_.storage_designator(i);
@@ -2735,8 +2724,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       for (size_t i = 0; i < r.fields.size(); ++i) {
         if (i) out += ", ";
         const std::string field_name =
-            registry ? registry->field_cxx_name(r.fields[i].first)
-                     : mangle(r.fields[i].first);
+            registry.field_cxx_name(r.fields[i].first);
         out += "." + field_name + " = " +
                expr_to_cxx(*r.fields[i].second);
       }
@@ -2869,12 +2857,9 @@ void Emitter::emit_unit(const UnitNode& u) {
 
 }  // namespace
 
-EmittedUnit emit_unit(const UnitNode& u, const TypeRegistry* registry,
+EmittedUnit emit_unit(const UnitNode& u, const TypeRegistry& registry,
                       const std::vector<std::string>* unit_init_order,
                       TargetInfo target) {
-  if (!registry) {
-    throw std::invalid_argument("emit_unit requires a TypeRegistry");
-  }
   Emitter e(registry, unit_init_order, target);
   e.emit_unit(u);
   return {std::move(e.header), std::move(e.impl)};

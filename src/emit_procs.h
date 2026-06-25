@@ -36,7 +36,7 @@ class EmitProcOps {
 // routine emit paths.
 class EmitProcs {
  public:
-  EmitProcs(const TypeRegistry* registry, ScopeStateView& scope,
+  EmitProcs(const TypeRegistry& registry, ScopeStateView& scope,
             int& block_depth, EmitAnalysis& analysis,
             EmitTypes& types, EmitCalls& calls, EmitDecls& decls,
             EmitProcOps& emit_ops);
@@ -78,7 +78,7 @@ class EmitProcs {
   std::string nested_proc_cxx_name(const ast::ProcDecl& pd) const;
   std::string nested_proc_signature_types(const ast::ProcDecl& pd);
 
-  const TypeRegistry* registry_ = nullptr;
+  const TypeRegistry& registry_;
   ScopeStateView& scope_;
   int& block_depth_;
   EmitAnalysis& analysis_;

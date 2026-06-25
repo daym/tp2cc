@@ -84,7 +84,7 @@ struct ArrayDimBounds {
 // layout metadata for later static_asserts.
 class EmitTypes {
  public:
-  EmitTypes(const TypeRegistry* registry, ScopeStateView& scope,
+  EmitTypes(const TypeRegistry& registry, ScopeStateView& scope,
             EmitAnalysis& analysis, EmitTypeConstRender& const_render,
             EmitTypeOrdinalOps& ordinal_ops,
             EmitTypeDiagOps& diag_ops);
@@ -152,7 +152,7 @@ class EmitTypes {
  private:
   class RecordLayoutBuilder;
 
-  const TypeRegistry* registry_;
+  const TypeRegistry& registry_;
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;
   EmitTypeConstRender& const_render_;

@@ -79,7 +79,7 @@ struct MethodValueBinding {
 
 class EmitResolution {
  public:
-  EmitResolution(const TypeRegistry* registry, ScopeStateView& scope,
+  EmitResolution(const TypeRegistry& registry, ScopeStateView& scope,
                   EmitAnalysis& analysis, ResolutionTypeOps& type_ops,
                   OverloadTypeProvider& overload_types, TargetInfo target);
 
@@ -278,7 +278,7 @@ class EmitResolution {
                                              const ast::TypeExpr* param,
                                              bool allow_assignment_operator_conversions);
 
-  const TypeRegistry* registry_;
+  const TypeRegistry& registry_;
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;
   ResolutionTypeOps& type_ops_;

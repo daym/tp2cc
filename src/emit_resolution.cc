@@ -56,7 +56,7 @@ std::vector<Param> single_slot_param_vector(const Param& param) {
 
 }  // namespace
 
-EmitResolution::EmitResolution(const TypeRegistry* registry,
+EmitResolution::EmitResolution(const TypeRegistry& registry,
                                ScopeStateView& scope, EmitAnalysis& analysis,
                                ResolutionTypeOps& type_ops,
                                OverloadTypeProvider& overload_types,
@@ -71,8 +71,8 @@ EmitResolution::EmitResolution(const TypeRegistry* registry,
 std::vector<EmitResolution::AnyCand> EmitResolution::class_method_cands(
     const std::string& cls, const std::string& name) {
   std::vector<AnyCand> candidates;
-  if (!registry_ || cls.empty()) return candidates;
-  auto* set = registry_->lookup_class_methods(
+  if (cls.empty()) return candidates;
+  auto* set = registry_.lookup_class_methods(
       cls, name, scope_.current_unit_name);
   if (!set) return candidates;
   for (const auto& ms : *set) {
@@ -87,8 +87,8 @@ std::vector<EmitResolution::AnyCand> EmitResolution::class_method_cands(
 std::vector<EmitResolution::AnyCand> EmitResolution::metaclass_method_cands(
     const std::string& cls, const std::string& name) {
   std::vector<AnyCand> candidates;
-  if (!registry_ || cls.empty()) return candidates;
-  auto* set = registry_->lookup_class_methods(
+  if (cls.empty()) return candidates;
+  auto* set = registry_.lookup_class_methods(
       cls, name, scope_.current_unit_name);
   if (!set) return candidates;
   for (const auto& ms : *set) {
@@ -106,9 +106,8 @@ std::vector<EmitResolution::AnyCand> EmitResolution::metaclass_method_cands(
 std::vector<EmitResolution::AnyCand> EmitResolution::unit_export_proc_cands(
     const std::string& unit, const std::string& name) {
   std::vector<AnyCand> candidates;
-  if (!registry_) return candidates;
-  auto it = registry_->units.find(unit);
-  if (it == registry_->units.end()) return candidates;
+  auto it = registry_.units.find(unit);
+  if (it == registry_.units.end()) return candidates;
   auto* v = (unit == scope_.current_unit_name)
                 ? it->second.find_procs(name)
                 : it->second.find_export_procs(name);
@@ -125,7 +124,6 @@ std::vector<EmitResolution::AnyCand>
 EmitResolution::gather_callable_in_pascal_scope(
     const std::string& name) {
   std::vector<AnyCand> candidates;
-  if (!registry_) return candidates;
 
   for (auto wit = scope_.with_stack.rbegin(); wit != scope_.with_stack.rend();
        ++wit) {
@@ -146,8 +144,8 @@ EmitResolution::gather_callable_in_pascal_scope(
   std::vector<AnyCand> class_candidates =
       class_method_cands(scope_.current_class_name, name);
   if (!class_candidates.empty()) return class_candidates;
-  auto cur = registry_->units.find(scope_.current_unit_name);
-  if (cur == registry_->units.end()) return candidates;
+  auto cur = registry_.units.find(scope_.current_unit_name);
+  if (cur == registry_.units.end()) return candidates;
   // A decl in the current unit shadows same-named decls reached through
   // `uses`. Without this stop, local overload sets and imported overload sets
   // would get merged even though Pascal lexical lookup never reaches the
@@ -184,9 +182,8 @@ std::vector<EmitResolution::AnyCand>
 EmitResolution::gather_operator_in_pascal_scope(
     const std::string& op) {
   std::vector<AnyCand> candidates;
-  if (!registry_) return candidates;
-  auto cur = registry_->units.find(scope_.current_unit_name);
-  if (cur == registry_->units.end()) return candidates;
+  auto cur = registry_.units.find(scope_.current_unit_name);
+  if (cur == registry_.units.end()) return candidates;
   if (auto* local = cur->second.find_operators(op); local && !local->empty()) {
     for (const auto& pi : *local) {
       candidates.push_back(
@@ -197,8 +194,8 @@ EmitResolution::gather_operator_in_pascal_scope(
   }
   for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
        ++it) {
-    auto uit = registry_->units.find(*it);
-    if (uit == registry_->units.end()) continue;
+    auto uit = registry_.units.find(*it);
+    if (uit == registry_.units.end()) continue;
     auto* ops = uit->second.find_export_operators(op);
     if (!ops) continue;
     for (const auto& pi : *ops) {
@@ -252,11 +249,10 @@ const TypeExpr* EmitResolution::strip_conversion_wrapper(const TypeExpr* t) {
 
 ConvScore EmitResolution::class_hierarchy_conversion_score(
     const TypeExpr* arg, const TypeExpr* param) {
-  if (!registry_) return {};
   auto class_name_for_type = [&](const TypeExpr* t) -> std::string {
     if (!t) return {};
     if (t->kind == Kind::TyName) return static_cast<const TyName&>(*t).name;
-    return registry_->direct_type_name(t, scope_.current_unit_name);
+    return registry_.direct_type_name(t, scope_.current_unit_name);
   };
   const std::string arg_name = class_name_for_type(arg);
   const std::string param_name = class_name_for_type(param);
@@ -276,7 +272,7 @@ ConvScore EmitResolution::class_hierarchy_conversion_score(
       return {ConvRank::ClassHierarchy, depth};
     }
     seen.insert(identity);
-    cur = registry_->lookup_parent_class(*cur);
+    cur = registry_.lookup_parent_class(*cur);
     ++depth;
   }
   return {};
@@ -284,11 +280,10 @@ ConvScore EmitResolution::class_hierarchy_conversion_score(
 
 ConvScore EmitResolution::object_pointer_hierarchy_conversion_score(
     const TypeExpr* arg, const TypeExpr* param) {
-  if (!registry_) return {};
   const std::string arg_name =
-      registry_->pointer_target_type_name(arg, scope_.current_unit_name);
+      registry_.pointer_target_type_name(arg, scope_.current_unit_name);
   const std::string param_name =
-      registry_->pointer_target_type_name(param, scope_.current_unit_name);
+      registry_.pointer_target_type_name(param, scope_.current_unit_name);
   if (arg_name.empty() || param_name.empty()) return {};
   const auto* arg_class = analysis_.class_info_for_type_name(arg_name);
   const auto* param_class = analysis_.class_info_for_type_name(param_name);
@@ -308,7 +303,7 @@ ConvScore EmitResolution::object_pointer_hierarchy_conversion_score(
       return {ConvRank::ClassHierarchy, depth};
     }
     seen.insert(identity);
-    cur = registry_->lookup_parent_class(*cur);
+    cur = registry_.lookup_parent_class(*cur);
     ++depth;
   }
   return {};
@@ -913,7 +908,7 @@ EmitResolution::pick_instance_method_decl(
     const std::string& cls, const std::string& name,
     const TyProcedural& proc, bool allow_pointer_carrier_adapters) {
   const auto* methods =
-      registry_->lookup_class_methods(cls, name, scope_.current_unit_name);
+      registry_.lookup_class_methods(cls, name, scope_.current_unit_name);
   if (!methods) return InstanceMethodLookup::no_instance_method();
   bool saw_instance = false;
   const ProcDecl* match = nullptr;
@@ -943,7 +938,7 @@ EmitResolution::pick_instance_method_decl(
 std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
     const Expr& arg, const TyProcedural& proc,
     bool allow_pointer_carrier_adapters) {
-  if (!proc.is_method || !registry_) return std::nullopt;
+  if (!proc.is_method) return std::nullopt;
 
   // Strip an optional address-of (`@method`); both bare ident-form (`method`)
   // and addressed form lower the same way for procedure-of-object targets.
@@ -990,7 +985,7 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
       cls = scope_.current_class_name;
     } else if (!analysis_.identifier_is_shadowed_value(id.name) &&
                [&] {
-                 const TypeSymbol* symbol = registry_->lookup_type_symbol(
+                 const TypeSymbol* symbol = registry_.lookup_type_symbol(
                      id.name, scope_.current_unit_name);
                  return symbol &&
                         (symbol->class_info() || symbol->record_info());
@@ -1031,7 +1026,7 @@ std::optional<PlainProcValueBinding>
 EmitResolution::resolve_plain_proc_value_binding(const Expr& arg,
                                                  const TyProcedural& proc,
                                                  bool allow_pointer_carrier_adapters) {
-  if (proc.is_method || !registry_) return std::nullopt;
+  if (proc.is_method) return std::nullopt;
 
   const Expr* value = &arg;
   if (arg.kind == Kind::AddrOf) {
@@ -1051,8 +1046,8 @@ EmitResolution::resolve_plain_proc_value_binding(const Expr& arg,
   } else if (value->kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(*value);
     if (auto unit_member = analysis_.resolve_unit_qualified_member(mem)) {
-      auto uit = registry_->units.find(unit_member->unit_name);
-      if (uit == registry_->units.end()) return std::nullopt;
+      auto uit = registry_.units.find(unit_member->unit_name);
+      if (uit == registry_.units.end()) return std::nullopt;
       const bool own_unit = unit_member->unit_name == scope_.current_unit_name;
       const std::vector<ProcInfo>* procs =
           own_unit ? uit->second.find_procs(mem.name)
@@ -1409,17 +1404,15 @@ std::string EmitResolution::value_class_alias(const Expr& e) {
   }
   if (const TypeExpr* t = overload_types_.type_for_overload(e)) {
     if (auto cls = analysis_.metaclass_target_name(t); !cls.empty()) return cls;
-    if (registry_) {
-      if (auto cls = registry_->direct_type_name(t, scope_.current_unit_name);
+    if (auto cls = registry_.direct_type_name(t, scope_.current_unit_name);
+        !cls.empty()) {
+      return cls;
+    }
+    if (const TypeExpr* canon = analysis_.canonicalize_type(t)) {
+      if (auto cls =
+              registry_.direct_type_name(canon, scope_.current_unit_name);
           !cls.empty()) {
         return cls;
-      }
-      if (const TypeExpr* canon = analysis_.canonicalize_type(t)) {
-        if (auto cls =
-                registry_->direct_type_name(canon, scope_.current_unit_name);
-            !cls.empty()) {
-          return cls;
-        }
       }
     }
   }
@@ -1457,7 +1450,6 @@ std::string EmitResolution::receiver_class_for_member_call(const Expr& callee) {
 ResolvedCall EmitResolution::resolve_call(
     const Expr& callee, const std::vector<const Expr*>& args) {
   const std::string member_name = callable_member_name(callee);
-  if (!registry_) return unresolved_call(member_name);
   // Method overloads and free-function overloads share the same picker.
   // Methods come from class-chain lookup; free functions come from the current
   // unit plus the visible uses chain. `inherited foo(...)` is still a separate
@@ -1479,7 +1471,7 @@ ResolvedCall EmitResolution::resolve_call(
         // same type-based disambiguation as any other method call.
         inherited_call = true;
         const ClassInfo* ci =
-            registry_->lookup_class(scope_.current_class_name,
+            registry_.lookup_class(scope_.current_class_name,
                                     scope_.current_unit_name);
         if (ci) {
           std::string parent = ci->parent;
@@ -1599,10 +1591,10 @@ ResolvedCall EmitResolution::resolve_call(
 ResolvedCall EmitResolution::resolve_pointer_target_constructor(
     const TypeExpr* pointer_type, const Expr& ctor_callee,
     const std::vector<const Expr*>& args) {
-  if (!registry_ || !pointer_type || ctor_callee.kind != Kind::Ident) {
+  if (!pointer_type || ctor_callee.kind != Kind::Ident) {
     return unresolved_call();
   }
-  std::string pointee = registry_->pointer_target_type_name(pointer_type);
+  std::string pointee = registry_.pointer_target_type_name(pointer_type);
   if (pointee.empty()) return unresolved_call();
   const auto& ctor_ident = static_cast<const Ident&>(ctor_callee);
   Member member(ctor_callee.loc,
@@ -1619,7 +1611,7 @@ bool EmitResolution::operand_type_allows_operator_lookup(const TypeExpr* t) {
     const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
     if (primitive_info(name)) return false;
     const TypeSymbol* symbol =
-        registry_->lookup_type_symbol(name, scope_.current_unit_name);
+        registry_.lookup_type_symbol(name, scope_.current_unit_name);
     if (!symbol || symbol->enum_info()) return false;
     return symbol->record_info() || symbol->class_info() ||
            symbol->interface_info() || symbol->alias_info();
@@ -1643,8 +1635,6 @@ bool EmitResolution::operands_are_pointer_nil_comparison(
 
 BinaryOperatorResult EmitResolution::find_binary_operator(
     const std::string& op, const Expr& lhs, const Expr& rhs) {
-  if (!registry_) return {};
-
   const TypeExpr* lhs_type = overload_types_.type_for_overload(lhs);
   const TypeExpr* rhs_type = overload_types_.type_for_overload(rhs);
   // `nil` is the built-in null value for pointer-compatible operands. It should
@@ -1688,7 +1678,6 @@ BinaryOperatorResult EmitResolution::find_binary_operator(
 
 UnaryOperatorResult EmitResolution::find_unary_operator(
     const std::string& op, const Expr& operand) {
-  if (!registry_) return {};
   std::vector<AnyCand> cands = gather_operator_in_pascal_scope(op);
   if (cands.empty()) return {};
 
@@ -1714,7 +1703,7 @@ UnaryOperatorResult EmitResolution::find_unary_operator(
 
 AssignmentOperatorResult EmitResolution::find_assignment_operator(
     const TypeExpr* source, const TypeExpr* target) {
-  if (!registry_ || !source || !target) return {};
+  if (!source || !target) return {};
   const TypeExpr* canon_target = analysis_.canonicalize_type(target);
   if (!canon_target) return {};
   std::string target_cxx = type_ops_.type_to_cxx(*canon_target);

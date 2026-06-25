@@ -4,16 +4,13 @@
 #include <vector>
 
 #include "emit_support.h"
-#include "typereg.h"
-
 namespace tp2cc {
 
 using namespace ast;
 
-EmitProperties::EmitProperties(const TypeRegistry* registry,
-                               EmitAnalysis& analysis,
+EmitProperties::EmitProperties(EmitAnalysis& analysis,
                                EmitPropertyExprOps& expr_ops)
-    : registry_(registry), analysis_(analysis), expr_ops_(expr_ops) {}
+    : analysis_(analysis), expr_ops_(expr_ops) {}
 
 std::optional<std::string> EmitProperties::maybe_property_read_text(
     const std::string& base_cxx, const std::string& class_name,
@@ -21,7 +18,6 @@ std::optional<std::string> EmitProperties::maybe_property_read_text(
   // Properties are Pascal-side metadata only. Reads/writes rewrite to the
   // declared backing field/getter/setter so we do not invent extra C++
   // members whose names could collide in ways Pascal itself forbids.
-  if (!registry_) return std::nullopt;
   const ClassInfo* ci = analysis_.class_info_for_type_name(class_name);
   const std::string access =
       (ci && ci->is_reference_type) ? "->" : ".";
@@ -60,7 +56,6 @@ std::optional<std::string> EmitProperties::maybe_property_write_text(
     const std::string& base_cxx, const std::string& class_name,
     const PropertyInfo& prop, const std::vector<const Expr*>& indices,
     const Expr& value) {
-  if (!registry_) return std::nullopt;
   const ClassInfo* ci = analysis_.class_info_for_type_name(class_name);
   const std::string access =
       (ci && ci->is_reference_type) ? "->" : ".";

@@ -36,7 +36,7 @@ class EmitDeclOps {
 // for nested and top-level routines.
 class EmitDecls {
  public:
-  EmitDecls(const TypeRegistry* registry, ScopeStateView& scope,
+  EmitDecls(const TypeRegistry& registry, ScopeStateView& scope,
             EmitAnalysis& analysis,
             EmitTypes& types, EmitStorage& storage, EmitValues& values,
             EmitDeclOps& emit_ops);
@@ -146,7 +146,7 @@ class EmitDecls {
       const PendingReferenceClassSupport& pending);
   bool should_emit_var_type_helpers(const ast::VarDecl& vd, bool in_header);
 
-  const TypeRegistry* registry_;
+  const TypeRegistry& registry_;
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;
   EmitTypes& types_;

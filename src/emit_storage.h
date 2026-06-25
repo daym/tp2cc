@@ -214,7 +214,7 @@ struct EmitStorageDesignator {
 //   byte-aligned carriers that are safe to index directly
 class EmitStorage {
  public:
-  EmitStorage(const TypeRegistry* registry, ScopeStateView& scope,
+  EmitStorage(const TypeRegistry& registry, ScopeStateView& scope,
               EmitAnalysis& analysis, EmitTypes& types,
               ResolveNameProvider& resolve_name_provider,
               EmitStorageExprOps& expr_ops);
@@ -365,7 +365,7 @@ class EmitStorage {
       const std::string& target_cxx, const ast::TypeExpr* type,
       bool is_const_storage = false);
 
-  const TypeRegistry* registry_;
+  const TypeRegistry& registry_;
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;
   EmitTypes& types_;

@@ -12,7 +12,6 @@
 namespace tp2cc {
 
 struct PropertyInfo;
-struct TypeRegistry;
 
 class EmitPropertyExprOps {
  public:
@@ -30,8 +29,7 @@ class EmitPropertyExprOps {
 // of truth for bare-property resolution.
 class EmitProperties {
  public:
-  EmitProperties(const TypeRegistry* registry, EmitAnalysis& analysis,
-                 EmitPropertyExprOps& expr_ops);
+  EmitProperties(EmitAnalysis& analysis, EmitPropertyExprOps& expr_ops);
 
   std::string lower_property_read(Location where, const std::string& base_cxx,
                                   const std::string& class_name,
@@ -56,7 +54,6 @@ class EmitProperties {
       const PropertyInfo& prop, const std::vector<const ast::Expr*>& indices,
       const ast::Expr& value);
 
-  const TypeRegistry* registry_;
   EmitAnalysis& analysis_;
   EmitPropertyExprOps& expr_ops_;
 };

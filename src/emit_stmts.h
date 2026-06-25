@@ -40,7 +40,7 @@ class EmitStmtOps {
 // separate statement-only semantics inside `emit.cc`.
 class EmitStmts {
  public:
-  EmitStmts(const TypeRegistry* registry, ScopeStateView& scope,
+  EmitStmts(const TypeRegistry& registry, ScopeStateView& scope,
             int& except_handler_depth, int& try_stmt_counter,
             int& loop_label_counter,
             std::vector<std::string>& loop_break_labels,
@@ -127,7 +127,7 @@ class EmitStmts {
                                 const ast::CaseArm& arm);
   void emit_case_stmt(const ast::CaseStmt& cs);
 
-  const TypeRegistry* registry_;
+  const TypeRegistry& registry_;
   ScopeStateView& scope_;
   int& except_handler_depth_;
   int& try_stmt_counter_;

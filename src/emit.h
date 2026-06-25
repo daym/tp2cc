@@ -33,7 +33,7 @@ struct EmittedUnit {
 };
 
 EmittedUnit emit_unit(const ast::UnitNode& u,
-                      const TypeRegistry* registry,
+                      const TypeRegistry& registry,
                       // When emitting a `program`, the ordered list of
                       // unit names (excluding the program itself) whose
                       // unit lifecycle hooks should run before the

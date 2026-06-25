@@ -53,7 +53,7 @@ EmittedUnit compile_snippet_with_registry(
   units.reserve(parsed_units.size());
   for (const auto& unit : parsed_units) units.push_back(unit.get());
   reg.build(units);
-  return emit_unit(*u, &reg, nullptr, default_target_info());
+  return emit_unit(*u, reg, nullptr, default_target_info());
 }
 
 EmittedUnit compile_snippet(std::string text) {
@@ -72,7 +72,7 @@ EmittedUnit compile_snippet_with_init_order(
   TypeRegistry reg;
   std::vector<const UnitNode*> units{u.get()};
   reg.build(units);
-  return emit_unit(*u, &reg, &init_order, default_target_info());
+  return emit_unit(*u, reg, &init_order, default_target_info());
 }
 
 bool contains(const std::string& s, std::string_view needle) {

@@ -31,7 +31,7 @@ class EmitValueExprOps {
 // values, and metaclass values.
 class EmitValues {
  public:
-  EmitValues(const TypeRegistry* registry, ScopeStateView& scope,
+  EmitValues(const TypeRegistry& registry, ScopeStateView& scope,
              EmitAnalysis& analysis, EmitTypes& types, EmitStorage& storage,
              EmitResolution& resolution, OverloadTypeProvider& overload_types,
              EmitValueExprOps& expr_ops);
@@ -107,7 +107,7 @@ class EmitValues {
   bool reject_metaclass_member_as_plain_proc_value(const ast::Expr& value);
   std::string concrete_class_name_for_metaclass_value(const ast::Expr& src);
 
-  const TypeRegistry* registry_;
+  const TypeRegistry& registry_;
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;
   EmitTypes& types_;

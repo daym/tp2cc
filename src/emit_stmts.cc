@@ -81,7 +81,7 @@ ExprPtr borrowed_expr_ptr(const Expr& expr) {
 
 }  // namespace
 
-EmitStmts::EmitStmts(const TypeRegistry* registry, ScopeStateView& scope,
+EmitStmts::EmitStmts(const TypeRegistry& registry, ScopeStateView& scope,
                      int& except_handler_depth, int& try_stmt_counter,
                      int& loop_label_counter,
                      std::vector<std::string>& loop_break_labels,
@@ -161,14 +161,14 @@ std::string EmitStmts::value_class_alias(const Expr& expr) {
   }
   if (const TypeExpr* t = selected_value_type(expr)) {
     if (auto cls = analysis_.metaclass_target_name(t); !cls.empty()) return cls;
-    if (registry_) {
-      if (auto cls = registry_->direct_type_name(t, scope_.current_unit_name);
+    {
+      if (auto cls = registry_.direct_type_name(t, scope_.current_unit_name);
           !cls.empty()) {
         return cls;
       }
       if (const TypeExpr* canon = analysis_.canonicalize_type(t)) {
         if (auto cls =
-                registry_->direct_type_name(canon, scope_.current_unit_name);
+                registry_.direct_type_name(canon, scope_.current_unit_name);
             !cls.empty()) {
           return cls;
         }
@@ -324,7 +324,6 @@ void EmitStmts::emit_try_stmt(const Try& t) {
 }
 
 bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
-  if (!registry_) return false;
 
   if (a.target->kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(*a.target);
@@ -336,7 +335,7 @@ bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
       cls = value_class_alias(*mem.base);
     }
     if (!cls.empty()) {
-      if (auto* prop = registry_->lookup_class_property(
+      if (auto* prop = registry_.lookup_class_property(
               cls, mem.name, scope_.current_unit_name)) {
         std::vector<const Expr*> no_indices;
         stmt_ops_.emitln(properties_.lower_property_write(
@@ -370,7 +369,7 @@ bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
         cls = value_class_alias(*mem.base);
       }
       if (!cls.empty()) {
-        if (auto* prop = registry_->lookup_class_property(
+        if (auto* prop = registry_.lookup_class_property(
                 cls, mem.name, scope_.current_unit_name)) {
           if (!prop->params.empty()) {
             stmt_ops_.emitln(properties_.lower_property_write(
@@ -395,7 +394,7 @@ bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
     }
     std::string cls = value_class_alias(*ix.base);
     if (!cls.empty()) {
-      if (auto* prop = registry_->lookup_default_property(
+      if (auto* prop = registry_.lookup_default_property(
               cls, scope_.current_unit_name)) {
         stmt_ops_.emitln(properties_.lower_property_write(
                              a.loc, stmt_ops_.expr_to_cxx(*ix.base), cls,
@@ -671,13 +670,13 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
     } else {
       std::string text = stmt_ops_.expr_to_cxx(*es.expr);
       bool stmt_autocalls_member = false;
-      if (registry_) {
+      {
         std::string cls;
         if (mem.base && mem.base->kind == Kind::Ident) {
           const std::string base =
               ascii_lower(static_cast<const Ident&>(*mem.base).name);
           const TypeSymbol* symbol =
-              registry_->lookup_type_symbol(base, scope_.current_unit_name);
+              registry_.lookup_type_symbol(base, scope_.current_unit_name);
           if (!symbol || (!symbol->class_info() && !symbol->record_info())) {
             cls = value_class_alias(*mem.base);
           }
@@ -685,7 +684,7 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
           cls = value_class_alias(*mem.base);
         }
         if (!cls.empty()) {
-          if (const auto* methods = registry_->lookup_class_methods(
+          if (const auto* methods = registry_.lookup_class_methods(
                   cls, mem.name, scope_.current_unit_name)) {
             PickResult picked = resolution_.pick_method_overload(*methods, {});
             stmt_autocalls_member = !picked.ambiguous && picked.decl;
@@ -712,7 +711,7 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
   // are either emitted as `Call` (handled above with args) or they're real
   // source bugs that should be fixed in the Pascal, not papered over.
   std::string text = stmt_ops_.expr_to_cxx(*es.expr);
-  if (es.expr->kind == Kind::Ident && registry_) {
+  if (es.expr->kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(*es.expr);
     ResolveResult rr = resolve_name_provider_.resolve_name(id.name);
     if (rr.accepts_zero_args && !text.empty() && text.back() != ')') {
@@ -879,7 +878,7 @@ std::string EmitStmts::for_in_class_type_name(
   if (!type) return {};
   if (type->kind == Kind::TyName) {
     const std::string name = ascii_lower(static_cast<const TyName&>(*type).name);
-    if (registry_ && method) {
+    if (method) {
       const std::string unit = method->defining_unit.empty()
                                    ? scope_.current_unit_name
                                    : method->defining_unit;
@@ -896,9 +895,9 @@ std::string EmitStmts::for_in_class_type_name(
           std::string(owner_class_name) + "." + name;
       if (analysis_.class_info_for_type_name(nested)) return nested;
     }
-    if (registry_) {
+    {
       const std::string direct =
-          registry_->direct_type_name(type, scope_.current_unit_name);
+          registry_.direct_type_name(type, scope_.current_unit_name);
       if (!direct.empty() && analysis_.class_info_for_type_name(direct)) {
         return direct;
       }
@@ -916,8 +915,7 @@ std::string EmitStmts::for_in_class_type_name(
 const MethodSig* EmitStmts::for_in_zero_arg_method(
     Location loc, const std::string& class_name,
     const std::string& method_name) {
-  if (!registry_) return nullptr;
-  const auto* methods = registry_->lookup_class_methods(
+  const auto* methods = registry_.lookup_class_methods(
       class_name, method_name, scope_.current_unit_name);
   if (!methods) return nullptr;
 
@@ -1043,7 +1041,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
     return ForInEmitResult::Error;
   }
 
-  const PropertyInfo* current = registry_->lookup_class_property(
+  const PropertyInfo* current = registry_.lookup_class_property(
       enum_class, "Current", scope_.current_unit_name);
   if (!current || current->read.empty() || !current->params.empty()) {
     stmt_ops_.report_error(provider.loc,

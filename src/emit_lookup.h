@@ -25,7 +25,7 @@ struct TypeRegistry;
 // "is this a method? a unit export? a with-bound field?" checks.
 class EmitLookup {
  public:
-  EmitLookup(const TypeRegistry* registry, ScopeStateView& scope,
+  EmitLookup(const TypeRegistry& registry, ScopeStateView& scope,
              EmitAnalysis& analysis, EmitProperties& properties);
 
   ResolveResult resolve_name(const std::string& name,
@@ -36,7 +36,7 @@ class EmitLookup {
   std::optional<ResolveResult> resolve_exported_unit_name(
       const std::string& unit_name, const std::string& name);
 
-  const TypeRegistry* registry_;
+  const TypeRegistry& registry_;
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;
   EmitProperties& properties_;

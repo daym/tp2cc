@@ -40,7 +40,7 @@ inline std::string type_symbol_unit_pascal_path(const TypeSymbol& symbol) {
 }
 
 inline const TypeSymbol* signature_type_symbol_for(
-    const TypeRegistry* registry, const ScopeStateView& scope,
+    const TypeRegistry& registry, const ScopeStateView& scope,
     std::string_view type_name) {
   // Signature syntax is lexical: a type name in `function f: TNested` belongs
   // to the unit and declaring type where that signature was declared. Later
@@ -54,11 +54,10 @@ class ScopedSignatureLookupUnit {
  public:
   // Temporarily restore the unit and nested type frames that were in force at
   // the declaration site of a method/property/constructor signature.
-  ScopedSignatureLookupUnit(ScopeStateView& scope, const TypeRegistry* registry,
+  ScopedSignatureLookupUnit(ScopeStateView& scope, const TypeRegistry& registry,
                             std::string_view defining_unit,
                             std::string_view declaring_type)
       : scope_(scope),
-        registry_(registry),
         saved_unit_(scope.current_unit_name),
         saved_lookup_emission_unit_(scope.lookup_emission_unit_name),
         saved_type_scope_(scope.type_scope) {
@@ -70,11 +69,12 @@ class ScopedSignatureLookupUnit {
       scope_.current_unit_name = std::string(defining_unit);
       scope_.type_scope = nullptr;
     }
+    (void)registry;
     (void)declaring_type;
   }
 
   explicit ScopedSignatureLookupUnit(ScopeStateView& scope,
-                                     const TypeRegistry* registry,
+                                     const TypeRegistry& registry,
                                      const MethodSig* sig)
       : ScopedSignatureLookupUnit(scope, registry,
                                   sig ? sig->defining_unit : std::string_view{},
@@ -94,7 +94,6 @@ class ScopedSignatureLookupUnit {
 
  private:
   ScopeStateView& scope_;
-  const TypeRegistry* registry_ = nullptr;
   std::string saved_unit_;
   std::string saved_lookup_emission_unit_;
   const TypeLookupContext* saved_type_scope_ = nullptr;
@@ -102,7 +101,7 @@ class ScopedSignatureLookupUnit {
 };
 
 inline std::shared_ptr<ast::TyName> qualified_signature_type_name(
-    const TypeRegistry* registry, ScopeStateView& scope,
+    const TypeRegistry& registry, ScopeStateView& scope,
     const ast::TypeExpr* param_type, std::string_view param_unit,
     std::string_view param_declaring_type) {
   if (!param_type || param_type->kind != ast::Kind::TyName) return nullptr;
@@ -114,11 +113,9 @@ inline std::shared_ptr<ast::TyName> qualified_signature_type_name(
   ScopedSignatureLookupUnit signature_scope(scope, registry, param_unit,
                                             param_declaring_type);
   const TypeLookupContext* saved_context = scope.type_scope;
-  if (registry) {
-    if (const TypeLookupContext* context =
-            registry->lookup_context_for_type(param_type)) {
-      scope.type_scope = context;
-    }
+  if (const TypeLookupContext* context =
+          registry.lookup_context_for_type(param_type)) {
+    scope.type_scope = context;
   }
   const TypeSymbol* symbol =
       signature_type_symbol_for(registry, scope, tn.name);

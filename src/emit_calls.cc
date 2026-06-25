@@ -70,10 +70,9 @@ struct DefaultArgumentUnitScope {
 
 std::string visible_type_unit_from(std::string_view type_name,
                                    std::string_view unit_name,
-                                   const TypeRegistry* registry) {
-  if (!registry) return {};
+                                   const TypeRegistry& registry) {
   if (const TypeSymbol* symbol =
-          registry->lookup_type_symbol(type_name, unit_name)) {
+          registry.lookup_type_symbol(type_name, unit_name)) {
     return symbol->defining_unit;
   }
   return {};
@@ -92,7 +91,7 @@ bool is_plain_pointer_type(const TypeExpr* t) {
 }
 
 EffectiveParamType effective_call_param_type(
-    const TypeRegistry* registry, ScopeStateView& scope,
+    const TypeRegistry& registry, ScopeStateView& scope,
     const TypeExpr* param_type, std::string_view param_unit,
     std::string_view param_declaring_type, std::string_view default_arg_unit) {
   EffectiveParamType out;
@@ -212,7 +211,7 @@ EmitCalls::call_slots_with_builtin_memory_helper_info(
   return slots;
 }
 
-EmitCalls::EmitCalls(const TypeRegistry* registry, ScopeStateView& scope,
+EmitCalls::EmitCalls(const TypeRegistry& registry, ScopeStateView& scope,
                      EmitAnalysis& analysis, EmitTypes& types,
                      EmitStorage& storage, EmitResolution& resolution,
                      OverloadTypeProvider& overload_types,
@@ -667,7 +666,6 @@ std::optional<std::string> EmitCalls::maybe_lower_class_free_member(
 std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
     Location where, std::string_view class_name, std::string_view member_name,
     const CallArgumentPlan& plan, const ProcDecl* selected_decl) {
-  if (!registry_) return std::nullopt;
   const ClassInfo* ci =
       analysis_.class_info_for_type_name(std::string(class_name));
   if (!ci || !ci->is_reference_type) {
@@ -675,7 +673,7 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
   }
   const MethodSig* method = nullptr;
   if (selected_decl) {
-    if (const auto* methods = registry_->lookup_class_methods(
+    if (const auto* methods = registry_.lookup_class_methods(
             std::string(class_name), std::string(member_name),
             scope_.current_unit_name)) {
       for (const auto& candidate : *methods) {

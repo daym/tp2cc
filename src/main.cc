@@ -496,7 +496,7 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
       init_order = &init_list;
     }
     int errs_before = error_count();
-    auto out = emit_unit(*pu->ast, &reg, init_order, target);
+    auto out = emit_unit(*pu->ast, reg, init_order, target);
     int errs = error_count() - errs_before;
     if (errs != 0) {
       std::printf("FAIL %s (%d emit errors)\n", name.c_str(), errs);
@@ -564,7 +564,7 @@ int cmd_emit(const CliOptions& opts, const std::string& path,
   std::vector<const ast::UnitNode*> units{u.get()};
   reg.build(units);
   int errs_before = error_count();
-  auto out = emit_unit(*u, &reg, nullptr, target);
+  auto out = emit_unit(*u, reg, nullptr, target);
   if (error_count() != errs_before) return 1;
   fs::create_directories(outdir);
   std::string stem = u->name;

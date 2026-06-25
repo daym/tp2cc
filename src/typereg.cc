@@ -1337,10 +1337,8 @@ void insert_type_ref(TypeLookupContext& context, const TypeSymbol* symbol) {
 
 TypeSymbol* register_context_type_decl(TypeRegistry& r,
                                        TypeLookupContext& context,
-                                       std::string_view unit,
                                        const TypeDecl& td) {
   if (!td.type) return nullptr;
-  (void)unit;
   r.type_symbols.push_back(make_type_symbol_for_type({}, td.name, td.type));
   TypeSymbol* stored = &r.type_symbols.back();
   populate_nested_types(r, *stored);
@@ -1349,11 +1347,9 @@ TypeSymbol* register_context_type_decl(TypeRegistry& r,
 }
 
 void register_context_enum_symbol(TypeRegistry& r, TypeLookupContext& context,
-                                  std::string_view unit,
                                   std::string_view name,
                                   std::string_view cxx_name,
                                   const TyEnum& type) {
-  (void)unit;
   r.type_symbols.push_back(
       make_enum_type_symbol({}, name, cxx_name, type));
   insert_type_ref(context, &r.type_symbols.back());
@@ -1361,7 +1357,6 @@ void register_context_enum_symbol(TypeRegistry& r, TypeLookupContext& context,
 
 void register_context_enum_symbols_for_owner(TypeRegistry& r,
                                              TypeLookupContext& context,
-                                             std::string_view unit,
                                              const TypePtr& type,
                                              std::string_view owner_name,
                                              const TyEnum* named_top_level =
@@ -1374,8 +1369,7 @@ void register_context_enum_symbols_for_owner(TypeRegistry& r,
   for (const TyEnum* te : enums) {
     if (!te || !seen.insert(te).second) continue;
     if (named_top_level && te == named_top_level) {
-      register_context_enum_symbol(r, context, unit, owner,
-                                   type_mangle(owner), *te);
+      register_context_enum_symbol(r, context, owner, type_mangle(owner), *te);
       continue;
     }
     const bool whole_type_is_enum = te == type.get() && !named_top_level;
@@ -1386,37 +1380,36 @@ void register_context_enum_symbols_for_owner(TypeRegistry& r,
         whole_type_is_enum ? type_mangle(owner)
                            : type_mangle(owner) + "_enum" +
                                  std::to_string(anon_index);
-    register_context_enum_symbol(r, context, unit, key, cxx_name, *te);
+    register_context_enum_symbol(r, context, key, cxx_name, *te);
     ++anon_index;
   }
 }
 
 void register_decl_list_context_symbols(TypeRegistry& r,
                                         TypeLookupContext& context,
-                                        std::string_view unit,
                                         const std::vector<DeclPtr>& decls) {
   for (const auto& d : decls) {
     if (!d) continue;
     if (d->kind == Kind::TypeDecl) {
       const auto& td = static_cast<const TypeDecl&>(*d);
-      register_context_type_decl(r, context, unit, td);
+      register_context_type_decl(r, context, td);
     } else if (d->kind == Kind::VarDecl) {
       const auto& vd = static_cast<const VarDecl&>(*d);
       if (!vd.names.empty()) {
         register_context_enum_symbols_for_owner(
-            r, context, unit, vd.type, vd.names.front());
+            r, context, vd.type, vd.names.front());
       }
     } else if (d->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*d);
       register_context_enum_symbols_for_owner(
-          r, context, unit, cd.type, cd.name);
+          r, context, cd.type, cd.name);
     }
   }
 }
 
-const TypeLookupContext* make_unit_type_context(TypeRegistry& r,
-                                                std::string_view unit,
-                                                bool is_interface) {
+TypeLookupContext* make_unit_type_context(TypeRegistry& r,
+                                          std::string_view unit,
+                                          bool is_interface) {
   TypeLookupContext* context = make_type_lookup_context(r, unit, nullptr);
   auto uit = r.units.find(lc(std::string(unit)));
   if (uit == r.units.end()) return context;
@@ -1594,7 +1587,7 @@ void index_type_expr_context(TypeRegistry& r, const TypeExpr* type,
 
 void index_decl_list_contexts(TypeRegistry& r, const std::string& unit,
                               const std::vector<DeclPtr>& decls,
-                              const TypeLookupContext* context) {
+                              TypeLookupContext* context) {
   for (const auto& d : decls) {
     if (!d) continue;
     switch (d->kind) {
@@ -1605,8 +1598,7 @@ void index_decl_list_contexts(TypeRegistry& r, const std::string& unit,
                                                                 context));
         if (td.type && td.type->kind != Kind::TyEnum) {
           register_context_enum_symbols_for_owner(
-              r, *const_cast<TypeLookupContext*>(context), unit, td.type,
-              td.name);
+              r, *context, td.type, td.name);
         }
         break;
       }
@@ -1624,7 +1616,7 @@ void index_decl_list_contexts(TypeRegistry& r, const std::string& unit,
         TypeLookupContext* body_context =
             make_type_lookup_context(r, unit, proc_context);
         r.proc_body_type_contexts[&pd] = body_context;
-        register_decl_list_context_symbols(r, *body_context, unit, pd.locals);
+        register_decl_list_context_symbols(r, *body_context, pd.locals);
         index_decl_list_contexts(r, unit, pd.locals, body_context);
         break;
       }
@@ -1632,8 +1624,7 @@ void index_decl_list_contexts(TypeRegistry& r, const std::string& unit,
         const auto& vd = static_cast<const VarDecl&>(*d);
         if (!vd.names.empty()) {
           register_context_enum_symbols_for_owner(
-              r, *const_cast<TypeLookupContext*>(context), unit, vd.type,
-              vd.names.front());
+              r, *context, vd.type, vd.names.front());
         }
         index_type_expr_context(r, vd.type.get(), context);
         break;
@@ -1641,8 +1632,7 @@ void index_decl_list_contexts(TypeRegistry& r, const std::string& unit,
       case Kind::ConstDecl: {
         const auto& cd = static_cast<const ConstDecl&>(*d);
         register_context_enum_symbols_for_owner(
-            r, *const_cast<TypeLookupContext*>(context), unit, cd.type,
-            cd.name);
+            r, *context, cd.type, cd.name);
         index_type_expr_context(r, cd.type.get(), context);
         break;
       }
@@ -2274,12 +2264,12 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     register_decl_list(*this, lc(u->name), u->impl_decls,
                        /*is_interface=*/false);
     const std::string unit_name = lc(u->name);
-    const TypeLookupContext* interface_context =
+    TypeLookupContext* interface_context =
         make_unit_type_context(*this, unit_name, /*is_interface=*/true);
     unit_interface_type_contexts[unit_name] = interface_context;
     index_decl_list_contexts(*this, unit_name, u->interface_decls,
                              interface_context);
-    const TypeLookupContext* implementation_context =
+    TypeLookupContext* implementation_context =
         make_unit_type_context(*this, unit_name, /*is_interface=*/false);
     unit_implementation_type_contexts[unit_name] = implementation_context;
     index_decl_list_contexts(*this, unit_name, u->impl_decls,

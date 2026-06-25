@@ -20,7 +20,7 @@ constexpr const char* kCtorStatusSlotName = "tp2cc_ctor_ok";
 
 }  // namespace
 
-EmitProcs::EmitProcs(const TypeRegistry* registry, ScopeStateView& scope,
+EmitProcs::EmitProcs(const TypeRegistry& registry, ScopeStateView& scope,
                      int& block_depth,
                      EmitAnalysis& analysis, EmitTypes& types,
                      EmitCalls& calls, EmitDecls& decls, EmitProcOps& emit_ops)
@@ -229,9 +229,7 @@ void EmitProcs::emit_proc_body(const ProcDecl& pd) {
     // A Pascal method implementation is written outside the class declaration,
     // but its signature still resolves unqualified nested type names through
     // the owner class scope.
-    if (registry_) {
-      scope_.type_scope = registry_->lookup_proc_signature_context(&pd);
-    }
+    scope_.type_scope = registry_.lookup_proc_signature_context(&pd);
   }
 
   // Header line: ret ClassName::Method(args) or ret Method(args).
@@ -258,9 +256,7 @@ void EmitProcs::emit_proc_body(const ProcDecl& pd) {
   }
 
   SavedProcState saved = save_proc_state();
-  if (registry_) {
-    scope_.type_scope = registry_->lookup_proc_body_context(&pd);
-  }
+  scope_.type_scope = registry_.lookup_proc_body_context(&pd);
   setup_proc_frame(pd, /*nested_lambda=*/false);
   seed_proc_scope(pd);
 
@@ -311,9 +307,7 @@ void EmitProcs::emit_nested_proc_lambda(const ProcDecl& pd) {
   emit_ops_.indent();
 
   SavedProcState saved = save_proc_state();
-  if (registry_) {
-    scope_.type_scope = registry_->lookup_proc_body_context(&pd);
-  }
+  scope_.type_scope = registry_.lookup_proc_body_context(&pd);
   setup_proc_frame(pd, /*nested_lambda=*/true);
   seed_proc_scope(pd);
 

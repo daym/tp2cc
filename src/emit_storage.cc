@@ -15,7 +15,7 @@ using namespace ast;
 
 namespace {
 
-const TypeSymbol* local_type_symbol(const TypeRegistry* registry,
+const TypeSymbol* local_type_symbol(const TypeRegistry& registry,
                                     const ScopeStateView& scope,
                                     std::string_view name) {
   return lexical_type_symbol_in_context(registry, scope, name);
@@ -48,7 +48,7 @@ std::string reference_class_name(const TypeExpr* t) {
 
 }  // namespace
 
-EmitStorage::EmitStorage(const TypeRegistry* registry, ScopeStateView& scope,
+EmitStorage::EmitStorage(const TypeRegistry& registry, ScopeStateView& scope,
                          EmitAnalysis& analysis, EmitTypes& types,
                          ResolveNameProvider& resolve_name_provider,
                          EmitStorageExprOps& expr_ops)
@@ -84,12 +84,10 @@ std::string EmitStorage::offsetof_base_type_cxx(
       return types_.named_type_struct_cxx(n.name);
     }
   }
-  if (registry_) {
-    if (std::string name =
-            registry_->direct_type_name(t, scope_.current_unit_name);
-        !name.empty()) {
-      return types_.named_type_struct_cxx(name);
-    }
+  if (std::string name =
+          registry_.direct_type_name(t, scope_.current_unit_name);
+      !name.empty()) {
+    return types_.named_type_struct_cxx(name);
   }
   if (!base_expr_cxx.empty()) {
     return "::std::remove_reference_t<decltype(" + base_expr_cxx + ")>";
@@ -206,9 +204,7 @@ EmitStorage::storage_typecast_target(const Ident& id, const Expr& source) {
                              false};
   }
   if (const TypeSymbol* symbol =
-          registry_ ? registry_->lookup_type_symbol(lower,
-                                                    scope_.current_unit_name)
-                    : nullptr;
+          registry_.lookup_type_symbol(lower, scope_.current_unit_name);
       symbol && (symbol->record_info() || symbol->class_info())) {
     return StorageCastTarget{types_.type_name_text_to_cxx(id.name), nullptr,
                              false};
@@ -357,8 +353,6 @@ std::optional<EmitStorageDesignator> EmitStorage::raw_address_index_designator(
 }
 
 bool EmitStorage::index_base_denotes_property_value(const Index& i) {
-  if (!registry_) return false;
-
   if (i.base->kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(*i.base);
     std::string cls;
@@ -369,7 +363,7 @@ bool EmitStorage::index_base_denotes_property_value(const Index& i) {
       cls = analysis_.deduce_class_alias(*mem.base);
     }
     if (!cls.empty() &&
-        registry_->lookup_class_property(cls, mem.name,
+        registry_.lookup_class_property(cls, mem.name,
                                          scope_.current_unit_name)) {
       return true;
     }
@@ -385,7 +379,7 @@ bool EmitStorage::index_base_denotes_property_value(const Index& i) {
 
   std::string cls = analysis_.deduce_class_alias(*i.base);
   return !cls.empty() &&
-         registry_->lookup_default_property(cls, scope_.current_unit_name);
+         registry_.lookup_default_property(cls, scope_.current_unit_name);
 }
 
 std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
@@ -518,8 +512,7 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
       const std::string offset_type =
           offsetof_base_type_cxx(base_type, base_text);
       if (field_cxx.empty() || offset_type.empty()) return std::nullopt;
-      const std::string member_cxx =
-          registry_ ? registry_->field_cxx_name(m.name) : mangle(m.name);
+      const std::string member_cxx = registry_.field_cxx_name(m.name);
       const std::string field_ptr_cxx =
           "::rt::tp2cc_byte_offset((&" + base_text + "), offsetof(" +
           offset_type + ", " + member_cxx + "))";
@@ -532,8 +525,8 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
       std::string owner = analysis_.deduce_class_alias(*m.base);
       std::string member_cxx = mangle(m.name);
       bool field_backed_property = false;
-      if (registry_ && !owner.empty()) {
-        if (const auto* prop = registry_->lookup_class_property(
+      if (!owner.empty()) {
+        if (const auto* prop = registry_.lookup_class_property(
                 owner, m.name, scope_.current_unit_name)) {
           // A property name is not a C++ member name. In storage contexts we
           // can only expose the property as storage when its read accessor is
@@ -546,12 +539,12 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
           }
           member_cxx = prop->read.cxx_path;
           field_backed_property = true;
-        } else if (registry_->lookup_class_field(owner, m.name,
+        } else if (registry_.lookup_class_field(owner, m.name,
                                                  scope_.current_unit_name) ||
-                   registry_->lookup_record_field(
+                   registry_.lookup_record_field(
                        owner, m.name, scope_.current_unit_name)) {
-          member_cxx = registry_->field_cxx_name(m.name);
-        } else if (registry_->lookup_class_methods(owner, m.name,
+          member_cxx = registry_.field_cxx_name(m.name);
+        } else if (registry_.lookup_class_methods(owner, m.name,
                                                    scope_.current_unit_name)) {
           // Storage designators are field/property paths. A method selected
           // from a byte-addressed variant payload must fall back to expression
@@ -730,9 +723,9 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
     const auto& m = static_cast<const Member&>(e);
     const std::string owner = analysis_.deduce_class_alias(*m.base);
     if (owner.empty()) return std::nullopt;
-    if (!registry_->lookup_class_field(owner, m.name,
+    if (!registry_.lookup_class_field(owner, m.name,
                                        scope_.current_unit_name) &&
-        !registry_->lookup_record_field(owner, m.name,
+        !registry_.lookup_record_field(owner, m.name,
                                         scope_.current_unit_name)) {
       return std::nullopt;
     }
@@ -741,7 +734,7 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
     // as `byte(obj.EnumField) := value`.
     const std::string text = expr_ops_.expr_to_cxx(*m.base) +
                              member_access_op(*m.base) +
-                             registry_->field_cxx_name(m.name);
+                             registry_.field_cxx_name(m.name);
     return EmitStorageDesignator::ordinary(text, type_cxx);
   }
   return std::nullopt;
@@ -915,8 +908,7 @@ std::optional<EmitBytewiseStorage> EmitStorage::packed_scalar_storage_ref(
         const std::string offset_type =
             offsetof_base_type_cxx(base_type, base->text);
         if (offset_type.empty()) return std::nullopt;
-        const std::string field_name =
-            registry_ ? registry_->field_cxx_name(m.name) : mangle(m.name);
+        const std::string field_name = registry_.field_cxx_name(m.name);
         const std::string ptr =
             "::rt::tp2cc_byte_offset(" + storage_designator_raw_address(*base) +
             ", offsetof(" + offset_type + ", " + field_name + "))";
@@ -970,9 +962,7 @@ bool EmitStorage::type_is_packed_record(const TypeExpr* t) {
       return symbol->record_info()->is_packed;
     }
     const TypeSymbol* symbol =
-        registry_ ? registry_->lookup_type_symbol(n.name,
-                                                  scope_.current_unit_name)
-                  : nullptr;
+        registry_.lookup_type_symbol(n.name, scope_.current_unit_name);
     if (symbol && symbol->record_info()) {
       const RecordInfo* record = symbol->record_info();
       if (record) return record->is_packed;
@@ -988,8 +978,8 @@ bool EmitStorage::type_is_direct_packed_aggregate(const TypeExpr* t) {
   if (t->kind == Kind::TyName) {
     const std::string low = ascii_lower(static_cast<const TyName&>(*t).name);
     const TypeSymbol* symbol = local_type_symbol(registry_, scope_, low);
-    if (!symbol && registry_) {
-      symbol = registry_->lookup_type_symbol(low, scope_.current_unit_name);
+    if (!symbol) {
+      symbol = registry_.lookup_type_symbol(low, scope_.current_unit_name);
     }
     if (!low.empty() && symbol &&
         (symbol->record_info() || symbol->class_info())) {
@@ -1057,7 +1047,7 @@ std::optional<EmitPackedScalarValueLoad> EmitStorage::packed_scalar_value_load(
   // `offsetof` sums over the member chain and byte-load from the base object.
   // A packed aggregate subfield can be read safely as bytes, but binding a
   // C++ reference to the intermediate packed aggregate would not be safe.
-  if (!registry_ || e.kind != Kind::Member) return std::nullopt;
+  if (e.kind != Kind::Member) return std::nullopt;
 
   std::vector<const Member*> chain;
   const Expr* root = &e;
@@ -1083,7 +1073,7 @@ std::optional<EmitPackedScalarValueLoad> EmitStorage::packed_scalar_value_load(
     const std::string base_cxx = offsetof_base_type_cxx(base_type, {});
     if (base_cxx.empty()) return std::nullopt;
     offsets.push_back("offsetof(" + base_cxx + ", " +
-                      registry_->field_cxx_name(m->name) + ")");
+                      registry_.field_cxx_name(m->name) + ")");
 
     if (type_is_packed_record(base_type) &&
         type_is_direct_packed_aggregate(field_type)) {
@@ -1122,7 +1112,7 @@ std::optional<EmitPackedScalarValueLoad> EmitStorage::packed_scalar_value_load(
 
 std::optional<EmitPackedAggregateFieldUse>
 EmitStorage::direct_packed_aggregate_field_use(const Expr& e) {
-  if (!registry_ || e.kind != Kind::Member) return std::nullopt;
+  if (e.kind != Kind::Member) return std::nullopt;
   const auto& m = static_cast<const Member&>(e);
   const TypeExpr* base_type = storage_expr_type(*m.base);
   if (!type_is_packed_record(base_type)) return std::nullopt;
@@ -1132,7 +1122,7 @@ EmitStorage::direct_packed_aggregate_field_use(const Expr& e) {
     return std::nullopt;
   }
   std::string record_name =
-      registry_->direct_type_name(base_type, scope_.current_unit_name);
+      registry_.direct_type_name(base_type, scope_.current_unit_name);
   if (record_name.empty()) record_name = "packed record";
   return EmitPackedAggregateFieldUse{record_name, m.name};
 }
@@ -1232,7 +1222,7 @@ bool EmitStorage::expr_is_storage_lvalue(const Expr& e) {
       scope_.local_untyped_params.count(static_cast<const Ident&>(root).name)) {
     is_lvalue_expr = true;
   }
-  if (!is_lvalue_expr || !registry_) return is_lvalue_expr;
+  if (!is_lvalue_expr) return is_lvalue_expr;
 
   if (root.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(root);
@@ -1246,9 +1236,9 @@ bool EmitStorage::expr_is_storage_lvalue(const Expr& e) {
     const auto& m = static_cast<const Member&>(root);
     std::string cls = analysis_.deduce_class_alias(*m.base);
     if (!cls.empty()) {
-      if (registry_->lookup_class_property(
+      if (registry_.lookup_class_property(
               cls, m.name, scope_.current_unit_name)) return false;
-      if (registry_->lookup_class_methods(cls, m.name,
+      if (registry_.lookup_class_methods(cls, m.name,
                                           scope_.current_unit_name)) return false;
     }
   }
@@ -1304,29 +1294,22 @@ bool EmitStorage::type_is_reference_class(const TypeExpr* t) {
 bool EmitStorage::expr_is_reference_class(const Expr& e) {
   if (e.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(e);
-    if (id.name == "self" && !scope_.current_class_name.empty() && registry_) {
+    if (id.name == "self" && !scope_.current_class_name.empty()) {
       const ClassInfo* ci =
-          registry_->lookup_class(scope_.current_class_name,
+          registry_.lookup_class(scope_.current_class_name,
                                   scope_.current_unit_name);
       return ci && ci->is_reference_type;
     }
-  } else if (e.kind == Kind::Call && registry_) {
+  } else if (e.kind == Kind::Call) {
     const auto& c = static_cast<const Call&>(e);
     if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
       const auto& id = static_cast<const Ident&>(*c.callee);
       if (analysis_.is_builtin_reference_class_name(id.name)) return true;
       const ClassInfo* ci =
-          registry_->lookup_class(id.name, scope_.current_unit_name);
+          registry_.lookup_class(id.name, scope_.current_unit_name);
       if (ci && ci->is_reference_type) {
         return true;
       }
-    }
-  } else if (e.kind == Kind::Call) {
-    const auto& c = static_cast<const Call&>(e);
-    if (c.args.size() == 1 && c.callee->kind == Kind::Ident &&
-        analysis_.is_builtin_reference_class_name(
-            static_cast<const Ident&>(*c.callee).name)) {
-      return true;
     }
   }
   return type_is_reference_class(storage_expr_type(e));
@@ -1564,11 +1547,10 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
 
 bool EmitStorage::pointer_to_object_upcast_is_valid(const TypeExpr* dst_type,
                                                     const TypeExpr* src_type) {
-  if (!registry_) return false;
   const std::string dst_name =
-      registry_->pointer_target_type_name(dst_type, scope_.current_unit_name);
+      registry_.pointer_target_type_name(dst_type, scope_.current_unit_name);
   const std::string src_name =
-      registry_->pointer_target_type_name(src_type, scope_.current_unit_name);
+      registry_.pointer_target_type_name(src_type, scope_.current_unit_name);
   if (dst_name.empty() || src_name.empty()) return false;
   const ClassInfo* dst_class =
       analysis_.class_info_for_type_name(dst_name);
@@ -1583,9 +1565,8 @@ bool EmitStorage::pointer_to_object_upcast_is_valid(const TypeExpr* dst_type,
 
 bool EmitStorage::class_to_interface_conversion_is_valid(
     const TypeExpr* dst_type, const TypeExpr* src_type) {
-  if (!registry_) return false;
   const InterfaceInfo* interface =
-      registry_->interface_info_for_type(dst_type, scope_.current_unit_name);
+      registry_.interface_info_for_type(dst_type, scope_.current_unit_name);
   if (!interface) return false;
 
   const TypeExpr* src = analysis_.canonicalize_type(src_type);
@@ -1594,7 +1575,7 @@ bool EmitStorage::class_to_interface_conversion_is_valid(
   std::string class_name = reference_class_name(src_type);
   if (class_name.empty()) class_name = reference_class_name(src);
   if (class_name.empty()) return false;
-  return registry_->class_implements_interface(class_name, *interface,
+  return registry_.class_implements_interface(class_name, *interface,
                                                scope_.current_unit_name);
 }
 
@@ -1648,9 +1629,8 @@ std::optional<EmitAbsoluteTargetInfo> EmitStorage::resolve_absolute_target(
   }
 
   ResolveResult rr = resolve_name_provider_.resolve_name(vd.absolute_target);
-  if (rr.kind == ResolvedKind::ClassField && registry_ &&
-      !scope_.current_class_name.empty()) {
-    if (auto* f = registry_->lookup_class_field(scope_.current_class_name,
+  if (rr.kind == ResolvedKind::ClassField && !scope_.current_class_name.empty()) {
+    if (auto* f = registry_.lookup_class_field(scope_.current_class_name,
                                                 vd.absolute_target,
                                                 scope_.current_unit_name)) {
       return absolute_target_info(target_cxx, f->type.get());

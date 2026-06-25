@@ -91,7 +91,7 @@ struct OrdinalDomain {
 
 class EmitAnalysis {
  public:
-  EmitAnalysis(const TypeRegistry* registry, ScopeStateView& scope,
+  EmitAnalysis(const TypeRegistry& registry, ScopeStateView& scope,
                ResolveNameProvider& resolve_name_provider,
                CallTypeProvider& call_type_provider, TargetInfo target);
 
@@ -280,7 +280,7 @@ class EmitAnalysis {
   const EnumInfoReg* find_enum_info_in_unit(std::string_view unit_name,
                                             std::string_view member_name);
 
-  const TypeRegistry* registry_;
+  const TypeRegistry& registry_;
   ScopeStateView& scope_;
   ResolveNameProvider& resolve_name_provider_;
   CallTypeProvider& call_type_provider_;

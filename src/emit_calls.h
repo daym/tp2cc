@@ -53,7 +53,7 @@ class EmitCallExprOps {
 // call forms that are semantically more than "print callee(args)".
 class EmitCalls {
  public:
-  EmitCalls(const TypeRegistry* registry, ScopeStateView& scope,
+  EmitCalls(const TypeRegistry& registry, ScopeStateView& scope,
             EmitAnalysis& analysis, EmitTypes& types, EmitStorage& storage,
             EmitResolution& resolution, OverloadTypeProvider& overload_types,
             EmitCallExprOps& expr_ops);
@@ -127,7 +127,7 @@ class EmitCalls {
       const ast::Expr& callee, std::vector<CallArgumentSlot> slots);
   const ast::TypeExpr* procedural_callee_type(const ast::Expr& callee);
 
-  const TypeRegistry* registry_;
+  const TypeRegistry& registry_;
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;
   EmitTypes& types_;

@@ -21,7 +21,7 @@ using namespace ast;
 
 namespace {
 
-const TypeSymbol* visible_type_symbol(const TypeRegistry* registry,
+const TypeSymbol* visible_type_symbol(const TypeRegistry& registry,
                                       const ScopeStateView& scope,
                                       std::string_view name) {
   return visible_type_symbol_in_context(registry, scope, name);
@@ -51,11 +51,11 @@ std::string type_symbol_source_name(const TypeSymbol& symbol) {
 
 class ScopedTypeExprContext {
  public:
-  ScopedTypeExprContext(ScopeStateView& scope, const TypeRegistry* registry,
+  ScopedTypeExprContext(ScopeStateView& scope, const TypeRegistry& registry,
                         const TypeExpr* type)
       : scope_(scope), saved_type_scope_(scope.type_scope) {
-    if (!registry || !type) return;
-    const TypeLookupContext* context = registry->lookup_context_for_type(type);
+    if (!type) return;
+    const TypeLookupContext* context = registry.lookup_context_for_type(type);
     if (!context) return;
     scope_.type_scope = context;
     active_ = true;
@@ -76,7 +76,7 @@ class ScopedTypeExprContext {
 
 }  // namespace
 
-EmitDecls::EmitDecls(const TypeRegistry* registry, ScopeStateView& scope,
+EmitDecls::EmitDecls(const TypeRegistry& registry, ScopeStateView& scope,
                      EmitAnalysis& analysis,
                      EmitTypes& types, EmitStorage& storage,
                      EmitValues& values, EmitDeclOps& emit_ops)
@@ -148,9 +148,9 @@ void EmitDecls::emit_enum_carrier_decls(const TypeExpr* t,
 
 bool EmitDecls::should_emit_var_type_helpers(const VarDecl& vd,
                                              bool in_header) {
-  if (in_header || emit_ops_.in_block_scope() || !registry_) return true;
-  auto uit = registry_->units.find(scope_.current_unit_name);
-  if (uit == registry_->units.end()) return true;
+  if (in_header || emit_ops_.in_block_scope()) return true;
+  auto uit = registry_.units.find(scope_.current_unit_name);
+  if (uit == registry_.units.end()) return true;
   for (const auto& n : vd.names) {
     if (!uit->second.iface_vars.count(ascii_lower(n))) return true;
   }
@@ -178,8 +178,6 @@ void EmitDecls::emit_packed_record_asserts(
 std::vector<EmitDecls::MetaclassCallable> EmitDecls::collect_metaclass_callables(
     std::string_view class_name) {
   std::vector<MetaclassCallable> out;
-  if (!registry_) return out;
-
   std::string cls = ascii_lower(std::string(class_name));
   std::vector<const ClassInfo*> chain;
   std::unordered_set<std::string> seen;
@@ -190,8 +188,8 @@ std::vector<EmitDecls::MetaclassCallable> EmitDecls::collect_metaclass_callables
     seen.insert(identity);
     chain.push_back(ci);
     ci = ci->parent.empty() ? nullptr
-                            : registry_->lookup_class(ci->parent,
-                                                      ci->defining_unit);
+                            : registry_.lookup_class(ci->parent,
+                                                     ci->defining_unit);
   }
   std::reverse(chain.begin(), chain.end());
 
@@ -246,8 +244,6 @@ std::vector<EmitDecls::MetaclassCallable> EmitDecls::collect_metaclass_callables
 std::optional<EmitDecls::MetaclassCallableImpl>
 EmitDecls::find_metaclass_callable_impl(std::string_view concrete_class,
                                         const MetaclassCallable& target) {
-  if (!registry_) return std::nullopt;
-
   std::string cls = ascii_lower(std::string(concrete_class));
   std::unordered_set<std::string> seen;
   const ClassInfo* ci = analysis_.class_info_for_type_name(cls);
@@ -266,8 +262,8 @@ EmitDecls::find_metaclass_callable_impl(std::string_view concrete_class,
       }
     }
     ci = ci->parent.empty() ? nullptr
-                            : registry_->lookup_class(ci->parent,
-                                                      ci->defining_unit);
+                            : registry_.lookup_class(ci->parent,
+                                                     ci->defining_unit);
   }
 
   if (target.implicit_root_create) {
@@ -694,13 +690,13 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool in_header,
         symbol ? types_.type_symbol_struct_cxx(*symbol) : name;
     auto inherited_virtual_with_same_cxx_signature =
         [&](const ProcDecl& pd) -> const MethodSig* {
-      if (!registry_ || pd.is_class_method || to.parent.empty()) return nullptr;
+      if (pd.is_class_method || to.parent.empty()) return nullptr;
 
       const std::string method_name = ascii_lower(pd.name);
       const std::string cxx_name = mangle(pd.name);
       const std::string params = param_type_list_to_cxx(pd.params);
       const ClassInfo* parent =
-          registry_->lookup_class(to.parent, scope_.current_unit_name);
+          registry_.lookup_class(to.parent, scope_.current_unit_name);
       std::unordered_set<std::string> seen;
       while (parent) {
         const std::string identity = parent->defining_unit + "." + parent->name;
@@ -722,8 +718,8 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool in_header,
         }
         parent = parent->parent.empty()
                      ? nullptr
-                     : registry_->lookup_class(parent->parent,
-                                              parent->defining_unit);
+                     : registry_.lookup_class(parent->parent,
+                                             parent->defining_unit);
       }
       return nullptr;
     };
@@ -788,13 +784,12 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool in_header,
           // FPC rejects a field or class var that reuses an inherited field
           // name. C++ would accept a derived static member with the same name,
           // so diagnose it before emission can change the Pascal program.
-          if (!to.parent.empty() && registry_ &&
-              registry_->lookup_class_field(to.parent, fn,
-                                            scope_.current_unit_name)) {
+          if (!to.parent.empty() &&
+              registry_.lookup_class_field(to.parent, fn,
+                                           scope_.current_unit_name)) {
             emit_ops_.report_error(m.loc, "duplicate inherited field `" + fn + "'");
           }
-          const std::string field_name =
-              registry_ ? registry_->field_cxx_name(fn) : mangle(fn);
+          const std::string field_name = registry_.field_cxx_name(fn);
           const std::string decl =
               types_.named_type_to_cxx(m.field_type.get(), field_name);
           emit_ops_.emitln(m.is_class_var ? ("inline static " + decl + "{};")
@@ -1019,11 +1014,6 @@ void EmitDecls::emit_pending_reference_class_support(
   if (!to.is_reference_type || to.is_forward) return;
 
   const std::string source_name = ascii_lower(pending.source_type_name);
-  const TypeSymbol* symbol =
-      registry_ ? registry_->lookup_type_symbol(source_name,
-                                                scope_.current_unit_name)
-                : nullptr;
-  (void)symbol;
   // Pascal reference classes need namespace-scope C++ helper definitions for
   // `class of' values and TObject virtual metadata. The declaration pass
   // records them while class scopes are open; the containing type drains the

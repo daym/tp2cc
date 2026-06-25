@@ -77,7 +77,7 @@ bool record_has_pointer_field(EmitAnalysis& analysis, EmitStorage& storage,
 
 }  // namespace
 
-EmitValues::EmitValues(const TypeRegistry* registry, ScopeStateView& scope,
+EmitValues::EmitValues(const TypeRegistry& registry, ScopeStateView& scope,
                        EmitAnalysis& analysis, EmitTypes& types,
                        EmitStorage& storage, EmitResolution& resolution,
                        OverloadTypeProvider& overload_types,
@@ -418,7 +418,6 @@ bool EmitValues::can_convert_proc_value(const Expr& e, const TypeExpr* target,
 bool EmitValues::can_convert_reference_class_value(const Expr& e,
                                                    const TypeExpr* source_type,
                                                    const TypeExpr* target) {
-  if (!registry_) return false;
   // Class values can canonicalize to a TyObject body, which no longer carries
   // the Pascal class name needed for hierarchy checks. Recover the source and
   // target names here, then delegate the actual compatibility rule to
@@ -429,7 +428,7 @@ bool EmitValues::can_convert_reference_class_value(const Expr& e,
       source_name = static_cast<const TyName&>(*source_type).name;
     } else {
       source_name =
-          registry_->direct_type_name(source_type, scope_.current_unit_name);
+          registry_.direct_type_name(source_type, scope_.current_unit_name);
     }
   }
   std::string target_name;
@@ -438,7 +437,7 @@ bool EmitValues::can_convert_reference_class_value(const Expr& e,
       target_name = static_cast<const TyName&>(*target).name;
     } else {
       target_name =
-          registry_->direct_type_name(target, scope_.current_unit_name);
+          registry_.direct_type_name(target, scope_.current_unit_name);
     }
   }
   if (source_name.empty() || target_name.empty()) return false;
@@ -656,8 +655,7 @@ std::string EmitValues::const_value_to_cxx_impl(
       const TypeExpr* field_type =
           analysis_.lookup_record_field_type_in_type(target, rc.fields[i].first);
       const std::string field_name =
-          registry_ ? registry_->field_cxx_name(rc.fields[i].first)
-                    : mangle(rc.fields[i].first);
+          registry_.field_cxx_name(rc.fields[i].first);
       std::string field_val =
           const_value_to_cxx_impl(*rc.fields[i].second, field_type,
                                   explicit_conversion,
@@ -770,11 +768,11 @@ bool EmitValues::reject_metaclass_member_as_plain_proc_value(
   }
   if (candidate->kind != Kind::Member) return false;
   const auto& mem = static_cast<const Member&>(*candidate);
-  if (!registry_ || !mem.base) return false;
+  if (!mem.base) return false;
   const std::string metaclass =
       analysis_.metaclass_target_name(metaclass_value_base_type(*mem.base));
   if (metaclass.empty()) return false;
-  const auto* methods = registry_->lookup_class_methods(
+  const auto* methods = registry_.lookup_class_methods(
       metaclass, mem.name, scope_.current_unit_name);
   bool rejects = false;
   if (methods) {

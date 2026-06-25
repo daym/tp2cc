@@ -105,7 +105,7 @@ static std::optional<ResolveResult> resolve_nested_overloads(
       /*accepts_zero_args=*/false, {}, {});
 }
 
-EmitLookup::EmitLookup(const TypeRegistry* registry, ScopeStateView& scope,
+EmitLookup::EmitLookup(const TypeRegistry& registry, ScopeStateView& scope,
                        EmitAnalysis& analysis, EmitProperties& properties)
     : registry_(registry),
       scope_(scope),
@@ -114,8 +114,8 @@ EmitLookup::EmitLookup(const TypeRegistry* registry, ScopeStateView& scope,
 
 std::optional<ResolveResult> EmitLookup::resolve_exported_unit_name(
     const std::string& unit_name, const std::string& name) {
-  auto it = registry_->units.find(unit_name);
-  if (it == registry_->units.end()) return std::nullopt;
+  auto it = registry_.units.find(unit_name);
+  if (it == registry_.units.end()) return std::nullopt;
   const UnitInfo& unit = it->second;
   // Synthetic `__rt__` unit holds runtime builtins. Emit them fully qualified
   // so translated units do not depend on `using namespace ::rt;`.
@@ -148,9 +148,8 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   // ----- Qualified lookups first: `Unit.name` / `Class.name`. -----
   if (qk == QualifierKind::Unit) {
     const std::string unit_cxx = unit_namespace_prefix(qualifier) + mangle(name);
-    if (registry_) {
-      auto uit = registry_->units.find(qualifier);
-      if (uit != registry_->units.end()) {
+    auto uit = registry_.units.find(qualifier);
+    if (uit != registry_.units.end()) {
         const UnitInfo& u = uit->second;
         const bool own_unit = qualifier == scope_.current_unit_name;
         const std::vector<ProcInfo>* procs =
@@ -171,24 +170,21 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         if (own_unit ? u.has_type(name) : u.has_export_type(name)) {
           return resolved_value(ResolvedKind::UnitType, unit_cxx);
         }
-      }
     }
     return resolved_value(ResolvedKind::Unknown, {});
   }
   if (qk == QualifierKind::Class) {
     const std::string member_cxx = mangle(name);
-    if (registry_) {
-      if (auto result = resolve_method_overloads(
-              registry_->lookup_class_methods(qualifier, name,
-                                              scope_.current_unit_name),
-              ResolvedKind::ClassMethod, member_cxx)) {
-        return *result;
-      }
-      if (registry_->lookup_class_field(
-              qualifier, name, scope_.current_unit_name)) {
-        return resolved_value(ResolvedKind::ClassField,
-                              registry_->field_cxx_name(name));
-      }
+    if (auto result = resolve_method_overloads(
+            registry_.lookup_class_methods(qualifier, name,
+                                           scope_.current_unit_name),
+            ResolvedKind::ClassMethod, member_cxx)) {
+      return *result;
+    }
+    if (registry_.lookup_class_field(
+            qualifier, name, scope_.current_unit_name)) {
+      return resolved_value(ResolvedKind::ClassField,
+                            registry_.field_cxx_name(name));
     }
     return resolved_value(ResolvedKind::Unknown, member_cxx);
   }
@@ -213,9 +209,8 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
 
   // 2. `with X do` bindings (inside-out). Fields and methods of X's
   //    class (walking ancestors) shadow outer scopes.
-  if (registry_) {
-    for (auto it = scope_.with_stack.rbegin(); it != scope_.with_stack.rend();
-         ++it) {
+  for (auto it = scope_.with_stack.rbegin(); it != scope_.with_stack.rend();
+       ++it) {
       const std::string& cls = it->class_name;
       const std::string& access = it->access_op;
       if (const auto* ci = analysis_.class_info_for_type_name(cls);
@@ -237,17 +232,17 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       }
       if (!cls.empty()) {
         if (auto result = resolve_method_overloads(
-                registry_->lookup_class_methods(cls, name,
-                                                scope_.current_unit_name),
+                registry_.lookup_class_methods(cls, name,
+                                               scope_.current_unit_name),
                 ResolvedKind::WithMethod,
                 it->cxx_text + access + mangle(name))) {
           return *result;
         }
-        if (registry_->lookup_class_field(
+        if (registry_.lookup_class_field(
                 cls, name, scope_.current_unit_name)) {
           return resolved_value(ResolvedKind::WithField,
                                 it->cxx_text + access +
-                                    registry_->field_cxx_name(name));
+                                    registry_.field_cxx_name(name));
         }
       }
       if (const ast::TypeExpr* field_type =
@@ -260,13 +255,12 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
           const auto& bytewise = *it->bytewise_storage;
           return ResolveResult::bytewise_with_field_result(
               field_type, bytewise.ptr_cxx, bytewise.type_cxx,
-              registry_->field_cxx_name(name), bytewise.unaligned);
+              registry_.field_cxx_name(name), bytewise.unaligned);
         }
         return resolved_value(ResolvedKind::WithField,
                               it->cxx_text + access +
-                                  registry_->field_cxx_name(name));
+                                  registry_.field_cxx_name(name));
       }
-    }
   }
 
   // 3. Nested parameterless function in the current scope -- stored
@@ -307,7 +301,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   }
 
   // 5. Current class's members (chain).
-  if (!scope_.current_class_name.empty() && registry_) {
+  if (!scope_.current_class_name.empty()) {
     if (const auto* ci =
             analysis_.class_info_for_type_name(scope_.current_class_name);
         ci && ci->is_reference_type &&
@@ -315,27 +309,26 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       return zero_arg_callable(ResolvedKind::ClassMethod, mangle(name));
     }
     if (auto result = resolve_method_overloads(
-            registry_->lookup_class_methods(scope_.current_class_name, name,
-                                            scope_.current_unit_name),
+            registry_.lookup_class_methods(scope_.current_class_name, name,
+                                           scope_.current_unit_name),
             ResolvedKind::ClassMethod, mangle(name))) {
       return *result;
     }
-    if (registry_->lookup_class_field(scope_.current_class_name, name,
-                                      scope_.current_unit_name)) {
+    if (registry_.lookup_class_field(scope_.current_class_name, name,
+                                     scope_.current_unit_name)) {
       return resolved_value(ResolvedKind::ClassField,
-                            registry_->field_cxx_name(name));
+                            registry_.field_cxx_name(name));
     }
-    if (registry_->class_has_enum_member(scope_.current_class_name, name,
-                                         scope_.current_unit_name)) {
+    if (registry_.class_has_enum_member(scope_.current_class_name, name,
+                                        scope_.current_unit_name)) {
       return resolved_value(ResolvedKind::EnumMember, mangle(name));
     }
   }
 
   // 6. Unit-level -- own unit first, then cross-unit (`uses` chain).
-  if (registry_) {
-    auto uit = registry_->units.find(scope_.current_unit_name);
-    const UnitInfo* ui = (uit != registry_->units.end()) ? &uit->second
-                                                          : nullptr;
+  auto uit = registry_.units.find(scope_.current_unit_name);
+  const UnitInfo* ui = (uit != registry_.units.end()) ? &uit->second
+                                                       : nullptr;
     const std::string own_prefix =
         (!scope_.lookup_emission_unit_name.empty() &&
          scope_.lookup_emission_unit_name != scope_.current_unit_name)
@@ -379,7 +372,6 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         if (auto result = resolve_exported_unit_name(*it, name)) return *result;
       }
     }
-  }
 
   // 7. Unresolved free name: keep it in Pascal identifier space.
   // Known runtime helpers already resolve through the synthetic `__rt__`
