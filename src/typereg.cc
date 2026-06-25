@@ -2889,19 +2889,29 @@ const ClassInfo* TypeRegistry::lookup_parent_class(
 }
 
 bool TypeRegistry::class_implements_interface(
-    std::string_view class_name, const InterfaceInfo& interface_info,
-    std::string_view current_unit) const {
-  const ClassInfo* cls = lookup_class(class_name, current_unit);
+    const ClassInfo& class_info, const InterfaceInfo& interface_info) const {
+  const ClassInfo* cls = &class_info;
   SeenClassChain seen;
   while (cls && seen.mark(cls)) {
     for (const auto& implemented_name : cls->interfaces) {
       const InterfaceInfo* implemented =
           lookup_interface(implemented_name, cls->defining_unit);
-      if (implemented == &interface_info) return true;
+      if (implemented == &interface_info ||
+          (implemented && implemented->name == interface_info.name &&
+           implemented->defining_unit == interface_info.defining_unit)) {
+        return true;
+      }
     }
     cls = lookup_parent_class(*cls);
   }
   return false;
+}
+
+bool TypeRegistry::class_implements_interface(
+    std::string_view class_name, const InterfaceInfo& interface_info,
+    std::string_view current_unit) const {
+  const ClassInfo* cls = lookup_class(class_name, current_unit);
+  return cls && class_implements_interface(*cls, interface_info);
 }
 
 const InterfaceInfo* TypeRegistry::lookup_interface_exact(

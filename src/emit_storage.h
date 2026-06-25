@@ -295,6 +295,12 @@ class EmitStorage {
                                          const ast::TypeExpr* src_type);
   bool class_to_interface_conversion_is_valid(const ast::TypeExpr* dst_type,
                                               const ast::TypeExpr* src_type);
+  const ClassInfo* class_info_for_pointer_target(const ast::TypeExpr* t);
+  const ClassInfo* class_info_for_value_type(const ast::TypeExpr* raw,
+                                             const ast::TypeExpr* canonical);
+  bool same_class_info(const ClassInfo& a, const ClassInfo& b) const;
+  bool class_parent_chain_contains(const ClassInfo& ancestor,
+                                   const ClassInfo& current) const;
   // Central pointer-value coercion policy used by explicit typecasts, plain
   // assignments, and value call arguments. Implicit Pascal pointer conversions
   // are concrete conversions such as `pointer`/`void*` <-> typed data pointers,

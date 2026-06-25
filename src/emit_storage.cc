@@ -1513,18 +1513,13 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
 
 bool EmitStorage::pointer_to_object_upcast_is_valid(const TypeExpr* dst_type,
                                                     const TypeExpr* src_type) {
-  const std::string dst_name = analysis_.pointer_target_type_name(dst_type);
-  const std::string src_name = analysis_.pointer_target_type_name(src_type);
-  if (dst_name.empty() || src_name.empty()) return false;
-  const ClassInfo* dst_class =
-      analysis_.migration_fallback_class_info_by_name(dst_name);
-  const ClassInfo* src_class =
-      analysis_.migration_fallback_class_info_by_name(src_name);
+  const ClassInfo* dst_class = class_info_for_pointer_target(dst_type);
+  const ClassInfo* src_class = class_info_for_pointer_target(src_type);
   if (!dst_class || !src_class) return false;
   if (dst_class->is_reference_type || src_class->is_reference_type) {
     return false;
   }
-  return pascal_parent_chain_contains(dst_name, src_name);
+  return class_parent_chain_contains(*dst_class, *src_class);
 }
 
 bool EmitStorage::class_to_interface_conversion_is_valid(
@@ -1535,19 +1530,69 @@ bool EmitStorage::class_to_interface_conversion_is_valid(
   const TypeExpr* src = analysis_.canonicalize_type(src_type);
   if (!type_is_reference_class(src)) return false;
 
-  std::string class_name = reference_class_name(src_type);
-  if (class_name.empty()) class_name = reference_class_name(src);
-  if (class_name.empty()) return false;
-  return registry_.class_implements_interface(class_name, *interface,
-                                               scope_.current_unit_name);
+  const ClassInfo* cls = class_info_for_value_type(src_type, src);
+  if (!cls) return false;
+  return registry_.class_implements_interface(*cls, *interface);
+}
+
+const ClassInfo* EmitStorage::class_info_for_pointer_target(
+    const TypeExpr* t) {
+  const TypeExpr* canonical = analysis_.canonicalize_type(t);
+  if (!canonical || canonical->kind != Kind::TyPointer) return nullptr;
+  const TypeExpr* target =
+      static_cast<const TyPointer&>(*canonical).target.get();
+  return analysis_.class_info_for_type(target);
+}
+
+const ClassInfo* EmitStorage::class_info_for_value_type(
+    const TypeExpr* raw, const TypeExpr* canonical) {
+  if (const ClassInfo* info = analysis_.class_info_for_type(raw)) return info;
+  if (const ClassInfo* info = analysis_.class_info_for_type(canonical)) {
+    return info;
+  }
+  // MIGRATION_NAME_LOOKUP_FALLBACK: some expression typing paths still return
+  // synthesized TyName nodes rather than build-stamped TypeExprs. Preserve the
+  // source spelling only as the bridge into the central ClassInfo path; parent
+  // and interface walks below still use registry class metadata.
+  auto lookup_named = [this](const TypeExpr* t) -> const ClassInfo* {
+    if (!t || t->kind != Kind::TyName) return nullptr;
+    const auto& name = static_cast<const TyName&>(*t).name;
+    return analysis_.migration_fallback_class_info_by_name(name);
+  };
+  if (const ClassInfo* info = lookup_named(raw)) return info;
+  return lookup_named(canonical);
+}
+
+bool EmitStorage::same_class_info(const ClassInfo& a,
+                                  const ClassInfo& b) const {
+  if (&a == &b) return true;
+  return !a.name.empty() && a.name == b.name &&
+         a.defining_unit == b.defining_unit;
+}
+
+bool EmitStorage::class_parent_chain_contains(
+    const ClassInfo& ancestor, const ClassInfo& current) const {
+  const ClassInfo* cls = &current;
+  std::unordered_set<std::string> seen;
+  while (cls) {
+    if (same_class_info(ancestor, *cls)) return true;
+    const std::string key = cls->defining_unit + "$" + cls->name;
+    if (!seen.insert(key).second) break;
+    cls = registry_.lookup_parent_class(*cls);
+  }
+  return false;
 }
 
 bool EmitStorage::pascal_parent_chain_contains(std::string_view ancestor,
                                                std::string current) {
+  // MIGRATION_NAME_LOOKUP_FALLBACK: reference-class value conversions still
+  // receive synthesized TyName nodes in some expression-typing paths. Keep the
+  // old spelling bridge here until those expressions carry class symbols.
   const std::string ancestor_key = ascii_lower(std::string(ancestor));
   while (!current.empty()) {
     if (ascii_lower(current) == ancestor_key) return true;
-    const ClassInfo* info = analysis_.migration_fallback_class_info_by_name(current);
+    const ClassInfo* info =
+        analysis_.migration_fallback_class_info_by_name(current);
     if (!info) break;
     current = info->parent;
   }

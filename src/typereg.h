@@ -123,8 +123,15 @@ struct TypeSymbol;
 
 struct TypeDescriptor {
   size_t id = 0;
-  // Canonical source syntax that created this Pascal type object. Aliases
-  // point at another descriptor instead of owning one.
+  // Canonical source syntax that created this Pascal type object. Keep three
+  // concepts separate:
+  //   1. Pascal semantic identity: this descriptor.
+  //   2. Pascal source spelling: an optional declaration name on TypeSymbol.
+  //   3. C++ emitted spelling: an EmitTypes/backend policy decision.
+  // Aliases point at another descriptor instead of owning one. Anonymous
+  // nominal syntax such as bare `record end` or `class end` still gets a
+  // fresh descriptor even though it has no Pascal declaration name and
+  // therefore no TypeSymbol and no declaration-derived `t_x` C++ name.
   const ast::TypeExpr* type = nullptr;
   // The named declaration that owns this descriptor, when there is one.
   const TypeSymbol* symbol = nullptr;
@@ -245,6 +252,14 @@ struct TypeSymbol {
   // Pascal semantic identity. `type Y = X` shares X's descriptor; `type X =
   // record end` owns the descriptor created by that record syntax. This is
   // populated by TypeRegistry::build().
+  //
+  // `name` is only Pascal declaration/source spelling. It is not the type
+  // object's identity and it is not inherently the emitted C++ spelling. The
+  // emitter is allowed to apply the fixed backend naming rule for declared
+  // Pascal types (`type X = ...` -> generated carrier `t_x`, with owner/unit
+  // qualification as needed). Anonymous nominal types have no `type X =`
+  // source name, so they need a descriptor-attached synthesized C++ name or an
+  // inline C++ form when that is representable.
   const TypeDescriptor* descriptor = nullptr;
   TypeSymbolPayload payload;
 
@@ -560,6 +575,8 @@ struct TypeRegistry {
   // Pascal class ancestry for semantic lookup/conversion. Root reference
   // classes implicitly inherit runtime TObject, matching emitted C++ bases.
   const ClassInfo* lookup_parent_class(const ClassInfo& class_info) const;
+  bool class_implements_interface(const ClassInfo& class_info,
+                                  const InterfaceInfo& interface_info) const;
   bool class_implements_interface(std::string_view class_name,
                                   const InterfaceInfo& interface_info,
                                   std::string_view current_unit) const;

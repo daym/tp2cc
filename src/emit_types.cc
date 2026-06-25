@@ -416,6 +416,11 @@ std::string EmitTypes::type_symbol_struct_cxx(
 }
 
 std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
+  // Backend spelling for a Pascal declaration/source name that has already
+  // been chosen by semantic binding. This is only the fixed C++ carrier-name
+  // calculation (`type X = ...` -> `t_x` plus qualification), not a type
+  // identity or lookup API. Anonymous nominal descriptors must not flow through
+  // here, because they have no `type X = ...` name to apply this rule to.
   // Keep runtime names fixed unless a translated lexical type exists for the
   // spelling below.
   if (!registry_knows_translated_type(name)) {

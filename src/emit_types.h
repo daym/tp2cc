@@ -78,10 +78,19 @@ struct ArrayDimBounds {
       : low(std::move(low_in)), size_expr(std::move(size_expr_in)) {}
 };
 
-// Central Pascal type/layout lowering. This module owns the rules for producing
-// C++ type text, keeping registry-defined types ahead of runtime stubs,
-// preserving enum/subrange/array layout decisions, and computing packed-record
-// layout metadata for later static_asserts.
+// Central Pascal type/layout lowering.
+//
+// Do not collapse Pascal type identity, Pascal source spelling, and C++ emitted
+// spelling. Type identity comes from TypeRegistry descriptors. A Pascal
+// declaration name (`type X = ...`) is optional source spelling. This module
+// owns the separate backend policy for producing C++ type spellings: declared
+// Pascal type symbols normally use the deterministic generated carrier name
+// (`type X = ...` -> `t_x`, with owner/unit qualification as needed), while
+// anonymous nominal syntax such as bare `record end` or `class end` has no
+// Pascal source name and must use descriptor-attached/synthesized backend
+// spelling or an inline C++ form where C++ permits one. Keep registry-defined
+// types ahead of runtime stubs, preserve enum/subrange/array layout decisions,
+// and compute packed-record layout metadata for later static_asserts.
 class EmitTypes {
  public:
   EmitTypes(const TypeRegistry& registry, ScopeStateView& scope,
