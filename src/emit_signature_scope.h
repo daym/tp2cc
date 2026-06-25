@@ -47,7 +47,7 @@ inline const TypeSymbol* signature_type_symbol_for(
   // emitters may render the signature from another unit or helper context, so
   // resolve through the saved nested-type scope before falling back to ordinary
   // unit visibility.
-  return visible_type_symbol_in_context(registry, scope, type_name);
+  return migration_fallback_type_symbol_by_name(registry, scope, type_name);
 }
 
 class ScopedSignatureLookupUnit {

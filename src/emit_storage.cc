@@ -15,12 +15,6 @@ using namespace ast;
 
 namespace {
 
-const TypeSymbol* local_type_symbol(const TypeRegistry& registry,
-                                    const ScopeStateView& scope,
-                                    std::string_view name) {
-  return lexical_type_symbol_in_context(registry, scope, name);
-}
-
 bool is_nonmethod_procedural_type(const TypeExpr* t) {
   if (!t) return false;
   t = static_cast<const TypeExpr*>(t);
@@ -80,12 +74,11 @@ std::string EmitStorage::offsetof_base_type_cxx(
   // C++ type text.
   if (t && t->kind == Kind::TyName) {
     const auto& n = static_cast<const TyName&>(*t);
-    if (local_type_symbol(registry_, scope_, n.name)) {
+    if (migration_fallback_local_type_symbol_by_name(registry_, scope_, n.name)) {
       return types_.named_type_struct_cxx(n.name);
     }
   }
-  if (std::string name =
-          registry_.direct_type_name(t, scope_.current_unit_name);
+  if (std::string name = analysis_.direct_type_name(t);
       !name.empty()) {
     return types_.named_type_struct_cxx(name);
   }
@@ -199,14 +192,8 @@ EmitStorage::storage_typecast_target(const Ident& id, const Expr& source) {
   if (is_primitive_type(lower)) {
     return StorageCastTarget{primitive_type_cxx(lower), nullptr, true};
   }
-  if (const TypeExpr* named = analysis_.lookup_named_type_expr(lower)) {
+  if (const TypeExpr* named = analysis_.migration_fallback_named_type_expr_by_name(lower)) {
     return StorageCastTarget{types_.type_name_text_to_cxx(id.name), named,
-                             false};
-  }
-  if (const TypeSymbol* symbol =
-          registry_.lookup_type_symbol(lower, scope_.current_unit_name);
-      symbol && (symbol->record_info() || symbol->class_info())) {
-    return StorageCastTarget{types_.type_name_text_to_cxx(id.name), nullptr,
                              false};
   }
   return std::nullopt;
@@ -679,7 +666,7 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
       // Getter-backed properties stay values and must not satisfy var/out or
       // reference-style const arguments.
       const ClassInfo* ci =
-          analysis_.class_info_for_type_name(found->class_name);
+          analysis_.migration_fallback_class_info_by_name(found->class_name);
       const std::string access =
           (ci && ci->is_reference_type) ? "->" : ".";
       const std::string text = found->base_cxx + access +
@@ -955,14 +942,8 @@ std::optional<EmitUntypedStorageIndexView> EmitStorage::untyped_storage_index_vi
 bool EmitStorage::type_is_packed_record(const TypeExpr* t) {
   if (!t) return false;
   if (t->kind == Kind::TyName) {
-    const auto& n = static_cast<const TyName&>(*t);
-    if (const TypeSymbol* symbol =
-            local_type_symbol(registry_, scope_, n.name);
-        symbol && symbol->record_info()) {
-      return symbol->record_info()->is_packed;
-    }
     const TypeSymbol* symbol =
-        registry_.lookup_type_symbol(n.name, scope_.current_unit_name);
+        resolved_type_symbol_in_context(registry_, scope_, t);
     if (symbol && symbol->record_info()) {
       const RecordInfo* record = symbol->record_info();
       if (record) return record->is_packed;
@@ -977,10 +958,8 @@ bool EmitStorage::type_is_direct_packed_aggregate(const TypeExpr* t) {
   if (!t) return false;
   if (t->kind == Kind::TyName) {
     const std::string low = ascii_lower(static_cast<const TyName&>(*t).name);
-    const TypeSymbol* symbol = local_type_symbol(registry_, scope_, low);
-    if (!symbol) {
-      symbol = registry_.lookup_type_symbol(low, scope_.current_unit_name);
-    }
+    const TypeSymbol* symbol =
+        resolved_type_symbol_in_context(registry_, scope_, t);
     if (!low.empty() && symbol &&
         (symbol->record_info() || symbol->class_info())) {
       return true;
@@ -1121,8 +1100,7 @@ EmitStorage::direct_packed_aggregate_field_use(const Expr& e) {
   if (!field_type || !type_is_direct_packed_aggregate(field_type)) {
     return std::nullopt;
   }
-  std::string record_name =
-      registry_.direct_type_name(base_type, scope_.current_unit_name);
+  std::string record_name = analysis_.direct_type_name(base_type);
   if (record_name.empty()) record_name = "packed record";
   return EmitPackedAggregateFieldUse{record_name, m.name};
 }
@@ -1277,18 +1255,7 @@ bool EmitStorage::type_is_metaclass(const TypeExpr* t) {
 }
 
 bool EmitStorage::type_is_reference_class(const TypeExpr* t) {
-  if (!t) return false;
-  t = analysis_.canonicalize_type(t);
-  if (!t) return false;
-  if (t->kind == Kind::TyObject) {
-    return static_cast<const TyObject&>(*t).is_reference_type;
-  }
-  if (t->kind != Kind::TyName) return false;
-  const auto& n = static_cast<const TyName&>(*t);
-  if (const auto* ci = analysis_.class_info_for_type_name(n.name)) {
-    return ci->is_reference_type;
-  }
-  return analysis_.is_builtin_reference_class_name(n.name);
+  return analysis_.type_is_reference_class(t);
 }
 
 bool EmitStorage::expr_is_reference_class(const Expr& e) {
@@ -1296,17 +1263,16 @@ bool EmitStorage::expr_is_reference_class(const Expr& e) {
     const auto& id = static_cast<const Ident&>(e);
     if (id.name == "self" && !scope_.current_class_name.empty()) {
       const ClassInfo* ci =
-          registry_.lookup_class(scope_.current_class_name,
-                                  scope_.current_unit_name);
+          analysis_.migration_fallback_class_info_by_name(
+              scope_.current_class_name);
       return ci && ci->is_reference_type;
     }
   } else if (e.kind == Kind::Call) {
     const auto& c = static_cast<const Call&>(e);
     if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
       const auto& id = static_cast<const Ident&>(*c.callee);
-      if (analysis_.is_builtin_reference_class_name(id.name)) return true;
       const ClassInfo* ci =
-          registry_.lookup_class(id.name, scope_.current_unit_name);
+          analysis_.migration_fallback_class_info_by_name(id.name);
       if (ci && ci->is_reference_type) {
         return true;
       }
@@ -1547,15 +1513,13 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
 
 bool EmitStorage::pointer_to_object_upcast_is_valid(const TypeExpr* dst_type,
                                                     const TypeExpr* src_type) {
-  const std::string dst_name =
-      registry_.pointer_target_type_name(dst_type, scope_.current_unit_name);
-  const std::string src_name =
-      registry_.pointer_target_type_name(src_type, scope_.current_unit_name);
+  const std::string dst_name = analysis_.pointer_target_type_name(dst_type);
+  const std::string src_name = analysis_.pointer_target_type_name(src_type);
   if (dst_name.empty() || src_name.empty()) return false;
   const ClassInfo* dst_class =
-      analysis_.class_info_for_type_name(dst_name);
+      analysis_.migration_fallback_class_info_by_name(dst_name);
   const ClassInfo* src_class =
-      analysis_.class_info_for_type_name(src_name);
+      analysis_.migration_fallback_class_info_by_name(src_name);
   if (!dst_class || !src_class) return false;
   if (dst_class->is_reference_type || src_class->is_reference_type) {
     return false;
@@ -1565,8 +1529,7 @@ bool EmitStorage::pointer_to_object_upcast_is_valid(const TypeExpr* dst_type,
 
 bool EmitStorage::class_to_interface_conversion_is_valid(
     const TypeExpr* dst_type, const TypeExpr* src_type) {
-  const InterfaceInfo* interface =
-      registry_.interface_info_for_type(dst_type, scope_.current_unit_name);
+  const InterfaceInfo* interface = analysis_.interface_info_for_type(dst_type);
   if (!interface) return false;
 
   const TypeExpr* src = analysis_.canonicalize_type(src_type);
@@ -1584,7 +1547,7 @@ bool EmitStorage::pascal_parent_chain_contains(std::string_view ancestor,
   const std::string ancestor_key = ascii_lower(std::string(ancestor));
   while (!current.empty()) {
     if (ascii_lower(current) == ancestor_key) return true;
-    const ClassInfo* info = analysis_.class_info_for_type_name(current);
+    const ClassInfo* info = analysis_.migration_fallback_class_info_by_name(current);
     if (!info) break;
     current = info->parent;
   }
@@ -1621,8 +1584,8 @@ std::optional<EmitAbsoluteTargetInfo> EmitStorage::resolve_absolute_target(
     return absolute_target_info(target_cxx, lit->second->type.get());
   }
 
-  auto tit = scope_.local_types.find(vd.absolute_target);
-  if (tit != scope_.local_types.end()) {
+  auto tit = scope_.local_value_types.find(vd.absolute_target);
+  if (tit != scope_.local_value_types.end()) {
     return absolute_target_info(
         target_cxx, tit->second,
         scope_.local_const_params.count(vd.absolute_target) > 0);

@@ -121,6 +121,15 @@ struct PropertyInfo {
 
 struct TypeSymbol;
 
+struct TypeDescriptor {
+  size_t id = 0;
+  // Canonical source syntax that created this Pascal type object. Aliases
+  // point at another descriptor instead of owning one.
+  const ast::TypeExpr* type = nullptr;
+  // The named declaration that owns this descriptor, when there is one.
+  const TypeSymbol* symbol = nullptr;
+};
+
 struct ClassInfo {
   std::string name;
   std::string parent;                    // empty if none
@@ -233,6 +242,10 @@ struct TypeSymbol {
   // `owned_type` so every TypeSymbol exposes the same raw AST pointer API.
   std::shared_ptr<const ast::TypeExpr> owned_type;
   const ast::TypeExpr* type = nullptr;
+  // Pascal semantic identity. `type Y = X` shares X's descriptor; `type X =
+  // record end` owns the descriptor created by that record syntax. This is
+  // populated by TypeRegistry::build().
+  const TypeDescriptor* descriptor = nullptr;
   TypeSymbolPayload payload;
 
   TypeSymbol() = delete;
@@ -455,6 +468,19 @@ struct TypeRegistry {
   std::deque<TypeLookupContext> type_lookup_context_storage;
   std::unordered_map<const ast::TypeExpr*, const TypeLookupContext*>
       type_lookup_contexts;
+  // Build-time semantic identity for TypeExpr nodes. TyName nodes resolve to
+  // the descriptor of the symbol they name; fresh nominal syntax owns a fresh
+  // descriptor. This is the transitional side table until the parser stores
+  // resolved type references directly.
+  std::deque<TypeDescriptor> type_descriptor_storage;
+  std::unordered_map<const ast::TypeExpr*, const TypeDescriptor*>
+      type_descriptors;
+  // For TypeExpr nodes that name a Pascal type symbol, remember the exact
+  // symbol chosen by semantic binding. This is distinct from descriptor
+  // identity: aliases share the target descriptor but still name the alias
+  // symbol at the reference site.
+  std::unordered_map<const ast::TypeExpr*, const TypeSymbol*>
+      type_reference_symbols;
   std::unordered_map<std::string, const TypeLookupContext*>
       unit_interface_type_contexts;
   std::unordered_map<std::string, const TypeLookupContext*>
@@ -501,6 +527,14 @@ struct TypeRegistry {
       const ast::ProcDecl* proc) const;
   const TypeLookupContext* lookup_proc_body_context(
       const ast::ProcDecl* proc) const;
+  const TypeDescriptor* descriptor_for_type(
+      const ast::TypeExpr* type) const;
+  const TypeSymbol* referenced_symbol_for_type(
+      const ast::TypeExpr* type) const;
+  const TypeSymbol* canonical_symbol_for_type(
+      const ast::TypeExpr* type) const;
+  const TypeSymbol* resolved_symbol_for_type(
+      const ast::TypeExpr* type) const;
   std::string_view declaration_unit_for_type(
       const ast::TypeExpr* type) const;
   const TypeSymbol* lookup_type_symbol_in_context(

@@ -249,16 +249,8 @@ const TypeExpr* EmitResolution::strip_conversion_wrapper(const TypeExpr* t) {
 
 ConvScore EmitResolution::class_hierarchy_conversion_score(
     const TypeExpr* arg, const TypeExpr* param) {
-  auto class_name_for_type = [&](const TypeExpr* t) -> std::string {
-    if (!t) return {};
-    if (t->kind == Kind::TyName) return static_cast<const TyName&>(*t).name;
-    return registry_.direct_type_name(t, scope_.current_unit_name);
-  };
-  const std::string arg_name = class_name_for_type(arg);
-  const std::string param_name = class_name_for_type(param);
-  if (arg_name.empty() || param_name.empty()) return {};
-  const auto* arg_class = analysis_.class_info_for_type_name(arg_name);
-  const auto* param_class = analysis_.class_info_for_type_name(param_name);
+  const auto* arg_class = analysis_.class_info_for_type(arg);
+  const auto* param_class = analysis_.class_info_for_type(param);
   if (!arg_class || !param_class) return {};
 
   std::unordered_set<std::string> seen;
@@ -280,13 +272,16 @@ ConvScore EmitResolution::class_hierarchy_conversion_score(
 
 ConvScore EmitResolution::object_pointer_hierarchy_conversion_score(
     const TypeExpr* arg, const TypeExpr* param) {
-  const std::string arg_name =
-      registry_.pointer_target_type_name(arg, scope_.current_unit_name);
-  const std::string param_name =
-      registry_.pointer_target_type_name(param, scope_.current_unit_name);
-  if (arg_name.empty() || param_name.empty()) return {};
-  const auto* arg_class = analysis_.class_info_for_type_name(arg_name);
-  const auto* param_class = analysis_.class_info_for_type_name(param_name);
+  arg = analysis_.canonicalize_type(arg);
+  param = analysis_.canonicalize_type(param);
+  if (!arg || !param || arg->kind != Kind::TyPointer ||
+      param->kind != Kind::TyPointer) {
+    return {};
+  }
+  const auto* arg_class = analysis_.class_info_for_type(
+      static_cast<const TyPointer&>(*arg).target.get());
+  const auto* param_class = analysis_.class_info_for_type(
+      static_cast<const TyPointer&>(*param).target.get());
   if (!arg_class || !param_class) return {};
   if (arg_class->is_reference_type || param_class->is_reference_type) {
     return {};
@@ -985,8 +980,9 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
       cls = scope_.current_class_name;
     } else if (!analysis_.identifier_is_shadowed_value(id.name) &&
                [&] {
-                 const TypeSymbol* symbol = registry_.lookup_type_symbol(
-                     id.name, scope_.current_unit_name);
+                 const TypeSymbol* symbol =
+                     migration_fallback_type_symbol_by_name(registry_, scope_,
+                                                    id.name);
                  return symbol &&
                         (symbol->class_info() || symbol->record_info());
                }()) {
@@ -1038,7 +1034,7 @@ EmitResolution::resolve_plain_proc_value_binding(const Expr& arg,
   std::vector<AnyCand> candidates;
   if (value->kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(*value);
-    if (scope_.local_scope.count(id.name) || scope_.local_types.count(id.name) ||
+    if (scope_.local_scope.count(id.name) || scope_.local_value_types.count(id.name) ||
         scope_.local_consts.count(id.name)) {
       return std::nullopt;
     }
@@ -1404,13 +1400,12 @@ std::string EmitResolution::value_class_alias(const Expr& e) {
   }
   if (const TypeExpr* t = overload_types_.type_for_overload(e)) {
     if (auto cls = analysis_.metaclass_target_name(t); !cls.empty()) return cls;
-    if (auto cls = registry_.direct_type_name(t, scope_.current_unit_name);
+    if (auto cls = analysis_.direct_type_name(t);
         !cls.empty()) {
       return cls;
     }
     if (const TypeExpr* canon = analysis_.canonicalize_type(t)) {
-      if (auto cls =
-              registry_.direct_type_name(canon, scope_.current_unit_name);
+      if (auto cls = analysis_.direct_type_name(canon);
           !cls.empty()) {
         return cls;
       }
@@ -1471,8 +1466,8 @@ ResolvedCall EmitResolution::resolve_call(
         // same type-based disambiguation as any other method call.
         inherited_call = true;
         const ClassInfo* ci =
-            registry_.lookup_class(scope_.current_class_name,
-                                    scope_.current_unit_name);
+            analysis_.migration_fallback_class_info_by_name(
+                scope_.current_class_name);
         if (ci) {
           std::string parent = ci->parent;
           if (parent.empty() && ci->is_reference_type) {
@@ -1594,7 +1589,7 @@ ResolvedCall EmitResolution::resolve_pointer_target_constructor(
   if (!pointer_type || ctor_callee.kind != Kind::Ident) {
     return unresolved_call();
   }
-  std::string pointee = registry_.pointer_target_type_name(pointer_type);
+  std::string pointee = analysis_.pointer_target_type_name(pointer_type);
   if (pointee.empty()) return unresolved_call();
   const auto& ctor_ident = static_cast<const Ident&>(ctor_callee);
   Member member(ctor_callee.loc,
@@ -1611,7 +1606,7 @@ bool EmitResolution::operand_type_allows_operator_lookup(const TypeExpr* t) {
     const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
     if (primitive_info(name)) return false;
     const TypeSymbol* symbol =
-        registry_.lookup_type_symbol(name, scope_.current_unit_name);
+        resolved_type_symbol_in_context(registry_, scope_, t);
     if (!symbol || symbol->enum_info()) return false;
     return symbol->record_info() || symbol->class_info() ||
            symbol->interface_info() || symbol->alias_info();

@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "emit_support.h"
 #include "typereg.h"
 
 namespace tp2cc::ast {
@@ -114,7 +115,7 @@ struct ScopeStateView {
 
   // Current lexical scope.
   std::unordered_set<std::string>& local_scope;
-  std::unordered_map<std::string, const ast::TypeExpr*>& local_types;
+  std::unordered_map<std::string, const ast::TypeExpr*>& local_value_types;
   std::unordered_map<std::string, const ast::ConstDecl*>& local_consts;
   std::unordered_set<std::string>& local_untyped_params;
   std::unordered_map<std::string, std::vector<NestedFn>>& local_nested_fns;
@@ -138,20 +139,83 @@ struct ScopeStateView {
   const ast::TypeExpr*& outer_result_type;
 };
 
-inline const TypeSymbol* visible_type_symbol_in_context(
+// MIGRATION_NAME_LOOKUP_FALLBACK: every call to a migration_fallback_* type
+// lookup function is a remaining spelling-based type lookup site. These are
+// temporary because the parser does not yet bind constructs such as `sizeof(T)`
+// or callee syntax `T(expr)` to a TypeExpr. Consumers that already have a
+// TypeExpr must use resolved_type_symbol_in_context(),
+// referenced_symbol_for_type(), or canonical_symbol_for_type() instead. The
+// final parser-driven migration should delete these functions and all call
+// sites.
+inline const TypeSymbol* migration_fallback_type_symbol_by_name(
     const TypeRegistry& registry, const ScopeStateView& scope,
     std::string_view name) {
   if (scope.type_scope) {
-    return registry.lookup_type_symbol_in_context(name, scope.type_scope);
+    if (const TypeSymbol* symbol =
+            registry.lookup_type_symbol_in_context(name, scope.type_scope)) {
+      return symbol;
+    }
   }
   return registry.lookup_type_symbol(name, scope.current_unit_name);
 }
 
-inline const TypeSymbol* lexical_type_symbol_in_context(
+inline const TypeSymbol* migration_fallback_type_symbol_in_lookup_context_by_name(
+    const TypeRegistry& registry, const TypeLookupContext* context,
+    std::string_view name) {
+  if (!context) return nullptr;
+  return registry.lookup_type_symbol_in_context(name, context);
+}
+
+inline const TypeSymbol* migration_fallback_type_symbol_in_unit_by_name(
+    const TypeRegistry& registry, std::string_view unit_name,
+    std::string_view name) {
+  return registry.lookup_type_symbol(name, unit_name);
+}
+
+inline const TypeSymbol* migration_fallback_lexical_type_symbol_by_name(
     const TypeRegistry& registry, const ScopeStateView& scope,
     std::string_view name) {
   if (!scope.type_scope) return nullptr;
   return registry.lookup_type_symbol_in_scope_chain(name, scope.type_scope);
+}
+
+inline const TypeSymbol* migration_fallback_local_type_symbol_by_name(
+    const TypeRegistry& registry, const ScopeStateView& scope,
+    std::string_view name) {
+  return migration_fallback_lexical_type_symbol_by_name(registry, scope, name);
+}
+
+inline const EnumInfoReg* local_enum_info_for_member(
+    const ScopeStateView& scope, std::string_view name) {
+  const std::string member = ascii_lower(name);
+  for (const TypeLookupContext* frame = scope.type_scope; frame;
+       frame = frame->parent) {
+    for (const auto& [_, symbol] : frame->type_symbols) {
+      if (!symbol) continue;
+      const EnumInfoReg* info = symbol->enum_info();
+      if (!info) continue;
+      for (const auto& enum_member : info->members) {
+        if (enum_member == member) return info;
+      }
+    }
+  }
+  return nullptr;
+}
+
+inline const TypeSymbol* resolved_type_symbol_in_context(
+    const TypeRegistry& registry, const ScopeStateView& scope,
+    const ast::TypeExpr* type, const TypeLookupContext* context = nullptr) {
+  const TypeSymbol* symbol = registry.canonical_symbol_for_type(type);
+  if (symbol && symbol->defining_unit != "__builtin__") return symbol;
+  if (!type || type->kind != ast::Kind::TyName) return symbol;
+  const auto& name = static_cast<const ast::TyName&>(*type).name;
+  if (const TypeSymbol* visible =
+          context ? migration_fallback_type_symbol_in_lookup_context_by_name(
+                        registry, context, name)
+                  : migration_fallback_type_symbol_by_name(registry, scope, name)) {
+    return visible;
+  }
+  return symbol;
 }
 
 }  // namespace tp2cc

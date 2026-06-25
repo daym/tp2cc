@@ -418,29 +418,19 @@ std::string runtime_named_type_cxx(std::string_view lowname) {
                                               : std::string(it->second);
 }
 
-struct BuiltinReferenceClassInfo {
-  const char* struct_cxx;
-  const char* parent;
-  const char* defining_unit;
-};
-
-const std::unordered_map<std::string, BuiltinReferenceClassInfo>&
+const std::unordered_map<std::string, std::string_view>&
 builtin_reference_class_map() {
-  static const std::unordered_map<std::string, BuiltinReferenceClassInfo> m = {
-      {"tobject", {"::rt::t_tobject", "", "__rt__"}},
-      {"exception", {"::rt::t_exception", "tobject", "sysutils"}},
-      {"eexternal", {"::p_sysutils::t_eexternal", "exception", "sysutils"}},
-      {"einterror", {"::p_sysutils::t_einterror", "eexternal", "sysutils"}},
-      {"einouterror", {"::p_sysutils::t_einouterror", "exception", "sysutils"}},
-      {"eheapmemoryerror",
-       {"::p_sysutils::t_eheapmemoryerror", "exception", "sysutils"}},
-      {"eheapexception",
-       {"::p_sysutils::t_eheapexception", "eheapmemoryerror", "sysutils"}},
-      {"eoutofmemory",
-       {"::p_sysutils::t_eoutofmemory", "eheapmemoryerror", "sysutils"}},
-      {"eintoverflow",
-       {"::p_sysutils::t_eintoverflow", "einterror", "sysutils"}},
-      {"eoserror", {"::p_sysutils::t_eoserror", "exception", "sysutils"}},
+  static const std::unordered_map<std::string, std::string_view> m = {
+      {"tobject", "::rt::t_tobject"},
+      {"exception", "::rt::t_exception"},
+      {"eexternal", "::p_sysutils::t_eexternal"},
+      {"einterror", "::p_sysutils::t_einterror"},
+      {"einouterror", "::p_sysutils::t_einouterror"},
+      {"eheapmemoryerror", "::p_sysutils::t_eheapmemoryerror"},
+      {"eheapexception", "::p_sysutils::t_eheapexception"},
+      {"eoutofmemory", "::p_sysutils::t_eoutofmemory"},
+      {"eintoverflow", "::p_sysutils::t_eintoverflow"},
+      {"eoserror", "::p_sysutils::t_eoserror"},
   };
   return m;
 }
@@ -449,7 +439,7 @@ std::string builtin_reference_class_struct_cxx(std::string_view lowname) {
   auto it = builtin_reference_class_map().find(ascii_lower(lowname));
   return it == builtin_reference_class_map().end()
              ? std::string()
-             : std::string(it->second.struct_cxx);
+             : std::string(it->second);
 }
 
 std::string unit_namespace_prefix(std::string_view unit_name) {

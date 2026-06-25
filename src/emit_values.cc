@@ -424,21 +424,11 @@ bool EmitValues::can_convert_reference_class_value(const Expr& e,
   // rank_conversion so value validation does not grow its own class model.
   std::string source_name = analysis_.deduce_class_alias(e);
   if (source_name.empty() && source_type) {
-    if (source_type->kind == Kind::TyName) {
-      source_name = static_cast<const TyName&>(*source_type).name;
-    } else {
-      source_name =
-          registry_.direct_type_name(source_type, scope_.current_unit_name);
-    }
+    source_name = analysis_.direct_type_name(source_type);
   }
   std::string target_name;
   if (target) {
-    if (target->kind == Kind::TyName) {
-      target_name = static_cast<const TyName&>(*target).name;
-    } else {
-      target_name =
-          registry_.direct_type_name(target, scope_.current_unit_name);
-    }
+    target_name = analysis_.direct_type_name(target);
   }
   if (source_name.empty() || target_name.empty()) return false;
   if (!analysis_.type_is_reference_class(named_pascal_type(source_name)) ||
@@ -686,7 +676,7 @@ std::string EmitValues::const_value_to_cxx_impl(
     const auto& call = static_cast<const Call&>(e);
     if (call.args.size() == 1 && call.callee->kind == Kind::Ident) {
       const auto& id = static_cast<const Ident&>(*call.callee);
-      if (const TypeExpr* cast_type = analysis_.lookup_named_type_expr(id.name)) {
+      if (const TypeExpr* cast_type = analysis_.migration_fallback_named_type_expr_by_name(id.name)) {
         source_type = cast_type;
       }
     }
@@ -983,7 +973,7 @@ std::optional<std::string> EmitValues::maybe_lower_metaclass_value(
 
   const std::string concrete_name = concrete_class_name_for_metaclass_value(e);
   if (concrete_name.empty()) return std::nullopt;
-  if (!analysis_.class_info_for_type_name(base_name)) return std::nullopt;
+  if (!analysis_.migration_fallback_class_info_by_name(base_name)) return std::nullopt;
   return types_.metaclass_value_fn_cxx(concrete_name) + "()";
 }
 

@@ -59,7 +59,7 @@ class EmitProcs {
     const ast::TypeExpr* outer_result_type = nullptr;
     std::string current_class_name;
     std::unordered_set<std::string> local_scope;
-    std::unordered_map<std::string, const ast::TypeExpr*> local_types;
+    std::unordered_map<std::string, const ast::TypeExpr*> local_value_types;
     std::unordered_map<std::string, const ast::ConstDecl*> local_consts;
     std::unordered_map<std::string, std::vector<ScopeStateView::NestedFn>>
         local_nested_fns;

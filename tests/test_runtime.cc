@@ -1282,12 +1282,22 @@ void test_exception_metaclass_exists_and_constructs_exception_instance() {
   CHECK(meta != nullptr);
   CHECK(meta->p_create != nullptr);
 
-  t_tobject* instance = meta->p_create();
+  t_exception* instance = meta->p_create(tp2cc_shortstring_of<>("boom"));
   CHECK(instance != nullptr);
   CHECK(instance->p_classtype() == meta);
-  CHECK(dynamic_cast<t_exception*>(instance) != nullptr);
+  CHECK_EQ(tp2cc_to_std_string(instance->p_message), std::string("boom"));
 
   t_tobject::p_free(instance);
+
+  const auto* root_view =
+      static_cast<const tp2cc_metaclass_t_tobject*>(meta);
+  CHECK(root_view->p_create != nullptr);
+  t_tobject* root_instance = root_view->p_create();
+  CHECK(root_instance != nullptr);
+  CHECK(root_instance->p_classtype() == meta);
+  CHECK(dynamic_cast<t_exception*>(root_instance) != nullptr);
+
+  t_tobject::p_free(root_instance);
 }
 
 void test_classname_comes_from_metaclass_descriptor() {
@@ -1332,10 +1342,11 @@ void test_exception_metaclass_accepts_concrete_root_create_thunk() {
     return instance;
   }));
 
-  CHECK(meta.p_create != nullptr);
+  auto* root_view = static_cast<tp2cc_metaclass_t_tobject*>(&meta);
+  CHECK(root_view->p_create != nullptr);
   CHECK(meta.tp2cc_parentclass() == tp2cc_metaclass_value_t_tobject());
 
-  t_tobject* instance = meta.p_create();
+  t_tobject* instance = root_view->p_create();
   CHECK(instance != nullptr);
   CHECK(dynamic_cast<t_exception*>(instance) != nullptr);
 

@@ -353,6 +353,422 @@ TypeSymbol* lookup_nested_type_symbol_path_mut(TypeSymbol* root,
   return current;
 }
 
+const TypeDescriptor* make_type_descriptor(TypeRegistry& r,
+                                           const TypeExpr* type,
+                                           const TypeSymbol* symbol) {
+  r.type_descriptor_storage.push_back(
+      TypeDescriptor{.id = r.type_descriptor_storage.size() + 1,
+                     .type = type,
+                     .symbol = symbol});
+  return &r.type_descriptor_storage.back();
+}
+
+void bind_type_expr_descriptor(TypeRegistry& r, const TypeExpr* type,
+                               const TypeDescriptor* descriptor) {
+  if (!type || !descriptor) return;
+  r.type_descriptors.insert_or_assign(type, descriptor);
+}
+
+void bind_type_expr_symbol(TypeRegistry& r, const TypeExpr* type,
+                           const TypeSymbol* symbol) {
+  if (!type || !symbol) return;
+  r.type_reference_symbols.insert_or_assign(type, symbol);
+}
+
+void bind_symbol_descriptor(TypeRegistry& r, TypeSymbol& symbol,
+                            const TypeDescriptor* descriptor) {
+  if (!descriptor) return;
+  symbol.descriptor = descriptor;
+  bind_type_expr_descriptor(r, symbol.type, descriptor);
+}
+
+bool symbol_declares_fresh_type(const TypeSymbol& symbol) {
+  const AliasInfo* alias = symbol.alias_info();
+  if (!alias) return true;
+  if (!alias->target) return true;
+  return alias->target->kind != Kind::TyName;
+}
+
+const TypeDescriptor* ensure_fresh_symbol_descriptor(TypeRegistry& r,
+                                                     TypeSymbol& symbol) {
+  if (symbol.descriptor) return symbol.descriptor;
+  const TypeDescriptor* descriptor =
+      make_type_descriptor(r, symbol.type, &symbol);
+  bind_symbol_descriptor(r, symbol, descriptor);
+  return descriptor;
+}
+
+void ensure_fresh_descriptors_for_symbol_tree(TypeRegistry& r,
+                                              TypeSymbol& symbol) {
+  if (symbol_declares_fresh_type(symbol)) {
+    ensure_fresh_symbol_descriptor(r, symbol);
+  }
+  if (auto* nested = nested_type_map_mut(symbol)) {
+    for (auto& [_, child] : *nested) {
+      if (child) ensure_fresh_descriptors_for_symbol_tree(r, *child);
+    }
+  }
+}
+
+void ensure_fresh_descriptors_for_registered_symbols(TypeRegistry& r) {
+  for (TypeSymbol& symbol : r.type_symbols) {
+    ensure_fresh_descriptors_for_symbol_tree(r, symbol);
+  }
+  for (auto& [_, symbol] : r.nested_type_symbols) {
+    if (symbol) ensure_fresh_descriptors_for_symbol_tree(r, *symbol);
+  }
+}
+
+struct TypeDescriptorResolver {
+  TypeRegistry& registry;
+  const TypeLookupContext* context = nullptr;
+  const std::unordered_map<std::string, const TypeSymbol*>* pointer_forwards =
+      nullptr;
+  const std::unordered_set<std::string>* ordinary_forwards = nullptr;
+  const std::unordered_map<std::string, const TypeSymbol*>*
+      visible_forward_classes = nullptr;
+  std::unordered_set<const TypeSymbol*> resolving_symbols;
+
+  TypeDescriptorResolver(
+      TypeRegistry& registry_in, const TypeLookupContext* context_in,
+      const std::unordered_map<std::string, const TypeSymbol*>*
+          pointer_forwards_in = nullptr,
+      const std::unordered_set<std::string>* ordinary_forwards_in = nullptr,
+      const std::unordered_map<std::string, const TypeSymbol*>*
+          visible_forward_classes_in = nullptr)
+      : registry(registry_in),
+        context(context_in),
+        pointer_forwards(pointer_forwards_in),
+        ordinary_forwards(ordinary_forwards_in),
+        visible_forward_classes(visible_forward_classes_in) {}
+
+  const TypeDescriptor* resolve_symbol_reference(const TypeSymbol* symbol) {
+    return resolve_symbol(symbol, /*resolve_fresh_body=*/false);
+  }
+
+  const TypeDescriptor* resolve_symbol_declaration(const TypeSymbol* symbol) {
+    return resolve_symbol(symbol, /*resolve_fresh_body=*/true);
+  }
+
+  const TypeDescriptor* resolve_symbol(const TypeSymbol* symbol,
+                                       bool resolve_fresh_body) {
+    if (!symbol) return nullptr;
+    TypeSymbol& mut = *const_cast<TypeSymbol*>(symbol);
+    if (symbol_declares_fresh_type(*symbol)) {
+      const TypeDescriptor* descriptor =
+          ensure_fresh_symbol_descriptor(registry, mut);
+      if (!resolve_fresh_body) return descriptor;
+      if (!resolving_symbols.insert(symbol).second) {
+        return descriptor;
+      }
+      resolve_children(symbol->type);
+      resolving_symbols.erase(symbol);
+      return descriptor;
+    }
+
+    if (const TypeDescriptor* descriptor = symbol->descriptor) {
+      return descriptor;
+    }
+    if (!resolving_symbols.insert(symbol).second) {
+      report_error({}, "cyclic type alias involving `" + symbol->name + "`");
+      return nullptr;
+    }
+
+    const TypeDescriptor* descriptor = nullptr;
+    if (const AliasInfo* alias = symbol->alias_info()) {
+      descriptor = resolve_type(alias->target.get(), /*pointer_target=*/false);
+      bind_symbol_descriptor(registry, mut, descriptor);
+    }
+
+    resolving_symbols.erase(symbol);
+    return descriptor;
+  }
+
+  const TypeDescriptor* resolve_type(const TypeExpr* type,
+                                     bool pointer_target) {
+    if (!type) return nullptr;
+    const TypeLookupContext* saved_context = context;
+    if (const TypeLookupContext* own_context =
+            registry.lookup_context_for_type(type)) {
+      context = own_context;
+    }
+    auto existing = registry.type_descriptors.find(type);
+    if (existing != registry.type_descriptors.end()) {
+      if (type->kind != Kind::TyName) resolve_children(type);
+      context = saved_context;
+      return existing->second;
+    }
+
+    if (type->kind == Kind::TyName) {
+      const std::string name =
+          lc(static_cast<const TyName&>(*type).name);
+      const TypeSymbol* symbol = nullptr;
+      if (pointer_target && pointer_forwards) {
+        auto fit = pointer_forwards->find(name);
+        if (fit != pointer_forwards->end()) symbol = fit->second;
+      }
+      if (!symbol && visible_forward_classes) {
+        auto fit = visible_forward_classes->find(name);
+        if (fit != visible_forward_classes->end()) symbol = fit->second;
+      }
+      if (!symbol && ordinary_forwards &&
+          ordinary_forwards->count(name) > 0) {
+        report_error(type->loc,
+                     "type `" + name + "` is not visible before this "
+                     "declaration");
+        context = saved_context;
+        return nullptr;
+      }
+      if (!symbol) {
+        symbol = registry.lookup_type_symbol_in_context(name, context);
+      }
+      if (!symbol) {
+        symbol = registry.builtin_literal(name);
+      }
+      if (!symbol) {
+        symbol = registry.lookup_type_symbol(
+            name, context ? std::string_view(context->unit)
+                          : std::string_view{});
+      }
+      if (!symbol) {
+        report_error(type->loc, "unresolved type `" + name + "`");
+        context = saved_context;
+        return nullptr;
+      }
+      const TypeDescriptor* descriptor = resolve_symbol_reference(symbol);
+      bind_type_expr_descriptor(registry, type, descriptor);
+      bind_type_expr_symbol(registry, type, symbol);
+      context = saved_context;
+      return descriptor;
+    }
+
+    const TypeDescriptor* descriptor = make_type_descriptor(registry, type,
+                                                            nullptr);
+    bind_type_expr_descriptor(registry, type, descriptor);
+    resolve_children(type);
+    context = saved_context;
+    return descriptor;
+  }
+
+  void resolve_params(const std::vector<Param>& params) {
+    for (const auto& param : params) {
+      resolve_type(param.type.get(), /*pointer_target=*/false);
+    }
+  }
+
+  void resolve_variant_part(const std::shared_ptr<VariantPart>& variant) {
+    if (!variant) return;
+    resolve_type(variant->tag_type.get(), /*pointer_target=*/false);
+    for (const auto& vcase : variant->cases) {
+      for (const auto& field : vcase.fields) {
+        resolve_type(field.type.get(), /*pointer_target=*/false);
+      }
+      resolve_variant_part(vcase.variant_part);
+    }
+  }
+
+  void resolve_object_member(const ObjectMember& member) {
+    switch (member.kind) {
+      case ObjectMemberKind::Field:
+        resolve_type(member.field_type.get(), /*pointer_target=*/false);
+        break;
+      case ObjectMemberKind::Method:
+        if (member.method) {
+          resolve_params(member.method->params);
+          resolve_type(member.method->return_type.get(),
+                       /*pointer_target=*/false);
+        }
+        break;
+      case ObjectMemberKind::Property:
+        resolve_params(member.property.params);
+        resolve_type(member.property.type.get(), /*pointer_target=*/false);
+        break;
+      case ObjectMemberKind::Type:
+        if (member.type_decl) {
+          resolve_type(member.type_decl->type.get(),
+                       /*pointer_target=*/false);
+        }
+        break;
+    }
+  }
+
+  void resolve_children(const TypeExpr* type) {
+    if (!type) return;
+    switch (type->kind) {
+      case Kind::TyArray: {
+        const auto& array = static_cast<const TyArray&>(*type);
+        for (const auto& dim : array.dims) {
+          resolve_type(dim.get(), /*pointer_target=*/false);
+        }
+        resolve_type(array.element.get(), /*pointer_target=*/false);
+        break;
+      }
+      case Kind::TyRecord: {
+        const auto& record = static_cast<const TyRecord&>(*type);
+        for (const auto& nested : record.nested_types) {
+          if (nested) {
+            resolve_type(nested->type.get(), /*pointer_target=*/false);
+          }
+        }
+        for (const auto& field : record.fields) {
+          resolve_type(field.type.get(), /*pointer_target=*/false);
+        }
+        resolve_variant_part(record.variant_part);
+        break;
+      }
+      case Kind::TyObject: {
+        const auto& object = static_cast<const TyObject&>(*type);
+        for (const auto& member : object.members) {
+          resolve_object_member(member);
+        }
+        break;
+      }
+      case Kind::TyInterface: {
+        const auto& intf = static_cast<const TyInterface&>(*type);
+        for (const auto& member : intf.members) {
+          resolve_object_member(member);
+        }
+        break;
+      }
+      case Kind::TySet:
+        resolve_type(static_cast<const TySet&>(*type).element.get(),
+                     /*pointer_target=*/false);
+        break;
+      case Kind::TyFile:
+        resolve_type(static_cast<const TyFile&>(*type).element.get(),
+                     /*pointer_target=*/false);
+        break;
+      case Kind::TyPointer:
+        resolve_type(static_cast<const TyPointer&>(*type).target.get(),
+                     /*pointer_target=*/true);
+        break;
+      case Kind::TyDistinct:
+        resolve_type(static_cast<const TyDistinct&>(*type).underlying.get(),
+                     /*pointer_target=*/false);
+        break;
+      case Kind::TyProcedural: {
+        const auto& proc = static_cast<const TyProcedural&>(*type);
+        resolve_params(proc.params);
+        resolve_type(proc.return_type.get(), /*pointer_target=*/false);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+};
+
+const TypeSymbol* local_context_type_symbol(const TypeLookupContext* context,
+                                            std::string_view name) {
+  if (!context) return nullptr;
+  auto it = context->type_symbols.find(lc(std::string(name)));
+  return it == context->type_symbols.end() ? nullptr : it->second;
+}
+
+bool is_forward_reference_class_type(const TypeExpr* type) {
+  if (!type || type->kind != Kind::TyObject) return false;
+  const auto& object = static_cast<const TyObject&>(*type);
+  return object.is_reference_type && object.is_forward;
+}
+
+void resolve_type_decl_run_descriptors(
+    TypeRegistry& r, const std::vector<DeclPtr>& decls, size_t begin,
+    size_t end, const TypeLookupContext* context,
+    std::unordered_map<std::string, const TypeSymbol*>&
+        visible_forward_classes) {
+  std::unordered_map<std::string, const TypeSymbol*> run_symbols;
+  std::unordered_set<std::string> unresolved;
+  for (size_t i = begin; i < end; ++i) {
+    const auto& td = static_cast<const TypeDecl&>(*decls[i]);
+    const std::string name = lc(td.name);
+    if (const TypeSymbol* symbol = local_context_type_symbol(context, name)) {
+      run_symbols[name] = symbol;
+      unresolved.insert(name);
+      if (symbol_declares_fresh_type(*symbol)) {
+        ensure_fresh_symbol_descriptor(r, *const_cast<TypeSymbol*>(symbol));
+      }
+    }
+  }
+
+  for (size_t i = begin; i < end; ++i) {
+    const auto& td = static_cast<const TypeDecl&>(*decls[i]);
+    unresolved.erase(lc(td.name));
+    TypeDescriptorResolver resolver(r, context, &run_symbols, &unresolved);
+    if (const TypeSymbol* symbol =
+            local_context_type_symbol(context, td.name)) {
+      if (is_forward_reference_class_type(td.type.get())) {
+        visible_forward_classes[lc(td.name)] = symbol;
+      }
+      TypeDescriptorResolver scoped_resolver(
+          r, context, &run_symbols, &unresolved, &visible_forward_classes);
+      if (is_forward_reference_class_type(td.type.get()) &&
+          td.type.get() != symbol->type) {
+        const TypeDescriptor* descriptor =
+            ensure_fresh_symbol_descriptor(r, *const_cast<TypeSymbol*>(symbol));
+        bind_type_expr_descriptor(r, td.type.get(), descriptor);
+        bind_type_expr_symbol(r, td.type.get(), symbol);
+        continue;
+      }
+      scoped_resolver.resolve_symbol_declaration(symbol);
+    } else {
+      resolver.resolve_type(td.type.get(), /*pointer_target=*/false);
+    }
+  }
+}
+
+void resolve_decl_list_type_descriptors(TypeRegistry& r,
+                                        const std::vector<DeclPtr>& decls,
+                                        const TypeLookupContext* context) {
+  std::unordered_map<std::string, const TypeSymbol*> visible_forward_classes;
+  for (size_t i = 0; i < decls.size();) {
+    const auto& d = decls[i];
+    if (!d) {
+      ++i;
+      continue;
+    }
+    if (d->kind == Kind::TypeDecl) {
+      size_t end = i + 1;
+      while (end < decls.size() && decls[end] &&
+             decls[end]->kind == Kind::TypeDecl) {
+        ++end;
+      }
+      resolve_type_decl_run_descriptors(r, decls, i, end, context,
+                                        visible_forward_classes);
+      i = end;
+      continue;
+    }
+
+    TypeDescriptorResolver resolver(r, context);
+    switch (d->kind) {
+      case Kind::VarDecl:
+        resolver.resolve_type(static_cast<const VarDecl&>(*d).type.get(),
+                              /*pointer_target=*/false);
+        break;
+      case Kind::ConstDecl:
+        resolver.resolve_type(static_cast<const ConstDecl&>(*d).type.get(),
+                              /*pointer_target=*/false);
+        break;
+      case Kind::ProcDecl: {
+        const auto& pd = static_cast<const ProcDecl&>(*d);
+        const TypeLookupContext* sig_context =
+            r.lookup_proc_signature_context(&pd);
+        TypeDescriptorResolver sig_resolver(
+            r, sig_context ? sig_context : context);
+        sig_resolver.resolve_params(pd.params);
+        sig_resolver.resolve_type(pd.return_type.get(),
+                                  /*pointer_target=*/false);
+        resolve_decl_list_type_descriptors(
+            r, pd.locals,
+            r.lookup_proc_body_context(&pd));
+        break;
+      }
+      default:
+        break;
+    }
+    ++i;
+  }
+}
+
 bool proc_accepts_zero_args(const ProcDecl& pd) {
   // Defaulted trailing parameters make a Pascal routine callable as `foo`
   // / `foo()` even when its flattened formal count is non-zero.
@@ -963,37 +1379,53 @@ MethodSig runtime_method_sig(std::string name, ProcKind pkind,
 void register_runtime_class(TypeRegistry& r, std::string name,
                             std::string parent,
                             std::vector<MethodSig> methods) {
+  const std::string key = name;
   std::unordered_map<std::string, std::vector<MethodSig>> method_map;
   for (auto& m : methods) {
+    if (m.declaring_type.empty()) {
+      m.declaring_type = key;
+    }
     if (m.kind == SymKind::Constructor && m.return_type_name.empty()) {
-      m.return_type_name = name;
+      m.return_type_name = key;
     }
     const std::string method_name = m.decl->name;
     method_map[method_name].push_back(std::move(m));
   }
-  const std::string key = name;
-  r.rt_classes[key] =
-      ClassInfo{.name = std::move(name),
-                .parent = std::move(parent),
-                .defining_unit = "__rt__",
-                .is_reference_type = true,
-                .is_abstract = false,
-                .is_forward = false,
-                .interfaces = {},
-                .fields = {},
-                .methods = std::move(method_map),
-                .properties = {},
-                .nested_types = {},
-                .enum_members = {},
-                .default_property_name = {}};
+  ClassInfo info{.name = key,
+                 .parent = std::move(parent),
+                 .defining_unit = "__rt__",
+                 .is_reference_type = true,
+                 .is_abstract = false,
+                 .is_forward = false,
+                 .interfaces = {},
+                 .fields = {},
+                 .methods = std::move(method_map),
+                 .properties = {},
+                 .nested_types = {},
+                 .enum_members = {},
+                 .default_property_name = {}};
+  r.rt_classes[key] = info;
+  if (auto rt = r.units.find("__rt__"); rt != r.units.end()) {
+    upsert_unit_type_symbol(
+        r, &rt->second, /*is_interface=*/true,
+        TypeSymbol(key, "__rt__", runtime_type_name(key), std::move(info)));
+  }
 }
 
 void register_runtime_class_field(TypeRegistry& r, std::string class_name,
                                   std::string field_name, TypePtr type) {
-  auto it = r.rt_classes.find(lc(std::move(class_name)));
+  const std::string low_class = lc(std::move(class_name));
+  const std::string low_field = lc(std::move(field_name));
+  auto it = r.rt_classes.find(low_class);
   if (it == r.rt_classes.end()) return;
-  it->second.fields[lc(std::move(field_name))] =
-      FieldInfo{.type = std::move(type), .is_class_var = false};
+  FieldInfo field{.type = std::move(type), .is_class_var = false};
+  if (TypeSymbol* symbol =
+          r.lookup_type_symbol_exact_mut("__rt__", low_class)) {
+    if (ClassInfo* info = symbol->mutable_class_info()) {
+      info->fields[low_field] = field;
+    }
+  }
+  it->second.fields[low_field] = std::move(field);
 }
 
 void register_runtime_backed_unit(TypeRegistry& r, std::string used_name) {
@@ -1744,7 +2176,10 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     info.target = nullptr;
     type_symbols.emplace_back(name, "__builtin__", atom_type,
                               std::move(info));
-    builtin_literal_descriptors[name] = &type_symbols.back();
+    TypeSymbol& symbol = type_symbols.back();
+    bind_symbol_descriptor(*this, symbol,
+                           make_type_descriptor(*this, atom_type, &symbol));
+    builtin_literal_descriptors[name] = &symbol;
   }
   // Runtime-side named types (tclass, tmethod, currency, ...) are also atoms:
   // each is a single declaration in the runtime that every translated unit
@@ -1760,7 +2195,10 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     info.target = nullptr;
     type_symbols.emplace_back(name, "__builtin__", atom_type,
                               std::move(info));
-    builtin_literal_descriptors[name] = &type_symbols.back();
+    TypeSymbol& symbol = type_symbols.back();
+    bind_symbol_descriptor(*this, symbol,
+                           make_type_descriptor(*this, atom_type, &symbol));
+    builtin_literal_descriptors[name] = &symbol;
   }
   // rt:: builtins that live in `tp2cc_rt/prelude.h` rather than a
   // Pascal unit. Model them as ProcInfos so deduce_type / is_bool
@@ -2287,6 +2725,18 @@ void TypeRegistry::build(const std::vector<const UnitNode*>& us) {
     }
   }
 
+  ensure_fresh_descriptors_for_registered_symbols(*this);
+  for (const auto* u : us) {
+    if (!u) continue;
+    const std::string unit = lc(u->name);
+    resolve_decl_list_type_descriptors(
+        *this, u->interface_decls,
+        lookup_unit_context(unit, /*implementation=*/false));
+    resolve_decl_list_type_descriptors(
+        *this, u->impl_decls,
+        lookup_unit_context(unit, /*implementation=*/true));
+  }
+
   for (const auto* u : us) {
     if (!u) continue;
     const std::string unit = lc(u->name);
@@ -2476,7 +2926,8 @@ const InterfaceInfo* TypeRegistry::interface_info_for_type(
     const TypeExpr* type, std::string_view current_unit) const {
   if (!type || type->kind != Kind::TyName) return nullptr;
   const auto& named = static_cast<const TyName&>(*type);
-  const TypeSymbol* symbol = lookup_type_symbol(named.name, current_unit);
+  const TypeSymbol* symbol = canonical_symbol_for_type(type);
+  if (!symbol) symbol = lookup_type_symbol(named.name, current_unit);
   if (!symbol) return nullptr;
   if (const InterfaceInfo* interface = symbol->interface_info()) {
     return interface;
@@ -2549,6 +3000,39 @@ const TypeLookupContext* TypeRegistry::lookup_proc_body_context(
   if (!proc) return nullptr;
   auto it = proc_body_type_contexts.find(proc);
   return it == proc_body_type_contexts.end() ? nullptr : it->second;
+}
+
+const TypeDescriptor* TypeRegistry::descriptor_for_type(
+    const TypeExpr* type) const {
+  if (!type) return nullptr;
+  if (auto it = type_descriptors.find(type); it != type_descriptors.end()) {
+    return it->second;
+  }
+  return nullptr;
+}
+
+const TypeSymbol* TypeRegistry::referenced_symbol_for_type(
+    const TypeExpr* type) const {
+  if (!type) return nullptr;
+  if (auto it = type_reference_symbols.find(type);
+      it != type_reference_symbols.end()) {
+    return it->second;
+  }
+  return nullptr;
+}
+
+const TypeSymbol* TypeRegistry::canonical_symbol_for_type(
+    const TypeExpr* type) const {
+  const TypeDescriptor* descriptor = descriptor_for_type(type);
+  return descriptor ? descriptor->symbol : nullptr;
+}
+
+const TypeSymbol* TypeRegistry::resolved_symbol_for_type(
+    const TypeExpr* type) const {
+  if (const TypeSymbol* symbol = referenced_symbol_for_type(type)) {
+    return symbol;
+  }
+  return canonical_symbol_for_type(type);
 }
 
 const TypeSymbol* TypeRegistry::lookup_type_symbol_in_context(
@@ -2635,11 +3119,15 @@ const TypeExpr* TypeRegistry::canonicalize(
           "kMaxAliasChainHops; cycle or registry corruption");
     }
     const auto& n = static_cast<const TyName&>(*te);
-    const TypeSymbol* symbol = lookup_type_symbol(n.name, current_unit);
+    const TypeSymbol* symbol = referenced_symbol_for_type(te);
+    if (!symbol) {
+      symbol = lookup_type_symbol(n.name, current_unit);
+    }
     const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
     if (!alias || !alias->target) {
       break;
     }
+    if (alias->target.get() == te) break;
     te = alias->target.get();
     current_unit = symbol->defining_unit;
   }
@@ -2661,11 +3149,15 @@ const TypeExpr* TypeRegistry::canonicalize(
           "kMaxAliasChainHops; cycle or registry corruption");
     }
     const auto& n = static_cast<const TyName&>(*te);
-    const TypeSymbol* symbol = lookup_type_symbol_in_context(n.name, context);
+    const TypeSymbol* symbol = referenced_symbol_for_type(te);
+    if (!symbol) {
+      symbol = lookup_type_symbol_in_context(n.name, context);
+    }
     const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
     if (!alias || !alias->target) {
       break;
     }
+    if (alias->target.get() == te) break;
     te = alias->target.get();
     if (const TypeLookupContext* alias_context =
             lookup_context_for_type(te)) {
@@ -2695,6 +3187,9 @@ std::string TypeRegistry::pointer_target_type_name(
   // Target may itself be a TyName.
   if (tgt->kind == Kind::TyName) {
     const auto& n = static_cast<const TyName&>(*tgt);
+    if (const TypeSymbol* symbol = referenced_symbol_for_type(tgt)) {
+      return type_symbol_path(*symbol);
+    }
     if (const TypeSymbol* symbol = lookup_type_symbol(n.name, current_unit)) {
       return type_symbol_path(*symbol);
     }
@@ -2709,6 +3204,9 @@ std::string TypeRegistry::direct_type_name(
   if (!te) return {};
   if (te->kind == Kind::TyName) {
     const auto& n = static_cast<const TyName&>(*te);
+    if (const TypeSymbol* symbol = referenced_symbol_for_type(te)) {
+      return type_symbol_path(*symbol);
+    }
     if (const TypeSymbol* symbol = lookup_type_symbol(n.name, current_unit)) {
       return type_symbol_path(*symbol);
     }

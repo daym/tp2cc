@@ -165,6 +165,8 @@ class EmitTypes {
   std::string active_emission_unit_name() const;
   bool should_qualify_unit(std::string_view defining_unit) const;
   bool registry_knows_translated_type(std::string_view name);
+  std::string metaclass_symbol_cxx(const TypeSymbol& symbol,
+                                   std::string_view name_prefix) const;
   EmitRecordFieldDecl record_field_decl(const ast::TypeExpr* type,
                                         std::string_view name);
   std::string array_bound_ordinal_to_cxx(const ast::Expr& e);

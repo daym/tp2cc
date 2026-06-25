@@ -21,12 +21,6 @@ using namespace ast;
 
 namespace {
 
-const TypeSymbol* visible_type_symbol(const TypeRegistry& registry,
-                                      const ScopeStateView& scope,
-                                      std::string_view name) {
-  return visible_type_symbol_in_context(registry, scope, name);
-}
-
 std::string nested_proc_cxx_name(const ScopeStateView& scope,
                                  const ProcDecl& pd) {
   auto it = scope.local_nested_fns.find(pd.name);
@@ -47,6 +41,12 @@ std::string type_symbol_source_name(const TypeSymbol& symbol) {
   if (!out.empty()) out += ".";
   out += symbol.name;
   return out;
+}
+
+bool has_builtin_metaclass_descriptor_slot(std::string_view name) {
+  const std::string low = ascii_lower(std::string(name));
+  return low == "classname" || low == "classtype" ||
+         low == "inheritsfrom" || low == "instancesize";
 }
 
 class ScopedTypeExprContext {
@@ -181,15 +181,13 @@ std::vector<EmitDecls::MetaclassCallable> EmitDecls::collect_metaclass_callables
   std::string cls = ascii_lower(std::string(class_name));
   std::vector<const ClassInfo*> chain;
   std::unordered_set<std::string> seen;
-  const ClassInfo* ci = analysis_.class_info_for_type_name(cls);
+  const ClassInfo* ci = analysis_.migration_fallback_class_info_by_name(cls);
   while (ci) {
     const std::string identity = ci->defining_unit + "." + ci->name;
     if (seen.count(identity)) break;
     seen.insert(identity);
     chain.push_back(ci);
-    ci = ci->parent.empty() ? nullptr
-                            : registry_.lookup_class(ci->parent,
-                                                     ci->defining_unit);
+    ci = registry_.lookup_parent_class(*ci);
   }
   std::reverse(chain.begin(), chain.end());
 
@@ -212,6 +210,7 @@ std::vector<EmitDecls::MetaclassCallable> EmitDecls::collect_metaclass_callables
       }
       if (sig->kind == SymKind::Constructor ||
           sig->kind == SymKind::ClassMethod) {
+        if (has_builtin_metaclass_descriptor_slot(name)) continue;
         names.push_back(name);
       }
     }
@@ -230,7 +229,7 @@ std::vector<EmitDecls::MetaclassCallable> EmitDecls::collect_metaclass_callables
     }
   }
 
-  if (const auto* ci = analysis_.class_info_for_type_name(class_name);
+  if (const auto* ci = analysis_.migration_fallback_class_info_by_name(class_name);
       ci && ci->is_reference_type && !pos.count("create")) {
     // Every Delphi/FPC class inherits `TObject.Create` even if the source
     // does not redeclare a constructor. Class-value calls like
@@ -246,7 +245,7 @@ EmitDecls::find_metaclass_callable_impl(std::string_view concrete_class,
                                         const MetaclassCallable& target) {
   std::string cls = ascii_lower(std::string(concrete_class));
   std::unordered_set<std::string> seen;
-  const ClassInfo* ci = analysis_.class_info_for_type_name(cls);
+  const ClassInfo* ci = analysis_.migration_fallback_class_info_by_name(cls);
   while (ci) {
     const std::string identity = ci->defining_unit + "." + ci->name;
     if (seen.count(identity)) break;
@@ -261,9 +260,7 @@ EmitDecls::find_metaclass_callable_impl(std::string_view concrete_class,
         }
       }
     }
-    ci = ci->parent.empty() ? nullptr
-                            : registry_.lookup_class(ci->parent,
-                                                     ci->defining_unit);
+    ci = registry_.lookup_parent_class(*ci);
   }
 
   if (target.implicit_root_create) {
@@ -456,12 +453,12 @@ std::string EmitDecls::build_metaclass_ctor_expr(
   const auto target_callables = collect_metaclass_callables(target_class);
   std::string current = ascii_lower(std::string(target_class));
   std::string parent_class;
-  if (const auto* ci = analysis_.class_info_for_type_name(current)) {
+  if (const auto* ci = analysis_.migration_fallback_class_info_by_name(current)) {
     parent_class = ci->parent;
   }
   const bool has_parent =
-      !parent_class.empty() && analysis_.class_info_for_type_name(parent_class) &&
-      analysis_.class_info_for_type_name(parent_class)->is_reference_type;
+      !parent_class.empty() && analysis_.migration_fallback_class_info_by_name(parent_class) &&
+      analysis_.migration_fallback_class_info_by_name(parent_class)->is_reference_type;
   const auto parent_visible =
       has_parent ? collect_metaclass_callables(parent_class)
                  : std::vector<MetaclassCallable>{};
@@ -683,7 +680,7 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool in_header,
     if (to.is_forward) {
       return;
     }
-    const TypeSymbol* symbol = visible_type_symbol(registry_, scope_, td.name);
+    const TypeSymbol* symbol = registry_.canonical_symbol_for_type(td.type.get());
     const std::string source_type_name =
         symbol ? type_symbol_source_name(*symbol) : ascii_lower(td.name);
     const std::string qualified_cxx_name =
@@ -696,7 +693,7 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool in_header,
       const std::string cxx_name = mangle(pd.name);
       const std::string params = param_type_list_to_cxx(pd.params);
       const ClassInfo* parent =
-          registry_.lookup_class(to.parent, scope_.current_unit_name);
+          analysis_.migration_fallback_class_info_by_name(to.parent);
       std::unordered_set<std::string> seen;
       while (parent) {
         const std::string identity = parent->defining_unit + "." + parent->name;
@@ -716,10 +713,7 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool in_header,
             }
           }
         }
-        parent = parent->parent.empty()
-                     ? nullptr
-                     : registry_.lookup_class(parent->parent,
-                                             parent->defining_unit);
+        parent = registry_.lookup_parent_class(*parent);
       }
       return nullptr;
     };
@@ -900,6 +894,10 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool in_header,
 
   std::string rhs = td.type ? types_.type_to_cxx(*td.type)
                             : std::string("int32_t");
+  // MIGRATION: this preserves Pascal alias spelling as a C++ `using`
+  // declaration. Keep only if a later compatibility decision explicitly wants
+  // alias declarations in the generated C++ surface; semantic consumers must
+  // not depend on this alias existing.
   emit_ops_.emitln("using " + name + " = " + rhs + ";");
 }
 
@@ -909,8 +907,8 @@ void EmitDecls::emit_reference_class_support(
   const std::string meta_name = types_.metaclass_struct_cxx(source_type_name);
   const std::string value_fn = types_.metaclass_value_fn_cxx(source_type_name);
   const bool has_parent_meta =
-      !to.parent.empty() && analysis_.class_info_for_type_name(to.parent) &&
-      analysis_.class_info_for_type_name(to.parent)->is_reference_type;
+      !to.parent.empty() && analysis_.migration_fallback_class_info_by_name(to.parent) &&
+      analysis_.migration_fallback_class_info_by_name(to.parent)->is_reference_type;
   const std::string parent_meta =
       has_parent_meta ? types_.metaclass_struct_cxx(to.parent) : std::string{};
   const std::string base_meta =

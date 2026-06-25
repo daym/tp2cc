@@ -213,7 +213,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
        ++it) {
       const std::string& cls = it->class_name;
       const std::string& access = it->access_op;
-      if (const auto* ci = analysis_.class_info_for_type_name(cls);
+      if (const auto* ci = analysis_.migration_fallback_class_info_by_name(cls);
           ci && ci->is_reference_type &&
           (name == "classtype" || name == "instancesize")) {
         return zero_arg_callable(ResolvedKind::WithMethod,
@@ -223,7 +223,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       // Resolve it through the active `with` expression so inherited TObject
       // methods are still available even though TObject is a runtime class
       // rather than an entry in `registry->classes`.
-      if (const auto* ci = analysis_.class_info_for_type_name(cls);
+      if (const auto* ci = analysis_.migration_fallback_class_info_by_name(cls);
           ci && ci->is_reference_type && name == "free") {
         // The expression is already a complete call; no implicit-zero-arg
         // wrap is wanted at the use site.
@@ -303,7 +303,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   // 5. Current class's members (chain).
   if (!scope_.current_class_name.empty()) {
     if (const auto* ci =
-            analysis_.class_info_for_type_name(scope_.current_class_name);
+            analysis_.migration_fallback_class_info_by_name(scope_.current_class_name);
         ci && ci->is_reference_type &&
         (name == "classtype" || name == "instancesize")) {
       return zero_arg_callable(ResolvedKind::ClassMethod, mangle(name));

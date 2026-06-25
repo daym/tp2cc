@@ -18,7 +18,7 @@ std::optional<std::string> EmitProperties::maybe_property_read_text(
   // Properties are Pascal-side metadata only. Reads/writes rewrite to the
   // declared backing field/getter/setter so we do not invent extra C++
   // members whose names could collide in ways Pascal itself forbids.
-  const ClassInfo* ci = analysis_.class_info_for_type_name(class_name);
+  const ClassInfo* ci = analysis_.migration_fallback_class_info_by_name(class_name);
   const std::string access =
       (ci && ci->is_reference_type) ? "->" : ".";
   if (prop.read.kind == PropertyAccessorKind::FieldPath) {
@@ -56,7 +56,7 @@ std::optional<std::string> EmitProperties::maybe_property_write_text(
     const std::string& base_cxx, const std::string& class_name,
     const PropertyInfo& prop, const std::vector<const Expr*>& indices,
     const Expr& value) {
-  const ClassInfo* ci = analysis_.class_info_for_type_name(class_name);
+  const ClassInfo* ci = analysis_.migration_fallback_class_info_by_name(class_name);
   const std::string access =
       (ci && ci->is_reference_type) ? "->" : ".";
   if (prop.write.empty()) {

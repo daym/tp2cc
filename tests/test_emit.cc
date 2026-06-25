@@ -1379,6 +1379,294 @@ void test_named_type_alias() {
   CHECK(contains(out.header, "using t_mystr = ::rt::tp2cc_ShortString<32>;"));
 }
 
+void test_build_resolves_alias_descriptor_identity() {
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  X = record end;\n"
+      "  Y = X;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+
+  const TypeSymbol* x = reg.lookup_type_symbol("x", "u");
+  const TypeSymbol* y = reg.lookup_type_symbol("y", "u");
+  CHECK(x && y);
+  CHECK(x && x->descriptor);
+  CHECK(y && y->descriptor);
+  CHECK_EQ(x->descriptor, y->descriptor);
+
+  auto* y_decl = dynamic_cast<TypeDecl*>(u->interface_decls[1].get());
+  CHECK(y_decl);
+  CHECK_EQ(reg.descriptor_for_type(y_decl->type.get()), x->descriptor);
+  auto y_resolved = reg.type_descriptors.find(y_decl->type.get());
+  CHECK(y_resolved != reg.type_descriptors.end());
+  CHECK_EQ(y_resolved == reg.type_descriptors.end() ? nullptr
+                                                    : y_resolved->second,
+           x->descriptor);
+}
+
+void test_build_keeps_fresh_record_descriptor_identity() {
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  X = record end;\n"
+      "  Y = record end;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+
+  const TypeSymbol* x = reg.lookup_type_symbol("x", "u");
+  const TypeSymbol* y = reg.lookup_type_symbol("y", "u");
+  CHECK(x && y);
+  CHECK(x && x->descriptor);
+  CHECK(y && y->descriptor);
+  CHECK(x->descriptor != y->descriptor);
+}
+
+void test_build_resolves_pointer_forward_descriptor_identity() {
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  PFoo = ^TFoo;\n"
+      "  TFoo = record end;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+
+  const TypeSymbol* tfoo = reg.lookup_type_symbol("tfoo", "u");
+  CHECK(tfoo && tfoo->descriptor);
+
+  auto* pfoo_decl = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+  CHECK(pfoo_decl);
+  auto* pointer = pfoo_decl && pfoo_decl->type
+                      ? dynamic_cast<TyPointer*>(pfoo_decl->type.get())
+                      : nullptr;
+  CHECK(pointer && pointer->target);
+  CHECK_EQ(reg.descriptor_for_type(pointer ? pointer->target.get() : nullptr),
+           tfoo->descriptor);
+  auto target_resolved = pointer && pointer->target
+                             ? reg.type_descriptors.find(pointer->target.get())
+                             : reg.type_descriptors.end();
+  CHECK(target_resolved != reg.type_descriptors.end());
+  CHECK_EQ(target_resolved == reg.type_descriptors.end()
+               ? nullptr
+               : target_resolved->second,
+           tfoo->descriptor);
+}
+
+void test_build_pointer_forward_does_not_resolve_target_body_early() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  PFoo = ^TFoo;\n"
+      "  TBar = record end;\n"
+      "  TFoo = record\n"
+      "    Bar : TBar;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK_EQ(error_count(), before);
+}
+
+void test_build_class_forward_does_not_resolve_completion_early() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TScannerFile = class;\n"
+      "  TPreprocTyp = (pp_ifdef, pp_else);\n"
+      "  TPreprocStack = class\n"
+      "    Typ : TPreprocTyp;\n"
+      "    Next : TPreprocStack;\n"
+      "    Owner : TScannerFile;\n"
+      "  end;\n"
+      "  TDirectiveItem = class end;\n"
+      "  TCompileTimePredicate = function : Boolean;\n"
+      "  TScannerFile = class\n"
+      "    Stack : TPreprocStack;\n"
+      "    procedure IfPreprocStack(atyp : TPreprocTyp; "
+      "compile_time_predicate : TCompileTimePredicate; "
+      "item : TDirectiveItem);\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK_EQ(error_count(), before);
+}
+
+void test_build_class_forward_allows_record_pointer_cycle_before_completion() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TNode = class end;\n"
+      "  TTempCreateNode = class;\n"
+      "  PTempInfo = ^TTempInfo;\n"
+      "  TTempInfo = record\n"
+      "    HookOnCopy : PTempInfo;\n"
+      "    Owner : TTempCreateNode;\n"
+      "  end;\n"
+      "  TTempCreateNode = class(TNode)\n"
+      "    TempInfo : PTempInfo;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK_EQ(error_count(), before);
+}
+
+void test_build_class_field_uses_prior_forward_class_decl() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TSection = class;\n"
+      "  TSymbol = class\n"
+      "    Section : TSection;\n"
+      "  end;\n"
+      "  TSection = class\n"
+      "    Symbol : TSymbol;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK_EQ(error_count(), before);
+
+  const TypeSymbol* section = reg.lookup_type_symbol("tsection", "u");
+  const TypeSymbol* symbol = reg.lookup_type_symbol("tsymbol", "u");
+  CHECK(section && section->descriptor);
+  CHECK(symbol && symbol->descriptor);
+  const ClassInfo* symbol_class = symbol ? symbol->class_info() : nullptr;
+  CHECK(symbol_class);
+  auto fit = symbol_class ? symbol_class->fields.find("section")
+                          : std::unordered_map<std::string, FieldInfo>::const_iterator{};
+  CHECK(symbol_class && fit != symbol_class->fields.end());
+  CHECK_EQ(reg.descriptor_for_type(symbol_class && fit != symbol_class->fields.end()
+                                       ? fit->second.type.get()
+                                       : nullptr),
+           section ? section->descriptor : nullptr);
+}
+
+void test_build_rejects_class_field_before_unseen_later_class() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TSymbol = class\n"
+      "    Section : TSection;\n"
+      "  end;\n"
+      "  TSection = class end;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK(error_count() > before);
+}
+
+void test_build_resolves_set_element_descriptor_identity() {
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TEnum = (A, B);\n"
+      "  TSet = set of TEnum;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+
+  const TypeSymbol* tenum = reg.lookup_type_symbol("tenum", "u");
+  CHECK(tenum && tenum->descriptor);
+
+  auto* set_decl = dynamic_cast<TypeDecl*>(u->interface_decls[1].get());
+  CHECK(set_decl);
+  auto* set_type = set_decl && set_decl->type
+                       ? dynamic_cast<TySet*>(set_decl->type.get())
+                       : nullptr;
+  CHECK(set_type && set_type->element);
+  auto element_resolved =
+      set_type && set_type->element
+          ? reg.type_descriptors.find(set_type->element.get())
+          : reg.type_descriptors.end();
+  CHECK(element_resolved != reg.type_descriptors.end());
+  CHECK_EQ(element_resolved == reg.type_descriptors.end()
+               ? nullptr
+               : element_resolved->second,
+           tenum->descriptor);
+}
+
+void test_build_resolves_builtin_descriptor_identity() {
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TInt = longint;\n"
+      "var\n"
+      "  Value : longint;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+
+  const TypeSymbol* atom = reg.builtin_literal("longint");
+  CHECK(atom && atom->descriptor);
+
+  auto* alias_decl = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
+  CHECK(alias_decl);
+  CHECK_EQ(reg.descriptor_for_type(alias_decl ? alias_decl->type.get()
+                                              : nullptr),
+           atom->descriptor);
+
+  auto* var_decl = dynamic_cast<VarDecl*>(u->interface_decls[1].get());
+  CHECK(var_decl);
+  CHECK_EQ(reg.descriptor_for_type(var_decl ? var_decl->type.get()
+                                            : nullptr),
+           atom->descriptor);
+}
+
+void test_build_reports_unresolved_type_name() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TMissingAlias = TMissing;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK(error_count() > before);
+}
+
 void test_ansistring_builtin_maps_to_runtime_type() {
   auto out = compile_snippet(
       "unit u;\n"
@@ -4853,6 +5141,7 @@ void test_classname_uses_metaclass_descriptor_slot() {
   CHECK(contains(out.header,
                  "::rt::tp2cc_ShortString<> p_classname() const override { "
                  "return ::rt::tp2cc_shortstring_of<>(\"titem\"); }"));
+  CHECK_EQ(count_substring(out.header, "p_classname() const override"), 1u);
   CHECK(contains(out.impl,
                  "::rt::tp2cc_shortstring_assign(p_result, "
                  "p_x->p_classname());"));
@@ -4862,6 +5151,39 @@ void test_classname_uses_metaclass_descriptor_slot() {
   CHECK(contains(out.impl,
                  "::rt::tp2cc_shortstring_assign(p_result, "
                  "tp2cc_metaclass_value_t_titem()->p_classname());"));
+}
+
+void test_runtime_tobject_hooks_do_not_become_metaclass_slots() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  titem = class(TObject)\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(!contains(out.header, "(*p_classtype)"));
+  CHECK(!contains(out.header, "(*p_inheritsfrom)"));
+  CHECK(!contains(out.header, "(*p_instancesize)"));
+  CHECK(contains(out.header,
+                 "::rt::tp2cc_ShortString<> p_classname() const override"));
+}
+
+void test_internal_rt_qualified_tobject_lowers_through_runtime_symbol() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tcallback = procedure(data : __rt__.tobject; arg : pointer) of object;\n"
+      "var\n"
+      "  obj : __rt__.tobject;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.header, "extern ::rt::t_tobject* p_obj;"));
+  CHECK(!contains(out.header, "unresolved"));
+  CHECK(!contains(out.header, "void* p_obj"));
 }
 
 void test_tobject_cast_preserves_pointer_semantics_for_free() {
@@ -12198,6 +12520,10 @@ void test_inherited_exception_create_lowers_as_constructor_call() {
   // instance.
   CHECK(contains(out.impl, "new t_efoo"));
   CHECK(contains(out.impl, "tp2cc_ptr->p_create("));
+  CHECK(contains(out.header,
+                 "tp2cc_metaclass_t_exception(::rt::tp2cc_metaclass_t_tobject("));
+  CHECK(contains(out.header,
+                 "+[](::rt::tp2cc_ShortString<> p_msg) -> ::rt::t_exception*"));
   // Must NOT be a static-style call.
   CHECK(!contains(out.impl, "p_efoo::p_create("));
 }
@@ -12451,6 +12777,31 @@ void test_metaclass_base_constructor_slot_survives_hidden_child_create() {
       "end.\n");
   CHECK(contains(out.header,
                  "static_cast<t_tbase*>(tp2cc_ptr)->p_create();"));
+  CHECK(contains(out.impl, "p_inst = p_cls->p_create();"));
+}
+
+void test_runtime_tobject_constructor_slot_survives_hidden_child_create() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tchild = class(TObject)\n"
+      "    constructor create(n : integer);\n"
+      "  end;\n"
+      "  tbaseclass = class of TObject;\n"
+      "var\n"
+      "  cls : tbaseclass;\n"
+      "  inst : TObject;\n"
+      "implementation\n"
+      "constructor tchild.create(n : integer);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  cls := tchild;\n"
+      "  inst := cls.create;\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "static_cast<::rt::t_tobject*>(tp2cc_ptr)->p_create();"));
   CHECK(contains(out.impl, "p_inst = p_cls->p_create();"));
 }
 
@@ -13148,6 +13499,38 @@ void test_reference_class_cast_keeps_pointer_member_access() {
   CHECK(contains(out.impl, "p_result = static_cast<t_tchild*>(p_p)->p_next;"));
 }
 
+void test_reference_class_alias_cast_uses_alias_carrier() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class end;\n"
+      "  tchild = class(tbase)\n"
+      "    ops : longint;\n"
+      "  end;\n"
+      "  tinstr = tchild;\n"
+      "  pinstr = ^tinstr;\n"
+      "function read_alias(p : tbase) : longint;\n"
+      "function read_pointer_alias(p : tbase) : longint;\n"
+      "implementation\n"
+      "function read_alias(p : tbase) : longint;\n"
+      "begin\n"
+      "  read_alias := tinstr(p).ops;\n"
+      "end;\n"
+      "function read_pointer_alias(p : tbase) : longint;\n"
+      "begin\n"
+      "  read_pointer_alias := pinstr(p)^.ops;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.header, "using t_tinstr = t_tchild*;"));
+  CHECK(contains(out.header, "using t_pinstr = t_tinstr*;"));
+  CHECK(contains(out.impl, "p_result = static_cast<t_tinstr>(p_p)->p_ops;"));
+  CHECK(contains(out.impl,
+                 "p_result = ::rt::tp2cc_deref(reinterpret_cast<t_pinstr>(p_p))->p_ops;"));
+  CHECK(!contains(out.impl, "static_cast<t_tinstr*>(p_p)"));
+  CHECK(!contains(out.header, "using t_pinstr = t_tinstr**;"));
+}
+
 void test_addr_of_reference_class_typecast_field_uses_object_pointer() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -13543,6 +13926,17 @@ int main() {
   RUN_TEST(test_typed_const_shortstring_literals_use_target_capacity);
   RUN_TEST(test_shortstring_length_literal_capacity_is_constant_folded);
   RUN_TEST(test_named_type_alias);
+  RUN_TEST(test_build_resolves_alias_descriptor_identity);
+  RUN_TEST(test_build_keeps_fresh_record_descriptor_identity);
+  RUN_TEST(test_build_resolves_pointer_forward_descriptor_identity);
+  RUN_TEST(test_build_pointer_forward_does_not_resolve_target_body_early);
+  RUN_TEST(test_build_class_forward_does_not_resolve_completion_early);
+  RUN_TEST(test_build_class_forward_allows_record_pointer_cycle_before_completion);
+  RUN_TEST(test_build_class_field_uses_prior_forward_class_decl);
+  RUN_TEST(test_build_rejects_class_field_before_unseen_later_class);
+  RUN_TEST(test_build_resolves_set_element_descriptor_identity);
+  RUN_TEST(test_build_resolves_builtin_descriptor_identity);
+  RUN_TEST(test_build_reports_unresolved_type_name);
   RUN_TEST(test_ansistring_builtin_maps_to_runtime_type);
   RUN_TEST(test_runtime_ansistring_result_validates_against_alias_formal);
   RUN_TEST(test_widechar_builtin_maps_to_16bit_ordinal);
@@ -13686,6 +14080,8 @@ int main() {
   RUN_TEST(test_class_var_inherited_duplicate_reports_error);
   RUN_TEST(test_tobject_runtime_helpers_lower_in_method_body);
   RUN_TEST(test_classname_uses_metaclass_descriptor_slot);
+  RUN_TEST(test_runtime_tobject_hooks_do_not_become_metaclass_slots);
+  RUN_TEST(test_internal_rt_qualified_tobject_lowers_through_runtime_symbol);
   RUN_TEST(test_tobject_cast_preserves_pointer_semantics_for_free);
   RUN_TEST(test_parameterless_proc_assignment_keeps_designator);
   RUN_TEST(test_method_pointer_type_and_bound_assignment_emit);
@@ -13967,6 +14363,7 @@ int main() {
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
   RUN_TEST(test_metaclass_named_constructor_with_args_lowers_to_descriptor_slot);
   RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);
+  RUN_TEST(test_runtime_tobject_constructor_slot_survives_hidden_child_create);
   RUN_TEST(test_metaclass_same_signature_constructor_keeps_derived_return_type);
   RUN_TEST(test_inherited_metaclass_constructor_uses_declaring_unit_type_lookup);
   RUN_TEST(test_inheritsfrom_uses_runtime_tclass_and_method_call);
@@ -13994,6 +14391,7 @@ int main() {
   RUN_TEST(test_type_order_sees_method_signature_dependencies);
   RUN_TEST(test_reference_class_typecast_is_pointer_cast);
   RUN_TEST(test_reference_class_cast_keeps_pointer_member_access);
+  RUN_TEST(test_reference_class_alias_cast_uses_alias_carrier);
   RUN_TEST(test_addr_of_reference_class_typecast_field_uses_object_pointer);
   RUN_TEST(test_addr_of_object_pointer_field_returns_typed_pointer);
   RUN_TEST(test_reference_class_typecast_field_assignment_uses_assignment_operator);

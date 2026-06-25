@@ -19,6 +19,7 @@ namespace tp2cc {
 struct ClassInfo;
 struct ConstInfo;
 struct EnumInfoReg;
+struct InterfaceInfo;
 struct PropertyInfo;
 struct TypeRegistry;
 struct UnitInfo;
@@ -110,9 +111,18 @@ class EmitAnalysis {
   // reference lowering so C++ preserves aliasing/mutability semantics.
   bool const_param_needs_mutable_ref(const ast::TypeExpr* t);
   bool const_param_needs_const_ref(const ast::TypeExpr* t);
-  const ClassInfo* class_info_for_type_name(std::string_view name);
-  const ast::TypeExpr* lookup_named_type_expr(std::string_view name);
-  bool is_builtin_reference_class_name(std::string_view name) const;
+  // MIGRATION_NAME_LOOKUP_FALLBACK: spelling-only type queries. These remain
+  // until parser-bound syntax covers callee names, sizeof/low/high type names,
+  // and stored string class names such as current_class_name.
+  const ClassInfo* migration_fallback_class_info_by_name(std::string_view name) const;
+  const ast::TypeExpr* migration_fallback_named_type_expr_by_name(
+      std::string_view name);
+  // Central transitional TypeExpr API. Consumers that have a TypeExpr should
+  // use these descriptor/symbol-backed helpers rather than re-querying a name.
+  const ClassInfo* class_info_for_type(const ast::TypeExpr* t);
+  const InterfaceInfo* interface_info_for_type(const ast::TypeExpr* t);
+  std::string direct_type_name(const ast::TypeExpr* t);
+  std::string pointer_target_type_name(const ast::TypeExpr* t);
   std::string metaclass_target_name(const ast::TypeExpr* t);
   bool type_is_reference_class(const ast::TypeExpr* t);
   bool type_is_interface(const ast::TypeExpr* t);

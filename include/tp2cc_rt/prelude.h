@@ -227,7 +227,7 @@ struct tp2cc_metaclass_t_tobject {
 inline tp2cc_metaclass_t_tobject* tp2cc_metaclass_value_t_tobject();
 
 struct tp2cc_metaclass_t_exception : public tp2cc_metaclass_t_tobject {
-  using tp2cc_metaclass_t_tobject::tp2cc_metaclass_t_tobject;
+  t_exception* (*p_create)(tp2cc_ShortString<>) = nullptr;
 
   // Generated subclasses of `Exception` reuse the root metaclass thunk but
   // still need a concrete `tp2cc_metaclass_t_exception` object so their
@@ -237,13 +237,14 @@ struct tp2cc_metaclass_t_exception : public tp2cc_metaclass_t_tobject {
       : tp2cc_metaclass_t_tobject(tp2cc_parent) {}
 
   // Generated exception subclasses keep a typed `Exception.Create` slot in
-  // their metaclass descriptors. Accept that narrower thunk directly and
-  // forward it through the root `TObject` metaclass storage.
+  // their metaclass descriptors. Store it separately from TObject's zero-arg
+  // root `Create` slot; C++ name hiding then mirrors the Pascal static type:
+  // `TClass.Create` is zero-arg, while `class of Exception`.Create takes Msg.
   tp2cc_metaclass_t_exception(tp2cc_metaclass_t_tobject tp2cc_parent,
-                              t_exception* (*tp2cc_p_create)())
-      : tp2cc_metaclass_t_tobject(tp2cc_parent) {
-    p_create = reinterpret_cast<t_tobject* (*)()>(tp2cc_p_create);
-  }
+                              t_exception* (*tp2cc_p_create)(
+                                  tp2cc_ShortString<>))
+      : tp2cc_metaclass_t_tobject(tp2cc_parent),
+        p_create(tp2cc_p_create) {}
 
   t_tclass tp2cc_parentclass() const override;
   tp2cc_ShortString<> p_classname() const override;
@@ -1082,9 +1083,14 @@ struct t_exception : t_tobject {
 
 inline tp2cc_metaclass_t_exception* tp2cc_metaclass_value_t_exception() {
   static tp2cc_metaclass_t_exception value{
-      +[]() -> t_tobject* {
+      tp2cc_metaclass_t_tobject(+[]() -> t_tobject* {
         auto* tp2cc_ptr = new t_exception{};
         tp2cc_ptr->p_create();
+        return tp2cc_ptr;
+      }),
+      +[](tp2cc_ShortString<> p_msg) -> t_exception* {
+        auto* tp2cc_ptr = new t_exception{};
+        tp2cc_ptr->p_create(p_msg);
         return tp2cc_ptr;
       }};
   return &value;

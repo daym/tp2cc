@@ -68,11 +68,18 @@ struct DefaultArgumentUnitScope {
   }
 };
 
-std::string visible_type_unit_from(std::string_view type_name,
+std::string visible_type_unit_from(const TypeExpr* type,
+                                   std::string_view type_name,
                                    std::string_view unit_name,
                                    const TypeRegistry& registry) {
-  if (const TypeSymbol* symbol =
-          registry.lookup_type_symbol(type_name, unit_name)) {
+  if (const TypeSymbol* symbol = registry.referenced_symbol_for_type(type)) {
+    return symbol->defining_unit;
+  }
+  // MIGRATION_NAME_LOOKUP_FALLBACK: default-argument helper types can still be
+  // synthesized/qualified names without a bound TypeExpr. Parser-side binding
+  // should delete this spelling fallback.
+  if (const TypeSymbol* symbol = migration_fallback_type_symbol_in_unit_by_name(
+          registry, unit_name, type_name)) {
     return symbol->defining_unit;
   }
   return {};
@@ -107,7 +114,8 @@ EffectiveParamType effective_call_param_type(
         !is_primitive_type(tn.name) && tn.name != "nil" &&
         runtime_named_type_cxx(tn.name).empty()) {
       if (std::string unit =
-              visible_type_unit_from(tn.name, default_arg_unit, registry);
+              visible_type_unit_from(out.type, tn.name, default_arg_unit,
+                                     registry);
           !unit.empty()) {
         // Default argument expressions are resolved as if they were still in
         // the declaring unit. The generated argument text is inserted at the
@@ -667,7 +675,7 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
     Location where, std::string_view class_name, std::string_view member_name,
     const CallArgumentPlan& plan, const ProcDecl* selected_decl) {
   const ClassInfo* ci =
-      analysis_.class_info_for_type_name(std::string(class_name));
+      analysis_.migration_fallback_class_info_by_name(std::string(class_name));
   if (!ci || !ci->is_reference_type) {
     return std::nullopt;
   }

@@ -48,7 +48,7 @@ EmitProcs::SavedProcState EmitProcs::save_proc_state() const {
       .outer_result_type = scope_.outer_result_type,
       .current_class_name = scope_.current_class_name,
       .local_scope = scope_.local_scope,
-      .local_types = scope_.local_types,
+      .local_value_types = scope_.local_value_types,
       .local_consts = scope_.local_consts,
       .local_nested_fns = scope_.local_nested_fns,
       .local_nested_forwards = scope_.local_nested_forwards,
@@ -72,7 +72,7 @@ void EmitProcs::restore_proc_state(SavedProcState&& saved) {
   scope_.outer_result_type = saved.outer_result_type;
   scope_.current_class_name = std::move(saved.current_class_name);
   scope_.local_scope = std::move(saved.local_scope);
-  scope_.local_types = std::move(saved.local_types);
+  scope_.local_value_types = std::move(saved.local_value_types);
   scope_.local_consts = std::move(saved.local_consts);
   scope_.local_nested_fns = std::move(saved.local_nested_fns);
   scope_.local_nested_forwards = std::move(saved.local_nested_forwards);
@@ -148,7 +148,7 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
     for (const auto& nm : p.names) {
       if (!insert_proc_local_name(pd.loc, nm)) continue;
       if (p.type) {
-        scope_.local_types[nm] = p.type.get();
+        scope_.local_value_types[nm] = p.type.get();
         if (p.mode == Param::Const || p.mode == Param::ConstRef) {
           scope_.local_const_params.insert(nm);
         }
@@ -169,14 +169,14 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
       const auto& vd = static_cast<const VarDecl&>(*l);
       for (const auto& nm : vd.names) {
         if (!insert_proc_local_name(vd.loc, nm)) continue;
-        if (vd.type) scope_.local_types[nm] = vd.type.get();
+        if (vd.type) scope_.local_value_types[nm] = vd.type.get();
       }
     } else if (l->kind == Kind::ConstDecl) {
       const auto& cd = static_cast<const ConstDecl&>(*l);
       if (!insert_proc_local_name(cd.loc, cd.name)) continue;
       scope_.local_consts[cd.name] = &cd;
       if (const TypeExpr* ct = analysis_.deduce_const_decl_type(cd)) {
-        scope_.local_types[cd.name] = ct;
+        scope_.local_value_types[cd.name] = ct;
       }
     } else if (l->kind == Kind::TypeDecl) {
       continue;

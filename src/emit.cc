@@ -116,7 +116,7 @@ struct Emitter : ResolveNameProvider,
   // locals). Populated at proc-body entry so expression-type deduction
   // can answer "what class does this variable belong to?" and the
   // Member-access emitter can auto-call only actual methods.
-  std::unordered_map<std::string, const ast::TypeExpr*> local_types;
+  std::unordered_map<std::string, const ast::TypeExpr*> local_value_types;
 
   // Function-local const declarations. Needed so integer constant
   // expressions can fold through local const references instead of
@@ -216,7 +216,7 @@ struct Emitter : ResolveNameProvider,
                      suppress_packed_scalar_value_load,
                      storage_view_context,
                      local_scope,
-                     local_types,
+                     local_value_types,
                      local_consts,
                      local_untyped_params,
                      local_nested_fns,
@@ -406,8 +406,8 @@ struct Emitter : ResolveNameProvider,
   bool const_param_needs_const_ref(const ast::TypeExpr* t) {
     return analysis_.const_param_needs_const_ref(t);
   }
-  const ClassInfo* class_info_for_type_name(std::string_view name) {
-    return analysis_.class_info_for_type_name(name);
+  const ClassInfo* migration_fallback_class_info_by_name(std::string_view name) {
+    return analysis_.migration_fallback_class_info_by_name(name);
   }
   std::string class_cast_rhs_type_cxx(const ast::Expr& rhs);
   std::string char_concat_operand_cxx(const ast::Expr& x, bool wrap_as_string);
@@ -425,7 +425,7 @@ struct Emitter : ResolveNameProvider,
   std::optional<std::string> member_base_ident(const ast::Member& m);
   std::string single_call_arg_cxx(const ast::Call& c);
   bool expr_is_const_untyped_storage_arg(const ast::Expr& e);
-  const TypeSymbol* visible_type_symbol(std::string_view type_name);
+  const TypeSymbol* migration_fallback_type_symbol(std::string_view type_name);
   bool visible_type_name_for_intrinsic(std::string_view type_name);
   bool visible_class_or_record_type_name(std::string_view type_name);
   std::string visible_class_or_record_type_path(std::string_view type_name);
@@ -435,11 +435,8 @@ struct Emitter : ResolveNameProvider,
   tp2cc::ResolvedCall resolve_new_constructor_call(
       const ast::Expr& pointer_type_expr, const ast::Expr& ctor_callee,
       const std::vector<const ast::Expr*>& args);
-  const ast::TypeExpr* lookup_named_type_expr(std::string_view name) {
-    return analysis_.lookup_named_type_expr(name);
-  }
-  bool is_builtin_reference_class_name(std::string_view name) const {
-    return analysis_.is_builtin_reference_class_name(name);
+  const ast::TypeExpr* migration_fallback_named_type_expr_by_name(std::string_view name) {
+    return analysis_.migration_fallback_named_type_expr_by_name(name);
   }
   std::string metaclass_target_name(const ast::TypeExpr* t) {
     return analysis_.metaclass_target_name(t);
@@ -737,10 +734,10 @@ const TypeExpr* Emitter::type_for_resolved_call(const Call& c) {
       ascii_lower(static_cast<const Ident&>(*c.callee).name) == "new" &&
       !c.args.empty()) {
     if (c.args[0]->kind == Kind::Ident) {
-      return lookup_named_type_expr(static_cast<const Ident&>(*c.args[0]).name);
+      return migration_fallback_named_type_expr_by_name(static_cast<const Ident&>(*c.args[0]).name);
     }
     if (auto qualified = unit_qualified_type_name(*c.args[0])) {
-      return lookup_named_type_expr(*qualified);
+      return migration_fallback_named_type_expr_by_name(*qualified);
     }
     return nullptr;
   }
@@ -755,7 +752,7 @@ const TypeExpr* Emitter::type_for_resolved_call(const Call& c) {
   }
   if (resolved.return_type_name.empty()) return nullptr;
   if (const TypeExpr* named =
-          analysis_.lookup_named_type_expr(resolved.return_type_name)) {
+          analysis_.migration_fallback_named_type_expr_by_name(resolved.return_type_name)) {
     return named;
   }
   const std::string low = ascii_lower(resolved.return_type_name);
@@ -832,12 +829,12 @@ std::string Emitter::value_class_alias(const Expr& e) {
   }
   if (const TypeExpr* t = type_for_overload(e)) {
     if (auto cls = metaclass_target_name(t); !cls.empty()) return cls;
-    if (auto cls = registry.direct_type_name(t, current_unit_name);
+    if (auto cls = analysis_.direct_type_name(t);
         !cls.empty()) {
       return cls;
     }
     if (const TypeExpr* canon = canonicalize_type(t)) {
-      if (auto cls = registry.direct_type_name(canon, current_unit_name);
+      if (auto cls = analysis_.direct_type_name(canon);
           !cls.empty()) {
         return cls;
       }
@@ -849,7 +846,7 @@ std::string Emitter::value_class_alias(const Expr& e) {
 std::string Emitter::class_cast_rhs_type_cxx(const Expr& rhs) {
   if (rhs.kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(rhs);
-    if (class_info_for_type_name(id.name)) {
+    if (migration_fallback_class_info_by_name(id.name)) {
       TyName tn(rhs.loc, id.name);
       return type_name_to_cxx(tn);
     }
@@ -996,16 +993,16 @@ bool Emitter::expr_is_const_untyped_storage_arg(const Expr& e) {
   return false;
 }
 
-const TypeSymbol* Emitter::visible_type_symbol(std::string_view type_name) {
-  return visible_type_symbol_in_context(registry, scope_state_, type_name);
+const TypeSymbol* Emitter::migration_fallback_type_symbol(std::string_view type_name) {
+  return migration_fallback_type_symbol_by_name(registry, scope_state_, type_name);
 }
 
 bool Emitter::visible_type_name_for_intrinsic(std::string_view type_name) {
   const std::string low = ascii_lower(type_name);
   if (is_primitive_type(low)) return true;
   if (!runtime_named_type_cxx(low).empty()) return true;
-  if (!builtin_reference_class_struct_cxx(low).empty()) return true;
-  if (visible_type_symbol(low)) return true;
+  if (migration_fallback_class_info_by_name(low)) return true;
+  if (migration_fallback_type_symbol(low)) return true;
   if (ResolveResult rr = resolve_name(std::string(type_name));
       rr.kind == ResolvedKind::UnitType) {
     return true;
@@ -1014,18 +1011,18 @@ bool Emitter::visible_type_name_for_intrinsic(std::string_view type_name) {
 }
 
 bool Emitter::visible_class_or_record_type_name(std::string_view type_name) {
-  if (class_info_for_type_name(type_name)) return true;
-  const TypeSymbol* symbol = visible_type_symbol(type_name);
+  if (migration_fallback_class_info_by_name(type_name)) return true;
+  const TypeSymbol* symbol = migration_fallback_type_symbol(type_name);
   return symbol && (symbol->class_info() || symbol->record_info());
 }
 
 std::string Emitter::visible_class_or_record_type_path(
     std::string_view type_name) {
-  const TypeSymbol* symbol = visible_type_symbol(type_name);
+  const TypeSymbol* symbol = migration_fallback_type_symbol(type_name);
   if (symbol && (symbol->class_info() || symbol->record_info())) {
     return type_symbol_pascal_path(*symbol);
   }
-  return class_info_for_type_name(type_name) ? std::string(type_name)
+  return migration_fallback_class_info_by_name(type_name) ? std::string(type_name)
                                              : std::string{};
 }
 
@@ -1047,10 +1044,10 @@ std::optional<std::string> Emitter::sizeof_type_operand_cxx(
   const auto& deref = static_cast<const Deref&>(expr);
   const TypeExpr* ptr_type = nullptr;
   if (deref.operand->kind == Kind::Ident) {
-    ptr_type = lookup_named_type_expr(
+    ptr_type = migration_fallback_named_type_expr_by_name(
         static_cast<const Ident&>(*deref.operand).name);
   } else if (auto qualified = unit_qualified_type_name(*deref.operand)) {
-    ptr_type = lookup_named_type_expr(*qualified);
+    ptr_type = migration_fallback_named_type_expr_by_name(*qualified);
   }
   if (!ptr_type) ptr_type = type_for_overload(*deref.operand);
   ptr_type = canonicalize_type(ptr_type);
@@ -1065,13 +1062,7 @@ std::optional<std::string> Emitter::sizeof_type_operand_cxx(
 Emitter::PascalTypecastTarget Emitter::classify_pascal_typecast_target(
     std::string_view type_name) {
   PascalTypecastTarget out;
-  if (is_builtin_reference_class_name(type_name)) {
-    out.known = true;
-    out.kind = PascalTypecastKind::ReferenceClass;
-    return out;
-  }
-
-  const TypeSymbol* symbol = visible_type_symbol(type_name);
+  const TypeSymbol* symbol = migration_fallback_type_symbol(type_name);
   if (symbol) {
     out.known = true;
     if (const ClassInfo* ci = symbol->class_info()) {
@@ -1087,7 +1078,7 @@ Emitter::PascalTypecastTarget Emitter::classify_pascal_typecast_target(
     }
   }
 
-  out.type = lookup_named_type_expr(type_name);
+  out.type = migration_fallback_named_type_expr_by_name(type_name);
   if (out.type) {
     out.known = true;
     out.type = canonicalize_type(out.type);
@@ -1095,7 +1086,7 @@ Emitter::PascalTypecastTarget Emitter::classify_pascal_typecast_target(
 
   if (out.type && out.type->kind == Kind::TyName) {
     const auto& n = static_cast<const TyName&>(*out.type);
-    if (const TypeSymbol* resolved = visible_type_symbol(n.name)) {
+    if (const TypeSymbol* resolved = migration_fallback_type_symbol(n.name)) {
       if (const ClassInfo* ci = resolved->class_info()) {
         out.kind = ci->is_reference_type ? PascalTypecastKind::ReferenceClass
                                          : PascalTypecastKind::Aggregate;
@@ -1140,8 +1131,8 @@ bool Emitter::type_uses_reinterpret_copy_for_scalar_cast(const TypeExpr* t) {
   }
   if (t->kind != Kind::TyName) return false;
 
-  const auto& name = static_cast<const TyName&>(*t);
-  const TypeSymbol* symbol = visible_type_symbol(name.name);
+  const TypeSymbol* symbol =
+      resolved_type_symbol_in_context(registry, scope_state_, t);
   if (!symbol) return false;
   if (symbol->record_info()) return true;
   if (const ClassInfo* ci = symbol->class_info()) return !ci->is_reference_type;
@@ -1337,15 +1328,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (rr.kind == ResolvedKind::UnitType) {
         const std::string class_name =
             analysis_.resolve_class_alias_name(n.name);
-        if (const auto* ci = class_info_for_type_name(class_name);
+        if (const auto* ci = migration_fallback_class_info_by_name(class_name);
             ci && ci->is_reference_type) {
           return metaclass_value_fn_cxx(class_name) + "()";
         }
         // Type aliases of reference classes (`texportlibwdosx = texportlibwin`)
         // appear in value position to mean the underlying class's metaclass.
         // Follow the alias chain to its concrete class and emit that metaclass.
-        const TypeSymbol* symbol =
-            registry.lookup_type_symbol(n.name, current_unit_name);
+        const TypeSymbol* symbol = migration_fallback_type_symbol(n.name);
         const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
         if (alias && alias->target) {
           const TypeExpr* canon =
@@ -1353,7 +1343,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (canon && canon->kind == Kind::TyName) {
             const std::string& target =
                 static_cast<const TyName&>(*canon).name;
-            if (const auto* tci = class_info_for_type_name(target);
+            if (const auto* tci = migration_fallback_class_info_by_name(target);
                 tci && tci->is_reference_type) {
               return metaclass_value_fn_cxx(target) + "()";
             }
@@ -1618,8 +1608,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (base_ident && *base_ident == "inherited") {
         std::string parent;
         if (!current_class_name.empty()) {
-          const ClassInfo* ci = registry.lookup_class(current_class_name,
-                                                      current_unit_name);
+          const ClassInfo* ci =
+              migration_fallback_class_info_by_name(current_class_name);
           if (ci) {
             parent = ci->parent;
             if (parent.empty() && ci->is_reference_type) {
@@ -1660,7 +1650,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if (rr.kind == ResolvedKind::UnitType) {
           const std::string qualified =
               unit_member->unit_name + "." + m.name;
-          if (const auto* ci = class_info_for_type_name(qualified);
+          if (const auto* ci = migration_fallback_class_info_by_name(qualified);
               ci && ci->is_reference_type) {
             return metaclass_value_fn_cxx(qualified) + "()";
           }
@@ -1789,7 +1779,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       std::string bcls = value_class_alias(*m.base);
       if (m.name == "classtype" || m.name == "instancesize") {
-        const auto* ci = bcls.empty() ? nullptr : class_info_for_type_name(bcls);
+        const auto* ci = bcls.empty() ? nullptr : migration_fallback_class_info_by_name(bcls);
         if ((ci && ci->is_reference_type) || expr_is_reference_class(*m.base)) {
           // Property/default-index results like `Items[i]` may already have
           // the right Pascal class alias even when the raw expression
@@ -2387,14 +2377,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         } else {
           const TypeExpr* tgt = nullptr;
           if (const TypeSymbol* local_symbol =
-                  lexical_type_symbol_in_context(registry, scope_state_,
+                  migration_fallback_lexical_type_symbol_by_name(registry, scope_state_,
                                                  id.name);
               local_symbol && local_symbol->alias_info() &&
               local_symbol->alias_info()->target) {
             tgt = canonicalize_type(local_symbol->alias_info()->target.get());
           } else {
-            const TypeSymbol* symbol =
-                registry.lookup_type_symbol(id.name, current_unit_name);
+            const TypeSymbol* symbol = migration_fallback_type_symbol(id.name);
             const AliasInfo* alias = symbol ? symbol->alias_info() : nullptr;
             if (alias && alias->target) {
               tgt = registry.canonicalize(alias->target.get(),
@@ -2437,7 +2426,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             // procedure overload resolution.
             const std::string qualified =
                 unit_member->unit_name + "." + mem.name;
-            const TypeExpr* cast_ty = lookup_named_type_expr(qualified);
+            const TypeExpr* cast_ty = migration_fallback_named_type_expr_by_name(qualified);
             if (cast_ty) cast_ty = canonicalize_type(cast_ty);
             if (cast_ty && cast_ty->kind == Kind::TyProcedural) {
               // Unit-qualified procedural casts are the same Pascal operation

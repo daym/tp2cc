@@ -162,13 +162,12 @@ std::string EmitStmts::value_class_alias(const Expr& expr) {
   if (const TypeExpr* t = selected_value_type(expr)) {
     if (auto cls = analysis_.metaclass_target_name(t); !cls.empty()) return cls;
     {
-      if (auto cls = registry_.direct_type_name(t, scope_.current_unit_name);
+      if (auto cls = analysis_.direct_type_name(t);
           !cls.empty()) {
         return cls;
       }
       if (const TypeExpr* canon = analysis_.canonicalize_type(t)) {
-        if (auto cls =
-                registry_.direct_type_name(canon, scope_.current_unit_name);
+        if (auto cls = analysis_.direct_type_name(canon);
             !cls.empty()) {
           return cls;
         }
@@ -278,7 +277,7 @@ void EmitStmts::emit_try_stmt(const Try& t) {
     std::optional<std::string> bound_name;
     std::optional<TyName> bound_type;
     auto saved_locals = scope_.local_scope;
-    auto saved_types = scope_.local_types;
+    auto saved_types = scope_.local_value_types;
     if (!h.var_name.empty()) {
       bound_name = mangle(h.var_name);
       stmt_ops_.emitln("auto " + *bound_name + " = " +
@@ -290,13 +289,13 @@ void EmitStmts::emit_try_stmt(const Try& t) {
       bound_type.emplace();
       bound_type->name =
           h.class_name.empty() ? std::string("exception") : h.class_name;
-      scope_.local_types[h.var_name] = &*bound_type;
+      scope_.local_value_types[h.var_name] = &*bound_type;
     }
     ++except_handler_depth_;
     if (h.body) emit_stmt(*h.body);
     --except_handler_depth_;
     scope_.local_scope = std::move(saved_locals);
-    scope_.local_types = std::move(saved_types);
+    scope_.local_value_types = std::move(saved_types);
     stmt_ops_.dedent();
     stmt_ops_.emitln("}");
   }
@@ -676,7 +675,7 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
           const std::string base =
               ascii_lower(static_cast<const Ident&>(*mem.base).name);
           const TypeSymbol* symbol =
-              registry_.lookup_type_symbol(base, scope_.current_unit_name);
+              migration_fallback_type_symbol_by_name(registry_, scope_, base);
           if (!symbol || (!symbol->class_info() && !symbol->record_info())) {
             cls = value_class_alias(*mem.base);
           }
@@ -689,7 +688,7 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
             PickResult picked = resolution_.pick_method_overload(*methods, {});
             stmt_autocalls_member = !picked.ambiguous && picked.decl;
           } else if (ascii_lower(mem.name) == "destroy") {
-            if (const auto* ci = analysis_.class_info_for_type_name(cls)) {
+            if (const auto* ci = analysis_.migration_fallback_class_info_by_name(cls)) {
               stmt_autocalls_member = ci->is_reference_type;
             }
           }
@@ -774,7 +773,7 @@ void EmitStmts::emit_case_stmt(const CaseStmt& cs) {
   bool scope_inserted = scope_.local_scope.insert(selector).second;
   bool type_inserted = false;
   if (selector_type) {
-    scope_.local_types[selector] = selector_type;
+    scope_.local_value_types[selector] = selector_type;
     type_inserted = true;
   }
 
@@ -810,7 +809,7 @@ void EmitStmts::emit_case_stmt(const CaseStmt& cs) {
   stmt_ops_.emitln("}");
 
   if (type_inserted) {
-    scope_.local_types.erase(selector);
+    scope_.local_value_types.erase(selector);
   }
   if (scope_inserted) {
     scope_.local_scope.erase(selector);
@@ -857,7 +856,7 @@ std::optional<std::string> EmitStmts::for_in_type_rhs_name(const Expr& e) {
     ResolveResult rr = resolve_name_provider_.resolve_name(id.name);
     if (rr.kind == ResolvedKind::UnitType) return id.name;
     if (rr.kind == ResolvedKind::Unknown &&
-        (is_primitive_type(low) || analysis_.lookup_named_type_expr(id.name))) {
+        (is_primitive_type(low) || analysis_.migration_fallback_named_type_expr_by_name(id.name))) {
       return id.name;
     }
     return std::nullopt;
@@ -893,21 +892,20 @@ std::string EmitStmts::for_in_class_type_name(
     if (!owner_class_name.empty() && name.find('.') == std::string::npos) {
       const std::string nested =
           std::string(owner_class_name) + "." + name;
-      if (analysis_.class_info_for_type_name(nested)) return nested;
+      if (analysis_.migration_fallback_class_info_by_name(nested)) return nested;
     }
     {
-      const std::string direct =
-          registry_.direct_type_name(type, scope_.current_unit_name);
-      if (!direct.empty() && analysis_.class_info_for_type_name(direct)) {
+      const std::string direct = analysis_.direct_type_name(type);
+      if (!direct.empty() && analysis_.migration_fallback_class_info_by_name(direct)) {
         return direct;
       }
     }
-    if (analysis_.class_info_for_type_name(name)) return name;
+    if (analysis_.migration_fallback_class_info_by_name(name)) return name;
   }
   type = analysis_.canonicalize_type(type);
   if (type && type->kind == Kind::TyName) {
     const std::string name = ascii_lower(static_cast<const TyName&>(*type).name);
-    if (analysis_.class_info_for_type_name(name)) return name;
+    if (analysis_.migration_fallback_class_info_by_name(name)) return name;
   }
   return {};
 }
@@ -937,7 +935,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_type_rhs(
   auto type_name = for_in_type_rhs_name(*f.in_expr);
   if (!type_name) return ForInEmitResult::NotMatched;
 
-  const TypeExpr* named = analysis_.lookup_named_type_expr(*type_name);
+  const TypeExpr* named = analysis_.migration_fallback_named_type_expr_by_name(*type_name);
   named = analysis_.canonicalize_type(named);
   if (named && named->kind == Kind::TyEnum &&
       types_.enum_has_explicit_values(static_cast<const TyEnum&>(*named))) {
@@ -1004,7 +1002,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_own_get_enumerator(
     return ForInEmitResult::Error;
   }
 
-  const ClassInfo* ci = analysis_.class_info_for_type_name(class_name);
+  const ClassInfo* ci = analysis_.migration_fallback_class_info_by_name(class_name);
   std::string access = (ci && ci->is_reference_type) ? "->" : ".";
   ForInEnumeratorProvider provider(
       stmt_ops_.expr_to_cxx(*f.in_expr) + access + mangle(get->decl->name) +
@@ -1049,7 +1047,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
     return ForInEmitResult::Error;
   }
 
-  const ClassInfo* enum_info = analysis_.class_info_for_type_name(enum_class);
+  const ClassInfo* enum_info = analysis_.migration_fallback_class_info_by_name(enum_class);
   const bool enum_is_reference = enum_info && enum_info->is_reference_type;
   const std::string access = enum_is_reference ? "->" : ".";
   const std::string n = std::to_string(++loop_label_counter_);
