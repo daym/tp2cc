@@ -1,0 +1,24 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-30
+Subject: Use the implicit pshortstring alias
+License: expat
+
+`cutils.stringdispose` takes a `var p: pshortstring` parameter.  With the
+local declaration, that parameter has the distinct `cutils.pshortstring`
+type, while callers pass variables declared as bare `pshortstring` in
+their own units.  Remove the local declaration so the formal parameter and
+callers use the same implicit `pshortstring` type.
+
+Later FPC compiler trees already use `pshortstring` without declaring a
+local alias in `compiler/cutils.pas`.
+
+--- a/compiler/cutils.pas
++++ b/compiler/cutils.pas
+@@ -31,7 +31,6 @@ interface
+ 
+ 
+     type
+-       pshortstring = ^string;
+        Tcharset=set of char;
+ 
+     var
