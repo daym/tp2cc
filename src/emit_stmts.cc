@@ -1009,11 +1009,9 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_own_get_enumerator(
     return ForInEmitResult::Error;
   }
 
-  const ClassInfo* ci = analysis_.migration_fallback_class_info_by_name(class_name);
-  std::string access = (ci && ci->is_reference_type) ? "->" : ".";
   ForInEnumeratorProvider provider(
-      stmt_ops_.expr_to_cxx(*f.in_expr) + access + mangle(get->decl->name) +
-          "()",
+      stmt_ops_.expr_to_cxx(*f.in_expr) + value_receiver_access_op(*f.in_expr) +
+          mangle(get->decl->name) + "()",
       get->decl->return_type.get(), f.loc, class_name);
   provider.method = get;
   return emit_for_in_enumerator_provider(f, var, provider);
@@ -1054,7 +1052,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
     return ForInEmitResult::Error;
   }
 
-  const ClassInfo* enum_info = analysis_.migration_fallback_class_info_by_name(enum_class);
+  const ClassInfo* enum_info = analysis_.class_info_for_type(provider.type);
   const bool enum_is_reference = enum_info && enum_info->is_reference_type;
   const std::string access = enum_is_reference ? "->" : ".";
   const std::string n = std::to_string(++loop_label_counter_);

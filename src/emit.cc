@@ -1781,8 +1781,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // no longer looks like a plain class lvalue. Recover the dynamic
           // class query from that alias so `Items[i].ClassType` still lowers
           // to an object-side method call.
-          const std::string access =
-              (ci && ci->is_reference_type) ? "->" : member_access_op(*m.base);
+          const std::string access = value_receiver_access_op(*m.base);
           std::string text = base_cxx + access + mangle(m.name);
           return is_callee_context_ ? text : text + "()";
         }
@@ -1804,7 +1803,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
            registry.lookup_record_field(bcls, m.name, current_unit_name))) {
         member_cxx = registry.field_cxx_name(m.name);
       }
-      std::string text = base_cxx + member_access_op(*m.base) + member_cxx;
+      std::string text =
+          base_cxx + value_receiver_access_op(*m.base) + member_cxx;
       if (is_callee_context_) return text;
       if (bcls.empty()) return text;
       if (const auto* methods =
