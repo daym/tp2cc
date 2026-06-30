@@ -1,0 +1,43 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-30
+Subject: Import compiler-local pointer aliases where used
+License: expat
+
+`compiler/aoptbase.pas` uses `pbyte`, `compiler/owar.pas` uses
+`plongint`, and `compiler/optconstprop.pas` uses `pboolean`, but those
+units do not import the local compiler unit that defines those aliases.
+
+When building fpc using fpc (B), it would accidentially resolve those
+using the fpc B RTL, which is unnecessary coupling.  Fix it.
+
+--- a/compiler/aoptbase.pas
++++ b/compiler/aoptbase.pas
+@@ -27,6 +27,7 @@
+   interface
+ 
+     uses
++      globtype,
+       aasmbase,aasmcpu,aasmtai,aasmdata,
+       cpubase,
+       cgbase,
+
+--- a/compiler/owar.pas
++++ b/compiler/owar.pas
+@@ -89,6 +89,7 @@
+ implementation
+ 
+     uses
++      globtype,
+       SysUtils,
+       cstreams,
+       systems,
+--- a/compiler/optconstprop.pas
++++ b/compiler/optconstprop.pas
+@@ -55,6 +55,7 @@
+   implementation
+ 
+     uses
++      globtype,
+       pass_1,procinfo,compinnr,
+       symsym, symconst,
+       nutils, nbas, ncnv, nld, nflw, ncal, ninl;
