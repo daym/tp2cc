@@ -1,0 +1,20 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-06-30
+Subject: Import compiler-local pointer aliases where used
+License: expat
+
+`compiler/owar.pas` uses `plongint`, but does not import the local
+compiler unit that defines that alias.
+
+When building fpc using fpc (B), it would accidentially resolve
+`plongint` using the fpc B RTL, which is unnecessary coupling.  Fix it.
+
+--- a/compiler/owar.pas
++++ b/compiler/owar.pas
+@@ -91,6 +91,7 @@ implementation
+     uses
++      globtype,
+       SysUtils,
+       cstreams,
+       systems,
+       globals,
