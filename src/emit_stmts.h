@@ -110,6 +110,7 @@ class EmitStmts {
   const ast::TypeExpr* selected_value_type(const ast::Expr& expr);
   const ast::TypeExpr* with_receiver_type(const ast::Expr& expr);
   std::string value_class_alias(const ast::Expr& expr);
+  std::string value_receiver_access_op(const ast::Expr& expr);
   std::optional<std::string> for_in_type_rhs_name(const ast::Expr& e);
   std::string for_in_class_type_name(
       const ast::TypeExpr* type,

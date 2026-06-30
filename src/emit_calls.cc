@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -38,33 +39,22 @@ struct PackedScalarValueLoadSuppressor {
   ~PackedScalarValueLoadSuppressor() { flag = saved; }
 };
 
-struct DefaultArgumentUnitScope {
+struct DefaultArgumentScope {
   // A default argument expression belongs to the declaration that introduced
   // it, even though tp2cc lowers it while emitting a later call site.
-  std::string& current_unit;
-  std::string& emission_unit;
-  std::string saved_current_unit;
-  std::string saved_emission_unit;
-  bool active = false;
+  ScopedDeclarationLookup declaration_lookup;
 
-  DefaultArgumentUnitScope(std::string& current_unit_in,
-                           std::string& emission_unit_in,
-                           std::string_view default_arg_unit)
-      : current_unit(current_unit_in), emission_unit(emission_unit_in) {
-    if (!default_arg_unit.empty() && default_arg_unit != current_unit) {
-      saved_current_unit = current_unit;
-      saved_emission_unit = emission_unit;
-      emission_unit = current_unit;
-      current_unit = std::string(default_arg_unit);
-      active = true;
-    }
-  }
-
-  ~DefaultArgumentUnitScope() {
-    if (active) {
-      current_unit = saved_current_unit;
-      emission_unit = saved_emission_unit;
-    }
+  DefaultArgumentScope(ScopeStateView& scope,
+                       const TypeRegistry& registry,
+                       const TypeLookupContext* default_arg_context,
+                       std::string_view default_arg_unit)
+      : declaration_lookup(
+            scope,
+            default_arg_context ? default_arg_context
+                                : registry.lookup_unit_context(
+                                      default_arg_unit,
+                                      /*implementation=*/false),
+            default_arg_unit) {
   }
 };
 
@@ -72,17 +62,38 @@ std::string visible_type_unit_from(const TypeExpr* type,
                                    std::string_view type_name,
                                    std::string_view unit_name,
                                    const TypeRegistry& registry) {
-  if (const TypeSymbol* symbol = registry.referenced_symbol_for_type(type)) {
+  if (const TypeSymbol* symbol = registry.resolved_symbol_for_type(type)) {
     return symbol->defining_unit;
   }
+  // A present TypeExpr was already through build() binding. Looking up the
+  // spelling here would mask that failure and revive emission-time alias/name
+  // chasing for default-argument helper types.
+  if (type) return {};
   // MIGRATION_NAME_LOOKUP_FALLBACK: default-argument helper types can still be
   // synthesized/qualified names without a bound TypeExpr. Parser-side binding
   // should delete this spelling fallback.
-  if (const TypeSymbol* symbol = migration_fallback_type_symbol_in_unit_by_name(
-          registry, unit_name, type_name)) {
+  if (const TypeSymbol* symbol =
+          registry.lookup_type_symbol(type_name, unit_name)) {
     return symbol->defining_unit;
   }
   return {};
+}
+
+const MethodSig* find_selected_class_method(
+    const TypeRegistry& registry, const ClassInfo& start,
+    std::string_view member_name, const ProcDecl* selected_decl) {
+  if (!selected_decl) return nullptr;
+  const std::string key = ascii_lower(std::string(member_name));
+  std::unordered_set<const ClassInfo*> seen;
+  for (const ClassInfo* ci = &start; ci && seen.insert(ci).second;
+       ci = registry.lookup_parent_class(*ci)) {
+    auto methods = ci->methods.find(key);
+    if (methods == ci->methods.end()) continue;
+    for (const auto& candidate : methods->second) {
+      if (candidate.decl.get() == selected_decl) return &candidate;
+    }
+  }
+  return nullptr;
 }
 
 struct EffectiveParamType {
@@ -244,6 +255,8 @@ bool EmitCalls::proc_accepts_zero_args(const ProcDecl& decl) {
 std::vector<CallArgumentSlot> EmitCalls::append_default_call_slots(
     const ProcDecl* decl, std::vector<CallArgumentSlot> slots) {
   if (!decl) return slots;
+  const TypeLookupContext* signature_context =
+      registry_.lookup_proc_signature_context(decl);
   const std::vector<FlatCallParamInfo> flat_params =
       resolution_.flatten_call_param_info(decl);
   if (slots.size() >= flat_params.size()) return slots;
@@ -262,8 +275,10 @@ std::vector<CallArgumentSlot> EmitCalls::append_default_call_slots(
     slots.push_back(CallArgumentSlot{
         .expr = flat_params[i].default_value,
         .param_type = nullptr,
+        .param_context = nullptr,
         .param_unit = {},
         .param_declaring_type = {},
+        .default_arg_context = signature_context,
         .untyped_arg = UntypedArgKind::None,
         .mutable_ref_arg = false,
         .defaulted = true});
@@ -291,8 +306,15 @@ std::vector<CallArgumentSlot> EmitCalls::call_slots_with_decl_param_info(
           (p.mode == Param::Const &&
            analysis_.const_param_needs_mutable_ref(p.type.get()));
       slot.param_type = p.type.get();
+      slot.param_context = registry_.lookup_context_for_type(p.type.get());
+      if (!slot.param_context) {
+        slot.param_context = registry_.lookup_proc_signature_context(decl);
+      }
       slot.param_unit = std::string(param_unit);
       slot.param_declaring_type = std::string(param_declaring_type);
+      if (slot.defaulted && !slot.default_arg_context) {
+        slot.default_arg_context = registry_.lookup_proc_signature_context(decl);
+      }
       ++ai;
     }
   }
@@ -320,7 +342,7 @@ std::vector<CallArgumentSlot>
 EmitCalls::call_slots_with_procedural_callee_param_info(
     const Expr& callee, std::vector<CallArgumentSlot> slots) {
   const TypeExpr* callee_type = procedural_callee_type(callee);
-  if (callee_type) callee_type = analysis_.canonicalize_type(callee_type);
+  if (callee_type) callee_type = analysis_.semantic_shape_type(callee_type);
   if (!callee_type || callee_type->kind != Kind::TyProcedural) return slots;
 
   const auto& proc = static_cast<const TyProcedural&>(*callee_type);
@@ -340,6 +362,7 @@ EmitCalls::call_slots_with_procedural_callee_param_info(
           (p.mode == Param::Const &&
            analysis_.const_param_needs_mutable_ref(p.type.get()));
       slot.param_type = p.type.get();
+      slot.param_context = registry_.lookup_context_for_type(p.type.get());
       ++ai;
     }
   }
@@ -364,8 +387,10 @@ CallArgumentPlan EmitCalls::plan_call_arguments(
     slots.push_back(CallArgumentSlot{
         .expr = arg,
         .param_type = nullptr,
+        .param_context = nullptr,
         .param_unit = {},
         .param_declaring_type = {},
+        .default_arg_context = nullptr,
         .untyped_arg = UntypedArgKind::None,
         .mutable_ref_arg = false,
         .defaulted = false});
@@ -395,12 +420,19 @@ bool EmitCalls::slot_accepts_argument(const CallArgumentSlot& slot,
       registry_, scope_, slot.param_type, slot.param_unit,
       slot.param_declaring_type, default_arg_unit);
   const TypeExpr* param_type = effective.type;
+  const TypeLookupContext* param_context =
+      slot.param_context ? slot.param_context
+                         : registry_.lookup_context_for_type(param_type);
   if (!param_type || slot.untyped_arg != UntypedArgKind::None) return true;
 
   auto scored_conversion_is_viable = [&] {
     FlatCallParamInfo formal(param_type, /*untyped_in=*/false,
                              slot.mutable_ref_arg,
-                             /*default_value_in=*/nullptr);
+                             /*default_value_in=*/nullptr,
+                             /*param_unit_in=*/{},
+                             /*param_declaring_type_in=*/{},
+                             /*owned_type_in=*/{},
+                             param_context);
     return resolution_
         .score_argument_conversion(*slot.expr, formal,
                                    /*allow_assignment_operator_conversions=*/true)
@@ -414,8 +446,9 @@ bool EmitCalls::slot_accepts_argument(const CallArgumentSlot& slot,
     }
     const TypeExpr* arg_type = overload_types_.type_for_overload(*slot.expr);
     if (!arg_type) arg_type = analysis_.deduce_type(*slot.expr);
-    if (arg_type) arg_type = analysis_.canonicalize_type(arg_type);
-    const TypeExpr* canon_param = analysis_.canonicalize_type(param_type);
+    if (arg_type) arg_type = analysis_.semantic_shape_type(arg_type);
+    const TypeExpr* canon_param =
+        analysis_.semantic_shape_type_in_context(param_type, param_context);
     if (!arg_type || !canon_param) return true;
     if (storage_.type_is_stringish(canon_param) &&
         storage_.type_is_stringish(arg_type) &&
@@ -448,21 +481,28 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
                                       UntypedArgKind untyped_arg,
                                       bool mutable_ref_arg,
                                       std::string_view default_arg_unit,
+                                      const TypeLookupContext* default_arg_context,
                                       std::string_view param_unit,
-                                      std::string_view param_declaring_type) {
+                                      std::string_view param_declaring_type,
+                                      const TypeLookupContext* param_context) {
   EffectiveParamType effective = effective_call_param_type(
       registry_, scope_, param_type, param_unit, param_declaring_type,
       default_arg_unit);
   param_type = effective.type;
-  DefaultArgumentUnitScope default_scope(scope_.current_unit_name,
-                                         scope_.lookup_emission_unit_name,
-                                         default_arg_unit);
-  if (param_type && storage_.type_is_open_array(param_type) &&
+  const TypeLookupContext* effective_param_context =
+      param_context ? param_context
+                    : registry_.lookup_context_for_type(param_type);
+  DefaultArgumentScope default_scope(scope_, registry_, default_arg_context,
+                                     default_arg_unit);
+  const TypeExpr* canon_param_type =
+      analysis_.semantic_shape_type_in_context(param_type,
+                                               effective_param_context);
+  if (canon_param_type && canon_param_type->kind == Kind::TyArray &&
+      static_cast<const TyArray&>(*canon_param_type).array_kind ==
+          ArrayKind::Open &&
       arg.kind == Kind::SetLit) {
     const auto& s = static_cast<const SetLit&>(arg);
-    const TypeExpr* canon = analysis_.canonicalize_type(param_type);
-    if (!canon || canon->kind != Kind::TyArray) return expr_ops_.expr_to_cxx(s);
-    const auto& arr = static_cast<const TyArray&>(*canon);
+    const auto& arr = static_cast<const TyArray&>(*canon_param_type);
     const TypeExpr* elem_type = arr.element.get();
     if (!elem_type) return "::rt::tp2cc_open_array<int32_t>()";
     if (s.elements.empty()) {
@@ -508,9 +548,9 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
   } storage_view_context(scope_.storage_view_context,
                          scope_.storage_view_context || mutable_ref_arg ||
                              untyped_arg != UntypedArgKind::None);
-  const TypeExpr* arg_type = overload_types_.type_for_overload(arg);
-  if (arg_type) arg_type = analysis_.canonicalize_type(arg_type);
-  const TypeExpr* canon_param_type = analysis_.canonicalize_type(param_type);
+  const TypeExpr* raw_arg_type = overload_types_.type_for_overload(arg);
+  const TypeExpr* arg_type = raw_arg_type;
+  if (arg_type) arg_type = analysis_.semantic_shape_type(arg_type);
   if (mutable_ref_arg && (canon_param_type || untyped_arg == UntypedArgKind::None)) {
     // `var`/`out` actuals are storage contexts. Reuse the same designator
     // lowering as assignment so call-site typecasts like `Val(s,
@@ -550,10 +590,17 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
   if (mutable_ref_arg && canon_param_type && arg_type &&
       storage_.expr_is_storage_lvalue(arg) &&
       storage_.type_is_pointerish(canon_param_type) &&
-      storage_.type_is_pointerish(arg_type) &&
-      types_.type_to_cxx(*canon_param_type) != types_.type_to_cxx(*arg_type)) {
-    return storage_.reinterpret_ref_text(types_.type_to_cxx(*param_type),
+      storage_.type_is_pointerish(arg_type)) {
+    const std::string param_cxx =
+        param_type ? types_.type_to_cxx(*param_type)
+                   : types_.type_to_cxx(*canon_param_type);
+    const std::string arg_cxx =
+        raw_arg_type ? types_.type_to_cxx(*raw_arg_type)
+                     : types_.type_to_cxx(*arg_type);
+    if (param_cxx != arg_cxx) {
+      return storage_.reinterpret_ref_text(param_cxx,
                                          expr_ops_.expr_to_cxx(arg), false);
+    }
   }
   if (canon_param_type && storage_.type_is_stringish(canon_param_type)) {
     if (mutable_ref_arg && arg_type &&
@@ -590,11 +637,12 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
     }
   }
   std::string arg_text = expr_ops_.const_value_to_cxx(arg, param_type, false);
-  if (storage_.type_is_open_array(param_type)) {
+  if (canon_param_type && canon_param_type->kind == Kind::TyArray &&
+      static_cast<const TyArray&>(*canon_param_type).array_kind ==
+          ArrayKind::Open) {
     const TypeExpr* at = arg_type;
     if (!storage_.type_is_open_array(at)) {
-      const TypeExpr* canon_open = analysis_.canonicalize_type(param_type);
-      const auto& arr = static_cast<const TyArray&>(*canon_open);
+      const auto& arr = static_cast<const TyArray&>(*canon_param_type);
       const TypeExpr* elem_type = arr.element ? arr.element.get() : nullptr;
       std::string elem_cxx =
           elem_type ? types_.type_to_cxx(*elem_type) : std::string("int32_t");
@@ -639,7 +687,9 @@ std::string EmitCalls::lower_call_arg(const CallArgumentSlot& slot,
   return lower_call_arg(*slot.expr, slot.param_type, slot.untyped_arg,
                         slot.mutable_ref_arg,
                         slot.defaulted ? default_arg_unit : std::string_view{},
-                        slot.param_unit, slot.param_declaring_type);
+                        slot.defaulted ? slot.default_arg_context : nullptr,
+                        slot.param_unit, slot.param_declaring_type,
+                        slot.param_context);
 }
 
 std::string EmitCalls::lower_implicit_zero_arg_call(
@@ -679,19 +729,8 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
   if (!ci || !ci->is_reference_type) {
     return std::nullopt;
   }
-  const MethodSig* method = nullptr;
-  if (selected_decl) {
-    if (const auto* methods = registry_.lookup_class_methods(
-            std::string(class_name), std::string(member_name),
-            scope_.current_unit_name)) {
-      for (const auto& candidate : *methods) {
-        if (candidate.decl.get() == selected_decl) {
-          method = &candidate;
-          break;
-        }
-      }
-    }
-  }
+  const MethodSig* method =
+      find_selected_class_method(registry_, *ci, member_name, selected_decl);
   bool implicit_root_create = false;
   if (!method || method->kind != SymKind::Constructor) {
     if (ascii_lower(std::string(member_name)) != "create" ||
@@ -719,7 +758,11 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
     if (i) args_cxx += ", ";
     args_cxx += lower_call_arg(plan.slots[i], default_arg_unit);
   }
-  std::string struct_ty = types_.named_type_struct_cxx(class_name);
+  const TypeSymbol* symbol =
+      descriptor_payload_symbol(
+          registry_.lookup_type_symbol_exact(ci->defining_unit, ci->name));
+  std::string struct_ty = symbol ? types_.type_symbol_struct_cxx(*symbol)
+                                 : types_.named_type_struct_cxx(class_name);
   return "([&]{ auto tp2cc_ptr = new " + struct_ty + "{}; tp2cc_ptr->" +
          (implicit_root_create ? std::string("p_create")
                                : mangle(std::string(member_name))) +

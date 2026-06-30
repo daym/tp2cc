@@ -734,13 +734,4 @@ bool primitive_name_is_charish(std::string_view lowname) {
   return low == "char" || low == "ansichar";
 }
 
-// Pre: `t` is already canonical (caller's responsibility). Tests membership
-// in the char family by atom pointer equality. char and ansichar are the
-// same type in FPC's Linux/cpaware-disabled path; both names resolve to the
-// char atom through canonicalize, so they share identity here.
-bool tyname_is_charish(const ast::TypeExpr* t) {
-  return t == named_pascal_type("char") ||
-         t == named_pascal_type("ansichar");
-}
-
 }  // namespace tp2cc

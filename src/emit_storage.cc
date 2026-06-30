@@ -28,18 +28,6 @@ bool is_plain_pointer_type(const TypeExpr* t) {
          !static_cast<const TyPointer&>(*t).target;
 }
 
-bool is_runtime_pointer_primitive_type(const TypeExpr* t) {
-  if (!t || t->kind != Kind::TyName) return false;
-  const PrimitiveInfo* pi = primitive_info(
-      ascii_lower(static_cast<const TyName&>(*t).name));
-  return pi && pi->is_pointer_primitive();
-}
-
-std::string reference_class_name(const TypeExpr* t) {
-  if (!t || t->kind != Kind::TyName) return {};
-  return ascii_lower(static_cast<const TyName&>(*t).name);
-}
-
 }  // namespace
 
 EmitStorage::EmitStorage(const TypeRegistry& registry, ScopeStateView& scope,
@@ -61,26 +49,31 @@ const TypeExpr* EmitStorage::storage_expr_type(const Expr& e) {
 }
 
 const TypeExpr* EmitStorage::canonical_storage_expr_type(const Expr& e) {
-  return analysis_.canonicalize_type(storage_expr_type(e));
+  return analysis_.semantic_shape_type(storage_expr_type(e));
 }
 
 std::string EmitStorage::offsetof_base_type_cxx(
     const TypeExpr* t, const std::string& base_expr_cxx) {
-  // `offsetof` needs a C++ type, not a value expression. Prefer the registered
-  // Pascal type name when one exists, because that names the generated struct
-  // directly. Inline anonymous record/object variables have no Pascal type name;
-  // for those, use the emitted object expression's `decltype` so offset math
-  // still names the actual generated C++ aggregate without parsing generated
-  // C++ type text.
-  if (t && t->kind == Kind::TyName) {
-    const auto& n = static_cast<const TyName&>(*t);
-    if (migration_fallback_local_type_symbol_by_name(registry_, scope_, n.name)) {
-      return types_.named_type_struct_cxx(n.name);
+  // `offsetof` needs the containing C++ aggregate type, not a Pascal spelling.
+  // If build() resolved the source type, use that symbol directly; otherwise
+  // anonymous record/object variables fall back to `decltype(base_expr_cxx)`.
+  if (t) {
+    const TypeLookupContext* context = registry_.lookup_context_for_type(t);
+    if (const TypeSymbol* symbol =
+            resolved_type_symbol_in_context(registry_, scope_, t, context)) {
+      const TypeSymbol* payload = descriptor_payload_symbol(symbol);
+      if (payload && (payload->record_info() || payload->class_info() ||
+                      payload->interface_info())) {
+        if (payload->defining_unit == "__rt__" ||
+            payload->defining_unit == "__builtin__") {
+          if (std::string cxx = types_.type_symbol_to_cxx(payload);
+              !cxx.empty()) {
+            return cxx;
+          }
+        }
+        return types_.type_symbol_struct_cxx(*payload);
+      }
     }
-  }
-  if (std::string name = analysis_.direct_type_name(t);
-      !name.empty()) {
-    return types_.named_type_struct_cxx(name);
   }
   if (!base_expr_cxx.empty()) {
     return "::std::remove_reference_t<decltype(" + base_expr_cxx + ")>";
@@ -161,7 +154,7 @@ bool EmitStorage::chr_source_has_byte_storage(const Expr& source) {
   const TypeExpr* source_type = canonical_storage_expr_type(source);
   if (!source_type) return false;
   if (source_type->kind == Kind::TyName) {
-    const TypeExpr* canon = analysis_.canonicalize_type(source_type);
+    const TypeExpr* canon = analysis_.semantic_shape_type(source_type);
     if (canon == named_pascal_type("byte") ||
         canon == named_pascal_type("shortint")) {
       return true;
@@ -193,8 +186,7 @@ EmitStorage::storage_typecast_target(const Ident& id, const Expr& source) {
     return StorageCastTarget{primitive_type_cxx(lower), nullptr, true};
   }
   if (const TypeExpr* named = analysis_.migration_fallback_named_type_expr_by_name(lower)) {
-    return StorageCastTarget{types_.type_name_text_to_cxx(id.name), named,
-                             false};
+    return StorageCastTarget{types_.type_to_cxx(*named), named, false};
   }
   return std::nullopt;
 }
@@ -234,7 +226,7 @@ EmitStorage::resolved_bytewise_with_field_storage(const ResolveResult& rr) {
 }
 
 const TypeExpr* EmitStorage::pointer_like_member_object_type(const TypeExpr* t) {
-  t = analysis_.canonicalize_type(t);
+  t = analysis_.semantic_shape_type(t);
   if (!t) return nullptr;
   if (t->kind == Kind::TyPointer) {
     return static_cast<const TyPointer&>(*t).target.get();
@@ -246,7 +238,7 @@ const TypeExpr* EmitStorage::pointer_like_member_object_type(const TypeExpr* t) 
 }
 
 std::string EmitStorage::scalar_storage_type_cxx(const TypeExpr* t) {
-  t = analysis_.canonicalize_type(t);
+  t = analysis_.semantic_shape_type(t);
   if (!t) return {};
   switch (t->kind) {
     case Kind::TyArray:
@@ -268,7 +260,7 @@ std::optional<EmitStorageDesignator> EmitStorage::raw_address_index_designator(
   // the storage address. Rebuilding them as `&base[i]` would first dereference
   // pointer bases such as `p^` or load bytewise aggregate storage into a C++
   // temporary.
-  base_type = analysis_.canonicalize_type(base_type);
+  base_type = analysis_.semantic_shape_type(base_type);
   if (!base_type || i.indices.empty()) return std::nullopt;
 
   const bool base_address_is_pointer_value =
@@ -732,8 +724,9 @@ std::string EmitStorage::reference_class_cast_pointer_cxx(
   if (base_expr.kind != Kind::Call) return {};
   const auto& call = static_cast<const Call&>(base_expr);
   if (call.args.size() != 1 || call.callee->kind != Kind::Ident) return {};
+  const auto& id = static_cast<const Ident&>(*call.callee);
   const TypeExpr* target_ty =
-      canonical_storage_expr_type(base_expr);
+      analysis_.migration_fallback_named_type_expr_by_name(id.name);
   if (!type_is_reference_class(target_ty)) return {};
   const TypeExpr* source_ty = storage_expr_type(*call.args[0]);
   if (!type_is_reference_class(source_ty) && !type_is_pointerish(source_ty)) {
@@ -917,7 +910,7 @@ std::optional<EmitUntypedStorageIndexView> EmitStorage::untyped_storage_index_vi
   }
   const TypeExpr* base_ty = storage_expr_type(*i.base);
   if (!base_ty) return std::nullopt;
-  base_ty = analysis_.canonicalize_type(base_ty);
+  base_ty = analysis_.semantic_shape_type(base_ty);
   if (!base_ty || base_ty->kind != Kind::TyArray) return std::nullopt;
   const auto& arr = static_cast<const TyArray&>(*base_ty);
   if (arr.array_kind != ArrayKind::Fixed || arr.dims.size() != 1 ||
@@ -942,14 +935,16 @@ std::optional<EmitUntypedStorageIndexView> EmitStorage::untyped_storage_index_vi
 bool EmitStorage::type_is_packed_record(const TypeExpr* t) {
   if (!t) return false;
   if (t->kind == Kind::TyName) {
+    const TypeLookupContext* context = registry_.lookup_context_for_type(t);
     const TypeSymbol* symbol =
-        resolved_type_symbol_in_context(registry_, scope_, t);
+        resolved_type_symbol_in_context(registry_, scope_, t, context);
+    symbol = descriptor_payload_symbol(symbol);
     if (symbol && symbol->record_info()) {
       const RecordInfo* record = symbol->record_info();
       if (record) return record->is_packed;
     }
   }
-  t = analysis_.canonicalize_type(t);
+  t = analysis_.semantic_shape_type(t);
   return t && t->kind == Kind::TyRecord &&
          static_cast<const TyRecord&>(*t).is_packed;
 }
@@ -958,8 +953,10 @@ bool EmitStorage::type_is_direct_packed_aggregate(const TypeExpr* t) {
   if (!t) return false;
   if (t->kind == Kind::TyName) {
     const std::string low = ascii_lower(static_cast<const TyName&>(*t).name);
+    const TypeLookupContext* context = registry_.lookup_context_for_type(t);
     const TypeSymbol* symbol =
-        resolved_type_symbol_in_context(registry_, scope_, t);
+        resolved_type_symbol_in_context(registry_, scope_, t, context);
+    symbol = descriptor_payload_symbol(symbol);
     if (!low.empty() && symbol &&
         (symbol->record_info() || symbol->class_info())) {
       return true;
@@ -970,7 +967,7 @@ bool EmitStorage::type_is_direct_packed_aggregate(const TypeExpr* t) {
     };
     if (runtime_aggregate_types.count(low)) return true;
   }
-  t = analysis_.canonicalize_type(t);
+  t = analysis_.semantic_shape_type(t);
   if (!t) return false;
   switch (t->kind) {
     case Kind::TyArray:
@@ -987,7 +984,7 @@ bool EmitStorage::type_is_direct_packed_aggregate(const TypeExpr* t) {
 
 bool EmitStorage::type_is_byte_aligned_packed_index_carrier(const TypeExpr* t) {
   if (!t) return false;
-  t = analysis_.canonicalize_type(t);
+  t = analysis_.semantic_shape_type(t);
   if (!t) return false;
   switch (t->kind) {
     case Kind::TyString:
@@ -1062,7 +1059,7 @@ std::optional<EmitPackedScalarValueLoad> EmitStorage::packed_scalar_value_load(
   }
   if (!crossed_packed_aggregate) return std::nullopt;
 
-  const TypeExpr* scalar_type = analysis_.canonicalize_type(current_type);
+  const TypeExpr* scalar_type = analysis_.semantic_shape_type(current_type);
   if (!scalar_type || type_is_direct_packed_aggregate(scalar_type)) {
     return std::nullopt;
   }
@@ -1233,21 +1230,23 @@ bool EmitStorage::expr_is_untyped_storage_ref(const Expr& e) {
 bool EmitStorage::expr_is_charish(const Expr& e) {
   const TypeExpr* t = storage_expr_type(e);
   if (!t) return false;
-  t = analysis_.canonicalize_type(t);
-  return tyname_is_charish(t);
+  const PrimitiveInfo* info = analysis_.primitive_info_for_type(t);
+  return info && info->is_char();
 }
 
 bool EmitStorage::type_is_pcharish(const TypeExpr* t) {
   if (!t) return false;
-  t = analysis_.canonicalize_type(t);
-  if (!t) return false;
-  if (t == named_pascal_type("pchar") || t == named_pascal_type("pansichar")) {
+  const std::string atom = analysis_.builtin_atom_name_for_type(t);
+  if (atom == "pchar" || atom == "pansichar") {
     return true;
   }
+  t = analysis_.semantic_shape_type(t);
+  if (!t) return false;
   if (t->kind != Kind::TyPointer) return false;
   const TypeExpr* target =
-      analysis_.canonicalize_type(static_cast<const TyPointer&>(*t).target.get());
-  return tyname_is_charish(target);
+      analysis_.semantic_shape_type(static_cast<const TyPointer&>(*t).target.get());
+  const PrimitiveInfo* info = analysis_.primitive_info_for_type(target);
+  return info && info->is_char();
 }
 
 bool EmitStorage::type_is_metaclass(const TypeExpr* t) {
@@ -1297,43 +1296,44 @@ bool EmitStorage::type_is_stringish(const TypeExpr* t) {
 
 bool EmitStorage::type_is_pointerish(const TypeExpr* t) {
   if (!t) return false;
-  t = analysis_.canonicalize_type(t);
+  t = analysis_.semantic_shape_type(t);
   if (!t) return false;
   if (type_is_metaclass(t)) return true;
   if (type_is_reference_class(t)) return true;
   if (analysis_.type_is_interface(t)) return true;
   if (t->kind == Kind::TyPointer) return true;
-  if (is_runtime_pointer_primitive_type(t)) return true;
+  const PrimitiveInfo* info = analysis_.primitive_info_for_type(t);
+  if (info && info->is_pointer_primitive()) return true;
   return false;
 }
 
 bool EmitStorage::type_is_open_array(const TypeExpr* t) {
   if (!t) return false;
-  t = analysis_.canonicalize_type(t);
+  t = analysis_.semantic_shape_type(t);
   return t && t->kind == Kind::TyArray &&
          static_cast<const TyArray&>(*t).array_kind == ArrayKind::Open;
 }
 
 bool EmitStorage::fixed_array_pointer_can_decay_to_element_pointer(
     const TypeExpr* src_type, const TypeExpr* dst_type) {
-  const TypeExpr* src = analysis_.canonicalize_type(src_type);
-  const TypeExpr* dst = analysis_.canonicalize_type(dst_type);
+  const TypeExpr* src = analysis_.semantic_shape_type(src_type);
+  const TypeExpr* dst = analysis_.semantic_shape_type(dst_type);
   if (!src || src->kind != Kind::TyPointer || !dst) return false;
 
-  const TypeExpr* src_pointee = analysis_.canonicalize_type(
+  const TypeExpr* src_pointee = analysis_.semantic_shape_type(
       static_cast<const TyPointer&>(*src).target.get());
   if (!src_pointee || src_pointee->kind != Kind::TyArray ||
       static_cast<const TyArray&>(*src_pointee).array_kind !=
           ArrayKind::Fixed) {
     return false;
   }
-  const TypeExpr* src_elem = analysis_.canonicalize_type(
+  const TypeExpr* src_elem = analysis_.semantic_shape_type(
       static_cast<const TyArray&>(*src_pointee).element.get());
   if (!src_elem) return false;
 
   const TypeExpr* dst_elem = nullptr;
   if (dst->kind == Kind::TyPointer) {
-    dst_elem = analysis_.canonicalize_type(
+    dst_elem = analysis_.semantic_shape_type(
         static_cast<const TyPointer&>(*dst).target.get());
   } else if (type_is_pcharish(dst)) {
     dst_elem = builtin_char_type();
@@ -1344,22 +1344,23 @@ bool EmitStorage::fixed_array_pointer_can_decay_to_element_pointer(
 
 bool EmitStorage::fixed_char_array_value_can_decay_to_pchar(
     const TypeExpr* src_type, const TypeExpr* dst_type) {
-  const TypeExpr* src = analysis_.canonicalize_type(src_type);
+  const TypeExpr* src = analysis_.semantic_shape_type(src_type);
   if (!src || src->kind != Kind::TyArray ||
       static_cast<const TyArray&>(*src).array_kind != ArrayKind::Fixed) {
     return false;
   }
   const auto& arr = static_cast<const TyArray&>(*src);
   if (arr.dims.size() != 1 || !type_is_pcharish(dst_type)) return false;
-  const TypeExpr* elem = analysis_.canonicalize_type(arr.element.get());
-  return tyname_is_charish(elem);
+  const TypeExpr* elem = analysis_.semantic_shape_type(arr.element.get());
+  const PrimitiveInfo* info = analysis_.primitive_info_for_type(elem);
+  return info && info->is_char();
 }
 
 std::string EmitStorage::lower_pointer_to_fixed_array_to_element(
     const TypeExpr* src_type, const std::string& source_cxx) {
-  const TypeExpr* src = analysis_.canonicalize_type(src_type);
+  const TypeExpr* src = analysis_.semantic_shape_type(src_type);
   if (!src || src->kind != Kind::TyPointer) return source_cxx;
-  const TypeExpr* pointee = analysis_.canonicalize_type(
+  const TypeExpr* pointee = analysis_.semantic_shape_type(
       static_cast<const TyPointer&>(*src).target.get());
   if (!pointee || pointee->kind != Kind::TyArray ||
       static_cast<const TyArray&>(*pointee).array_kind != ArrayKind::Fixed) {
@@ -1382,8 +1383,8 @@ bool EmitStorage::pointer_value_conversion_is_valid(
     bool explicit_pascal_cast) {
   const TypeExpr* raw_dst = dst_type;
   const TypeExpr* raw_src = src_type;
-  const TypeExpr* dst = analysis_.canonicalize_type(dst_type);
-  const TypeExpr* src = analysis_.canonicalize_type(src_type);
+  const TypeExpr* dst = analysis_.semantic_shape_type(dst_type);
+  const TypeExpr* src = analysis_.semantic_shape_type(src_type);
   if (!dst || !src) return false;
 
   const bool dst_proc = is_nonmethod_procedural_type(dst);
@@ -1405,12 +1406,13 @@ bool EmitStorage::pointer_value_conversion_is_valid(
   const bool dst_ref_class = type_is_reference_class(dst);
   const bool src_ref_class = type_is_reference_class(src);
   if (dst_ref_class && src_ref_class) {
-    std::string dst_name = reference_class_name(raw_dst);
-    if (dst_name.empty()) dst_name = reference_class_name(dst);
-    std::string src_name = reference_class_name(raw_src);
-    if (src_name.empty()) src_name = reference_class_name(src);
-    if (!dst_name.empty() && !src_name.empty() &&
-        pascal_parent_chain_contains(dst_name, src_name)) {
+    // Reference-class conversions are nominal class-identity checks. Looking
+    // up raw TyName spelling here would hide missing build-time type binding
+    // and can pick the wrong unit/type when aliases or imports are involved.
+    const ClassInfo* dst_class = class_info_for_value_type(raw_dst, dst);
+    const ClassInfo* src_class = class_info_for_value_type(raw_src, src);
+    if (dst_class && src_class &&
+        class_parent_chain_contains(*dst_class, *src_class)) {
       return true;
     }
     return explicit_pascal_cast;
@@ -1429,8 +1431,8 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
                                          explicit_pascal_cast)) {
     return source_cxx;
   }
-  const TypeExpr* dst = analysis_.canonicalize_type(dst_type);
-  const TypeExpr* src = analysis_.canonicalize_type(src_type);
+  const TypeExpr* dst = analysis_.semantic_shape_type(dst_type);
+  const TypeExpr* src = analysis_.semantic_shape_type(src_type);
   if (!dst || !src) return source_cxx;
 
   const bool dst_proc = is_nonmethod_procedural_type(dst);
@@ -1443,11 +1445,20 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
   const std::string dst_cxx =
       dst_cxx_text.empty() ? canonical_dst_cxx : std::string(dst_cxx_text);
   const std::string src_cxx = types_.type_to_cxx(*src);
-  // Compare canonical C++ type names here. Use-site casts may request an alias
-  // type name (`p_tchildclass`) even when both sides already canonicalize to
-  // the same underlying metaclass/pointer type; emitting another cast around
-  // an already-correct explicit Pascal cast only creates review-noise.
-  if (canonical_dst_cxx == src_cxx || dst_cxx == src_cxx) return source_cxx;
+  const bool dst_ref_class = type_is_reference_class(dst);
+  const bool src_ref_class = type_is_reference_class(src);
+  if (!dst_ref_class && !src_ref_class) {
+    // Compare canonical C++ type names here. Use-site casts may request an
+    // alias type name (`p_tchildclass`) even when both sides already
+    // canonicalize to the same underlying metaclass/pointer type; emitting
+    // another cast around an already-correct explicit Pascal cast only creates
+    // review-noise. Reference-class bodies render through an inline-object
+    // placeholder, so their spelling equality is handled below with class
+    // identity instead of shaped C++ text.
+    if (canonical_dst_cxx == src_cxx || dst_cxx == src_cxx) {
+      return source_cxx;
+    }
+  }
 
   const bool dst_void_ptr = is_plain_pointer_type(dst);
   const bool src_void_ptr = is_plain_pointer_type(src);
@@ -1486,19 +1497,21 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
     return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
   }
 
-  const bool dst_ref_class = type_is_reference_class(dst);
-  const bool src_ref_class = type_is_reference_class(src);
   if (dst_ref_class && src_ref_class) {
-    std::string dst_name = reference_class_name(dst_type);
-    if (dst_name.empty()) dst_name = reference_class_name(dst);
-    std::string src_name = reference_class_name(src_type);
-    if (src_name.empty()) src_name = reference_class_name(src);
+    // Keep the emitted cast policy tied to the same ClassInfo relationship
+    // test used for validity; do not reconstruct class names in emission.
+    const ClassInfo* dst_class = class_info_for_value_type(dst_type, dst);
+    const ClassInfo* src_class = class_info_for_value_type(src_type, src);
+    if (!explicit_pascal_cast && dst_class && src_class &&
+        same_class_info(*dst_class, *src_class)) {
+      return source_cxx;
+    }
     const bool related_upcast =
-        !dst_name.empty() && !src_name.empty() &&
-        pascal_parent_chain_contains(dst_name, src_name);
+        dst_class && src_class &&
+        class_parent_chain_contains(*dst_class, *src_class);
     const bool related_downcast =
-        !dst_name.empty() && !src_name.empty() &&
-        pascal_parent_chain_contains(src_name, dst_name);
+        dst_class && src_class &&
+        class_parent_chain_contains(*src_class, *dst_class);
     if (related_upcast || (explicit_pascal_cast && related_downcast)) {
       return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
     }
@@ -1527,7 +1540,7 @@ bool EmitStorage::class_to_interface_conversion_is_valid(
   const InterfaceInfo* interface = analysis_.interface_info_for_type(dst_type);
   if (!interface) return false;
 
-  const TypeExpr* src = analysis_.canonicalize_type(src_type);
+  const TypeExpr* src = analysis_.semantic_shape_type(src_type);
   if (!type_is_reference_class(src)) return false;
 
   const ClassInfo* cls = class_info_for_value_type(src_type, src);
@@ -1537,7 +1550,7 @@ bool EmitStorage::class_to_interface_conversion_is_valid(
 
 const ClassInfo* EmitStorage::class_info_for_pointer_target(
     const TypeExpr* t) {
-  const TypeExpr* canonical = analysis_.canonicalize_type(t);
+  const TypeExpr* canonical = analysis_.semantic_shape_type(t);
   if (!canonical || canonical->kind != Kind::TyPointer) return nullptr;
   const TypeExpr* target =
       static_cast<const TyPointer&>(*canonical).target.get();
@@ -1550,17 +1563,7 @@ const ClassInfo* EmitStorage::class_info_for_value_type(
   if (const ClassInfo* info = analysis_.class_info_for_type(canonical)) {
     return info;
   }
-  // MIGRATION_NAME_LOOKUP_FALLBACK: some expression typing paths still return
-  // synthesized TyName nodes rather than build-stamped TypeExprs. Preserve the
-  // source spelling only as the bridge into the central ClassInfo path; parent
-  // and interface walks below still use registry class metadata.
-  auto lookup_named = [this](const TypeExpr* t) -> const ClassInfo* {
-    if (!t || t->kind != Kind::TyName) return nullptr;
-    const auto& name = static_cast<const TyName&>(*t).name;
-    return analysis_.migration_fallback_class_info_by_name(name);
-  };
-  if (const ClassInfo* info = lookup_named(raw)) return info;
-  return lookup_named(canonical);
+  return nullptr;
 }
 
 bool EmitStorage::same_class_info(const ClassInfo& a,
@@ -1579,22 +1582,6 @@ bool EmitStorage::class_parent_chain_contains(
     const std::string key = cls->defining_unit + "$" + cls->name;
     if (!seen.insert(key).second) break;
     cls = registry_.lookup_parent_class(*cls);
-  }
-  return false;
-}
-
-bool EmitStorage::pascal_parent_chain_contains(std::string_view ancestor,
-                                               std::string current) {
-  // MIGRATION_NAME_LOOKUP_FALLBACK: reference-class value conversions still
-  // receive synthesized TyName nodes in some expression-typing paths. Keep the
-  // old spelling bridge here until those expressions carry class symbols.
-  const std::string ancestor_key = ascii_lower(std::string(ancestor));
-  while (!current.empty()) {
-    if (ascii_lower(current) == ancestor_key) return true;
-    const ClassInfo* info =
-        analysis_.migration_fallback_class_info_by_name(current);
-    if (!info) break;
-    current = info->parent;
   }
   return false;
 }

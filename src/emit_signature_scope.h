@@ -56,20 +56,33 @@ class ScopedSignatureLookupUnit {
   // the declaration site of a method/property/constructor signature.
   ScopedSignatureLookupUnit(ScopeStateView& scope, const TypeRegistry& registry,
                             std::string_view defining_unit,
-                            std::string_view declaring_type)
+                            std::string_view declaring_type,
+                            const TypeLookupContext* declaration_context = nullptr)
       : scope_(scope),
         saved_unit_(scope.current_unit_name),
         saved_lookup_emission_unit_(scope.lookup_emission_unit_name),
         saved_type_scope_(scope.type_scope) {
-    if (!defining_unit.empty() && defining_unit != scope_.current_unit_name) {
-      changed_ = true;
-      scope_.lookup_emission_unit_name =
-          saved_lookup_emission_unit_.empty() ? saved_unit_
-                                              : saved_lookup_emission_unit_;
-      scope_.current_unit_name = std::string(defining_unit);
-      scope_.type_scope = nullptr;
+    const TypeLookupContext* context = declaration_context;
+    if (!context && !defining_unit.empty()) {
+      context = registry.lookup_unit_context(defining_unit,
+                                             /*implementation=*/false);
+      if (!context) {
+        context = registry.lookup_unit_context(defining_unit,
+                                               /*implementation=*/true);
+      }
     }
-    (void)registry;
+    if (context || (!defining_unit.empty() &&
+                    defining_unit != scope_.current_unit_name)) {
+      changed_ = true;
+      std::string_view unit = context ? context->unit : defining_unit;
+      if (!unit.empty() && unit != scope_.current_unit_name) {
+        scope_.lookup_emission_unit_name =
+            saved_lookup_emission_unit_.empty() ? saved_unit_
+                                                : saved_lookup_emission_unit_;
+        scope_.current_unit_name = std::string(unit);
+      }
+      scope_.type_scope = context;
+    }
     (void)declaring_type;
   }
 
@@ -79,7 +92,11 @@ class ScopedSignatureLookupUnit {
       : ScopedSignatureLookupUnit(scope, registry,
                                   sig ? sig->defining_unit : std::string_view{},
                                   sig ? sig->declaring_type
-                                      : std::string_view{}) {}
+                                      : std::string_view{},
+                                  sig && sig->decl
+                                      ? registry.lookup_proc_signature_context(
+                                            sig->decl.get())
+                                      : nullptr) {}
 
   ScopedSignatureLookupUnit(const ScopedSignatureLookupUnit&) = delete;
   ScopedSignatureLookupUnit& operator=(const ScopedSignatureLookupUnit&) =
@@ -108,6 +125,10 @@ inline std::shared_ptr<ast::TyName> qualified_signature_type_name(
   const auto& tn = static_cast<const ast::TyName&>(*param_type);
   if (tn.name == "nil" || is_primitive_type(tn.name) ||
       !runtime_named_type_cxx(tn.name).empty()) {
+    return nullptr;
+  }
+  if (registry.resolved_symbol_for_type(param_type) ||
+      registry.lookup_context_for_type(param_type)) {
     return nullptr;
   }
   ScopedSignatureLookupUnit signature_scope(scope, registry, param_unit,

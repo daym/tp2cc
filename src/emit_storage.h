@@ -365,8 +365,6 @@ class EmitStorage {
   std::string storage_type_cxx(const ast::TypeExpr* t);
   std::string scalar_storage_type_cxx(const ast::TypeExpr* t);
   std::string reference_class_cast_pointer_cxx(const ast::Expr& base_expr);
-  bool pascal_parent_chain_contains(std::string_view ancestor,
-                                    std::string current);
   EmitAbsoluteTargetInfo absolute_target_info(
       const std::string& target_cxx, const ast::TypeExpr* type,
       bool is_const_storage = false);

@@ -32,11 +32,13 @@ class EmitProperties {
   EmitProperties(EmitAnalysis& analysis, EmitPropertyExprOps& expr_ops);
 
   std::string lower_property_read(Location where, const std::string& base_cxx,
+                                  std::string_view base_access,
                                   const std::string& class_name,
                                   const PropertyInfo& prop,
                                   const std::vector<const ast::Expr*>& indices);
   std::string lower_property_write(
       Location where, const std::string& base_cxx,
+      std::string_view base_access,
       const std::string& class_name, const PropertyInfo& prop,
       const std::vector<const ast::Expr*>& indices, const ast::Expr& value);
 
@@ -47,10 +49,12 @@ class EmitProperties {
 
  private:
   std::optional<std::string> maybe_property_read_text(
-      const std::string& base_cxx, const std::string& class_name,
+      const std::string& base_cxx, std::string_view base_access,
+      const std::string& class_name,
       const PropertyInfo& prop, const std::vector<const ast::Expr*>& indices);
   std::optional<std::string> maybe_property_write_text(
-      const std::string& base_cxx, const std::string& class_name,
+      const std::string& base_cxx, std::string_view base_access,
+      const std::string& class_name,
       const PropertyInfo& prop, const std::vector<const ast::Expr*>& indices,
       const ast::Expr& value);
 

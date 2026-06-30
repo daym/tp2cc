@@ -55,6 +55,7 @@ struct ImplicitPropertyLookup {
   const PropertyInfo* prop = nullptr;
   std::string class_name;
   std::string base_cxx;
+  std::string base_access;
   bool from_with = false;
 };
 
@@ -103,9 +104,12 @@ class EmitAnalysis {
   // pointer width; for everything else, returns the fixed table width.
   [[nodiscard]] uint8_t resolved_primitive_bits(const PrimitiveInfo& info) const;
 
-  // Canonicalize Pascal type aliases/distinct wrappers to the underlying type
-  // view the emitter should reason about for layout and conversion questions.
-  const ast::TypeExpr* canonicalize_type(const ast::TypeExpr* t);
+  // Descriptor-first semantic shape. Use this for predicates that need the
+  // resolved type body (array, record, set, pointer, primitive, class/interface
+  // kind). Do not use it to choose emitted C++ carrier spelling.
+  const ast::TypeExpr* semantic_shape_type(const ast::TypeExpr* t);
+  const ast::TypeExpr* semantic_shape_type_in_context(
+      const ast::TypeExpr* t, const TypeLookupContext* context);
 
   // Parameter ABI policy: decide when Pascal `const` aggregates still need
   // reference lowering so C++ preserves aliasing/mutability semantics.
@@ -120,10 +124,14 @@ class EmitAnalysis {
   // Central transitional TypeExpr API. Consumers that have a TypeExpr should
   // use these descriptor/symbol-backed helpers rather than re-querying a name.
   const ClassInfo* class_info_for_type(const ast::TypeExpr* t);
+  const ClassInfo* class_info_for_type_in_context(
+      const ast::TypeExpr* t, const TypeLookupContext* context);
   const InterfaceInfo* interface_info_for_type(const ast::TypeExpr* t);
   std::string direct_type_name(const ast::TypeExpr* t);
   std::string pointer_target_type_name(const ast::TypeExpr* t);
   std::string metaclass_target_name(const ast::TypeExpr* t);
+  bool type_is_runtime_tclass(const ast::TypeExpr* t);
+  bool type_accepts_class_value(const ast::TypeExpr* t);
   bool type_is_reference_class(const ast::TypeExpr* t);
   bool type_is_interface(const ast::TypeExpr* t);
   bool type_is_value_object(const ast::TypeExpr* t);
@@ -143,6 +151,8 @@ class EmitAnalysis {
   std::optional<ConstIntExprInfo> eval_const_int_expr(
       const ast::Expr& e,
       std::unordered_set<std::string>* visiting_const_names = nullptr);
+  std::optional<ConstIntExprInfo> eval_const_int_expr(
+      const ast::Expr& e, const TypeLookupContext* context);
   const ast::TypeExpr* deduce_set_literal_type(
       const ast::SetLit& s, const ast::TypeExpr* target = nullptr);
   SetConversionKind classify_set_conversion(const ast::TypeExpr* source,
@@ -170,7 +180,6 @@ class EmitAnalysis {
   const ast::TypeExpr* ord_result_type_for_operand(const ast::Expr& operand);
   const ast::TypeExpr* ord_result_type_for_type(const ast::TypeExpr* t);
   std::string deduce_class_alias(const ast::Expr& e);
-  std::string resolve_class_alias_name(std::string_view name);
   // Class identifiers and class aliases are values when passed to TClass or a
   // `class of ...` formal. Return the concrete class denoted by that source
   // expression; null string means the expression is not such a value.
@@ -223,6 +232,7 @@ class EmitAnalysis {
 
   // Primitive metadata and target access for callers that drive dispatch
   // from the canonical atom rather than its name string.
+  std::string builtin_atom_name_for_type(const ast::TypeExpr* t);
   const PrimitiveInfo* primitive_info_for_type(const ast::TypeExpr* t);
   TargetInfo target() const { return target_; }
 
@@ -249,12 +259,15 @@ class EmitAnalysis {
   };
 
   std::string implicit_self_cxx();
+  std::string implicit_self_access();
   bool is_visible_unit_qualifier(std::string_view name);
   const ast::TySet* synthesize_set_type(
       const ast::TypeExpr* element,
       std::optional<std::pair<int64_t, int64_t>> explicit_bounds);
   const ast::TyPointer* synthesize_pointer_type(
       const ast::TypeExpr* target);
+  const ast::TypeExpr* semantic_shape_type(
+      const ast::TypeExpr* t, const TypeLookupContext*& context);
   std::optional<OrdinalDomain> ordinal_domain_for_type(
       const ast::TypeExpr* t, const TypeLookupContext* context);
   std::optional<OrdinalDomain> ordinal_domain_for_set_type(
@@ -274,19 +287,12 @@ class EmitAnalysis {
   static bool binop_is_arithmetic_like(ast::BinOp op);
   const ast::TypeExpr* deduce_binary_expr_type(const ast::Binary& b);
   const ast::TypeExpr* deduce_low_high_result_type(const ast::TypeExpr* t);
-  const ast::TypeExpr* deduce_own_unit_value_type(const UnitInfo& u,
-                                                  const std::string& name);
-  const ast::TypeExpr* deduce_exported_unit_value_type(
-      const UnitInfo& u, const std::string& name);
   std::optional<ConstIntExprInfo> fold_untyped_const_decl(
       const ast::ConstDecl& cd,
       std::unordered_set<std::string>* visiting_const_names);
   std::optional<ConstIntExprInfo> fold_untyped_const_info(
       const ConstInfo& c,
       std::unordered_set<std::string>* visiting_const_names);
-  const ConstInfo* find_const_for_fold_in_unit(const UnitInfo& u,
-                                               const std::string& name,
-                                               bool export_only) const;
   const EnumInfoReg* find_enum_info_in_unit(std::string_view unit_name,
                                             std::string_view member_name);
 

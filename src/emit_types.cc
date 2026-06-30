@@ -3,8 +3,6 @@
 #include <algorithm>
 #include <limits>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -81,71 +79,46 @@ bool array_bound_is_plain_integer_const_syntax(const Expr& e) {
   }
 }
 
-class ScopedTypeBoundUnit {
- public:
-  ScopedTypeBoundUnit(ScopeStateView& scope, std::string_view declaration_unit)
-      : scope_(scope) {
-    if (declaration_unit.empty() ||
-        declaration_unit == scope_.current_unit_name) {
-      return;
+std::string_view declaration_unit_for_type(const TypeRegistry& registry,
+                                           const TypeExpr* primary,
+                                           const TypeExpr* fallback = nullptr) {
+  if (primary) {
+    if (std::string_view unit = registry.declaration_unit_for_type(primary);
+        !unit.empty()) {
+      return unit;
     }
-    saved_current_unit_ = scope.current_unit_name;
-    saved_lookup_emission_unit_ = scope.lookup_emission_unit_name;
-    saved_local_scope_.swap(scope.local_scope);
-    saved_local_value_types_.swap(scope.local_value_types);
-    saved_local_consts_.swap(scope.local_consts);
-    saved_local_untyped_params_.swap(scope.local_untyped_params);
-    saved_local_nested_fns_.swap(scope.local_nested_fns);
-    saved_local_nested_forwards_.swap(scope.local_nested_forwards);
-    saved_local_const_params_.swap(scope.local_const_params);
-    saved_with_stack_.swap(scope.with_stack);
-    saved_type_scope_ = scope.type_scope;
-    // Type-bound expressions are parsed in the type declaration's unit, but the
-    // same TypeExpr can be rendered later while emitting another unit's code.
-    // Resolve names through the declaration unit while still qualifying
-    // generated C++ for the real output namespace.
-    active_ = true;
-    scope_.lookup_emission_unit_name =
-        saved_lookup_emission_unit_.empty() ? saved_current_unit_
-                                            : saved_lookup_emission_unit_;
-    scope_.current_unit_name = std::string(declaration_unit);
-    scope_.type_scope = nullptr;
   }
+  return fallback ? registry.declaration_unit_for_type(fallback)
+                  : std::string_view{};
+}
 
-  ScopedTypeBoundUnit(const ScopedTypeBoundUnit&) = delete;
-  ScopedTypeBoundUnit& operator=(const ScopedTypeBoundUnit&) = delete;
-
-  ~ScopedTypeBoundUnit() {
-    if (!active_) return;
-    scope_.current_unit_name = saved_current_unit_;
-    scope_.lookup_emission_unit_name = saved_lookup_emission_unit_;
-    scope_.local_scope.swap(saved_local_scope_);
-    scope_.local_value_types.swap(saved_local_value_types_);
-    scope_.local_consts.swap(saved_local_consts_);
-    scope_.local_untyped_params.swap(saved_local_untyped_params_);
-    scope_.local_nested_fns.swap(saved_local_nested_fns_);
-    scope_.local_nested_forwards.swap(saved_local_nested_forwards_);
-    scope_.local_const_params.swap(saved_local_const_params_);
-    scope_.with_stack.swap(saved_with_stack_);
-    scope_.type_scope = saved_type_scope_;
+const TypeLookupContext* declaration_context_for_type(
+    const TypeRegistry& registry, const ScopeStateView& scope,
+    const TypeExpr* primary, const TypeExpr* fallback = nullptr) {
+  if (primary) {
+    if (const TypeLookupContext* context =
+            registry.lookup_context_for_type(primary)) {
+      return context;
+    }
   }
-
- private:
-  ScopeStateView& scope_;
-  std::string saved_current_unit_;
-  std::string saved_lookup_emission_unit_;
-  std::unordered_set<std::string> saved_local_scope_;
-  std::unordered_map<std::string, const TypeExpr*> saved_local_value_types_;
-  std::unordered_map<std::string, const ConstDecl*> saved_local_consts_;
-  std::unordered_set<std::string> saved_local_untyped_params_;
-  std::unordered_map<std::string, std::vector<ScopeStateView::NestedFn>>
-      saved_local_nested_fns_;
-  std::unordered_set<std::string> saved_local_nested_forwards_;
-  std::unordered_set<std::string> saved_local_const_params_;
-  std::vector<ScopeStateView::WithBind> saved_with_stack_;
-  const TypeLookupContext* saved_type_scope_ = nullptr;
-  bool active_ = false;
-};
+  if (fallback) {
+    if (const TypeLookupContext* context =
+            registry.lookup_context_for_type(fallback)) {
+      return context;
+    }
+  }
+  std::string_view unit =
+      declaration_unit_for_type(registry, primary, fallback);
+  if (unit.empty()) return nullptr;
+  if (unit == scope.current_unit_name && scope.type_scope) {
+    return scope.type_scope;
+  }
+  if (const TypeLookupContext* context =
+          registry.lookup_unit_context(unit, /*implementation=*/false)) {
+    return context;
+  }
+  return registry.lookup_unit_context(unit, /*implementation=*/true);
+}
 
 const EnumInfoReg* local_enum_info_for_type(const ScopeStateView& scope,
                                             const TyEnum& e) {
@@ -283,99 +256,48 @@ std::string EmitTypes::type_name_to_cxx(const TyName& n) {
                            "internal unresolved H-mode `string' type name");
     return "::rt::tp2cc_ShortString<>";
   }
-  if (is_primitive_type(n.name)) return primitive_type_cxx(n.name);
   if (n.name == "nil") return "std::nullptr_t";
 
-  auto symbol_type_cxx = [this](const TypeSymbol* symbol) -> std::string {
+  auto emit_symbol_type = [&](const TypeSymbol* symbol) -> std::string {
     if (!symbol) return {};
-    const TypeSymbol* canonical =
-        symbol->descriptor ? symbol->descriptor->symbol : nullptr;
-    if (!canonical) canonical = symbol;
+    if (std::string cxx = type_symbol_to_cxx(symbol); !cxx.empty()) {
+      return cxx;
+    }
     if (symbol->defining_unit == "__rt__" ||
         symbol->defining_unit == "__builtin__") {
-      if (const ClassInfo* ci = canonical->class_info();
-          ci && ci->is_reference_type) {
-        if (std::string cls = builtin_reference_class_struct_cxx(canonical->name);
-            !cls.empty()) {
-          return cls + "*";
-        }
-        return type_symbol_struct_cxx(*canonical) + "*";
-      }
-      if (canonical->interface_info()) {
-        return type_symbol_struct_cxx(*canonical) + "*";
-      }
-      if (symbol->defining_unit == "__rt__") {
-        if (std::string rt = runtime_named_type_cxx(symbol->name);
-            !rt.empty()) {
-          return rt;
-        }
-      }
-      if (is_primitive_type(canonical->name)) {
-        return primitive_type_cxx(canonical->name);
-      }
-      if (std::string rt = runtime_named_type_cxx(canonical->name);
-          !rt.empty()) {
-        return rt;
-      }
-      return {};
+      diag_ops_.report_error(n.loc, "unresolved type `" + n.name + "`");
+      return "void";
     }
-    const bool alias_carrier = symbol->alias_info() != nullptr;
-    if (const ClassInfo* ci = canonical->class_info();
-        ci && ci->is_reference_type) {
-      return type_symbol_struct_cxx(*symbol) + (alias_carrier ? "" : "*");
-    }
-    if (canonical->interface_info()) {
-      return type_symbol_struct_cxx(*symbol) + (alias_carrier ? "" : "*");
-    }
-    return type_symbol_struct_cxx(*symbol);
+    return {};
   };
 
-  if (const TypeSymbol* symbol = registry_.referenced_symbol_for_type(&n)) {
-    if (std::string cxx = symbol_type_cxx(symbol); !cxx.empty()) {
+  if (std::string cxx = emit_symbol_type(registry_.resolved_symbol_for_type(&n));
+      !cxx.empty()) {
+    return cxx;
+  }
+  // Parsed TyName nodes carry a build-time lookup context. If one has no
+  // resolved symbol now, a fresh scope query would hide a binding bug and
+  // reintroduce emission-time alias/name chasing. The fallback below is only
+  // for contextless manufactured type-name text.
+  if (registry_.lookup_context_for_type(&n)) {
+    diag_ops_.report_error(n.loc, "unresolved type `" + n.name + "`");
+    return "void";
+  }
+  if (std::string cxx = emit_symbol_type(
+          migration_fallback_type_symbol_by_name(registry_, scope_, n.name));
+      !cxx.empty()) {
+    return cxx;
+  }
+  if (const size_t dot = n.name.find('.'); dot != std::string::npos) {
+    const std::string unit = n.name.substr(0, dot);
+    const std::string path = n.name.substr(dot + 1);
+    if (std::string cxx = emit_symbol_type(
+            registry_.lookup_type_symbol_exact(unit, path));
+        !cxx.empty()) {
       return cxx;
     }
-    if (symbol->defining_unit == "__rt__" ||
-        symbol->defining_unit == "__builtin__") {
-      diag_ops_.report_error(n.loc, "unresolved type `" + n.name + "`");
-      return "void";
-    }
   }
-  if (const TypeSymbol* symbol =
-          migration_fallback_type_symbol_by_name(registry_, scope_, n.name)) {
-    if (std::string cxx = symbol_type_cxx(symbol); !cxx.empty()) {
-      return cxx;
-    }
-    if (symbol->defining_unit == "__rt__" ||
-        symbol->defining_unit == "__builtin__") {
-      diag_ops_.report_error(n.loc, "unresolved type `" + n.name + "`");
-      return "void";
-    }
-  }
-  // Runtime aliases are also registered for analysis, but their emitted names
-  // are fixed by the runtime. Only non-runtime translated declarations use
-  // generated `t_*` C++ type names.
-  if (registry_knows_translated_type(n.name)) {
-    auto lookup_name = ascii_lower(n.name);
-    if (const TypeSymbol* symbol =
-            migration_fallback_type_symbol_by_name(registry_, scope_, lookup_name)) {
-      const TypeSymbol* canonical = registry_.canonical_symbol_for_type(&n);
-      if (!canonical) canonical = symbol;
-      const bool alias_carrier = symbol->alias_info() != nullptr;
-      if (const ClassInfo* ci = canonical->class_info();
-          ci && ci->is_reference_type) {
-        return named_type_struct_cxx(n.name) + (alias_carrier ? "" : "*");
-      }
-      if (canonical->interface_info()) {
-        return named_type_struct_cxx(n.name) + (alias_carrier ? "" : "*");
-      }
-    }
-    const ClassInfo* ci =
-        analysis_.migration_fallback_class_info_by_name(lookup_name);
-    if (ci && ci->is_reference_type) {
-      return named_type_struct_cxx(n.name) + "*";
-    }
-    return named_type_struct_cxx(n.name);
-  }
+  if (is_primitive_type(n.name)) return primitive_type_cxx(n.name);
   if (std::string cls = builtin_reference_class_struct_cxx(n.name);
       !cls.empty()) {
     return cls + "*";
@@ -385,6 +307,59 @@ std::string EmitTypes::type_name_to_cxx(const TyName& n) {
   }
   diag_ops_.report_error(n.loc, "unresolved type `" + n.name + "`");
   return "void";
+}
+
+std::string EmitTypes::type_symbol_to_cxx(const TypeSymbol* symbol) const {
+  if (!symbol) return {};
+  const TypeSymbol* canonical = descriptor_payload_symbol(symbol);
+  if (symbol->defining_unit == "__rt__" ||
+      symbol->defining_unit == "__builtin__") {
+    if (const ClassInfo* ci = canonical->class_info();
+        ci && ci->is_reference_type) {
+      if (std::string cls = builtin_reference_class_struct_cxx(canonical->name);
+          !cls.empty()) {
+        return cls + "*";
+      }
+      return type_symbol_struct_cxx(*canonical) + "*";
+    }
+    if (canonical->interface_info()) {
+      return type_symbol_struct_cxx(*canonical) + "*";
+    }
+    if (symbol->defining_unit == "__rt__") {
+      if (std::string rt = runtime_named_type_cxx(symbol->name); !rt.empty()) {
+        return rt;
+      }
+    }
+    if (is_primitive_type(canonical->name)) {
+      return primitive_type_cxx(canonical->name);
+    }
+    if (std::string rt = runtime_named_type_cxx(canonical->name);
+        !rt.empty()) {
+      return rt;
+    }
+    return {};
+  }
+  if (const ClassInfo* ci = canonical->class_info();
+      ci && ci->is_reference_type) {
+    return type_symbol_struct_cxx(*canonical) + "*";
+  }
+  if (canonical->interface_info()) {
+    return type_symbol_struct_cxx(*canonical) + "*";
+  }
+  if (canonical != symbol) {
+    if (canonical->defining_unit == "__builtin__" ||
+        canonical->defining_unit == "__rt__") {
+      if (is_primitive_type(canonical->name)) {
+        return primitive_type_cxx(canonical->name);
+      }
+      if (std::string rt = runtime_named_type_cxx(canonical->name);
+          !rt.empty()) {
+        return rt;
+      }
+    }
+    return type_symbol_struct_cxx(*canonical);
+  }
+  return type_symbol_struct_cxx(*canonical);
 }
 
 std::string EmitTypes::type_name_text_to_cxx(std::string_view name) {
@@ -421,9 +396,16 @@ std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
   // calculation (`type X = ...` -> `t_x` plus qualification), not a type
   // identity or lookup API. Anonymous nominal descriptors must not flow through
   // here, because they have no `type X = ...` name to apply this rule to.
+  const std::string low = ascii_lower(name);
+  const TypeSymbol* symbol =
+      migration_fallback_type_symbol_by_name(registry_, scope_, low);
+  const bool translated =
+      symbol && symbol->defining_unit != "__rt__" &&
+      symbol->defining_unit != "__builtin__";
+
   // Keep runtime names fixed unless a translated lexical type exists for the
   // spelling below.
-  if (!registry_knows_translated_type(name)) {
+  if (!translated) {
     if (std::string rt = runtime_named_type_cxx(name); !rt.empty()) {
       return rt;
     }
@@ -432,9 +414,7 @@ std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
       !cls.empty()) {
     return cls;
   }
-  const std::string low = ascii_lower(name);
-  if (const TypeSymbol* symbol =
-          migration_fallback_type_symbol_by_name(registry_, scope_, low)) {
+  if (symbol) {
     // Pascal local and nested type declarations are lexical symbols. Emitting
     // the resolved symbol path keeps the same lookup result usable both inside
     // the declaring C++ class and from namespace-scope helper declarations.
@@ -442,29 +422,6 @@ std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
   }
   diag_ops_.report_error({}, "unresolved type `" + std::string(name) + "`");
   return "void";
-}
-
-std::string EmitTypes::visible_type_prefix(std::string_view name) {
-  std::string lower = ascii_lower(std::string(name));
-  if (const TypeSymbol* symbol =
-          migration_fallback_type_symbol_by_name(registry_, scope_, lower)) {
-    if (migration_fallback_local_type_symbol_by_name(registry_, scope_, lower) == symbol) return {};
-    if (should_qualify_unit(symbol->defining_unit)) {
-      return unit_namespace_prefix(symbol->defining_unit);
-    }
-  }
-  return {};
-}
-
-bool EmitTypes::registry_knows_translated_type(std::string_view name) {
-  std::string lower = ascii_lower(std::string(name));
-  if (const TypeSymbol* symbol =
-          migration_fallback_type_symbol_by_name(registry_, scope_, lower);
-      symbol && symbol->defining_unit != "__rt__" &&
-      symbol->defining_unit != "__builtin__") {
-    return true;
-  }
-  return false;
 }
 
 std::string EmitTypes::metaclass_symbol_cxx(
@@ -483,32 +440,33 @@ std::string EmitTypes::metaclass_symbol_cxx(
   return prefix + std::string(name_prefix) + tail;
 }
 
+std::string EmitTypes::metaclass_struct_cxx(const TypeSymbol& symbol) const {
+  return metaclass_symbol_cxx(symbol, "tp2cc_metaclass_");
+}
+
 std::string EmitTypes::metaclass_struct_cxx(std::string_view class_name) {
   std::string tail = std::string(class_name);
-  std::string prefix;
   if (const TypeSymbol* symbol =
           migration_fallback_type_symbol_by_name(registry_, scope_, class_name)) {
-    return metaclass_symbol_cxx(*symbol, "tp2cc_metaclass_");
+    symbol = descriptor_payload_symbol(symbol);
+    return metaclass_struct_cxx(*symbol);
   }
-  if (const auto* ci = analysis_.migration_fallback_class_info_by_name(class_name);
-      ci && should_qualify_unit(ci->defining_unit)) {
-    prefix = unit_namespace_prefix(ci->defining_unit);
-  }
-  return prefix + "tp2cc_metaclass_" + type_mangle(tail);
+  return "tp2cc_metaclass_" + type_mangle(tail);
+}
+
+std::string EmitTypes::metaclass_value_fn_cxx(
+    const TypeSymbol& symbol) const {
+  return metaclass_symbol_cxx(symbol, "tp2cc_metaclass_value_");
 }
 
 std::string EmitTypes::metaclass_value_fn_cxx(std::string_view class_name) {
   std::string tail = std::string(class_name);
-  std::string prefix;
   if (const TypeSymbol* symbol =
           migration_fallback_type_symbol_by_name(registry_, scope_, class_name)) {
-    return metaclass_symbol_cxx(*symbol, "tp2cc_metaclass_value_");
+    symbol = descriptor_payload_symbol(symbol);
+    return metaclass_value_fn_cxx(*symbol);
   }
-  if (const auto* ci = analysis_.migration_fallback_class_info_by_name(class_name);
-      ci && should_qualify_unit(ci->defining_unit)) {
-    prefix = unit_namespace_prefix(ci->defining_unit);
-  }
-  return prefix + "tp2cc_metaclass_value_" + type_mangle(tail);
+  return "tp2cc_metaclass_value_" + type_mangle(tail);
 }
 
 bool EmitTypes::enum_has_explicit_values(const TyEnum& e) {
@@ -520,6 +478,11 @@ bool EmitTypes::enum_has_explicit_values(const TyEnum& e) {
 
 std::optional<int64_t> EmitTypes::enum_member_value_int64(const TyEnum& e,
                                                           size_t index) {
+  const TypeLookupContext* declaration_context =
+      declaration_context_for_type(registry_, scope_, &e);
+  ScopedDeclarationLookup declaration_scope(
+      scope_, declaration_context,
+      declaration_unit_for_type(registry_, &e));
   int64_t value = 0;
   for (size_t i = 0; i <= index; ++i) {
     if (e.members[i].value) {
@@ -610,7 +573,36 @@ std::string EmitTypes::enum_underlying_type_to_cxx(const TyEnum& e) {
 
 std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
     const TypeExpr& dim_in) {
-  const TypeExpr* dim = analysis_.canonicalize_type(&dim_in);
+  if (dim_in.kind == Kind::TyName) {
+    const TypeLookupContext* context = registry_.lookup_context_for_type(&dim_in);
+    const TypeSymbol* symbol =
+        resolved_type_symbol_in_context(registry_, scope_, &dim_in, context);
+    symbol = descriptor_payload_symbol(symbol);
+    const EnumInfoReg* enum_info = symbol ? symbol->enum_info() : nullptr;
+    if (enum_info) {
+      std::string lo = "0";
+      std::string size_expr;
+      const TyEnum* enum_type = enum_info->type;
+      if (!enum_type) return std::nullopt;
+      if (!enum_info->members.empty()) {
+        if (enum_has_explicit_values(*enum_type)) {
+          std::string prefix;
+          if (should_qualify_unit(enum_info->defining_unit)) {
+            prefix = unit_namespace_prefix(enum_info->defining_unit);
+          }
+          lo = prefix + mangle(enum_info->members.front());
+          const std::string hi = prefix + mangle(enum_info->members.back());
+          size_expr = "((" + ordinal_value_text(hi) + ") - (" +
+                      ordinal_value_text(lo) + ") + 1)";
+        } else {
+          size_expr = std::to_string(enum_info->members.size());
+        }
+      }
+      return ArrayDimBounds(std::move(lo), std::move(size_expr));
+    }
+  }
+
+  const TypeExpr* dim = analysis_.semantic_shape_type(&dim_in);
   if (!dim) return std::nullopt;
   if (dim->kind == Kind::TyDistinct) {
     // Distinct ordinal wrappers keep assignment-compatibility differences, but
@@ -618,14 +610,11 @@ std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
     const auto& distinct = static_cast<const TyDistinct&>(*dim);
     return array_dim_bounds_to_cxx(*distinct.underlying);
   }
-  std::string_view declaration_unit;
-  {
-    declaration_unit = registry_.declaration_unit_for_type(dim);
-    if (declaration_unit.empty()) {
-      declaration_unit = registry_.declaration_unit_for_type(&dim_in);
-    }
-  }
-  ScopedTypeBoundUnit type_bound_scope(scope_, declaration_unit);
+  const TypeLookupContext* declaration_context =
+      declaration_context_for_type(registry_, scope_, dim, &dim_in);
+  ScopedDeclarationLookup type_bound_scope(
+      scope_, declaration_context,
+      declaration_unit_for_type(registry_, dim, &dim_in));
   std::string lo = "0";
   std::string size_expr;
   if (dim->kind == Kind::TySubrange) {
@@ -665,33 +654,7 @@ std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
     }
     return ArrayDimBounds(std::move(lo), std::move(size_expr));
   }
-  if (dim->kind != Kind::TyName) return std::nullopt;
-  const TypeSymbol* symbol =
-      resolved_type_symbol_in_context(registry_, scope_, dim);
-  const EnumInfoReg* enum_info = symbol ? symbol->enum_info() : nullptr;
-  if (enum_info) {
-    const TyEnum* enum_type = enum_info->type;
-    if (!enum_type) return std::nullopt;
-    if (!enum_info->members.empty()) {
-      if (enum_has_explicit_values(*enum_type)) {
-        std::string prefix;
-        if (should_qualify_unit(enum_info->defining_unit)) {
-          prefix = unit_namespace_prefix(enum_info->defining_unit);
-        }
-        lo = prefix + mangle(enum_info->members.front());
-        const std::string hi = prefix + mangle(enum_info->members.back());
-        size_expr = "((" + ordinal_value_text(hi) + ") - (" +
-                    ordinal_value_text(lo) + ") + 1)";
-      } else {
-        size_expr = std::to_string(enum_info->members.size());
-      }
-    }
-    return ArrayDimBounds(std::move(lo), std::move(size_expr));
-  }
-  // Canonicalize for atom-identity comparisons and metadata-driven dispatch.
-  const TypeExpr* canon_dim = analysis_.canonicalize_type(dim);
-  if (!canon_dim || canon_dim->kind != Kind::TyName) return std::nullopt;
-  const PrimitiveInfo* info = analysis_.primitive_info_for_type(canon_dim);
+  const PrimitiveInfo* info = analysis_.primitive_info_for_type(dim);
   if (!info) return std::nullopt;
   // Pascal boolean atoms share a two-value ordinal domain regardless of
   // carrier width.
@@ -737,7 +700,7 @@ const TypeExpr* EmitTypes::subrange_bound_source_type(const Expr& e) {
 const TypeExpr* EmitTypes::subrange_bound_canonical_type(const Expr* e) {
   if (!e) return nullptr;
   const TypeExpr* t = subrange_bound_source_type(*e);
-  return t ? analysis_.canonicalize_type(t) : nullptr;
+  return t ? analysis_.semantic_shape_type(t) : nullptr;
 }
 
 std::string EmitTypes::visible_enum_type_for_member(std::string_view name) {
@@ -758,13 +721,14 @@ std::string EmitTypes::visible_enum_type_for_type_name(std::string_view name) {
   const std::string low = ascii_lower(name);
   const TypeSymbol* symbol =
       migration_fallback_type_symbol_by_name(registry_, scope_, low);
-  if (!symbol || !symbol->enum_info()) return {};
-  if (migration_fallback_local_type_symbol_by_name(registry_, scope_, low) == symbol ||
+  const TypeSymbol* canonical = descriptor_payload_symbol(symbol);
+  if (!canonical || !canonical->enum_info()) return {};
+  if (migration_fallback_lexical_type_symbol_by_name(registry_, scope_, low) == symbol ||
       low.find('.') != std::string::npos ||
-      !should_qualify_unit(symbol->defining_unit)) {
+      !should_qualify_unit(canonical->defining_unit)) {
     return type_name_text_to_cxx(low);
   }
-  return type_name_text_to_cxx(symbol->defining_unit + "." + symbol->name);
+  return type_name_text_to_cxx(canonical->defining_unit + "." + canonical->name);
 }
 
 std::string EmitTypes::subrange_bound_enum_cxx_type(const Expr* e) {
@@ -826,13 +790,16 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
 
   const TypeExpr* lo_type = subrange_bound_canonical_type(r.lo.get());
   const TypeExpr* hi_type = subrange_bound_canonical_type(r.hi.get());
-  if ((tyname_is_charish(lo_type) && tyname_is_charish(hi_type)) ||
+  const PrimitiveInfo* lo_info = analysis_.primitive_info_for_type(lo_type);
+  const PrimitiveInfo* hi_info = analysis_.primitive_info_for_type(hi_type);
+  if (((lo_info && lo_info->is_char()) &&
+       (hi_info && hi_info->is_char())) ||
       (is_single_char_string_literal(r.lo.get()) &&
        is_single_char_string_literal(r.hi.get()))) {
     return primitive_type_cxx("char");
   }
-  if (lo_type == named_pascal_type("widechar") &&
-      hi_type == named_pascal_type("widechar")) {
+  if (analysis_.builtin_atom_name_for_type(lo_type) == "widechar" &&
+      analysis_.builtin_atom_name_for_type(hi_type) == "widechar") {
     return primitive_type_cxx("widechar");
   }
 
@@ -893,11 +860,11 @@ std::string EmitTypes::enum_bound_cxx_name(std::string_view enum_name,
 }
 
 std::string EmitTypes::string_type_to_cxx(const TyString& s) {
-  std::string_view declaration_unit;
-  {
-    declaration_unit = registry_.declaration_unit_for_type(&s);
-  }
-  ScopedTypeBoundUnit type_bound_scope(scope_, declaration_unit);
+  const TypeLookupContext* declaration_context =
+      declaration_context_for_type(registry_, scope_, &s);
+  ScopedDeclarationLookup type_bound_scope(
+      scope_, declaration_context,
+      declaration_unit_for_type(registry_, &s));
   if (s.max_length) {
     if (auto value = analysis_.eval_const_int_expr(*s.max_length)) {
       return "::rt::tp2cc_ShortString<" + std::to_string(value->value) + ">";
@@ -910,19 +877,19 @@ std::string EmitTypes::string_type_to_cxx(const TyString& s) {
 
 std::optional<std::string> EmitTypes::shortstring_capacity_to_cxx(
     const TypeExpr* t) {
-  const TypeExpr* canon = analysis_.canonicalize_type(t);
+  if (analysis_.builtin_atom_name_for_type(t) == "shortstring") {
+    return std::string("255");
+  }
+  const TypeExpr* canon = analysis_.semantic_shape_type(t);
   if (canon == builtin_string_type()) {
     return std::string("255");
   }
   if (!(canon && canon->kind == Kind::TyString)) return std::nullopt;
-  std::string_view declaration_unit;
-  {
-    declaration_unit = registry_.declaration_unit_for_type(canon);
-    if (declaration_unit.empty()) {
-      declaration_unit = registry_.declaration_unit_for_type(t);
-    }
-  }
-  ScopedTypeBoundUnit type_bound_scope(scope_, declaration_unit);
+  const TypeLookupContext* declaration_context =
+      declaration_context_for_type(registry_, scope_, canon, t);
+  ScopedDeclarationLookup type_bound_scope(
+      scope_, declaration_context,
+      declaration_unit_for_type(registry_, canon, t));
   const auto& s = static_cast<const TyString&>(*canon);
   if (s.max_length) {
     if (auto value = analysis_.eval_const_int_expr(*s.max_length)) {
@@ -1003,7 +970,7 @@ std::vector<std::string> EmitTypes::enum_members_to_cxx(const TyEnum& e) {
 }
 
 std::string EmitTypes::open_array_type_to_cxx(const TypeExpr& t) {
-  const TypeExpr* canon = analysis_.canonicalize_type(&t);
+  const TypeExpr* canon = analysis_.semantic_shape_type(&t);
   const auto& a = static_cast<const TyArray&>(*canon);
   return "::rt::tp2cc_OpenArray<" +
          (a.element ? type_to_cxx(*a.element) : std::string("int32_t")) + ">";
@@ -1041,7 +1008,7 @@ std::string EmitTypes::formal_param_type_to_cxx(const Param& pp) {
     pt = (pp.mode == Param::Const || pp.mode == Param::ConstRef)
              ? "const void*"
              : "void*";
-  } else if (const TypeExpr* canon = analysis_.canonicalize_type(pp.type.get());
+  } else if (const TypeExpr* canon = analysis_.semantic_shape_type(pp.type.get());
              canon && canon->kind == Kind::TyArray &&
              static_cast<const TyArray&>(*canon).array_kind ==
                  ArrayKind::Open) {
@@ -1096,7 +1063,7 @@ bool EmitTypes::procedural_param_uses_pointer_carrier(const Param& pp) {
     return false;
   }
 
-  const TypeExpr* canon = analysis_.canonicalize_type(pp.type.get());
+  const TypeExpr* canon = analysis_.semantic_shape_type(pp.type.get());
   if (!canon) return false;
   if (canon->kind == Kind::TyProcedural) return false;
   if (canon->kind == Kind::TyPointer || canon->kind == Kind::TyMetaclass) {
@@ -1245,6 +1212,9 @@ std::string EmitTypes::type_to_cxx(const TypeExpr& t) {
     case Kind::TyProcedural:
       return procedural_type_to_cxx(static_cast<const TyProcedural&>(t));
     case Kind::TyMetaclass:
+      if (const TypeSymbol* target = registry_.metaclass_target_for_type(&t)) {
+        return metaclass_struct_cxx(*target) + "*";
+      }
       return metaclass_struct_cxx(static_cast<const TyMetaclass&>(t).class_name) +
              "*";
     case Kind::TyFile: {
@@ -1275,30 +1245,15 @@ std::string EmitTypes::low_high_expr_for_named_type(std::string_view name,
     return primitive;
   }
 
-  auto dot = name.find('.');
-  if (dot != std::string_view::npos) {
-    if (const TypeSymbol* symbol =
-            migration_fallback_type_symbol_by_name(registry_, scope_, name)) {
-      if (symbol->enum_info()) {
-        return enum_bound_cxx_name(symbol->name, symbol->defining_unit,
-                                   want_low);
-      }
-      if (const AliasInfo* alias = symbol->alias_info();
-          alias && alias->target) {
-        return low_high_expr_for_type(alias->target.get(), want_low);
-      }
-    }
-    return {};
-  }
-
   if (const TypeSymbol* symbol =
           migration_fallback_type_symbol_by_name(registry_, scope_, name)) {
-    if (symbol->enum_info()) {
-      return enum_bound_cxx_name(symbol->name, symbol->defining_unit, want_low);
+    const TypeSymbol* canonical = descriptor_payload_symbol(symbol);
+    if (canonical && canonical->enum_info()) {
+      return enum_bound_cxx_name(canonical->name, canonical->defining_unit,
+                                 want_low);
     }
-    if (const AliasInfo* alias = symbol->alias_info();
-        alias && alias->target) {
-      return low_high_expr_for_type(alias->target.get(), want_low);
+    if (const TypeExpr* type = descriptor_payload_type(symbol)) {
+      return low_high_expr_for_type(type, want_low);
     }
   }
   return {};
@@ -1308,8 +1263,26 @@ std::string EmitTypes::low_high_expr_for_type(const TypeExpr* t,
                                               bool want_low) {
   if (!t) return {};
   if (t->kind == Kind::TyName) {
-    return low_high_expr_for_named_type(static_cast<const TyName&>(*t).name,
-                                        want_low);
+    const auto& name = static_cast<const TyName&>(*t).name;
+    if (std::string primitive = primitive_low_high_expr(name, want_low);
+        !primitive.empty()) {
+      return primitive;
+    }
+    if (const TypeSymbol* symbol = registry_.resolved_symbol_for_type(t)) {
+      const TypeSymbol* canonical = descriptor_payload_symbol(symbol);
+      if (canonical && canonical->enum_info()) {
+        return enum_bound_cxx_name(canonical->name, canonical->defining_unit,
+                                   want_low);
+      }
+      if (const TypeExpr* payload = descriptor_payload_type(symbol);
+          payload && payload != t) {
+        return low_high_expr_for_type(payload, want_low);
+      }
+    }
+    // This is a bound TypeExpr path; falling back to the name would make
+    // Low(T)/High(T) silently depend on late scope lookup after build()
+    // failed to bind T. Syntax-only lookup stays in low_high_expr_for_named_type().
+    return {};
   }
   if (t->kind == Kind::TyDistinct) {
     return low_high_expr_for_type(

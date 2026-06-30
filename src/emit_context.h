@@ -139,12 +139,88 @@ struct ScopeStateView {
   const ast::TypeExpr*& outer_result_type;
 };
 
+// Temporarily evaluate declaration-owned syntax in the lexical environment
+// that owned that declaration. This is for type bounds, enum ordinals, and
+// default arguments that are lowered later from a different call/type site.
+class ScopedDeclarationLookup {
+ public:
+  ScopedDeclarationLookup(ScopeStateView& scope,
+                          const TypeLookupContext* declaration_context,
+                          std::string_view declaration_unit)
+      : scope_(scope),
+        saved_current_unit_(scope.current_unit_name),
+        saved_lookup_emission_unit_(scope.lookup_emission_unit_name),
+        saved_type_scope_(scope.type_scope) {
+    if (!declaration_context && declaration_unit.empty()) return;
+
+    std::string_view unit = declaration_context ? declaration_context->unit
+                                                : declaration_unit;
+    if (declaration_context == scope.type_scope &&
+        (unit.empty() || unit == scope.current_unit_name)) {
+      return;
+    }
+
+    saved_local_scope_.swap(scope.local_scope);
+    saved_local_value_types_.swap(scope.local_value_types);
+    saved_local_consts_.swap(scope.local_consts);
+    saved_local_untyped_params_.swap(scope.local_untyped_params);
+    saved_local_nested_fns_.swap(scope.local_nested_fns);
+    saved_local_nested_forwards_.swap(scope.local_nested_forwards);
+    saved_local_const_params_.swap(scope.local_const_params);
+    saved_with_stack_.swap(scope.with_stack);
+
+    if (!unit.empty() && unit != scope_.current_unit_name) {
+      scope_.lookup_emission_unit_name =
+          saved_lookup_emission_unit_.empty() ? saved_current_unit_
+                                              : saved_lookup_emission_unit_;
+      scope_.current_unit_name = std::string(unit);
+    }
+    scope_.type_scope = declaration_context;
+    active_ = true;
+  }
+
+  ScopedDeclarationLookup(const ScopedDeclarationLookup&) = delete;
+  ScopedDeclarationLookup& operator=(const ScopedDeclarationLookup&) = delete;
+
+  ~ScopedDeclarationLookup() {
+    if (!active_) return;
+    scope_.current_unit_name = saved_current_unit_;
+    scope_.lookup_emission_unit_name = saved_lookup_emission_unit_;
+    scope_.local_scope.swap(saved_local_scope_);
+    scope_.local_value_types.swap(saved_local_value_types_);
+    scope_.local_consts.swap(saved_local_consts_);
+    scope_.local_untyped_params.swap(saved_local_untyped_params_);
+    scope_.local_nested_fns.swap(saved_local_nested_fns_);
+    scope_.local_nested_forwards.swap(saved_local_nested_forwards_);
+    scope_.local_const_params.swap(saved_local_const_params_);
+    scope_.with_stack.swap(saved_with_stack_);
+    scope_.type_scope = saved_type_scope_;
+  }
+
+ private:
+  ScopeStateView& scope_;
+  std::string saved_current_unit_;
+  std::string saved_lookup_emission_unit_;
+  std::unordered_set<std::string> saved_local_scope_;
+  std::unordered_map<std::string, const ast::TypeExpr*>
+      saved_local_value_types_;
+  std::unordered_map<std::string, const ast::ConstDecl*> saved_local_consts_;
+  std::unordered_set<std::string> saved_local_untyped_params_;
+  std::unordered_map<std::string, std::vector<ScopeStateView::NestedFn>>
+      saved_local_nested_fns_;
+  std::unordered_set<std::string> saved_local_nested_forwards_;
+  std::unordered_set<std::string> saved_local_const_params_;
+  std::vector<ScopeStateView::WithBind> saved_with_stack_;
+  const TypeLookupContext* saved_type_scope_ = nullptr;
+  bool active_ = false;
+};
+
 // MIGRATION_NAME_LOOKUP_FALLBACK: every call to a migration_fallback_* type
 // lookup function is a remaining spelling-based type lookup site. These are
 // temporary because the parser does not yet bind constructs such as `sizeof(T)`
 // or callee syntax `T(expr)` to a TypeExpr. Consumers that already have a
 // TypeExpr must use resolved_type_symbol_in_context(),
-// referenced_symbol_for_type(), or canonical_symbol_for_type() instead. The
+// resolved_symbol_for_type(), or canonical_symbol_for_type() instead. The
 // final parser-driven migration should delete these functions and all call
 // sites.
 inline const TypeSymbol* migration_fallback_type_symbol_by_name(
@@ -156,20 +232,7 @@ inline const TypeSymbol* migration_fallback_type_symbol_by_name(
       return symbol;
     }
   }
-  return registry.lookup_type_symbol(name, scope.current_unit_name);
-}
-
-inline const TypeSymbol* migration_fallback_type_symbol_in_lookup_context_by_name(
-    const TypeRegistry& registry, const TypeLookupContext* context,
-    std::string_view name) {
-  if (!context) return nullptr;
-  return registry.lookup_type_symbol_in_context(name, context);
-}
-
-inline const TypeSymbol* migration_fallback_type_symbol_in_unit_by_name(
-    const TypeRegistry& registry, std::string_view unit_name,
-    std::string_view name) {
-  return registry.lookup_type_symbol(name, unit_name);
+  return nullptr;
 }
 
 inline const TypeSymbol* migration_fallback_lexical_type_symbol_by_name(
@@ -177,12 +240,6 @@ inline const TypeSymbol* migration_fallback_lexical_type_symbol_by_name(
     std::string_view name) {
   if (!scope.type_scope) return nullptr;
   return registry.lookup_type_symbol_in_scope_chain(name, scope.type_scope);
-}
-
-inline const TypeSymbol* migration_fallback_local_type_symbol_by_name(
-    const TypeRegistry& registry, const ScopeStateView& scope,
-    std::string_view name) {
-  return migration_fallback_lexical_type_symbol_by_name(registry, scope, name);
 }
 
 inline const EnumInfoReg* local_enum_info_for_member(
@@ -210,8 +267,7 @@ inline const TypeSymbol* resolved_type_symbol_in_context(
   if (!type || type->kind != ast::Kind::TyName) return symbol;
   const auto& name = static_cast<const ast::TyName&>(*type).name;
   if (const TypeSymbol* visible =
-          context ? migration_fallback_type_symbol_in_lookup_context_by_name(
-                        registry, context, name)
+          context ? registry.lookup_type_symbol_in_context(name, context)
                   : migration_fallback_type_symbol_by_name(registry, scope, name)) {
     return visible;
   }

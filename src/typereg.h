@@ -16,7 +16,6 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -52,15 +51,6 @@ struct StringViewEqual {
     return a == b;
   }
 };
-
-// Upper bound on the length of a TyName -> TyName alias chain that
-// `canonicalize' is willing to follow.  A well-formed Pascal program
-// has short chains (typically 1--3 hops: alias -> concrete type);
-// hitting this limit means either the registry has a cycle (bug) or the
-// source declared a genuinely pathological set of aliases. Either way,
-// silently returning an intermediate would hide the fault, so
-// callers are expected to treat exceeding this limit as fatal.
-constexpr int kMaxAliasChainHops = 32;
 
 enum class SymKind : uint8_t {
   Unknown,
@@ -132,9 +122,14 @@ struct TypeDescriptor {
   // nominal syntax such as bare `record end` or `class end` still gets a
   // fresh descriptor even though it has no Pascal declaration name and
   // therefore no TypeSymbol and no declaration-derived `t_x` C++ name.
+  // Shared `class of T` descriptors are target-keyed and intentionally leave
+  // this null; no single syntax occurrence owns that type identity.
   const ast::TypeExpr* type = nullptr;
   // The named declaration that owns this descriptor, when there is one.
   const TypeSymbol* symbol = nullptr;
+  // `class of T` is a class-reference type whose identity is tied to the
+  // resolved target class T, not to each syntactic `class of T` occurrence.
+  const TypeSymbol* metaclass_target = nullptr;
 };
 
 struct ClassInfo {
@@ -198,7 +193,10 @@ struct EnumInfoReg {
 
 struct AliasInfo {
   std::string defining_unit;
-  std::shared_ptr<const ast::TypeExpr> target; // may itself be a TyName (chain)
+  // Declaration target for `type X = Y`. TypeRegistry::build() resolves this
+  // once to the target descriptor; emission should consume the descriptor, not
+  // chase this syntax again.
+  std::shared_ptr<const ast::TypeExpr> target;
 };
 
 struct ProcInfo {
@@ -206,6 +204,7 @@ struct ProcInfo {
   std::shared_ptr<const ast::ProcDecl> decl;
   size_t param_count = 0;
   bool is_function = false;
+  bool is_overload = false;
   // For rt builtins that accept `foo;` with zero args (writeln,
   // readln, halt, etc.) regardless of declared arity.
   bool accepts_zero_args = false;
@@ -300,9 +299,6 @@ struct TypeSymbol {
   const AliasInfo* alias_info() const {
     return std::get_if<AliasInfo>(&payload);
   }
-  AliasInfo* mutable_alias_info() {
-    return std::get_if<AliasInfo>(&payload);
-  }
   const ClassInfo* class_info() const {
     return std::get_if<ClassInfo>(&payload);
   }
@@ -329,6 +325,22 @@ struct TypeSymbol {
   }
 };
 
+inline const TypeSymbol* descriptor_payload_symbol(const TypeSymbol* symbol) {
+  if (!symbol) return nullptr;
+  if (symbol->descriptor && symbol->descriptor->symbol) {
+    return symbol->descriptor->symbol;
+  }
+  return symbol;
+}
+
+inline const ast::TypeExpr* descriptor_payload_type(const TypeSymbol* symbol) {
+  if (!symbol) return nullptr;
+  if (symbol->descriptor && symbol->descriptor->type) {
+    return symbol->descriptor->type;
+  }
+  return symbol->type;
+}
+
 using TypeSymbolScopeMap =
     std::unordered_map<std::string, TypeSymbol, StringViewHash,
                        StringViewEqual>;
@@ -336,19 +348,34 @@ using TypeSymbolRefScopeMap =
     std::unordered_map<std::string, const TypeSymbol*, StringViewHash,
                        StringViewEqual>;
 
+struct UnitInfo;
+
+enum class ScopeFrameKind : uint8_t {
+  Local,
+  UnitInterface,
+  UnitImplementation,
+  ImportedUnitInterface,
+};
+
 // Lexical type lookup context for a TypeExpr as written in Pascal source.
 // Entries point at registry-owned TypeSymbols; they are not copied into this
 // tree. This lets a field/member/signature type keep the unit and enclosing
-// type scope that declared it even when rendered or canonicalized elsewhere.
+// type scope that declared it even when rendered after parsing.
 struct TypeLookupContext {
   std::string unit;
   const TypeLookupContext* parent = nullptr;
+  ScopeFrameKind kind = ScopeFrameKind::Local;
+  const UnitInfo* unit_info = nullptr;
   TypeSymbolRefScopeMap type_symbols;
 };
 
 struct UnitInfo {
   std::string name;
-  std::vector<std::string> uses;         // interface + impl (order)
+  // Direct unit names from the corresponding source-section `uses` clauses.
+  // Implementation lookup builds a frame chain from both vectors; imported
+  // units contribute only their interface symbols.
+  std::vector<std::string> interface_uses;
+  std::vector<std::string> implementation_uses;
   // Per-unit symbol tables -- split interface vs impl. Only
   // interface-exported symbols are visible to other units; both are
   // visible within this unit's own procs/method bodies.
@@ -448,6 +475,123 @@ struct UnitInfo {
   }
 };
 
+inline bool scope_frame_is_import(const TypeLookupContext& frame) {
+  return frame.kind == ScopeFrameKind::ImportedUnitInterface;
+}
+
+inline bool scope_frame_is_runtime(const TypeLookupContext& frame) {
+  return frame.unit == "__rt__";
+}
+
+inline const VarInfo* scope_frame_find_var(const TypeLookupContext& frame,
+                                           const std::string& n) {
+  if (!frame.unit_info) return nullptr;
+  switch (frame.kind) {
+    case ScopeFrameKind::UnitImplementation: {
+      auto it = frame.unit_info->impl_vars.find(n);
+      return it == frame.unit_info->impl_vars.end() ? nullptr : &it->second;
+    }
+    case ScopeFrameKind::UnitInterface:
+    case ScopeFrameKind::ImportedUnitInterface: {
+      auto it = frame.unit_info->iface_vars.find(n);
+      return it == frame.unit_info->iface_vars.end() ? nullptr : &it->second;
+    }
+    case ScopeFrameKind::Local:
+      return nullptr;
+  }
+  return nullptr;
+}
+
+inline const ConstInfo* scope_frame_find_const(const TypeLookupContext& frame,
+                                               const std::string& n) {
+  if (!frame.unit_info) return nullptr;
+  switch (frame.kind) {
+    case ScopeFrameKind::UnitImplementation: {
+      auto it = frame.unit_info->impl_consts.find(n);
+      return it == frame.unit_info->impl_consts.end() ? nullptr : &it->second;
+    }
+    case ScopeFrameKind::UnitInterface:
+    case ScopeFrameKind::ImportedUnitInterface: {
+      auto it = frame.unit_info->iface_consts.find(n);
+      return it == frame.unit_info->iface_consts.end() ? nullptr : &it->second;
+    }
+    case ScopeFrameKind::Local:
+      return nullptr;
+  }
+  return nullptr;
+}
+
+inline const std::vector<ProcInfo>* scope_frame_find_procs(
+    const TypeLookupContext& frame, const std::string& n) {
+  if (!frame.unit_info) return nullptr;
+  switch (frame.kind) {
+    case ScopeFrameKind::UnitImplementation: {
+      auto it = frame.unit_info->impl_procs.find(n);
+      return it == frame.unit_info->impl_procs.end() ? nullptr : &it->second;
+    }
+    case ScopeFrameKind::UnitInterface:
+    case ScopeFrameKind::ImportedUnitInterface: {
+      auto it = frame.unit_info->iface_procs.find(n);
+      return it == frame.unit_info->iface_procs.end() ? nullptr : &it->second;
+    }
+    case ScopeFrameKind::Local:
+      return nullptr;
+  }
+  return nullptr;
+}
+
+inline const std::vector<ProcInfo>* scope_frame_find_operators(
+    const TypeLookupContext& frame, const std::string& n) {
+  if (!frame.unit_info) return nullptr;
+  switch (frame.kind) {
+    case ScopeFrameKind::UnitImplementation: {
+      auto it = frame.unit_info->impl_operators.find(n);
+      return it == frame.unit_info->impl_operators.end() ? nullptr
+                                                        : &it->second;
+    }
+    case ScopeFrameKind::UnitInterface:
+    case ScopeFrameKind::ImportedUnitInterface: {
+      auto it = frame.unit_info->iface_operators.find(n);
+      return it == frame.unit_info->iface_operators.end() ? nullptr
+                                                         : &it->second;
+    }
+    case ScopeFrameKind::Local:
+      return nullptr;
+  }
+  return nullptr;
+}
+
+inline bool scope_frame_has_type(const TypeLookupContext& frame,
+                                 const std::string& n) {
+  if (frame.type_symbols.count(n) > 0) return true;
+  if (!frame.unit_info) return false;
+  switch (frame.kind) {
+    case ScopeFrameKind::UnitImplementation:
+      return frame.unit_info->impl_types.count(n) > 0;
+    case ScopeFrameKind::UnitInterface:
+    case ScopeFrameKind::ImportedUnitInterface:
+      return frame.unit_info->iface_types.count(n) > 0;
+    case ScopeFrameKind::Local:
+      return false;
+  }
+  return false;
+}
+
+inline bool scope_frame_has_enum_member(const TypeLookupContext& frame,
+                                        const std::string& n) {
+  if (!frame.unit_info) return false;
+  switch (frame.kind) {
+    case ScopeFrameKind::UnitImplementation:
+      return frame.unit_info->impl_enum_members.count(n) > 0;
+    case ScopeFrameKind::UnitInterface:
+    case ScopeFrameKind::ImportedUnitInterface:
+      return frame.unit_info->iface_enum_members.count(n) > 0;
+    case ScopeFrameKind::Local:
+      return false;
+  }
+  return false;
+}
+
 struct TypeRegistry {
   std::unordered_map<std::string, UnitInfo> units;
 
@@ -490,6 +634,8 @@ struct TypeRegistry {
   std::deque<TypeDescriptor> type_descriptor_storage;
   std::unordered_map<const ast::TypeExpr*, const TypeDescriptor*>
       type_descriptors;
+  std::unordered_map<const TypeSymbol*, const TypeDescriptor*>
+      metaclass_descriptors;
   // For TypeExpr nodes that name a Pascal type symbol, remember the exact
   // symbol chosen by semantic binding. This is distinct from descriptor
   // identity: aliases share the target descriptor but still name the alias
@@ -511,15 +657,11 @@ struct TypeRegistry {
   // an entry for every TypeExpr node.
   std::unordered_map<const SourceFile*, std::string> source_file_units;
 
-  // Canonical descriptors for built-in type literals (atoms). Pascal is
-  // nominal: a type's identity is its declaration identity. Atoms like
-  // `integer`, `char`, `ansistring` are one declaration per atom, so they
-  // have one identity independent of where they appear in source. Each atom
-  // is interned once at build() time as a stable TypeSymbol whose `type`
-  // pointer is that declaration's canonical representative. `canonicalize`
-  // promotes terminal TyName occurrences of these names to that canonical
-  // pointer; the emitter then tests type identity as pointer equality on
-  // `const ast::TypeExpr*`, which is exactly "same declaration".
+  // Descriptors for built-in type literals (atoms). Pascal is nominal: a
+  // type's identity is its declaration identity. Atoms like `integer`, `char`,
+  // and `ansistring` are one declaration per atom, so they have one identity
+  // independent of where they appear in source. TypeRegistry::build() interns
+  // each atom as a stable TypeSymbol and binds references to that descriptor.
   std::unordered_map<std::string, const TypeSymbol*, StringViewHash,
                      StringViewEqual>
       builtin_literal_descriptors;
@@ -550,6 +692,8 @@ struct TypeRegistry {
       const ast::TypeExpr* type) const;
   const TypeSymbol* resolved_symbol_for_type(
       const ast::TypeExpr* type) const;
+  const TypeSymbol* metaclass_target_for_type(
+      const ast::TypeExpr* type) const;
   std::string_view declaration_unit_for_type(
       const ast::TypeExpr* type) const;
   const TypeSymbol* lookup_type_symbol_in_context(
@@ -570,56 +714,20 @@ struct TypeRegistry {
 
   const ClassInfo* lookup_class(std::string_view name,
                                 std::string_view current_unit) const;
-  const ClassInfo* lookup_class_exact(std::string_view unit,
-                                      std::string_view name) const;
   // Pascal class ancestry for semantic lookup/conversion. Root reference
   // classes implicitly inherit runtime TObject, matching emitted C++ bases.
   const ClassInfo* lookup_parent_class(const ClassInfo& class_info) const;
   bool class_implements_interface(const ClassInfo& class_info,
                                   const InterfaceInfo& interface_info) const;
-  bool class_implements_interface(std::string_view class_name,
-                                  const InterfaceInfo& interface_info,
-                                  std::string_view current_unit) const;
-  const InterfaceInfo* interface_info_for_type(
-      const ast::TypeExpr* type, std::string_view current_unit) const;
   const InterfaceInfo* lookup_interface(std::string_view name,
                                         std::string_view current_unit) const;
-  const InterfaceInfo* lookup_interface_exact(std::string_view unit,
-                                              std::string_view name) const;
   const RecordInfo* lookup_record(std::string_view name,
                                   std::string_view current_unit) const;
-  const RecordInfo* lookup_record_exact(std::string_view unit,
-                                        std::string_view name) const;
-  bool has_class(std::string_view name,
-                 std::string_view current_unit = {}) const {
-    return lookup_class(name, current_unit) != nullptr;
-  }
-
-  // Chase TyName aliases through the scoped registry to the first non-TyName
-  // type expression.
-  const ast::TypeExpr* canonicalize(
-      const ast::TypeExpr* te,
-      std::string_view current_unit = {}) const;
-  const ast::TypeExpr* canonicalize(
-      const ast::TypeExpr* te,
-      const TypeLookupContext* context) const;
-
   // Returns the canonical TypeSymbol for a built-in type literal (lowercased
   // Pascal name), or nullptr if `name` is not a builtin atom. The symbol's
   // `type` field is the canonical AST representative; pointer equality on it
   // is type identity.
   const TypeSymbol* builtin_literal(std::string_view name) const;
-
-  // If `te` canonicalizes to a pointer to a class/record, return its
-  // type-alias name (lowercased). Otherwise empty string.
-  std::string pointer_target_type_name(
-      const ast::TypeExpr* te,
-      std::string_view current_unit = {}) const;
-
-  // If `te` canonicalizes to a class/record, return its type-alias name.
-  std::string direct_type_name(
-      const ast::TypeExpr* te,
-      std::string_view current_unit = {}) const;
 
   // Pascal resolves type names and value names in different contexts. C++
   // class/struct scopes do not, so fields use value identifiers (`p_*`) while

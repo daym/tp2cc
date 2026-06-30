@@ -101,10 +101,12 @@ class EmitTypes {
   std::string type_to_cxx(const ast::TypeExpr& t);
   std::string type_name_to_cxx(const ast::TyName& n);
   std::string type_name_text_to_cxx(std::string_view name);
+  std::string type_symbol_to_cxx(const TypeSymbol* symbol) const;
   std::string named_type_struct_cxx(std::string_view name);
   std::string type_symbol_struct_cxx(const TypeSymbol& symbol) const;
-  std::string visible_type_prefix(std::string_view name);
+  std::string metaclass_struct_cxx(const TypeSymbol& symbol) const;
   std::string metaclass_struct_cxx(std::string_view class_name);
+  std::string metaclass_value_fn_cxx(const TypeSymbol& symbol) const;
   std::string metaclass_value_fn_cxx(std::string_view class_name);
   bool enum_has_explicit_values(const ast::TyEnum& e);
   std::optional<int64_t> enum_member_value_int64(const ast::TyEnum& e,
@@ -168,12 +170,8 @@ class EmitTypes {
   EmitTypeOrdinalOps& ordinal_ops_;
   EmitTypeDiagOps& diag_ops_;
 
-  // Did any non-runtime translated unit declare this type? Runtime aliases are
-  // present in the registry for analysis/member lookup, but their C++ type name
-  // remains the explicit ::rt::t_* names from runtime_named_type_cxx().
   std::string active_emission_unit_name() const;
   bool should_qualify_unit(std::string_view defining_unit) const;
-  bool registry_knows_translated_type(std::string_view name);
   std::string metaclass_symbol_cxx(const TypeSymbol& symbol,
                                    std::string_view name_prefix) const;
   EmitRecordFieldDecl record_field_decl(const ast::TypeExpr* type,

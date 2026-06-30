@@ -332,6 +332,8 @@ inline void p_set8087cw(uint16_t cw) { tp2cc_set_8087_control_word(cw); }
 // machinery; subclasses and `new t_exception` users land below
 // `tp2cc_AnsiString` so the field has a complete type.
 
+// Metaclass objects are function-local statics on purpose: constructing them
+// on first use avoids C++ cross-translation-unit initialization order.
 inline tp2cc_metaclass_t_tobject* tp2cc_metaclass_value_t_tobject() {
   static tp2cc_metaclass_t_tobject value{+[]() -> t_tobject* {
     auto* tp2cc_ptr = new t_tobject{};

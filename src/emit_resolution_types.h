@@ -17,6 +17,8 @@ struct TypeExpr;
 
 namespace tp2cc {
 
+struct TypeLookupContext;
+
 // Result of Pascal identifier lookup. The emitter uses this both for C++ access
 // text (`cxx`) and for semantic questions like "is this a zero-arg callable?".
 enum class ResolvedKind {
@@ -225,6 +227,7 @@ struct PickResult {
 struct FlatCallParamInfo {
   const ast::TypeExpr* type = nullptr;
   std::shared_ptr<const ast::TypeExpr> owned_type;
+  const TypeLookupContext* type_context = nullptr;
   bool untyped = false;
   bool mutable_ref = false;
   const ast::Expr* default_value = nullptr;
@@ -234,9 +237,11 @@ struct FlatCallParamInfo {
                     bool mutable_ref_in, const ast::Expr* default_value_in,
                     std::string param_unit_in = {},
                     std::string param_declaring_type_in = {},
-                    std::shared_ptr<const ast::TypeExpr> owned_type_in = {})
+                    std::shared_ptr<const ast::TypeExpr> owned_type_in = {},
+                    const TypeLookupContext* type_context_in = nullptr)
       : type(type_in),
         owned_type(std::move(owned_type_in)),
+        type_context(type_context_in),
         untyped(untyped_in),
         mutable_ref(mutable_ref_in),
         default_value(default_value_in),

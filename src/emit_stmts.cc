@@ -166,7 +166,7 @@ std::string EmitStmts::value_class_alias(const Expr& expr) {
           !cls.empty()) {
         return cls;
       }
-      if (const TypeExpr* canon = analysis_.canonicalize_type(t)) {
+      if (const TypeExpr* canon = analysis_.semantic_shape_type(t)) {
         if (auto cls = analysis_.direct_type_name(canon);
             !cls.empty()) {
           return cls;
@@ -175,6 +175,15 @@ std::string EmitStmts::value_class_alias(const Expr& expr) {
     }
   }
   return analysis_.deduce_class_alias(expr);
+}
+
+std::string EmitStmts::value_receiver_access_op(const Expr& expr) {
+  if (const TypeExpr* t = selected_value_type(expr)) {
+    if (storage_.type_is_reference_class(t) || analysis_.type_is_interface(t)) {
+      return "->";
+    }
+  }
+  return storage_.member_access_op(expr);
 }
 
 bool EmitStmts::stmt_autocalls_procvar(const Expr& expr) {
@@ -188,7 +197,7 @@ bool EmitStmts::stmt_autocalls_procvar(const Expr& expr) {
       return false;
   }
   if (const TypeExpr* t = procedural_designator_type(expr);
-      t && (t = analysis_.canonicalize_type(t)) &&
+      t && (t = analysis_.semantic_shape_type(t)) &&
       t->kind == Kind::TyProcedural) {
     return procedural_param_count(static_cast<const TyProcedural&>(*t)) == 0;
   }
@@ -338,8 +347,9 @@ bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
               cls, mem.name, scope_.current_unit_name)) {
         std::vector<const Expr*> no_indices;
         stmt_ops_.emitln(properties_.lower_property_write(
-                             a.loc, stmt_ops_.expr_to_cxx(*mem.base), cls,
-                             *prop, no_indices, *a.value) +
+                             a.loc, stmt_ops_.expr_to_cxx(*mem.base),
+                             value_receiver_access_op(*mem.base), cls, *prop,
+                             no_indices, *a.value) +
                          ";");
         return true;
       }
@@ -372,7 +382,8 @@ bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
                 cls, mem.name, scope_.current_unit_name)) {
           if (!prop->params.empty()) {
             stmt_ops_.emitln(properties_.lower_property_write(
-                                 a.loc, stmt_ops_.expr_to_cxx(*mem.base), cls,
+                                 a.loc, stmt_ops_.expr_to_cxx(*mem.base),
+                                 value_receiver_access_op(*mem.base), cls,
                                  *prop, indices, *a.value) +
                              ";");
             return true;
@@ -385,8 +396,9 @@ bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
       if (auto found = analysis_.find_implicit_class_property(id.name);
           found && found->prop && !found->prop->params.empty()) {
         stmt_ops_.emitln(properties_.lower_property_write(
-                             a.loc, found->base_cxx, found->class_name,
-                             *found->prop, indices, *a.value) +
+                             a.loc, found->base_cxx, found->base_access,
+                             found->class_name, *found->prop, indices,
+                             *a.value) +
                          ";");
         return true;
       }
@@ -396,8 +408,9 @@ bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
       if (auto* prop = registry_.lookup_default_property(
               cls, scope_.current_unit_name)) {
         stmt_ops_.emitln(properties_.lower_property_write(
-                             a.loc, stmt_ops_.expr_to_cxx(*ix.base), cls,
-                             *prop, indices, *a.value) +
+                             a.loc, stmt_ops_.expr_to_cxx(*ix.base),
+                             value_receiver_access_op(*ix.base), cls, *prop,
+                             indices, *a.value) +
                          ";");
         return true;
       }
@@ -466,39 +479,31 @@ void EmitStmts::emit_assign_stmt(const Assign& a) {
   // (modular truncation is well-defined on unsigned, and gcc
   // implements two's-complement on signed).
   if (target_ty) {
-    const TypeExpr* tcanon = analysis_.canonicalize_type(target_ty);
-    if (tcanon && tcanon->kind == Kind::TyName) {
-      const PrimitiveInfo* dst =
-          primitive_info(ascii_lower(static_cast<const TyName&>(*tcanon).name));
-      if (dst && (dst->int_kind != PrimitiveIntKind::None)) {
-        const TypeExpr* src_ty = overload_types_.type_for_overload(*a.value);
-        if (src_ty) src_ty = analysis_.canonicalize_type(src_ty);
-        const PrimitiveInfo* src = nullptr;
-        bool src_is_real = false;
-        if (src_ty && src_ty->kind == Kind::TyName) {
-          std::string sn =
-              ascii_lower(static_cast<const TyName&>(*src_ty).name);
-          src = primitive_info(sn);
-          src_is_real = sn == "single" || sn == "double" || sn == "real" ||
-                        sn == "extended" || sn == "comp" || sn == "bestreal";
-        }
-        if (a.r_check) {
-          bool wrap = false;
-          if (src_is_real) {
+    const TypeExpr* tcanon = analysis_.semantic_shape_type(target_ty);
+    const PrimitiveInfo* dst = analysis_.primitive_info_for_type(tcanon);
+    if (dst && dst->int_kind != PrimitiveIntKind::None) {
+      const TypeExpr* src_ty = overload_types_.type_for_overload(*a.value);
+      if (src_ty) src_ty = analysis_.semantic_shape_type(src_ty);
+      const PrimitiveInfo* src = analysis_.primitive_info_for_type(src_ty);
+      bool src_is_real = src && src->is_real();
+      if (a.r_check) {
+        bool wrap = false;
+        if (src_is_real) {
+          wrap = true;
+        } else if (src && (src->int_kind != PrimitiveIntKind::None)) {
+          if (analysis_.resolved_primitive_bits(*src) >
+                  analysis_.resolved_primitive_bits(*dst) ||
+              src->int_kind != dst->int_kind) {
             wrap = true;
-          } else if (src && (src->int_kind != PrimitiveIntKind::None)) {
-            if (analysis_.resolved_primitive_bits(*src) > analysis_.resolved_primitive_bits(*dst) || src->int_kind != dst->int_kind) {
-              wrap = true;
-            }
           }
-          if (wrap) {
-            rhs_cxx = "::rt::tp2cc_range_check_assign<" +
-                      std::string(dst->cxx) + ">(" + rhs_cxx + ")";
-          }
-        } else if (src_is_real) {
-          rhs_cxx = "::rt::tp2cc_real_to_int_trunc<" +
+        }
+        if (wrap) {
+          rhs_cxx = "::rt::tp2cc_range_check_assign<" +
                     std::string(dst->cxx) + ">(" + rhs_cxx + ")";
         }
+      } else if (src_is_real) {
+        rhs_cxx = "::rt::tp2cc_real_to_int_trunc<" +
+                  std::string(dst->cxx) + ">(" + rhs_cxx + ")";
       }
     }
   }
@@ -676,6 +681,7 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
               ascii_lower(static_cast<const Ident&>(*mem.base).name);
           const TypeSymbol* symbol =
               migration_fallback_type_symbol_by_name(registry_, scope_, base);
+          symbol = descriptor_payload_symbol(symbol);
           if (!symbol || (!symbol->class_info() && !symbol->record_info())) {
             cls = value_class_alias(*mem.base);
           }
@@ -885,6 +891,7 @@ std::string EmitStmts::for_in_class_type_name(
                                                 method->declaring_type);
       const TypeSymbol* symbol =
           signature_type_symbol_for(registry_, scope_, name);
+      symbol = descriptor_payload_symbol(symbol);
       if (symbol && symbol->class_info()) {
         return type_symbol_unit_pascal_path(*symbol);
       }
@@ -902,7 +909,7 @@ std::string EmitStmts::for_in_class_type_name(
     }
     if (analysis_.migration_fallback_class_info_by_name(name)) return name;
   }
-  type = analysis_.canonicalize_type(type);
+  type = analysis_.semantic_shape_type(type);
   if (type && type->kind == Kind::TyName) {
     const std::string name = ascii_lower(static_cast<const TyName&>(*type).name);
     if (analysis_.migration_fallback_class_info_by_name(name)) return name;
@@ -936,7 +943,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_type_rhs(
   if (!type_name) return ForInEmitResult::NotMatched;
 
   const TypeExpr* named = analysis_.migration_fallback_named_type_expr_by_name(*type_name);
-  named = analysis_.canonicalize_type(named);
+  named = analysis_.semantic_shape_type(named);
   if (named && named->kind == Kind::TyEnum &&
       types_.enum_has_explicit_values(static_cast<const TyEnum&>(*named))) {
     stmt_ops_.report_error(f.loc,
@@ -1032,7 +1039,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
     return ForInEmitResult::Error;
   }
   const TypeExpr* move_ret = move->decl ? move->decl->return_type.get() : nullptr;
-  move_ret = analysis_.canonicalize_type(move_ret);
+  move_ret = analysis_.semantic_shape_type(move_ret);
   if (!move->is_function || move_ret != builtin_boolean_type()) {
     stmt_ops_.report_error(provider.loc,
                            "enumerator MoveNext must return Boolean");
@@ -1068,7 +1075,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
   std::vector<const Expr*> no_indices;
   stmt_ops_.emitln(var + " = " +
                    properties_.lower_property_read(
-                       provider.loc, enum_var, enum_class, *current,
+                       provider.loc, enum_var, access, enum_class, *current,
                        no_indices) +
                    ";");
   {
@@ -1092,7 +1099,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_string(
     const For& f, const std::string& var) {
   if (!f.in_expr) return ForInEmitResult::NotMatched;
   const TypeExpr* in_type =
-      analysis_.canonicalize_type(selected_value_type(*f.in_expr));
+      analysis_.semantic_shape_type(selected_value_type(*f.in_expr));
   bool is_string = in_type && in_type->kind == Kind::TyString;
   if (!is_string && in_type) {
     is_string = analysis_.type_is_string_like(in_type);
@@ -1137,7 +1144,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_array(
     const For& f, const std::string& var) {
   if (!f.in_expr) return ForInEmitResult::NotMatched;
   const TypeExpr* in_type =
-      analysis_.canonicalize_type(selected_value_type(*f.in_expr));
+      analysis_.semantic_shape_type(selected_value_type(*f.in_expr));
   if (!(in_type && in_type->kind == Kind::TyArray)) {
     return ForInEmitResult::NotMatched;
   }
@@ -1195,7 +1202,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_set(
     const For& f, const std::string& var) {
   if (!f.in_expr) return ForInEmitResult::NotMatched;
   const TypeExpr* in_type =
-      analysis_.canonicalize_type(selected_value_type(*f.in_expr));
+      analysis_.semantic_shape_type(selected_value_type(*f.in_expr));
   if (!(in_type && in_type->kind == Kind::TySet)) {
     return ForInEmitResult::NotMatched;
   }
@@ -1378,7 +1385,7 @@ void EmitStmts::emit_stmt(const Stmt& s) {
       for (size_t i = 0; i < w.exprs.size(); ++i) {
         const Expr& with_expr = *w.exprs[i];
         const TypeExpr* ty = with_receiver_type(with_expr);
-        if (ty) ty = analysis_.canonicalize_type(ty);
+        if (ty) ty = analysis_.semantic_shape_type(ty);
         std::string nm =
             "tp2cc_with_" + std::to_string(scope_.with_stack.size());
         auto storage = storage_.storage_designator(with_expr);

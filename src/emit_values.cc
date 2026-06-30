@@ -115,7 +115,7 @@ std::string EmitValues::set_literal_to_cxx(const SetLit& s,
   if (!target) target = analysis_.deduce_set_literal_type(s);
   const TypeExpr* elem_type = nullptr;
   if (target) {
-    const TypeExpr* canon = analysis_.canonicalize_type(target);
+    const TypeExpr* canon = analysis_.semantic_shape_type(target);
     if (canon && canon->kind == Kind::TySet) {
       elem_type = static_cast<const TySet&>(*canon).element.get();
     }
@@ -130,7 +130,7 @@ std::string EmitValues::set_literal_to_cxx(const SetLit& s,
   }
 
   if (elem_type) {
-    const TypeExpr* canonical_elem_type = analysis_.canonicalize_type(elem_type);
+    const TypeExpr* canonical_elem_type = analysis_.semantic_shape_type(elem_type);
     if (!has_range && canonical_elem_type &&
         canonical_elem_type->kind == Kind::TyEnum) {
       const TypeExpr* common_literal_type = nullptr;
@@ -289,7 +289,7 @@ std::string EmitValues::apply_target_pointer_conversion(
 std::optional<std::string> EmitValues::maybe_lower_target_pointer_arithmetic(
     const Expr& e, const TypeExpr* target, bool explicit_conversion,
     bool typed_const_initializer) {
-  const TypeExpr* canon_target = analysis_.canonicalize_type(target);
+  const TypeExpr* canon_target = analysis_.semantic_shape_type(target);
   if (!canon_target || !storage_.type_is_pointerish(canon_target) ||
       e.kind != Kind::Binary) {
     return std::nullopt;
@@ -300,20 +300,14 @@ std::optional<std::string> EmitValues::maybe_lower_target_pointer_arithmetic(
   if (!b.lhs || !b.rhs) return std::nullopt;
 
   const TypeExpr* lhs_type =
-      analysis_.canonicalize_type(overload_types_.type_for_overload(*b.lhs));
+      analysis_.semantic_shape_type(overload_types_.type_for_overload(*b.lhs));
   const TypeExpr* rhs_type =
-      analysis_.canonicalize_type(overload_types_.type_for_overload(*b.rhs));
-  auto integer_type = [](const TypeExpr* t) {
-    if (!t || t->kind != Kind::TyName) return false;
-    const PrimitiveInfo* pi =
-        primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
-    return pi && pi->int_kind != PrimitiveIntKind::None;
-  };
+      analysis_.semantic_shape_type(overload_types_.type_for_overload(*b.rhs));
 
   const bool lhs_ptr = storage_.type_is_pointerish(lhs_type);
   const bool rhs_ptr = storage_.type_is_pointerish(rhs_type);
-  const bool lhs_int = integer_type(lhs_type);
-  const bool rhs_int = integer_type(rhs_type);
+  const bool lhs_int = type_is_integer_primitive(lhs_type);
+  const bool rhs_int = type_is_integer_primitive(rhs_type);
   const char* op = b.op == BinOp::Add ? " + " : " - ";
 
   // Pointer arithmetic is a target-typed value context for its pointer
@@ -336,7 +330,7 @@ std::optional<std::string> EmitValues::maybe_lower_target_pointer_arithmetic(
 
 bool EmitValues::can_lower_target_pointer_arithmetic(
     const Expr& e, const TypeExpr* target, bool explicit_conversion) {
-  const TypeExpr* canon_target = analysis_.canonicalize_type(target);
+  const TypeExpr* canon_target = analysis_.semantic_shape_type(target);
   if (!canon_target || !storage_.type_is_pointerish(canon_target) ||
       e.kind != Kind::Binary) {
     return false;
@@ -347,20 +341,14 @@ bool EmitValues::can_lower_target_pointer_arithmetic(
   if (!b.lhs || !b.rhs) return false;
 
   const TypeExpr* lhs_type =
-      analysis_.canonicalize_type(overload_types_.type_for_overload(*b.lhs));
+      analysis_.semantic_shape_type(overload_types_.type_for_overload(*b.lhs));
   const TypeExpr* rhs_type =
-      analysis_.canonicalize_type(overload_types_.type_for_overload(*b.rhs));
-  auto integer_type = [](const TypeExpr* t) {
-    if (!t || t->kind != Kind::TyName) return false;
-    const PrimitiveInfo* pi =
-        primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
-    return pi && pi->int_kind != PrimitiveIntKind::None;
-  };
+      analysis_.semantic_shape_type(overload_types_.type_for_overload(*b.rhs));
 
   const bool lhs_ptr = storage_.type_is_pointerish(lhs_type);
   const bool rhs_ptr = storage_.type_is_pointerish(rhs_type);
-  const bool lhs_int = integer_type(lhs_type);
-  const bool rhs_int = integer_type(rhs_type);
+  const bool lhs_int = type_is_integer_primitive(lhs_type);
+  const bool rhs_int = type_is_integer_primitive(rhs_type);
   if (lhs_ptr && rhs_int) {
     return can_convert_value_to_type(*b.lhs, target, explicit_conversion);
   }
@@ -368,6 +356,11 @@ bool EmitValues::can_lower_target_pointer_arithmetic(
     return can_convert_value_to_type(*b.rhs, target, explicit_conversion);
   }
   return false;
+}
+
+bool EmitValues::type_is_integer_primitive(const TypeExpr* t) {
+  const PrimitiveInfo* pi = analysis_.primitive_info_for_type(t);
+  return pi && pi->int_kind != PrimitiveIntKind::None;
 }
 
 std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target,
@@ -385,14 +378,14 @@ std::string EmitValues::typed_const_value_to_cxx(
 bool EmitValues::can_convert_proc_value(const Expr& e, const TypeExpr* target,
                                         bool explicit_conversion) {
   if (!target) return false;
-  const TypeExpr* canon = analysis_.canonicalize_type(target);
+  const TypeExpr* canon = analysis_.semantic_shape_type(target);
   if (!(canon && canon->kind == Kind::TyProcedural)) return false;
   const auto& proc = static_cast<const TyProcedural&>(*canon);
 
   if (proc.is_method && e.kind == Kind::NilLit) return true;
 
   const TypeExpr* source_type = proc_value_source_type(e);
-  source_type = analysis_.canonicalize_type(source_type);
+  source_type = analysis_.semantic_shape_type(source_type);
   if (source_type && source_type->kind == Kind::TyProcedural) {
     return resolution_.procedural_types_match(
         static_cast<const TyProcedural&>(*source_type), proc);
@@ -446,7 +439,7 @@ bool EmitValues::can_convert_value_to_type(const Expr& e,
                                            const TypeExpr* target,
                                            bool explicit_conversion) {
   if (!target) return true;
-  const TypeExpr* canon_target = analysis_.canonicalize_type(target);
+  const TypeExpr* canon_target = analysis_.semantic_shape_type(target);
   if (!canon_target) return true;
 
   if (e.kind == Kind::NilLit) {
@@ -461,9 +454,11 @@ bool EmitValues::can_convert_value_to_type(const Expr& e,
     if (canon_target->kind == Kind::TyArray) {
       const auto& arr = static_cast<const TyArray&>(*canon_target);
       const TypeExpr* elem =
-          arr.element ? analysis_.canonicalize_type(arr.element.get()) : nullptr;
+          arr.element ? analysis_.semantic_shape_type(arr.element.get()) : nullptr;
+      const PrimitiveInfo* elem_info = analysis_.primitive_info_for_type(elem);
+      const std::string elem_atom = analysis_.builtin_atom_name_for_type(elem);
       if (arr.array_kind == ArrayKind::Fixed && arr.dims.size() == 1 && elem &&
-          (tyname_is_charish(elem) || elem == named_pascal_type("byte"))) {
+          ((elem_info && elem_info->is_char()) || elem_atom == "byte")) {
         return types_.array_dim_bounds_to_cxx(*arr.dims[0]).has_value();
       }
     }
@@ -499,10 +494,8 @@ bool EmitValues::can_convert_value_to_type(const Expr& e,
     return can_convert_proc_value(e, target, explicit_conversion);
   }
 
-  const bool target_is_tclass =
-      target == named_pascal_type("tclass") ||
-      canon_target == named_pascal_type("tclass");
-  if ((!analysis_.metaclass_target_name(target).empty() || target_is_tclass) &&
+  if ((analysis_.type_accepts_class_value(target) ||
+       analysis_.type_accepts_class_value(canon_target)) &&
       !concrete_class_name_for_metaclass_value(e).empty()) {
     return true;
   }
@@ -511,7 +504,7 @@ bool EmitValues::can_convert_value_to_type(const Expr& e,
   if (!source_type) source_type = overload_types_.type_for_overload(e);
   if (!source_type) source_type = analysis_.deduce_type(e);
   const TypeExpr* raw_source_type = source_type;
-  const TypeExpr* canon_source_type = analysis_.canonicalize_type(source_type);
+  const TypeExpr* canon_source_type = analysis_.semantic_shape_type(source_type);
   if (!raw_source_type || !canon_source_type) return false;
 
   if (can_convert_reference_class_value(e, raw_source_type, target)) {
@@ -570,16 +563,18 @@ std::string EmitValues::const_value_to_cxx_impl(
   if (!target) return expr_ops_.expr_to_cxx(e);
   if (e.kind == Kind::StringLit) {
     const auto& lit = static_cast<const StringLit&>(e);
-    const TypeExpr* canon = analysis_.canonicalize_type(target);
+    const TypeExpr* canon = analysis_.semantic_shape_type(target);
     if (storage_.type_is_pcharish(target)) {
       return pchar_string_literal_to_cxx(lit);
     }
     if (canon && canon->kind == Kind::TyArray) {
       const auto& arr = static_cast<const TyArray&>(*canon);
       const TypeExpr* elem =
-          arr.element ? analysis_.canonicalize_type(arr.element.get()) : nullptr;
+          arr.element ? analysis_.semantic_shape_type(arr.element.get()) : nullptr;
+      const PrimitiveInfo* elem_info = analysis_.primitive_info_for_type(elem);
+      const std::string elem_atom = analysis_.builtin_atom_name_for_type(elem);
       if (arr.array_kind == ArrayKind::Fixed && arr.dims.size() == 1 && elem &&
-          (tyname_is_charish(elem) || elem == named_pascal_type("byte"))) {
+          ((elem_info && elem_info->is_char()) || elem_atom == "byte")) {
         auto bounds = types_.array_dim_bounds_to_cxx(*arr.dims[0]);
         if (bounds) {
           return "::rt::tp2cc_array_literal<" + types_.type_to_cxx(*elem) +
@@ -607,7 +602,7 @@ std::string EmitValues::const_value_to_cxx_impl(
       return out;
     }
   }
-  const TypeExpr* canon_target = analysis_.canonicalize_type(target);
+  const TypeExpr* canon_target = analysis_.semantic_shape_type(target);
   if (e.kind == Kind::ArrayConst) {
     const TypeExpr* canon = canon_target;
     std::shared_ptr<TyArray> nested_array_target;
@@ -682,7 +677,7 @@ std::string EmitValues::const_value_to_cxx_impl(
     }
   }
   if (!source_type) source_type = analysis_.deduce_type(e);
-  if (source_type) source_type = analysis_.canonicalize_type(source_type);
+  if (source_type) source_type = analysis_.semantic_shape_type(source_type);
   if (canon_target && canon_target->kind == Kind::TyProcedural) {
     const auto& proc = static_cast<const TyProcedural&>(*canon_target);
     if (auto text = reject_method_pointer_record_cast(
@@ -785,7 +780,7 @@ bool EmitValues::reject_metaclass_member_as_plain_proc_value(
 std::optional<std::string> EmitValues::maybe_convert_proc_value(
     const Expr& e, const TypeExpr* target, bool explicit_conversion) {
   if (!target) return std::nullopt;
-  const TypeExpr* canon = analysis_.canonicalize_type(target);
+  const TypeExpr* canon = analysis_.semantic_shape_type(target);
   if (!(canon && canon->kind == Kind::TyProcedural)) return std::nullopt;
   const auto& proc = static_cast<const TyProcedural&>(*canon);
 
@@ -805,7 +800,7 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
       case Kind::Member:
         if (const TypeExpr* source = overload_types_.type_for_overload(e);
             storage_.type_is_pointerish(
-                analysis_.canonicalize_type(source ? source
+                analysis_.semantic_shape_type(source ? source
                                                    : analysis_.deduce_type(e)))) {
           return std::nullopt;
         }
@@ -860,7 +855,7 @@ const TypeExpr* EmitValues::proc_value_source_type(const Expr& e) {
 }
 
 bool EmitValues::source_is_runtime_tmethod(const TypeExpr* source_type) {
-  const TypeExpr* source = analysis_.canonicalize_type(source_type);
+  const TypeExpr* source = analysis_.semantic_shape_type(source_type);
   return source && types_.type_to_cxx(*source) == "::rt::t_tmethod";
 }
 
@@ -886,7 +881,7 @@ std::optional<std::string> EmitValues::reject_method_pointer_record_cast(
   if (!explicit_conversion || !proc.is_method || !source_type) {
     return std::nullopt;
   }
-  const TypeExpr* source = analysis_.canonicalize_type(source_type);
+  const TypeExpr* source = analysis_.semantic_shape_type(source_type);
   if (!(source && source->kind == Kind::TyRecord)) return std::nullopt;
 
   if (!record_has_pointer_field(analysis_, storage_, source, "proc") ||
@@ -969,11 +964,16 @@ std::string EmitValues::concrete_class_name_for_metaclass_value(
 std::optional<std::string> EmitValues::maybe_lower_metaclass_value(
     const Expr& e, const TypeExpr* target) {
   const std::string base_name = analysis_.metaclass_target_name(target);
-  if (base_name.empty()) return std::nullopt;
+  if (base_name.empty() && !analysis_.type_is_runtime_tclass(target)) {
+    return std::nullopt;
+  }
 
   const std::string concrete_name = concrete_class_name_for_metaclass_value(e);
   if (concrete_name.empty()) return std::nullopt;
-  if (!analysis_.migration_fallback_class_info_by_name(base_name)) return std::nullopt;
+  if (!base_name.empty() &&
+      !analysis_.migration_fallback_class_info_by_name(base_name)) {
+    return std::nullopt;
+  }
   return types_.metaclass_value_fn_cxx(concrete_name) + "()";
 }
 

@@ -13,14 +13,13 @@ EmitProperties::EmitProperties(EmitAnalysis& analysis,
     : analysis_(analysis), expr_ops_(expr_ops) {}
 
 std::optional<std::string> EmitProperties::maybe_property_read_text(
-    const std::string& base_cxx, const std::string& class_name,
+    const std::string& base_cxx, std::string_view base_access,
+    const std::string&,
     const PropertyInfo& prop, const std::vector<const Expr*>& indices) {
   // Properties are Pascal-side metadata only. Reads/writes rewrite to the
   // declared backing field/getter/setter so we do not invent extra C++
   // members whose names could collide in ways Pascal itself forbids.
-  const ClassInfo* ci = analysis_.migration_fallback_class_info_by_name(class_name);
-  const std::string access =
-      (ci && ci->is_reference_type) ? "->" : ".";
+  const std::string access(base_access);
   if (prop.read.kind == PropertyAccessorKind::FieldPath) {
     std::string text = base_cxx + access + prop.read.cxx_path;
     for (const auto* idx : indices) {
@@ -41,9 +40,12 @@ std::optional<std::string> EmitProperties::maybe_property_read_text(
 }
 
 std::string EmitProperties::lower_property_read(
-    Location where, const std::string& base_cxx, const std::string& class_name,
+    Location where, const std::string& base_cxx,
+    std::string_view base_access, const std::string& class_name,
     const PropertyInfo& prop, const std::vector<const Expr*>& indices) {
-  if (auto text = maybe_property_read_text(base_cxx, class_name, prop, indices)) {
+  if (auto text =
+          maybe_property_read_text(base_cxx, base_access, class_name, prop,
+                                   indices)) {
     return *text;
   }
   expr_ops_.report_error(
@@ -53,12 +55,11 @@ std::string EmitProperties::lower_property_read(
 }
 
 std::optional<std::string> EmitProperties::maybe_property_write_text(
-    const std::string& base_cxx, const std::string& class_name,
+    const std::string& base_cxx, std::string_view base_access,
+    const std::string&,
     const PropertyInfo& prop, const std::vector<const Expr*>& indices,
     const Expr& value) {
-  const ClassInfo* ci = analysis_.migration_fallback_class_info_by_name(class_name);
-  const std::string access =
-      (ci && ci->is_reference_type) ? "->" : ".";
+  const std::string access(base_access);
   if (prop.write.empty()) {
     return std::nullopt;
   }
@@ -88,11 +89,13 @@ std::optional<std::string> EmitProperties::maybe_property_write_text(
 }
 
 std::string EmitProperties::lower_property_write(
-    Location where, const std::string& base_cxx, const std::string& class_name,
+    Location where, const std::string& base_cxx,
+    std::string_view base_access, const std::string& class_name,
     const PropertyInfo& prop, const std::vector<const Expr*>& indices,
     const Expr& value) {
   if (auto text =
-          maybe_property_write_text(base_cxx, class_name, prop, indices, value)) {
+          maybe_property_write_text(base_cxx, base_access, class_name, prop,
+                                    indices, value)) {
     return *text;
   }
   if (prop.write.empty()) {
@@ -110,8 +113,9 @@ std::optional<ResolveResult> EmitProperties::maybe_resolve_implicit_property(
   auto found = analysis_.find_implicit_class_property(name);
   if (!found || !found->prop || !found->prop->params.empty()) return std::nullopt;
   std::vector<const Expr*> no_indices;
-  if (auto text = maybe_property_read_text(found->base_cxx, found->class_name,
-                                           *found->prop, no_indices)) {
+  if (auto text = maybe_property_read_text(found->base_cxx, found->base_access,
+                                           found->class_name, *found->prop,
+                                           no_indices)) {
     return ResolveResult(found->from_with ? ResolvedKind::WithProperty
                                           : ResolvedKind::ClassProperty,
                          *text);
@@ -124,8 +128,9 @@ std::optional<std::string> EmitProperties::maybe_lower_implicit_property_write(
   auto found = analysis_.find_implicit_class_property(name);
   if (!found || !found->prop || !found->prop->params.empty()) return std::nullopt;
   std::vector<const Expr*> no_indices;
-  return lower_property_write(where, found->base_cxx, found->class_name,
-                              *found->prop, no_indices, value);
+  return lower_property_write(where, found->base_cxx, found->base_access,
+                              found->class_name, *found->prop, no_indices,
+                              value);
 }
 
 }  // namespace tp2cc

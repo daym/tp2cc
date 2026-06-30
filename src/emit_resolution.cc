@@ -54,6 +54,13 @@ std::vector<Param> single_slot_param_vector(const Param& param) {
   return {std::move(copy)};
 }
 
+bool proc_set_allows_outer_lookup(const std::vector<ProcInfo>& procs) {
+  // Keep walking the unit stack when the procsym found in the current
+  // frame contains at least one `overload` procdef.
+  return std::any_of(procs.begin(), procs.end(),
+                     [](const ProcInfo& proc) { return proc.is_overload; });
+}
+
 }  // namespace
 
 EmitResolution::EmitResolution(const TypeRegistry& registry,
@@ -144,37 +151,28 @@ EmitResolution::gather_callable_in_pascal_scope(
   std::vector<AnyCand> class_candidates =
       class_method_cands(scope_.current_class_name, name);
   if (!class_candidates.empty()) return class_candidates;
-  auto cur = registry_.units.find(scope_.current_unit_name);
-  if (cur == registry_.units.end()) return candidates;
   // A decl in the current unit shadows same-named decls reached through
   // `uses`. Without this stop, local overload sets and imported overload sets
   // would get merged even though Pascal lexical lookup never reaches the
   // imports once the current unit contributes the name.
-  if (auto* local = cur->second.find_procs(name); local && !local->empty()) {
-    for (const auto& pi : *local) {
-      candidates.push_back(
+  for (const TypeLookupContext* frame = scope_.type_scope; frame;
+       frame = frame->parent) {
+    const std::vector<ProcInfo>* procs = scope_frame_find_procs(*frame, name);
+    if (!procs || procs->empty()) continue;
+    std::vector<AnyCand> frame_candidates;
+    for (const auto& pi : *procs) {
+      frame_candidates.push_back(
           {pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-           scope_.current_unit_name, pi.defining_unit, {},
-           pi.return_type_name});
+           frame->unit, pi.defining_unit, {}, pi.return_type_name});
     }
-    return candidates;
-  }
-  std::vector<AnyCand> runtime_candidates;
-  for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
-       ++it) {
-    std::vector<AnyCand> unit_candidates = unit_export_proc_cands(*it, name);
-    if (*it == "__rt__") {
-      // `__rt__` models implicit System/runtime helpers. Explicit units,
-      // including runtime-backed stubs such as Dos and SysUtils, are the
-      // Pascal surface and must own their exports when they provide the name.
-      runtime_candidates = std::move(unit_candidates);
-      continue;
+    if (!scope_frame_is_import(*frame)) {
+      return frame_candidates;
     }
     candidates.insert(candidates.end(),
-                      std::make_move_iterator(unit_candidates.begin()),
-                      std::make_move_iterator(unit_candidates.end()));
+                      std::make_move_iterator(frame_candidates.begin()),
+                      std::make_move_iterator(frame_candidates.end()));
+    if (!proc_set_allows_outer_lookup(*procs)) break;
   }
-  if (candidates.empty()) return runtime_candidates;
   return candidates;
 }
 
@@ -182,26 +180,23 @@ std::vector<EmitResolution::AnyCand>
 EmitResolution::gather_operator_in_pascal_scope(
     const std::string& op) {
   std::vector<AnyCand> candidates;
-  auto cur = registry_.units.find(scope_.current_unit_name);
-  if (cur == registry_.units.end()) return candidates;
-  if (auto* local = cur->second.find_operators(op); local && !local->empty()) {
-    for (const auto& pi : *local) {
-      candidates.push_back(
-          {pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-           scope_.current_unit_name, pi.defining_unit, {}, {}});
-    }
-    return candidates;
-  }
-  for (auto it = cur->second.uses.rbegin(); it != cur->second.uses.rend();
-       ++it) {
-    auto uit = registry_.units.find(*it);
-    if (uit == registry_.units.end()) continue;
-    auto* ops = uit->second.find_export_operators(op);
+  for (const TypeLookupContext* frame = scope_.type_scope; frame;
+       frame = frame->parent) {
+    const auto* ops = scope_frame_find_operators(*frame, op);
     if (!ops) continue;
+    std::vector<AnyCand> frame_candidates;
     for (const auto& pi : *ops) {
-      candidates.push_back({pi.decl.get(), pi.param_count, pi.accepts_zero_args,
-                            *it, pi.defining_unit, {}, {}});
+      frame_candidates.push_back({pi.decl.get(), pi.param_count,
+                                  pi.accepts_zero_args, frame->unit,
+                                  pi.defining_unit, {}, {}});
     }
+    if (!scope_frame_is_import(*frame)) {
+      return frame_candidates;
+    }
+    candidates.insert(candidates.end(),
+                      std::make_move_iterator(frame_candidates.begin()),
+                      std::make_move_iterator(frame_candidates.end()));
+    if (!proc_set_allows_outer_lookup(*ops)) break;
   }
   return candidates;
 }
@@ -211,18 +206,22 @@ std::vector<FlatCallParamInfo> EmitResolution::flatten_call_param_info(
     std::string_view param_declaring_type) {
   std::vector<FlatCallParamInfo> flat_params;
   if (!decl) return flat_params;
+  const TypeLookupContext* signature_context =
+      registry_.lookup_proc_signature_context(decl);
   for (const auto& p : decl->params) {
     size_t count = p.names.empty() ? 1 : p.names.size();
     for (size_t i = 0; i < count; ++i) {
-      std::shared_ptr<TyName> qualified = qualified_signature_type_name(
-          registry_, scope_, p.type.get(), param_unit, param_declaring_type);
+      const TypeLookupContext* type_context =
+          registry_.lookup_context_for_type(p.type.get());
+      if (!type_context) type_context = signature_context;
       flat_params.emplace_back(
           p.type.get(), !p.type,
           p.mode == Param::Var || p.mode == Param::Out ||
               (p.mode == Param::Const &&
                analysis_.const_param_needs_mutable_ref(p.type.get())),
           p.default_value.get(), std::string(param_unit),
-          std::string(param_declaring_type), std::move(qualified));
+          std::string(param_declaring_type),
+          std::shared_ptr<const TypeExpr>{}, type_context);
     }
   }
   return flat_params;
@@ -235,7 +234,7 @@ std::string EmitResolution::type_cxx_or_empty(const TypeExpr* t) {
 const TypeExpr* EmitResolution::strip_conversion_wrapper(const TypeExpr* t) {
   while (t && (t->kind == Kind::TyDistinct || t->kind == Kind::TySubrange)) {
     if (t->kind == Kind::TyDistinct) {
-      t = analysis_.canonicalize_type(
+      t = analysis_.semantic_shape_type(
           static_cast<const TyDistinct&>(*t).underlying.get());
     } else {
       // Resolve subrange to its host integer primitive using the same
@@ -248,9 +247,12 @@ const TypeExpr* EmitResolution::strip_conversion_wrapper(const TypeExpr* t) {
 }
 
 ConvScore EmitResolution::class_hierarchy_conversion_score(
-    const TypeExpr* arg, const TypeExpr* param) {
-  const auto* arg_class = analysis_.class_info_for_type(arg);
-  const auto* param_class = analysis_.class_info_for_type(param);
+    const TypeExpr* arg, const TypeLookupContext* arg_context,
+    const TypeExpr* param, const TypeLookupContext* param_context) {
+  const auto* arg_class =
+      analysis_.class_info_for_type_in_context(arg, arg_context);
+  const auto* param_class =
+      analysis_.class_info_for_type_in_context(param, param_context);
   if (!arg_class || !param_class) return {};
 
   std::unordered_set<std::string> seen;
@@ -272,8 +274,8 @@ ConvScore EmitResolution::class_hierarchy_conversion_score(
 
 ConvScore EmitResolution::object_pointer_hierarchy_conversion_score(
     const TypeExpr* arg, const TypeExpr* param) {
-  arg = analysis_.canonicalize_type(arg);
-  param = analysis_.canonicalize_type(param);
+  arg = analysis_.semantic_shape_type(arg);
+  param = analysis_.semantic_shape_type(param);
   if (!arg || !param || arg->kind != Kind::TyPointer ||
       param->kind != Kind::TyPointer) {
     return {};
@@ -305,13 +307,12 @@ ConvScore EmitResolution::object_pointer_hierarchy_conversion_score(
 }
 
 const PrimitiveInfo* EmitResolution::primitive_for_type(const TypeExpr* t) {
-  if (!t || t->kind != Kind::TyName) return nullptr;
-  return primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
+  return analysis_.primitive_info_for_type(t);
 }
 
 std::optional<EmitResolution::IntegerActualDomain>
 EmitResolution::integer_actual_domain_for_type(const TypeExpr* t) {
-  t = analysis_.canonicalize_type(t);
+  t = analysis_.semantic_shape_type(t);
   if (!t) return std::nullopt;
   if (t->kind == Kind::TyDistinct) {
     return integer_actual_domain_for_type(
@@ -431,8 +432,10 @@ bool EmitResolution::integer_domain_fits_primitive(
 }
 
 bool EmitResolution::set_literal_can_construct_open_array(
-    const SetLit& literal, const TypeExpr* param) const {
-  const TypeExpr* p = analysis_.canonicalize_type(param);
+    const SetLit& literal, const TypeExpr* param,
+    const TypeLookupContext* param_context) const {
+  const TypeExpr* p =
+      analysis_.semantic_shape_type_in_context(param, param_context);
   if (!p || p->kind != Kind::TyArray ||
       static_cast<const TyArray&>(*p).array_kind != ArrayKind::Open) {
     return false;
@@ -445,8 +448,10 @@ bool EmitResolution::set_literal_can_construct_open_array(
 
 bool EmitResolution::target_pointer_arithmetic_can_convert(
     const Expr& arg, const TypeExpr* param,
+    const TypeLookupContext* param_context,
     bool allow_assignment_operator_conversions) {
-  const TypeExpr* canon_param = analysis_.canonicalize_type(param);
+  const TypeExpr* canon_param =
+      analysis_.semantic_shape_type_in_context(param, param_context);
   if (!canon_param || !type_ops_.type_is_pointerish(canon_param) ||
       arg.kind != Kind::Binary) {
     return false;
@@ -457,19 +462,21 @@ bool EmitResolution::target_pointer_arithmetic_can_convert(
   if (!b.lhs || !b.rhs) return false;
 
   const TypeExpr* lhs_type =
-      analysis_.canonicalize_type(argument_source_type_for_conversion(*b.lhs));
+      analysis_.semantic_shape_type(argument_source_type_for_conversion(*b.lhs));
   const TypeExpr* rhs_type =
-      analysis_.canonicalize_type(argument_source_type_for_conversion(*b.rhs));
-  auto integer_type = [](const TypeExpr* t) {
-    if (!t || t->kind != Kind::TyName) return false;
-    const PrimitiveInfo* pi =
-        primitive_info(ascii_lower(static_cast<const TyName&>(*t).name));
+      analysis_.semantic_shape_type(argument_source_type_for_conversion(*b.rhs));
+  auto integer_type = [this](const TypeExpr* t) {
+    const PrimitiveInfo* pi = primitive_for_type(t);
     return pi && pi->int_kind != PrimitiveIntKind::None;
   };
 
   FlatCallParamInfo pointer_operand(param, /*untyped_in=*/false,
                                     /*mutable_ref_in=*/false,
-                                    /*default_value_in=*/nullptr);
+                                    /*default_value_in=*/nullptr,
+                                    /*param_unit_in=*/{},
+                                    /*param_declaring_type_in=*/{},
+                                    /*owned_type_in=*/{},
+                                    param_context);
   if (type_ops_.type_is_pointerish(lhs_type) && integer_type(rhs_type)) {
     return score_argument_conversion(*b.lhs, pointer_operand,
                                      allow_assignment_operator_conversions)
@@ -497,9 +504,11 @@ const TypeExpr* EmitResolution::argument_source_type_for_conversion(
 }
 
 ConvScore EmitResolution::rank_integer_domain_conversion(
-    const IntegerActualDomain& domain, const TypeExpr* param, bool var_param) {
+    const IntegerActualDomain& domain, const TypeExpr* param, bool var_param,
+    const TypeLookupContext* param_context) {
   if (var_param) return {};
-  const TypeExpr* p = analysis_.canonicalize_type(param);
+  const TypeExpr* p =
+      analysis_.semantic_shape_type_in_context(param, param_context);
   const PrimitiveInfo* formal = primitive_for_type(p);
   if (!formal || formal->int_kind == PrimitiveIntKind::None) return {};
   if (!integer_domain_fits_primitive(domain, *formal)) return {};
@@ -551,7 +560,7 @@ std::optional<PickResult> EmitResolution::pick_integer_domain_overload(
         fits_all = false;
         break;
       }
-      const TypeExpr* formal_type = analysis_.canonicalize_type(flat[i].type);
+      const TypeExpr* formal_type = analysis_.semantic_shape_type(flat[i].type);
       const PrimitiveInfo* formal = primitive_for_type(formal_type);
       if (!formal || formal->int_kind == PrimitiveIntKind::None) {
         // Integer actuals may also fit non-primitive overloads through
@@ -562,7 +571,8 @@ std::optional<PickResult> EmitResolution::pick_integer_domain_overload(
         break;
       }
       ConvScore score =
-          rank_integer_domain_conversion(*domains[i], flat[i].type, false);
+          rank_integer_domain_conversion(*domains[i], flat[i].type, false,
+                                         flat[i].type_context);
       if (!score.viable()) {
         fits_all = false;
         break;
@@ -590,38 +600,64 @@ std::optional<PickResult> EmitResolution::pick_integer_domain_overload(
   return PickResult{domain_viable[best].decl, false};
 }
 
-int EmitResolution::real_conversion_rank(std::string_view name) const {
-  const PrimitiveInfo* info = primitive_info(name);
-  return info ? info->float_rank() : 0;
-}
-
-bool EmitResolution::type_is_shortstring_family(const TypeExpr* t) const {
+bool EmitResolution::type_is_shortstring_family(const TypeExpr* t) {
   if (!t) return false;
-  if (t->kind == Kind::TyString) return true;
-  if (t->kind != Kind::TyName) return false;
-  const auto& n = ascii_lower(static_cast<const TyName&>(*t).name);
-  return n == "shortstring";
+  const TypeExpr* shape = analysis_.semantic_shape_type(t);
+  if (shape && shape->kind == Kind::TyString) return true;
+  return analysis_.builtin_atom_name_for_type(t) == "shortstring";
 }
 
 bool EmitResolution::type_is_longstring_family(const TypeExpr* t) const {
   return analysis_.type_is_long_string(t);
 }
 
-bool EmitResolution::type_is_char_type(const TypeExpr* t) const {
-  return t && t == named_pascal_type("char");
+bool EmitResolution::type_is_char_type(const TypeExpr* t) {
+  const PrimitiveInfo* info = primitive_for_type(t);
+  return info && info->is_char();
 }
 
 ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
                                           const TypeExpr* param,
-                                          bool var_param) {
+                                          bool var_param,
+                                          const TypeLookupContext* param_context) {
   if (!arg || !param) return {};
   const TypeExpr* raw_arg = arg;
   const TypeExpr* raw_param = param;
-  const TypeExpr* a = analysis_.canonicalize_type(arg);
-  const TypeExpr* p = analysis_.canonicalize_type(param);
+  const TypeDescriptor* arg_descriptor = registry_.descriptor_for_type(raw_arg);
+  if (!arg_descriptor) {
+    if (const TypeSymbol* symbol = registry_.resolved_symbol_for_type(raw_arg)) {
+      arg_descriptor = symbol->descriptor;
+    }
+  }
+  if (!arg_descriptor) {
+    if (const TypeSymbol* symbol =
+            resolved_type_symbol_in_context(registry_, scope_, raw_arg)) {
+      arg_descriptor = symbol->descriptor;
+    }
+  }
+  const TypeDescriptor* param_descriptor =
+      registry_.descriptor_for_type(raw_param);
+  if (!param_descriptor) {
+    if (const TypeSymbol* symbol =
+            registry_.resolved_symbol_for_type(raw_param)) {
+      param_descriptor = symbol->descriptor;
+    }
+  }
+  if (!param_descriptor) {
+    if (const TypeSymbol* symbol = resolved_type_symbol_in_context(
+            registry_, scope_, raw_param, param_context)) {
+      param_descriptor = symbol->descriptor;
+    }
+  }
+  if (arg_descriptor && param_descriptor) {
+    if (arg_descriptor == param_descriptor) return {ConvRank::Exact, 0};
+  }
+  const TypeExpr* a = analysis_.semantic_shape_type(arg);
+  const TypeExpr* p =
+      analysis_.semantic_shape_type_in_context(param, param_context);
   if (!a || !p) return {};
 
-  if (analysis_.same_type_ast(raw_arg, raw_param)) {
+  if (a == p || (!param_context && analysis_.same_type_ast(raw_arg, raw_param))) {
     return {ConvRank::Exact, 0};
   }
 
@@ -662,11 +698,13 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
     // `var`/`out` params only accept identity/equal-or-wrapper matches, plus
     // class-hierarchy aliasing for reference types. Anything else would pass a
     // temporary or layout-incompatible slot by reference.
-    if (ConvScore score = class_hierarchy_conversion_score(raw_arg, raw_param);
+    if (ConvScore score = class_hierarchy_conversion_score(
+            raw_arg, nullptr, raw_param, param_context);
         score.viable()) {
       return score;
     }
-    if (ConvScore score = class_hierarchy_conversion_score(a, p);
+    if (ConvScore score =
+            class_hierarchy_conversion_score(a, nullptr, p, param_context);
         score.viable()) {
       return score;
     }
@@ -689,11 +727,14 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
 
   // 3. Class hierarchy: a derived class may pass where an ancestor is expected.
   // Fewer parent hops means the closer Pascal match.
-  if (ConvScore score = class_hierarchy_conversion_score(raw_arg, raw_param);
+  if (ConvScore score = class_hierarchy_conversion_score(
+          raw_arg, nullptr, raw_param, param_context);
       score.viable()) {
     return score;
   }
-  if (ConvScore score = class_hierarchy_conversion_score(a, p); score.viable()) {
+  if (ConvScore score =
+          class_hierarchy_conversion_score(a, nullptr, p, param_context);
+      score.viable()) {
     return score;
   }
 
@@ -714,11 +755,10 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
 
   // 5. Real widening follows Pascal's precision ladder. Again, smaller rank
   // gaps are better fits.
-  if (a->kind == Kind::TyName && p->kind == Kind::TyName) {
-    int ar =
-        real_conversion_rank(ascii_lower(static_cast<const TyName&>(*a).name));
-    int pr =
-        real_conversion_rank(ascii_lower(static_cast<const TyName&>(*p).name));
+  if (const PrimitiveInfo* ai = primitive_for_type(a)) {
+    const PrimitiveInfo* pi = primitive_for_type(p);
+    int ar = ai->float_rank();
+    int pr = pi ? pi->float_rank() : 0;
     if (ar > 0 && pr > 0 && pr >= ar) return {ConvRank::RealWidening, pr - ar};
     if (ar > 0 && pr > 0) return {ConvRank::RealNarrowing, ar - pr};
   }
@@ -791,9 +831,9 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
   // than every integer-formal conversion so integer overloads still win for
   // integer actuals; within real formals, prefer the lower-precision target.
   if (const auto* ai = primitive_for_type(a);
-      ai && ai->int_kind != PrimitiveIntKind::None && p->kind == Kind::TyName) {
-    int pr =
-        real_conversion_rank(ascii_lower(static_cast<const TyName&>(*p).name));
+      ai && ai->int_kind != PrimitiveIntKind::None) {
+    const PrimitiveInfo* pi = primitive_for_type(p);
+    int pr = pi ? pi->float_rank() : 0;
     if (pr > 0) return {ConvRank::IntegerToReal, pr};
   }
 
@@ -983,6 +1023,7 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
                  const TypeSymbol* symbol =
                      migration_fallback_type_symbol_by_name(registry_, scope_,
                                                     id.name);
+                 symbol = descriptor_payload_symbol(symbol);
                  return symbol &&
                         (symbol->class_info() || symbol->record_info());
                }()) {
@@ -1122,8 +1163,13 @@ std::optional<ConvScore> EmitResolution::score_procedural_argument_conversion(
 ConvScore EmitResolution::score_argument_conversion(
     const Expr& arg, const FlatCallParamInfo& param,
     bool allow_assignment_operator_conversions) {
+  const TypeLookupContext* param_context =
+      param.type_context ? param.type_context
+                         : registry_.lookup_context_for_type(param.type);
   const TypeExpr* canon_param =
-      param.type ? analysis_.canonicalize_type(param.type) : nullptr;
+      param.type ? analysis_.semantic_shape_type_in_context(param.type,
+                                                            param_context)
+                 : nullptr;
   // Pascal's empty set literal is context-typed: once the parameter is known
   // to be a set, bare `[]` is an exact fit even though it has no standalone
   // element type.
@@ -1147,7 +1193,7 @@ ConvScore EmitResolution::score_argument_conversion(
   }
   if (arg.kind == Kind::SetLit &&
       set_literal_can_construct_open_array(
-          static_cast<const SetLit&>(arg), param.type)) {
+          static_cast<const SetLit&>(arg), param.type, param_context)) {
     // Bracket syntax is target-typed in Pascal calls: `[a, b]` is an
     // open-array constructor when the selected formal is `array of T`, not a
     // set value. Score it here so overload selection reaches the existing
@@ -1157,13 +1203,14 @@ ConvScore EmitResolution::score_argument_conversion(
   if (canon_param && canon_param->kind == Kind::TyArray &&
       static_cast<const TyArray&>(*canon_param).array_kind == ArrayKind::Open) {
     const TypeExpr* arg_type = argument_source_type_for_conversion(arg);
-    const TypeExpr* canon_arg = analysis_.canonicalize_type(arg_type);
+    const TypeExpr* canon_arg = analysis_.semantic_shape_type(arg_type);
     if (canon_arg && canon_arg->kind == Kind::TyArray) {
       return {ConvRank::Exact, 0};
     }
   }
   if (target_pointer_arithmetic_can_convert(
-          arg, param.type, allow_assignment_operator_conversions)) {
+          arg, param.type, param_context,
+          allow_assignment_operator_conversions)) {
     return {ConvRank::Exact, 0};
   }
   if (!param.mutable_ref && canon_param &&
@@ -1210,7 +1257,7 @@ ConvScore EmitResolution::score_argument_conversion(
       return {ConvRank::PointerValueConversion, 0};
     }
     if (const TypeExpr* arg_type = argument_source_type_for_conversion(arg)) {
-      const TypeExpr* canon_arg = analysis_.canonicalize_type(arg_type);
+      const TypeExpr* canon_arg = analysis_.semantic_shape_type(arg_type);
       if (canon_arg && type_ops_.type_is_pointerish(canon_arg)) {
         return {ConvRank::PointerValueConversion, 0};
       }
@@ -1219,7 +1266,7 @@ ConvScore EmitResolution::score_argument_conversion(
   if (canon_param && canon_param->kind == Kind::TyProcedural) {
     const auto& proc = static_cast<const TyProcedural&>(*canon_param);
     if (const TypeExpr* arg_type = argument_source_type_for_conversion(arg)) {
-      const TypeExpr* canon_arg = analysis_.canonicalize_type(arg_type);
+      const TypeExpr* canon_arg = analysis_.semantic_shape_type(arg_type);
       if (canon_arg && canon_arg->kind == Kind::TyProcedural) {
         return procedural_types_match(
                    static_cast<const TyProcedural&>(*canon_arg), proc)
@@ -1239,16 +1286,14 @@ ConvScore EmitResolution::score_argument_conversion(
   }
   const TypeExpr* arg_type = argument_source_type_for_conversion(arg);
   if (!param.mutable_ref && canon_param) {
-    const bool target_is_tclass =
-        param.type == named_pascal_type("tclass") ||
-        canon_param == named_pascal_type("tclass");
-    if ((!analysis_.metaclass_target_name(canon_param).empty() ||
-         target_is_tclass) &&
+    if ((analysis_.type_accepts_class_value(param.type) ||
+         analysis_.type_accepts_class_value(canon_param)) &&
         !analysis_.concrete_class_name_for_metaclass_value(arg).empty()) {
       return {ConvRank::ClassValueConversion, 0};
     }
   }
-  ConvScore direct = rank_conversion(arg_type, param.type, param.mutable_ref);
+  ConvScore direct = rank_conversion(arg_type, param.type, param.mutable_ref,
+                                     param_context);
   if (direct.rank == ConvRank::Exact) return direct;
   if (!param.mutable_ref && arg_type &&
       type_ops_.pointer_value_conversion_is_valid(
@@ -1260,7 +1305,7 @@ ConvScore EmitResolution::score_argument_conversion(
   if (auto domain = integer_actual_domain_for_expr(arg)) {
     if (ConvScore ordinal =
             rank_integer_domain_conversion(*domain, param.type,
-                                           param.mutable_ref);
+                                           param.mutable_ref, param_context);
         ordinal.viable()) {
       return ordinal;
     }
@@ -1404,7 +1449,7 @@ std::string EmitResolution::value_class_alias(const Expr& e) {
         !cls.empty()) {
       return cls;
     }
-    if (const TypeExpr* canon = analysis_.canonicalize_type(t)) {
+    if (const TypeExpr* canon = analysis_.semantic_shape_type(t)) {
       if (auto cls = analysis_.direct_type_name(canon);
           !cls.empty()) {
         return cls;
@@ -1427,15 +1472,12 @@ std::string EmitResolution::receiver_class_for_member_call(const Expr& callee) {
   if (member.base->kind == Kind::Ident) {
     const auto& id = static_cast<const Ident&>(*member.base);
     if (id.name == "self") return scope_.current_class_name;
-    if (!analysis_.identifier_is_shadowed_value(id.name) &&
-        [&] {
-          const TypeSymbol* symbol =
-              signature_type_symbol_for(registry_, scope_, id.name);
-          return symbol && (symbol->class_info() || symbol->record_info());
-        }()) {
-      const TypeSymbol* symbol =
-          signature_type_symbol_for(registry_, scope_, id.name);
-      return symbol ? type_symbol_pascal_path(*symbol) : id.name;
+    if (!analysis_.identifier_is_shadowed_value(id.name)) {
+      const TypeSymbol* symbol = descriptor_payload_symbol(
+          signature_type_symbol_for(registry_, scope_, id.name));
+      if (symbol && (symbol->class_info() || symbol->record_info())) {
+        return type_symbol_pascal_path(*symbol);
+      }
     }
     return value_class_alias(*member.base);
   }
@@ -1599,18 +1641,21 @@ ResolvedCall EmitResolution::resolve_pointer_target_constructor(
 }
 
 bool EmitResolution::operand_type_allows_operator_lookup(const TypeExpr* t) {
-  t = analysis_.canonicalize_type(t);
   if (!t) return false;
   if (type_ops_.type_is_stringish(t)) return true;
   if (t->kind == Kind::TyName) {
-    const auto& name = ascii_lower(static_cast<const TyName&>(*t).name);
-    if (primitive_info(name)) return false;
+    if (analysis_.primitive_info_for_type(t)) return false;
     const TypeSymbol* symbol =
         resolved_type_symbol_in_context(registry_, scope_, t);
-    if (!symbol || symbol->enum_info()) return false;
-    return symbol->record_info() || symbol->class_info() ||
-           symbol->interface_info() || symbol->alias_info();
+    const TypeSymbol* payload = descriptor_payload_symbol(symbol);
+    if (payload) {
+      if (payload->enum_info()) return false;
+      return payload->record_info() || payload->class_info() ||
+             payload->interface_info();
+    }
   }
+  t = analysis_.semantic_shape_type(t);
+  if (!t) return false;
   return t->kind == Kind::TyRecord || t->kind == Kind::TyObject ||
          t->kind == Kind::TyInterface || t->kind == Kind::TyPointer ||
          t->kind == Kind::TyArray || t->kind == Kind::TyMetaclass;
@@ -1699,7 +1744,7 @@ UnaryOperatorResult EmitResolution::find_unary_operator(
 AssignmentOperatorResult EmitResolution::find_assignment_operator(
     const TypeExpr* source, const TypeExpr* target) {
   if (!source || !target) return {};
-  const TypeExpr* canon_target = analysis_.canonicalize_type(target);
+  const TypeExpr* canon_target = analysis_.semantic_shape_type(target);
   if (!canon_target) return {};
   std::string target_cxx = type_ops_.type_to_cxx(*canon_target);
   if (target_cxx.empty()) return {};
@@ -1714,12 +1759,14 @@ AssignmentOperatorResult EmitResolution::find_assignment_operator(
         c.declaring_type);
     const TypeExpr* ret_type =
         qualified_ret ? qualified_ret.get() : pd->return_type.get();
-    const TypeExpr* ret = analysis_.canonicalize_type(ret_type);
+    const TypeExpr* ret = analysis_.semantic_shape_type(ret_type);
     if (!ret || type_ops_.type_to_cxx(*ret) != target_cxx) continue;
     std::vector<FlatCallParamInfo> flat =
         flatten_call_param_info(pd, c.declaration_unit, c.declaring_type);
     if (flat.size() != 1) continue;
-    if (rank_conversion(source, flat[0].type, flat[0].mutable_ref).viable()) {
+    if (rank_conversion(source, flat[0].type, flat[0].mutable_ref,
+                        flat[0].type_context)
+            .viable()) {
       viable.push_back(c);
     }
   }
@@ -1742,7 +1789,9 @@ AssignmentOperatorResult EmitResolution::find_assignment_operator(
     std::vector<FlatCallParamInfo> flat =
         flatten_call_param_info(pd, candidate.declaration_unit,
                                 candidate.declaring_type);
-    ConvScore score = rank_conversion(source, flat[0].type, flat[0].mutable_ref);
+    ConvScore score = rank_conversion(source, flat[0].type,
+                                      flat[0].mutable_ref,
+                                      flat[0].type_context);
     if (!score.viable()) continue;
     if (!have_best || score.rank < best_score.rank ||
         (score.rank == best_score.rank && score.distance < best_score.distance)) {

@@ -17,14 +17,17 @@ class EmitStorage;
 class EmitTypes;
 class OverloadTypeProvider;
 struct TypeRegistry;
+struct TypeLookupContext;
 
 enum class UntypedArgKind : uint8_t { None, Const, Mutable };
 
 struct CallArgumentSlot {
   const ast::Expr* expr = nullptr;
   const ast::TypeExpr* param_type = nullptr;
+  const TypeLookupContext* param_context = nullptr;
   std::string param_unit;
   std::string param_declaring_type;
+  const TypeLookupContext* default_arg_context = nullptr;
   UntypedArgKind untyped_arg = UntypedArgKind::None;
   bool mutable_ref_arg = false;
   bool defaulted = false;
@@ -83,8 +86,10 @@ class EmitCalls {
                              UntypedArgKind untyped_arg,
                              bool mutable_ref_arg,
                              std::string_view default_arg_unit = {},
+                             const TypeLookupContext* default_arg_context = nullptr,
                              std::string_view param_unit = {},
-                             std::string_view param_declaring_type = {});
+                             std::string_view param_declaring_type = {},
+                             const TypeLookupContext* param_context = nullptr);
   std::string lower_call_arg(const CallArgumentSlot& slot,
                              std::string_view default_arg_unit = {});
 

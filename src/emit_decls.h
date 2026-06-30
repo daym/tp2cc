@@ -14,8 +14,10 @@ class EmitAnalysis;
 class EmitStorage;
 class EmitTypes;
 class EmitValues;
+struct ClassInfo;
 struct MethodSig;
 struct TypeRegistry;
+struct TypeSymbol;
 
 class EmitDeclOps {
  public:
@@ -76,6 +78,7 @@ class EmitDecls {
 
   struct PendingReferenceClassSupport {
     const ast::TypeDecl* decl = nullptr;
+    const ClassInfo* class_info = nullptr;
     std::string source_type_name;
     std::string qualified_cxx_name;
   };
@@ -94,9 +97,9 @@ class EmitDecls {
                                  const ast::ProcDecl& pd,
                                  const std::string& ret);
   std::vector<MetaclassCallable> collect_metaclass_callables(
-      std::string_view class_name);
+      const ClassInfo& root);
   std::optional<MetaclassCallableImpl> find_metaclass_callable_impl(
-      std::string_view concrete_class, const MetaclassCallable& target);
+      const ClassInfo& concrete_class, const MetaclassCallable& target);
   bool metaclass_callable_matches_impl(const MetaclassCallable& target,
                                        const MethodSig& candidate);
   std::string method_sig_param_types(const MethodSig& sig);
@@ -114,19 +117,48 @@ class EmitDecls {
       const std::vector<MetaclassCallable>& parent_callables);
   std::string metaclass_callable_return_type(
       std::string_view target_class, const MetaclassCallable& callable);
+  std::string metaclass_callable_return_type(
+      const ClassInfo& target_info, const MetaclassCallable& callable);
+  std::string metaclass_callable_return_type(
+      const ClassInfo& target_info, std::string_view target_class,
+      const MetaclassCallable& callable);
   std::string metaclass_callable_param_list(const MetaclassCallable& callable);
   std::string metaclass_callable_arg_list(const MetaclassCallable& callable);
   std::string metaclass_callable_ctor_param(
       std::string_view target_class, const MetaclassCallable& callable);
+  std::string metaclass_callable_ctor_param(
+      const ClassInfo& target_info, std::string_view target_class,
+      const MetaclassCallable& callable);
   std::string metaclass_callable_ctor_init(const MetaclassCallable& callable);
   void emit_virtual_metaclass_callable(std::string_view owner_class,
                                        const MetaclassCallable& callable,
                                        bool has_same_parent_slot);
-  std::string metaclass_ctor_member_call(std::string_view owner_class,
-                                         std::string_view concrete_class,
-                                         std::string_view method_name,
-                                         const std::string& args);
-  std::string build_metaclass_ctor_expr(std::string_view target_class,
+  void emit_virtual_metaclass_callable(const ClassInfo& owner_info,
+                                       std::string_view owner_class,
+                                       const MetaclassCallable& callable,
+                                       bool has_same_parent_slot);
+  const TypeSymbol* class_symbol(const ClassInfo& info) const;
+  const TypeSymbol* class_symbol(const ClassInfo& info,
+                                 std::string_view source_name) const;
+  std::string class_struct_cxx(const ClassInfo& info) const;
+  std::string class_struct_cxx(const ClassInfo& info,
+                               std::string_view fallback_name) const;
+  std::string class_struct_cxx(std::string_view class_name,
+                               const MethodSig* sig) const;
+  std::string metaclass_struct_cxx(const ClassInfo& info) const;
+  std::string metaclass_struct_cxx(const ClassInfo& info,
+                                   std::string_view fallback_name) const;
+  std::string metaclass_value_fn_cxx(const ClassInfo& info) const;
+  std::string metaclass_value_fn_cxx(const ClassInfo& info,
+                                     std::string_view fallback_name) const;
+  std::string build_metaclass_ctor_expr(const ClassInfo& target_info,
+                                        std::string_view concrete_class);
+  std::string build_metaclass_ctor_expr(const ClassInfo& target_info,
+                                        std::string_view target_class,
+                                        std::string_view concrete_class);
+  std::string build_metaclass_ctor_expr(const ClassInfo& target_info,
+                                        std::string_view target_class,
+                                        const ClassInfo& concrete_info,
                                         std::string_view concrete_class);
   void emit_enum_carrier(const ast::TyEnum& te, std::string_view cxx_name,
                          std::string_view bound_name);
@@ -139,7 +171,7 @@ class EmitDecls {
       const ast::TypeDecl& td,
       std::vector<PendingReferenceClassSupport>& pending_support);
   void emit_reference_class_support(const ast::TypeDecl& td,
-                                    const ast::TyObject& to,
+                                    const ClassInfo& class_info,
                                     std::string_view qualified_cxx_name,
                                     std::string_view source_type_name);
   void emit_pending_reference_class_support(

@@ -88,7 +88,8 @@ class EmitResolution {
   // out before the dominance check.
   ConvScore rank_conversion(const ast::TypeExpr* arg,
                             const ast::TypeExpr* param,
-                            bool var_param);
+                            bool var_param,
+                            const TypeLookupContext* param_context = nullptr);
 
   // Shared actual/formal conversion model for call arguments. Overload
   // picking uses the score to rank candidates; single-candidate validation uses
@@ -196,9 +197,9 @@ class EmitResolution {
     }
   };
   // Pascal lookup order for an unqualified callable name:
-  // `with` stack -> nested procs -> current class chain -> current unit ->
-  // uses chain. The first contributing non-uses scope wins; the uses chain
-  // aggregates so same-name overloads across imports compete together.
+  // `with` stack -> nested procs -> current class chain -> lexical unit/import
+  // frames. The first contributing non-import frame wins; imported frames
+  // aggregate so same-name overloads across imports compete together.
   std::vector<AnyCand> class_method_cands(const std::string& cls,
                                           const std::string& name);
   std::vector<AnyCand> metaclass_method_cands(const std::string& cls,
@@ -210,8 +211,9 @@ class EmitResolution {
   std::vector<AnyCand> gather_operator_in_pascal_scope(const std::string& op);
   std::string type_cxx_or_empty(const ast::TypeExpr* t);
   const ast::TypeExpr* strip_conversion_wrapper(const ast::TypeExpr* t);
-  ConvScore class_hierarchy_conversion_score(const ast::TypeExpr* arg,
-                                             const ast::TypeExpr* param);
+  ConvScore class_hierarchy_conversion_score(
+      const ast::TypeExpr* arg, const TypeLookupContext* arg_context,
+      const ast::TypeExpr* param, const TypeLookupContext* param_context);
   const PrimitiveInfo* primitive_for_type(const ast::TypeExpr* t);
   std::optional<IntegerActualDomain> integer_actual_domain_for_type(
       const ast::TypeExpr* t);
@@ -221,17 +223,17 @@ class EmitResolution {
   bool integer_domain_fits_primitive(const IntegerActualDomain& domain,
                                      const PrimitiveInfo& formal) const;
   bool set_literal_can_construct_open_array(const ast::SetLit& literal,
-                                            const ast::TypeExpr* param) const;
+                                            const ast::TypeExpr* param,
+                                            const TypeLookupContext* param_context) const;
   ConvScore rank_integer_domain_conversion(
       const IntegerActualDomain& domain, const ast::TypeExpr* param,
-      bool var_param);
+      bool var_param, const TypeLookupContext* param_context = nullptr);
   std::optional<PickResult> pick_integer_domain_overload(
       const std::vector<ScoredCandidate>& viable,
       const std::vector<const ast::Expr*>& args);
-  int real_conversion_rank(std::string_view name) const;
-  bool type_is_shortstring_family(const ast::TypeExpr* t) const;
+  bool type_is_shortstring_family(const ast::TypeExpr* t);
   bool type_is_longstring_family(const ast::TypeExpr* t) const;
-  bool type_is_char_type(const ast::TypeExpr* t) const;
+  bool type_is_char_type(const ast::TypeExpr* t);
   bool procedural_signatures_match(const ast::ProcDecl& decl,
                                    const ast::TyProcedural& proc);
   std::optional<int> procedural_value_signature_distance(
@@ -276,6 +278,7 @@ class EmitResolution {
       const ast::Expr& arg);
   bool target_pointer_arithmetic_can_convert(const ast::Expr& arg,
                                              const ast::TypeExpr* param,
+                                             const TypeLookupContext* param_context,
                                              bool allow_assignment_operator_conversions);
 
   const TypeRegistry& registry_;

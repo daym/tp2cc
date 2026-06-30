@@ -112,36 +112,6 @@ EmitLookup::EmitLookup(const TypeRegistry& registry, ScopeStateView& scope,
       analysis_(analysis),
       properties_(properties) {}
 
-std::optional<ResolveResult> EmitLookup::resolve_exported_unit_name(
-    const std::string& unit_name, const std::string& name) {
-  auto it = registry_.units.find(unit_name);
-  if (it == registry_.units.end()) return std::nullopt;
-  const UnitInfo& unit = it->second;
-  // Synthetic `__rt__` unit holds runtime builtins. Emit them fully qualified
-  // so translated units do not depend on `using namespace ::rt;`.
-  const std::string prefix = unit_namespace_prefix(unit_name);
-  if (auto result = resolve_proc_overloads(
-          unit.find_export_procs(name),
-          (unit_name == "__rt__") ? ResolvedKind::RtBuiltin
-                                  : ResolvedKind::UnitProc,
-          prefix + mangle(name))) {
-    return result;
-  }
-  if (unit.find_export_var(name)) {
-    return resolved_value(ResolvedKind::UnitVar, prefix + mangle(name));
-  }
-  if (unit.find_export_const(name)) {
-    return resolved_value(ResolvedKind::UnitConst, prefix + mangle(name));
-  }
-  if (unit.has_export_enum_member(name)) {
-    return resolved_value(ResolvedKind::EnumMember, prefix + mangle(name));
-  }
-  if (unit.has_export_type(name)) {
-    return resolved_value(ResolvedKind::UnitType, prefix + mangle(name));
-  }
-  return std::nullopt;
-}
-
 ResolveResult EmitLookup::resolve_name(const std::string& name,
                                        QualifierKind qk,
                                        const std::string& qualifier) {
@@ -213,8 +183,8 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
        ++it) {
       const std::string& cls = it->class_name;
       const std::string& access = it->access_op;
-      if (const auto* ci = analysis_.migration_fallback_class_info_by_name(cls);
-          ci && ci->is_reference_type &&
+      const ClassInfo* ci = analysis_.migration_fallback_class_info_by_name(cls);
+      if (ci && ci->is_reference_type &&
           (name == "classtype" || name == "instancesize")) {
         return zero_arg_callable(ResolvedKind::WithMethod,
                                  it->cxx_text + access + mangle(name));
@@ -223,8 +193,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
       // Resolve it through the active `with` expression so inherited TObject
       // methods are still available even though TObject is a runtime class
       // rather than an entry in `registry->classes`.
-      if (const auto* ci = analysis_.migration_fallback_class_info_by_name(cls);
-          ci && ci->is_reference_type && name == "free") {
+      if (ci && ci->is_reference_type && name == "free") {
         // The expression is already a complete call; no implicit-zero-arg
         // wrap is wanted at the use site.
         return resolved_value(ResolvedKind::WithMethod,
@@ -325,53 +294,40 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     }
   }
 
-  // 6. Unit-level -- own unit first, then cross-unit (`uses` chain).
-  auto uit = registry_.units.find(scope_.current_unit_name);
-  const UnitInfo* ui = (uit != registry_.units.end()) ? &uit->second
-                                                       : nullptr;
-    const std::string own_prefix =
-        (!scope_.lookup_emission_unit_name.empty() &&
-         scope_.lookup_emission_unit_name != scope_.current_unit_name)
-            ? unit_namespace_prefix(scope_.current_unit_name)
-            : std::string{};
-    // Current unit's own symbols shadow everything from `uses`. Normal
-    // emission leaves them bare. When lookup is redirected to a declaration
-    // unit but the generated C++ is inserted in another unit, those
-    // declaration-unit symbols need an explicit namespace prefix there.
-    if (ui) {
-      if (auto result = resolve_proc_overloads(
-              ui->find_procs(name), ResolvedKind::UnitProc,
-              own_prefix + mangle(name))) {
-        return *result;
-      }
-      if (ui->find_var(name)) {
-        return resolved_value(ResolvedKind::UnitVar, own_prefix + mangle(name));
-      }
-      if (ui->find_const(name)) {
-        return resolved_value(ResolvedKind::UnitConst, own_prefix + mangle(name));
-      }
-      if (ui->has_enum_member(name)) {
-        return resolved_value(ResolvedKind::EnumMember,
-                              own_prefix + mangle(name));
-      }
-      if (ui->has_type(name)) {
-        return resolved_value(ResolvedKind::UnitType, own_prefix + mangle(name));
-      }
+  // 6. Unit-level frames: current implementation, current interface, imported
+  // interface frames, then implicit runtime.
+  for (const TypeLookupContext* frame = scope_.type_scope; frame;
+       frame = frame->parent) {
+    if (!frame->unit_info) continue;
+    const bool imported = scope_frame_is_import(*frame);
+    const std::string prefix =
+        imported
+            ? unit_namespace_prefix(frame->unit)
+            : ((!scope_.lookup_emission_unit_name.empty() &&
+                scope_.lookup_emission_unit_name != frame->unit)
+                   ? unit_namespace_prefix(frame->unit)
+                   : std::string{});
+    const ResolvedKind proc_kind =
+        scope_frame_is_runtime(*frame) ? ResolvedKind::RtBuiltin
+                                       : ResolvedKind::UnitProc;
+    if (auto result = resolve_proc_overloads(
+            scope_frame_find_procs(*frame, name), proc_kind,
+            prefix + mangle(name))) {
+      return *result;
     }
-
-    if (ui) {
-      // Right-to-left is Pascal's uses resolution order. Keep the synthetic
-      // `__rt__` unit as the last resort so real imported units can shadow
-      // runtime builtin names such as FPU exception enum members.
-      for (auto it = ui->uses.rbegin(); it != ui->uses.rend(); ++it) {
-        if (*it == "__rt__") continue;
-        if (auto result = resolve_exported_unit_name(*it, name)) return *result;
-      }
-      for (auto it = ui->uses.rbegin(); it != ui->uses.rend(); ++it) {
-        if (*it != "__rt__") continue;
-        if (auto result = resolve_exported_unit_name(*it, name)) return *result;
-      }
+    if (scope_frame_find_var(*frame, name)) {
+      return resolved_value(ResolvedKind::UnitVar, prefix + mangle(name));
     }
+    if (scope_frame_find_const(*frame, name)) {
+      return resolved_value(ResolvedKind::UnitConst, prefix + mangle(name));
+    }
+    if (scope_frame_has_enum_member(*frame, name)) {
+      return resolved_value(ResolvedKind::EnumMember, prefix + mangle(name));
+    }
+    if (scope_frame_has_type(*frame, name)) {
+      return resolved_value(ResolvedKind::UnitType, prefix + mangle(name));
+    }
+  }
 
   // 7. Unresolved free name: keep it in Pascal identifier space.
   // Known runtime helpers already resolve through the synthetic `__rt__`

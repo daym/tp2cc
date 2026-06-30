@@ -100,6 +100,7 @@ class EmitValues {
   bool can_lower_target_pointer_arithmetic(const ast::Expr& e,
                                            const ast::TypeExpr* target,
                                            bool explicit_conversion);
+  bool type_is_integer_primitive(const ast::TypeExpr* t);
   std::string pchar_string_literal_to_cxx(const ast::StringLit& lit);
   const ast::TypeExpr* set_literal_member_source_type(const ast::Expr& e);
   const ast::TypeExpr* metaclass_value_base_type(const ast::Expr& e);
