@@ -3366,15 +3366,16 @@ const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
   // FPC's overload resolution is two-phase:
   //   1. Name lookup: Walk the class chain from derived to parent. At each
   //      class, if the name is found, add those methods to the candidate set.
-  //      If ALL overloads at this class have `is_overload=true`, continue
-  //      walking to merge parent overloads. Otherwise stop (name hiding).
+  //      If any procdef in that procsym has `overload`, continue walking to
+  //      merge parent overloads. Otherwise stop (name hiding). This matches
+  //      FPC's tcallcandidates.collect_overloads_in_struct.
   //   2. Argument matching: Run overload ranking on the collected set.
   //
   // This correctly handles:
   //   - No overload: stops at the first class with the name (name hiding).
   //   - Unbroken overload chain: merges parent + child overloads.
-  //   - Broken chain: parent without `overload` hides grandparent; child with
-  //     `overload` only sees the parent's overloads.
+  //   - Mixed procsym: one overload-marked procdef keeps parent overloads
+  //     visible for the whole same-name candidate set.
   const ClassInfo* ci = lookup_class(class_name_in, current_unit);
   std::string key = lc(member);
   if (const InterfaceInfo* interface =
@@ -3402,17 +3403,14 @@ const std::vector<MethodSig>* TypeRegistry::lookup_class_methods(
     auto mit = ci->methods.find(key);
     if (mit != ci->methods.end()) {
       merged.insert(merged.end(), mit->second.begin(), mit->second.end());
-      // Check if ALL overloads at this class have is_overload=true. If so,
-      // continue walking to merge parent overloads. Otherwise stop (name
-      // hiding); parent overloads are hidden.
-      bool all_overload = true;
+      bool has_overload = false;
       for (const auto& sig : mit->second) {
-        if (!sig.is_overload) {
-          all_overload = false;
+        if (sig.is_overload) {
+          has_overload = true;
           break;
         }
       }
-      if (!all_overload) break;
+      if (!has_overload) break;
     }
     ci = lookup_parent_class(*ci);
   }

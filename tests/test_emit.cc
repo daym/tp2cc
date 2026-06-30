@@ -11050,6 +11050,43 @@ void test_non_overload_unit_proc_hides_earlier_uses() {
   CHECK(error_count() > before);
 }
 
+void test_class_overload_continuation_matches_fpc_any_procdef_rule() {
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TBase = class\n"
+      "    procedure Pick(i : longint); overload;\n"
+      "  end;\n"
+      "  TChild = class(TBase)\n"
+      "    procedure Pick(s : string); overload;\n"
+      "    procedure Pick(b : boolean);\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+
+  const auto* methods = reg.lookup_class_methods("tchild", "pick", "u");
+  CHECK(methods);
+  CHECK_EQ(methods ? methods->size() : 0, size_t{3});
+
+  size_t base_methods = 0;
+  size_t child_methods = 0;
+  size_t overload_marked = 0;
+  if (methods) {
+    for (const MethodSig& method : *methods) {
+      if (method.declaring_type == "tbase") ++base_methods;
+      if (method.declaring_type == "tchild") ++child_methods;
+      if (method.is_overload) ++overload_marked;
+    }
+  }
+  CHECK_EQ(base_methods, size_t{1});
+  CHECK_EQ(child_methods, size_t{2});
+  CHECK_EQ(overload_marked, size_t{2});
+}
+
 void test_overload_ambiguous_default_arg_vs_no_default_reports_error() {
   // `f(x : longint)` and `f(x : longint = 5)` are both viable for `f(7)`:
   // the first by exact match, the second also by exact match (default
@@ -14686,6 +14723,7 @@ int main() {
   RUN_TEST(test_overload_picks_unsigned_widening_over_sign_change);
   RUN_TEST(test_overload_aggregates_explicit_overloads_across_direct_uses);
   RUN_TEST(test_non_overload_unit_proc_hides_earlier_uses);
+  RUN_TEST(test_class_overload_continuation_matches_fpc_any_procdef_rule);
   RUN_TEST(test_overload_ambiguous_default_arg_vs_no_default_reports_error);
   RUN_TEST(test_overload_ambiguous_two_default_arg_overloads_reports_error);
   RUN_TEST(test_overload_default_arg_extends_arity_disambiguates_cleanly);
