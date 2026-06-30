@@ -249,10 +249,20 @@ const TypeExpr* EmitResolution::strip_conversion_wrapper(const TypeExpr* t) {
 ConvScore EmitResolution::class_hierarchy_conversion_score(
     const TypeExpr* arg, const TypeLookupContext* arg_context,
     const TypeExpr* param, const TypeLookupContext* param_context) {
+  const TypeExpr* raw_arg = arg;
+  const TypeExpr* raw_param = param;
+  arg = analysis_.semantic_shape_type_in_context(arg, arg_context);
+  param = analysis_.semantic_shape_type_in_context(param, param_context);
   const auto* arg_class =
+      analysis_.class_info_for_type_in_context(raw_arg, arg_context);
+  const auto* shaped_arg_class =
       analysis_.class_info_for_type_in_context(arg, arg_context);
   const auto* param_class =
+      analysis_.class_info_for_type_in_context(raw_param, param_context);
+  const auto* shaped_param_class =
       analysis_.class_info_for_type_in_context(param, param_context);
+  if (!arg_class) arg_class = shaped_arg_class;
+  if (!param_class) param_class = shaped_param_class;
   if (!arg_class || !param_class) return {};
 
   std::unordered_set<std::string> seen;
@@ -703,11 +713,6 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
         score.viable()) {
       return score;
     }
-    if (ConvScore score =
-            class_hierarchy_conversion_score(a, nullptr, p, param_context);
-        score.viable()) {
-      return score;
-    }
     return {};
   }
 
@@ -729,11 +734,6 @@ ConvScore EmitResolution::rank_conversion(const TypeExpr* arg,
   // Fewer parent hops means the closer Pascal match.
   if (ConvScore score = class_hierarchy_conversion_score(
           raw_arg, nullptr, raw_param, param_context);
-      score.viable()) {
-    return score;
-  }
-  if (ConvScore score =
-          class_hierarchy_conversion_score(a, nullptr, p, param_context);
       score.viable()) {
     return score;
   }
