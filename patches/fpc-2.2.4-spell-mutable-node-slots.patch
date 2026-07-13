@@ -1,0 +1,183 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-07-08
+Subject: Spell mutable node pass slots as base nodes
+License: expat
+
+Older compiler sources pass subclass-typed node slots to helpers whose
+`var tnode` formals can reseat the slot.  Allowing that implicitly would let
+any subclass variable satisfy a mutable base-class formal, even when the callee
+can store a different subclass back into the caller's slot.
+
+Spell those storage boundaries explicitly, as later compiler trees do, so
+tp2cc can keep `var` class-slot compatibility strict.
+
+--- a/compiler/pstatmnt.pas
++++ b/compiler/pstatmnt.pas
+@@ -537,7 +537,7 @@
+                 else
+                   hdef:=tpointerdef.create(p.resultdef);
+                 { load address of the value in a temp }
+                 tempnode:=ctempcreatenode.create_withnode(hdef,sizeof(aint),tt_persistent,true,p);
+-                typecheckpass(tempnode);
++                typecheckpass(tnode(tempnode));
+                 valuenode:=p;
+                 refnode:=ctemprefnode.create(tempnode);
+                 fillchar(refnode.fileinfo,sizeof(tfileposinfo),0);
+
+--- a/compiler/htypechk.pas
++++ b/compiler/htypechk.pas
+@@ -462,7 +462,7 @@
+         { Display info when multiple candidates are found }
+         candidates.dump_info(V_Debug);
+ {$endif EXTDEBUG}
+-        cand_cnt:=candidates.choose_best(operpd,false);
++        cand_cnt:=candidates.choose_best(tabstractprocdef(operpd),false);
+ 
+         { exit when no overloads are found }
+         if cand_cnt=0 then
+@@ -608,7 +608,7 @@
+         { Display info when multiple candidates are found }
+         candidates.dump_info(V_Debug);
+ {$endif EXTDEBUG}
+-        cand_cnt:=candidates.choose_best(operpd,false);
++        cand_cnt:=candidates.choose_best(tabstractprocdef(operpd),false);
+ 
+         { exit when no overloads are found }
+         if cand_cnt=0 then
+
+--- a/compiler/ninl.pas
++++ b/compiler/ninl.pas
+@@ -2474,7 +2474,7 @@
+                    if assigned(tempnode) then
+                      addstatement(newstatement,ctempdeletenode.create(tempnode));
+                    { firstpass it }
+-                   firstpass(newblock);
++                   firstpass(tnode(newblock));
+                    { return new node }
+                    result := newblock;
+                  end
+
+--- a/compiler/nutils.pas
++++ b/compiler/nutils.pas
+@@ -122,10 +122,10 @@
+         calln:
+           begin
+             { not in one statement, won't work because of b- }
+-            result := foreachnode(tcallnode(n).methodpointerinit,f,arg) or result;
++            result := foreachnode(tnode(tcallnode(n).methodpointerinit),f,arg) or result;
+             result := foreachnode(tcallnode(n).methodpointer,f,arg) or result;
+             result := foreachnode(tcallnode(n)._funcretnode,f,arg) or result;
+-            result := foreachnode(tcallnode(n).methodpointerdone,f,arg) or result;
++            result := foreachnode(tnode(tcallnode(n).methodpointerdone),f,arg) or result;
+           end;
+         ifn, whilerepeatn, forn, tryexceptn, tryfinallyn:
+           begin
+@@ -134,7 +134,7 @@
+             result := foreachnode(tloopnode(n).t2,f,arg) or result;
+           end;
+         raisen:
+-          result := foreachnode(traisenode(n).frametree,f,arg) or result;
++          result := foreachnode(ttertiarynode(n).third,f,arg) or result;
+         casen:
+           begin
+             for i := 0 to tcasenode(n).blocks.count-1 do
+@@ -173,4 +173,4 @@
+-              result := foreachnodestatic(procmethod,tcallnode(n).methodpointerinit,f,arg) or result;
++              result := foreachnodestatic(procmethod,tnode(tcallnode(n).methodpointerinit),f,arg) or result;
+               result := foreachnodestatic(procmethod,tcallnode(n).methodpointer,f,arg) or result;
+               result := foreachnodestatic(procmethod,tcallnode(n)._funcretnode,f,arg) or result;
+-              result := foreachnodestatic(procmethod,tcallnode(n).methodpointerdone,f,arg) or result;
++              result := foreachnodestatic(procmethod,tnode(tcallnode(n).methodpointerdone),f,arg) or result;
+@@ -182,7 +182,7 @@
+               result := foreachnodestatic(procmethod,tloopnode(n).t2,f,arg) or result;
+             end;
+           raisen:
+-            result := foreachnodestatic(traisenode(n).frametree,f,arg) or result;
++            result := foreachnodestatic(ttertiarynode(n).third,f,arg) or result;
+           casen:
+             begin
+               for i := 0 to tcasenode(n).blocks.count-1 do
+
+--- a/compiler/ncal.pas
++++ b/compiler/ncal.pas
+@@ -577,8 +577,8 @@
+             else
+               addstatement(newdonestatement,ctemprefnode.create(ptemp));
+             { call typecheckpass for new nodes }
+             typecheckpass(p);
+-            typecheckpass(aktcallnode.methodpointerinit);
+-            typecheckpass(aktcallnode.methodpointerdone);
++            typecheckpass(tnode(aktcallnode.methodpointerinit));
++            typecheckpass(tnode(aktcallnode.methodpointerdone));
+           end;
+       end;
+ 
+@@ -981,7 +981,7 @@
+                      left:=nil;
+                      { release temp after next use }
+                      addstatement(statements,ctempdeletenode.create_normal_temp(temp));
+                      addstatement(statements,ctemprefnode.create(temp));
+-                     typecheckpass(block);
++                     typecheckpass(tnode(block));
+                      left:=block;
+                    end;
+ 
+@@ -2888,9 +2888,9 @@
+           again inside the args or itself }
+         exclude(procdefinition.procoptions,po_inline);
+ 
+-        typecheckpass(createblock);
+-        dosimplify(createblock);
+-        firstpass(createblock);
++        typecheckpass(tnode(createblock));
++        dosimplify(tnode(createblock));
++        firstpass(tnode(createblock));
+         include(procdefinition.procoptions,po_inline);
+ 
+         { if all that's left of the inlined function is an constant       }
+@@ -3016,10 +3016,10 @@
+          order_parameters;
+ 
+          if assigned(methodpointerinit) then
+-           firstpass(methodpointerinit);
++           firstpass(tnode(methodpointerinit));
+ 
+          if assigned(methodpointerdone) then
+-           firstpass(methodpointerdone);
++           firstpass(tnode(methodpointerdone));
+ 
+          { function result node }
+         if assigned(_funcretnode) then
+
+--- a/compiler/psub.pas
++++ b/compiler/psub.pas
+@@ -551,7 +551,7 @@
+         bodyentrycode,
+         bodyexitcode,
+         exceptcode   : tnode;
+-        newblock     : tblocknode;
++        newblock     : tnode;
+         codestatement,
+         newstatement : tstatementnode;
+         hstatement   : tstatementnode;
+
+--- a/compiler/ncgcal.pas
++++ b/compiler/ncgcal.pas
+@@ -866,7 +866,7 @@
+            internalerror(200305264);
+ 
+          if assigned(methodpointerinit) then
+-           secondpass(methodpointerinit);
++           secondpass(tnode(methodpointerinit));
+ 
+          if resultdef.needs_inittable and
+             not paramanager.ret_in_param(resultdef,procdefinition.proccalloption) and
+@@ -1142,7 +1142,7 @@
+ 
+ 
+          if assigned(methodpointerdone) then
+-           secondpass(methodpointerdone);
++           secondpass(tnode(methodpointerdone));
+       end;
+ 
+ 
