@@ -58,24 +58,24 @@ struct ScopeStateView {
     };
 
     WithBind(std::string cxx_text_in, const ast::TypeExpr* type_in,
-             std::string class_name_in, std::string access_op_in)
+             const TypeSymbol* class_symbol_in, std::string access_op_in)
         : cxx_text(std::move(cxx_text_in)),
           type(type_in),
-          class_name(std::move(class_name_in)),
+          class_symbol(class_symbol_in),
           access_op(std::move(access_op_in)) {}
 
     WithBind(std::string cxx_text_in, const ast::TypeExpr* type_in,
-             std::string class_name_in, std::string access_op_in,
+             const TypeSymbol* class_symbol_in, std::string access_op_in,
              BytewiseStorage bytewise_storage_in)
         : cxx_text(std::move(cxx_text_in)),
           type(type_in),
-          class_name(std::move(class_name_in)),
+          class_symbol(class_symbol_in),
           access_op(std::move(access_op_in)),
           bytewise_storage(std::move(bytewise_storage_in)) {}
 
     std::string cxx_text;
     const ast::TypeExpr* type = nullptr;
-    std::string class_name;
+    const TypeSymbol* class_symbol = nullptr;
     std::string access_op;
     // Base storage available to bare fields inside `with`.
     //
@@ -86,7 +86,7 @@ struct ScopeStateView {
     std::optional<BytewiseStorage> bytewise_storage;
   };
 
-  std::string& current_class_name;
+  const TypeSymbol*& current_class_symbol;
   std::string& current_unit_name;
   // Non-empty when Pascal name lookup is intentionally performed with
   // `current_unit_name` set to a declaration unit, while the generated C++
@@ -122,6 +122,21 @@ struct ScopeStateView {
   std::unordered_set<std::string>& local_nested_forwards;
   const TypeLookupContext*& type_scope;
   std::unordered_set<std::string>& local_const_params;
+  // Pascal `var view: T absolute other` binds `view` as a T-typed view
+  // of the bytes at `other`. There is no C++ variable emitted for
+  // `view`: emitting a persistent `T&` reference over storage whose
+  // dynamic type is not T would be strict-aliasing UB. Instead, name
+  // lookup for `view` synthesises a bytewise storage designator whose
+  // ptr expression is `&other`; the existing bytewise machinery then
+  // handles reads/writes via memcpy helpers, and method calls / var-out
+  // args go through the bounded `tp2cc_TypedView` wrapper.
+  struct AbsoluteAlias {
+    std::string target_cxx;             // C++ ident of the source variable
+    const ast::TypeExpr* type = nullptr; // alias's declared Pascal type (T)
+    bool target_is_pointerish = false;   // target value already is an address
+    bool target_is_const = false;        // Pascal `const` source parameter
+  };
+  std::unordered_map<std::string, AbsoluteAlias>& local_absolute_targets;
   std::vector<WithBind>& with_stack;
 
   // Current-function / result-slot state. `Result` semantics differ between
@@ -150,24 +165,63 @@ class ScopedDeclarationLookup {
       : scope_(scope),
         saved_current_unit_(scope.current_unit_name),
         saved_lookup_emission_unit_(scope.lookup_emission_unit_name),
+        saved_current_class_symbol_(scope.current_class_symbol),
+        saved_current_fn_name_(scope.current_fn_name),
+        saved_current_fn_param_names_(scope.current_fn_param_names),
+        saved_current_fn_is_function_(scope.current_fn_is_function),
+        saved_current_fn_is_ctor_(scope.current_fn_is_ctor),
+        saved_current_fn_result_type_(scope.current_fn_result_type),
+        saved_current_result_slot_name_(scope.current_result_slot_name),
+        saved_bare_result_slot_name_(scope.bare_result_slot_name),
+        saved_bare_result_type_(scope.bare_result_type),
+        saved_outer_result_name_(scope.outer_result_name),
+        saved_outer_result_slot_name_(scope.outer_result_slot_name),
+        saved_outer_result_type_(scope.outer_result_type),
         saved_type_scope_(scope.type_scope) {
     if (!declaration_context && declaration_unit.empty()) return;
 
     std::string_view unit = declaration_context ? declaration_context->unit
                                                 : declaration_unit;
+    preserve_local_value_scope_ =
+        declaration_context && declaration_context->preserve_local_value_scope &&
+        (unit.empty() || unit == scope_.current_unit_name);
+    // Unit emission preloads later const declarations into local value maps for
+    // ordinary output, so an already-active type context still needs the local
+    // value maps cleared when rendering declaration-owned bounds/ordinals.
     if (declaration_context == scope.type_scope &&
-        (unit.empty() || unit == scope.current_unit_name)) {
+        (unit.empty() || unit == scope.current_unit_name) &&
+        preserve_local_value_scope_) {
       return;
     }
+    if (!preserve_local_value_scope_) {
+      saved_local_scope_.swap(scope.local_scope);
+      saved_local_value_types_.swap(scope.local_value_types);
+      saved_local_consts_.swap(scope.local_consts);
+      saved_local_untyped_params_.swap(scope.local_untyped_params);
+      saved_local_nested_fns_.swap(scope.local_nested_fns);
+      saved_local_nested_forwards_.swap(scope.local_nested_forwards);
+      saved_local_const_params_.swap(scope.local_const_params);
+      saved_local_absolute_targets_.swap(scope.local_absolute_targets);
+      saved_with_stack_.swap(scope.with_stack);
+    }
 
-    saved_local_scope_.swap(scope.local_scope);
-    saved_local_value_types_.swap(scope.local_value_types);
-    saved_local_consts_.swap(scope.local_consts);
-    saved_local_untyped_params_.swap(scope.local_untyped_params);
-    saved_local_nested_fns_.swap(scope.local_nested_fns);
-    saved_local_nested_forwards_.swap(scope.local_nested_forwards);
-    saved_local_const_params_.swap(scope.local_const_params);
-    saved_with_stack_.swap(scope.with_stack);
+    // Declaration-owned expressions are not evaluated as part of the caller's
+    // routine body. Even when local value names are preserved for a local
+    // declaration context, caller-only bindings such as `Result`, the current
+    // function name, `Self`, and `inherited` must not leak into default
+    // arguments, enum ordinals, or type bounds.
+    scope_.current_class_symbol = nullptr;
+    scope_.current_fn_name.clear();
+    scope_.current_fn_param_names.clear();
+    scope_.current_fn_is_function = false;
+    scope_.current_fn_is_ctor = false;
+    scope_.current_fn_result_type = nullptr;
+    scope_.current_result_slot_name.clear();
+    scope_.bare_result_slot_name.clear();
+    scope_.bare_result_type = nullptr;
+    scope_.outer_result_name.clear();
+    scope_.outer_result_slot_name.clear();
+    scope_.outer_result_type = nullptr;
 
     if (!unit.empty() && unit != scope_.current_unit_name) {
       scope_.lookup_emission_unit_name =
@@ -186,14 +240,29 @@ class ScopedDeclarationLookup {
     if (!active_) return;
     scope_.current_unit_name = saved_current_unit_;
     scope_.lookup_emission_unit_name = saved_lookup_emission_unit_;
-    scope_.local_scope.swap(saved_local_scope_);
-    scope_.local_value_types.swap(saved_local_value_types_);
-    scope_.local_consts.swap(saved_local_consts_);
-    scope_.local_untyped_params.swap(saved_local_untyped_params_);
-    scope_.local_nested_fns.swap(saved_local_nested_fns_);
-    scope_.local_nested_forwards.swap(saved_local_nested_forwards_);
-    scope_.local_const_params.swap(saved_local_const_params_);
-    scope_.with_stack.swap(saved_with_stack_);
+    scope_.current_class_symbol = saved_current_class_symbol_;
+    scope_.current_fn_name = saved_current_fn_name_;
+    scope_.current_fn_param_names = saved_current_fn_param_names_;
+    scope_.current_fn_is_function = saved_current_fn_is_function_;
+    scope_.current_fn_is_ctor = saved_current_fn_is_ctor_;
+    scope_.current_fn_result_type = saved_current_fn_result_type_;
+    scope_.current_result_slot_name = saved_current_result_slot_name_;
+    scope_.bare_result_slot_name = saved_bare_result_slot_name_;
+    scope_.bare_result_type = saved_bare_result_type_;
+    scope_.outer_result_name = saved_outer_result_name_;
+    scope_.outer_result_slot_name = saved_outer_result_slot_name_;
+    scope_.outer_result_type = saved_outer_result_type_;
+    if (!preserve_local_value_scope_) {
+      scope_.local_scope.swap(saved_local_scope_);
+      scope_.local_value_types.swap(saved_local_value_types_);
+      scope_.local_consts.swap(saved_local_consts_);
+      scope_.local_untyped_params.swap(saved_local_untyped_params_);
+      scope_.local_nested_fns.swap(saved_local_nested_fns_);
+      scope_.local_nested_forwards.swap(saved_local_nested_forwards_);
+      scope_.local_const_params.swap(saved_local_const_params_);
+      scope_.local_absolute_targets.swap(saved_local_absolute_targets_);
+      scope_.with_stack.swap(saved_with_stack_);
+    }
     scope_.type_scope = saved_type_scope_;
   }
 
@@ -201,6 +270,18 @@ class ScopedDeclarationLookup {
   ScopeStateView& scope_;
   std::string saved_current_unit_;
   std::string saved_lookup_emission_unit_;
+  const TypeSymbol* saved_current_class_symbol_ = nullptr;
+  std::string saved_current_fn_name_;
+  std::vector<std::string> saved_current_fn_param_names_;
+  bool saved_current_fn_is_function_ = false;
+  bool saved_current_fn_is_ctor_ = false;
+  const ast::TypeExpr* saved_current_fn_result_type_ = nullptr;
+  std::string saved_current_result_slot_name_;
+  std::string saved_bare_result_slot_name_;
+  const ast::TypeExpr* saved_bare_result_type_ = nullptr;
+  std::string saved_outer_result_name_;
+  std::string saved_outer_result_slot_name_;
+  const ast::TypeExpr* saved_outer_result_type_ = nullptr;
   std::unordered_set<std::string> saved_local_scope_;
   std::unordered_map<std::string, const ast::TypeExpr*>
       saved_local_value_types_;
@@ -210,68 +291,26 @@ class ScopedDeclarationLookup {
       saved_local_nested_fns_;
   std::unordered_set<std::string> saved_local_nested_forwards_;
   std::unordered_set<std::string> saved_local_const_params_;
+  std::unordered_map<std::string, ScopeStateView::AbsoluteAlias>
+      saved_local_absolute_targets_;
   std::vector<ScopeStateView::WithBind> saved_with_stack_;
   const TypeLookupContext* saved_type_scope_ = nullptr;
   bool active_ = false;
+  bool preserve_local_value_scope_ = false;
 };
-
-// MIGRATION_NAME_LOOKUP_FALLBACK: every call to a migration_fallback_* type
-// lookup function is a remaining spelling-based type lookup site. These are
-// temporary because the parser does not yet bind constructs such as `sizeof(T)`
-// or callee syntax `T(expr)` to a TypeExpr. Consumers that already have a
-// TypeExpr must use resolved_type_symbol_in_context(),
-// resolved_symbol_for_type(), or canonical_symbol_for_type() instead. The
-// final parser-driven migration should delete these functions and all call
-// sites.
-inline const TypeSymbol* migration_fallback_type_symbol_by_name(
-    const TypeRegistry& registry, const ScopeStateView& scope,
-    std::string_view name) {
-  if (scope.type_scope) {
-    if (const TypeSymbol* symbol =
-            registry.lookup_type_symbol_in_context(name, scope.type_scope)) {
-      return symbol;
-    }
-  }
-  return nullptr;
-}
-
-inline const TypeSymbol* migration_fallback_lexical_type_symbol_by_name(
-    const TypeRegistry& registry, const ScopeStateView& scope,
-    std::string_view name) {
-  if (!scope.type_scope) return nullptr;
-  return registry.lookup_type_symbol_in_scope_chain(name, scope.type_scope);
-}
 
 inline const EnumInfoReg* local_enum_info_for_member(
     const ScopeStateView& scope, std::string_view name) {
-  const std::string member = ascii_lower(name);
+  assert(pascal_key_is_canonical(name));
   for (const TypeLookupContext* frame = scope.type_scope; frame;
        frame = frame->parent) {
-    for (const auto& [_, symbol] : frame->type_symbols) {
-      if (!symbol) continue;
-      const EnumInfoReg* info = symbol->enum_info();
-      if (!info) continue;
-      for (const auto& enum_member : info->members) {
-        if (enum_member == member) return info;
-      }
+    if (frame->kind != ScopeFrameKind::Local) continue;
+    if (const EnumInfoReg* info =
+            scope_frame_find_local_enum_info_for_member(*frame, name)) {
+      return info;
     }
   }
   return nullptr;
-}
-
-inline const TypeSymbol* resolved_type_symbol_in_context(
-    const TypeRegistry& registry, const ScopeStateView& scope,
-    const ast::TypeExpr* type, const TypeLookupContext* context = nullptr) {
-  const TypeSymbol* symbol = registry.canonical_symbol_for_type(type);
-  if (symbol && symbol->defining_unit != "__builtin__") return symbol;
-  if (!type || type->kind != ast::Kind::TyName) return symbol;
-  const auto& name = static_cast<const ast::TyName&>(*type).name;
-  if (const TypeSymbol* visible =
-          context ? registry.lookup_type_symbol_in_context(name, context)
-                  : migration_fallback_type_symbol_by_name(registry, scope, name)) {
-    return visible;
-  }
-  return symbol;
 }
 
 }  // namespace tp2cc

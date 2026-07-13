@@ -816,7 +816,7 @@ inline constexpr auto operator+(const tp2cc_ShortString<N>& a, CharConst b) {
 // as a Pascal string value, and as "the variable whose first storage slot
 // contains the payload pointer". Keep the runtime wrapper to exactly one
 // pointer data member so low-level emitted operations like
-// `reinterpret_storage_ref<void*>(s)` still see the expected bytes.
+// `Move`/`FillChar` over the variable storage see the expected bytes.
 
 struct AnsiStringHeader {
   int32_t len;
@@ -2580,6 +2580,78 @@ inline void tp2cc_reinterpret_store(void* p, const T& value) {
   std::memcpy(p, &value, sizeof(T));
 }
 
+// Bounded-lifetime typed lvalue over byte storage.
+//
+// Pascal has constructs whose semantics are "for the duration of this call,
+// treat these bytes as a T; commit any changes back after the call":
+//
+//   - `variant_record.tag_field.method()` on packed variant records
+//   - `Ptype(untyped_ptr)^.method()` and `.field := v` where Ptype's pointee
+//     is not the storage's dynamic type
+//   - Pascal `absolute` variables: `var view: T absolute other`; every use of
+//     `view` is a T-typed access to `other`'s bytes
+//   - passing bytewise storage to a typed `var`/`out` parameter
+//
+// A bare `reinterpret_cast<T*>(void_ptr)` for these would be strict-aliasing
+// UB whenever the storage's dynamic type is not T. Emitting the access as
+// `tp2cc_reinterpret_load<T>` alone is only enough for read-only or full
+// value-return cases; it cannot model methods that mutate `Self`, nor
+// var/out parameters that write through their reference.
+//
+// This wrapper resolves both problems in defined C++:
+//
+//   1. Construction memcpy-loads the bytes into `tmp_`, a real live T with
+//      full C++ object identity. Method calls, field access, and reference
+//      binding on `tmp_` are ordinary well-defined operations, not
+//      aliasing-UB access through a manufactured typed pointer.
+//   2. Destruction memcpy-stores `tmp_` back into `backing_`, propagating
+//      any mutations the caller made. Exception-safe: the write-back
+//      happens whether the call returned normally or unwound with an
+//      exception, matching Pascal's observable "state as it was when the
+//      call last touched it" semantics.
+//
+// The `is_trivially_copyable_v` static_assert is load-bearing: without it
+// the memcpy round-trip is UB in general C++ (non-trivial types have
+// invariants that memcpy would silently break). Pascal's storage-view
+// constructs are only meaningful over POD-shaped records, so the assert
+// also acts as a guardrail against accidentally routing a class type (with
+// virtual dispatch, refcount, etc.) through this pattern.
+//
+// Non-copyable by design: a TypedView owns the memcpy write-back for one
+// backing address. Copying would double-write or leave a live tmp with a
+// stale backing pointer.
+//
+// Known caveat, for reviewer awareness: if the wrapped method stashes
+// `&*view` or `&*view.method_receiver` somewhere for later use, that
+// stash points into `tmp_` and dangles once the view's scope ends. Pascal
+// source that does this is rare and dubious even in Pascal.
+template <typename T>
+class tp2cc_TypedView {
+  static_assert(std::is_trivially_copyable_v<T>,
+                "TypedView requires a trivially copyable T; class types "
+                "with virtual dispatch or non-trivial special members must "
+                "not be routed through byte-storage aliasing");
+  T tmp_;
+  void* backing_;
+
+ public:
+  explicit tp2cc_TypedView(void* p) : backing_(p) {
+    std::memcpy(&tmp_, p, sizeof(T));
+  }
+  ~tp2cc_TypedView() { std::memcpy(backing_, &tmp_, sizeof(T)); }
+
+  tp2cc_TypedView(const tp2cc_TypedView&) = delete;
+  tp2cc_TypedView& operator=(const tp2cc_TypedView&) = delete;
+  tp2cc_TypedView(tp2cc_TypedView&&) = delete;
+  tp2cc_TypedView& operator=(tp2cc_TypedView&&) = delete;
+
+  T* operator->() { return &tmp_; }
+  T& operator*() { return tmp_; }
+  // Implicit conversion so a TypedView binds directly to a `T&` parameter
+  // when passed as a Pascal var/out actual over bytewise storage.
+  operator T&() { return tmp_; }
+};
+
 // Pascal `unaligned(x)` reads/writes the bytes of `x` without making an
 // alignment claim about the storage. Keep that surface distinct from the more
 // general reinterpret helpers even though the implementation is the same
@@ -2626,54 +2698,6 @@ inline std::ptrdiff_t tp2cc_shortstring_index_offset(Index index) {
 template <int N, typename Index>
 inline void* tp2cc_shortstring_index_address(void* p, Index index) {
   return tp2cc_byte_offset(p, tp2cc_shortstring_index_offset<N>(index));
-}
-
-// View the bytes of the source object itself as a different type.
-// This is the helper used for Pascal `absolute` aliases and typed lvalue
-// casts, where the source object already is the storage being re-viewed.
-template <typename T, typename Src>
-inline T& tp2cc_reinterpret_storage_ref(Src& src) {
-  return *reinterpret_cast<T*>(&src);
-}
-template <typename T, typename Src>
-inline const T& tp2cc_reinterpret_storage_ref(const Src& src) {
-  return *reinterpret_cast<const T*>(&src);
-}
-template <typename T>
-inline T& tp2cc_reinterpret_storage_ref(tp2cc_ShortStringCharRef src) {
-  return *reinterpret_cast<T*>(src.byte);
-}
-template <typename T>
-inline const T& tp2cc_reinterpret_storage_ref(tp2cc_ShortStringCharValue src) {
-  return *reinterpret_cast<const T*>(src.byte);
-}
-
-// View the storage pointed at by `src` as a different type. This is a
-// different Pascal operation from tp2cc_reinterpret_storage_ref even though the
-// current implementation uses the same cast sequence for non-pointer inputs.
-template <typename T, typename Src>
-inline T& tp2cc_reinterpret_ref(Src& src) {
-  return *reinterpret_cast<T*>(&src);
-}
-template <typename T, typename Src>
-inline const T& tp2cc_reinterpret_ref(const Src& src) {
-  return *reinterpret_cast<const T*>(&src);
-}
-template <typename T>
-inline T& tp2cc_reinterpret_ref(tp2cc_ShortStringCharRef src) {
-  return *reinterpret_cast<T*>(src.byte);
-}
-template <typename T>
-inline const T& tp2cc_reinterpret_ref(tp2cc_ShortStringCharValue src) {
-  return *reinterpret_cast<const T*>(src.byte);
-}
-template <typename T>
-inline T& tp2cc_reinterpret_ref(void* p) {
-  return *reinterpret_cast<T*>(p);
-}
-template <typename T>
-inline const T& tp2cc_reinterpret_ref(const void* p) {
-  return *reinterpret_cast<const T*>(p);
 }
 
 // --- tp2cc_Set<Elem> --------------------------------------------------------------
@@ -2969,6 +2993,15 @@ struct tp2cc_TextFile {
   tp2cc_ShortString<> name{};
   int32_t iores = 0;  // last IOResult
 };
+// Locked in so Pascal `text(untyped_ptr^)` can route through
+// `tp2cc_TypedView<tp2cc_TextFile>`, which requires trivial copyability.
+// If a future change adds a user-declared destructor, virtual method, or
+// non-trivial member here, this assert catches it before the emitter
+// silently starts emitting something else.
+static_assert(std::is_trivially_copyable_v<tp2cc_TextFile>,
+              "tp2cc_TextFile must stay trivially copyable so `text(x)` "
+              "storage typecasts can bind a bounded typed view over "
+              "untyped Pascal storage");
 
 // Pascal `file of T` - minimal stub; behaviour added as needed.
 template <typename T>
@@ -4938,31 +4971,6 @@ inline P* p_reallocmem(P*& p, int size) {
 }
 
 template <typename P>
-inline void p_getmem_slot(void* slot, int size) {
-  static_assert(std::is_pointer_v<P>, "GetMem slot type must be a pointer");
-  void* raw = std::malloc(static_cast<size_t>(size));
-  tp2cc_reinterpret_store<P>(slot, static_cast<P>(raw));
-}
-
-template <typename P>
-inline P p_reallocmem_slot(void* slot, int size) {
-  static_assert(std::is_pointer_v<P>, "ReallocMem slot type must be a pointer");
-  P p = tp2cc_reinterpret_load<P>(slot);
-  if (size <= 0) {
-    std::free(static_cast<void*>(p));
-    p = nullptr;
-    tp2cc_reinterpret_store<P>(slot, p);
-    return p;
-  }
-  void* q = std::realloc(static_cast<void*>(p), static_cast<size_t>(size));
-  if (q) {
-    p = static_cast<P>(q);
-    tp2cc_reinterpret_store<P>(slot, p);
-  }
-  return p;
-}
-
-template <typename P>
 inline void p_new(P*& p) {
   // Pascal typed-pointer allocation must stay in the same malloc/realloc/free
   // family as getmem/reallocmem/freemem. Plain typed storage is sometimes
@@ -4974,18 +4982,6 @@ inline void p_new(P*& p) {
   if (!raw) std::abort();
   p = static_cast<P*>(raw);
   ::new (raw) P{};
-}
-
-template <typename P>
-inline void p_new_slot(void* slot) {
-  static_assert(std::is_pointer_v<P>, "New slot type must be a pointer");
-  using Elem = std::remove_pointer_t<P>;
-  static_assert(!std::is_void_v<Elem>, "New requires a typed pointer slot");
-  void* raw = std::malloc(sizeof(Elem));
-  if (!raw) std::abort();
-  P p = static_cast<P>(raw);
-  ::new (raw) Elem{};
-  tp2cc_reinterpret_store<P>(slot, p);
 }
 
 // Pascal `Dispose(p)` -- destroy the pointed-to object and free its
@@ -5897,13 +5893,6 @@ inline void p_strdispose(p_char*& p) {
   if (!p) return;
   std::free(static_cast<void*>(p));
   p = nullptr;
-}
-inline void p_strdispose_slot(void* slot) {
-  p_char* p = tp2cc_reinterpret_load<p_char*>(slot);
-  if (!p) return;
-  std::free(static_cast<void*>(p));
-  p = nullptr;
-  tp2cc_reinterpret_store<p_char*>(slot, p);
 }
 inline bool p_chmod(const tp2cc_ShortString<>& path, int32_t newmode) {
   return ::chmod(tp2cc_to_std_string(path).c_str(),

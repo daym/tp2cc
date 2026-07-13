@@ -76,9 +76,8 @@ struct Emitter : ResolveNameProvider,
   // which means C++ `inline` is invalid for local decls.
   int block_depth = 0;
 
-  // Name of the Pascal class whose method body we're currently emitting
-  // (if any). Empty when emitting a free function or at namespace scope.
-  std::string current_class_name;
+  // Resolved Pascal class whose method body we're currently emitting, if any.
+  const TypeSymbol* current_class_symbol = nullptr;
 
   // Name of the Pascal unit we are emitting (lowercased). Used to
   // decide whether a cross-unit reference needs explicit qualification
@@ -144,6 +143,11 @@ struct Emitter : ResolveNameProvider,
   // must therefore bind a `const T&`, not a mutable `T&`, or C++ rejects the
   // alias and Pascal source that only reads through it stops compiling.
   std::unordered_set<std::string> local_const_params;
+  // Pascal `var view: T absolute other`. See `ScopeStateView::AbsoluteAlias`
+  // for the design justification. The Emitter owns the storage; the scope
+  // view holds a reference.
+  std::unordered_map<std::string, ScopeStateView::AbsoluteAlias>
+      local_absolute_targets;
   // `with X do` bindings: for every `with target`, push the target's
   // expression text (already emitted) and its deduced type. Bare idents
   // inside the body that resolve as fields of one of the targets get
@@ -206,7 +210,7 @@ struct Emitter : ResolveNameProvider,
       : registry(registry_in),
         unit_init_order(unit_init_order_in),
         target(target_in),
-        scope_state_{current_class_name,
+        scope_state_{current_class_symbol,
                      current_unit_name,
                      lookup_emission_unit_name,
                      lhs_fn_rewrite,
@@ -223,6 +227,7 @@ struct Emitter : ResolveNameProvider,
                      local_nested_forwards,
                      current_type_scope,
                      local_const_params,
+                     local_absolute_targets,
                      with_stack,
                      current_fn_name,
                      current_fn_param_names,
@@ -283,18 +288,6 @@ struct Emitter : ResolveNameProvider,
   std::string type_name_to_cxx(const TyName& n) {
     return types_.type_name_to_cxx(n);
   }
-  std::string type_name_text_to_cxx(std::string_view name) {
-    return types_.type_name_text_to_cxx(name);
-  }
-  std::string named_type_struct_cxx(std::string_view name) {
-    return types_.named_type_struct_cxx(name);
-  }
-  std::string metaclass_struct_cxx(std::string_view class_name) {
-    return types_.metaclass_struct_cxx(class_name);
-  }
-  std::string metaclass_value_fn_cxx(std::string_view class_name) {
-    return types_.metaclass_value_fn_cxx(class_name);
-  }
   std::string array_type_to_cxx(const TyArray& a) {
     return types_.array_type_to_cxx(a);
   }
@@ -349,10 +342,6 @@ struct Emitter : ResolveNameProvider,
   }
   std::string method_pointer_helper_name(const ast::ProcDecl& pd) {
     return types_.method_pointer_helper_name(pd);
-  }
-  std::string low_high_expr_for_named_type(std::string_view name,
-                                           bool want_low) {
-    return types_.low_high_expr_for_named_type(name, want_low);
   }
   std::string low_high_expr_for_type(const ast::TypeExpr* t,
                                      bool want_low) {
@@ -423,17 +412,13 @@ struct Emitter : ResolveNameProvider,
   std::optional<std::string> member_base_ident(const ast::Member& m);
   std::string single_call_arg_cxx(const ast::Call& c);
   bool expr_is_const_untyped_storage_arg(const ast::Expr& e);
-  const TypeSymbol* migration_fallback_type_symbol(std::string_view type_name);
-  bool visible_class_or_record_type_name(std::string_view type_name);
-  std::string visible_class_or_record_type_path(std::string_view type_name);
   bool type_uses_reinterpret_copy_for_scalar_cast(const ast::TypeExpr* t);
   std::optional<std::string> sizeof_type_operand_cxx(const ast::Expr& expr);
-  std::optional<std::string> unit_qualified_type_name(const ast::Expr& expr);
   tp2cc::ResolvedCall resolve_new_constructor_call(
       const ast::Expr& pointer_type_expr, const ast::Expr& ctor_callee,
       const std::vector<const ast::Expr*>& args);
-  std::string metaclass_target_name(const ast::TypeExpr* t) {
-    return analysis_.metaclass_target_name(t);
+  const TypeSymbol* metaclass_target_symbol(const ast::TypeExpr* t) {
+    return analysis_.metaclass_target_symbol(t);
   }
   void emit_proc_body(const ProcDecl& pd);
   void emit_nested_proc_lambda(const ProcDecl& pd);
@@ -466,13 +451,13 @@ struct Emitter : ResolveNameProvider,
     bool known = false;
     PascalTypecastKind kind = PascalTypecastKind::Unknown;
     std::string cxx_type;
+    const TypeSymbol* symbol = nullptr;
     const ast::TypeExpr* type = nullptr;
     const ast::TypeExpr* source_type = nullptr;
-    std::shared_ptr<ast::TyName> owned_source_type;
   };
 
   PascalTypecastTarget classify_pascal_typecast_target(
-      std::string_view type_name);
+      const TypeSymbol* symbol);
 
   bool type_is_packed_record(const ast::TypeExpr* t) {
     return storage_.type_is_packed_record(t);
@@ -501,7 +486,7 @@ struct Emitter : ResolveNameProvider,
 
   // Member/property receivers are produced values. Overloaded calls/operators can
   // supply a more precise result type than syntax-only deduction.
-  std::string value_class_alias(const ast::Expr& e);
+  const TypeSymbol* value_class_symbol(const ast::Expr& e);
   const ast::Expr* peel_primitive_casts(const ast::Expr* e) {
     return storage_.peel_primitive_casts(e);
   }
@@ -576,15 +561,10 @@ struct Emitter : ResolveNameProvider,
   std::string open_array_type_to_cxx(const ast::TypeExpr& t) {
     return types_.open_array_type_to_cxx(t);
   }
-  std::string reinterpret_ref_text(const std::string& ty_cxx,
-                                   const std::string& source_cxx,
-                                   bool pointee_view) {
-    return storage_.reinterpret_ref_text(ty_cxx, source_cxx, pointee_view);
-  }
   std::string storage_designator_value_or_member_base(
-      Location loc, const EmitStorageDesignator& storage) {
+      const EmitStorageDesignator& storage) {
     return member_base_context
-               ? storage_.storage_designator_member_base(storage, loc)
+               ? storage_.storage_designator_member_base(storage)
                : storage_.storage_designator_value(storage);
   }
   using AbsoluteTargetInfo = EmitAbsoluteTargetInfo;
@@ -609,10 +589,9 @@ struct Emitter : ResolveNameProvider,
       const ast::ProcDecl* decl, const ast::Expr* callee,
       const std::vector<const ast::Expr*>& explicit_args,
       std::string_view default_arg_unit = {},
-      std::string_view signature_declaring_type = {}) {
+      const ProcInfo* selected_proc = nullptr) {
     return calls_.plan_call_arguments(decl, callee, explicit_args,
-                                      default_arg_unit,
-                                      signature_declaring_type);
+                                      default_arg_unit, selected_proc);
   }
   std::string lower_call_arg(const ast::Expr& arg,
                              const ast::TypeExpr* param_type,
@@ -628,30 +607,26 @@ struct Emitter : ResolveNameProvider,
   }
   std::string lower_implicit_zero_arg_call(const std::string& callee_text,
                                            const ast::ProcDecl* decl,
-                                           std::string_view default_arg_unit,
-                                           std::string_view signature_declaring_type = {}) {
+                                           std::string_view default_arg_unit) {
     return calls_.lower_implicit_zero_arg_call(callee_text, decl,
-                                               default_arg_unit,
-                                               signature_declaring_type);
+                                               default_arg_unit);
   }
   std::string lower_property_read(Location where,
                                   const std::string& base_cxx,
                                   std::string_view base_access,
-                                  const std::string& class_name,
                                   const PropertyInfo& prop,
                                   const std::vector<const ast::Expr*>& indices) {
     return properties_.lower_property_read(where, base_cxx, base_access,
-                                           class_name, prop, indices);
+                                           prop, indices);
   }
   std::string lower_property_write(Location where,
                                    const std::string& base_cxx,
                                    std::string_view base_access,
-                                   const std::string& class_name,
                                    const PropertyInfo& prop,
                                    const std::vector<const ast::Expr*>& indices,
                                    const ast::Expr& value) {
     return properties_.lower_property_write(where, base_cxx, base_access,
-                                            class_name, prop, indices, value);
+                                            prop, indices, value);
   }
   std::optional<ImplicitPropertyLookup> find_implicit_class_property(
       std::string_view name) {
@@ -668,20 +643,26 @@ struct Emitter : ResolveNameProvider,
     return calls_.maybe_lower_class_free_member(base, member_name);
   }
   std::optional<std::string> maybe_lower_class_constructor_call(
-      Location where, std::string_view class_name, std::string_view member_name,
+      Location where, const TypeSymbol& class_symbol,
+      std::string_view member_name,
       const CallArgumentPlan& plan, const ast::ProcDecl* selected_decl) {
     return calls_.maybe_lower_class_constructor_call(
-        where, class_name, member_name, plan, selected_decl);
+        where, class_symbol, member_name, plan, selected_decl);
   }
   using ResolvedKind = tp2cc::ResolvedKind;
   using ResolveResult = tp2cc::ResolveResult;
-  // Qualifier: empty means unqualified lookup.  Otherwise it's a
-  // unit name or a class/record alias name (both lowercased).
+  // Qualifier: empty means unqualified lookup; otherwise it is a unit name.
+  // Type-qualified member access is handled before this resolver, while the
+  // AST still carries the build-resolved type identity.
   using QualifierKind = tp2cc::QualifierKind;
   ResolveResult resolve_name(const std::string& name,
                              QualifierKind qk = QualifierKind::None,
                              const std::string& qualifier = {}) override {
     return lookup_.resolve_name(name, qk, qualifier);
+  }
+  ResolveResult resolve_class_member(const ClassInfo& class_info,
+                                     const std::string& name) {
+    return lookup_.resolve_class_member(class_info, name);
   }
 
   // State: the Pascal identifier of the current function whose body we are
@@ -741,12 +722,9 @@ const TypeExpr* Emitter::type_for_resolved_call(const Call& c) {
   if (c.callee->kind == Kind::Ident &&
       ascii_lower(static_cast<const Ident&>(*c.callee).name) == "new" &&
       !c.args.empty()) {
-    if (c.args[0]->kind == Kind::Ident) {
-      return analysis_.migration_fallback_named_type_expr_by_name(
-          static_cast<const Ident&>(*c.args[0]).name);
-    }
-    if (auto qualified = unit_qualified_type_name(*c.args[0])) {
-      return analysis_.migration_fallback_named_type_expr_by_name(*qualified);
+    if (std::optional<const TypeSymbol*> type_operand =
+            registry.type_name_expression_result(c.args[0].get())) {
+      return *type_operand ? (*type_operand)->type : nullptr;
     }
     return nullptr;
   }
@@ -759,16 +737,8 @@ const TypeExpr* Emitter::type_for_resolved_call(const Call& c) {
   if (resolved.decl && resolved.decl->return_type) {
     return resolved.decl->return_type.get();
   }
-  if (resolved.return_type_name.empty()) return nullptr;
-  if (const TypeExpr* named =
-          analysis_.migration_fallback_named_type_expr_by_name(resolved.return_type_name)) {
-    return named;
-  }
-  const std::string low = ascii_lower(resolved.return_type_name);
-  if (const TyName* int_ty = builtin_integer_type(low)) return int_ty;
-  if (low == "string" || low == "shortstring") return builtin_string_type();
-  if (is_primitive_type(low) || !runtime_named_type_cxx(low).empty()) {
-    return named_pascal_type(low);
+  if (const TypeSymbol* symbol = resolved.return_type_symbol) {
+    return symbol->type;
   }
   return nullptr;
 }
@@ -826,38 +796,42 @@ const TypeExpr* Emitter::compute_type_for_overload(const Expr& e) {
   return plain_expr_type(e);
 }
 
-std::string Emitter::value_class_alias(const Expr& e) {
+const TypeSymbol* Emitter::value_class_symbol(const Expr& e) {
   if (e.kind == Kind::Ident &&
       static_cast<const Ident&>(e).name == "self") {
-    return current_class_name;
+    return descriptor_payload_symbol(current_class_symbol);
   }
   const bool produced_value =
       e.kind == Kind::Call || e.kind == Kind::Binary || e.kind == Kind::Unary;
   if (!produced_value) {
-    if (auto cls = analysis_.deduce_class_alias(e); !cls.empty()) return cls;
+    if (const TypeSymbol* symbol = analysis_.deduce_class_symbol(e)) {
+      return descriptor_payload_symbol(symbol);
+    }
   }
   if (const TypeExpr* t = type_for_overload(e)) {
-    if (auto cls = metaclass_target_name(t); !cls.empty()) return cls;
-    if (auto cls = analysis_.direct_type_name(t);
-        !cls.empty()) {
-      return cls;
+    if (const TypeSymbol* target = registry.metaclass_target_for_type(t)) {
+      return descriptor_payload_symbol(target);
+    }
+    if (const TypeSymbol* symbol = analysis_.class_symbol_for_type(t)) {
+      return descriptor_payload_symbol(symbol);
     }
     if (const TypeExpr* canon = semantic_shape_type(t)) {
-      if (auto cls = analysis_.direct_type_name(canon);
-          !cls.empty()) {
-        return cls;
+      if (const TypeSymbol* target = registry.metaclass_target_for_type(canon)) {
+        return descriptor_payload_symbol(target);
+      }
+      if (const TypeSymbol* symbol = analysis_.class_symbol_for_type(canon)) {
+        return descriptor_payload_symbol(symbol);
       }
     }
   }
-  return analysis_.deduce_class_alias(e);
+  return descriptor_payload_symbol(analysis_.deduce_class_symbol(e));
 }
 
 std::string Emitter::class_cast_rhs_type_cxx(const Expr& rhs) {
-  if (rhs.kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(rhs);
-    if (analysis_.migration_fallback_class_info_by_name(id.name)) {
-      TyName tn(rhs.loc, id.name);
-      return type_name_to_cxx(tn);
+  if (const TypeSymbol* symbol =
+          analysis_.concrete_class_symbol_for_metaclass_value(rhs)) {
+    if (std::string cxx = types_.type_symbol_to_cxx(symbol); !cxx.empty()) {
+      return cxx;
     }
   }
   return expr_to_cxx(rhs);
@@ -892,14 +866,21 @@ bool Emitter::ordinal_value_needs_explicit_cast(const Expr& operand) {
       pi && pi->is_char()) {
     return false;
   }
-  const std::string operand_cxx = type_to_cxx(*operand_type);
-  const std::string result_cxx = type_to_cxx(*result_type);
-  return !operand_cxx.empty() && !result_cxx.empty() &&
-         operand_cxx != result_cxx;
+  // `Ord` changes the Pascal result type for enums, chars, and boolean
+  // families. Decide that from the resolved Pascal types, not from the C++
+  // carrier spelling, so aliases that happen to render the same do not
+  // suppress a required overload-pinning cast.
+  return !analysis_.same_type_ast(operand_type, result_type);
 }
 
 bool Emitter::call_arg_already_pins_formal_type(const Expr& arg,
                                                 const TypeExpr* formal_type) {
+  const TypeExpr* actual_type = analysis_.explicit_typecast_result_type(arg);
+  if (!actual_type) actual_type = analysis_.deduce_type(arg);
+  if (analysis_.classify_set_conversion(actual_type, formal_type) ==
+      SetConversionKind::Compatible) {
+    return true;
+  }
   if (!formal_type || arg.kind != Kind::Call) return false;
   const auto& call = static_cast<const Call&>(arg);
   if (call.callee->kind != Kind::Ident || call.args.size() != 1) return false;
@@ -907,7 +888,7 @@ bool Emitter::call_arg_already_pins_formal_type(const Expr& arg,
   if (!ordinal_value_needs_explicit_cast(*call.args[0])) return false;
   const TypeExpr* arg_type = type_for_overload(arg);
   if (!arg_type) return false;
-  return type_to_cxx(*arg_type) == type_to_cxx(*formal_type);
+  return analysis_.same_type_ast(arg_type, formal_type);
 }
 
 std::string Emitter::binary_operand_to_cxx(const Expr& operand,
@@ -1000,56 +981,26 @@ bool Emitter::expr_is_const_untyped_storage_arg(const Expr& e) {
   return false;
 }
 
-const TypeSymbol* Emitter::migration_fallback_type_symbol(std::string_view type_name) {
-  return migration_fallback_type_symbol_by_name(registry, scope_state_, type_name);
-}
-
-bool Emitter::visible_class_or_record_type_name(std::string_view type_name) {
-  const TypeSymbol* symbol = migration_fallback_type_symbol(type_name);
-  symbol = descriptor_payload_symbol(symbol);
-  return symbol && (symbol->class_info() || symbol->record_info());
-}
-
-std::string Emitter::visible_class_or_record_type_path(
-    std::string_view type_name) {
-  const TypeSymbol* symbol = migration_fallback_type_symbol(type_name);
-  const TypeSymbol* payload = descriptor_payload_symbol(symbol);
-  if (payload && (payload->class_info() || payload->record_info())) {
-    return type_symbol_pascal_path(*payload);
-  }
-  return {};
-}
-
 std::optional<std::string> Emitter::sizeof_type_operand_cxx(
     const Expr& expr) {
-  if (expr.kind == Kind::Ident) {
-    const auto& tn = static_cast<const Ident&>(expr);
-    const std::string low = ascii_lower(tn.name);
-    if (is_primitive_type(low) || !runtime_named_type_cxx(low).empty()) {
-      return type_name_text_to_cxx(tn.name);
-    }
-    if (const TypeSymbol* symbol = migration_fallback_type_symbol(low)) {
+  if (std::optional<const TypeSymbol*> result =
+          registry.type_name_expression_result(&expr)) {
+    if (const TypeSymbol* symbol = *result) {
       return types_.type_symbol_to_cxx(symbol);
     }
-    if (ResolveResult rr = resolve_name(std::string(tn.name));
-        rr.kind == ResolvedKind::UnitType) {
-      return type_name_text_to_cxx(tn.name);
-    }
     return std::nullopt;
-  }
-
-  if (auto qualified = unit_qualified_type_name(expr)) {
-    return type_name_text_to_cxx(*qualified);
   }
 
   if (expr.kind != Kind::Deref) return std::nullopt;
   const auto& deref = static_cast<const Deref&>(expr);
   const TypeExpr* ptr_type = nullptr;
-  if (deref.operand->kind == Kind::Ident) {
-    ptr_type = analysis_.migration_fallback_named_type_expr_by_name(
-        static_cast<const Ident&>(*deref.operand).name);
-  } else if (auto qualified = unit_qualified_type_name(*deref.operand)) {
-    ptr_type = analysis_.migration_fallback_named_type_expr_by_name(*qualified);
+  if (deref.operand) {
+    if (std::optional<const TypeSymbol*> result =
+            registry.type_name_expression_result(deref.operand.get())) {
+      if (const TypeSymbol* symbol = *result) {
+        ptr_type = symbol->type;
+      }
+    }
   }
   if (!ptr_type) ptr_type = type_for_overload(*deref.operand);
   ptr_type = semantic_shape_type(ptr_type);
@@ -1062,16 +1013,18 @@ std::optional<std::string> Emitter::sizeof_type_operand_cxx(
 }
 
 Emitter::PascalTypecastTarget Emitter::classify_pascal_typecast_target(
-    std::string_view type_name) {
+    const TypeSymbol* symbol) {
   PascalTypecastTarget out;
-  const TypeSymbol* symbol = migration_fallback_type_symbol(type_name);
+  if (symbol) {
+    out.known = true;
+    out.symbol = symbol;
+    out.cxx_type = types_.type_symbol_to_cxx(symbol);
+    out.source_type = symbol->type;
+    out.type = semantic_shape_type(symbol->type);
+  }
   const TypeSymbol* payload = descriptor_payload_symbol(symbol);
   if (payload) {
     out.known = true;
-    out.cxx_type = types_.type_symbol_to_cxx(symbol);
-    out.owned_source_type =
-        std::make_shared<TyName>(type_symbol_unit_pascal_path(*payload));
-    out.source_type = out.owned_source_type.get();
     if (const ClassInfo* ci = payload->class_info()) {
       out.kind = ci->is_reference_type ? PascalTypecastKind::ReferenceClass
                                        : PascalTypecastKind::Aggregate;
@@ -1085,20 +1038,9 @@ Emitter::PascalTypecastTarget Emitter::classify_pascal_typecast_target(
     }
   }
 
-  const TypeExpr* named =
-      analysis_.migration_fallback_named_type_expr_by_name(type_name);
-  if (named) {
-    out.known = true;
-    out.source_type = named;
-    out.cxx_type = type_to_cxx(*named);
-    out.type = semantic_shape_type(named);
-  }
-
   if (out.type && out.type->kind == Kind::TyName) {
-    const TypeLookupContext* context = registry.lookup_context_for_type(out.type);
-    out.type = descriptor_payload_type(
-        resolved_type_symbol_in_context(registry, scope_state_, out.type,
-                                        context));
+    out.type =
+        descriptor_payload_type(registry.resolved_symbol_for_type(out.type));
   }
 
   if (!out.type) return out;
@@ -1131,9 +1073,7 @@ bool Emitter::type_uses_reinterpret_copy_for_scalar_cast(const TypeExpr* t) {
   }
   if (t->kind != Kind::TyName) return false;
 
-  const TypeLookupContext* context = registry.lookup_context_for_type(t);
-  const TypeSymbol* symbol =
-      resolved_type_symbol_in_context(registry, scope_state_, t, context);
+  const TypeSymbol* symbol = registry.resolved_symbol_for_type(t);
   symbol = descriptor_payload_symbol(symbol);
   if (!symbol) return false;
   if (symbol->record_info()) return true;
@@ -1141,26 +1081,15 @@ bool Emitter::type_uses_reinterpret_copy_for_scalar_cast(const TypeExpr* t) {
   return false;
 }
 
-std::optional<std::string> Emitter::unit_qualified_type_name(const Expr& expr) {
-  if (expr.kind != Kind::Member) return std::nullopt;
-  const auto& mem = static_cast<const Member&>(expr);
-  auto unit_member = analysis_.resolve_unit_qualified_member(mem);
-  if (!unit_member || unit_member->resolved.kind != ResolvedKind::UnitType) {
-    return std::nullopt;
-  }
-  return unit_member->unit_name + "." + mem.name;
-}
-
 tp2cc::ResolvedCall Emitter::resolve_new_constructor_call(
     const Expr& pointer_type_expr, const Expr& ctor_callee,
     const std::vector<const Expr*>& args) {
-  if (pointer_type_expr.kind != Kind::Ident) {
-    return resolution_.resolve_pointer_target_constructor(nullptr, ctor_callee,
-                                                          args);
+  const TypeExpr* pointer_type = nullptr;
+  if (std::optional<const TypeSymbol*> type_operand =
+          registry.type_name_expression_result(&pointer_type_expr)) {
+    if (const TypeSymbol* symbol = *type_operand) pointer_type = symbol->type;
   }
-  const auto& ptr_ident = static_cast<const Ident&>(pointer_type_expr);
-  TyName ptr_type_name(ptr_ident.loc, ptr_ident.name);
-  return resolution_.resolve_pointer_target_constructor(&ptr_type_name,
+  return resolution_.resolve_pointer_target_constructor(pointer_type,
                                                         ctor_callee, args);
 }
 
@@ -1279,7 +1208,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       const auto& n = static_cast<const Ident&>(e);
       if (n.name == "inherited") {
         if (!is_callee_context_ && !current_fn_name.empty() &&
-            !current_class_name.empty()) {
+            current_class_symbol) {
           std::string args;
           for (const auto& arg : current_fn_param_names) {
             if (!args.empty()) args += ", ";
@@ -1320,21 +1249,25 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           !outer_result_name.empty() && n.name == outer_result_name) {
         return mangle(n.name);
       }
+      // A Pascal class identifier can be used as a metaclass value, but that
+      // decision belongs to build-time type binding. Falling through to
+      // resolve_name() would make ordinary value lookup silently recover type
+      // names that build failed to bind.
+      if (const TypeSymbol* symbol =
+              analysis_.class_or_record_type_value_symbol(n)) {
+        if (const auto* ci = symbol->class_info(); ci && ci->is_reference_type) {
+          return types_.metaclass_value_fn_cxx(*symbol) + "()";
+        }
+      }
+      if (auto storage = storage_.absolute_alias_designator(n)) {
+        return storage_designator_value_or_member_base(*storage);
+      }
       ResolveResult rr = resolve_name(n.name);
       if (rr.kind == ResolvedKind::Unknown) {
         report_error(n.loc, "unresolved identifier `" + n.name + "`");
       }
       if (auto storage = storage_.resolved_bytewise_with_field_storage(rr)) {
-        return storage_designator_value_or_member_base(n.loc, *storage);
-      }
-      if (rr.kind == ResolvedKind::UnitType) {
-        const TypeSymbol* symbol =
-            descriptor_payload_symbol(migration_fallback_type_symbol(n.name));
-        if (const auto* ci = symbol ? symbol->class_info() : nullptr;
-            ci && ci->is_reference_type) {
-          const std::string class_name = type_symbol_pascal_path(*symbol);
-          return metaclass_value_fn_cxx(class_name) + "()";
-        }
+        return storage_designator_value_or_member_base(*storage);
       }
       // At namespace scope (block_depth == 0) we leave callable
       // names bare: Pascal typed-const initialisers reference
@@ -1342,8 +1275,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       bool want_call = !is_callee_context_ && block_depth > 0 &&
                        rr.is_callable && rr.accepts_zero_args;
       return want_call ? lower_implicit_zero_arg_call(
-                             rr.cxx, rr.proc, rr.default_arg_unit,
-                             rr.signature_declaring_type)
+                             rr.cxx, rr.proc, rr.default_arg_unit)
                        : rr.cxx;
     }
     case Kind::Binary: {
@@ -1572,14 +1504,15 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         report_packed_aggregate_subobject_use(
             m.loc, "nested member access", *use);
       }
-      if (storage_.member_value_may_need_storage_designator(e)) {
+      if (!is_callee_context_ &&
+          storage_.member_value_may_need_storage_designator(e)) {
         if (auto storage = storage_.storage_designator(e);
             storage && storage->is_bytewise()) {
           // Packed scalar fields and variant payload fields are Pascal values,
           // but their storage address may not denote a live, aligned C++
           // object. Read the value through the same byte-addressed designator
           // used by assignment, Inc/Dec, address-of, and var/untyped actuals.
-          return storage_designator_value_or_member_base(m.loc, *storage);
+          return storage_designator_value_or_member_base(*storage);
         }
       }
       // Classify the base into one of the qualifier kinds that
@@ -1598,27 +1531,22 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // alias (C++ `inherited::foo` via the in-struct `using
       // inherited = Parent;` alias).
       if (base_ident && *base_ident == "inherited") {
-        std::string parent;
-        if (!current_class_name.empty()) {
+        const ClassInfo* parent_class = nullptr;
+        if (current_class_symbol) {
           const ClassInfo* ci =
-              analysis_.migration_fallback_class_info_by_name(current_class_name);
+              current_class_symbol ? current_class_symbol->class_info()
+                                   : nullptr;
           if (ci) {
-            parent = ci->parent;
-            if (parent.empty() && ci->is_reference_type) {
-              parent = "tobject";
-            }
+            parent_class = registry.lookup_parent_class(*ci);
           }
         }
         std::string text = "inherited::" + mangle(m.name);
-        if (parent.empty()) return text;
+        if (!parent_class) return text;
         ResolveResult rr =
-            resolve_name(m.name, QualifierKind::Class, parent);
-        // The implicit TObject ancestor lives in the runtime, not in the
-        // Pascal registry. `inherited Create;` / `inherited Destroy;` still
-        // need statement-form auto-call even though name resolution cannot
-        // see their zero-argument signatures there.
+            resolve_class_member(*parent_class, m.name);
         bool implicit_tobject_root =
-            parent == "tobject" &&
+            parent_class->defining_unit == "__rt__" &&
+            parent_class->name == "tobject" &&
             (ascii_lower(m.name) == "create" || ascii_lower(m.name) == "destroy");
         bool same_current_method =
             !current_fn_name.empty() &&
@@ -1627,6 +1555,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                          ((rr.is_callable && rr.accepts_zero_args) ||
                           implicit_tobject_root || same_current_method);
         return want_call ? text + "()" : text;
+      }
+
+      // Same rule as bare class identifiers: `Unit.T` as a metaclass value
+      // must come from build's value-type binding, not a late qualified-unit
+      // lookup in the value resolver.
+      if (const TypeSymbol* symbol =
+              analysis_.class_or_record_type_value_symbol(m)) {
+        if (const auto* ci = symbol->class_info(); ci && ci->is_reference_type) {
+          return types_.metaclass_value_fn_cxx(*symbol) + "()";
+        }
       }
 
       // `Unit.name` is not member access on a value named `Unit`. The shared
@@ -1639,63 +1577,51 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                                   unit_member->unit_name + "." + m.name + "`");
           return {};
         }
-        if (rr.kind == ResolvedKind::UnitType) {
-          const std::string qualified =
-              unit_member->unit_name + "." + m.name;
-          if (const auto* ci =
-                  analysis_.migration_fallback_class_info_by_name(qualified);
-              ci && ci->is_reference_type) {
-            return metaclass_value_fn_cxx(qualified) + "()";
-          }
-        }
         bool want_call =
             !is_callee_context_ && rr.is_callable && rr.accepts_zero_args;
         return want_call ? rr.cxx + "()" : rr.cxx;
       }
       if (base_ident) {
-        const std::string& base_name = *base_ident;
-        const std::string base_type_path =
-            analysis_.identifier_is_shadowed_value(base_name)
-                ? std::string{}
-                : visible_class_or_record_type_path(base_name);
+        const TypeSymbol* base_type_symbol =
+            analysis_.class_or_record_type_value_symbol(*m.base);
         // `TClass.method` -- Pascal's way to call a specific
         // class's method (typically the parent's version from
         // inside an override). Emit `TClass::method`. This is a
         // type-name interpretation, so a parameter/local/current-field named
         // `TClass` must block it: in Pascal `tsym.typedef` is member access on
         // value `tsym` even when a visible type named `tsym` also exists.
-        if (!base_type_path.empty()) {
+        if (const ClassInfo* base_class =
+                base_type_symbol ? base_type_symbol->class_info() : nullptr) {
           if (!is_callee_context_) {
             std::vector<const Expr*> no_args;
             ResolvedCall ctor_resolved = resolve_call(m, no_args);
             CallArgumentPlan ctor_plan = plan_call_arguments(
-                ctor_resolved.decl, &m, no_args, ctor_resolved.default_arg_unit,
-                ctor_resolved.signature_declaring_type);
+                ctor_resolved.decl, &m, no_args,
+                ctor_resolved.default_arg_unit);
             if (auto ctor_call = maybe_lower_class_constructor_call(
-                    m.loc, base_type_path, m.name, ctor_plan,
+                    m.loc, *base_type_symbol, m.name, ctor_plan,
                     ctor_resolved.decl)) {
               return *ctor_call;
             }
           }
-          ResolveResult rr =
-              resolve_name(m.name, QualifierKind::Class, base_type_path);
+          ResolveResult rr = resolve_class_member(*base_class, m.name);
           if (ascii_lower(m.name) == "classname") {
-            std::string text = metaclass_value_fn_cxx(base_type_path) +
-                               "()->" + mangle(m.name);
+            std::string text =
+                types_.metaclass_value_fn_cxx(*base_type_symbol) + "()->" +
+                mangle(m.name);
             bool want_call = !is_callee_context_ &&
                              rr.is_callable && rr.accepts_zero_args;
             return want_call ? lower_implicit_zero_arg_call(
-                                   text, rr.proc, rr.default_arg_unit,
-                                   rr.signature_declaring_type)
-                             : text;
+                                   text, rr.proc, rr.default_arg_unit)
+                              : text;
           }
           std::string text =
-              named_type_struct_cxx(base_type_path) + "::" + mangle(m.name);
+              types_.type_symbol_struct_cxx(*base_type_symbol) + "::" +
+              mangle(m.name);
           bool want_call = !is_callee_context_ &&
                            rr.is_callable && rr.accepts_zero_args;
           return want_call ? lower_implicit_zero_arg_call(
-                                 text, rr.proc, rr.default_arg_unit,
-                                 rr.signature_declaring_type)
+                                 text, rr.proc, rr.default_arg_unit)
                            : text;
         }
       }
@@ -1703,9 +1629,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // A `class of T` value is a pointer to a metaclass descriptor. Constructor
       // and class-method members are stored as descriptor function slots, not as
       // fields of an instance.
-      const std::string metaclass =
-          metaclass_target_name(type_for_overload(*m.base));
-      if (!metaclass.empty()) {
+      const TypeExpr* base_type = type_for_overload(*m.base);
+      const TypeSymbol* metaclass_symbol =
+          descriptor_payload_symbol(registry.metaclass_target_for_type(base_type));
+      if (!metaclass_symbol) {
+        metaclass_symbol = descriptor_payload_symbol(
+            registry.metaclass_target_for_type(semantic_shape_type(base_type)));
+      }
+      const ClassInfo* metaclass_info =
+          metaclass_symbol ? metaclass_symbol->class_info() : nullptr;
+      if (metaclass_info) {
           // Member's base is an *object-position* expression, not a callee.
           // Suppress callee-context auto-call suppression while emitting it
           // so e.g. `TBaseClass(classtype).Create(...)` lowers the inner
@@ -1716,8 +1649,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           std::string base_cxx = expr_to_cxx(*m.base);
           is_callee_context_ = saved_callee;
           if (const auto* methods =
-                  registry.lookup_class_methods(metaclass, m.name,
-                                                current_unit_name)) {
+                  registry.lookup_class_methods(*metaclass_info, m.name)) {
             std::vector<MethodSig> candidates;
             bool callable_metaclass_member = false;
             for (const auto& method : *methods) {
@@ -1738,8 +1670,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               return !is_callee_context_
                          ? lower_implicit_zero_arg_call(
                                text, picked.decl,
-                               sig ? sig->defining_unit : std::string_view{},
-                               sig ? sig->declaring_type : std::string_view{})
+                               sig ? sig->defining_unit : std::string_view{})
                          : text;
             }
           }
@@ -1770,11 +1701,16 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return *free_call;
         }
       }
-      std::string bcls = value_class_alias(*m.base);
+      const TypeSymbol* receiver_symbol =
+          resolution_.value_receiver_type_symbol(*m.base);
+      const ClassInfo* bcls_info =
+          receiver_symbol ? receiver_symbol->class_info() : nullptr;
+      const InterfaceInfo* biface_info =
+          receiver_symbol ? receiver_symbol->interface_info() : nullptr;
       if (m.name == "classtype" || m.name == "instancesize") {
-        const auto* ci = bcls.empty()
-                             ? nullptr
-                             : analysis_.migration_fallback_class_info_by_name(bcls);
+        const TypeSymbol* class_symbol =
+            analysis_.deduce_class_symbol(*m.base);
+        const auto* ci = class_symbol ? class_symbol->class_info() : nullptr;
         if ((ci && ci->is_reference_type) || expr_is_reference_class(*m.base)) {
           // Property/default-index results like `Items[i]` may already have
           // the right Pascal class alias even when the raw expression
@@ -1786,42 +1722,68 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return is_callee_context_ ? text : text + "()";
         }
       }
-      if (!bcls.empty()) {
-        if (auto* prop = registry.lookup_class_property(
-                bcls, m.name, current_unit_name)) {
+      if (bcls_info) {
+        if (auto* prop = registry.lookup_class_property(*bcls_info, m.name)) {
           if (prop->params.empty()) {
             std::vector<const Expr*> no_indices;
             return lower_property_read(m.loc, base_cxx,
-                                       value_receiver_access_op(*m.base), bcls,
-                                       *prop, no_indices);
+                                       value_receiver_access_op(*m.base), *prop,
+                                       no_indices);
           }
         }
       }
       std::string member_cxx = mangle(m.name);
-      if (!bcls.empty() &&
-          (registry.lookup_class_field(bcls, m.name, current_unit_name) ||
-           registry.lookup_record_field(bcls, m.name, current_unit_name))) {
+      if (bcls_info && registry.lookup_class_field(*bcls_info, m.name)) {
         member_cxx = registry.field_cxx_name(m.name);
       }
       std::string text =
           base_cxx + value_receiver_access_op(*m.base) + member_cxx;
       if (is_callee_context_) return text;
-      if (bcls.empty()) return text;
-      if (const auto* methods =
-              registry.lookup_class_methods(bcls, m.name, current_unit_name)) {
+      if (!bcls_info && !biface_info) return text;
+      // Interface values use the same Pascal `receiver.method` expression
+      // syntax as class values. A zero-arg method in value context denotes its
+      // result, not the method slot, so an argument like `sink(decorator.name)`
+      // must be called before overload checking sees the produced value.
+      const std::vector<MethodSig>* methods =
+          bcls_info ? registry.lookup_class_methods(*bcls_info, m.name)
+                    : registry.lookup_interface_methods(*biface_info, m.name);
+      if (methods) {
         PickResult picked = resolution_.pick_method_overload(*methods, {});
         if (!picked.ambiguous && picked.decl) {
           const MethodSig* sig = method_sig_for_decl(*methods, picked.decl);
           text = lower_implicit_zero_arg_call(
               text, picked.decl,
-              sig ? sig->defining_unit : std::string_view{},
-              sig ? sig->declaring_type : std::string_view{});
+              sig ? sig->defining_unit : std::string_view{});
         }
       }
       return text;
     }
     case Kind::Deref: {
       const auto& d = static_cast<const Deref&>(e);
+      if (member_base_context) {
+        const TypeExpr* cast_target_type =
+            analysis_.explicit_typecast_result_type(*d.operand);
+        const TypeExpr* cast_shape = semantic_shape_type(cast_target_type);
+        if (cast_shape && cast_shape->kind == Kind::TyPointer) {
+          bool saved_storage_view = storage_view_context;
+          bool saved_member_base = member_base_context;
+          storage_view_context = false;
+          member_base_context = false;
+          std::string pointer_cxx = expr_to_cxx(*d.operand);
+          member_base_context = saved_member_base;
+          storage_view_context = saved_storage_view;
+          // A member receiver needs the pointee object identity. Loading
+          // `Ptype(p)^` by bytes would manufacture a temporary, so method
+          // calls would no longer operate on the object Pascal selected.
+          return "::rt::tp2cc_deref(" + pointer_cxx + ")";
+        }
+      }
+      // Pascal `Ptype(p)^` in rvalue context. The Deref itself has a bytewise
+      // storage designator; load through the memcpy helper instead of forming
+      // a typed C++ reference over reinterpreted storage.
+      if (auto storage = storage_.pointer_typecast_deref_as_bytewise(d)) {
+        return storage_.storage_designator_value(*storage);
+      }
       if (auto storage = storage_.storage_designator(*d.operand);
           storage && storage->is_bytewise() &&
           storage_.type_is_pointerish(plain_expr_type(*d.operand))) {
@@ -1846,13 +1808,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (a.operand && a.operand->kind == Kind::Member) {
         const auto& m = static_cast<const Member&>(*a.operand);
         if (m.base && m.base->kind == Kind::Ident) {
-          const auto& id = static_cast<const Ident&>(*m.base);
-          if (!analysis_.identifier_is_shadowed_value(id.name) &&
-              visible_class_or_record_type_name(id.name)) {
+          const TypeSymbol* owner_symbol =
+              analysis_.class_or_record_type_value_symbol(*m.base);
+          if (owner_symbol && owner_symbol->class_info()) {
             const ProcDecl* selected = nullptr;
             if (const auto* methods =
-                    registry.lookup_class_methods(id.name, m.name,
-                                                  current_unit_name)) {
+                    registry.lookup_class_methods(*owner_symbol->class_info(),
+                                                  m.name)) {
               for (const auto& method : *methods) {
                 if (!method.decl || method.decl->is_class_method) continue;
                 if (selected) {
@@ -1864,19 +1826,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             }
             if (selected) {
               return "::rt::tp2cc_method_code<&" +
-                     named_type_struct_cxx(id.name) + "::" +
+                     types_.type_symbol_struct_cxx(*owner_symbol) + "::" +
                      method_pointer_helper_name(*selected) + ">()";
             }
           }
         }
         if (m.base) {
-          const std::string metaclass =
-              metaclass_target_name(plain_expr_type(*m.base));
-          if (!metaclass.empty()) {
+          const TypeSymbol* metaclass =
+              metaclass_target_symbol(plain_expr_type(*m.base));
+          if (metaclass && metaclass->class_info()) {
             bool class_method = false;
             if (const auto* methods =
-                    registry.lookup_class_methods(metaclass, m.name,
-                                                  current_unit_name)) {
+                    registry.lookup_class_methods(*metaclass->class_info(),
+                                                  m.name)) {
               for (const auto& method : *methods) {
                 if (method.kind == SymKind::ClassMethod ||
                     method.kind == SymKind::Constructor) {
@@ -1956,10 +1918,20 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         // a raw runtime call in the generated C++.
         if ((n == "low" || n == "high") && c.args.size() == 1) {
           const bool want_low = (n == "low");
-          if (c.args[0]->kind == Kind::Ident) {
-            const auto& a = static_cast<const Ident&>(*c.args[0]);
+          if (std::optional<const TypeSymbol*> type_operand =
+                  registry.type_name_expression_result(c.args[0].get())) {
+            if (const TypeSymbol* symbol = *type_operand) {
+              if (std::string rewrite =
+                      types_.low_high_expr_for_type_symbol(symbol, want_low);
+                  !rewrite.empty()) {
+                return rewrite;
+              }
+            }
+          }
+          if (const TypeExpr* field_type =
+                  analysis_.const_intrinsic_type_arg(*c.args[0])) {
             if (std::string rewrite =
-                    low_high_expr_for_named_type(a.name, want_low);
+                    low_high_expr_for_type(field_type, want_low);
                 !rewrite.empty()) {
               return rewrite;
             }
@@ -2007,6 +1979,26 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (c.callee->kind == Kind::Ident) {
         const auto& id = static_cast<const Ident&>(*c.callee);
         const std::string& n = id.name;
+        const TypeSymbol* type_callee_symbol = nullptr;
+        const TypeSymbol* primitive_typecast_symbol = nullptr;
+        std::string primitive_typecast_name;
+        if (c.args.size() == 1) {
+          if (std::optional<const TypeSymbol*> type_callee =
+                  registry.type_name_expression_result(c.callee.get())) {
+            type_callee_symbol = *type_callee;
+            const TypeSymbol* primitive_symbol =
+                descriptor_payload_symbol(type_callee_symbol);
+            if (!primitive_symbol) primitive_symbol = type_callee_symbol;
+            if (primitive_symbol &&
+                primitive_symbol->defining_unit == "__builtin__" &&
+                is_primitive_type(primitive_symbol->name)) {
+              primitive_typecast_symbol = primitive_symbol;
+              primitive_typecast_name = primitive_symbol->name;
+            }
+          }
+        }
+        const TypeExpr* primitive_typecast_type =
+            primitive_typecast_symbol ? primitive_typecast_symbol->type : nullptr;
 
         if (n == "unaligned" && c.args.size() == 1) {
           // Pascal `unaligned(x)` is an explicit bytewise load/store view,
@@ -2025,37 +2017,36 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // `nullptr` with a dummy template-arg tag so the expression
           // at least compiles. Users of this value compare it for
           // equality/inequality at runtime only.
-          const auto& a = static_cast<const Ident&>(*c.args[0]);
-          if (visible_class_or_record_type_name(a.name)) {
+          if (analysis_.class_or_record_type_value_symbol(*c.args[0])) {
             return "((void*)nullptr)";
           }
-        } else if (c.args.size() == 1 && is_primitive_type(n)) {
+        } else if (!primitive_typecast_name.empty()) {
+          const std::string& n = primitive_typecast_name;
           // Function-style type cast in expression context.
           // Only the explicit lvalue forms handled elsewhere
           // (`T(lv) := ...`, `inc(T(lv))`, `dec(T(lv))`) reinterpret
           // storage. Plain `T(expr)` remains a value conversion.
-          if (n == "string") {
-            report_error(c.loc,
-                         "internal unresolved H-mode `string' typecast");
-            return "/* unresolved string typecast */";
-          }
           if (n == "shortstring") {
             return "::rt::tp2cc_shortstring_of<>(" +
                    single_call_arg_cxx(c) + ")";
           }
-          if (const TypeSymbol* atom = registry.builtin_literal(n)) {
-            if (analysis_.type_is_long_string(atom->type)) {
-              return "::rt::tp2cc_ansistring_of(" +
-                     single_call_arg_cxx(c) + ")";
-            }
+          if (primitive_typecast_symbol &&
+              analysis_.type_is_long_string(primitive_typecast_symbol->type)) {
+            return "::rt::tp2cc_ansistring_of(" + single_call_arg_cxx(c) + ")";
           }
           if (n == "text") {
+            // Pascal `text(x)` names TextFile bytes at x's storage. The
+            // callers (`write`/`writeln`/`readln`/etc.) want a `TextFile&`
+            // to mutate file state during the call. Route through the
+            // bounded-lifetime typed-view wrapper: it materialises a live
+            // TextFile in a stack temp, hands its `T&` to the call, and
+            // memcpy-writes back at scope end. This keeps Pascal's
+            // observable mutate-in-place semantics without ever forming a
+            // typed C++ reference over storage of a different dynamic
+            // type (which would be strict-aliasing UB).
             if (auto view = storage_.typecast_storage_view(c)) {
-              // `text(p^)` is a typed view of file storage, commonly used
-              // before `write`/`writeln`. Keep it as an lvalue so the file
-              // overload receives the original TextFile, not a temporary copy.
-              return reinterpret_ref_text(view->target_cxx, view->source_cxx,
-                                          view->pointee_view);
+              return "::rt::tp2cc_TypedView<::rt::tp2cc_TextFile>(" +
+                     view->source_ptr_cxx + ")";
             }
           }
           const Expr* peeled = peel_primitive_casts(c.args[0].get());
@@ -2089,13 +2080,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return "::rt::p_chr(" + single_call_arg_cxx(c) + ")";
           }
           if (n == "pointer" || n == "pchar" || n == "pansichar") {
-            TyName cast_name(n);
             std::string source =
                 (peeled && expr_is_storage_lvalue(*c.args[0]))
                     ? expr_to_cxx(*peeled)
                     : single_call_arg_cxx(c);
             std::string coerced = coerce_pointer_like_text(
-                primitive_type_cxx(n), &cast_name,
+                primitive_type_cxx(n), primitive_typecast_type,
                 type_for_overload(*c.args[0]),
                 source,
                 /*explicit_pascal_cast=*/true,
@@ -2111,9 +2101,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                    ordinal_value_to_cxx(*c.args[0],
                                         single_call_arg_cxx(c)) + "))";
           }
-          TyName target(n);
           if (auto conv = resolution_.find_assignment_operator(
-                  type_for_overload(*c.args[0]), &target);
+                  type_for_overload(*c.args[0]), primitive_typecast_type,
+                  registry.lookup_context_for_type(primitive_typecast_type));
               conv.decl) {
             std::string fn = pascal_assignment_operator_helper_name(*conv.decl);
             if (!conv.defining_unit.empty()) {
@@ -2122,7 +2112,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             return fn + "(" + single_call_arg_cxx(c) + ")";
           }
           if (auto lit =
-                  maybe_convert_const_int_expr(*c.args[0], &target, true)) {
+                  maybe_convert_const_int_expr(*c.args[0],
+                                               primitive_typecast_type, true)) {
             return *lit;
           }
           if (type_uses_reinterpret_copy_for_scalar_cast(
@@ -2138,7 +2129,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return "((" + primitive_type_cxx(n) + ")(" +
                  single_call_arg_cxx(c) + "))";
         } else if (c.args.size() == 1 && n != "inc" && n != "dec") {
-          PascalTypecastTarget target = classify_pascal_typecast_target(n);
+          PascalTypecastTarget target =
+              classify_pascal_typecast_target(type_callee_symbol);
           if (target.known && target.kind == PascalTypecastKind::Metaclass) {
             std::string source = single_call_arg_cxx(c);
             std::string coerced = coerce_pointer_like_text(
@@ -2151,13 +2143,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           if (target.known && target.kind == PascalTypecastKind::Pointer) {
             const Expr* peeled = peel_primitive_casts(c.args[0].get());
+            const TypeExpr* source_type = type_for_overload(*c.args[0]);
             std::string source =
                 (peeled && expr_is_storage_lvalue(*c.args[0]))
                     ? expr_to_cxx(*peeled)
                     : single_call_arg_cxx(c);
             std::string coerced = coerce_pointer_like_text(
                 target.cxx_type, target.type,
-                type_for_overload(*c.args[0]),
+                source_type,
                 source,
                 /*explicit_pascal_cast=*/true,
                 expr_is_const_untyped_storage_arg(*c.args[0]));
@@ -2185,7 +2178,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           if (target.known) {
             if (auto conv = resolution_.find_assignment_operator(
-                    type_for_overload(*c.args[0]), target.source_type);
+                    type_for_overload(*c.args[0]), target.source_type,
+                    registry.lookup_context_for_type(target.source_type));
                 conv.decl) {
               std::string fn =
                   pascal_assignment_operator_helper_name(*conv.decl);
@@ -2212,9 +2206,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (target.known && target.kind == PascalTypecastKind::Aggregate) {
             auto storage_view = storage_.typecast_storage_view(c);
             if (storage_view && storage_view_context) {
-              return reinterpret_ref_text(storage_view->target_cxx,
-                                          storage_view->source_cxx,
-                                          storage_view->pointee_view);
+              report_error(c.loc,
+                           "aggregate storage typecasts are unsupported here");
+              return "/* invalid aggregate storage typecast */";
             }
             if (!storage_view_context) {
               if (auto ptr = untyped_pointer_deref_address(*c.args[0])) {
@@ -2229,7 +2223,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               if (arr.dims.size() == 1) {
                 const PrimitiveInfo* pi_elem =
                     analysis_.primitive_info_for_type(elem);
-                if (elem == named_pascal_type("byte") ||
+                if (analysis_.builtin_atom_name_for_type(elem) == "byte" ||
                     (pi_elem && pi_elem->is_char())) {
                   if (storage_view && storage_view->source_is_untyped_storage) {
                     return "::rt::tp2cc_reinterpret_load<" +
@@ -2290,31 +2284,18 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // argument is a pointer type name, not a value expression; lowering
           // it as type text keeps Pascal's type/value namespaces separate in
           // generated C++.
-          // STUB: if the type is one of our stub target-back-end
-          // aliases (t_win32 / t_os2 / t_go32v* classes that got
-          // skipped), emit `nullptr` -- the call site is inside an
-          // unreachable `case target_info.target of` arm.
-          if (c.args[0]->kind == Kind::Ident) {
-            const std::string& tname =
-                static_cast<const Ident&>(*c.args[0]).name;
-            static const std::unordered_set<std::string> stub_targets = {
-                "pimportlibwin32", "timportlibwin32",
-                "pimportlibos2",   "timportlibos2",
-                "pimportlibgo32v2","timportlibgo32v2",
-                "pexportlibwin32", "texportlibwin32",
-                "pexportlibos2",   "texportlibos2",
-                "pexportlibgo32v2","texportlibgo32v2",
-                "plinkerwin32",    "tlinkerwin32",
-                "plinkeros2",      "tlinkeros2",
-                "plinkergo32v1",   "tlinkergo32v1",
-                "plinkergo32v2",   "tlinkergo32v2",
-            };
-            if (stub_targets.count(tname)) return "nullptr";
+          std::string t;
+          if (std::optional<const TypeSymbol*> type_operand =
+                  registry.type_name_expression_result(c.args[0].get())) {
+            if (const TypeSymbol* symbol = *type_operand) {
+              t = types_.type_symbol_to_cxx(symbol);
+            }
           }
-          std::string t = (c.args[0]->kind == Kind::Ident)
-                              ? type_name_text_to_cxx(
-                                    static_cast<const Ident&>(*c.args[0]).name)
-                              : expr_to_cxx(*c.args[0]);
+          if (t.empty()) {
+            report_error(c.args[0]->loc,
+                         "new requires a resolved pointer type operand");
+            t = "void*";
+          }
           std::string make =
               "([&]{ auto tp2cc_ptr = static_cast<::std::remove_pointer_t<" +
               t + ">*>(nullptr); ::rt::p_new(tp2cc_ptr); return tp2cc_ptr; }())";
@@ -2336,8 +2317,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                                              ctor_args);
             CallArgumentPlan ctor_plan =
                 plan_call_arguments(ctor_resolved.decl, cc.callee.get(),
-                                    ctor_args, ctor_resolved.default_arg_unit,
-                                    ctor_resolved.signature_declaring_type);
+                                    ctor_args,
+                                    ctor_resolved.default_arg_unit);
             for (size_t i = 0; i < ctor_plan.slots.size(); ++i) {
               if (i) margs += ", ";
               margs += lower_call_arg(ctor_plan.slots[i],
@@ -2361,22 +2342,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // emitter silently calls), a plain functional cast works and
       // an address-of would not compile.
       if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
-        const auto& id = static_cast<const Ident&>(*c.callee);
         bool cast_to_pointer = false;
         std::string cast_type_cxx;
         const TypeExpr* pointer_cast_ty = nullptr;
-        if (id.name == "pointer") {
+        const TypeSymbol* symbol = nullptr;
+        if (std::optional<const TypeSymbol*> type_callee =
+                registry.type_name_expression_result(c.callee.get())) {
+          symbol = *type_callee;
+        }
+        const TypeExpr* tgt = descriptor_payload_type(symbol);
+        if (tgt && tgt->kind == Kind::TyPointer) {
           cast_to_pointer = true;
-          cast_type_cxx = "void*";
-          pointer_cast_ty = named_pascal_type("pointer");
-        } else {
-          const TypeSymbol* symbol = migration_fallback_type_symbol(id.name);
-          const TypeExpr* tgt = descriptor_payload_type(symbol);
-          if (tgt && tgt->kind == Kind::TyPointer) {
-            cast_to_pointer = true;
-            cast_type_cxx = types_.type_symbol_to_cxx(symbol);
-            pointer_cast_ty = tgt;
-          }
+          cast_type_cxx = types_.type_symbol_to_cxx(symbol);
+          pointer_cast_ty = tgt;
         }
         if (cast_to_pointer) {
           const Expr* peeled = peel_primitive_casts(c.args[0].get());
@@ -2396,21 +2374,18 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         }
       }
       if (c.args.size() == 1 && c.callee->kind == Kind::Member) {
-        const auto& mem = static_cast<const Member&>(*c.callee);
         // Same `Member` AST node as a call, but semantically this can be a
         // unit-qualified typecast: `Unit.Type(expr)`.
-        if (auto unit_member = analysis_.resolve_unit_qualified_member(mem)) {
-          if (unit_member->resolved.kind == ResolvedKind::UnitType) {
-            // The parser uses Call for both calls and Pascal typecasts, so
-            // `Unit.Type(expr)` reaches this point as a member callee. Once the
-            // shared resolver has proven the member is a unit-qualified type,
+        if (std::optional<const TypeSymbol*> type_callee =
+                registry.type_name_expression_result(c.callee.get())) {
+          if (const TypeSymbol* cast_symbol = *type_callee) {
+            // Build has already marked this callee as a Pascal type name, so
             // lower it as an explicit cast instead of sending it through
             // procedure overload resolution.
-            const std::string qualified =
-                unit_member->unit_name + "." + mem.name;
-            const TypeExpr* cast_ty =
-                analysis_.migration_fallback_named_type_expr_by_name(qualified);
+            const TypeExpr* cast_ty = descriptor_payload_type(cast_symbol);
             if (cast_ty) cast_ty = semantic_shape_type(cast_ty);
+            const std::string cast_type_cxx =
+                types_.type_symbol_to_cxx(cast_symbol);
             if (cast_ty && cast_ty->kind == Kind::TyProcedural) {
               // Unit-qualified procedural casts are the same Pascal operation
               // as unqualified ones: the target procedural type controls
@@ -2418,7 +2393,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               return const_value_to_cxx(*c.args[0], cast_ty,
                                         /*explicit_conversion=*/true);
             }
-            if (cast_ty && cast_ty->kind == Kind::TyPointer) {
+            if (cast_ty && cast_ty->kind == Kind::TyPointer &&
+                !cast_type_cxx.empty()) {
               // Pointer casts are still Pascal value conversions, but their
               // source may be a typed storage view such as `T(x)`. Peel only
               // primitive storage-view casts before the pointer coercion so the
@@ -2430,20 +2406,18 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                       ? expr_to_cxx(*peeled)
                       : expr_to_cxx(*c.args[0]);
               std::string coerced = coerce_pointer_like_text(
-                  type_name_text_to_cxx(qualified), cast_ty,
-                  type_for_overload(*c.args[0]), source,
+                  cast_type_cxx, cast_ty, type_for_overload(*c.args[0]), source,
                   /*explicit_pascal_cast=*/true);
               if (coerced != source) return coerced;
               if (peeled && expr_is_storage_lvalue(*c.args[0])) {
-                return "((" + type_name_text_to_cxx(qualified) + ")(" +
-                       expr_to_cxx(*peeled) + "))";
+                return "((" + cast_type_cxx + ")(" + expr_to_cxx(*peeled) +
+                       "))";
               }
-              return "((" + type_name_text_to_cxx(qualified) + ")(" +
-                     source + "))";
+              return "((" + cast_type_cxx + ")(" + source + "))";
             }
-            if (cast_ty) {
-              return "((" + type_name_text_to_cxx(qualified) + ")(" +
-                     expr_to_cxx(*c.args[0]) + "))";
+            if (cast_ty && !cast_type_cxx.empty()) {
+              return "((" + cast_type_cxx + ")(" + expr_to_cxx(*c.args[0]) +
+                     "))";
             }
           }
         }
@@ -2486,7 +2460,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       const ProcDecl* call_decl = resolved.decl;
       CallArgumentPlan call_plan = plan_call_arguments(
           call_decl, c.callee.get(), call_args, resolved.default_arg_unit,
-          resolved.signature_declaring_type);
+          resolved.proc_info);
+      std::string callee_text = format_resolved_callee(resolved, *c.callee);
       if (resolved.needs_arg_validation &&
           !calls_.validate_call_arguments(call_plan)) {
         std::string name;
@@ -2508,21 +2483,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (c.callee->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         if (mem.base->kind == Kind::Ident) {
-          const auto& id = static_cast<const Ident&>(*mem.base);
-          const std::string class_type_path =
-              analysis_.identifier_is_shadowed_value(id.name)
-                  ? std::string{}
-                  : visible_class_or_record_type_path(id.name);
-          if (!class_type_path.empty()) {
+          const TypeSymbol* class_type_symbol =
+              analysis_.class_or_record_type_value_symbol(*mem.base);
+          if (class_type_symbol) {
             if (auto ctor_call = maybe_lower_class_constructor_call(
-                    c.loc, class_type_path, mem.name, call_plan,
+                    c.loc, *class_type_symbol, mem.name, call_plan,
                     resolved.decl)) {
               return *ctor_call;
             }
           }
         }
       }
-      std::string callee_text = format_resolved_callee(resolved, *c.callee);
       bool is_tpexcept_setjmp = false;
       if (c.args.size() == 1) {
         if (c.callee->kind == Kind::Ident) {
@@ -2542,41 +2513,6 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (is_tpexcept_setjmp) {
         return "setjmp(::p_tpexcept::p_detail::p_state_for(&(" +
                expr_to_cxx(*c.args[0]) + ")).p_env)";
-      }
-      const std::string memory_helper =
-          callee_text == "::rt::p_getmem"
-              ? "getmem"
-              : callee_text == "::rt::p_reallocmem"
-                    ? "reallocmem"
-                    : callee_text == "::rt::p_strdispose" ? "strdispose" : "";
-      if (!memory_helper.empty() && !c.args.empty()) {
-        const bool bytewise_pointer_slot_helper =
-            memory_helper == "getmem" || memory_helper == "reallocmem" ||
-            memory_helper == "strdispose";
-        if (bytewise_pointer_slot_helper) {
-          if (auto storage = storage_.storage_designator(*c.args[0]);
-              storage && storage->is_bytewise()) {
-            if (storage->type_cxx.empty()) {
-              report_error(c.args[0]->loc,
-                           "memory helper requires a typed pointer slot");
-              return "/* invalid pointer slot */";
-            }
-            // These helpers mutate the pointer value stored in the Pascal
-            // slot. A bytewise slot is addressable storage, but not a live C++
-            // pointer object, so the runtime helper updates it by byte-copy.
-            if (memory_helper == "getmem" && c.args.size() >= 2) {
-              return "::rt::p_getmem_slot<" + storage->type_cxx + ">(" +
-                     storage->ptr_cxx + ", " + expr_to_cxx(*c.args[1]) + ")";
-            }
-            if (memory_helper == "reallocmem" && c.args.size() >= 2) {
-              return "::rt::p_reallocmem_slot<" + storage->type_cxx + ">(" +
-                     storage->ptr_cxx + ", " + expr_to_cxx(*c.args[1]) + ")";
-            }
-            if (memory_helper == "strdispose") {
-              return "::rt::p_strdispose_slot(" + storage->ptr_cxx + ")";
-            }
-          }
-        }
       }
       std::string out = callee_text + "(";
       for (size_t i = 0; i < call_plan.slots.size(); ++i) {
@@ -2628,19 +2564,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       for (const auto& idx : i.indices) indices.push_back(idx.get());
       if (i.base->kind == Kind::Member) {
         const auto& mem = static_cast<const Member&>(*i.base);
-        std::string cls;
-        if (mem.base->kind == Kind::Ident &&
-            static_cast<const Ident&>(*mem.base).name == "self") {
-          cls = current_class_name;
-        } else {
-          cls = value_class_alias(*mem.base);
-        }
-        if (!cls.empty()) {
-          if (auto* prop = registry.lookup_class_property(
-                  cls, mem.name, current_unit_name)) {
+        const TypeSymbol* cls_symbol = value_class_symbol(*mem.base);
+        const ClassInfo* cls_info =
+            cls_symbol ? cls_symbol->class_info() : nullptr;
+        if (cls_info) {
+          if (auto* prop = registry.lookup_class_property(*cls_info, mem.name)) {
             if (!prop->params.empty()) {
               return lower_property_read(i.loc, expr_to_cxx(*mem.base),
-                                         value_receiver_access_op(*mem.base), cls,
+                                         value_receiver_access_op(*mem.base),
                                          *prop, indices);
             }
           }
@@ -2651,16 +2582,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if (auto found = find_implicit_class_property(id.name);
             found && found->prop && !found->prop->params.empty()) {
           return lower_property_read(i.loc, found->base_cxx,
-                                     found->base_access, found->class_name,
-                                     *found->prop, indices);
+                                     found->base_access, *found->prop,
+                                     indices);
         }
       }
-      std::string cls = value_class_alias(*i.base);
-      if (!cls.empty()) {
-        if (auto* prop =
-                registry.lookup_default_property(cls, current_unit_name)) {
+      const TypeSymbol* cls_symbol = value_class_symbol(*i.base);
+      const ClassInfo* cls_info =
+          cls_symbol ? cls_symbol->class_info() : nullptr;
+      if (cls_info) {
+        if (auto* prop = registry.lookup_default_property(*cls_info)) {
           return lower_property_read(i.loc, expr_to_cxx(*i.base),
-                                     value_receiver_access_op(*i.base), cls,
+                                     value_receiver_access_op(*i.base),
                                      *prop, indices);
         }
       }
@@ -2670,7 +2602,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         // storage. Ordinary indexes and aligned storage-view indexes keep the
         // normal expression path; bytewise indexes must load from the composed
         // element address instead of indexing a copied aggregate value.
-        return storage_designator_value_or_member_base(i.loc, *storage);
+        return storage_designator_value_or_member_base(*storage);
       }
       std::string out = expr_to_cxx(*i.base);
       for (const auto& idx : i.indices) {
@@ -2764,36 +2696,31 @@ void Emitter::emit_forward_struct_decls(
 // ---------------------------------------------------------------------------
 // Unit
 
-// Scan the decl list and emit forward declarations for every record/object/interface
-// type, so a pointer type that textually precedes its target still compiles.
-static std::string nested_pascal_type_path(std::string_view owner,
-                                           std::string_view name) {
-  std::string out(owner);
-  if (!out.empty()) out += ".";
-  out += ascii_lower(name);
-  return out;
-}
-
 static void emit_reference_metaclass_forward_decls_impl(
-    Emitter& e, const TypeDecl& td, std::string_view pascal_path,
+    Emitter& e, const TypeDecl& td, const TypeSymbol* symbol,
     bool emit_current) {
   if (!td.type) return;
   if (td.type->kind == Kind::TyObject) {
     const auto& to = static_cast<const TyObject&>(*td.type);
     if (to.is_reference_type && emit_current) {
-      // Metaclass carriers live at namespace scope even for Pascal nested
-      // classes. The nested class body friends the carrier value function, so
-      // the carrier struct has to be declared before the owner body is emitted.
-      e.emitln("struct " + e.metaclass_struct_cxx(pascal_path) + ";");
+      if (!symbol) {
+        e.report_error(td.loc, "unresolved class type `" + td.name + "`");
+        return;
+      }
+      // Nested Pascal class bodies friend their namespace-scope metaclass value
+      // function. Forward-declare that carrier from the build-resolved symbol so
+      // the declaration matches the owning unit/type path chosen by type binding.
+      e.emitln("struct " + e.types_.metaclass_struct_cxx(*symbol) + ";");
     }
     for (const auto& member : to.members) {
       if (member.kind != ObjectMemberKind::Type || !member.type_decl) {
         continue;
       }
-      const std::string nested_path =
-          nested_pascal_type_path(pascal_path, member.type_decl->name);
+      const TypeSymbol* nested_symbol =
+          e.registry.resolved_symbol_for_type(member.type_decl->type.get());
+      nested_symbol = descriptor_payload_symbol(nested_symbol);
       emit_reference_metaclass_forward_decls_impl(
-          e, *member.type_decl, nested_path, /*emit_current=*/true);
+          e, *member.type_decl, nested_symbol, /*emit_current=*/true);
     }
     return;
   }
@@ -2801,10 +2728,11 @@ static void emit_reference_metaclass_forward_decls_impl(
     const auto& tr = static_cast<const TyRecord&>(*td.type);
     for (const auto& nested : tr.nested_types) {
       if (!nested) continue;
-      const std::string nested_path =
-          nested_pascal_type_path(pascal_path, nested->name);
+      const TypeSymbol* nested_symbol =
+          e.registry.resolved_symbol_for_type(nested->type.get());
+      nested_symbol = descriptor_payload_symbol(nested_symbol);
       emit_reference_metaclass_forward_decls_impl(
-          e, *nested, nested_path, /*emit_current=*/true);
+          e, *nested, nested_symbol, /*emit_current=*/true);
     }
   }
 }
@@ -2817,13 +2745,20 @@ static void emit_forward_struct_decls_impl(Emitter& e,
     if (!td.type) continue;
     if (td.type->kind == Kind::TyRecord || td.type->kind == Kind::TyObject ||
         td.type->kind == Kind::TyInterface) {
+      const TypeSymbol* symbol =
+          descriptor_payload_symbol(e.registry.resolved_symbol_for_type(
+              td.type.get()));
       e.emitln("struct " + type_mangle(td.name) + ";");
       if (td.type->kind == Kind::TyObject &&
           static_cast<const TyObject&>(*td.type).is_reference_type) {
-        e.emitln("struct tp2cc_metaclass_" + type_mangle(td.name) + ";");
+        if (!symbol) {
+          e.report_error(td.loc, "unresolved class type `" + td.name + "`");
+        } else {
+          e.emitln("struct " + e.types_.metaclass_struct_cxx(*symbol) + ";");
+        }
       }
       emit_reference_metaclass_forward_decls_impl(
-          e, td, ascii_lower(td.name), /*emit_current=*/false);
+          e, td, symbol, /*emit_current=*/false);
     }
   }
 }

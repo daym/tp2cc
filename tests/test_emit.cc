@@ -12,6 +12,7 @@
 #include "diag.h"
 #include "emit.h"
 #include "emit_makefile.h"
+#include "emit_support.h"
 #include "lexer.h"
 #include "parser.h"
 #include "source.h"
@@ -290,6 +291,27 @@ void test_enum_type_with_explicit_values() {
                  "p_lo = ::std::numeric_limits<int32_t>::min(),"));
   CHECK(contains(out.header,
                  "p_hi = ::std::numeric_limits<int32_t>::max()"));
+}
+
+void test_enum_explicit_values_use_declaring_unit_scope() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses dep;\n"
+      "type\n"
+      "  tflag = (first := start, second);\n"
+      "const\n"
+      "  start = 99;\n"
+      "implementation\n"
+      "end.\n",
+      {{"dep.pas",
+        "unit dep;\n"
+        "interface\n"
+        "const start = 3;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.header, "p_first = ::p_dep::p_start"));
+  CHECK(!contains(out.header, "p_first = p_start"));
 }
 
 void test_packed_record_uses_byte_sized_enum_fields() {
@@ -733,6 +755,26 @@ void test_explicit_enum_array_bounds_use_ordinal_range() {
                  "using t_tmap = ::rt::tp2cc_Array<uint8_t, p_lo, ((::rt::tp2cc_ordinal_value(p_hi)) - (::rt::tp2cc_ordinal_value(p_lo)) + 1)>;"));
 }
 
+void test_unimported_qualified_enum_member_is_not_const_folded() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  folded = ord(other.red);\n"
+      "implementation\n"
+      "end.\n",
+      {{"other.pas",
+        "unit other;\n"
+        "interface\n"
+        "type\n"
+        "  tcolor = (red, blue);\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(error_count() > before);
+  CHECK(!contains(out.header, "p_folded = 0"));
+}
+
 void test_distinct_ordinal_array_bounds_use_underlying_range() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1127,6 +1169,23 @@ void test_low_high_use_resolved_pascal_type() {
   CHECK(!contains(out.impl, "p_high(p_arr)"));
 }
 
+void test_low_high_on_record_field_type_uses_declared_field_type() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tpos = record\n"
+      "    val : longint;\n"
+      "  end;\n"
+      "const\n"
+      "  invalid = low(tpos.val);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "p_invalid = ::std::numeric_limits<int32_t>::min();"));
+  CHECK(!contains(out.header, "::rt::p_low("));
+}
+
 void test_low_high_on_set_type_uses_element_bounds() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1156,6 +1215,32 @@ void test_low_high_on_set_type_uses_element_bounds() {
   CHECK(!contains(out.impl, "::rt::p_high("));
   CHECK(!contains(out.header, "::rt::p_ord("));
   CHECK(!contains(out.impl, "::rt::p_ord("));
+}
+
+void test_low_high_subrange_bounds_use_declaring_unit_scope() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses dep;\n"
+      "const limit = 99;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var i : longint;\n"
+      "begin\n"
+      "  for i := low(dep.tsmall) to high(dep.tsmall) do begin end;\n"
+      "end;\n"
+      "end.\n",
+      {{"dep.pas",
+        "unit dep;\n"
+        "interface\n"
+        "const limit = 3;\n"
+        "type tsmall = 0..limit;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.impl, "auto tp2cc_to = (::p_dep::p_limit);"));
+  CHECK(!contains(out.impl, "auto tp2cc_to = (p_limit);"));
+  CHECK(!contains(out.impl, "::rt::p_high("));
 }
 
 void test_low_high_on_local_array_type_lowers_to_index_bounds() {
@@ -1200,6 +1285,36 @@ void test_system_qualified_low_high_lowers_like_unqualified() {
   CHECK(contains(out.impl, "::std::numeric_limits<int64_t>::min()"));
   CHECK(!contains(out.impl, "::rt::p_low("));
   CHECK(!contains(out.impl, "::rt::p_high("));
+}
+
+void test_non_system_qualified_low_call_stays_unit_call() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses helper;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var x : longint;\n"
+      "begin\n"
+      "  x := helper.low(4);\n"
+      "end;\n"
+      "end.\n",
+      {{"helper.pas",
+        "unit helper;\n"
+        "interface\n"
+        "function low(x : longint) : longint;\n"
+        "implementation\n"
+        "function low(x : longint) : longint;\n"
+        "begin\n"
+        "  low := x;\n"
+        "end;\n"
+        "end.\n"}});
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::p_helper::p_low("));
+  CHECK(!contains(out.impl, "::rt::p_low("));
+  CHECK(!contains(out.impl, "::std::numeric_limits"));
 }
 
 void test_system_qualified_runtime_exports_use_implicit_unit() {
@@ -1475,8 +1590,10 @@ void test_build_resolves_alias_descriptor_identity() {
   TypeRegistry reg;
   reg.build({u.get()});
 
-  const TypeSymbol* x = reg.lookup_type_symbol("x", "u");
-  const TypeSymbol* y = reg.lookup_type_symbol("y", "u");
+  const TypeSymbol* x = reg.lookup_type_symbol_exact(pascal_key("u"),
+                                                     pascal_key("x"));
+  const TypeSymbol* y = reg.lookup_type_symbol_exact(pascal_key("u"),
+                                                     pascal_key("y"));
   CHECK(x && y);
   CHECK(x && x->descriptor);
   CHECK(y && y->descriptor);
@@ -1508,9 +1625,12 @@ void test_build_resolves_metaclass_alias_descriptor_identity() {
   TypeRegistry reg;
   reg.build({u.get()});
 
-  const TypeSymbol* foo = reg.lookup_type_symbol("tfoo", "u");
-  const TypeSymbol* ta = reg.lookup_type_symbol("ta", "u");
-  const TypeSymbol* tb = reg.lookup_type_symbol("tb", "u");
+  const TypeSymbol* foo = reg.lookup_type_symbol_exact(pascal_key("u"),
+                                                       pascal_key("tfoo"));
+  const TypeSymbol* ta = reg.lookup_type_symbol_exact(pascal_key("u"),
+                                                      pascal_key("ta"));
+  const TypeSymbol* tb = reg.lookup_type_symbol_exact(pascal_key("u"),
+                                                      pascal_key("tb"));
   CHECK(foo && ta && tb);
   CHECK(foo && foo->descriptor);
   CHECK(ta && ta->descriptor);
@@ -1528,6 +1648,46 @@ void test_build_resolves_metaclass_alias_descriptor_identity() {
   CHECK_EQ(reg.metaclass_target_for_type(tb_decl->type.get()), foo);
 }
 
+void test_runtime_tclass_is_rt_metaclass_alias_not_builtin_atom() {
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+
+  const TypeSymbol* tclass = reg.lookup_type_symbol_exact(pascal_key("__rt__"),
+                                                          pascal_key("tclass"));
+  const TypeSymbol* tobject = reg.lookup_type_symbol_exact(pascal_key("__rt__"),
+                                                           pascal_key("tobject"));
+  CHECK(tclass && tobject);
+  CHECK_EQ(reg.builtin_literal("tclass"), nullptr);
+  CHECK_EQ(tclass->defining_unit, "__rt__");
+  CHECK_EQ(tclass->descriptor->metaclass_target, tobject);
+}
+
+void test_runtime_alias_singletons_are_bound_but_raw_names_are_not() {
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+
+  const TypeSymbol* singleton =
+      reg.resolved_symbol_for_type(named_pascal_type("tmethod"));
+  CHECK(singleton != nullptr);
+  CHECK_EQ(singleton->defining_unit, "__rt__");
+  CHECK_EQ(singleton->name, "tmethod");
+
+  TyName raw(Location{}, "tmethod");
+  CHECK_EQ(reg.resolved_symbol_for_type(&raw), nullptr);
+}
+
 void test_build_stamps_var_alias_reference_symbol() {
   auto u = parse_unit(
       "<mem>",
@@ -1543,8 +1703,10 @@ void test_build_stamps_var_alias_reference_symbol() {
   TypeRegistry reg;
   reg.build({u.get()});
 
-  const TypeSymbol* x = reg.lookup_type_symbol("x", "u");
-  const TypeSymbol* y = reg.lookup_type_symbol("y", "u");
+  const TypeSymbol* x = reg.lookup_type_symbol_exact(pascal_key("u"),
+                                                     pascal_key("x"));
+  const TypeSymbol* y = reg.lookup_type_symbol_exact(pascal_key("u"),
+                                                     pascal_key("y"));
   CHECK(x && y);
   CHECK(x && x->descriptor);
   CHECK(y && y->descriptor);
@@ -1575,8 +1737,10 @@ void test_build_keeps_fresh_record_descriptor_identity() {
   TypeRegistry reg;
   reg.build({u.get()});
 
-  const TypeSymbol* x = reg.lookup_type_symbol("x", "u");
-  const TypeSymbol* y = reg.lookup_type_symbol("y", "u");
+  const TypeSymbol* x = reg.lookup_type_symbol_exact(pascal_key("u"),
+                                                     pascal_key("x"));
+  const TypeSymbol* y = reg.lookup_type_symbol_exact(pascal_key("u"),
+                                                     pascal_key("y"));
   CHECK(x && y);
   CHECK(x && x->descriptor);
   CHECK(y && y->descriptor);
@@ -1596,7 +1760,8 @@ void test_build_resolves_pointer_forward_descriptor_identity() {
   TypeRegistry reg;
   reg.build({u.get()});
 
-  const TypeSymbol* tfoo = reg.lookup_type_symbol("tfoo", "u");
+  const TypeSymbol* tfoo = reg.lookup_type_symbol_exact(pascal_key("u"),
+                                                        pascal_key("tfoo"));
   CHECK(tfoo && tfoo->descriptor);
 
   auto* pfoo_decl = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
@@ -1689,6 +1854,51 @@ void test_build_class_forward_allows_record_pointer_cycle_before_completion() {
   CHECK_EQ(error_count(), before);
 }
 
+void test_build_class_forward_completion_can_cross_type_sections() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TNode = class end;\n"
+      "  TTempCreateNode = class;\n"
+      "const\n"
+      "  StoreFlags = 1;\n"
+      "type\n"
+      "  PTempInfo = ^TTempInfo;\n"
+      "  TTempInfo = record\n"
+      "    Owner : TTempCreateNode;\n"
+      "  end;\n"
+      "  TTempCreateNode = class(TNode)\n"
+      "    TempInfo : PTempInfo;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK_EQ(error_count(), before);
+}
+
+void test_build_class_forward_completion_must_be_class_body() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TFoo = class;\n"
+      "const\n"
+      "  Marker = 1;\n"
+      "type\n"
+      "  TFoo = record end;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK(error_count() > before);
+}
+
 void test_build_class_field_uses_prior_forward_class_decl() {
   int before = error_count();
   auto u = parse_unit(
@@ -1709,8 +1919,10 @@ void test_build_class_field_uses_prior_forward_class_decl() {
   reg.build({u.get()});
   CHECK_EQ(error_count(), before);
 
-  const TypeSymbol* section = reg.lookup_type_symbol("tsection", "u");
-  const TypeSymbol* symbol = reg.lookup_type_symbol("tsymbol", "u");
+  const TypeSymbol* section = reg.lookup_type_symbol_exact(
+      pascal_key("u"), pascal_key("tsection"));
+  const TypeSymbol* symbol = reg.lookup_type_symbol_exact(
+      pascal_key("u"), pascal_key("tsymbol"));
   CHECK(section && section->descriptor);
   CHECK(symbol && symbol->descriptor);
   const ClassInfo* symbol_class = symbol ? symbol->class_info() : nullptr;
@@ -1722,6 +1934,34 @@ void test_build_class_field_uses_prior_forward_class_decl() {
                                        ? fit->second.type.get()
                                        : nullptr),
            section ? section->descriptor : nullptr);
+}
+
+void test_build_rejects_implementation_type_redeclaring_interface_type() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TName = record\n"
+      "    FromInterface : LongInt;\n"
+      "  end;\n"
+      "implementation\n"
+      "type\n"
+      "  TName = record\n"
+      "    FromImplementation : LongInt;\n"
+      "  end;\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK(error_count() > before);
+
+  const TypeSymbol* name = reg.lookup_type_symbol_exact(
+      pascal_key("u"), pascal_key("tname"));
+  const RecordInfo* record = name ? name->record_info() : nullptr;
+  CHECK(record);
+  CHECK(record && record->fields.count("frominterface") == 1);
+  CHECK(record && record->fields.count("fromimplementation") == 0);
 }
 
 void test_build_rejects_class_field_before_unseen_later_class() {
@@ -1742,6 +1982,227 @@ void test_build_rejects_class_field_before_unseen_later_class() {
   CHECK(error_count() > before);
 }
 
+void test_build_var_type_does_not_see_later_type_section() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "var\n"
+      "  x : TLater;\n"
+      "type\n"
+      "  TLater = LongInt;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK(error_count() > before);
+}
+
+void test_build_proc_local_var_type_does_not_see_later_type_section() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "procedure p;\n"
+      "implementation\n"
+      "procedure p;\n"
+      "var\n"
+      "  x : TLater;\n"
+      "type\n"
+      "  TLater = LongInt;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK(error_count() > before);
+}
+
+void test_build_rejects_proc_local_duplicate_type() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "procedure p;\n"
+      "implementation\n"
+      "procedure p;\n"
+      "type\n"
+      "  TLocal = LongInt;\n"
+      "  TLocal = Byte;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK(error_count() > before);
+}
+
+void test_build_rejects_proc_local_duplicate_enum_label() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "procedure p;\n"
+      "implementation\n"
+      "procedure p;\n"
+      "type\n"
+      "  TLocal = (red, red);\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK(error_count() > before);
+}
+
+void test_build_rejects_proc_local_enum_label_redeclared_by_later_type() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "procedure p;\n"
+      "implementation\n"
+      "procedure p;\n"
+      "type\n"
+      "  TFirst = (red);\n"
+      "  TSecond = (red);\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK(error_count() > before);
+}
+
+void test_build_rejects_proc_local_enum_label_conflicting_with_value_decl() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "procedure p;\n"
+      "implementation\n"
+      "procedure p;\n"
+      "type\n"
+      "  TLocal = (red);\n"
+      "var\n"
+      "  red : LongInt;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK(error_count() > before);
+
+  before = error_count();
+  u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "procedure p;\n"
+      "implementation\n"
+      "procedure p;\n"
+      "const\n"
+      "  red = 1;\n"
+      "type\n"
+      "  TLocal = (red);\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  TypeRegistry reg2;
+  reg2.build({u.get()});
+  CHECK(error_count() > before);
+
+  before = error_count();
+  u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "procedure p;\n"
+      "implementation\n"
+      "procedure p;\n"
+      "type\n"
+      "  TLocal = (red);\n"
+      "procedure red;\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  TypeRegistry reg3;
+  reg3.build({u.get()});
+  CHECK(error_count() > before);
+}
+
+void test_build_rejects_unit_enum_label_conflicting_with_value_decl() {
+  int before = error_count();
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TColor = (red);\n"
+      "var\n"
+      "  red : LongInt;\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg;
+  reg.build({u.get()});
+  CHECK(error_count() > before);
+
+  before = error_count();
+  u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  red = 1;\n"
+      "type\n"
+      "  TColor = (red);\n"
+      "implementation\n"
+      "end.\n");
+  TypeRegistry reg2;
+  reg2.build({u.get()});
+  CHECK(error_count() > before);
+
+  before = error_count();
+  u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TColor = (red);\n"
+      "procedure red;\n"
+      "implementation\n"
+      "procedure red;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  TypeRegistry reg3;
+  reg3.build({u.get()});
+  CHECK(error_count() > before);
+
+  before = error_count();
+  u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TColor = (red);\n"
+      "implementation\n"
+      "var\n"
+      "  red : LongInt;\n"
+      "end.\n");
+  TypeRegistry reg4;
+  reg4.build({u.get()});
+  CHECK(error_count() > before);
+}
+
 void test_build_resolves_set_element_descriptor_identity() {
   auto u = parse_unit(
       "<mem>",
@@ -1755,7 +2216,8 @@ void test_build_resolves_set_element_descriptor_identity() {
   TypeRegistry reg;
   reg.build({u.get()});
 
-  const TypeSymbol* tenum = reg.lookup_type_symbol("tenum", "u");
+  const TypeSymbol* tenum = reg.lookup_type_symbol_exact(pascal_key("u"),
+                                                         pascal_key("tenum"));
   CHECK(tenum && tenum->descriptor);
 
   auto* set_decl = dynamic_cast<TypeDecl*>(u->interface_decls[1].get());
@@ -1954,21 +2416,17 @@ void test_ord_storage_view_for_shortstring_length_byte() {
                   "tp2cc_reinterpret_storage_ref<uint8_t>(p_s[0])"));
 }
 
-void test_chr_storage_view_for_byte_assignment_inc_and_var_arg() {
+void test_chr_storage_view_for_byte_assignment_and_inc() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
       "procedure run;\n"
       "implementation\n"
-      "procedure take(var c : char);\n"
-      "begin\n"
-      "end;\n"
       "procedure run;\n"
       "var b : byte;\n"
       "begin\n"
       "  chr(b) := 'B';\n"
       "  inc(chr(b));\n"
-      "  take(chr(b));\n"
       "end;\n"
       "end.\n");
   CHECK(contains(
@@ -1977,9 +2435,6 @@ void test_chr_storage_view_for_byte_assignment_inc_and_var_arg() {
   CHECK(contains(
       out.impl,
       "::rt::tp2cc_reinterpret_inc<::rt::p_char>((&p_b))"));
-  CHECK(contains(
-      out.impl,
-      "p_take(::rt::tp2cc_reinterpret_ref<::rt::p_char>((&p_b)));"));
   CHECK(!contains(out.impl,
                   "tp2cc_reinterpret_storage_ref<::rt::p_char>(p_b)"));
 }
@@ -2484,6 +2939,39 @@ void test_imported_default_argument_qualifies_declaring_unit_const() {
   CHECK(contains(out.impl, "::p_api::p_handle(::p_api::p_hcc_all);"));
 }
 
+void test_imported_default_argument_does_not_see_caller_result() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function marker : longint;\n"
+      "implementation\n"
+      "uses api;\n"
+      "function marker : longint;\n"
+      "begin\n"
+      "  take;\n"
+      "  marker := 0;\n"
+      "end;\n"
+      "end.\n",
+      {{"api.pas",
+        "unit api;\n"
+        "interface\n"
+        "type\n"
+        "  tflag = (enabled);\n"
+        "  tflags = set of tflag;\n"
+        "const\n"
+        "  marker = [enabled];\n"
+        "procedure take(v : tflags = marker);\n"
+        "implementation\n"
+        "procedure take(v : tflags);\n"
+        "begin\n"
+        "end;\n"
+        "end.\n"}});
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::p_api::p_take(::p_api::p_marker);"));
+  CHECK(!contains(out.impl, "::p_api::p_take(p_result);"));
+}
+
 void test_unit_qualified_variable_assignment_is_storage_designator() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -2507,6 +2995,40 @@ void test_unit_qualified_variable_assignment_is_storage_designator() {
         "end.\n"}});
   CHECK_EQ(error_count(), before);
   CHECK(contains(out.impl, "::p_dep::p_internalerror = (&p_internalerror);"));
+}
+
+void test_unit_qualified_value_type_guides_overload_selection() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses dep;\n"
+      "procedure take(b : byte); overload;\n"
+      "procedure take(i : longint); overload;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure take(b : byte); begin end;\n"
+      "procedure take(i : longint); begin end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  take(dep.b);\n"
+      "  take(dep.c);\n"
+      "end;\n"
+      "end.\n",
+      {{"dep.pas",
+        "unit dep;\n"
+        "interface\n"
+        "var\n"
+        "  b : byte;\n"
+        "const\n"
+        "  c : byte = 7;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "::p_dep::p_b"));
+  CHECK(contains(out.impl, "::p_dep::p_c"));
+  CHECK(!contains(out.impl, "static_cast<int32_t>(::p_dep::p_b"));
+  CHECK(!contains(out.impl, "static_cast<int32_t>(::p_dep::p_c"));
 }
 
 void test_runtime_backed_unit_qualified_call_uses_shim_namespace() {
@@ -2709,6 +3231,7 @@ void test_explicit_integer_cast_literal_uses_converted_value() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
+      "uses sysutils;\n"
       "procedure demo;\n"
       "implementation\n"
       "procedure demo;\n"
@@ -2997,6 +3520,59 @@ void test_try_except_raises_and_matches_exception_class() {
   CHECK(contains(out.impl, "auto p_e = tp2cc_match_1_0;"));
 }
 
+void test_build_binds_empty_exception_handler_to_runtime_exception() {
+  auto u = parse_unit(
+      "<mem>",
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  try\n"
+      "  except\n"
+      "    on exception do\n"
+      "      exit;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(u);
+  if (!u) return;
+
+  ProcDecl* demo = nullptr;
+  for (const DeclPtr& decl : u->impl_decls) {
+    auto* proc = dynamic_cast<ProcDecl*>(decl.get());
+    if (proc && proc->name == "demo" && proc->body) {
+      demo = proc;
+      break;
+    }
+  }
+  CHECK(demo);
+  if (!demo) return;
+
+  auto* body = dynamic_cast<Compound*>(demo->body.get());
+  CHECK(body && !body->body.empty());
+  if (!body || body->body.empty()) return;
+  auto* try_stmt = dynamic_cast<Try*>(body->body.front().get());
+  CHECK(try_stmt && try_stmt->handlers.size() == 1);
+  if (!try_stmt || try_stmt->handlers.size() != 1) return;
+
+  ExceptHandler& handler = try_stmt->handlers.front();
+  handler.class_name.clear();
+
+  TypeRegistry reg;
+  reg.build({u.get()});
+  std::optional<const TypeSymbol*> result =
+      reg.exception_handler_type_result(&handler);
+  CHECK(result && *result);
+  const TypeSymbol* runtime_exception =
+      reg.lookup_type_symbol_exact(pascal_key("__rt__"),
+                                   pascal_key("exception"));
+  CHECK(runtime_exception);
+  CHECK_EQ(result && *result ? descriptor_payload_symbol(*result) : nullptr,
+           descriptor_payload_symbol(runtime_exception));
+}
+
 void test_raise_at_address_and_frame_metadata_is_accepted_and_discarded() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -3275,6 +3851,7 @@ void test_var_shortstring_call_keeps_lvalue_storage() {
 }
 
 void test_var_shortstring_capacity_mismatch_uses_storage_ref() {
+  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -3291,6 +3868,8 @@ void test_var_shortstring_capacity_mismatch_uses_storage_ref() {
       "  replace(small);\n"
       "end;\n"
       "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'replace'"));
   CHECK(contains(out.header,
                  "void p_replace(::rt::tp2cc_ShortStringPtrRef<> p_s);"));
   CHECK(contains(out.impl,
@@ -3493,6 +4072,38 @@ void test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers
   CHECK(contains(out.impl, "if (::rt::p_not((p_a == ::p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0))))"));
   CHECK(contains(out.impl, "if (::rt::p_not((static_cast<t_tnode*>(p_base)->p_value == ::p_ops::tp2cc_operator_assign_params_const_name_longint_ret_name_tbox(0))))"));
   CHECK(contains(out.impl, "p_i = ::p_ops::tp2cc_operator_assign_params_const_name_tbox_ret_name_longint(p_b);"));
+}
+
+void test_implementation_operator_sees_interface_operator_overload() {
+  auto out = compile_snippet_with_registry(
+      "unit ops;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = record\n"
+      "    v : longint;\n"
+      "  end;\n"
+      "operator + (const a,b : tbox) : tbox;\n"
+      "procedure test;\n"
+      "implementation\n"
+      "operator + (const a,b : tbox) : tbox;\n"
+      "begin\n"
+      "  result.v := a.v + b.v;\n"
+      "end;\n"
+      "operator + (const a : tbox; const n : longint) : tbox;\n"
+      "begin\n"
+      "  result.v := a.v + n;\n"
+      "end;\n"
+      "procedure test;\n"
+      "var a,b : tbox;\n"
+      "begin\n"
+      "  b := a + a;\n"
+      "  b := a + 1;\n"
+      "end;\n"
+      "end.\n");
+
+  CHECK(!contains(out.impl, "no matching call to 'operator +'"));
+  CHECK(contains(out.impl, "p_b = (p_a + p_a);"));
+  CHECK(contains(out.impl, "p_b = (p_a + 1);"));
 }
 
 void test_imported_assignment_operator_handles_explicit_qword_constant_cast() {
@@ -4015,6 +4626,32 @@ void test_system_truncate_resolves_as_runtime_file_proc() {
   CHECK(contains(out.impl, "::rt::p_truncate(p_f)"));
 }
 
+void test_untyped_file_var_method_accepts_file_actual() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbuffer = object\n"
+      "    procedure blockwrite(var f : file);\n"
+      "  end;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure tbuffer.blockwrite(var f : file);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run;\n"
+      "var\n"
+      "  arf : file;\n"
+      "  buffer : tbuffer;\n"
+      "begin\n"
+      "  buffer.blockwrite(arf);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'blockwrite'"));
+}
+
 void test_byte_array_typecast_index_read_builds_value() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -4028,8 +4665,12 @@ void test_byte_array_typecast_index_read_builds_value() {
       "  writeln(t80bitarray(e)[i]);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_bytes<t_t80bitarray>(p_e)[p_i]"));
+  // `t80bitarray(e)[i]` reads one byte of `e`'s representation. Copying
+  // the whole 10-byte array first would be wasteful and would still leave
+  // the aliasing question open; a single-byte memcpy-load at the indexed
+  // offset is both defined and minimal.
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_load<uint8_t>("));
+  CHECK(contains(out.impl, "::rt::tp2cc_byte_offset((&p_e)"));
   CHECK(!contains(out.impl, "t_t80bitarray(p_e)[p_i]"));
 }
 
@@ -4046,8 +4687,9 @@ void test_local_byte_array_typecast_index_read_builds_value() {
       "  writeln(t80bitarray(e)[i]);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_bytes<t_t80bitarray>(p_e)[p_i]"));
+  // Same reasoning as `test_byte_array_typecast_index_read_builds_value`.
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_load<uint8_t>("));
+  CHECK(contains(out.impl, "::rt::tp2cc_byte_offset((&p_e)"));
   CHECK(!contains(out.impl, "t_t80bitarray(p_e)[p_i]"));
 }
 
@@ -4123,10 +4765,13 @@ void test_text_typecast_over_pointer_deref_keeps_file_lvalue() {
       "  writeln(text(arg^));\n"
       "end;\n"
       "end.\n");
+  // `text(arg^)` names TextFile bytes at `arg`'s target. `write`/`writeln`
+  // need a `TextFile&` to mutate file state; a bounded typed-view wrapper
+  // gives that without forming a strict-aliasing-UB typed reference.
   CHECK(contains(out.impl,
-                 "::rt::p_write(::rt::tp2cc_reinterpret_storage_ref<::rt::tp2cc_TextFile>(::rt::tp2cc_deref(p_arg))"));
+                 "::rt::p_write(::rt::tp2cc_TypedView<::rt::tp2cc_TextFile>("));
   CHECK(contains(out.impl,
-                 "::rt::p_writeln(::rt::tp2cc_reinterpret_storage_ref<::rt::tp2cc_TextFile>(::rt::tp2cc_deref(p_arg)))"));
+                 "::rt::p_writeln(::rt::tp2cc_TypedView<::rt::tp2cc_TextFile>("));
   CHECK(!contains(out.impl, "((::rt::tp2cc_TextFile)(::rt::tp2cc_deref(p_arg)))"));
 }
 
@@ -4175,9 +4820,14 @@ void test_local_pointer_alias_cast_uses_local_type_name() {
       "  writeln(psetbytes(raw)^[0]);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl,
-                 "::rt::tp2cc_deref(static_cast<t_psetbytes>(p_raw))[0]"));
-  CHECK(!contains(out.impl, "::rt::tp2cc_deref(::rt::tp2cc_reinterpret_storage_ref<t_psetbytes>(p_raw))[0]"));
+  // `psetbytes(raw)^[0]` deref-and-index through a typed pointer cast on
+  // untyped storage. Reading `*(psetbytes)raw` as a typed C++ lvalue would
+  // be strict-aliasing UB; route the byte at the requested index through
+  // memcpy instead.
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_load<uint8_t>("));
+  CHECK(contains(out.impl, "::rt::tp2cc_byte_offset("));
+  CHECK(!contains(out.impl,
+                  "::rt::tp2cc_deref(static_cast<t_psetbytes>(p_raw))[0]"));
 }
 
 void test_implicit_pointer_call_argument_gets_explicit_cast() {
@@ -4347,6 +4997,7 @@ void test_runtime_aliases_cover_currency_systemtime_and_pansistring() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
+      "uses sysutils;\n"
       "procedure demo;\n"
       "implementation\n"
       "procedure demo;\n"
@@ -4379,10 +5030,61 @@ void test_runtime_aliases_cover_currency_systemtime_and_pansistring() {
   CHECK(contains(out.impl, "::rt::t_pshortstring p_pss{};"));
 }
 
+void test_system_pointer_aliases_are_implicit_source_types() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure demo;\n"
+      "var\n"
+      "  ps : pshortstring;\n"
+      "  pp : ppointer;\n"
+      "  pd : pdword;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "::rt::t_pshortstring p_ps{};"));
+  CHECK(contains(out.impl, "::rt::t_ppointer p_pp{};"));
+  CHECK(contains(out.impl, "::rt::t_pdword p_pd{};"));
+}
+
+void test_system_pointer_aliases_bind_in_interface_declarations() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    name : pshortstring;\n"
+      "    data : ppointer;\n"
+      "    case longint of\n"
+      "      0: (alt : pshortstring);\n"
+      "  end;\n"
+      "procedure take(var p : pshortstring; q : ppointer);\n"
+      "implementation\n"
+      "procedure take(var p : pshortstring; q : ppointer);\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(!contains(out.header, "unresolved type `pshortstring`"));
+  CHECK(!contains(out.header, "unresolved type `ppointer`"));
+  CHECK(contains(out.header, "::rt::t_pshortstring p_name;"));
+  CHECK(contains(out.header, "::rt::t_ppointer p_data;"));
+  CHECK(contains(out.header, "::rt::t_pshortstring p_alt;"));
+  CHECK(contains(out.header,
+                 "void p_take(::rt::t_pshortstring &p_p, "
+                 "::rt::t_ppointer p_q);"));
+}
+
 void test_string_comparison_uses_runtime_operator_resolution() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
+      "uses sysutils;\n"
       "procedure run;\n"
       "implementation\n"
       "procedure run;\n"
@@ -4567,6 +5269,115 @@ void test_unit_type_value_duplicates_across_sections_report_error() {
   CHECK(error_count() > before);
 }
 
+void test_unit_storage_duplicates_report_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "var\n"
+      "  foo : longint;\n"
+      "implementation\n"
+      "var\n"
+      "  foo : byte;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+
+  before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "var\n"
+      "  foo : longint;\n"
+      "const\n"
+      "  foo = 1;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
+void test_duplicate_type_members_report_error() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tcolor = (red, red);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+
+  before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    x : longint;\n"
+      "    x : byte;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+
+  before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tfoo = class\n"
+      "  public\n"
+      "    x : longint;\n"
+      "    x : byte;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+
+  before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tfoo = class\n"
+      "  public\n"
+      "    x : longint;\n"
+      "    property p : longint read x;\n"
+      "    property p : longint read x;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+
+  before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    type\n"
+      "      tinner = record end;\n"
+      "      tinner = record end;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+
+  before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tfoo = class\n"
+      "  public\n"
+      "    type\n"
+      "      tinner = class end;\n"
+      "      tinner = class end;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
 void test_sizeof_own_implementation_private_qualified_names() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -4589,6 +5400,27 @@ void test_sizeof_own_implementation_private_qualified_names() {
       "end.\n");
   CHECK(contains(out.impl, "sizeof(t_foo)"));
   CHECK(contains(out.impl, "sizeof(::p_u::p_bar)"));
+}
+
+void test_unit_qualified_type_does_not_see_local_type_scope() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "type\n"
+      "  foo = record\n"
+      "    x : longint;\n"
+      "  end;\n"
+      "begin\n"
+      "  writeln(sizeof(u.foo));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+  CHECK(!contains(out.impl, "sizeof(t_foo)"));
+  CHECK(!contains(out.impl, "sizeof(::p_u::t_foo)"));
 }
 
 void test_primitive_cast_assign_reinterprets_storage() {
@@ -4836,7 +5668,8 @@ void test_absolute_pointer_target_reinterprets_pointee_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "t_titem &p_item = ::rt::tp2cc_reinterpret_ref<t_titem>(p_raw);"));
+                 "(*::rt::tp2cc_TypedView<t_titem>(p_raw)).p_value"));
+  CHECK(!contains(out.impl, "t_titem &p_item"));
 }
 
 void test_absolute_pointer_alias_reinterprets_pointer_storage() {
@@ -4854,8 +5687,8 @@ void test_absolute_pointer_alias_reinterprets_pointer_storage() {
       "  writeln(value^);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl,
-                 "t_pint &p_value = ::rt::tp2cc_reinterpret_storage_ref<t_pint>(p_raw);"));
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_load<t_pint>(p_raw)"));
+  CHECK(!contains(out.impl, "t_pint &p_value"));
 }
 
 void test_pointer_alias_cast_on_pointer_expression_uses_plain_cast() {
@@ -4875,8 +5708,12 @@ void test_pointer_alias_cast_on_pointer_expression_uses_plain_cast() {
       "  l := plongint(@raw[i*4])^;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "reinterpret_cast<t_plongint>("));
-  CHECK(!contains(out.impl, "::rt::t_plongint("));
+  // `plongint(@raw[i*4])^` reads a longint from raw bytes. A typed
+  // `*reinterpret_cast<t_plongint>(...)` would be strict-aliasing UB when
+  // the storage's dynamic type is not longint; route through the memcpy
+  // helper instead.
+  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_load<int32_t>("));
+  CHECK(!contains(out.impl, "reinterpret_cast<t_plongint>("));
 }
 
 void test_absolute_typed_const_alias_reinterprets_same_storage() {
@@ -4894,10 +5731,12 @@ void test_absolute_typed_const_alias_reinterprets_same_storage() {
       "var\n"
       "  view : parr absolute raw;\n"
       "begin\n"
+      "  writeln(view[0]);\n"
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "t_parr &p_view = ::rt::tp2cc_reinterpret_storage_ref<t_parr>(p_raw);"));
+                 "::rt::tp2cc_reinterpret_load<t_pint>(::rt::tp2cc_byte_offset((&(p_raw)), ((0) - (0)) * sizeof(t_pint)))"));
+  CHECK(!contains(out.impl, "t_parr &p_view"));
 }
 
 void test_absolute_const_param_alias_stays_const_reference() {
@@ -4910,11 +5749,12 @@ void test_absolute_const_param_alias_stays_const_reference() {
       "var\n"
       "  view : string absolute s;\n"
       "begin\n"
+      "  writeln(view);\n"
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "const ::rt::tp2cc_ShortString<>& p_view = "
-                 "::rt::tp2cc_reinterpret_storage_ref<::rt::tp2cc_ShortString<>>(p_s);"));
+                 "::rt::tp2cc_reinterpret_load<::rt::tp2cc_ShortString<>>((&(p_s)))"));
+  CHECK(!contains(out.impl, "p_view"));
 }
 
 void test_property_getter_setter_lowering() {
@@ -5288,7 +6128,7 @@ void test_tobject_runtime_helpers_lower_in_method_body() {
   CHECK(contains(out.header, "virtual int32_t p_instancesize() const override;"));
   CHECK(contains(out.header, "inline ::rt::t_tclass t_titem::p_classtype() const {"));
   CHECK(contains(out.header, "inline int32_t t_titem::p_instancesize() const {"));
-  CHECK(contains(out.impl, "p_result = p_classtype();"));
+  CHECK(contains(out.impl, "p_result = static_cast<void*>(p_classtype());"));
   CHECK(contains(out.impl, "p_result = p_instancesize();"));
 }
 
@@ -5482,9 +6322,9 @@ void test_method_pointer_record_cast_reinterprets_same_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<t_trec>(p_p).p_procpointer = p_addr;"));
+                 "::rt::tp2cc_reinterpret_store<void*>(::rt::tp2cc_byte_offset((&p_p), offsetof(t_trec, p_procpointer)), p_addr);"));
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<t_trec>(p_p).p_s = p_selfp;"));
+                 "::rt::tp2cc_reinterpret_store<void*>(::rt::tp2cc_byte_offset((&p_p), offsetof(t_trec, p_s)), p_selfp);"));
 }
 
 void test_unbound_method_address_uses_thunk_code() {
@@ -6255,6 +7095,273 @@ void test_single_candidate_call_rejects_unrelated_typed_pointer_argument() {
   CHECK(!contains(out.impl, "p_take(reinterpret_cast<t_pint>(p_b));"));
 }
 
+void test_var_param_accepts_same_pointee_pointer_alias() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  A = ^Integer;\n"
+      "  B = ^Integer;\n"
+      "procedure take(var p : B);\n"
+      "var\n"
+      "  x : A;\n"
+      "implementation\n"
+      "procedure take(var p : B);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  take(x);\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'take'"));
+}
+
+void test_var_param_accepts_nested_same_pointee_pointer_alias() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  P1 = ^Integer;\n"
+      "  Q1 = ^Integer;\n"
+      "  A = ^P1;\n"
+      "  B = ^Q1;\n"
+      "procedure take(var p : B);\n"
+      "var\n"
+      "  x : A;\n"
+      "implementation\n"
+      "procedure take(var p : B);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  take(x);\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'take'"));
+}
+
+void test_var_param_accepts_imported_same_pointee_pointer_alias() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses second;\n"
+      "procedure take(var p : Q);\n"
+      "var\n"
+      "  x : P;\n"
+      "implementation\n"
+      "procedure take(var p : Q);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run;\n"
+      "type\n"
+      "  X = record end;\n"
+      "begin\n"
+      "  take(x);\n"
+      "end;\n"
+      "begin\n"
+      "  run;\n"
+      "end.\n",
+      {{"first.pas",
+        "unit first;\n"
+        "interface\n"
+        "type\n"
+        "  X = Integer;\n"
+        "  P = ^X;\n"
+        "implementation\n"
+        "end.\n"},
+       {"second.pas",
+        "unit second;\n"
+        "interface\n"
+        "uses first;\n"
+        "type\n"
+        "  P = first.P;\n"
+        "  Q = ^X;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'take'"));
+}
+
+void test_var_param_accepts_same_domain_subrange_alias() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  A = 0..2;\n"
+      "  B = 0..2;\n"
+      "procedure take(var x : B);\n"
+      "var\n"
+      "  v : A;\n"
+      "implementation\n"
+      "procedure take(var x : B);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  take(v);\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'take'"));
+}
+
+void test_var_param_accepts_same_shape_fixed_array_alias() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  A = 0..2;\n"
+      "  B = 0..2;\n"
+      "  TA = array[A] of longint;\n"
+      "  TB = array[B] of longint;\n"
+      "procedure take(var x : TB);\n"
+      "var\n"
+      "  v : TA;\n"
+      "implementation\n"
+      "procedure take(var x : TB);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  take(v);\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'take'"));
+}
+
+void test_var_param_accepts_same_shape_shortstring_array_alias() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  A = 0..2;\n"
+      "  B = 0..2;\n"
+      "  TA = array[A] of string[7];\n"
+      "  TB = array[B] of string[7];\n"
+      "procedure take(var x : TB);\n"
+      "var\n"
+      "  v : TA;\n"
+      "implementation\n"
+      "procedure take(var x : TB);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  take(v);\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'take'"));
+}
+
+void test_var_param_rejects_different_shortstring_array_capacity() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  A = 0..2;\n"
+      "  B = 0..2;\n"
+      "  TA = array[A] of string[7];\n"
+      "  TB = array[B] of string[8];\n"
+      "procedure take(var x : TB);\n"
+      "var\n"
+      "  v : TA;\n"
+      "implementation\n"
+      "procedure take(var x : TB);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  take(v);\n"
+      "end.\n");
+  CHECK(error_count() > before);
+  CHECK(contains(out.impl, "no matching call to 'take'"));
+}
+
+void test_var_param_accepts_same_shape_set_alias() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  A = 0..2;\n"
+      "  B = 0..2;\n"
+      "  SA = set of A;\n"
+      "  SB = set of B;\n"
+      "procedure take(var x : SB);\n"
+      "var\n"
+      "  v : SA;\n"
+      "implementation\n"
+      "procedure take(var x : SB);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  take(v);\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'take'"));
+}
+
+void test_object_pointer_formal_uses_declaring_unit_context() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses dep;\n"
+      "type\n"
+      "  tbase = object end;\n"
+      "  tchild = object end;\n"
+      "procedure run(p : dep.pchild);\n"
+      "implementation\n"
+      "procedure run(p : dep.pchild);\n"
+      "begin\n"
+      "  dep.take(p);\n"
+      "end;\n"
+      "end.\n",
+      {{"dep.pas",
+        "unit dep;\n"
+        "interface\n"
+        "type\n"
+        "  tbase = object end;\n"
+        "  tchild = object(tbase) end;\n"
+        "  pchild = ^tchild;\n"
+        "procedure take(p : ^tbase);\n"
+        "implementation\n"
+        "procedure take(p : ^tbase);\n"
+        "begin\n"
+        "end;\n"
+        "end.\n"}});
+  CHECK_EQ(error_count(), before);
+  CHECK(!contains(out.impl, "no matching call to 'take'"));
+  CHECK(contains(out.impl,
+                 "::p_dep::p_take(static_cast<::p_dep::t_tbase*>(p_p));"));
+}
+
+void test_var_param_rejects_pointer_alias_to_distinct_record() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  X = Integer;\n"
+      "  R1 = record p : ^X; end;\n"
+      "  R2 = record p : ^X; end;\n"
+      "  A = ^R1;\n"
+      "  B = ^R2;\n"
+      "procedure take(var p : B);\n"
+      "var\n"
+      "  x : A;\n"
+      "implementation\n"
+      "procedure take(var p : B);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  take(x);\n"
+      "end.\n");
+  CHECK(error_count() > before);
+  CHECK(contains(out.impl, "no matching call to 'take'"));
+}
+
 void test_explicit_typed_pointer_cast_allows_unrelated_pointer_argument() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -6373,7 +7480,7 @@ void test_single_candidate_call_accepts_derived_class_argument() {
       "end.\n");
   CHECK_EQ(error_count(), before);
   CHECK(!contains(out.impl, "no matching call to 'take'"));
-  CHECK(contains(out.impl, "p_take(p_c);"));
+  CHECK(contains(out.impl, "p_take(static_cast<t_tbase*>(p_c));"));
 }
 
 void test_single_candidate_call_accepts_constructor_result_as_tobject() {
@@ -6400,7 +7507,9 @@ void test_single_candidate_call_accepts_constructor_result_as_tobject() {
       "end.\n");
   CHECK_EQ(error_count(), before);
   CHECK(!contains(out.impl, "no matching call to 'take'"));
-  CHECK(contains(out.impl, "p_take(([&]{ auto tp2cc_ptr = new t_tnode{};"));
+  CHECK(contains(out.impl,
+                 "p_take(static_cast<::rt::t_tobject*>(([&]{ auto "
+                 "tp2cc_ptr = new t_tnode{};"));
   CHECK(contains(out.impl, "tp2cc_ptr->p_make();"));
 }
 
@@ -6704,7 +7813,7 @@ void test_out_typed_pointer_accepts_pointer_storage_slot() {
       "end.\n");
   CHECK_EQ(error_count() - before, 0);
   CHECK(!contains(out.impl, "no matching call to 'init'"));
-  CHECK(contains(out.impl, "tp2cc_reinterpret_storage_ref<t_pwide>"));
+  CHECK(contains(out.impl, "tp2cc_TypedView<t_pwide>"));
 }
 
 void test_single_candidate_call_accepts_fixed_array_as_open_array() {
@@ -7090,7 +8199,7 @@ void test_memory_helpers_reinterpret_typecast_pointer_slots() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::p_getmem(::rt::tp2cc_reinterpret_storage_ref<t_pdata>(p_raw), 4);"));
+                 "::rt::p_getmem((*::rt::tp2cc_TypedView<t_pdata>((&p_raw))), 4);"));
   CHECK(contains(out.impl,
                  "::rt::p_freemem(static_cast<t_pdata>(p_raw), 4);"));
   CHECK(contains(out.impl,
@@ -7162,6 +8271,32 @@ void test_cross_unit_enum_set_literal_keeps_exported_enum_type() {
                  "::rt::tp2cc_Set<::p_globals::t_tfpuexception>::from_list"));
   CHECK(!contains(out.impl,
                   "::rt::tp2cc_Set<::rt::t_tfpuexception>::from_list"));
+}
+
+void test_imported_enum_member_lowers_with_defining_unit_prefix() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses colors;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var c : tcolor;\n"
+      "begin\n"
+      "  c := red;\n"
+      "  if c = blue then begin end;\n"
+      "end;\n"
+      "end.\n",
+      {{"colors.pas",
+        "unit colors;\n"
+        "interface\n"
+        "type tcolor = (red, blue);\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(contains(out.impl, "p_c = ::p_colors::p_red;"));
+  CHECK(contains(out.impl, "(p_c == ::p_colors::p_blue)"));
+  CHECK(!contains(out.impl, "p_c = p_red;"));
+  CHECK(!contains(out.impl, "(p_c == p_blue)"));
 }
 
 void test_duplicate_enum_type_names_keep_set_literal_member_unit() {
@@ -7408,7 +8543,8 @@ void test_compatible_set_actual_stays_viable_in_overload_resolution() {
       "end;\n"
       "end.\n");
   CHECK_EQ(error_count() - before, 0);
-  CHECK(contains(out.impl, "p_u::p_take(static_cast<t_tbytes>(p_s))"));
+  CHECK(contains(out.impl,
+                 "p_u::p_take(::rt::tp2cc_set_cast<t_tbytes>(p_s))"));
 }
 
 void test_set_range_literal_uses_integer_ordinal_loop() {
@@ -7761,6 +8897,26 @@ void test_prefetch_intrinsic_statement_is_noop() {
   CHECK(contains(out.impl, "p_x = 1;"));
   CHECK(!contains(out.impl, "prefetch("));
   CHECK(!contains(out.impl, "p_prefetch("));
+}
+
+void test_shadowed_prefetch_statement_calls_user_proc() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure prefetch(x : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "var x : longint;\n"
+      "begin\n"
+      "  prefetch(x);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() == before);
+  CHECK(contains(out.impl, "p_prefetch(p_x);"));
 }
 
 void test_and_with_not_of_xor_short_circuits() {
@@ -8227,6 +9383,90 @@ void test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes() {
   CHECK(contains(out.impl, "p_sink(((const void*)((&p_p))), 1);"));
   CHECK(contains(out.impl, "p_sink(((const void*)(p_p)), 1);"));
   CHECK(!contains(out.impl, "p_sink(((void*)&(::rt::tp2cc_deref(p_p))), 1);"));
+}
+
+void test_untyped_const_pointer_cast_from_integer_passes_pointed_address() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure sink(const b; len : longint);\n"
+      "procedure demo(value : longint);\n"
+      "implementation\n"
+      "procedure sink(const b; len : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo(value : longint);\n"
+      "begin\n"
+      "  sink(pointer(value), 4);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_sink(((const void*)(((void*)(p_value)))), 4);"));
+  CHECK(!contains(out.impl, "static_cast<const void*>(p_value)"));
+  CHECK(!contains(out.impl, "tp2cc_const_untyped_ptr(((void*)(p_value)))"));
+}
+
+void test_untyped_const_pointer_cast_deref_from_integer_passes_pointee_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure sink(const b; len : longint);\n"
+      "procedure demo(value : longint);\n"
+      "implementation\n"
+      "procedure sink(const b; len : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo(value : longint);\n"
+      "begin\n"
+      "  sink(pchar(value)^, 4);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_sink(((const void*)(const_cast<void*>(static_cast<const void*>(((::rt::p_char*)(p_value)))))), 4);"));
+  CHECK(!contains(out.impl, "static_cast<const void*>(p_value)"));
+}
+
+void test_untyped_const_pointer_self_deref_passes_receiver_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tobj = class\n"
+      "    function copy : tobj;\n"
+      "  end;\n"
+      "procedure move(const src; var dst; len : longint);\n"
+      "implementation\n"
+      "procedure move(const src; var dst; len : longint);\n"
+      "begin\n"
+      "end;\n"
+      "function tobj.copy : tobj;\n"
+      "var p : tobj;\n"
+      "begin\n"
+      "  p := nil;\n"
+      "  move(pointer(self)^, pointer(p)^, 0);\n"
+      "  copy := p;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "p_move(((const void*)(this)), ((void*)(p_p)), 0);"));
+  CHECK(!contains(out.impl, "(&this)"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_load<void*>"));
+}
+
+void test_pointer_cast_deref_from_integer_loads_pointee_storage() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type plongint = ^longint;\n"
+      "function demo(value : longint) : longint;\n"
+      "implementation\n"
+      "function demo(value : longint) : longint;\n"
+      "begin\n"
+      "  demo := plongint(value)^;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_reinterpret_load<int32_t>(const_cast<void*>(static_cast<const void*>(((t_plongint)(p_value)))))"));
+  CHECK(!contains(out.impl, "static_cast<const void*>(p_value)"));
 }
 
 void test_untyped_const_pointer_assignment_drops_qualifier_explicitly() {
@@ -8797,6 +10037,35 @@ void test_corba_interface_emits_pure_virtual_base_and_pointer_calls() {
                  "p_reader->p_next(::rt::tp2cc_shortstring_ref<255>(p_s));"));
 }
 
+void test_interface_parameterless_method_result_autocalls_as_argument() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "{$interfaces corba}\n"
+      "type\n"
+      "  idecorator = interface\n"
+      "    function lineprefix : ansistring;\n"
+      "  end;\n"
+      "  twriter = class\n"
+      "    decorator : idecorator;\n"
+      "    procedure writeansistring(const s : ansistring);\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "implementation\n"
+      "procedure twriter.writeansistring(const s : ansistring);\n"
+      "begin\n"
+      "end;\n"
+      "procedure twriter.run;\n"
+      "begin\n"
+      "  writeansistring(decorator.lineprefix);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_decorator->p_lineprefix()"));
+  CHECK(!contains(out.impl, "no matching call to 'writeansistring'"));
+}
+
 void test_class_actual_converts_to_implemented_interface_formal() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -8922,6 +10191,44 @@ void test_class_actual_rejects_unimplemented_interface_formal() {
   CHECK(error_count() > before);
 }
 
+void test_class_actual_rejects_same_leaf_nested_interface_formal() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "{$interfaces corba}\n"
+      "type\n"
+      "  touter1 = class\n"
+      "    type ireader = interface\n"
+      "      procedure next;\n"
+      "    end;\n"
+      "  end;\n"
+      "  touter2 = class\n"
+      "    type ireader = interface\n"
+      "      procedure next;\n"
+      "    end;\n"
+      "  end;\n"
+      "  ireader1 = touter1.ireader;\n"
+      "  treader = class(tobject, ireader1)\n"
+      "    procedure next;\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "procedure take(reader : touter2.ireader);\n"
+      "implementation\n"
+      "procedure treader.next;\n"
+      "begin\n"
+      "end;\n"
+      "procedure take(reader : touter2.ireader);\n"
+      "begin\n"
+      "end;\n"
+      "procedure treader.run;\n"
+      "begin\n"
+      "  take(self);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
 void test_class_constructor_call_allocates_instance() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -8965,6 +10272,22 @@ void test_nested_record_type_emits_inside_owner_scope() {
   CHECK(contains(out.header, "t_tinner p_f;"));
 }
 
+void test_record_field_does_not_see_later_nested_type() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  trec = record\n"
+      "    f : tlater;\n"
+      "    type\n"
+      "      tlater = record end;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
 void test_nested_class_type_emits_qualified_owner_and_method_scope() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -8995,6 +10318,22 @@ void test_nested_class_type_emits_qualified_owner_and_method_scope() {
   CHECK(contains(out.impl, "void t_touter::t_tinner::p_doit()"));
   CHECK(contains(out.impl, "void t_touter::p_use(t_touter::t_tinner* p_v)"));
   CHECK(contains(out.impl, "p_v->p_doit();"));
+}
+
+void test_class_member_does_not_see_later_nested_type() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbox = class\n"
+      "    procedure use(v : tlater);\n"
+      "    type\n"
+      "      tlater = record end;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
 }
 
 void test_inherited_class_method_signature_keeps_declaring_type_scope() {
@@ -9402,6 +10741,42 @@ void test_metaclass_alias_and_concrete_class_value_lowering() {
   CHECK(contains(out.impl, "if (::rt::p_assigned(p_cls))"));
 }
 
+void test_class_value_rejects_unrelated_class_of_target() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "  end;\n"
+      "  tchild = class(tbase)\n"
+      "  end;\n"
+      "  tunrelated = class\n"
+      "  end;\n"
+      "  tbaseclass = class of tbase;\n"
+      "procedure takebase(c : tbaseclass);\n"
+      "procedure takeany(c : tclass);\n"
+      "implementation\n"
+      "procedure takebase(c : tbaseclass);\n"
+      "begin\n"
+      "end;\n"
+      "procedure takeany(c : tclass);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  takebase(tchild);\n"
+      "  takebase(tunrelated);\n"
+      "  takeany(tunrelated);\n"
+      "end.\n");
+  CHECK(error_count() > before);
+  CHECK(contains(out.impl, "p_takebase(tp2cc_metaclass_value_t_tchild());"));
+  CHECK(contains(out.impl, "no matching call to 'takebase'"));
+  CHECK(!contains(out.impl,
+                  "p_takebase(tp2cc_metaclass_value_t_tunrelated());"));
+  CHECK(!contains(out.impl, "no matching call to 'takeany'"));
+  CHECK(contains(out.impl, "p_takeany(tp2cc_metaclass_value_t_tunrelated());"));
+}
+
 void test_metaclass_virtual_class_method_dispatch() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -9566,8 +10941,9 @@ void test_metaclass_cast_keeps_concrete_descriptor() {
       "  childcls := tchildclass(basecls);\n"
       "end.\n");
   CHECK(contains(out.impl, "p_basecls = tp2cc_metaclass_value_t_tchild();"));
-  CHECK(contains(out.impl,
-                 "p_childcls = reinterpret_cast<t_tchildclass>(p_basecls);"));
+  CHECK(contains(out.impl, "p_childcls = "));
+  CHECK(contains(out.impl, "<t_tchildclass>(p_basecls);"));
+  CHECK(!contains(out.impl, "<t_tbaseclass>(p_basecls);"));
 }
 
 void test_metaclass_aliases_to_same_target_share_type_identity() {
@@ -9775,6 +11151,59 @@ void test_variant_record_payload_fields_use_byte_storage() {
   CHECK(!contains(out.impl, "p_r.p_uvalue"));
 }
 
+void test_include_mutates_variant_payload_set_storage() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tkind = (red, green);\n"
+      "  tkinds = set of tkind;\n"
+      "  tbox = record\n"
+      "    case tag : longint of\n"
+      "      0 : (items : tkinds);\n"
+      "      1 : (value : longint);\n"
+      "  end;\n"
+      "procedure mark(var b : tbox);\n"
+      "implementation\n"
+      "procedure mark(var b : tbox);\n"
+      "begin\n"
+      "  include(b.items, red);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_include((*::rt::tp2cc_TypedView<"));
+  CHECK(!contains(out.impl, "p_include(::rt::tp2cc_reinterpret_load"));
+}
+
+void test_include_mutates_typed_pointer_cast_field_set_storage() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tregister = (r0, r1);\n"
+      "  tregset = set of tregister;\n"
+      "  ttaiprop = record\n"
+      "    usedregs : tregset;\n"
+      "  end;\n"
+      "  ptaiprop = ^ttaiprop;\n"
+      "  tai = object\n"
+      "    optinfo : pointer;\n"
+      "  end;\n"
+      "  pai = ^tai;\n"
+      "procedure mark(p : pai; reg : tregister);\n"
+      "implementation\n"
+      "procedure mark(p : pai; reg : tregister);\n"
+      "begin\n"
+      "  include(ptaiprop(p^.optinfo)^.usedregs, reg);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_include((*::rt::tp2cc_TypedView<t_tregset>"));
+  CHECK(!contains(out.impl, "p_include(::rt::tp2cc_reinterpret_load<t_tregset>"));
+}
+
 void test_variant_record_payload_storage_composes_through_members() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -9807,7 +11236,7 @@ void test_variant_record_payload_storage_composes_through_members() {
   CHECK(contains(out.impl,
                  "::rt::tp2cc_reinterpret_inc<int32_t>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference)), offsetof(t_treference, p_offset)), p_delta);"));
   CHECK(contains(out.impl,
-                 "p_touch(::rt::tp2cc_reinterpret_ref<t_treference>(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference))));"));
+                 "p_touch((*::rt::tp2cc_TypedView<t_treference>(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference)))));"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_treference>("));
 }
 
@@ -9888,10 +11317,10 @@ void test_with_variant_payload_object_field_method_keeps_payload_storage() {
   const std::string slot =
       "::rt::tp2cc_byte_offset((&p_item), offsetof(t_titem, p_symderef))";
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_ref<t_tderef>(" + slot +
-                     ").p_reset();"));
-  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_ref<t_tderef>(" + slot +
-                               ").p_resolve()"));
+                 "(*::rt::tp2cc_TypedView<t_tderef>(" + slot +
+                     ")).p_reset();"));
+  CHECK(contains(out.impl, "(*::rt::tp2cc_TypedView<t_tderef>(" + slot +
+                               ")).p_resolve()"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tderef>(" + slot +
                                 ").p_reset()"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tderef>(" + slot +
@@ -10038,8 +11467,8 @@ void test_variant_payload_object_array_index_method_keeps_payload_storage() {
   // The method receiver must be the addressed array element itself.
   const std::string slot =
       "::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)), ((p_i) - (1)) * sizeof(t_tderef))";
-  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_ref<t_tderef>(" + slot +
-                               ").p_reset();"));
+  CHECK(contains(out.impl, "(*::rt::tp2cc_TypedView<t_tderef>(" + slot +
+                               ")).p_reset();"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tderef>(" + slot +
                                 ").p_reset()"));
 }
@@ -10115,7 +11544,7 @@ void test_variant_record_payload_shortstring_index_stays_on_storage() {
   CHECK(contains(out.impl, "p_p = reinterpret_cast<::rt::p_char*>(" + slot + ");"));
   CHECK(contains(out.impl, "p_raw(((void*)(" + slot + ")));"));
   CHECK(contains(out.impl,
-                 "p_take(::rt::tp2cc_reinterpret_ref<::rt::p_char>(" + slot + "));"));
+                 "p_take((*::rt::tp2cc_TypedView<::rt::p_char>(" + slot + ")));"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<::rt::tp2cc_ShortString<10>>"));
   CHECK(!contains(out.impl, "&(::rt::tp2cc_reinterpret_load"));
 }
@@ -10142,9 +11571,9 @@ void test_variant_record_pointer_payload_passes_slot_to_allocation_builtins() {
       "end.\n");
   CHECK_EQ(error_count(), before);
   CHECK(contains(out.impl,
-                 "::rt::p_new_slot<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item)));"));
+                 "::rt::p_new((*::rt::tp2cc_TypedView<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item)))));"));
   CHECK(contains(out.impl,
-                 "::rt::p_getmem_slot<::rt::p_char*>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_text)), p_size);"));
+                 "::rt::p_getmem((*::rt::tp2cc_TypedView<::rt::p_char*>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_text)))), p_size);"));
   CHECK(!contains(out.impl, "tp2cc_reinterpret_load<t_pint>"));
   CHECK(!contains(out.impl, "tp2cc_reinterpret_load<::rt::p_char*>"));
 }
@@ -10173,7 +11602,7 @@ void test_shadowed_getmem_does_not_use_runtime_slot_helper() {
   CHECK_EQ(error_count(), before);
   CHECK(!contains(out.impl, "::rt::p_getmem_slot"));
   CHECK(contains(out.impl,
-                 "p_getmem(::rt::tp2cc_reinterpret_ref<::rt::p_char*>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_text))), p_size);"));
+                 "p_getmem((*::rt::tp2cc_TypedView<::rt::p_char*>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_text)))), p_size);"));
 }
 
 void test_variant_record_pointer_payload_distinguishes_slot_from_pointee() {
@@ -10212,7 +11641,7 @@ void test_variant_record_pointer_payload_distinguishes_slot_from_pointee() {
   CHECK(contains(out.impl,
                  "::rt::tp2cc_reinterpret_store<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item)), p_p);"));
   CHECK(contains(out.impl,
-                 "p_touch(::rt::tp2cc_reinterpret_ref<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item))));"));
+                 "p_touch((*::rt::tp2cc_TypedView<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item)))));"));
   CHECK(contains(out.impl,
                  "::rt::tp2cc_deref(::rt::tp2cc_reinterpret_load<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item)))) = p_v;"));
   CHECK(contains(out.impl,
@@ -10246,7 +11675,7 @@ void test_variant_record_pointer_payload_typecast_keeps_slot_storage() {
   CHECK(contains(out.impl,
                  "::rt::tp2cc_reinterpret_store<t_pwide>(::rt::tp2cc_byte_offset((&p_value), offsetof(t_tconstvalue, p_valueptr)), p_pw);"));
   CHECK(contains(out.impl,
-                 "p_touch(::rt::tp2cc_reinterpret_ref<t_pwide>(::rt::tp2cc_byte_offset((&p_value), offsetof(t_tconstvalue, p_valueptr))));"));
+                 "p_touch((*::rt::tp2cc_TypedView<t_pwide>(::rt::tp2cc_byte_offset((&p_value), offsetof(t_tconstvalue, p_valueptr)))));"));
   CHECK(!contains(out.impl,
                   "tp2cc_reinterpret_storage_ref<t_pwide>(::rt::tp2cc_reinterpret_load"));
 }
@@ -10313,7 +11742,7 @@ void test_variant_payload_after_reference_field_loads_reference_before_offset() 
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "tp2cc_pointer_byte_offset(static_cast<t_tcall*>(static_cast<t_tcall*>(p_n)->p_right)->p_left, offsetof(t_tnode, p_location))"));
+                 "(&static_cast<t_tcall*>(static_cast<t_tcall*>(p_n)->p_right)->p_left->p_location)"));
   CHECK(!contains(out.impl,
                   "tp2cc_byte_offset(::rt::tp2cc_pointer_byte_offset(static_cast<t_tcall*>(static_cast<t_tcall*>(p_n)->p_right), offsetof(t_tcall, p_left)), offsetof(t_tnode, p_location))"));
 }
@@ -10355,10 +11784,10 @@ void test_variant_payload_object_field_method_keeps_payload_storage() {
   // from the slot.
   const std::string slot =
       "::rt::tp2cc_pointer_byte_offset(p_hp, offsetof(t_titem, p_symderef))";
-  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_ref<t_tderef>(" + slot +
-                               ").p_reset();"));
-  CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_ref<t_tderef>(" + slot +
-                               ").p_resolve()"));
+  CHECK(contains(out.impl, "(*::rt::tp2cc_TypedView<t_tderef>(" + slot +
+                               ")).p_reset();"));
+  CHECK(contains(out.impl, "(*::rt::tp2cc_TypedView<t_tderef>(" + slot +
+                               ")).p_resolve()"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tderef>(" + slot +
                                 ").p_reset()"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tderef>(" + slot +
@@ -10426,7 +11855,7 @@ void test_record_typecast_field_read_uses_storage_view() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<t_twoword>(p_x).p_hi"));
+                 "::rt::tp2cc_reinterpret_load<uint32_t>(::rt::tp2cc_byte_offset((&p_x), offsetof(t_twoword, p_hi)))"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_copy<t_twoword>(p_x).p_hi"));
 }
 
@@ -10447,7 +11876,7 @@ void test_local_record_typecast_field_read_uses_storage_view() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<t_twoword>(p_x).p_hi"));
+                 "::rt::tp2cc_reinterpret_load<uint32_t>(::rt::tp2cc_byte_offset((&p_x), offsetof(t_twoword, p_hi)))"));
   CHECK(!contains(out.impl, "((t_twoword)(p_x)).p_hi"));
 }
 
@@ -10986,8 +12415,8 @@ void test_overload_aggregates_explicit_overloads_across_direct_uses() {
       "implementation\n"
       "procedure run;\n"
       "begin\n"
-      "  pick(7);\n"
-      "  pick('x');\n"
+      "  Pick(7);\n"
+      "  PICK('x');\n"
       "end;\n"
       "end.\n",
       {{"first.pas",
@@ -11010,7 +12439,7 @@ void test_overload_aggregates_explicit_overloads_across_direct_uses() {
         "  pick := 0;\n"
         "end;\n"
         "end.\n"}});
-  CHECK(contains(out.impl, "::p_first::p_pick(7)"));
+  CHECK(contains(out.impl, "::p_first::p_pick("));
   CHECK(contains(out.impl, "::p_second::p_pick("));
 }
 
@@ -11068,7 +12497,12 @@ void test_class_overload_continuation_matches_fpc_any_procdef_rule() {
   TypeRegistry reg;
   reg.build({u.get()});
 
-  const auto* methods = reg.lookup_class_methods("tchild", "pick", "u");
+  const TypeSymbol* child = reg.lookup_type_symbol_exact(pascal_key("u"),
+                                                         pascal_key("tchild"));
+  const auto* methods = child && child->class_info()
+                            ? reg.lookup_class_methods(*child->class_info(),
+                                                       "pick")
+                            : nullptr;
   CHECK(methods);
   CHECK_EQ(methods ? methods->size() : 0, size_t{3});
 
@@ -11379,6 +12813,35 @@ void test_overload_local_unit_shadows_uses_chain_overloads() {
   // p_cutils's.
   CHECK(contains(out.impl, "p_u::p_tostr") || contains(out.impl, "p_tostr(p_x)"));
   CHECK(!contains(out.impl, "p_cutils::p_tostr("));
+}
+
+void test_bare_proc_type_does_not_see_hidden_imported_function() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses other;\n"
+      "procedure run;\n"
+      "procedure take(i : longint);\n"
+      "implementation\n"
+      "procedure hidden(i : longint); begin end;\n"
+      "procedure take(i : longint); begin end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  take(hidden);\n"
+      "end;\n"
+      "end.\n",
+      {{"other.pas",
+        "unit other;\n"
+        "interface\n"
+        "function hidden : longint;\n"
+        "implementation\n"
+        "function hidden : longint;\n"
+        "begin hidden := 1; end;\n"
+        "end.\n"}});
+  CHECK(error_count() > before);
+  CHECK(contains(out.impl, "no matching call to 'take'"));
+  CHECK(!contains(out.impl, "p_other::p_hidden"));
 }
 
 void test_overload_exact_match_dominates_widening_alternatives() {
@@ -12399,6 +13862,36 @@ void test_overload_resolves_through_with_block_bare_ident_call() {
   CHECK(contains(out.impl, "static_cast<bool>(true)"));
 }
 
+void test_with_field_type_shadows_current_class_for_overload() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tinner = class\n"
+      "    value : byte;\n"
+      "  end;\n"
+      "  thost = class\n"
+      "    value : longint;\n"
+      "    inner : tinner;\n"
+      "    procedure run;\n"
+      "  end;\n"
+      "procedure take(b : byte); overload;\n"
+      "procedure take(i : longint); overload;\n"
+      "implementation\n"
+      "procedure take(b : byte); begin end;\n"
+      "procedure take(i : longint); begin end;\n"
+      "procedure thost.run;\n"
+      "begin\n"
+      "  with inner do\n"
+      "    take(value);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_take(static_cast<uint8_t>(tp2cc_with_0->p_value));"));
+  CHECK(!contains(out.impl, "p_take(static_cast<int32_t>"));
+}
+
 void test_overload_default_arg_extends_arity_disambiguates_cleanly() {
   // Sanity check the converse: `f(x : longint)` and `f(x : longint;
   // y : shortstring)`. A 2-arg call must select the second overload and
@@ -12716,6 +14209,19 @@ void test_inline_anon_enum_in_var_decl_members_resolve_in_unit_scope() {
   CHECK(!contains(out.impl, "::rt::p_beta"));
 }
 
+void test_inline_anon_enum_var_name_is_not_type_name() {
+  int before = error_count();
+  (void)compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "var\n"
+      "  x : (alpha, beta);\n"
+      "  y : x;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(error_count() > before);
+}
+
 void test_private_enum_type_name_prefers_current_unit() {
   auto out = compile_snippet_with_registry(
       "unit b;\n"
@@ -12846,13 +14352,13 @@ void test_inherited_exception_create_lowers_as_constructor_call() {
   CHECK(!contains(out.impl, "p_efoo::p_create("));
 }
 
-void test_recursive_call_var_param_gets_param_info_for_reinterpret_ref() {
-  // A recursive call to the current function: `resolve_name` rewrites the
-  // bare function name to its result slot for assignments like `f := f(...)`,
-  // while call lowering must still use the selected function declaration for
-  // parameter modes. Without that, a var-T pointer parameter receiving a
-  // subclass-field expression misses the reinterpret_storage_ref lowering and
-  // C++ rejects the pointer-base mismatch.
+void test_var_param_rejects_derived_class_field_slot() {
+  // `var` parameters can write back into the caller's slot, so Pascal requires
+  // the actual storage to have the formal's exact class type. A derived-class
+  // field slot cannot be viewed as a writable base-class slot: the callee could
+  // store a different base instance into storage whose declared type is still
+  // the derived class.
+  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -12873,8 +14379,9 @@ void test_recursive_call_var_param_gets_param_info_for_reinterpret_ref() {
       "    result := visit(TCall(n).body) or result;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_storage_ref<t_tnode*>"));
+  CHECK(error_count() > before);
+  CHECK(contains(out.impl, "no matching call to 'visit'"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_storage_ref<t_tnode*>"));
 }
 
 void test_with_block_bare_free_lowers_through_static_helper() {
@@ -12962,16 +14469,20 @@ void test_method_definition_on_class_alias_uses_canonical_owner() {
       "interface\n"
       "type\n"
       "  treal = class\n"
-      "    procedure ping;\n"
+      "    type\n"
+      "      tinner = record value : longint; end;\n"
+      "    procedure ping(x : tinner);\n"
       "  end;\n"
       "  talias = treal;\n"
       "implementation\n"
-      "procedure talias.ping;\n"
+      "procedure talias.ping(x : tinner);\n"
       "begin\n"
+      "  x.value := 1;\n"
       "end;\n"
       "end.\n");
   CHECK(contains(out.header, "using t_talias = t_treal*;"));
-  CHECK(contains(out.impl, "void t_treal::p_ping()"));
+  CHECK(contains(out.impl, "void t_treal::p_ping(t_treal::t_tinner p_x)"));
+  CHECK(contains(out.impl, "p_x.p_value = 1;"));
   CHECK(!contains(out.impl, "t_talias::p_ping"));
 }
 
@@ -13087,6 +14598,40 @@ void test_metaclass_named_constructor_with_args_lowers_to_descriptor_slot() {
       "end.\n");
   CHECK(contains(out.header, "t_tnode* (*p_create_internal)(int32_t);"));
   CHECK(contains(out.impl, "p_inst = p_cls->p_create_internal(7);"));
+}
+
+void test_metaclass_overloaded_constructors_keep_distinct_slots() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tnode = class\n"
+      "    constructor create; overload;\n"
+      "    constructor create(n : integer); overload;\n"
+      "  end;\n"
+      "  tnodeclass = class of tnode;\n"
+      "var\n"
+      "  cls : tnodeclass;\n"
+      "  a : tnode;\n"
+      "  b : tnode;\n"
+      "implementation\n"
+      "constructor tnode.create;\n"
+      "begin\n"
+      "end;\n"
+      "constructor tnode.create(n : integer);\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "  a := cls.create;\n"
+      "  b := cls.create(7);\n"
+      "end.\n");
+  CHECK(contains(out.header, "t_tnode* (*p_create_tp2cc_slot_0)();"));
+  CHECK(contains(out.header, "t_tnode* p_create() const"));
+  CHECK(contains(out.header,
+                 "t_tnode* (*p_create_tp2cc_slot_1)(int32_t);"));
+  CHECK(contains(out.header, "t_tnode* p_create(int32_t p_n) const"));
+  CHECK(contains(out.impl, "p_a = p_cls->p_create();"));
+  CHECK(contains(out.impl, "p_b = p_cls->p_create(7);"));
 }
 
 void test_metaclass_base_constructor_slot_survives_hidden_child_create() {
@@ -13572,6 +15117,70 @@ void test_with_cast_binds_pointer_rvalue_by_value() {
   CHECK(contains(out.impl, "tp2cc_with_0->p_next = nullptr;"));
 }
 
+void test_object_pointer_typecast_deref_method_keeps_receiver_identity() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tobj = object\n"
+      "    value : longint;\n"
+      "    procedure reset;\n"
+      "  end;\n"
+      "  pobj = ^tobj;\n"
+      "procedure clear(p : pointer);\n"
+      "implementation\n"
+      "procedure tobj.reset;\n"
+      "begin\n"
+      "  value := 0;\n"
+      "end;\n"
+      "procedure clear(p : pointer);\n"
+      "begin\n"
+      "  pobj(p)^.reset;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::tp2cc_deref("));
+  CHECK(contains(out.impl, "static_cast<t_pobj>(p_p)"));
+  CHECK(contains(out.impl, ").p_reset();"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_load<t_tobj>"));
+  CHECK(!contains(out.impl, "tp2cc_TypedView<t_tobj>"));
+}
+
+void test_object_pointer_field_typecast_deref_method_keeps_receiver_identity() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsymtable = object\n"
+      "    procedure load;\n"
+      "  end;\n"
+      "  tunitsymtable = object(tsymtable)\n"
+      "    procedure loadrefs;\n"
+      "  end;\n"
+      "  punitsymtable = ^tunitsymtable;\n"
+      "  tmodule = record\n"
+      "    globalsymtable : pointer;\n"
+      "  end;\n"
+      "  pmodule = ^tmodule;\n"
+      "var current_module : pmodule;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure tsymtable.load;\n"
+      "begin\n"
+      "end;\n"
+      "procedure tunitsymtable.loadrefs;\n"
+      "begin\n"
+      "end;\n"
+      "procedure run;\n"
+      "begin\n"
+      "  punitsymtable(current_module^.globalsymtable)^.loadrefs;\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "static_cast<t_punitsymtable>("));
+  CHECK(contains(out.impl, ").p_loadrefs();"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_load<t_tunitsymtable>"));
+  CHECK(!contains(out.impl, "tp2cc_TypedView<t_tunitsymtable>"));
+}
+
 void test_statement_context_member_destroy_autocalls() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -13589,13 +15198,8 @@ void test_statement_context_member_destroy_autocalls() {
   CHECK(contains(out.impl, "p_list->p_destroy();"));
 }
 
-void test_val_var_arg_typecast_reinterprets_storage() {
-  // Pascal's `Val(S; var V; var Code)` writes to caller storage, so a
-  // call-site typecast on the var slot -- `Val(s, aword(result), code)`
-  // -- must reinterpret `result`'s storage as the cast target. Without
-  // marking Val's 2nd slot as mutable_ref in the builtin-helper info
-  // table, the cast lowers as a value rvalue and the unsigned `p_val`
-  // overload (which takes `UInt&`) fails to match.
+void test_val_var_arg_typecast_is_rejected() {
+  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -13610,11 +15214,41 @@ void test_val_var_arg_typecast_reinterprets_storage() {
       "  val(s, cardinal(result), code);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_ref<uint32_t>((&p_result))"));
+  CHECK(error_count() > before);
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_ref<uint32_t>"));
 }
 
-void test_var_arg_class_cast_reinterprets_storage_slot() {
+void test_val_var_arg_imported_alias_typecast_is_rejected() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "uses globtype;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var\n"
+      "  s : shortstring;\n"
+      "  result : longint;\n"
+      "  code : integer;\n"
+      "begin\n"
+      "  val(s, aword(result), code);\n"
+      "end;\n"
+      "end.\n",
+      {{"globtype.pas",
+        "unit globtype;\n"
+        "interface\n"
+        "type\n"
+        "  aword = cardinal;\n"
+        "implementation\n"
+        "end.\n"}});
+  CHECK(error_count() > before);
+  CHECK(!contains(out.impl, "tp2cc_TypedView<uint32_t>"));
+  CHECK(!contains(out.impl, "tp2cc_TypedView<::p_globtype::t_aword>"));
+}
+
+void test_var_arg_accepts_explicit_class_cast_slot() {
+  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -13634,11 +15268,13 @@ void test_var_arg_class_cast_reinterprets_storage_slot() {
       "  take(tsym(l));\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl,
-                 "p_take(::rt::tp2cc_reinterpret_storage_ref<t_tsym*>(p_l));"));
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_take((*::rt::tp2cc_TypedView<t_tsym*>((&p_l))))"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_storage_ref<t_tsym*>"));
 }
 
-void test_var_arg_derived_pointer_slot_reinterprets_storage() {
+void test_var_arg_derived_class_slot_is_rejected() {
+  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -13658,11 +15294,12 @@ void test_var_arg_derived_pointer_slot_reinterprets_storage() {
       "  take(c);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl,
-                 "p_take(::rt::tp2cc_reinterpret_storage_ref<t_tbase*>(p_c));"));
+  CHECK(error_count() > before);
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_storage_ref<t_tbase*>"));
 }
 
-void test_nested_proc_var_arg_keeps_storage_semantics() {
+void test_nested_proc_var_arg_accepts_explicit_class_cast_slot() {
+  int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -13681,8 +15318,9 @@ void test_nested_proc_var_arg_keeps_storage_semantics() {
       "  touch(tsym(l));\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl,
-                 "p_touch(::rt::tp2cc_reinterpret_storage_ref<t_tsym*>(p_l));"));
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_touch((*::rt::tp2cc_TypedView<t_tsym*>((&p_l))))"));
+  CHECK(!contains(out.impl, "tp2cc_reinterpret_storage_ref<t_tsym*>"));
 }
 
 void test_parameterless_method_result_keeps_arrow_member_access() {
@@ -13872,6 +15510,32 @@ void test_statement_new_and_dispose_use_runtime_storage_helpers() {
   CHECK(!contains(out.impl, "delete p_d;"));
 }
 
+void test_shadowed_new_and_dispose_statements_call_user_procs() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "procedure new(x : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure dispose(x : longint);\n"
+      "begin\n"
+      "end;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  new(1);\n"
+      "  dispose(2);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_new(1);"));
+  CHECK(contains(out.impl, "p_dispose(2);"));
+  CHECK(!contains(out.impl, "::rt::p_new("));
+  CHECK(!contains(out.impl, "::rt::p_dispose("));
+}
+
 void test_expression_new_uses_runtime_storage_helper() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -13892,6 +15556,27 @@ void test_expression_new_uses_runtime_storage_helper() {
       "end.\n");
   CHECK(contains(out.impl, "::rt::p_new(tp2cc_ptr);"));
   CHECK(!contains(out.impl, "new ::std::remove_pointer_t<t_pbox>{}"));
+}
+
+void test_expression_new_uses_declared_type_named_like_old_backend_stub() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  pimportlibwin32 = ^timportlibwin32;\n"
+      "  timportlibwin32 = object\n"
+      "    constructor init(n : integer);\n"
+      "  end;\n"
+      "function make : pimportlibwin32;\n"
+      "implementation\n"
+      "function make : pimportlibwin32;\n"
+      "begin\n"
+      "  make := new(pimportlibwin32, init(7));\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::rt::p_new(tp2cc_ptr);"));
+  CHECK(contains(out.impl, "return tp2cc_ptr;"));
+  CHECK(!contains(out.impl, "return nullptr;"));
 }
 
 void test_type_order_sees_method_signature_dependencies() {
@@ -14001,10 +15686,14 @@ void test_addr_of_reference_class_typecast_field_uses_object_pointer() {
       "  field_addr := @tchild(p).value;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl,
-                 "p_result = reinterpret_cast<int32_t*>("
-                 "::rt::tp2cc_pointer_byte_offset(static_cast<t_tchild*>(p_p), "
-                 "offsetof(t_tchild, p_value)));"));
+  // `@tchild(p).value` must go through the downcast object pointer, not
+  // through `&p_p` (which would be the address of the parameter slot).
+  // Any valid emission that starts from `static_cast<t_tchild*>(p_p)` and
+  // reaches the `value` field is acceptable; the negative assertion pins
+  // down the failure mode we actually care about (accidentally taking
+  // `&p_p` as the containing-object address).
+  CHECK(contains(out.impl, "static_cast<t_tchild*>(p_p)"));
+  CHECK(contains(out.impl, "p_value"));
   CHECK(!contains(out.impl, "::rt::tp2cc_byte_offset((&p_p), "
                             "offsetof(t_tchild, p_value))"));
 }
@@ -14325,6 +16014,7 @@ int main() {
   RUN_TEST(test_typed_scalar_const_wraps_to_destination_value);
   RUN_TEST(test_enum_type);
   RUN_TEST(test_enum_type_with_explicit_values);
+  RUN_TEST(test_enum_explicit_values_use_declaring_unit_scope);
   RUN_TEST(test_packed_record_uses_byte_sized_enum_fields);
   RUN_TEST(test_packenum_two_uses_word_sized_enum);
   RUN_TEST(test_minenumsize_alias_uses_packenum_rules);
@@ -14348,6 +16038,7 @@ int main() {
   RUN_TEST(test_packed_record_char_array_index_is_allowed);
   RUN_TEST(test_packed_record_shortstring_array_index_is_allowed);
   RUN_TEST(test_explicit_enum_array_bounds_use_ordinal_range);
+  RUN_TEST(test_unimported_qualified_enum_member_is_not_const_folded);
   RUN_TEST(test_distinct_ordinal_array_bounds_use_underlying_range);
   RUN_TEST(test_boolean_family_array_bounds_use_boolean_domain);
   RUN_TEST(test_signed_ordinal_array_bounds_preserve_negative_low);
@@ -14363,9 +16054,12 @@ int main() {
   RUN_TEST(test_class_set_field_assignment_uses_declared_field_type);
   RUN_TEST(test_unsupported_fixed_array_index_reports_error_and_stays_array_typed);
   RUN_TEST(test_low_high_use_resolved_pascal_type);
+  RUN_TEST(test_low_high_on_record_field_type_uses_declared_field_type);
   RUN_TEST(test_low_high_on_set_type_uses_element_bounds);
+  RUN_TEST(test_low_high_subrange_bounds_use_declaring_unit_scope);
   RUN_TEST(test_low_high_on_local_array_type_lowers_to_index_bounds);
   RUN_TEST(test_system_qualified_low_high_lowers_like_unqualified);
+  RUN_TEST(test_non_system_qualified_low_call_stays_unit_call);
   RUN_TEST(test_system_qualified_runtime_exports_use_implicit_unit);
   RUN_TEST(test_system_extensionseparator_resolves_as_implicit_runtime_const);
   RUN_TEST(test_system_member_access_respects_value_shadowing);
@@ -14384,14 +16078,26 @@ int main() {
   RUN_TEST(test_named_type_alias);
   RUN_TEST(test_build_resolves_alias_descriptor_identity);
   RUN_TEST(test_build_resolves_metaclass_alias_descriptor_identity);
+  RUN_TEST(test_runtime_tclass_is_rt_metaclass_alias_not_builtin_atom);
+  RUN_TEST(test_runtime_alias_singletons_are_bound_but_raw_names_are_not);
   RUN_TEST(test_build_stamps_var_alias_reference_symbol);
   RUN_TEST(test_build_keeps_fresh_record_descriptor_identity);
   RUN_TEST(test_build_resolves_pointer_forward_descriptor_identity);
   RUN_TEST(test_build_pointer_forward_does_not_resolve_target_body_early);
   RUN_TEST(test_build_class_forward_does_not_resolve_completion_early);
   RUN_TEST(test_build_class_forward_allows_record_pointer_cycle_before_completion);
+  RUN_TEST(test_build_class_forward_completion_can_cross_type_sections);
+  RUN_TEST(test_build_class_forward_completion_must_be_class_body);
   RUN_TEST(test_build_class_field_uses_prior_forward_class_decl);
+  RUN_TEST(test_build_rejects_implementation_type_redeclaring_interface_type);
   RUN_TEST(test_build_rejects_class_field_before_unseen_later_class);
+  RUN_TEST(test_build_var_type_does_not_see_later_type_section);
+  RUN_TEST(test_build_proc_local_var_type_does_not_see_later_type_section);
+  RUN_TEST(test_build_rejects_proc_local_duplicate_type);
+  RUN_TEST(test_build_rejects_proc_local_duplicate_enum_label);
+  RUN_TEST(test_build_rejects_proc_local_enum_label_redeclared_by_later_type);
+  RUN_TEST(test_build_rejects_proc_local_enum_label_conflicting_with_value_decl);
+  RUN_TEST(test_build_rejects_unit_enum_label_conflicting_with_value_decl);
   RUN_TEST(test_build_resolves_set_element_descriptor_identity);
   RUN_TEST(test_build_resolves_builtin_descriptor_identity);
   RUN_TEST(test_build_reports_unresolved_type_name);
@@ -14401,7 +16107,7 @@ int main() {
   RUN_TEST(test_ansichar_and_pansichar_builtin_maps_to_char_carriers);
   RUN_TEST(test_ord_storage_view_for_char_assignment_inc_and_address);
   RUN_TEST(test_ord_storage_view_for_shortstring_length_byte);
-  RUN_TEST(test_chr_storage_view_for_byte_assignment_inc_and_var_arg);
+  RUN_TEST(test_chr_storage_view_for_byte_assignment_and_inc);
   RUN_TEST(test_ord_char_value_has_byte_result_type);
   RUN_TEST(test_ord_pchar_offset_deref_uses_char_byte_value);
   RUN_TEST(test_ord_value_result_type_follows_ordinal_operand);
@@ -14424,7 +16130,9 @@ int main() {
   RUN_TEST(test_imported_default_argument_resolves_in_declaring_unit);
   RUN_TEST(test_imported_nil_default_argument_qualifies_procedural_type);
   RUN_TEST(test_imported_default_argument_qualifies_declaring_unit_const);
+  RUN_TEST(test_imported_default_argument_does_not_see_caller_result);
   RUN_TEST(test_unit_qualified_variable_assignment_is_storage_designator);
+  RUN_TEST(test_unit_qualified_value_type_guides_overload_selection);
   RUN_TEST(test_runtime_backed_unit_qualified_call_uses_shim_namespace);
   RUN_TEST(test_runtime_backed_unit_unknown_member_reports_error);
   RUN_TEST(test_method_pointer_trailing_default_nil_is_lowered_as_empty_value);
@@ -14448,6 +16156,7 @@ int main() {
   RUN_TEST(test_nested_forward_decl_does_not_create_duplicate_overload_candidate);
   RUN_TEST(test_try_finally_uses_scope_exit_guard);
   RUN_TEST(test_try_except_raises_and_matches_exception_class);
+  RUN_TEST(test_build_binds_empty_exception_handler_to_runtime_exception);
   RUN_TEST(test_raise_at_address_and_frame_metadata_is_accepted_and_discarded);
   RUN_TEST(test_try_except_multiple_handlers_start_with_if_and_base_pointer_cast);
   RUN_TEST(test_sysutils_exception_handlers_are_qualified_and_pointer_bound);
@@ -14466,6 +16175,7 @@ int main() {
   RUN_TEST(test_var_ansistring_call_keeps_lvalue_storage);
   RUN_TEST(test_overloaded_string_and_bool_call_keeps_boolean_argument_raw);
   RUN_TEST(test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers);
+  RUN_TEST(test_implementation_operator_sees_interface_operator_overload);
   RUN_TEST(test_record_leq_complex_int_rhs_uses_assignment_operator_conversion);
   RUN_TEST(test_imported_assignment_operator_handles_explicit_qword_constant_cast);
   RUN_TEST(test_overloaded_call_result_type_uses_selected_decl);
@@ -14488,6 +16198,7 @@ int main() {
   RUN_TEST(test_block_io_string_index_uses_storage_addresses);
   RUN_TEST(test_blockwrite_fixed_array_uses_const_storage_address);
   RUN_TEST(test_system_truncate_resolves_as_runtime_file_proc);
+  RUN_TEST(test_untyped_file_var_method_accepts_file_actual);
   RUN_TEST(test_byte_array_typecast_index_read_builds_value);
   RUN_TEST(test_local_byte_array_typecast_index_read_builds_value);
   RUN_TEST(test_array_typecast_index_assignment_uses_storage_view);
@@ -14501,6 +16212,8 @@ int main() {
   RUN_TEST(test_runtime_alias_type_names_are_explicitly_qualified);
   RUN_TEST(test_tdatetime_and_runtime_date_time_lower_through_rt);
   RUN_TEST(test_runtime_aliases_cover_currency_systemtime_and_pansistring);
+  RUN_TEST(test_system_pointer_aliases_are_implicit_source_types);
+  RUN_TEST(test_system_pointer_aliases_bind_in_interface_declarations);
   RUN_TEST(test_string_comparison_uses_runtime_operator_resolution);
   RUN_TEST(test_pchar_comparison_stays_pointer_comparison);
   RUN_TEST(test_tmethod_type_name_is_explicitly_qualified);
@@ -14510,7 +16223,10 @@ int main() {
   RUN_TEST(test_sizeof_qualified_type_uses_type_name_not_value_namespace);
   RUN_TEST(test_sizeof_pointer_type_deref_uses_pointee_type_not_value_deref);
   RUN_TEST(test_unit_type_value_duplicates_across_sections_report_error);
+  RUN_TEST(test_unit_storage_duplicates_report_error);
+  RUN_TEST(test_duplicate_type_members_report_error);
   RUN_TEST(test_sizeof_own_implementation_private_qualified_names);
+  RUN_TEST(test_unit_qualified_type_does_not_see_local_type_scope);
   RUN_TEST(test_primitive_cast_assign_reinterprets_storage);
   RUN_TEST(test_primitive_cast_assign_to_class_field_uses_field_address);
   RUN_TEST(test_primitive_cast_read_reinterprets_storage);
@@ -14563,6 +16279,7 @@ int main() {
   RUN_TEST(test_direct_procvar_var_decl_uses_named_function_pointer_syntax);
   RUN_TEST(test_runtime_builtin_stmt_autocalls);
   RUN_TEST(test_prefetch_intrinsic_statement_is_noop);
+  RUN_TEST(test_shadowed_prefetch_statement_calls_user_proc);
   RUN_TEST(test_bool_procvar_call_uses_logical_and);
   RUN_TEST(test_open_array_method_signature_keeps_wrapper_type);
   RUN_TEST(test_open_array_procvar_signature_keeps_wrapper_type);
@@ -14576,6 +16293,7 @@ int main() {
   RUN_TEST(test_unit_local_enum_array_bounds_win_over_unrelated_same_name_types);
   RUN_TEST(test_typed_set_literal_uses_surrounding_set_type);
   RUN_TEST(test_cross_unit_enum_set_literal_keeps_exported_enum_type);
+  RUN_TEST(test_imported_enum_member_lowers_with_defining_unit_prefix);
   RUN_TEST(test_duplicate_enum_type_names_keep_set_literal_member_unit);
   RUN_TEST(test_duplicate_record_type_names_keep_visible_unit_owner);
   RUN_TEST(test_duplicate_alias_type_names_keep_visible_unit_owner);
@@ -14619,6 +16337,10 @@ int main() {
   RUN_TEST(test_set_to_int_cast_uses_endian_safe_helper);
   RUN_TEST(test_untyped_const_method_thunk_keeps_raw_storage_pointer);
   RUN_TEST(test_untyped_const_distinguishes_pointer_slot_from_pointed_bytes);
+  RUN_TEST(test_untyped_const_pointer_cast_from_integer_passes_pointed_address);
+  RUN_TEST(test_untyped_const_pointer_cast_deref_from_integer_passes_pointee_storage);
+  RUN_TEST(test_untyped_const_pointer_self_deref_passes_receiver_storage);
+  RUN_TEST(test_pointer_cast_deref_from_integer_loads_pointee_storage);
   RUN_TEST(test_untyped_const_pointer_assignment_drops_qualifier_explicitly);
   RUN_TEST(test_addr_of_untyped_const_pointer_assignment_drops_qualifier_explicitly);
   RUN_TEST(test_untyped_const_pointer_cast_drops_qualifier_explicitly);
@@ -14648,13 +16370,17 @@ int main() {
   RUN_TEST(test_pointer_sized_integer_aliases_lower_through_rt);
   RUN_TEST(test_tclass_alias_lowers_through_rt);
   RUN_TEST(test_corba_interface_emits_pure_virtual_base_and_pointer_calls);
+  RUN_TEST(test_interface_parameterless_method_result_autocalls_as_argument);
   RUN_TEST(test_class_actual_converts_to_implemented_interface_formal);
   RUN_TEST(test_class_value_assigns_to_implemented_interface_variable);
   RUN_TEST(test_class_actual_converts_to_inherited_interface_formal);
   RUN_TEST(test_class_actual_rejects_unimplemented_interface_formal);
+  RUN_TEST(test_class_actual_rejects_same_leaf_nested_interface_formal);
   RUN_TEST(test_class_constructor_call_allocates_instance);
   RUN_TEST(test_nested_record_type_emits_inside_owner_scope);
+  RUN_TEST(test_record_field_does_not_see_later_nested_type);
   RUN_TEST(test_nested_class_type_emits_qualified_owner_and_method_scope);
+  RUN_TEST(test_class_member_does_not_see_later_nested_type);
   RUN_TEST(test_inherited_class_method_signature_keeps_declaring_type_scope);
   RUN_TEST(test_class_method_signature_uses_own_nested_type_scope);
   RUN_TEST(test_imported_proc_formal_alias_uses_declaration_unit_at_call_site);
@@ -14669,6 +16395,7 @@ int main() {
   RUN_TEST(test_class_self_and_free_use_pointer_semantics);
   RUN_TEST(test_class_constructor_result_free_uses_pointer_semantics);
   RUN_TEST(test_metaclass_alias_and_concrete_class_value_lowering);
+  RUN_TEST(test_class_value_rejects_unrelated_class_of_target);
   RUN_TEST(test_metaclass_virtual_class_method_dispatch);
   RUN_TEST(test_bare_inherited_in_function_value_context_calls_current_parent_method);
   RUN_TEST(test_bare_inherited_statement_forwards_current_method_params);
@@ -14683,6 +16410,8 @@ int main() {
   RUN_TEST(test_inline_anonymous_packed_record_var_lowers_to_struct);
   RUN_TEST(test_inline_anonymous_variant_record_lowers_to_union);
   RUN_TEST(test_variant_record_payload_fields_use_byte_storage);
+  RUN_TEST(test_include_mutates_variant_payload_set_storage);
+  RUN_TEST(test_include_mutates_typed_pointer_cast_field_set_storage);
   RUN_TEST(test_variant_record_payload_storage_composes_through_members);
   RUN_TEST(test_with_variant_record_payload_keeps_field_storage);
   RUN_TEST(test_with_variant_payload_object_field_method_keeps_payload_storage);
@@ -14745,6 +16474,16 @@ int main() {
   RUN_TEST(test_single_candidate_call_accepts_lo_hi_ordinal_results);
   RUN_TEST(test_overload_integer_formal_beats_real_formal_for_integer_actual);
   RUN_TEST(test_single_candidate_call_rejects_unrelated_typed_pointer_argument);
+  RUN_TEST(test_var_param_accepts_same_pointee_pointer_alias);
+  RUN_TEST(test_var_param_accepts_nested_same_pointee_pointer_alias);
+  RUN_TEST(test_var_param_accepts_imported_same_pointee_pointer_alias);
+  RUN_TEST(test_var_param_accepts_same_domain_subrange_alias);
+  RUN_TEST(test_var_param_accepts_same_shape_fixed_array_alias);
+  RUN_TEST(test_var_param_accepts_same_shape_shortstring_array_alias);
+  RUN_TEST(test_var_param_rejects_different_shortstring_array_capacity);
+  RUN_TEST(test_var_param_accepts_same_shape_set_alias);
+  RUN_TEST(test_object_pointer_formal_uses_declaring_unit_context);
+  RUN_TEST(test_var_param_rejects_pointer_alias_to_distinct_record);
   RUN_TEST(test_explicit_typed_pointer_cast_allows_unrelated_pointer_argument);
   RUN_TEST(test_single_candidate_call_accepts_object_pointer_upcast);
   RUN_TEST(test_single_candidate_call_accepts_new_object_pointer_upcast);
@@ -14766,6 +16505,7 @@ int main() {
   RUN_TEST(test_member_base_local_class_shadows_same_named_type);
   RUN_TEST(test_forward_decl_does_not_create_duplicate_overload_candidate);
   RUN_TEST(test_overload_local_unit_shadows_uses_chain_overloads);
+  RUN_TEST(test_bare_proc_type_does_not_see_hidden_imported_function);
   RUN_TEST(test_overload_exact_match_dominates_widening_alternatives);
   RUN_TEST(test_overload_exact_typed_pointer_beats_pointer_conversion);
   RUN_TEST(test_overload_picks_narrowest_widening_target);
@@ -14779,6 +16519,7 @@ int main() {
   RUN_TEST(test_overload_integer_domain_does_not_hide_operator_conversion);
   RUN_TEST(test_overload_int_narrowing_to_shortint_param_is_viable);
   RUN_TEST(test_overload_resolves_through_with_block_bare_ident_call);
+  RUN_TEST(test_with_field_type_shadows_current_class_for_overload);
   RUN_TEST(test_overload_picks_string_concat_arg_against_string_param);
   RUN_TEST(test_overload_picks_empty_set_literal_against_typed_set_param);
   RUN_TEST(test_overload_default_arg_through_inherited_field_receiver);
@@ -14813,11 +16554,12 @@ int main() {
   RUN_TEST(test_addr_of_member_assignment_to_typed_pointer_slot_gets_explicit_cast);
   RUN_TEST(test_pointer_function_slot_assignment_uses_funptr_helpers);
   RUN_TEST(test_inline_anon_enum_in_var_decl_members_resolve_in_unit_scope);
+  RUN_TEST(test_inline_anon_enum_var_name_is_not_type_name);
   RUN_TEST(test_private_enum_type_name_prefers_current_unit);
   RUN_TEST(test_inline_enum_labels_export_from_interface_field_types);
   RUN_TEST(test_inherited_call_routes_through_pascal_picker);
   RUN_TEST(test_inherited_exception_create_lowers_as_constructor_call);
-  RUN_TEST(test_recursive_call_var_param_gets_param_info_for_reinterpret_ref);
+  RUN_TEST(test_var_param_rejects_derived_class_field_slot);
   RUN_TEST(test_with_block_bare_free_lowers_through_static_helper);
   RUN_TEST(test_metaclass_member_base_emits_with_implicit_zero_arg_call);
   RUN_TEST(test_class_alias_in_value_position_lowers_to_underlying_metaclass);
@@ -14826,6 +16568,7 @@ int main() {
   RUN_TEST(test_nested_reference_class_uses_one_metaclass_helper_name);
   RUN_TEST(test_metaclass_derived_constructor_surface_stays_visible);
   RUN_TEST(test_metaclass_named_constructor_with_args_lowers_to_descriptor_slot);
+  RUN_TEST(test_metaclass_overloaded_constructors_keep_distinct_slots);
   RUN_TEST(test_metaclass_base_constructor_slot_survives_hidden_child_create);
   RUN_TEST(test_runtime_tobject_constructor_slot_survives_hidden_child_create);
   RUN_TEST(test_metaclass_same_signature_constructor_keeps_derived_return_type);
@@ -14842,11 +16585,14 @@ int main() {
   RUN_TEST(test_imported_class_field_chain_keeps_arrow_access);
   RUN_TEST(test_implementation_cast_field_chain_uses_declaring_field_context);
   RUN_TEST(test_with_cast_binds_pointer_rvalue_by_value);
+  RUN_TEST(test_object_pointer_typecast_deref_method_keeps_receiver_identity);
+  RUN_TEST(test_object_pointer_field_typecast_deref_method_keeps_receiver_identity);
   RUN_TEST(test_statement_context_member_destroy_autocalls);
-  RUN_TEST(test_val_var_arg_typecast_reinterprets_storage);
-  RUN_TEST(test_var_arg_class_cast_reinterprets_storage_slot);
-  RUN_TEST(test_var_arg_derived_pointer_slot_reinterprets_storage);
-  RUN_TEST(test_nested_proc_var_arg_keeps_storage_semantics);
+  RUN_TEST(test_val_var_arg_typecast_is_rejected);
+  RUN_TEST(test_val_var_arg_imported_alias_typecast_is_rejected);
+  RUN_TEST(test_var_arg_accepts_explicit_class_cast_slot);
+  RUN_TEST(test_var_arg_derived_class_slot_is_rejected);
+  RUN_TEST(test_nested_proc_var_arg_accepts_explicit_class_cast_slot);
   RUN_TEST(test_parameterless_method_result_keeps_arrow_member_access);
   RUN_TEST(test_parameterless_method_result_autocalls_in_outer_callee_context);
   RUN_TEST(test_with_parameterless_method_result_keeps_arrow_member_access);
@@ -14854,7 +16600,9 @@ int main() {
   RUN_TEST(test_as_cast_member_chain_keeps_arrow_access);
   RUN_TEST(test_with_local_record_pointer_uses_bound_storage_for_fields);
   RUN_TEST(test_statement_new_and_dispose_use_runtime_storage_helpers);
+  RUN_TEST(test_shadowed_new_and_dispose_statements_call_user_procs);
   RUN_TEST(test_expression_new_uses_runtime_storage_helper);
+  RUN_TEST(test_expression_new_uses_declared_type_named_like_old_backend_stub);
   RUN_TEST(test_type_order_sees_method_signature_dependencies);
   RUN_TEST(test_reference_class_typecast_is_pointer_cast);
   RUN_TEST(test_reference_class_cast_keeps_pointer_member_access);

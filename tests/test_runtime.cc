@@ -480,7 +480,7 @@ void test_ansistring_index_proxy_has_byte_cast_like_shortstring() {
 void test_ansistring_storage_slot_holds_payload_pointer() {
   tp2cc_AnsiString s = tp2cc_ansistring_of("hello");
 
-  auto& slot = tp2cc_reinterpret_storage_ref<void*>(s);
+  void* slot = tp2cc_reinterpret_load<void*>(&s);
 
   CHECK(slot == static_cast<void*>(static_cast<p_char*>(s)));
   CHECK_EQ(tp2cc_deref(slot), 'h');
@@ -551,26 +551,28 @@ void test_reallocmem_returns_updated_pointer_slot() {
 void test_pointer_slot_helpers_update_byte_storage() {
   alignas(void*) unsigned char slot[sizeof(int32_t*)] = {};
 
-  p_new_slot<int32_t*>(slot);
+  p_new((*tp2cc_TypedView<int32_t*>(slot)));
   int32_t* p = tp2cc_reinterpret_load<int32_t*>(slot);
   CHECK(p != nullptr);
   CHECK_EQ(*p, int32_t{0});
   *p = 123;
   p_dispose(p);
 
-  p_getmem_slot<int32_t*>(slot, static_cast<int>(2 * sizeof(int32_t)));
+  p_getmem((*tp2cc_TypedView<int32_t*>(slot)),
+           static_cast<int>(2 * sizeof(int32_t)));
   p = tp2cc_reinterpret_load<int32_t*>(slot);
   CHECK(p != nullptr);
   p[0] = 11;
   p[1] = 22;
 
   int32_t* grown =
-      p_reallocmem_slot<int32_t*>(slot, static_cast<int>(4 * sizeof(int32_t)));
+      p_reallocmem((*tp2cc_TypedView<int32_t*>(slot)),
+                   static_cast<int>(4 * sizeof(int32_t)));
   CHECK(grown == tp2cc_reinterpret_load<int32_t*>(slot));
   CHECK_EQ(grown[0], int32_t{11});
   CHECK_EQ(grown[1], int32_t{22});
 
-  int32_t* cleared = p_reallocmem_slot<int32_t*>(slot, 0);
+  int32_t* cleared = p_reallocmem((*tp2cc_TypedView<int32_t*>(slot)), 0);
   CHECK(cleared == nullptr);
   CHECK(tp2cc_reinterpret_load<int32_t*>(slot) == nullptr);
 }
@@ -580,7 +582,7 @@ void test_strdispose_slot_clears_byte_storage() {
   p_char* text = p_strnew("slot");
   tp2cc_reinterpret_store<p_char*>(slot, text);
 
-  p_strdispose_slot(slot);
+  p_strdispose((*tp2cc_TypedView<p_char*>(slot)));
 
   CHECK(tp2cc_reinterpret_load<p_char*>(slot) == nullptr);
 }
@@ -589,7 +591,7 @@ void test_ansistring_setlength_and_insert_delete_keep_bytes_stable() {
   tp2cc_AnsiString s = tp2cc_ansistring_of("ab");
 
   p_setlength(s, 4);
-  auto& slot = tp2cc_reinterpret_storage_ref<void*>(s);
+  void* slot = tp2cc_reinterpret_load<void*>(&s);
   static_cast<p_char*>(slot)[2] = tp2cc_char_of('c');
   static_cast<p_char*>(slot)[3] = tp2cc_char_of('d');
 
@@ -985,33 +987,6 @@ void test_scope_exit_runs_on_exception_unwind() {
   CHECK_EQ(value, 7);
 }
 
-void test_reinterpret_storage_ref_views_pointer_variable_bytes() {
-  int first = 11;
-  int second = 22;
-  void* p = &first;
-
-  auto& alias = tp2cc_reinterpret_storage_ref<void*>(p);
-  CHECK_EQ(alias, static_cast<void*>(&first));
-
-  alias = &second;
-  CHECK_EQ(p, static_cast<void*>(&second));
-}
-
-void test_reinterpret_ref_views_pointee_bytes_of_pointer_value() {
-  struct Box {
-    int value;
-  };
-
-  Box box{17};
-  void* p = &box;
-
-  auto& alias = tp2cc_reinterpret_ref<Box>(p);
-  CHECK_EQ(alias.value, 17);
-
-  alias.value = 29;
-  CHECK_EQ(box.value, 29);
-}
-
 void test_open_array_helper_owns_temporary_storage() {
   auto holder = tp2cc_open_array_of<int32_t>(1, 2, 3);
   tp2cc_OpenArray<int32_t> view = holder;
@@ -1192,10 +1167,11 @@ void test_method_ptr_storage_matches_two_pointer_slots() {
 
   MethodPtrCounter counter;
   tp2cc_MethodPtr<void(int32_t)> cb{};
-  auto& slots = tp2cc_reinterpret_storage_ref<Slots>(cb);
+  Slots slots = tp2cc_reinterpret_load<Slots>(&cb);
 
   slots.procpointer = tp2cc_method_code<&method_ptr_add>();
   slots.self = &counter;
+  tp2cc_reinterpret_store<Slots>(&cb, slots);
 
   CHECK(cb != nullptr);
   cb(9);
@@ -1205,10 +1181,11 @@ void test_method_ptr_storage_matches_two_pointer_slots() {
 void test_tmethod_storage_matches_two_pointer_slots() {
   MethodPtrCounter counter;
   tp2cc_MethodPtr<void(int32_t)> cb{};
-  auto& raw = tp2cc_reinterpret_storage_ref<t_tmethod>(cb);
+  t_tmethod raw = tp2cc_reinterpret_load<t_tmethod>(&cb);
 
   raw.p_code = tp2cc_method_code<&method_ptr_add>();
   raw.p_data = &counter;
+  tp2cc_reinterpret_store<t_tmethod>(&cb, raw);
 
   CHECK(cb != nullptr);
   cb(5);
@@ -1602,8 +1579,6 @@ int main() {
   RUN_TEST(test_reinterpret_load_store_and_inc_handle_misaligned_bytes);
   RUN_TEST(test_unaligned_load_store_handle_misaligned_bytes);
   RUN_TEST(test_scope_exit_runs_on_exception_unwind);
-  RUN_TEST(test_reinterpret_storage_ref_views_pointer_variable_bytes);
-  RUN_TEST(test_reinterpret_ref_views_pointee_bytes_of_pointer_value);
   RUN_TEST(test_open_array_helper_owns_temporary_storage);
   RUN_TEST(test_dynamic_array_setlength_detaches_and_zeroes_tail);
   RUN_TEST(test_dynamic_array_copy_makes_independent_storage);

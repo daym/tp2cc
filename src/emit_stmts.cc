@@ -79,6 +79,22 @@ ExprPtr borrowed_expr_ptr(const Expr& expr) {
   return ExprPtr(const_cast<Expr*>(&expr), [](Expr*) {});
 }
 
+bool unqualified_builtin_name_is_shadowed(const Call* call_expr,
+                                          std::string_view name,
+                                          ResolveNameProvider& resolver) {
+  if (!call_expr || !call_expr->callee ||
+      call_expr->callee->kind != Kind::Ident) {
+    return false;
+  }
+  ResolveResult resolved = resolver.resolve_name(std::string(name));
+  // `new` has type/storage syntax and is not represented as an ordinary
+  // runtime proc, so unresolved means "still eligible for builtin lowering".
+  // `dispose` normally resolves through the implicit runtime unit. Any closer
+  // source declaration must win over the builtin statement form.
+  return resolved.kind != ResolvedKind::Unknown &&
+         resolved.kind != ResolvedKind::RtBuiltin;
+}
+
 }  // namespace
 
 EmitStmts::EmitStmts(const TypeRegistry& registry, ScopeStateView& scope,
@@ -146,35 +162,42 @@ const TypeExpr* EmitStmts::with_receiver_type(const Expr& expr) {
   return analysis_.deduce_type(expr);
 }
 
-std::string EmitStmts::value_class_alias(const Expr& expr) {
+const TypeSymbol* EmitStmts::value_class_symbol(const Expr& expr) {
   if (expr.kind == Kind::Ident &&
       static_cast<const Ident&>(expr).name == "self") {
-    return scope_.current_class_name;
+    return descriptor_payload_symbol(scope_.current_class_symbol);
   }
   const bool produced_value =
       expr.kind == Kind::Call || expr.kind == Kind::Binary ||
       expr.kind == Kind::Unary;
   if (!produced_value) {
-    if (auto cls = analysis_.deduce_class_alias(expr); !cls.empty()) {
-      return cls;
+    if (const TypeSymbol* symbol = analysis_.deduce_class_symbol(expr)) {
+      return descriptor_payload_symbol(symbol);
     }
   }
   if (const TypeExpr* t = selected_value_type(expr)) {
-    if (auto cls = analysis_.metaclass_target_name(t); !cls.empty()) return cls;
-    {
-      if (auto cls = analysis_.direct_type_name(t);
-          !cls.empty()) {
-        return cls;
+    if (const TypeSymbol* target = registry_.metaclass_target_for_type(t)) {
+      return descriptor_payload_symbol(target);
+    }
+    if (const TypeSymbol* symbol = analysis_.class_symbol_for_type(t)) {
+      return descriptor_payload_symbol(symbol);
+    }
+    if (const TypeExpr* canon = analysis_.semantic_shape_type(t)) {
+      if (const TypeSymbol* target =
+              registry_.metaclass_target_for_type(canon)) {
+        return descriptor_payload_symbol(target);
       }
-      if (const TypeExpr* canon = analysis_.semantic_shape_type(t)) {
-        if (auto cls = analysis_.direct_type_name(canon);
-            !cls.empty()) {
-          return cls;
-        }
+      if (const TypeSymbol* symbol = analysis_.class_symbol_for_type(canon)) {
+        return descriptor_payload_symbol(symbol);
       }
     }
   }
-  return analysis_.deduce_class_alias(expr);
+  return descriptor_payload_symbol(analysis_.deduce_class_symbol(expr));
+}
+
+const ClassInfo* EmitStmts::value_class_info(const Expr& expr) {
+  const TypeSymbol* symbol = value_class_symbol(expr);
+  return symbol ? symbol->class_info() : nullptr;
 }
 
 std::string EmitStmts::value_receiver_access_op(const Expr& expr) {
@@ -264,17 +287,23 @@ void EmitStmts::emit_try_stmt(const Try& t) {
   for (size_t i = 0; i < t.handlers.size(); ++i) {
     const auto& h = t.handlers[i];
     std::string opener = (i == 0) ? "if" : "else if";
+    const TypeSymbol* handler_symbol = nullptr;
+    const TypeExpr* handler_type = nullptr;
+    std::optional<const TypeSymbol*> handler_result =
+        registry_.exception_handler_type_result(&h);
+    if (!handler_result) {
+      stmt_ops_.report_error(t.loc,
+                             "exception handler type was not resolved during "
+                             "build");
+    } else if ((handler_symbol = *handler_result)) {
+      handler_type = handler_symbol->type;
+    }
     if (h.class_name.empty()) {
       stmt_ops_.emitln(opener + " (true) {");
     } else {
-      // Pascal `on E: TException do` only matches exception classes, so the
-      // translated `dynamic_cast` target must be a pointer type even when the
-      // name comes from the runtime-backed SysUtils shim and does not resolve
-      // through the normal class registry.
-      TyName handler_type(h.class_name);
-      std::string handler_cxx = types_.type_to_cxx(handler_type);
-      if (handler_cxx.empty() || handler_cxx.back() != '*') {
-        handler_cxx += "*";
+      std::string handler_cxx = types_.type_symbol_to_cxx(handler_symbol);
+      if (handler_cxx.empty()) {
+        handler_cxx = "::rt::t_exception*";
       }
       stmt_ops_.emitln(opener + " (auto tp2cc_match_" + n + "_" +
                        std::to_string(i) + " = dynamic_cast<" + handler_cxx +
@@ -284,7 +313,6 @@ void EmitStmts::emit_try_stmt(const Try& t) {
     stmt_ops_.indent();
     stmt_ops_.emitln(handled_name + " = true;");
     std::optional<std::string> bound_name;
-    std::optional<TyName> bound_type;
     auto saved_locals = scope_.local_scope;
     auto saved_types = scope_.local_value_types;
     if (!h.var_name.empty()) {
@@ -292,13 +320,10 @@ void EmitStmts::emit_try_stmt(const Try& t) {
       stmt_ops_.emitln("auto " + *bound_name + " = " +
                        (h.class_name.empty()
                             ? exc_name
-                            : "tp2cc_match_" + n + "_" + std::to_string(i)) +
+                           : "tp2cc_match_" + n + "_" + std::to_string(i)) +
                        ";");
       scope_.local_scope.insert(h.var_name);
-      bound_type.emplace();
-      bound_type->name =
-          h.class_name.empty() ? std::string("exception") : h.class_name;
-      scope_.local_value_types[h.var_name] = &*bound_type;
+      scope_.local_value_types[h.var_name] = handler_type;
     }
     ++except_handler_depth_;
     if (h.body) emit_stmt(*h.body);
@@ -335,20 +360,14 @@ bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
 
   if (a.target->kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(*a.target);
-    std::string cls;
-    if (mem.base->kind == Kind::Ident &&
-        static_cast<const Ident&>(*mem.base).name == "self") {
-      cls = scope_.current_class_name;
-    } else {
-      cls = value_class_alias(*mem.base);
-    }
-    if (!cls.empty()) {
-      if (auto* prop = registry_.lookup_class_property(
-              cls, mem.name, scope_.current_unit_name)) {
+    const TypeSymbol* cls_symbol = value_class_symbol(*mem.base);
+    const ClassInfo* cls_info = cls_symbol ? cls_symbol->class_info() : nullptr;
+    if (cls_info) {
+      if (auto* prop = registry_.lookup_class_property(*cls_info, mem.name)) {
         std::vector<const Expr*> no_indices;
         stmt_ops_.emitln(properties_.lower_property_write(
                              a.loc, stmt_ops_.expr_to_cxx(*mem.base),
-                             value_receiver_access_op(*mem.base), cls, *prop,
+                             value_receiver_access_op(*mem.base), *prop,
                              no_indices, *a.value) +
                          ";");
         return true;
@@ -370,21 +389,16 @@ bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
     for (const auto& idx : ix.indices) indices.push_back(idx.get());
     if (ix.base->kind == Kind::Member) {
       const auto& mem = static_cast<const Member&>(*ix.base);
-      std::string cls;
-      if (mem.base->kind == Kind::Ident &&
-          static_cast<const Ident&>(*mem.base).name == "self") {
-        cls = scope_.current_class_name;
-      } else {
-        cls = value_class_alias(*mem.base);
-      }
-      if (!cls.empty()) {
-        if (auto* prop = registry_.lookup_class_property(
-                cls, mem.name, scope_.current_unit_name)) {
+      const TypeSymbol* cls_symbol = value_class_symbol(*mem.base);
+      const ClassInfo* cls_info =
+          cls_symbol ? cls_symbol->class_info() : nullptr;
+      if (cls_info) {
+        if (auto* prop = registry_.lookup_class_property(*cls_info, mem.name)) {
           if (!prop->params.empty()) {
             stmt_ops_.emitln(properties_.lower_property_write(
                                  a.loc, stmt_ops_.expr_to_cxx(*mem.base),
-                                 value_receiver_access_op(*mem.base), cls,
-                                 *prop, indices, *a.value) +
+                                 value_receiver_access_op(*mem.base), *prop,
+                                 indices, *a.value) +
                              ";");
             return true;
           }
@@ -397,19 +411,18 @@ bool EmitStmts::emit_property_assign_stmt(const Assign& a) {
           found && found->prop && !found->prop->params.empty()) {
         stmt_ops_.emitln(properties_.lower_property_write(
                              a.loc, found->base_cxx, found->base_access,
-                             found->class_name, *found->prop, indices,
-                             *a.value) +
+                             *found->prop, indices, *a.value) +
                          ";");
         return true;
       }
     }
-    std::string cls = value_class_alias(*ix.base);
-    if (!cls.empty()) {
-      if (auto* prop = registry_.lookup_default_property(
-              cls, scope_.current_unit_name)) {
+    const TypeSymbol* cls_symbol = value_class_symbol(*ix.base);
+    const ClassInfo* cls_info = cls_symbol ? cls_symbol->class_info() : nullptr;
+    if (cls_info) {
+      if (auto* prop = registry_.lookup_default_property(*cls_info)) {
         stmt_ops_.emitln(properties_.lower_property_write(
                              a.loc, stmt_ops_.expr_to_cxx(*ix.base),
-                             value_receiver_access_op(*ix.base), cls, *prop,
+                             value_receiver_access_op(*ix.base), *prop,
                              indices, *a.value) +
                          ";");
         return true;
@@ -532,7 +545,19 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
   }
 
   if (call_expr && ascii_lower(name) == "prefetch") {
-    return;
+    std::vector<const Expr*> call_args;
+    call_args.reserve(call_expr->args.size());
+    for (const auto& arg : call_expr->args) call_args.push_back(arg.get());
+    ResolvedCall resolved_prefetch =
+        resolution_.resolve_call(*call_expr->callee, call_args);
+    // `Prefetch` is an optimization hint only for the implicit runtime helper.
+    // A source declaration with the same spelling is an ordinary Pascal call
+    // and must keep flowing through normal expression-statement lowering.
+    if (resolved_prefetch.proc_info &&
+        resolved_prefetch.proc_info->defining_unit == "__rt__" &&
+        ascii_lower(resolved_prefetch.member_name) == "prefetch") {
+      return;
+    }
   }
   if (name == "break") {
     // Pascal break exits the enclosing loop even from inside a case.
@@ -582,7 +607,9 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
     }
     return;
   }
-  if (name == "new" && call_expr && !call_expr->args.empty()) {
+  if (name == "new" && call_expr && !call_expr->args.empty() &&
+      !unqualified_builtin_name_is_shadowed(call_expr, name,
+                                            resolve_name_provider_)) {
     // new(p) or new(p, Ctor(args)). `p` might be `arr[i]` whose
     // `decltype` is a reference (`T&`); strip it before computing
     // the pointee so `new remove_pointer_t<T&>` doesn't arise. Route
@@ -597,11 +624,10 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
                                "new requires a typed pointer slot");
         p = stmt_ops_.expr_to_cxx(*call_expr->args[0]);
       } else {
-        // Bytewise variant/packed pointer slots are real Pascal storage, but
-        // not live C++ pointer objects. Store the allocated pointer value into
-        // the slot with byte-copy helpers instead of binding a C++ reference.
-        stmt_ops_.emitln("::rt::p_new_slot<" + storage->type_cxx + ">(" +
-                         storage->ptr_cxx + ");");
+        stmt_ops_.emitln("::rt::p_new(" +
+                         storage_.storage_designator_typed_view_lvalue(
+                             *storage) +
+                         ");");
         p = "::rt::tp2cc_reinterpret_load<" + storage->type_cxx + ">(" +
             storage->ptr_cxx + ")";
       }
@@ -632,8 +658,7 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
         CallArgumentPlan ctor_plan =
             calls_.plan_call_arguments(ctor_resolved.decl, cc.callee.get(),
                                        ctor_args,
-                                       ctor_resolved.default_arg_unit,
-                                       ctor_resolved.signature_declaring_type);
+                                       ctor_resolved.default_arg_unit);
         for (size_t i = 0; i < ctor_plan.slots.size(); ++i) {
           if (i) args += ", ";
           args += calls_.lower_call_arg(ctor_plan.slots[i],
@@ -648,7 +673,9 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
     }
     return;
   }
-  if (name == "dispose" && call_expr && !call_expr->args.empty()) {
+  if (name == "dispose" && call_expr && !call_expr->args.empty() &&
+      !unqualified_builtin_name_is_shadowed(call_expr, name,
+                                            resolve_name_provider_)) {
     // dispose(p) or dispose(p, Done)
     std::string p = stmt_ops_.expr_to_cxx(*call_expr->args[0]);
     if (call_expr->args.size() >= 2) {
@@ -675,28 +702,23 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
       std::string text = stmt_ops_.expr_to_cxx(*es.expr);
       bool stmt_autocalls_member = false;
       {
-        std::string cls;
+        const TypeSymbol* cls_symbol = nullptr;
         if (mem.base && mem.base->kind == Kind::Ident) {
-          const std::string base =
-              ascii_lower(static_cast<const Ident&>(*mem.base).name);
-          const TypeSymbol* symbol =
-              migration_fallback_type_symbol_by_name(registry_, scope_, base);
-          symbol = descriptor_payload_symbol(symbol);
-          if (!symbol || (!symbol->class_info() && !symbol->record_info())) {
-            cls = value_class_alias(*mem.base);
+          if (!analysis_.class_or_record_type_value_symbol(*mem.base)) {
+            cls_symbol = value_class_symbol(*mem.base);
           }
         } else {
-          cls = value_class_alias(*mem.base);
+          cls_symbol = value_class_symbol(*mem.base);
         }
-        if (!cls.empty()) {
-          if (const auto* methods = registry_.lookup_class_methods(
-                  cls, mem.name, scope_.current_unit_name)) {
+        const ClassInfo* cls_info =
+            cls_symbol ? cls_symbol->class_info() : nullptr;
+        if (cls_info) {
+          if (const auto* methods =
+                  registry_.lookup_class_methods(*cls_info, mem.name)) {
             PickResult picked = resolution_.pick_method_overload(*methods, {});
             stmt_autocalls_member = !picked.ambiguous && picked.decl;
           } else if (ascii_lower(mem.name) == "destroy") {
-            if (const auto* ci = analysis_.migration_fallback_class_info_by_name(cls)) {
-              stmt_autocalls_member = ci->is_reference_type;
-            }
+            stmt_autocalls_member = cls_info->is_reference_type;
           }
         }
       }
@@ -855,78 +877,46 @@ void EmitStmts::emit_ordinal_for_body(const For& f, const std::string& var,
   stmt_ops_.emitln(brk + ":;");
 }
 
-std::optional<std::string> EmitStmts::for_in_type_rhs_name(const Expr& e) {
-  if (e.kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(e);
-    const std::string low = ascii_lower(id.name);
-    ResolveResult rr = resolve_name_provider_.resolve_name(id.name);
-    if (rr.kind == ResolvedKind::UnitType) return id.name;
-    if (rr.kind == ResolvedKind::Unknown &&
-        (is_primitive_type(low) || analysis_.migration_fallback_named_type_expr_by_name(id.name))) {
-      return id.name;
-    }
-    return std::nullopt;
-  }
-  if (e.kind == Kind::Member) {
-    const auto& mem = static_cast<const Member&>(e);
-    if (auto resolved = analysis_.resolve_unit_qualified_member(mem);
-        resolved && resolved->resolved.kind == ResolvedKind::UnitType) {
-      return resolved->unit_name + "." + resolved->member_name;
-    }
+std::optional<EmitStmts::ForInTypeRhs> EmitStmts::for_in_type_rhs(
+    const Expr& e) {
+  if (std::optional<const TypeSymbol*> symbol =
+          registry_.value_type_expression_result(&e)) {
+    if (*symbol) return ForInTypeRhs{.symbol = *symbol};
   }
   return std::nullopt;
 }
 
-std::string EmitStmts::for_in_class_type_name(
-    const TypeExpr* type, std::string_view owner_class_name,
-    const MethodSig* method) {
-  if (!type) return {};
+const TypeSymbol* EmitStmts::for_in_class_symbol(const TypeExpr* type) {
+  if (!type) return nullptr;
   if (type->kind == Kind::TyName) {
-    const std::string name = ascii_lower(static_cast<const TyName&>(*type).name);
-    if (method) {
-      const std::string unit = method->defining_unit.empty()
-                                   ? scope_.current_unit_name
-                                   : method->defining_unit;
-      ScopedSignatureLookupUnit signature_scope(scope_, registry_, unit,
-                                                method->declaring_type);
-      const TypeSymbol* symbol =
-          signature_type_symbol_for(registry_, scope_, name);
-      symbol = descriptor_payload_symbol(symbol);
-      if (symbol && symbol->class_info()) {
-        return type_symbol_unit_pascal_path(*symbol);
-      }
+    if (const TypeSymbol* symbol = analysis_.class_symbol_for_type(type)) {
+      return descriptor_payload_symbol(symbol);
     }
-    if (!owner_class_name.empty() && name.find('.') == std::string::npos) {
-      const std::string nested =
-          std::string(owner_class_name) + "." + name;
-      if (analysis_.migration_fallback_class_info_by_name(nested)) return nested;
-    }
-    {
-      const std::string direct = analysis_.direct_type_name(type);
-      if (!direct.empty() && analysis_.migration_fallback_class_info_by_name(direct)) {
-        return direct;
-      }
-    }
-    if (analysis_.migration_fallback_class_info_by_name(name)) return name;
   }
   type = analysis_.semantic_shape_type(type);
   if (type && type->kind == Kind::TyName) {
-    const std::string name = ascii_lower(static_cast<const TyName&>(*type).name);
-    if (analysis_.migration_fallback_class_info_by_name(name)) return name;
+    if (const TypeSymbol* symbol = analysis_.class_symbol_for_type(type)) {
+      return descriptor_payload_symbol(symbol);
+    }
   }
-  return {};
+  return nullptr;
 }
 
 const MethodSig* EmitStmts::for_in_zero_arg_method(
-    Location loc, const std::string& class_name,
-    const std::string& method_name) {
-  const auto* methods = registry_.lookup_class_methods(
-      class_name, method_name, scope_.current_unit_name);
+    Location loc, const TypeSymbol& class_symbol,
+    std::string_view method_key, std::string_view display_name) {
+  const ClassInfo* class_info = class_symbol.class_info();
+  const auto* methods =
+      class_info
+          ? registry_.lookup_class_methods(*class_info,
+                                           std::string(method_key))
+                 : nullptr;
   if (!methods) return nullptr;
 
   PickResult picked = resolution_.pick_method_overload(*methods, {});
   if (picked.ambiguous) {
-    stmt_ops_.report_error(loc, "ambiguous " + method_name + " method");
+    stmt_ops_.report_error(loc, "ambiguous " + std::string(display_name) +
+                                    " method");
     return nullptr;
   }
   if (!picked.decl) return nullptr;
@@ -939,10 +929,11 @@ const MethodSig* EmitStmts::for_in_zero_arg_method(
 EmitStmts::ForInEmitResult EmitStmts::emit_for_in_type_rhs(
     const For& f, const std::string& var) {
   if (!f.in_expr) return ForInEmitResult::NotMatched;
-  auto type_name = for_in_type_rhs_name(*f.in_expr);
-  if (!type_name) return ForInEmitResult::NotMatched;
+  auto type_rhs = for_in_type_rhs(*f.in_expr);
+  if (!type_rhs) return ForInEmitResult::NotMatched;
 
-  const TypeExpr* named = analysis_.migration_fallback_named_type_expr_by_name(*type_name);
+  const TypeSymbol* symbol = descriptor_payload_symbol(type_rhs->symbol);
+  const TypeExpr* named = symbol ? descriptor_payload_type(symbol) : nullptr;
   named = analysis_.semantic_shape_type(named);
   if (named && named->kind == Kind::TyEnum &&
       types_.enum_has_explicit_values(static_cast<const TyEnum&>(*named))) {
@@ -952,8 +943,10 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_type_rhs(
     return ForInEmitResult::Error;
   }
 
-  std::string low = types_.low_high_expr_for_named_type(*type_name, true);
-  std::string high = types_.low_high_expr_for_named_type(*type_name, false);
+  std::string low = types_.low_high_expr_for_type_symbol(type_rhs->symbol,
+                                                         true);
+  std::string high = types_.low_high_expr_for_type_symbol(type_rhs->symbol,
+                                                          false);
   if (low.empty() || high.empty()) {
     stmt_ops_.report_error(f.loc, "cannot determine bounds for for-in type");
     return ForInEmitResult::Error;
@@ -987,9 +980,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_operator_enumerator(
 }
 
 EmitStmts::ForInEmitResult EmitStmts::emit_for_in_helper_get_enumerator(
-    const For& f, const std::string& var) {
-  (void)f;
-  (void)var;
+    const For&, const std::string&) {
   // Helpers can add GetEnumerator to a type without changing the type's own
   // declaration. tp2cc does not yet model helper method lookup here, so the
   // dispatch continues to the type's own GetEnumerator and built-in forms.
@@ -999,10 +990,13 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_helper_get_enumerator(
 EmitStmts::ForInEmitResult EmitStmts::emit_for_in_own_get_enumerator(
     const For& f, const std::string& var) {
   if (!f.in_expr) return ForInEmitResult::NotMatched;
-  const std::string class_name = value_class_alias(*f.in_expr);
-  if (class_name.empty()) return ForInEmitResult::NotMatched;
+  const TypeSymbol* class_symbol = value_class_symbol(*f.in_expr);
+  if (!class_symbol || !class_symbol->class_info()) {
+    return ForInEmitResult::NotMatched;
+  }
   const MethodSig* get =
-      for_in_zero_arg_method(f.loc, class_name, "GetEnumerator");
+      for_in_zero_arg_method(f.loc, *class_symbol, "getenumerator",
+                             "GetEnumerator");
   if (!get) return ForInEmitResult::NotMatched;
   if (!get->is_function || !get->decl || !get->decl->return_type) {
     stmt_ops_.report_error(f.loc, "GetEnumerator must return an enumerator");
@@ -1012,7 +1006,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_own_get_enumerator(
   ForInEnumeratorProvider provider(
       stmt_ops_.expr_to_cxx(*f.in_expr) + value_receiver_access_op(*f.in_expr) +
           mangle(get->decl->name) + "()",
-      get->decl->return_type.get(), f.loc, class_name);
+      get->decl->return_type.get(), f.loc);
   provider.method = get;
   return emit_for_in_enumerator_provider(f, var, provider);
 }
@@ -1020,17 +1014,17 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_own_get_enumerator(
 EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
     const For& f, const std::string& var,
     const ForInEnumeratorProvider& provider) {
-  const std::string enum_class =
-      for_in_class_type_name(provider.type, provider.owner_class_name,
-                             provider.method);
-  if (enum_class.empty()) {
+  const TypeSymbol* enum_symbol = for_in_class_symbol(provider.type);
+  const ClassInfo* enum_info = enum_symbol ? enum_symbol->class_info() : nullptr;
+  if (!enum_info) {
     stmt_ops_.report_error(provider.loc,
                            "enumerator provider must return an object or class");
     return ForInEmitResult::Error;
   }
 
   const MethodSig* move =
-      for_in_zero_arg_method(provider.loc, enum_class, "MoveNext");
+      for_in_zero_arg_method(provider.loc, *enum_symbol, "movenext",
+                             "MoveNext");
   if (!move) {
     stmt_ops_.report_error(provider.loc,
                            "enumerator is missing MoveNext");
@@ -1044,15 +1038,14 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
     return ForInEmitResult::Error;
   }
 
-  const PropertyInfo* current = registry_.lookup_class_property(
-      enum_class, "Current", scope_.current_unit_name);
+  const PropertyInfo* current =
+      registry_.lookup_class_property(*enum_info, "current");
   if (!current || current->read.empty() || !current->params.empty()) {
     stmt_ops_.report_error(provider.loc,
                            "enumerator is missing readable Current");
     return ForInEmitResult::Error;
   }
 
-  const ClassInfo* enum_info = analysis_.class_info_for_type(provider.type);
   const bool enum_is_reference = enum_info && enum_info->is_reference_type;
   const std::string access = enum_is_reference ? "->" : ".";
   const std::string n = std::to_string(++loop_label_counter_);
@@ -1073,8 +1066,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
   std::vector<const Expr*> no_indices;
   stmt_ops_.emitln(var + " = " +
                    properties_.lower_property_read(
-                       provider.loc, enum_var, access, enum_class, *current,
-                       no_indices) +
+                       provider.loc, enum_var, access, *current, no_indices) +
                    ";");
   {
     LoopLabelScope labels(loop_break_labels_, loop_continue_labels_, brk, cont);
@@ -1387,7 +1379,7 @@ void EmitStmts::emit_stmt(const Stmt& s) {
         std::string nm =
             "tp2cc_with_" + std::to_string(scope_.with_stack.size());
         auto storage = storage_.storage_designator(with_expr);
-        std::string class_name = analysis_.deduce_class_alias(with_expr);
+        const TypeSymbol* class_symbol = analysis_.class_symbol_for_type(ty);
         std::string access_op = storage_.member_access_op(with_expr);
         const bool reference_receiver =
             storage_.type_is_reference_class(ty) ||
@@ -1398,7 +1390,7 @@ void EmitStmts::emit_stmt(const Stmt& s) {
                            storage_.storage_designator_raw_address(*storage) +
                            ";");
           scope_.with_stack.emplace_back(
-              nm, ty, class_name, access_op,
+              nm, ty, class_symbol, access_op,
               ScopeStateView::WithBind::BytewiseStorage(
                   nm, storage->type_cxx,
                   storage->access == EmitStorageAccess::UnalignedBytewise,
@@ -1415,7 +1407,7 @@ void EmitStmts::emit_stmt(const Stmt& s) {
         // lvalue. Only genuine lvalues can be safely aliased with `auto&`.
         stmt_ops_.emitln(std::string(bind_by_ref ? "auto& " : "auto ") + nm +
                          " = " + init + ";");
-        scope_.with_stack.emplace_back(nm, ty, class_name, access_op);
+        scope_.with_stack.emplace_back(nm, ty, class_symbol, access_op);
         if (storage && !reference_receiver && !storage->type_cxx.empty()) {
           // A normal `with rec do` binding may later expose a Pascal variant
           // payload field. Those payload fields need byte-offset selection

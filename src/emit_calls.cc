@@ -1,7 +1,6 @@
 #include "emit_calls.h"
 
 #include <algorithm>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -52,32 +51,11 @@ struct DefaultArgumentScope {
             scope,
             default_arg_context ? default_arg_context
                                 : registry.lookup_unit_context(
-                                      default_arg_unit,
+                                      pascal_key(default_arg_unit),
                                       /*implementation=*/false),
             default_arg_unit) {
   }
 };
-
-std::string visible_type_unit_from(const TypeExpr* type,
-                                   std::string_view type_name,
-                                   std::string_view unit_name,
-                                   const TypeRegistry& registry) {
-  if (const TypeSymbol* symbol = registry.resolved_symbol_for_type(type)) {
-    return symbol->defining_unit;
-  }
-  // A present TypeExpr was already through build() binding. Looking up the
-  // spelling here would mask that failure and revive emission-time alias/name
-  // chasing for default-argument helper types.
-  if (type) return {};
-  // MIGRATION_NAME_LOOKUP_FALLBACK: default-argument helper types can still be
-  // synthesized/qualified names without a bound TypeExpr. Parser-side binding
-  // should delete this spelling fallback.
-  if (const TypeSymbol* symbol =
-          registry.lookup_type_symbol(type_name, unit_name)) {
-    return symbol->defining_unit;
-  }
-  return {};
-}
 
 const MethodSig* find_selected_class_method(
     const TypeRegistry& registry, const ClassInfo& start,
@@ -96,139 +74,19 @@ const MethodSig* find_selected_class_method(
   return nullptr;
 }
 
-struct EffectiveParamType {
-  const TypeExpr* type = nullptr;
-  std::shared_ptr<TyName> signature_qualified;
-  std::shared_ptr<TyName> default_qualified;
-};
-
-bool is_plain_pointer_type(const TypeExpr* t) {
-  if (t == named_pascal_type("pointer")) return true;
+bool is_plain_pascal_pointer_type(EmitAnalysis& analysis, const TypeExpr* t) {
+  t = analysis.semantic_shape_type(t);
   return t && t->kind == Kind::TyPointer &&
          !static_cast<const TyPointer&>(*t).target;
 }
 
-EffectiveParamType effective_call_param_type(
-    const TypeRegistry& registry, ScopeStateView& scope,
-    const TypeExpr* param_type, std::string_view param_unit,
-    std::string_view param_declaring_type, std::string_view default_arg_unit) {
-  EffectiveParamType out;
-  out.type = param_type;
-  out.signature_qualified = qualified_signature_type_name(
-      registry, scope, param_type, param_unit, param_declaring_type);
-  if (out.signature_qualified) out.type = out.signature_qualified.get();
-
-  if (!default_arg_unit.empty() && default_arg_unit != scope.current_unit_name &&
-      out.type && out.type->kind == Kind::TyName) {
-    const auto& tn = static_cast<const TyName&>(*out.type);
-    if (tn.name.find('.') == std::string::npos &&
-        !is_primitive_type(tn.name) && tn.name != "nil" &&
-        runtime_named_type_cxx(tn.name).empty()) {
-      if (std::string unit =
-              visible_type_unit_from(out.type, tn.name, default_arg_unit,
-                                     registry);
-          !unit.empty()) {
-        // Default argument expressions are resolved as if they were still in
-        // the declaring unit. The generated argument text is inserted at the
-        // caller, so a named formal type from that declaration must keep its
-        // defining unit in the emitted C++ type name.
-        out.default_qualified = std::make_shared<TyName>(tn);
-        out.default_qualified->name = unit + "." + tn.name;
-        out.type = out.default_qualified.get();
-      }
-    }
-  }
-  return out;
+bool is_typed_pascal_pointer_type(EmitAnalysis& analysis, const TypeExpr* t) {
+  t = analysis.semantic_shape_type(t);
+  return t && t->kind == Kind::TyPointer &&
+         static_cast<const TyPointer&>(*t).target;
 }
 
 }  // namespace
-
-void EmitCalls::mark_call_slot(std::vector<CallArgumentSlot>& slots,
-                               std::size_t index,
-                               UntypedArgKind untyped_kind, bool is_mutable,
-                               const ast::TypeExpr* type) {
-  // Builtin memory helpers are registered as runtime routines, but several of
-  // their Pascal arguments still mean caller storage. Store that fact in the
-  // same slot table used for parsed formal parameters.
-  if (index >= slots.size()) return;
-  CallArgumentSlot& slot = slots[index];
-  if (untyped_kind != UntypedArgKind::None) {
-    slot.untyped_arg = untyped_kind;
-  }
-  if (is_mutable) slot.mutable_ref_arg = true;
-  slot.param_type = type;
-}
-
-std::vector<CallArgumentSlot>
-EmitCalls::call_slots_with_builtin_memory_helper_info(
-    std::string_view name, std::vector<CallArgumentSlot> slots) {
-  const std::string lower = ascii_lower(name);
-
-  // Pascal's raw memory helpers all operate on caller storage, not on the
-  // value of the first expression. Reuse the normal untyped-argument
-  // lowering path here so calls like `FillChar(FList^[I], ...)` become
-  // `&slot` in C++ instead of reinterpreting the pointer value stored there.
-  if (lower == "fillchar" || lower == "fillbyte" ||
-      lower == "fillword" || lower == "filldword") {
-    mark_call_slot(slots, 0, UntypedArgKind::Mutable, /*is_mutable=*/true);
-    return slots;
-  }
-  if (lower == "initialize") {
-    mark_call_slot(slots, 0, UntypedArgKind::None, /*is_mutable=*/true);
-    return slots;
-  }
-  if (lower == "move") {
-    mark_call_slot(slots, 0, UntypedArgKind::Const, /*is_mutable=*/false);
-    mark_call_slot(slots, 1, UntypedArgKind::Mutable, /*is_mutable=*/true);
-    return slots;
-  }
-  if (lower == "setstring") {
-    // System.SetString mutates the destination string variable. The source
-    // pointer is still an ordinary value because the third argument supplies
-    // the byte count to copy.
-    mark_call_slot(slots, 0, UntypedArgKind::None, /*is_mutable=*/true);
-    return slots;
-  }
-  if (lower == "blockread") {
-    mark_call_slot(slots, 1, UntypedArgKind::Mutable, /*is_mutable=*/true);
-    return slots;
-  }
-  if (lower == "blockwrite") {
-    mark_call_slot(slots, 1, UntypedArgKind::Const, /*is_mutable=*/false);
-    return slots;
-  }
-  if (lower == "indexbyte" || lower == "indexword") {
-    mark_call_slot(slots, 0, UntypedArgKind::Const, /*is_mutable=*/false);
-    return slots;
-  }
-  if (lower == "comparebyte" || lower == "comparechar" ||
-      lower == "compareword") {
-    mark_call_slot(slots, 0, UntypedArgKind::Const, /*is_mutable=*/false);
-    mark_call_slot(slots, 1, UntypedArgKind::Const, /*is_mutable=*/false);
-    return slots;
-  }
-  if (lower == "getmem" || lower == "reallocmem" ||
-      lower == "strdispose") {
-    mark_call_slot(slots, 0, UntypedArgKind::None, /*is_mutable=*/true);
-  }
-  // Pascal `Val(S; var V; var Code)` and `Str(X; var S)` write to caller
-  // storage. Mark the var-mode slots so a call-site typecast like
-  // `Val(s, aword(result), code)` lowers through `lower_call_arg`'s
-  // mutable-ref-cast path -- it rebinds the `result` storage as the
-  // typecast's target type, which matches the unsigned `p_val` rt
-  // overload. Without this, the cast lowers as a value rvalue and the
-  // overload set fails to match.
-  if (lower == "val") {
-    mark_call_slot(slots, 1, UntypedArgKind::None, /*is_mutable=*/true);
-    mark_call_slot(slots, 2, UntypedArgKind::None, /*is_mutable=*/true);
-    return slots;
-  }
-  if (lower == "str") {
-    mark_call_slot(slots, 1, UntypedArgKind::None, /*is_mutable=*/true);
-    return slots;
-  }
-  return slots;
-}
 
 EmitCalls::EmitCalls(const TypeRegistry& registry, ScopeStateView& scope,
                      EmitAnalysis& analysis, EmitTypes& types,
@@ -276,8 +134,6 @@ std::vector<CallArgumentSlot> EmitCalls::append_default_call_slots(
         .expr = flat_params[i].default_value,
         .param_type = nullptr,
         .param_context = nullptr,
-        .param_unit = {},
-        .param_declaring_type = {},
         .default_arg_context = signature_context,
         .untyped_arg = UntypedArgKind::None,
         .mutable_ref_arg = false,
@@ -286,9 +142,34 @@ std::vector<CallArgumentSlot> EmitCalls::append_default_call_slots(
   return slots;
 }
 
+std::vector<CallArgumentSlot> EmitCalls::call_slots_with_proc_info(
+    const ProcInfo* proc_info, std::vector<CallArgumentSlot> slots) {
+  // Runtime builtins have ProcInfo records but no ProcDecl parameter list.
+  // Build attaches their caller-storage contracts here so call lowering can
+  // consume the selected callable instead of reclassifying callee spelling.
+  if (!proc_info) return slots;
+  const size_t count = std::min(slots.size(), proc_info->slot_info.size());
+  for (size_t i = 0; i < count; ++i) {
+    switch (proc_info->slot_info[i].storage) {
+      case ProcInfo::SlotStorage::Value:
+        break;
+      case ProcInfo::SlotStorage::Mutable:
+        slots[i].mutable_ref_arg = true;
+        break;
+      case ProcInfo::SlotStorage::UntypedConst:
+        slots[i].untyped_arg = UntypedArgKind::Const;
+        break;
+      case ProcInfo::SlotStorage::UntypedMutable:
+        slots[i].untyped_arg = UntypedArgKind::Mutable;
+        slots[i].mutable_ref_arg = true;
+        break;
+    }
+  }
+  return slots;
+}
+
 std::vector<CallArgumentSlot> EmitCalls::call_slots_with_decl_param_info(
-    const ProcDecl* decl, std::vector<CallArgumentSlot> slots,
-    std::string_view param_unit, std::string_view param_declaring_type) {
+    const ProcDecl* decl, std::vector<CallArgumentSlot> slots) {
   if (!decl) return slots;
   size_t ai = 0;
   for (const auto& p : decl->params) {
@@ -310,8 +191,6 @@ std::vector<CallArgumentSlot> EmitCalls::call_slots_with_decl_param_info(
       if (!slot.param_context) {
         slot.param_context = registry_.lookup_proc_signature_context(decl);
       }
-      slot.param_unit = std::string(param_unit);
-      slot.param_declaring_type = std::string(param_declaring_type);
       if (slot.defaulted && !slot.default_arg_context) {
         slot.default_arg_context = registry_.lookup_proc_signature_context(decl);
       }
@@ -322,27 +201,15 @@ std::vector<CallArgumentSlot> EmitCalls::call_slots_with_decl_param_info(
 }
 
 std::vector<CallArgumentSlot>
-EmitCalls::call_slots_with_builtin_helper_param_info(
-    const Expr& callee, std::vector<CallArgumentSlot> slots) {
-  if (callee.kind == Kind::Ident) {
-    return call_slots_with_builtin_memory_helper_info(
-        static_cast<const Ident&>(callee).name, std::move(slots));
-  }
-  if (callee.kind != Kind::Member) return slots;
-  const auto& mem = static_cast<const Member&>(callee);
-  if (mem.base->kind == Kind::Ident &&
-      ascii_lower(static_cast<const Ident&>(*mem.base).name) == "system") {
-    return call_slots_with_builtin_memory_helper_info(mem.name,
-                                                     std::move(slots));
-  }
-  return slots;
-}
-
-std::vector<CallArgumentSlot>
 EmitCalls::call_slots_with_procedural_callee_param_info(
     const Expr& callee, std::vector<CallArgumentSlot> slots) {
   const TypeExpr* callee_type = procedural_callee_type(callee);
-  if (callee_type) callee_type = analysis_.semantic_shape_type(callee_type);
+  const TypeLookupContext* callee_context =
+      registry_.lookup_context_for_type(callee_type);
+  if (callee_type) {
+    callee_type =
+        analysis_.semantic_shape_type_in_context(callee_type, callee_context);
+  }
   if (!callee_type || callee_type->kind != Kind::TyProcedural) return slots;
 
   const auto& proc = static_cast<const TyProcedural&>(*callee_type);
@@ -363,6 +230,7 @@ EmitCalls::call_slots_with_procedural_callee_param_info(
            analysis_.const_param_needs_mutable_ref(p.type.get()));
       slot.param_type = p.type.get();
       slot.param_context = registry_.lookup_context_for_type(p.type.get());
+      if (!slot.param_context) slot.param_context = callee_context;
       ++ai;
     }
   }
@@ -379,8 +247,7 @@ const TypeExpr* EmitCalls::procedural_callee_type(const Expr& callee) {
 CallArgumentPlan EmitCalls::plan_call_arguments(
     const ProcDecl* decl, const Expr* callee,
     const std::vector<const Expr*>& explicit_args,
-    std::string_view default_arg_unit,
-    std::string_view signature_declaring_type) {
+    std::string_view default_arg_unit, const ProcInfo* selected_proc) {
   std::vector<CallArgumentSlot> slots;
   slots.reserve(explicit_args.size());
   for (const Expr* arg : explicit_args) {
@@ -388,8 +255,6 @@ CallArgumentPlan EmitCalls::plan_call_arguments(
         .expr = arg,
         .param_type = nullptr,
         .param_context = nullptr,
-        .param_unit = {},
-        .param_declaring_type = {},
         .default_arg_context = nullptr,
         .untyped_arg = UntypedArgKind::None,
         .mutable_ref_arg = false,
@@ -398,13 +263,9 @@ CallArgumentPlan EmitCalls::plan_call_arguments(
 
   slots = append_default_call_slots(decl, std::move(slots));
 
-  if (callee) {
-    slots = call_slots_with_builtin_helper_param_info(*callee, std::move(slots));
-  }
+  slots = call_slots_with_proc_info(selected_proc, std::move(slots));
   if (decl) {
-    slots = call_slots_with_decl_param_info(decl, std::move(slots),
-                                            default_arg_unit,
-                                            signature_declaring_type);
+    slots = call_slots_with_decl_param_info(decl, std::move(slots));
   } else if (callee) {
     slots =
         call_slots_with_procedural_callee_param_info(*callee, std::move(slots));
@@ -416,13 +277,14 @@ CallArgumentPlan EmitCalls::plan_call_arguments(
 bool EmitCalls::slot_accepts_argument(const CallArgumentSlot& slot,
                                       std::string_view default_arg_unit) {
   if (!slot.expr || slot.defaulted) return true;
-  EffectiveParamType effective = effective_call_param_type(
-      registry_, scope_, slot.param_type, slot.param_unit,
-      slot.param_declaring_type, default_arg_unit);
-  const TypeExpr* param_type = effective.type;
+  const TypeExpr* param_type = slot.param_type;
   const TypeLookupContext* param_context =
       slot.param_context ? slot.param_context
                          : registry_.lookup_context_for_type(param_type);
+  if (!param_context && !default_arg_unit.empty()) {
+    param_context = registry_.lookup_unit_context(pascal_key(default_arg_unit),
+                                                  /*implementation=*/false);
+  }
   if (!param_type || slot.untyped_arg != UntypedArgKind::None) return true;
 
   auto scored_conversion_is_viable = [&] {
@@ -440,8 +302,12 @@ bool EmitCalls::slot_accepts_argument(const CallArgumentSlot& slot,
   };
 
   if (slot.mutable_ref_arg) {
+    auto storage = storage_.storage_designator(*slot.expr);
+    if (!storage) {
+      storage = storage_.mutable_typecast_slot_designator(*slot.expr);
+    }
     if (!storage_.expr_is_storage_lvalue(*slot.expr) &&
-        !storage_.storage_designator(*slot.expr)) {
+        !storage) {
       return false;
     }
     const TypeExpr* arg_type = overload_types_.type_for_overload(*slot.expr);
@@ -455,14 +321,18 @@ bool EmitCalls::slot_accepts_argument(const CallArgumentSlot& slot,
         storage_.expr_is_storage_lvalue(*slot.expr)) {
       return true;
     }
-    if (storage_.expr_is_storage_lvalue(*slot.expr) &&
-        storage_.type_is_pointerish(canon_param) &&
-        storage_.type_is_pointerish(arg_type) &&
-        (is_plain_pointer_type(canon_param) || is_plain_pointer_type(arg_type))) {
-      return true;
-    }
     if (scored_conversion_is_viable()) {
       return true;
+    }
+    if (storage && storage->access != EmitStorageAccess::UnalignedBytewise) {
+      // A Pascal `Pointer` variable is an untyped pointer-sized storage slot.
+      // When a typed pointer `var/out` formal is selected, the formal type
+      // supplies the slot interpretation for this call; no builtin callee name
+      // is involved.
+      if (is_plain_pascal_pointer_type(analysis_, arg_type) &&
+          is_typed_pascal_pointer_type(analysis_, canon_param)) {
+        return true;
+      }
     }
     return false;
   }
@@ -482,13 +352,7 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
                                       bool mutable_ref_arg,
                                       std::string_view default_arg_unit,
                                       const TypeLookupContext* default_arg_context,
-                                      std::string_view param_unit,
-                                      std::string_view param_declaring_type,
                                       const TypeLookupContext* param_context) {
-  EffectiveParamType effective = effective_call_param_type(
-      registry_, scope_, param_type, param_unit, param_declaring_type,
-      default_arg_unit);
-  param_type = effective.type;
   const TypeLookupContext* effective_param_context =
       param_context ? param_context
                     : registry_.lookup_context_for_type(param_type);
@@ -548,7 +412,12 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
   } storage_view_context(scope_.storage_view_context,
                          scope_.storage_view_context || mutable_ref_arg ||
                              untyped_arg != UntypedArgKind::None);
-  const TypeExpr* raw_arg_type = overload_types_.type_for_overload(arg);
+  // Argument emission needs the actual source type. The overload provider may
+  // carry a selected formal/result type, so use it only when ordinary
+  // expression typing cannot describe the produced value.
+  const TypeExpr* raw_arg_type = analysis_.explicit_typecast_result_type(arg);
+  if (!raw_arg_type) raw_arg_type = analysis_.deduce_type(arg);
+  if (!raw_arg_type) raw_arg_type = overload_types_.type_for_overload(arg);
   const TypeExpr* arg_type = raw_arg_type;
   if (arg_type) arg_type = analysis_.semantic_shape_type(arg_type);
   if (mutable_ref_arg && (canon_param_type || untyped_arg == UntypedArgKind::None)) {
@@ -560,46 +429,47 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
           arg.loc, "var/out argument", *use);
       return expr_ops_.expr_to_cxx(arg);
     }
-    if (auto storage = storage_.storage_designator(arg)) {
-      if (storage->access == EmitStorageAccess::ReinterpretRef) {
-        if (param_type && storage->type_cxx != types_.type_to_cxx(*param_type)) {
-          return storage_.reinterpret_ref_text(types_.type_to_cxx(*param_type),
-                                               storage->text, false);
-        }
-        return storage->text;
-      }
+    auto storage = storage_.storage_designator(arg);
+    if (!storage) {
+      storage = storage_.mutable_typecast_slot_designator(arg);
+    }
+    if (storage) {
       if (storage->access == EmitStorageAccess::UnalignedBytewise) {
         expr_ops_.report_error(
             arg.loc, "unaligned storage cannot be passed to var/out parameter");
         return expr_ops_.expr_to_cxx(arg);
       }
       if (storage->is_bytewise()) {
-        const std::string ref_type =
-            param_type ? types_.type_to_cxx(*param_type) : storage->type_cxx;
-        if (!ref_type.empty()) {
-          // Variant payloads are aligned Pascal storage, but they are reached
-          // through byte offsets so value reads/writes avoid C++ union
-          // active-member rules. A typed var/out call needs the callee's
-          // reference view of that same storage.
-          return storage_.reinterpret_ref_text(ref_type, storage->ptr_cxx,
-                                               true);
+        if (auto view = storage_.typecast_storage_view(arg);
+            view && view->target_is_primitive) {
+          expr_ops_.report_error(
+              arg.loc,
+              "primitive storage typecast cannot be passed to var/out parameter");
+          return expr_ops_.expr_to_cxx(arg);
+        }
+        if (storage->type_cxx.empty()) {
+          expr_ops_.report_error(
+              arg.loc, "typed var/out argument requires a resolved storage type");
+          return expr_ops_.expr_to_cxx(arg);
+        }
+        std::string view_type_cxx = storage->type_cxx;
+        if (param_type && untyped_arg == UntypedArgKind::None) {
+          if (std::string formal_cxx = types_.type_to_cxx(*param_type);
+              !formal_cxx.empty()) {
+            view_type_cxx = std::move(formal_cxx);
+          }
+        }
+        return storage_.storage_designator_typed_view_lvalue(*storage,
+                                                             view_type_cxx);
+      }
+      if (is_plain_pascal_pointer_type(analysis_, arg_type) &&
+          is_typed_pascal_pointer_type(analysis_, canon_param_type)) {
+        if (std::string formal_cxx = types_.type_to_cxx(*param_type);
+            !formal_cxx.empty()) {
+          return storage_.storage_designator_typed_view_lvalue(*storage,
+                                                               formal_cxx);
         }
       }
-    }
-  }
-  if (mutable_ref_arg && canon_param_type && arg_type &&
-      storage_.expr_is_storage_lvalue(arg) &&
-      storage_.type_is_pointerish(canon_param_type) &&
-      storage_.type_is_pointerish(arg_type)) {
-    const std::string param_cxx =
-        param_type ? types_.type_to_cxx(*param_type)
-                   : types_.type_to_cxx(*canon_param_type);
-    const std::string arg_cxx =
-        raw_arg_type ? types_.type_to_cxx(*raw_arg_type)
-                     : types_.type_to_cxx(*arg_type);
-    if (param_cxx != arg_cxx) {
-      return storage_.reinterpret_ref_text(param_cxx,
-                                         expr_ops_.expr_to_cxx(arg), false);
     }
   }
   if (canon_param_type && storage_.type_is_stringish(canon_param_type)) {
@@ -627,7 +497,8 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
   }
   if (param_type && arg_type && !mutable_ref_arg &&
       untyped_arg == UntypedArgKind::None) {
-    if (auto conv = resolution_.find_assignment_operator(arg_type, param_type);
+    if (auto conv = resolution_.find_assignment_operator(
+            arg_type, param_type, effective_param_context);
         conv.decl) {
       std::string fn = pascal_assignment_operator_helper_name(*conv.decl);
       if (!conv.defining_unit.empty()) {
@@ -664,6 +535,13 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
   }
   if (untyped_arg == UntypedArgKind::Const &&
       !mutable_ref_arg && !storage_.expr_is_storage_lvalue(arg)) {
+    if (storage_.type_is_pointerish(arg_type)) {
+      // A pointer-valued expression used as an untyped `const` actual denotes
+      // the bytes it points at. Passing the address of the temporary pointer
+      // object would change `sink(pointer(value), n)` into "sink the pointer
+      // variable itself", which is the opposite storage location.
+      return "((const void*)(" + arg_text + "))";
+    }
     return "::rt::tp2cc_const_untyped_ptr(" + arg_text + ")";
   }
   const char* ptr_cast =
@@ -688,20 +566,17 @@ std::string EmitCalls::lower_call_arg(const CallArgumentSlot& slot,
                         slot.mutable_ref_arg,
                         slot.defaulted ? default_arg_unit : std::string_view{},
                         slot.defaulted ? slot.default_arg_context : nullptr,
-                        slot.param_unit, slot.param_declaring_type,
                         slot.param_context);
 }
 
 std::string EmitCalls::lower_implicit_zero_arg_call(
     const std::string& callee_text, const ProcDecl* decl,
-    std::string_view default_arg_unit,
-    std::string_view signature_declaring_type) {
+    std::string_view default_arg_unit) {
   if (!decl) return callee_text + "()";
 
   std::vector<const Expr*> args;
-  CallArgumentPlan plan =
-      plan_call_arguments(decl, nullptr, args, default_arg_unit,
-                          signature_declaring_type);
+  CallArgumentPlan plan = plan_call_arguments(decl, nullptr, args,
+                                              default_arg_unit);
   if (plan.slots.empty()) return callee_text + "()";
 
   std::string out = callee_text + "(";
@@ -722,10 +597,10 @@ std::optional<std::string> EmitCalls::maybe_lower_class_free_member(
 }
 
 std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
-    Location where, std::string_view class_name, std::string_view member_name,
+    Location where, const TypeSymbol& class_symbol, std::string_view member_name,
     const CallArgumentPlan& plan, const ProcDecl* selected_decl) {
-  const ClassInfo* ci =
-      analysis_.migration_fallback_class_info_by_name(std::string(class_name));
+  const TypeSymbol* symbol = descriptor_payload_symbol(&class_symbol);
+  const ClassInfo* ci = symbol ? symbol->class_info() : nullptr;
   if (!ci || !ci->is_reference_type) {
     return std::nullopt;
   }
@@ -746,7 +621,7 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
   if (ci->is_abstract) {
     report_warning(where,
                    "instantiating abstract class `" +
-                       std::string(class_name) + "`");
+                       type_symbol_pascal_path(*symbol) + "`");
   }
 
   // Pascal constructor calls on a class value (`TNode.Create`) allocate a
@@ -758,11 +633,7 @@ std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
     if (i) args_cxx += ", ";
     args_cxx += lower_call_arg(plan.slots[i], default_arg_unit);
   }
-  const TypeSymbol* symbol =
-      descriptor_payload_symbol(
-          registry_.lookup_type_symbol_exact(ci->defining_unit, ci->name));
-  std::string struct_ty = symbol ? types_.type_symbol_struct_cxx(*symbol)
-                                 : types_.named_type_struct_cxx(class_name);
+  std::string struct_ty = types_.type_symbol_struct_cxx(*symbol);
   return "([&]{ auto tp2cc_ptr = new " + struct_ty + "{}; tp2cc_ptr->" +
          (implicit_root_create ? std::string("p_create")
                                : mangle(std::string(member_name))) +

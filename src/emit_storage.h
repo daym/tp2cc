@@ -97,10 +97,8 @@ struct EmitTypecastStorageView {
 
 enum class EmitStorageAccess {
   Ordinary,
-  ReinterpretRef,
   // Aligned storage reached through byte offsets. Variant-record payloads use
-  // this to avoid selecting a C++ union member for reads/writes; typed var/out
-  // calls may still need a reference to the payload storage.
+  // this to avoid selecting a C++ union member for reads/writes.
   Bytewise,
   // Storage that may violate the C++ alignment requirement for its Pascal
   // type, such as packed fields or explicit `unaligned(...)`.
@@ -132,15 +130,6 @@ struct EmitStorageDesignator {
   static EmitStorageDesignator ordinary_typed_address(
       std::string text_in, std::string ptr_cxx_in, std::string type_cxx_in) {
     return EmitStorageDesignator(EmitStorageAccess::Ordinary,
-                                 std::move(text_in), std::move(ptr_cxx_in),
-                                 std::move(type_cxx_in),
-                                 EmitStorageAddressForm::TypedStoragePointer);
-  }
-
-  static EmitStorageDesignator reinterpret_ref(std::string text_in,
-                                               std::string ptr_cxx_in,
-                                               std::string type_cxx_in) {
-    return EmitStorageDesignator(EmitStorageAccess::ReinterpretRef,
                                  std::move(text_in), std::move(ptr_cxx_in),
                                  std::move(type_cxx_in),
                                  EmitStorageAddressForm::TypedStoragePointer);
@@ -184,8 +173,7 @@ struct EmitStorageDesignator {
   }
   bool is_special() const { return access != EmitStorageAccess::Ordinary; }
   bool raw_address_needs_typed_cast() const {
-    return is_bytewise() || access == EmitStorageAccess::ReinterpretRef ||
-           ptr_form == EmitStorageAddressForm::RawBytePointer;
+    return is_bytewise() || ptr_form == EmitStorageAddressForm::RawBytePointer;
   }
 
  private:
@@ -221,12 +209,19 @@ class EmitStorage {
 
   std::optional<EmitTypecastStorageView> typecast_storage_view(
       const ast::Expr& e);
+  std::optional<EmitStorageDesignator> absolute_alias_designator(
+      const ast::Ident& id);
   std::optional<EmitStorageDesignator> storage_designator(const ast::Expr& e);
+  std::optional<EmitStorageDesignator> mutable_typecast_slot_designator(
+      const ast::Expr& e);
   std::optional<EmitStorageDesignator> resolved_bytewise_with_field_storage(
       const ResolveResult& rr);
   std::string storage_designator_value(const EmitStorageDesignator& d);
-  std::string storage_designator_member_base(const EmitStorageDesignator& d,
-                                             Location loc);
+  std::string storage_designator_member_base(const EmitStorageDesignator& d);
+  std::string storage_designator_typed_view_lvalue(
+      const EmitStorageDesignator& d);
+  std::string storage_designator_typed_view_lvalue(
+      const EmitStorageDesignator& d, std::string_view type_cxx);
   // Raw address of the Pascal storage denoted by a designator. This is for
   // internal storage computations: byte offsets, memcpy helpers, and backing
   // var/out machinery. It is not the public Pascal value of `@expr`.
@@ -293,12 +288,20 @@ class EmitStorage {
       const ast::TypeExpr* src_type, const ast::TypeExpr* dst_type);
   bool pointer_to_object_upcast_is_valid(const ast::TypeExpr* dst_type,
                                          const ast::TypeExpr* src_type);
+  bool pointer_to_object_downcast_is_valid(const ast::TypeExpr* dst_type,
+                                           const ast::TypeExpr* src_type);
   bool class_to_interface_conversion_is_valid(const ast::TypeExpr* dst_type,
                                               const ast::TypeExpr* src_type);
+  // Pascal `Ptype(p)^` where Ptype is a typed pointer and the cast is not
+  // covered by the class-hierarchy path. Without this route the emitter would
+  // produce `*(Ptype)p`, which is strict-aliasing UB whenever the pointee's
+  // dynamic type is not Ptype's pointee. Return a bytewise storage designator
+  // so downstream reads/writes go through the memcpy helpers.
+  std::optional<EmitStorageDesignator> pointer_typecast_deref_as_bytewise(
+      const ast::Deref& d);
   const ClassInfo* class_info_for_pointer_target(const ast::TypeExpr* t);
   const ClassInfo* class_info_for_value_type(const ast::TypeExpr* raw,
                                              const ast::TypeExpr* canonical);
-  bool same_class_info(const ClassInfo& a, const ClassInfo& b) const;
   bool class_parent_chain_contains(const ClassInfo& ancestor,
                                    const ClassInfo& current) const;
   // Central pointer-value coercion policy used by explicit typecasts, plain
@@ -325,10 +328,6 @@ class EmitStorage {
   std::string lower_fixed_char_array_value_to_pchar(
       const ast::TypeExpr* src_type, const ast::TypeExpr* dst_type,
       const std::string& source_cxx);
-  std::string reinterpret_ref_text(const std::string& ty_cxx,
-                                   const std::string& source_cxx,
-                                   bool pointee_view);
-
   std::optional<EmitAbsoluteTargetInfo> resolve_absolute_target(
       const ast::VarDecl& vd);
 
@@ -350,7 +349,7 @@ class EmitStorage {
   std::string ord_storage_target_cxx(const ast::Expr& source);
   bool chr_source_has_byte_storage(const ast::Expr& source);
   std::optional<StorageCastTarget> storage_typecast_target(
-      const ast::Ident& id, const ast::Expr& source);
+      const ast::Call& call, const ast::Expr& source);
   std::string typecast_source_raw_pointer(const ast::Expr& source,
                                           const std::string& source_cxx,
                                           bool untyped_storage);
