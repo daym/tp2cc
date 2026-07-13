@@ -1,0 +1,44 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-07-04
+Subject: Import compiler-local pointer aliases where used
+License: expat
+
+These compiler units use pointer aliases declared in `compiler/globtype.pas`,
+but omit `globtype` from their uses lists.
+
+Native bootstrap builds can still accept them because the bootstrap compiler's
+RTL supplies same-named pointer aliases.  That hides an undeclared dependency on
+the compiler-local type namespace.
+
+--- a/compiler/aoptbase.pas
++++ b/compiler/aoptbase.pas
+@@ -27,6 +27,7 @@
+   interface
+ 
+     uses
++      globtype,
+       aasmbase,aasmcpu,aasmtai,aasmdata,
+       cpubase,
+       cgbase,
+
+--- a/compiler/owar.pas
++++ b/compiler/owar.pas
+@@ -89,6 +89,7 @@
+ implementation
+ 
+     uses
++      globtype,
+       SysUtils,
+       cstreams,
+       systems,
+
+--- a/compiler/optconstprop.pas
++++ b/compiler/optconstprop.pas
+@@ -55,6 +55,7 @@
+   implementation
+ 
+     uses
++      globtype,
+       fmodule,
+       pass_1,procinfo,
+       symsym, symconst,
