@@ -1,0 +1,39 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-07-08
+Subject: Use an unsigned temporary in rautils ParseVal
+License: expat
+
+`rautils.ParseVal` retries a failed signed conversion by passing
+`aword(result)` as the `val` target.  That asks `val` to write through an
+`aword` var parameter into the storage of the function result, whose declared
+type is `aint`.
+
+tp2cc rejects such in-place var-parameter casts instead of generating a C++
+reference to the same storage through an unrelated type.  Parse into an
+`aword` temporary, then assign the converted value back to the function result.
+
+--- a/compiler/rautils.pas
++++ b/compiler/rautils.pas
+@@ -572,6 +572,7 @@
+   code : integer;
+   errmsg : word;
+   prefix : string[2];
++  uresult : aword;
+ Begin
+   case base of
+     2 :
+@@ -600,12 +601,13 @@
+   val(prefix+s,result,code);
+   if code<>0 then
+     begin
+-      val(prefix+s,aword(result),code);
++      val(prefix+s,uresult,code);
+       if code<>0 then
+         begin
+           Message1(errmsg,s);
+           result:=0;
+         end;
++      result:=uresult;
+     end;
+ end;
+
