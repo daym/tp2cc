@@ -18,6 +18,8 @@ struct TypeExpr;
 namespace tp2cc {
 
 struct TypeLookupContext;
+struct ProcInfo;
+struct TypeSymbol;
 
 // Result of Pascal identifier lookup. The emitter uses this both for C++ access
 // text (`cxx`) and for semantic questions like "is this a zero-arg callable?".
@@ -35,7 +37,6 @@ enum class ResolvedKind {
   UnitVar,      // variable exported from a visible Pascal unit
   UnitConst,    // constant exported from a visible Pascal unit
   UnitProc,     // procedure/function exported from a visible Pascal unit
-  UnitType,     // named type exported from a visible Pascal unit
   EnumMember,   // enum value found through Pascal enum visibility
   RtBuiltin,    // runtime helper tracked without a Pascal AST decl
 };
@@ -65,9 +66,7 @@ struct ResolveResult {
   bool is_callable = false;              // name denotes something invocable
   const ast::ProcDecl* proc = nullptr;   // declaration for call-site lowering
   bool accepts_zero_args = false;        // rt builtin or decl permits zero args
-  std::string return_type_name;          // Pascal-facing return type alias/name
   std::string default_arg_unit;          // declaration scope for defaults
-  std::string signature_declaring_type;  // owning type scope for method formals
   // Metadata for a bare field resolved through `with` where the `with`
   // receiver is byte-addressed storage. The ordinary `cxx` expression cannot
   // name such a field without first manufacturing a C++ aggregate reference.
@@ -75,38 +74,34 @@ struct ResolveResult {
 
   ResolveResult() = default;
   ResolveResult(ResolvedKind kind_in, std::string cxx_in)
-      : kind(kind_in), cxx(std::move(cxx_in)) {}
+      : kind(kind_in),
+        cxx(std::move(cxx_in)) {}
 
   static ResolveResult callable(ResolvedKind kind, std::string cxx,
                                 bool is_parameterless,
                                 const ast::ProcDecl* proc,
                                 bool accepts_zero_args,
-                                std::string return_type_name,
-                                std::string default_arg_unit,
-                                std::string signature_declaring_type = {}) {
+                                std::string default_arg_unit) {
     return ResolveResult(kind, std::move(cxx), is_parameterless, true, proc,
-                         accepts_zero_args, std::move(return_type_name),
-                         std::move(default_arg_unit),
-                         std::move(signature_declaring_type), std::nullopt);
+                         accepts_zero_args, std::move(default_arg_unit),
+                         std::nullopt);
   }
 
   static ResolveResult bytewise_with_field_result(
       const ast::TypeExpr* field_type, std::string base_ptr_cxx,
       std::string base_type_cxx, std::string field_cxx, bool unaligned) {
     return ResolveResult(
-        ResolvedKind::WithField, {}, false, false, nullptr, false, {}, {},
-        {}, BytewiseWithField(field_type, std::move(base_ptr_cxx),
-                              std::move(base_type_cxx), std::move(field_cxx),
-                              unaligned));
+        ResolvedKind::WithField, {}, false, false, nullptr, false, {},
+        BytewiseWithField(field_type, std::move(base_ptr_cxx),
+                          std::move(base_type_cxx), std::move(field_cxx),
+                          unaligned));
   }
 
  private:
   ResolveResult(ResolvedKind kind_in, std::string cxx_in,
                 bool is_parameterless_in, bool is_callable_in,
                 const ast::ProcDecl* proc_in, bool accepts_zero_args_in,
-                std::string return_type_name_in,
                 std::string default_arg_unit_in,
-                std::string signature_declaring_type_in,
                 std::optional<BytewiseWithField> bytewise_with_field_in)
       : kind(kind_in),
         cxx(std::move(cxx_in)),
@@ -114,15 +109,15 @@ struct ResolveResult {
         is_callable(is_callable_in),
         proc(proc_in),
         accepts_zero_args(accepts_zero_args_in),
-        return_type_name(std::move(return_type_name_in)),
         default_arg_unit(std::move(default_arg_unit_in)),
-        signature_declaring_type(std::move(signature_declaring_type_in)),
         bytewise_with_field(std::move(bytewise_with_field_in)) {}
 };
 
 // Empty qualifier means ordinary lexical lookup. Non-empty qualifiers are
-// Pascal unit names or class / record aliases.
-enum class QualifierKind { None, Unit, Class };
+// Pascal unit names. Type-qualified member access is emitted from the
+// bound TypeSymbol/ClassInfo instead of resolving a source qualifier
+// here.
+enum class QualifierKind { None, Unit };
 
 class ResolveNameProvider {
  public:
@@ -268,10 +263,13 @@ struct ResolvedCall {
   // Default parameter expressions are lowered at the call site, but
   // unqualified names inside them resolve in the declaration's unit.
   std::string default_arg_unit;
-  std::string signature_declaring_type;
-  // Metadata-only runtime helpers have no ProcDecl but still have a Pascal
-  // result type visible to type analysis.
-  std::string return_type_name;
+  // Metadata-only runtime helpers have no ProcDecl, so build carries the
+  // resolved result symbol here for type analysis.
+  const TypeSymbol* return_type_symbol = nullptr;
+  // The selected callable record. This is needed for metadata-only runtime
+  // procedures because their writable/untyped parameter contracts have no
+  // ProcDecl params to inspect.
+  const ProcInfo* proc_info = nullptr;
   // True iff the resolver had to pick among multiple arity-viable candidates
   // by Pascal conversion ranking. The call site then wraps each value arg in
   // `static_cast<param_type>(...)` so C++ overload resolution lands on the

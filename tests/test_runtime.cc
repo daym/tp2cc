@@ -551,14 +551,14 @@ void test_reallocmem_returns_updated_pointer_slot() {
 void test_pointer_slot_helpers_update_byte_storage() {
   alignas(void*) unsigned char slot[sizeof(int32_t*)] = {};
 
-  p_new((*tp2cc_TypedView<int32_t*>(slot)));
+  p_new(tp2cc_storage_ref<int32_t*>(slot));
   int32_t* p = tp2cc_reinterpret_load<int32_t*>(slot);
   CHECK(p != nullptr);
   CHECK_EQ(*p, int32_t{0});
   *p = 123;
   p_dispose(p);
 
-  p_getmem((*tp2cc_TypedView<int32_t*>(slot)),
+  p_getmem(tp2cc_storage_ref<int32_t*>(slot),
            static_cast<int>(2 * sizeof(int32_t)));
   p = tp2cc_reinterpret_load<int32_t*>(slot);
   CHECK(p != nullptr);
@@ -566,13 +566,13 @@ void test_pointer_slot_helpers_update_byte_storage() {
   p[1] = 22;
 
   int32_t* grown =
-      p_reallocmem((*tp2cc_TypedView<int32_t*>(slot)),
+      p_reallocmem(tp2cc_storage_ref<int32_t*>(slot),
                    static_cast<int>(4 * sizeof(int32_t)));
   CHECK(grown == tp2cc_reinterpret_load<int32_t*>(slot));
   CHECK_EQ(grown[0], int32_t{11});
   CHECK_EQ(grown[1], int32_t{22});
 
-  int32_t* cleared = p_reallocmem((*tp2cc_TypedView<int32_t*>(slot)), 0);
+  int32_t* cleared = p_reallocmem(tp2cc_storage_ref<int32_t*>(slot), 0);
   CHECK(cleared == nullptr);
   CHECK(tp2cc_reinterpret_load<int32_t*>(slot) == nullptr);
 }
@@ -582,9 +582,57 @@ void test_strdispose_slot_clears_byte_storage() {
   p_char* text = p_strnew("slot");
   tp2cc_reinterpret_store<p_char*>(slot, text);
 
-  p_strdispose((*tp2cc_TypedView<p_char*>(slot)));
+  p_strdispose(tp2cc_storage_ref<p_char*>(slot));
 
   CHECK(tp2cc_reinterpret_load<p_char*>(slot) == nullptr);
+}
+
+void test_storage_ref_preserves_pascal_address_identity() {
+  struct View {
+    int32_t value;
+  };
+  alignas(View) unsigned char slot[sizeof(View)] = {};
+
+  View& first = tp2cc_storage_ref<View>(slot);
+  View& second = tp2cc_storage_ref<View>(slot);
+  CHECK(&first == reinterpret_cast<View*>(slot));
+  CHECK(&second == &first);
+  first.value = 42;
+  CHECK_EQ(second.value, int32_t{42});
+}
+
+void test_storage_ref_does_not_run_default_member_initializers() {
+  struct View {
+    int32_t first = 101;
+    int32_t second = 202;
+  };
+  static_assert(std::is_trivially_copyable_v<View>);
+
+  alignas(View) unsigned char slot[sizeof(View)];
+  const int32_t words[2] = {7, 9};
+  std::memcpy(slot, words, sizeof(words));
+  View& view = tp2cc_storage_ref<View>(slot);
+  CHECK_EQ(view.first, int32_t{7});
+  CHECK_EQ(view.second, int32_t{9});
+}
+
+void test_scoped_storage_view_restores_backing_lifetime() {
+  struct Backing {
+    int32_t bits;
+  };
+  struct View {
+    int32_t value;
+  };
+  static_assert(sizeof(Backing) == sizeof(View));
+  static_assert(alignof(Backing) == alignof(View));
+
+  Backing backing{7};
+  {
+    tp2cc_ScopedStorageView<View, Backing> view(&backing, &backing);
+    CHECK(&*view == reinterpret_cast<View*>(&backing));
+    view->value = 23;
+  }
+  CHECK_EQ(backing.bits, int32_t{23});
 }
 
 void test_ansistring_setlength_and_insert_delete_keep_bytes_stable() {
@@ -692,6 +740,16 @@ void test_shortstring_ref_mutating_helpers_write_through_storage() {
 
   p_str(int32_t{42}, ref);
   CHECK_EQ(tp2cc_to_std_string(s), std::string("42"));
+}
+
+void test_shortstring_pointer_value_reads_only_live_prefix() {
+  uint8_t storage[] = {3, 'a', 'b', 'c'};
+  tp2cc_ShortStringPtrValue<255> value{storage};
+  tp2cc_ShortString<> copied = value;
+  CHECK_EQ(copied.size(), 3);
+  CHECK_EQ(static_cast<char>(copied.data[0]), 'a');
+  CHECK_EQ(static_cast<char>(copied.data[1]), 'b');
+  CHECK_EQ(static_cast<char>(copied.data[2]), 'c');
 }
 
 void test_shortstring_implicitly_converts_to_ansistring() {
@@ -998,6 +1056,9 @@ void test_open_array_helper_owns_temporary_storage() {
 }
 
 void test_dynamic_array_setlength_detaches_and_zeroes_tail() {
+  tp2cc_DynArray<int32_t> nil_values = nullptr;
+  CHECK(nil_values == nullptr);
+
   tp2cc_DynArray<int32_t> values;
   p_setlength(values, 2);
   values[0] = 7;
@@ -1043,6 +1104,7 @@ void test_dynamic_array_assignment_from_fixed_array_copies_values() {
   tp2cc_Array<uint16_t, 1, 4> fixed{{3, 5, 7, 11}};
   tp2cc_DynArray<uint16_t> dyn;
 
+  CHECK_EQ(p_length(fixed), 4);
   dyn = fixed;
 
   CHECK_EQ(p_length(dyn), 4);
@@ -1549,6 +1611,9 @@ int main() {
   RUN_TEST(test_reallocmem_returns_updated_pointer_slot);
   RUN_TEST(test_pointer_slot_helpers_update_byte_storage);
   RUN_TEST(test_strdispose_slot_clears_byte_storage);
+  RUN_TEST(test_storage_ref_preserves_pascal_address_identity);
+  RUN_TEST(test_storage_ref_does_not_run_default_member_initializers);
+  RUN_TEST(test_scoped_storage_view_restores_backing_lifetime);
   RUN_TEST(test_ansistring_setlength_and_insert_delete_keep_bytes_stable);
   RUN_TEST(test_ansistring_compares_equal_to_single_char_pascal_style);
   RUN_TEST(test_ansistring_converts_to_shortstring_with_pascal_truncation);
@@ -1558,6 +1623,7 @@ int main() {
   RUN_TEST(test_shortstring_literal_helper_preserves_embedded_nuls);
   RUN_TEST(test_shortstring_implicitly_converts_between_capacities);
   RUN_TEST(test_shortstring_ref_mutating_helpers_write_through_storage);
+  RUN_TEST(test_shortstring_pointer_value_reads_only_live_prefix);
   RUN_TEST(test_shortstring_implicitly_converts_to_ansistring);
   RUN_TEST(test_shortstring_assign_from_char_creates_one_character_string);
   RUN_TEST(test_strpas_returns_shortstring_up_to_first_nul);

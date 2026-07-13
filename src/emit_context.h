@@ -117,7 +117,8 @@ struct ScopeStateView {
   std::unordered_set<std::string>& local_scope;
   std::unordered_map<std::string, const ast::TypeExpr*>& local_value_types;
   std::unordered_map<std::string, const ast::ConstDecl*>& local_consts;
-  std::unordered_set<std::string>& local_untyped_params;
+  std::unordered_map<std::string, const TypeDescriptor*>&
+      local_untyped_params;
   std::unordered_map<std::string, std::vector<NestedFn>>& local_nested_fns;
   std::unordered_set<std::string>& local_nested_forwards;
   const TypeLookupContext*& type_scope;
@@ -128,12 +129,16 @@ struct ScopeStateView {
   // dynamic type is not T would be strict-aliasing UB. Instead, name
   // lookup for `view` synthesises a bytewise storage designator whose
   // ptr expression is `&other`; the existing bytewise machinery then
-  // handles reads/writes via memcpy helpers, and method calls / var-out
-  // args go through the bounded `tp2cc_TypedView` wrapper.
+  // handles reads/writes via memcpy helpers. Method calls and var/out args
+  // begin the alias type's lifetime at the original address for the duration
+  // of the full expression, then restore the target carrier.
   struct AbsoluteAlias {
     std::string target_cxx;             // C++ ident of the source variable
     const ast::TypeExpr* type = nullptr; // alias's declared Pascal type (T)
-    bool target_is_pointerish = false;   // target value already is an address
+    const ast::TypeExpr* target_type = nullptr;
+    // Untyped Pascal parameters already are caller-storage addresses. Every
+    // typed variable, including a Pointer variable, contributes its own slot.
+    bool target_value_is_storage_address = false;
     bool target_is_const = false;        // Pascal `const` source parameter
   };
   std::unordered_map<std::string, AbsoluteAlias>& local_absolute_targets;
@@ -286,7 +291,8 @@ class ScopedDeclarationLookup {
   std::unordered_map<std::string, const ast::TypeExpr*>
       saved_local_value_types_;
   std::unordered_map<std::string, const ast::ConstDecl*> saved_local_consts_;
-  std::unordered_set<std::string> saved_local_untyped_params_;
+  std::unordered_map<std::string, const TypeDescriptor*>
+      saved_local_untyped_params_;
   std::unordered_map<std::string, std::vector<ScopeStateView::NestedFn>>
       saved_local_nested_fns_;
   std::unordered_set<std::string> saved_local_nested_forwards_;
@@ -299,18 +305,24 @@ class ScopedDeclarationLookup {
   bool preserve_local_value_scope_ = false;
 };
 
-inline const EnumInfoReg* local_enum_info_for_member(
+inline const EnumMemberInfo* local_enum_member(
     const ScopeStateView& scope, std::string_view name) {
   assert(pascal_key_is_canonical(name));
   for (const TypeLookupContext* frame = scope.type_scope; frame;
        frame = frame->parent) {
     if (frame->kind != ScopeFrameKind::Local) continue;
-    if (const EnumInfoReg* info =
-            scope_frame_find_local_enum_info_for_member(*frame, name)) {
-      return info;
+    if (const EnumMemberInfo* member =
+            scope_frame_find_local_enum_member(*frame, name)) {
+      return member;
     }
   }
   return nullptr;
+}
+
+inline const EnumInfoReg* local_enum_info_for_member(
+    const ScopeStateView& scope, std::string_view name) {
+  const EnumMemberInfo* member = local_enum_member(scope, name);
+  return member ? member->owner : nullptr;
 }
 
 }  // namespace tp2cc

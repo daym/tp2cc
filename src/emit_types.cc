@@ -49,52 +49,42 @@ bool is_single_char_string_literal(const Expr* e) {
          static_cast<const StringLit&>(*e).value.size() == 1;
 }
 
-bool array_bound_is_plain_integer_const_syntax(const Expr& e) {
+bool array_bound_is_plain_integer_const_syntax(const TypeRegistry& registry,
+                                               const Expr& e) {
   switch (e.kind) {
     case Kind::IntLit:
     case Kind::Ident:
     case Kind::Member:
       return true;
     case Kind::Unary:
-      return array_bound_is_plain_integer_const_syntax(
+      return array_bound_is_plain_integer_const_syntax(registry,
           *static_cast<const Unary&>(e).operand);
     case Kind::Binary: {
       const auto& b = static_cast<const Binary&>(e);
-      return array_bound_is_plain_integer_const_syntax(*b.lhs) &&
-             array_bound_is_plain_integer_const_syntax(*b.rhs);
+      return array_bound_is_plain_integer_const_syntax(registry, *b.lhs) &&
+             array_bound_is_plain_integer_const_syntax(registry, *b.rhs);
     }
     case Kind::Call: {
       const auto& c = static_cast<const Call&>(e);
-      if (!c.callee || c.callee->kind != Kind::Ident ||
-          c.args.size() != 1 || !c.args[0]) {
+      if (!c.callee || c.args.size() != 1 || !c.args[0]) {
         return false;
       }
-      const std::string callee =
-          ascii_lower(static_cast<const Ident&>(*c.callee).name);
-      return is_primitive_type(callee) &&
-             array_bound_is_plain_integer_const_syntax(*c.args[0]);
+      const TypeSymbol* symbol = nullptr;
+      if (std::optional<const TypeSymbol*> type_callee =
+              registry.type_name_expression_result(c.callee.get())) {
+        symbol = *type_callee;
+      }
+      return symbol && symbol->descriptor && symbol->descriptor->primitive &&
+             array_bound_is_plain_integer_const_syntax(registry, *c.args[0]);
     }
     default:
       return false;
   }
 }
 
-std::string_view declaration_unit_for_type(const TypeRegistry& registry,
-                                           const TypeExpr* primary,
-                                           const TypeExpr* fallback = nullptr) {
-  if (primary) {
-    if (std::string_view unit = registry.declaration_unit_for_type(primary);
-        !unit.empty()) {
-      return unit;
-    }
-  }
-  return fallback ? registry.declaration_unit_for_type(fallback)
-                  : std::string_view{};
-}
-
 const TypeLookupContext* declaration_context_for_type(
-    const TypeRegistry& registry, const ScopeStateView& scope,
-    const TypeExpr* primary, const TypeExpr* fallback = nullptr) {
+    const TypeRegistry& registry, const TypeExpr* primary,
+    const TypeExpr* fallback = nullptr) {
   if (primary) {
     if (const TypeLookupContext* context =
             registry.lookup_context_for_type(primary)) {
@@ -105,29 +95,6 @@ const TypeLookupContext* declaration_context_for_type(
     if (const TypeLookupContext* context =
             registry.lookup_context_for_type(fallback)) {
       return context;
-    }
-  }
-  std::string_view unit =
-      declaration_unit_for_type(registry, primary, fallback);
-  if (unit.empty()) return nullptr;
-  if (unit == scope.current_unit_name && scope.type_scope) {
-    return scope.type_scope;
-  }
-  if (const TypeLookupContext* context =
-          registry.lookup_unit_context(unit, /*implementation=*/false)) {
-    return context;
-  }
-  return registry.lookup_unit_context(unit, /*implementation=*/true);
-}
-
-const EnumInfoReg* local_enum_info_for_type(const ScopeStateView& scope,
-                                            const TyEnum& e) {
-  for (const TypeLookupContext* frame = scope.type_scope; frame;
-       frame = frame->parent) {
-    for (const auto& [_, symbol] : frame->type_symbols) {
-      if (!symbol) continue;
-      const EnumInfoReg* info = symbol->enum_info();
-      if (info && info->type == &e) return info;
     }
   }
   return nullptr;
@@ -251,13 +218,6 @@ EmitTypes::EmitTypes(const TypeRegistry& registry, ScopeStateView& scope,
       diag_ops_(diag_ops) {}
 
 std::string EmitTypes::type_name_to_cxx(const TyName& n) {
-  if (n.name == "string") {
-    diag_ops_.report_error(n.loc,
-                           "internal unresolved H-mode `string' type name");
-    return "::rt::tp2cc_ShortString<>";
-  }
-  if (n.name == "nil") return "std::nullptr_t";
-
   auto emit_symbol_type = [&](const TypeSymbol* symbol) -> std::string {
     if (!symbol) return {};
     if (std::string cxx = type_symbol_to_cxx(symbol); !cxx.empty()) {
@@ -275,96 +235,47 @@ std::string EmitTypes::type_name_to_cxx(const TyName& n) {
       !cxx.empty()) {
     return cxx;
   }
-  // Parsed TyName nodes carry a build-time lookup context. If one has no
-  // resolved symbol now, a fresh scope query would hide a binding bug and
-  // reintroduce emission-time alias/name chasing. The fallback below is only
-  // for contextless manufactured type-name text.
-  if (registry_.lookup_context_for_type(&n)) {
-    diag_ops_.report_error(n.loc, "unresolved type `" + n.name + "`");
-    return "void";
-  }
-  if (std::string cxx = emit_symbol_type(
-          migration_fallback_type_symbol_by_name(registry_, scope_, n.name));
-      !cxx.empty()) {
-    return cxx;
-  }
-  if (const size_t dot = n.name.find('.'); dot != std::string::npos) {
-    const std::string unit = n.name.substr(0, dot);
-    const std::string path = n.name.substr(dot + 1);
-    if (std::string cxx = emit_symbol_type(
-            registry_.lookup_type_symbol_exact(unit, path));
-        !cxx.empty()) {
-      return cxx;
-    }
-  }
-  if (is_primitive_type(n.name)) return primitive_type_cxx(n.name);
-  if (std::string cls = builtin_reference_class_struct_cxx(n.name);
-      !cls.empty()) {
-    return cls + "*";
-  }
-  if (std::string rt = runtime_named_type_cxx(n.name); !rt.empty()) {
-    return rt;
-  }
+  // The semantic model owns Pascal type binding. Accepting raw spelling here would make
+  // this renderer a second type lookup path and hide missing binding.
   diag_ops_.report_error(n.loc, "unresolved type `" + n.name + "`");
   return "void";
 }
 
-std::string EmitTypes::type_symbol_to_cxx(const TypeSymbol* symbol) const {
+std::string EmitTypes::type_symbol_to_cxx(const TypeSymbol* symbol) {
   if (!symbol) return {};
-  const TypeSymbol* canonical = descriptor_payload_symbol(symbol);
-  if (symbol->defining_unit == "__rt__" ||
-      symbol->defining_unit == "__builtin__") {
-    if (const ClassInfo* ci = canonical->class_info();
-        ci && ci->is_reference_type) {
-      if (std::string cls = builtin_reference_class_struct_cxx(canonical->name);
-          !cls.empty()) {
-        return cls + "*";
-      }
-      return type_symbol_struct_cxx(*canonical) + "*";
-    }
-    if (canonical->interface_info()) {
-      return type_symbol_struct_cxx(*canonical) + "*";
-    }
-    if (symbol->defining_unit == "__rt__") {
-      if (std::string rt = runtime_named_type_cxx(symbol->name); !rt.empty()) {
-        return rt;
-      }
-    }
-    if (is_primitive_type(canonical->name)) {
-      return primitive_type_cxx(canonical->name);
-    }
-    if (std::string rt = runtime_named_type_cxx(canonical->name);
-        !rt.empty()) {
-      return rt;
-    }
-    return {};
+  const TypeDescriptor* descriptor = symbol->descriptor;
+  const TypeSymbol* canonical =
+      descriptor && descriptor->symbol ? descriptor->symbol : symbol;
+
+  if (descriptor && descriptor->primitive) {
+    return descriptor->primitive->cxx;
   }
-  if (const ClassInfo* ci = canonical->class_info();
-      ci && ci->is_reference_type) {
-    return type_symbol_struct_cxx(*canonical) + "*";
+  if (const ClassInfo* ci = canonical->class_info(); ci) {
+    if (ci->is_reference_type) {
+      return type_symbol_struct_cxx(*canonical) + "*";
+    }
+    return type_symbol_struct_cxx(*canonical);
   }
   if (canonical->interface_info()) {
     return type_symbol_struct_cxx(*canonical) + "*";
   }
-  if (canonical != symbol) {
-    if (canonical->defining_unit == "__builtin__" ||
-        canonical->defining_unit == "__rt__") {
-      if (is_primitive_type(canonical->name)) {
-        return primitive_type_cxx(canonical->name);
-      }
-      if (std::string rt = runtime_named_type_cxx(canonical->name);
-          !rt.empty()) {
-        return rt;
-      }
-    }
+  if (canonical->record_info() || canonical->enum_info()) {
     return type_symbol_struct_cxx(*canonical);
   }
-  return type_symbol_struct_cxx(*canonical);
-}
-
-std::string EmitTypes::type_name_text_to_cxx(std::string_view name) {
-  TyName t{std::string(name)};
-  return type_name_to_cxx(t);
+  if (descriptor && descriptor->symbol == canonical) {
+    // Backend naming is descriptor-owned: fresh named Pascal type syntax gets
+    // one `t_<declaration>` C++ carrier. A Pascal alias has no descriptor
+    // ownership, so it reaches this function with the target descriptor's
+    // owner and can never preserve the alias spelling.
+    return type_symbol_struct_cxx(*canonical);
+  }
+  if (descriptor && descriptor->metaclass_target) {
+    return metaclass_struct_cxx(*descriptor->metaclass_target) + "*";
+  }
+  if (descriptor && descriptor->type) {
+    return type_to_cxx(*descriptor->type);
+  }
+  return {};
 }
 
 std::string EmitTypes::active_emission_unit_name() const {
@@ -390,40 +301,6 @@ std::string EmitTypes::type_symbol_struct_cxx(
   return out;
 }
 
-std::string EmitTypes::named_type_struct_cxx(std::string_view name) {
-  // Backend spelling for a Pascal declaration/source name that has already
-  // been chosen by semantic binding. This is only the fixed C++ carrier-name
-  // calculation (`type X = ...` -> `t_x` plus qualification), not a type
-  // identity or lookup API. Anonymous nominal descriptors must not flow through
-  // here, because they have no `type X = ...` name to apply this rule to.
-  const std::string low = ascii_lower(name);
-  const TypeSymbol* symbol =
-      migration_fallback_type_symbol_by_name(registry_, scope_, low);
-  const bool translated =
-      symbol && symbol->defining_unit != "__rt__" &&
-      symbol->defining_unit != "__builtin__";
-
-  // Keep runtime names fixed unless a translated lexical type exists for the
-  // spelling below.
-  if (!translated) {
-    if (std::string rt = runtime_named_type_cxx(name); !rt.empty()) {
-      return rt;
-    }
-  }
-  if (std::string cls = builtin_reference_class_struct_cxx(name);
-      !cls.empty()) {
-    return cls;
-  }
-  if (symbol) {
-    // Pascal local and nested type declarations are lexical symbols. Emitting
-    // the resolved symbol path keeps the same lookup result usable both inside
-    // the declaring C++ class and from namespace-scope helper declarations.
-    return type_symbol_struct_cxx(*symbol);
-  }
-  diag_ops_.report_error({}, "unresolved type `" + std::string(name) + "`");
-  return "void";
-}
-
 std::string EmitTypes::metaclass_symbol_cxx(
     const TypeSymbol& symbol, std::string_view name_prefix) const {
   std::string tail;
@@ -444,29 +321,9 @@ std::string EmitTypes::metaclass_struct_cxx(const TypeSymbol& symbol) const {
   return metaclass_symbol_cxx(symbol, "tp2cc_metaclass_");
 }
 
-std::string EmitTypes::metaclass_struct_cxx(std::string_view class_name) {
-  std::string tail = std::string(class_name);
-  if (const TypeSymbol* symbol =
-          migration_fallback_type_symbol_by_name(registry_, scope_, class_name)) {
-    symbol = descriptor_payload_symbol(symbol);
-    return metaclass_struct_cxx(*symbol);
-  }
-  return "tp2cc_metaclass_" + type_mangle(tail);
-}
-
 std::string EmitTypes::metaclass_value_fn_cxx(
     const TypeSymbol& symbol) const {
   return metaclass_symbol_cxx(symbol, "tp2cc_metaclass_value_");
-}
-
-std::string EmitTypes::metaclass_value_fn_cxx(std::string_view class_name) {
-  std::string tail = std::string(class_name);
-  if (const TypeSymbol* symbol =
-          migration_fallback_type_symbol_by_name(registry_, scope_, class_name)) {
-    symbol = descriptor_payload_symbol(symbol);
-    return metaclass_value_fn_cxx(*symbol);
-  }
-  return "tp2cc_metaclass_value_" + type_mangle(tail);
 }
 
 bool EmitTypes::enum_has_explicit_values(const TyEnum& e) {
@@ -479,10 +336,11 @@ bool EmitTypes::enum_has_explicit_values(const TyEnum& e) {
 std::optional<int64_t> EmitTypes::enum_member_value_int64(const TyEnum& e,
                                                           size_t index) {
   const TypeLookupContext* declaration_context =
-      declaration_context_for_type(registry_, scope_, &e);
+      declaration_context_for_type(registry_, &e);
   ScopedDeclarationLookup declaration_scope(
       scope_, declaration_context,
-      declaration_unit_for_type(registry_, &e));
+      declaration_context ? std::string_view(declaration_context->unit)
+                          : std::string_view{});
   int64_t value = 0;
   for (size_t i = 0; i <= index; ++i) {
     if (e.members[i].value) {
@@ -500,6 +358,15 @@ std::optional<int64_t> EmitTypes::enum_member_value_int64(const TyEnum& e,
 std::string EmitTypes::enum_member_value_to_cxx(const TyEnum& e, size_t index) {
   // Pascal/FPC enum ordinals are assigned left-to-right. Each explicit value
   // resets the running ordinal for later implicit members.
+  const TypeLookupContext* declaration_context =
+      declaration_context_for_type(registry_, &e);
+  // Explicit enum ordinal expressions belong to the enum declaration. Rendering
+  // them under the later emission scope can bind same-named constants from the
+  // wrong unit or declaration section.
+  ScopedDeclarationLookup declaration_scope(
+      scope_, declaration_context,
+      declaration_context ? std::string_view(declaration_context->unit)
+                          : std::string_view{});
   std::string value = "0";
   for (size_t i = 0; i <= index; ++i) {
     if (e.members[i].value) {
@@ -574,10 +441,7 @@ std::string EmitTypes::enum_underlying_type_to_cxx(const TyEnum& e) {
 std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
     const TypeExpr& dim_in) {
   if (dim_in.kind == Kind::TyName) {
-    const TypeLookupContext* context = registry_.lookup_context_for_type(&dim_in);
-    const TypeSymbol* symbol =
-        resolved_type_symbol_in_context(registry_, scope_, &dim_in, context);
-    symbol = descriptor_payload_symbol(symbol);
+    const TypeSymbol* symbol = registry_.resolved_symbol_for_type(&dim_in);
     const EnumInfoReg* enum_info = symbol ? symbol->enum_info() : nullptr;
     if (enum_info) {
       std::string lo = "0";
@@ -611,10 +475,11 @@ std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
     return array_dim_bounds_to_cxx(*distinct.underlying);
   }
   const TypeLookupContext* declaration_context =
-      declaration_context_for_type(registry_, scope_, dim, &dim_in);
+      declaration_context_for_type(registry_, dim, &dim_in);
   ScopedDeclarationLookup type_bound_scope(
       scope_, declaration_context,
-      declaration_unit_for_type(registry_, dim, &dim_in));
+      declaration_context ? std::string_view(declaration_context->unit)
+                          : std::string_view{});
   std::string lo = "0";
   std::string size_expr;
   if (dim->kind == Kind::TySubrange) {
@@ -626,10 +491,10 @@ std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
     // imported const as raw Pascal text would record an unresolved-id error.
     std::optional<ConstIntExprInfo> lo_value;
     std::optional<ConstIntExprInfo> hi_value;
-    if (array_bound_is_plain_integer_const_syntax(*sr.lo)) {
+    if (array_bound_is_plain_integer_const_syntax(registry_, *sr.lo)) {
       lo_value = analysis_.eval_const_int_expr(*sr.lo);
     }
-    if (array_bound_is_plain_integer_const_syntax(*sr.hi)) {
+    if (array_bound_is_plain_integer_const_syntax(registry_, *sr.hi)) {
       hi_value = analysis_.eval_const_int_expr(*sr.hi);
     }
     lo = lo_value ? std::to_string(lo_value->value)
@@ -669,10 +534,6 @@ std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
   if (info->int_kind == PrimitiveIntKind::None || info->pointer_sized) {
     return std::nullopt;
   }
-  if (!info || info->int_kind == PrimitiveIntKind::None ||
-      info->pointer_sized) {
-    return std::nullopt;
-  }
   const uint8_t bits = analysis_.resolved_primitive_bits(*info);
   if (bits >= analysis_.target().pointer_bits) return std::nullopt;
   const uint64_t count = uint64_t{1} << bits;
@@ -707,7 +568,8 @@ std::string EmitTypes::visible_enum_type_for_member(std::string_view name) {
   if (const EnumInfoReg* info = local_enum_info_for_member(scope_, name)) {
     return info->cxx_name;
   }
-  const std::string member = ascii_lower(name);
+  assert(pascal_key_is_canonical(name));
+  const std::string member(name);
   const auto* info = analysis_.find_visible_enum_info_for_member(member);
   if (!info) return {};
   std::string prefix;
@@ -717,18 +579,14 @@ std::string EmitTypes::visible_enum_type_for_member(std::string_view name) {
   return prefix + info->cxx_name;
 }
 
-std::string EmitTypes::visible_enum_type_for_type_name(std::string_view name) {
-  const std::string low = ascii_lower(name);
-  const TypeSymbol* symbol =
-      migration_fallback_type_symbol_by_name(registry_, scope_, low);
-  const TypeSymbol* canonical = descriptor_payload_symbol(symbol);
+std::string EmitTypes::visible_enum_type_for_type_symbol(
+    const TypeSymbol* symbol) {
+  const TypeSymbol* canonical =
+      symbol && symbol->descriptor && symbol->descriptor->symbol
+          ? symbol->descriptor->symbol
+          : symbol;
   if (!canonical || !canonical->enum_info()) return {};
-  if (migration_fallback_lexical_type_symbol_by_name(registry_, scope_, low) == symbol ||
-      low.find('.') != std::string::npos ||
-      !should_qualify_unit(canonical->defining_unit)) {
-    return type_name_text_to_cxx(low);
-  }
-  return type_name_text_to_cxx(canonical->defining_unit + "." + canonical->name);
+  return type_symbol_to_cxx(symbol);
 }
 
 std::string EmitTypes::subrange_bound_enum_cxx_type(const Expr* e) {
@@ -738,16 +596,14 @@ std::string EmitTypes::subrange_bound_enum_cxx_type(const Expr* e) {
   }
   if (e->kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(*e);
-    if (mem.base && mem.base->kind == Kind::Ident) {
-      const std::string unit =
-          ascii_lower(static_cast<const Ident&>(*mem.base).name);
-      const std::string member = ascii_lower(mem.name);
-      if (const TyEnum* enum_type =
-              registry_.lookup_enum_member_in_unit(unit, member)) {
-        if (const EnumInfoReg* info =
-                registry_.enum_info_for_type(enum_type)) {
-          return unit_namespace_prefix(unit) + type_mangle(info->name);
-        }
+    if (auto unit_member = analysis_.resolve_unit_qualified_member(mem);
+        unit_member &&
+        unit_member->resolved.kind == ResolvedKind::EnumMember) {
+      if (const EnumInfoReg* info =
+              analysis_.find_enum_info_in_unit(unit_member->unit_name,
+                                               unit_member->member_name)) {
+        return unit_namespace_prefix(unit_member->unit_name) +
+               type_mangle(info->name);
       }
     }
     return {};
@@ -758,19 +614,11 @@ std::string EmitTypes::subrange_bound_enum_cxx_type(const Expr* e) {
         call.args.size() != 1 || !call.args[0]) {
       return {};
     }
-    const std::string callee =
-        ascii_lower(static_cast<const Ident&>(*call.callee).name);
+    const std::string& callee = static_cast<const Ident&>(*call.callee).name;
     if (callee == "low" || callee == "high") {
-      if (call.args[0]->kind == Kind::Ident) {
-        return visible_enum_type_for_type_name(
-            static_cast<const Ident&>(*call.args[0]).name);
-      }
-      if (call.args[0]->kind == Kind::Member) {
-        const auto& mem = static_cast<const Member&>(*call.args[0]);
-        if (mem.base && mem.base->kind == Kind::Ident) {
-          return visible_enum_type_for_type_name(
-              static_cast<const Ident&>(*mem.base).name + "." + mem.name);
-        }
+      if (std::optional<const TypeSymbol*> symbol =
+              registry_.type_name_expression_result(call.args[0].get())) {
+        return visible_enum_type_for_type_symbol(*symbol);
       }
       return {};
     }
@@ -782,6 +630,18 @@ std::string EmitTypes::subrange_bound_enum_cxx_type(const Expr* e) {
 }
 
 std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
+  auto primitive_cxx = [&](PrimitiveKind kind) -> std::string {
+    for (const PrimitiveInfo& primitive : registry_.primitive_info_storage) {
+      if (primitive.kind == kind && primitive.cxx) return primitive.cxx;
+    }
+    return {};
+  };
+  auto ordinal_cxx = [&](PrimitiveIntKind kind, uint8_t bits) -> std::string {
+    const PrimitiveInfo* primitive =
+        ordinal_integer_primitive(registry_, kind, bits);
+    return primitive && primitive->cxx ? primitive->cxx : std::string{};
+  };
+
   // If both bounds denote values from the same enum, preserve that enum carrier
   // so scalar subranges remain assignment-compatible with the parent enum.
   std::string le = subrange_bound_enum_cxx_type(r.lo.get());
@@ -796,11 +656,11 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
        (hi_info && hi_info->is_char())) ||
       (is_single_char_string_literal(r.lo.get()) &&
        is_single_char_string_literal(r.hi.get()))) {
-    return primitive_type_cxx("char");
+    return primitive_cxx(PrimitiveKind::Char);
   }
-  if (analysis_.builtin_atom_name_for_type(lo_type) == "widechar" &&
-      analysis_.builtin_atom_name_for_type(hi_type) == "widechar") {
-    return primitive_type_cxx("widechar");
+  if (lo_info && hi_info && lo_info->kind == PrimitiveKind::WideChar &&
+      hi_info->kind == PrimitiveKind::WideChar) {
+    return primitive_cxx(PrimitiveKind::WideChar);
   }
 
   // Subrange bounds belong to the type declaration's lexical context. Use the
@@ -811,13 +671,13 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
   if (!domain) return "int32_t";
 
   if (domain->family == OrdinalFamily::Boolean) {
-    return primitive_type_cxx("boolean");
+    return primitive_cxx(PrimitiveKind::Boolean);
   }
   if (domain->family == OrdinalFamily::Char) {
-    return primitive_type_cxx("char");
+    return primitive_cxx(PrimitiveKind::Char);
   }
   if (domain->family == OrdinalFamily::WideChar) {
-    return primitive_type_cxx("widechar");
+    return primitive_cxx(PrimitiveKind::WideChar);
   }
   if (domain->family != OrdinalFamily::Integer) return "int32_t";
 
@@ -836,17 +696,22 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
   // longint/cardinal domain so the emitted C++ can represent the source range.
   if (lo >= 0) {
     uint64_t uhi = static_cast<uint64_t>(hi);
-    if (uhi <= UINT8_MAX) return primitive_type_cxx("byte");
-    if (uhi <= UINT16_MAX) return primitive_type_cxx("word");
-    if (uhi <= UINT32_MAX) return primitive_type_cxx("cardinal");
-    return primitive_type_cxx("qword");
+    if (uhi <= UINT8_MAX)
+      return ordinal_cxx(PrimitiveIntKind::Unsigned, 8);
+    if (uhi <= UINT16_MAX)
+      return ordinal_cxx(PrimitiveIntKind::Unsigned, 16);
+    if (uhi <= UINT32_MAX)
+      return ordinal_cxx(PrimitiveIntKind::Unsigned, 32);
+    return ordinal_cxx(PrimitiveIntKind::Unsigned, 64);
   }
-  if (lo >= INT8_MIN && hi <= INT8_MAX) return primitive_type_cxx("shortint");
+  if (lo >= INT8_MIN && hi <= INT8_MAX)
+    return ordinal_cxx(PrimitiveIntKind::Signed, 8);
   if (lo >= INT16_MIN && hi <= INT16_MAX) {
-    return primitive_type_cxx("smallint");
+    return ordinal_cxx(PrimitiveIntKind::Signed, 16);
   }
-  if (lo >= INT32_MIN && hi <= INT32_MAX) return primitive_type_cxx("longint");
-  return primitive_type_cxx("int64");
+  if (lo >= INT32_MIN && hi <= INT32_MAX)
+    return ordinal_cxx(PrimitiveIntKind::Signed, 32);
+  return ordinal_cxx(PrimitiveIntKind::Signed, 64);
 }
 
 std::string EmitTypes::enum_bound_cxx_name(std::string_view enum_name,
@@ -861,10 +726,11 @@ std::string EmitTypes::enum_bound_cxx_name(std::string_view enum_name,
 
 std::string EmitTypes::string_type_to_cxx(const TyString& s) {
   const TypeLookupContext* declaration_context =
-      declaration_context_for_type(registry_, scope_, &s);
+      declaration_context_for_type(registry_, &s);
   ScopedDeclarationLookup type_bound_scope(
       scope_, declaration_context,
-      declaration_unit_for_type(registry_, &s));
+      declaration_context ? std::string_view(declaration_context->unit)
+                          : std::string_view{});
   if (s.max_length) {
     if (auto value = analysis_.eval_const_int_expr(*s.max_length)) {
       return "::rt::tp2cc_ShortString<" + std::to_string(value->value) + ">";
@@ -877,19 +743,18 @@ std::string EmitTypes::string_type_to_cxx(const TyString& s) {
 
 std::optional<std::string> EmitTypes::shortstring_capacity_to_cxx(
     const TypeExpr* t) {
-  if (analysis_.builtin_atom_name_for_type(t) == "shortstring") {
+  if (const PrimitiveInfo* primitive = analysis_.primitive_info_for_type(t);
+      primitive && primitive->kind == PrimitiveKind::ShortString) {
     return std::string("255");
   }
   const TypeExpr* canon = analysis_.semantic_shape_type(t);
-  if (canon == builtin_string_type()) {
-    return std::string("255");
-  }
   if (!(canon && canon->kind == Kind::TyString)) return std::nullopt;
   const TypeLookupContext* declaration_context =
-      declaration_context_for_type(registry_, scope_, canon, t);
+      declaration_context_for_type(registry_, canon, t);
   ScopedDeclarationLookup type_bound_scope(
       scope_, declaration_context,
-      declaration_unit_for_type(registry_, canon, t));
+      declaration_context ? std::string_view(declaration_context->unit)
+                          : std::string_view{});
   const auto& s = static_cast<const TyString&>(*canon);
   if (s.max_length) {
     if (auto value = analysis_.eval_const_int_expr(*s.max_length)) {
@@ -923,15 +788,9 @@ std::string EmitTypes::set_type_to_cxx(const TySet& s) {
 
 std::optional<std::string> EmitTypes::enum_carrier_type_to_cxx(
     const TyEnum& e) {
-  if (const EnumInfoReg* info = local_enum_info_for_type(scope_, e)) {
-    return info->cxx_name;
-  }
   const EnumInfoReg* info = registry_.enum_info_for_type(&e);
   if (!info || info->cxx_name.empty()) return std::nullopt;
   if (info->defining_unit == "__rt__") {
-    if (std::string rt = runtime_named_type_cxx(info->name); !rt.empty()) {
-      return rt;
-    }
     return std::string("::rt::") + info->cxx_name;
   }
   std::string prefix;
@@ -962,7 +821,7 @@ std::vector<std::string> EmitTypes::enum_members_to_cxx(const TyEnum& e) {
   for (size_t i = 0; i < e.members.size(); ++i) {
     std::string m = mangle(e.members[i].name);
     if (e.members[i].value) {
-      m += " = " + const_render_.const_value_to_cxx(*e.members[i].value);
+      m += " = " + enum_member_value_to_cxx(e, i);
     }
     out.push_back(std::move(m));
   }
@@ -1080,6 +939,24 @@ bool EmitTypes::procedural_param_uses_pointer_carrier(const Param& pp) {
   return false;
 }
 
+bool EmitTypes::procedural_param_uses_plain_pointer_carrier(const Param& pp) {
+  if (!procedural_param_uses_pointer_carrier(pp) || !pp.type) return false;
+  if (const PrimitiveInfo* primitive =
+          analysis_.primitive_info_for_type(pp.type.get());
+      primitive && primitive->kind == PrimitiveKind::Pointer) {
+    return true;
+  }
+  const TypeExpr* shape = analysis_.semantic_shape_type(pp.type.get());
+  return shape && shape->kind == Kind::TyPointer &&
+         !static_cast<const TyPointer&>(*shape).target;
+}
+
+bool EmitTypes::procedural_param_needs_pointer_carrier_restore(
+    const Param& pp) {
+  if (!procedural_param_uses_pointer_carrier(pp)) return false;
+  return !procedural_param_uses_plain_pointer_carrier(pp);
+}
+
 std::string EmitTypes::procedural_param_type_to_cxx(const Param& pp) {
   // Procvar calls are indirect C++ calls. By-value Pascal pointer-like slots
   // use `void*` as the carrier so compatible callback casts such as
@@ -1112,10 +989,10 @@ std::string EmitTypes::method_pointer_helper_name(const ProcDecl& pd) {
   std::string out = "tp2cc_methodptr_";
   out += encode_helper_ident(pd.name);
   out += "_";
-  out += encode_helper_params(pd.params);
+  out += encode_helper_params(registry_, pd.params);
   out += "_ret_";
   out += (pd.pkind == ProcKind::Function && pd.return_type)
-             ? encode_helper_type(*pd.return_type)
+             ? encode_helper_type(registry_, *pd.return_type)
              : std::string("void");
   return out;
 }
@@ -1215,8 +1092,10 @@ std::string EmitTypes::type_to_cxx(const TypeExpr& t) {
       if (const TypeSymbol* target = registry_.metaclass_target_for_type(&t)) {
         return metaclass_struct_cxx(*target) + "*";
       }
-      return metaclass_struct_cxx(static_cast<const TyMetaclass&>(t).class_name) +
-             "*";
+      diag_ops_.report_error(
+          t.loc, "unresolved metaclass target `" +
+                     static_cast<const TyMetaclass&>(t).class_name + "`");
+      return "::rt::t_tclass";
     case Kind::TyFile: {
       const auto& tf = static_cast<const TyFile&>(t);
       if (tf.is_text || !tf.element) return "::rt::tp2cc_TextFile";
@@ -1238,58 +1117,82 @@ std::string EmitTypes::type_to_cxx(const TypeExpr& t) {
   }
 }
 
-std::string EmitTypes::low_high_expr_for_named_type(std::string_view name,
-                                                    bool want_low) {
-  if (std::string primitive = primitive_low_high_expr(name, want_low);
-      !primitive.empty()) {
-    return primitive;
+std::string EmitTypes::low_high_expr_for_type_symbol(
+    const TypeSymbol* symbol, bool want_low) {
+  const TypeSymbol* canonical =
+      symbol && symbol->descriptor && symbol->descriptor->symbol
+          ? symbol->descriptor->symbol
+          : symbol;
+  if (canonical && canonical->enum_info()) {
+    return enum_bound_cxx_name(canonical->name, canonical->defining_unit,
+                               want_low);
   }
-
-  if (const TypeSymbol* symbol =
-          migration_fallback_type_symbol_by_name(registry_, scope_, name)) {
-    const TypeSymbol* canonical = descriptor_payload_symbol(symbol);
-    if (canonical && canonical->enum_info()) {
-      return enum_bound_cxx_name(canonical->name, canonical->defining_unit,
-                                 want_low);
-    }
-    if (const TypeExpr* type = descriptor_payload_type(symbol)) {
-      return low_high_expr_for_type(type, want_low);
-    }
+  if (const TypeExpr* type =
+          symbol && symbol->descriptor ? symbol->descriptor->type : nullptr) {
+    return low_high_expr_for_type(type, want_low);
   }
   return {};
 }
 
 std::string EmitTypes::low_high_expr_for_type(const TypeExpr* t,
                                               bool want_low) {
+  return low_high_expr_for_type_in_context(
+      t, want_low, declaration_context_for_type(registry_, t));
+}
+
+std::string EmitTypes::low_high_expr_for_type_in_context(
+    const TypeExpr* t, bool want_low,
+    const TypeLookupContext* declaration_context) {
   if (!t) return {};
+  if (const TypeLookupContext* own_context =
+          declaration_context_for_type(registry_, t)) {
+    declaration_context = own_context;
+  }
   if (t->kind == Kind::TyName) {
-    const auto& name = static_cast<const TyName&>(*t).name;
-    if (std::string primitive = primitive_low_high_expr(name, want_low);
-        !primitive.empty()) {
-      return primitive;
-    }
     if (const TypeSymbol* symbol = registry_.resolved_symbol_for_type(t)) {
-      const TypeSymbol* canonical = descriptor_payload_symbol(symbol);
+      const TypeSymbol* canonical = symbol;
+      if (symbol->descriptor && symbol->descriptor->primitive) {
+        if (std::string primitive =
+                primitive_low_high_expr(symbol->descriptor->primitive, want_low);
+            !primitive.empty()) {
+          return primitive;
+        }
+      }
       if (canonical && canonical->enum_info()) {
         return enum_bound_cxx_name(canonical->name, canonical->defining_unit,
                                    want_low);
       }
-      if (const TypeExpr* payload = descriptor_payload_type(symbol);
+      if (const TypeExpr* payload =
+              symbol->descriptor ? symbol->descriptor->type : nullptr;
           payload && payload != t) {
-        return low_high_expr_for_type(payload, want_low);
+        const TypeLookupContext* payload_context = declaration_context;
+        // The TyName node's own context is the use site. Bounds inside the
+        // resolved payload type belong to the declaration that created it.
+        if (const TypeLookupContext* symbol_context =
+                declaration_context_for_type(registry_,
+                                             canonical ? canonical->type
+                                                       : symbol->type)) {
+          payload_context = symbol_context;
+        }
+        return low_high_expr_for_type_in_context(payload, want_low,
+                                                 payload_context);
       }
     }
-    // This is a bound TypeExpr path; falling back to the name would make
-    // Low(T)/High(T) silently depend on late scope lookup after build()
-    // failed to bind T. Syntax-only lookup stays in low_high_expr_for_named_type().
     return {};
   }
   if (t->kind == Kind::TyDistinct) {
-    return low_high_expr_for_type(
-        static_cast<const TyDistinct&>(*t).underlying.get(), want_low);
+    return low_high_expr_for_type_in_context(
+        static_cast<const TyDistinct&>(*t).underlying.get(), want_low,
+        declaration_context);
   }
   if (t->kind == Kind::TySubrange) {
     const auto& r = static_cast<const TySubrange&>(*t);
+    // Subrange bound expressions belong to the type declaration, not to the
+    // later unit or routine that asks `Low(T)` / `High(T)`.
+    ScopedDeclarationLookup type_bound_scope(
+        scope_, declaration_context,
+        declaration_context ? std::string_view(declaration_context->unit)
+                            : std::string_view{});
     return const_render_.const_value_to_cxx(want_low ? *r.lo : *r.hi);
   }
   if (t->kind == Kind::TyArray) {
@@ -1299,14 +1202,16 @@ std::string EmitTypes::low_high_expr_for_type(const TypeExpr* t,
     const auto& arr = static_cast<const TyArray&>(*t);
     if (arr.array_kind != ArrayKind::Fixed) return {};
     if (arr.dims.empty()) return {};
-    return low_high_expr_for_type(arr.dims[0].get(), want_low);
+    return low_high_expr_for_type_in_context(arr.dims[0].get(), want_low,
+                                             declaration_context);
   }
   if (t->kind == Kind::TySet) {
     const auto& s = static_cast<const TySet&>(*t);
     if (s.has_explicit_bounds) {
       return std::to_string(want_low ? s.explicit_low : s.explicit_high);
     }
-    return low_high_expr_for_type(s.element.get(), want_low);
+    return low_high_expr_for_type_in_context(s.element.get(), want_low,
+                                             declaration_context);
   }
   return {};
 }

@@ -491,7 +491,7 @@ void test_object_inheritance() {
   }
 }
 
-void test_type_keyword_alias() {
+void test_type_keyword_creates_distinct_type() {
   int before = error_count();
   auto u = parse_snippet(
       "unit u;\n"
@@ -506,9 +506,13 @@ void test_type_keyword_alias() {
     auto* td = dynamic_cast<TypeDecl*>(u->interface_decls[0].get());
     CHECK(td);
     if (td) {
-      auto* tn = dynamic_cast<TyName*>(td->type.get());
-      CHECK(tn);
-      if (tn) CHECK_EQ(tn->name, std::string("word"));
+      auto* distinct = dynamic_cast<TyDistinct*>(td->type.get());
+      CHECK(distinct);
+      auto* underlying =
+          distinct ? dynamic_cast<TyName*>(distinct->underlying.get())
+                   : nullptr;
+      CHECK(underlying);
+      if (underlying) CHECK_EQ(underlying->name, std::string("word"));
     }
   }
 }
@@ -1915,7 +1919,7 @@ int main() {
   RUN_TEST(test_class_method_tail_stops_before_next_member);
   RUN_TEST(test_metaclass_type);
   RUN_TEST(test_try_except_finally_raise);
-  RUN_TEST(test_type_keyword_alias);
+  RUN_TEST(test_type_keyword_creates_distinct_type);
 
   int n = tp2cc_test::failures();
   std::printf("%s: %d failure%s\n", (n == 0 ? "PASS" : "FAIL"), n,

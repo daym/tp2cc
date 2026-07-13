@@ -2,16 +2,14 @@
 
 // Cross-unit Pascal type/symbol registry.
 //
-// Built from all parsed units up-front so the emitter can answer
-// questions like "does class C have a field named X, or a method?",
-// "what's the class of this variable?", "what does alias A resolve
-// to?" -- without heuristics.
+// Driven as declarations are parsed so the emitter can consume already-bound
+// type identity and descriptor-owned class/record/interface/enum metadata.
 //
-// Only the minimum information the emitter needs is captured: classes
-// with their member kinds + parent, records with field lists, enums
-// with their members, type aliases, and unit-level procs/vars with
-// their signatures/types. Expression resolution lives on top of this.
+// General value/procedure binding is a later migration. The value/procedure
+// tables here currently support the existing emitter resolver and declaration-
+// time type binding where Pascal syntax is ambiguous.
 
+#include <cassert>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -25,6 +23,7 @@
 #include <vector>
 
 #include "ast.h"
+#include "emit_support.h"
 
 namespace tp2cc {
 
@@ -52,6 +51,37 @@ struct StringViewEqual {
   }
 };
 
+inline bool pascal_key_is_canonical(std::string_view text) {
+  for (char ch : text) {
+    if (ch >= 'A' && ch <= 'Z') return false;
+  }
+  return true;
+}
+
+// Semantic tables are keyed by identifiers after Pascal case-folding. Keeping
+// that key as its own type prevents registry lookups from silently repairing
+// callers that skipped parser-side canonicalization.
+class PascalKey {
+ public:
+  explicit PascalKey(std::string_view text_in) : text_(text_in) {
+    assert(pascal_key_is_canonical(text_));
+  }
+
+  std::string_view view() const { return text_; }
+  bool empty() const { return text_.empty(); }
+
+ private:
+  std::string_view text_;
+};
+
+inline PascalKey pascal_key(std::string_view text) {
+  return PascalKey(text);
+}
+
+inline std::string pascal_key_string(PascalKey key) {
+  return std::string(key.view());
+}
+
 enum class SymKind : uint8_t {
   Unknown,
   Field,
@@ -61,17 +91,27 @@ enum class SymKind : uint8_t {
   Destructor,
 };
 
+struct TypeSymbol;
+struct EnumInfoReg;
+
+struct EnumMemberInfo {
+  const EnumInfoReg* owner = nullptr;
+  int64_t ordinal = 0;
+};
+
 struct MethodSig {
   SymKind kind = SymKind::Method;
   std::string defining_unit;
   std::string declaring_type;
+  // Build binds class/interface method signatures to their owner symbol once;
+  // emit-time method selection must not reconstruct that owner from text.
+  const TypeSymbol* declaring_symbol = nullptr;
   size_t param_count = 0;
   bool accepts_zero_args = false;
   bool is_function = false;       // returns a value
   bool is_virtual = false;
   bool is_final = false;
   bool is_overload = false;       // Pascal `overload` directive
-  std::string return_type_name;    // Pascal-facing result type, if any
   std::shared_ptr<const ast::ProcDecl> decl;
 };
 
@@ -109,33 +149,18 @@ struct PropertyInfo {
   bool is_default = false;
 };
 
-struct TypeSymbol;
-
-struct TypeDescriptor {
-  size_t id = 0;
-  // Canonical source syntax that created this Pascal type object. Keep three
-  // concepts separate:
-  //   1. Pascal semantic identity: this descriptor.
-  //   2. Pascal source spelling: an optional declaration name on TypeSymbol.
-  //   3. C++ emitted spelling: an EmitTypes/backend policy decision.
-  // Aliases point at another descriptor instead of owning one. Anonymous
-  // nominal syntax such as bare `record end` or `class end` still gets a
-  // fresh descriptor even though it has no Pascal declaration name and
-  // therefore no TypeSymbol and no declaration-derived `t_x` C++ name.
-  // Shared `class of T` descriptors are target-keyed and intentionally leave
-  // this null; no single syntax occurrence owns that type identity.
-  const ast::TypeExpr* type = nullptr;
-  // The named declaration that owns this descriptor, when there is one.
-  const TypeSymbol* symbol = nullptr;
-  // `class of T` is a class-reference type whose identity is tied to the
-  // resolved target class T, not to each syntactic `class of T` occurrence.
-  const TypeSymbol* metaclass_target = nullptr;
-};
-
 struct ClassInfo {
+  const TypeDescriptor* descriptor = nullptr;
   std::string name;
+  std::vector<std::string> owner_path;
   std::string parent;                    // empty if none
+  const TypeSymbol* parent_symbol = nullptr;
   std::string defining_unit;
+  // ClassInfo is copied into runtime helper views and passed around by
+  // reference during emission. Keep the owning symbol with it so class and
+  // metaclass emission use the semantically bound identity instead of reconstructing
+  // a unit-qualified type name from text.
+  const TypeSymbol* symbol = nullptr;
   // TP-style `object' is a value type: lives on the stack by default,
   // heap-allocated with `new(p, init(...))', destroyed via
   // `dispose(p, done)'.  Delphi-style `class' is a reference type:
@@ -145,7 +170,10 @@ struct ClassInfo {
   bool is_reference_type = false;
   bool is_abstract = false;
   bool is_forward = false;
-  std::vector<std::string> interfaces;  // lowercased direct implements list
+  // Resolved identities for `class(TBase, IFace, ...)` entries.
+  // Semantic checks and emission use these symbols so ancestry and interface
+  // checks follow the same semantic type binding as fields and parameters.
+  std::vector<const TypeSymbol*> interface_symbols;
   std::unordered_map<std::string, FieldInfo> fields;
   // Pascal allows overloaded methods (multiple `procedure foo(...)`
   // declarations on the same class), so the registry tracks the full set
@@ -158,21 +186,27 @@ struct ClassInfo {
   // them on the owner symbol, not in a parallel flat table, so `Outer.Inner'
   // lookup and unqualified lookup inside Outer follow the same tree.
   std::unordered_map<std::string, std::shared_ptr<TypeSymbol>> nested_types;
-  // Bare enum labels from class field types are visible while emitting member
-  // bodies. Keep the labels here so class and inherited-class lookup can
-  // resolve them before ordinary unit lookup.
-  std::unordered_set<std::string> enum_members;
+  // Bare enum labels from class field types are visible in member bodies.
+  // Store the descriptor-owned enum and ordinal directly; a later consumer
+  // must not recover either from the label spelling.
+  std::unordered_map<std::string, EnumMemberInfo> enum_members;
   std::string default_property_name;
 };
 
 struct InterfaceInfo {
+  const TypeDescriptor* descriptor = nullptr;
   std::string name;
   std::string defining_unit;
+  // Interface compatibility is nominal. Keep the owning symbol here so a class
+  // implementing OuterA.I does not satisfy a formal of same-leaf OuterB.I just
+  // because both interfaces live in the same unit.
+  const TypeSymbol* symbol = nullptr;
   std::string metadata_string;
   std::unordered_map<std::string, std::vector<MethodSig>> methods;
 };
 
 struct RecordInfo {
+  const TypeDescriptor* descriptor = nullptr;
   std::string name;
   std::string defining_unit;
   bool is_packed = false;
@@ -184,6 +218,7 @@ struct RecordInfo {
 };
 
 struct EnumInfoReg {
+  const TypeDescriptor* descriptor = nullptr;
   std::string name;
   std::string defining_unit;
   const ast::TyEnum* type = nullptr;
@@ -191,114 +226,39 @@ struct EnumInfoReg {
   std::vector<std::string> members;      // lowercased
 };
 
-struct AliasInfo {
-  std::string defining_unit;
-  // Declaration target for `type X = Y`. TypeRegistry::build() resolves this
-  // once to the target descriptor; emission should consume the descriptor, not
-  // chase this syntax again.
-  std::shared_ptr<const ast::TypeExpr> target;
-};
+using TypeDescriptorPayload =
+    std::variant<std::monostate, ClassInfo, RecordInfo, InterfaceInfo,
+                 EnumInfoReg>;
 
-struct ProcInfo {
-  std::string defining_unit;
-  std::shared_ptr<const ast::ProcDecl> decl;
-  size_t param_count = 0;
-  bool is_function = false;
-  bool is_overload = false;
-  // For rt builtins that accept `foo;` with zero args (writeln,
-  // readln, halt, etc.) regardless of declared arity.
-  bool accepts_zero_args = false;
-  // Return type name (lowercased Pascal type identifier) when known
-  // -- used for `is_bool` / auto-call decisions on rt builtins
-  // whose full AST we don't have.
-  std::string return_type_name;
-};
-
-struct VarInfo {
-  std::string defining_unit;
-  std::shared_ptr<const ast::TypeExpr> type;
-};
-
-struct ConstInfo {
-  std::string defining_unit;
-  std::shared_ptr<const ast::TypeExpr> type;   // nullptr if untyped
-  std::shared_ptr<const ast::Expr> value;      // constant expression AST
-};
-
-enum class TypeSymbolKind : uint8_t {
-  Alias,
-  Class,
-  Record,
-  Interface,
-  Enum,
-};
-
-using TypeSymbolPayload =
-    std::variant<AliasInfo, ClassInfo, RecordInfo, InterfaceInfo, EnumInfoReg>;
-
-struct TypeSymbol {
-  std::string name;
-  std::string defining_unit;
-  // Containing type names, outermost first. Empty for unit-level types.
-  // Emission uses this to lower Pascal `Outer.Inner' to C++ `Outer::Inner'
-  // after lookup has proven that the dot is type nesting rather than a unit.
-  std::vector<std::string> owner_path;
-  // For aliases this is the alias target. For named concrete types this is the
-  // declaration AST node. Synthetic runtime types keep ownership in
-  // `owned_type` so every TypeSymbol exposes the same raw AST pointer API.
-  std::shared_ptr<const ast::TypeExpr> owned_type;
+struct TypeDescriptor {
+  size_t id = 0;
+  // The syntax that creates this Pascal type object. Alias syntax points to
+  // another descriptor and therefore never becomes this field.
   const ast::TypeExpr* type = nullptr;
-  // Pascal semantic identity. `type Y = X` shares X's descriptor; `type X =
-  // record end` owns the descriptor created by that record syntax. This is
-  // populated by TypeRegistry::build().
-  //
-  // `name` is only Pascal declaration/source spelling. It is not the type
-  // object's identity and it is not inherently the emitted C++ spelling. The
-  // emitter is allowed to apply the fixed backend naming rule for declared
-  // Pascal types (`type X = ...` -> generated carrier `t_x`, with owner/unit
-  // qualification as needed). Anonymous nominal types have no `type X =`
-  // source name, so they need a descriptor-attached synthesized C++ name or an
-  // inline C++ form when that is representable.
-  const TypeDescriptor* descriptor = nullptr;
-  TypeSymbolPayload payload;
+  // Optional declaration name for the object. Aliases are not owners.
+  const TypeSymbol* symbol = nullptr;
+  // `class of T` has target-keyed identity and no declaration owner.
+  const TypeSymbol* metaclass_target = nullptr;
+  // Result edges for intrinsic operations whose result is fixed by this type.
+  // These point back into the same registry tree; emit-time consumers follow
+  // the edge and never acquire the result through a Pascal spelling.
+  const TypeDescriptor* ordinal_result = nullptr;
+  const TypeDescriptor* element_result = nullptr;
+  const TypeDescriptor* pointer_difference_result = nullptr;
+  const TypeDescriptor* real_division_result = nullptr;
+  const TypeDescriptor* string_concat_result = nullptr;
+  const TypeDescriptor* lo_hi_result = nullptr;
+  const TypeDescriptor* set_literal_element_result = nullptr;
+  const TypeDescriptor* low_high_result = nullptr;
+  // Backend properties of compiler-provided primitive types. Aliases share
+  // this descriptor and therefore share this metadata without spelling tests.
+  const PrimitiveInfo* primitive = nullptr;
+  // Pascal's standard Code/Data record is the only record type that an
+  // explicit cast may convert to a procedure-of-object carrier. Aliases share
+  // this role through descriptor identity.
+  bool is_method_carrier = false;
+  TypeDescriptorPayload payload;
 
-  TypeSymbol() = delete;
-  TypeSymbol(std::string name_in, std::string defining_unit_in,
-             const ast::TypeExpr* type_in, TypeSymbolPayload payload_in)
-      : name(std::move(name_in)),
-        defining_unit(std::move(defining_unit_in)),
-        type(type_in),
-        payload(std::move(payload_in)) {}
-  TypeSymbol(std::string name_in, std::string defining_unit_in,
-             std::shared_ptr<const ast::TypeExpr> owned_type_in,
-             TypeSymbolPayload payload_in)
-      : name(std::move(name_in)),
-        defining_unit(std::move(defining_unit_in)),
-        owned_type(std::move(owned_type_in)),
-        type(owned_type.get()),
-        payload(std::move(payload_in)) {}
-
-  TypeSymbolKind kind() const {
-    if (std::holds_alternative<AliasInfo>(payload)) {
-      return TypeSymbolKind::Alias;
-    }
-    if (std::holds_alternative<ClassInfo>(payload)) {
-      return TypeSymbolKind::Class;
-    }
-    if (std::holds_alternative<RecordInfo>(payload)) {
-      return TypeSymbolKind::Record;
-    }
-    if (std::holds_alternative<InterfaceInfo>(payload)) {
-      return TypeSymbolKind::Interface;
-    }
-    if (std::holds_alternative<EnumInfoReg>(payload)) {
-      return TypeSymbolKind::Enum;
-    }
-    throw std::logic_error("unreachable TypeSymbol payload");
-  }
-  const AliasInfo* alias_info() const {
-    return std::get_if<AliasInfo>(&payload);
-  }
   const ClassInfo* class_info() const {
     return std::get_if<ClassInfo>(&payload);
   }
@@ -325,21 +285,118 @@ struct TypeSymbol {
   }
 };
 
-inline const TypeSymbol* descriptor_payload_symbol(const TypeSymbol* symbol) {
-  if (!symbol) return nullptr;
-  if (symbol->descriptor && symbol->descriptor->symbol) {
-    return symbol->descriptor->symbol;
-  }
-  return symbol;
-}
+struct ProcInfo {
+  enum class SlotStorage { Value, Mutable, UntypedConst, UntypedMutable };
+  struct SlotInfo {
+    SlotStorage storage = SlotStorage::Value;
+  };
 
-inline const ast::TypeExpr* descriptor_payload_type(const TypeSymbol* symbol) {
-  if (!symbol) return nullptr;
-  if (symbol->descriptor && symbol->descriptor->type) {
-    return symbol->descriptor->type;
+  std::string defining_unit;
+  std::shared_ptr<const ast::ProcDecl> decl;
+  size_t param_count = 0;
+  bool is_function = false;
+  bool is_overload = false;
+  // For rt builtins that accept `foo;` with zero args (writeln,
+  // readln, halt, etc.) regardless of declared arity.
+  bool accepts_zero_args = false;
+  // Runtime metadata procedures have no ProcDecl, so build stores their
+  // resolved result symbol here instead of making emission rebuild it from
+  // this diagnostic/source spelling.
+  std::string return_type_name;
+  const TypeSymbol* return_type_symbol = nullptr;
+  // Metadata-only runtime helpers have no ProcDecl, so build stores their
+  // caller-storage parameter contracts here. Parsed Pascal declarations use
+  // Param::Var/Out/Const instead.
+  std::vector<SlotInfo> slot_info;
+};
+
+struct VarInfo {
+  std::string defining_unit;
+  std::shared_ptr<const ast::TypeExpr> type;
+  Location loc;
+};
+
+struct ConstInfo {
+  std::string defining_unit;
+  std::shared_ptr<const ast::TypeExpr> type;   // nullptr if untyped
+  std::shared_ptr<const ast::Expr> value;      // constant expression AST
+  Location loc;
+};
+
+struct TypeSymbol {
+  std::string name;
+  std::string defining_unit;
+  // Containing type names, outermost first. Empty for unit-level types.
+  // Emission uses this to lower Pascal `Outer.Inner' to C++ `Outer::Inner'
+  // after lookup has proven that the dot is type nesting rather than a unit.
+  std::vector<std::string> owner_path;
+  // For aliases this is the alias target. For named concrete types this is the
+  // declaration AST node. Synthetic runtime types keep ownership in
+  // `owned_type` so every TypeSymbol exposes the same raw AST pointer API.
+  std::shared_ptr<const ast::TypeExpr> owned_type;
+  const ast::TypeExpr* type = nullptr;
+  // Pascal semantic identity. `type Y = X` shares X's descriptor; `type X =
+  // record end` owns the descriptor created by that record syntax. This is
+  // populated by parser-driven semantic binding.
+  //
+  // `name` is only Pascal declaration/source spelling. It is not the type
+  // object's identity and it is not inherently the emitted C++ spelling. The
+  // emitter is allowed to apply the fixed backend naming rule for declared
+  // Pascal types (`type X = ...` -> generated carrier `t_x`, with owner/unit
+  // qualification as needed). Anonymous nominal types have no `type X =`
+  // source name, so they need a descriptor-attached synthesized C++ name or an
+  // inline C++ form when that is representable.
+  const TypeDescriptor* descriptor = nullptr;
+  // Kept after an explicit `T = class;` is completed so references between
+  // the forward declaration and its later body remain visible.
+  bool has_forward_declaration = false;
+  TypeSymbol() = delete;
+  TypeSymbol(std::string name_in, std::string defining_unit_in,
+             const ast::TypeExpr* type_in)
+      : name(std::move(name_in)),
+        defining_unit(std::move(defining_unit_in)),
+        type(type_in) {}
+  TypeSymbol(std::string name_in, std::string defining_unit_in,
+             std::shared_ptr<const ast::TypeExpr> owned_type_in)
+      : name(std::move(name_in)),
+        defining_unit(std::move(defining_unit_in)),
+        owned_type(std::move(owned_type_in)),
+        type(owned_type.get()) {}
+
+  const ClassInfo* class_info() const {
+    return descriptor ? descriptor->class_info() : nullptr;
   }
-  return symbol->type;
-}
+  ClassInfo* mutable_class_info() {
+    return descriptor
+               ? const_cast<TypeDescriptor*>(descriptor)->mutable_class_info()
+               : nullptr;
+  }
+  const InterfaceInfo* interface_info() const {
+    return descriptor ? descriptor->interface_info() : nullptr;
+  }
+  InterfaceInfo* mutable_interface_info() {
+    return descriptor
+               ? const_cast<TypeDescriptor*>(descriptor)
+                     ->mutable_interface_info()
+               : nullptr;
+  }
+  const RecordInfo* record_info() const {
+    return descriptor ? descriptor->record_info() : nullptr;
+  }
+  RecordInfo* mutable_record_info() {
+    return descriptor
+               ? const_cast<TypeDescriptor*>(descriptor)->mutable_record_info()
+               : nullptr;
+  }
+  const EnumInfoReg* enum_info() const {
+    return descriptor ? descriptor->enum_info() : nullptr;
+  }
+  EnumInfoReg* mutable_enum_info() {
+    return descriptor
+               ? const_cast<TypeDescriptor*>(descriptor)->mutable_enum_info()
+               : nullptr;
+  }
+};
 
 using TypeSymbolScopeMap =
     std::unordered_map<std::string, TypeSymbol, StringViewHash,
@@ -366,8 +423,38 @@ struct TypeLookupContext {
   const TypeLookupContext* parent = nullptr;
   ScopeFrameKind kind = ScopeFrameKind::Local;
   const UnitInfo* unit_info = nullptr;
+  // Ordered semantic frames keep the owning UnitInfo for value/proc visibility and
+  // unit-qualified lookup, but type lookup must use only declarations that
+  // were visible at this source point. The full UnitInfo maps remain ownership
+  // and export indexes, not a substitute for Pascal declaration order.
+  bool restrict_unit_type_lookup = false;
+  // Procedure-local declarations still use the emitter's existing local value
+  // state during the transition. A declaration-owned type context inside that
+  // procedure must not clear those local const/proc/var maps when evaluating
+  // bounds or defaults later in emission.
+  bool preserve_local_value_scope = false;
   TypeSymbolRefScopeMap type_symbols;
+  // Enum labels are values, not type declarations. Point directly at the
+  // descriptor payload so lookup is constant-time and anonymous enum syntax
+  // does not require a synthetic TypeSymbol.
+  std::unordered_map<std::string, EnumMemberInfo, StringViewHash,
+                     StringViewEqual>
+      enum_members;
+  std::unordered_map<std::string, ConstInfo, StringViewHash, StringViewEqual>
+      const_symbols;
 };
+
+inline const EnumMemberInfo* scope_frame_find_local_enum_member(
+    const TypeLookupContext& frame, std::string_view n) {
+  auto it = frame.enum_members.find(n);
+  return it == frame.enum_members.end() ? nullptr : &it->second;
+}
+
+inline const EnumInfoReg* scope_frame_find_local_enum_info_for_member(
+    const TypeLookupContext& frame, std::string_view n) {
+  const EnumMemberInfo* member = scope_frame_find_local_enum_member(frame, n);
+  return member ? member->owner : nullptr;
+}
 
 struct UnitInfo {
   std::string name;
@@ -387,19 +474,20 @@ struct UnitInfo {
   std::unordered_map<std::string, std::vector<ProcInfo>> iface_procs;
   std::unordered_map<std::string, std::vector<ProcInfo>> iface_operators;
   std::unordered_map<std::string, TypeSymbol*> iface_types;
-  std::unordered_set<std::string> iface_enum_members;
+  std::unordered_map<std::string, EnumMemberInfo> iface_enum_members;
   std::unordered_map<std::string, VarInfo> impl_vars;
   std::unordered_map<std::string, ConstInfo> impl_consts;
   std::unordered_map<std::string, std::vector<ProcInfo>> impl_procs;
   std::unordered_map<std::string, std::vector<ProcInfo>> impl_operators;
   std::unordered_map<std::string, TypeSymbol*> impl_types;
-  std::unordered_set<std::string> impl_enum_members;
+  std::unordered_map<std::string, EnumMemberInfo> impl_enum_members;
 
   // Union views over iface + impl (used for own-unit lookup where
   // both sections are in scope).
   template <typename M>
   static const typename M::mapped_type* find(const M& a, const M& b,
                                               const std::string& n) {
+    assert(pascal_key_is_canonical(n));
     auto it = a.find(n);
     if (it != a.end()) return &it->second;
     auto jt = b.find(n);
@@ -419,12 +507,14 @@ struct UnitInfo {
     return find(iface_operators, impl_operators, n);
   }
   const TypeSymbol* find_type(const std::string& n) const {
+    assert(pascal_key_is_canonical(n));
     auto it = iface_types.find(n);
     if (it != iface_types.end()) return it->second;
     auto jt = impl_types.find(n);
     return jt == impl_types.end() ? nullptr : jt->second;
   }
   TypeSymbol* find_type_mut(const std::string& n) {
+    assert(pascal_key_is_canonical(n));
     auto it = iface_types.find(n);
     if (it != iface_types.end()) return it->second;
     auto jt = impl_types.find(n);
@@ -434,6 +524,7 @@ struct UnitInfo {
     return find_type(n) != nullptr;
   }
   bool has_enum_member(const std::string& n) const {
+    assert(pascal_key_is_canonical(n));
     return iface_enum_members.count(n) || impl_enum_members.count(n);
   }
   bool has_proc(const std::string& n) const {
@@ -447,23 +538,28 @@ struct UnitInfo {
   // Interface-exports view: what other units see when they `uses`
   // this unit.
   const VarInfo* find_export_var(const std::string& n) const {
+    assert(pascal_key_is_canonical(n));
     auto it = iface_vars.find(n);
     return it == iface_vars.end() ? nullptr : &it->second;
   }
   const ConstInfo* find_export_const(const std::string& n) const {
+    assert(pascal_key_is_canonical(n));
     auto it = iface_consts.find(n);
     return it == iface_consts.end() ? nullptr : &it->second;
   }
   const std::vector<ProcInfo>* find_export_procs(const std::string& n) const {
+    assert(pascal_key_is_canonical(n));
     auto it = iface_procs.find(n);
     return it == iface_procs.end() ? nullptr : &it->second;
   }
   const std::vector<ProcInfo>* find_export_operators(
       const std::string& n) const {
+    assert(pascal_key_is_canonical(n));
     auto it = iface_operators.find(n);
     return it == iface_operators.end() ? nullptr : &it->second;
   }
   const TypeSymbol* find_export_type(const std::string& n) const {
+    assert(pascal_key_is_canonical(n));
     auto it = iface_types.find(n);
     return it == iface_types.end() ? nullptr : it->second;
   }
@@ -471,6 +567,7 @@ struct UnitInfo {
     return find_export_type(n) != nullptr;
   }
   bool has_export_enum_member(const std::string& n) const {
+    assert(pascal_key_is_canonical(n));
     return iface_enum_members.count(n) > 0;
   }
 };
@@ -486,6 +583,7 @@ inline bool scope_frame_is_runtime(const TypeLookupContext& frame) {
 inline const VarInfo* scope_frame_find_var(const TypeLookupContext& frame,
                                            const std::string& n) {
   if (!frame.unit_info) return nullptr;
+  assert(pascal_key_is_canonical(n));
   switch (frame.kind) {
     case ScopeFrameKind::UnitImplementation: {
       auto it = frame.unit_info->impl_vars.find(n);
@@ -504,7 +602,12 @@ inline const VarInfo* scope_frame_find_var(const TypeLookupContext& frame,
 
 inline const ConstInfo* scope_frame_find_const(const TypeLookupContext& frame,
                                                const std::string& n) {
-  if (!frame.unit_info) return nullptr;
+  assert(pascal_key_is_canonical(n));
+  if (auto local = frame.const_symbols.find(n);
+      local != frame.const_symbols.end()) {
+    return &local->second;
+  }
+  if (frame.restrict_unit_type_lookup || !frame.unit_info) return nullptr;
   switch (frame.kind) {
     case ScopeFrameKind::UnitImplementation: {
       auto it = frame.unit_info->impl_consts.find(n);
@@ -524,6 +627,7 @@ inline const ConstInfo* scope_frame_find_const(const TypeLookupContext& frame,
 inline const std::vector<ProcInfo>* scope_frame_find_procs(
     const TypeLookupContext& frame, const std::string& n) {
   if (!frame.unit_info) return nullptr;
+  assert(pascal_key_is_canonical(n));
   switch (frame.kind) {
     case ScopeFrameKind::UnitImplementation: {
       auto it = frame.unit_info->impl_procs.find(n);
@@ -543,6 +647,7 @@ inline const std::vector<ProcInfo>* scope_frame_find_procs(
 inline const std::vector<ProcInfo>* scope_frame_find_operators(
     const TypeLookupContext& frame, const std::string& n) {
   if (!frame.unit_info) return nullptr;
+  assert(pascal_key_is_canonical(n));
   switch (frame.kind) {
     case ScopeFrameKind::UnitImplementation: {
       auto it = frame.unit_info->impl_operators.find(n);
@@ -561,38 +666,103 @@ inline const std::vector<ProcInfo>* scope_frame_find_operators(
   return nullptr;
 }
 
-inline bool scope_frame_has_type(const TypeLookupContext& frame,
-                                 const std::string& n) {
-  if (frame.type_symbols.count(n) > 0) return true;
-  if (!frame.unit_info) return false;
+inline const EnumMemberInfo* scope_frame_find_enum_member(
+    const TypeLookupContext& frame, const std::string& n) {
+  assert(pascal_key_is_canonical(n));
   switch (frame.kind) {
-    case ScopeFrameKind::UnitImplementation:
-      return frame.unit_info->impl_types.count(n) > 0;
+    case ScopeFrameKind::UnitImplementation: {
+      if (!frame.unit_info) return nullptr;
+      auto it = frame.unit_info->impl_enum_members.find(n);
+      return it == frame.unit_info->impl_enum_members.end()
+                 ? nullptr
+                 : &it->second;
+    }
     case ScopeFrameKind::UnitInterface:
-    case ScopeFrameKind::ImportedUnitInterface:
-      return frame.unit_info->iface_types.count(n) > 0;
+    case ScopeFrameKind::ImportedUnitInterface: {
+      if (!frame.unit_info) return nullptr;
+      auto it = frame.unit_info->iface_enum_members.find(n);
+      return it == frame.unit_info->iface_enum_members.end()
+                 ? nullptr
+                 : &it->second;
+    }
     case ScopeFrameKind::Local:
-      return false;
+      return scope_frame_find_local_enum_member(frame, n);
   }
-  return false;
+  return nullptr;
 }
 
 inline bool scope_frame_has_enum_member(const TypeLookupContext& frame,
                                         const std::string& n) {
-  if (!frame.unit_info) return false;
-  switch (frame.kind) {
-    case ScopeFrameKind::UnitImplementation:
-      return frame.unit_info->impl_enum_members.count(n) > 0;
-    case ScopeFrameKind::UnitInterface:
-    case ScopeFrameKind::ImportedUnitInterface:
-      return frame.unit_info->iface_enum_members.count(n) > 0;
-    case ScopeFrameKind::Local:
-      return false;
-  }
-  return false;
+  return scope_frame_find_enum_member(frame, n) != nullptr;
 }
 
 struct TypeRegistry {
+  struct InferredSetKey {
+    const TypeDescriptor* element = nullptr;
+    bool has_explicit_bounds = false;
+    int64_t low = 0;
+    int64_t high = 0;
+    bool operator==(const InferredSetKey& other) const {
+      return element == other.element &&
+             has_explicit_bounds == other.has_explicit_bounds &&
+             low == other.low && high == other.high;
+    }
+  };
+
+  struct InferredSetKeyHash {
+    std::size_t operator()(const InferredSetKey& key) const {
+      std::size_t h = std::hash<const TypeDescriptor*>{}(key.element);
+      h ^= std::hash<bool>{}(key.has_explicit_bounds) + 0x9e3779b9 +
+           (h << 6) + (h >> 2);
+      h ^= std::hash<int64_t>{}(key.low) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      h ^= std::hash<int64_t>{}(key.high) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  struct ArrayTailKey {
+    const TypeDescriptor* source = nullptr;
+    std::size_t first_dimension = 0;
+    bool operator==(const ArrayTailKey& other) const {
+      return source == other.source &&
+             first_dimension == other.first_dimension;
+    }
+  };
+
+  struct ArrayTailKeyHash {
+    std::size_t operator()(const ArrayTailKey& key) const {
+      std::size_t h = std::hash<const TypeDescriptor*>{}(key.source);
+      h ^= std::hash<std::size_t>{}(key.first_dimension) + 0x9e3779b9 +
+           (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  struct MethodCacheKey {
+    const TypeDescriptor* owner = nullptr;
+    std::string member;
+
+    bool operator==(const MethodCacheKey& other) const {
+      return owner == other.owner && member == other.member;
+    }
+  };
+
+  struct MethodCacheKeyHash {
+    std::size_t operator()(const MethodCacheKey& key) const {
+      std::size_t h = std::hash<const TypeDescriptor*>{}(key.owner);
+      h ^= std::hash<std::string>{}(key.member) + 0x9e3779b9 +
+           (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  struct ParseUnitTypeState {
+    const TypeLookupContext* interface_current = nullptr;
+    const TypeLookupContext* implementation_current = nullptr;
+    std::unordered_map<std::string, const ast::TypeDecl*> interface_types;
+    std::unordered_map<std::string, const ast::TypeDecl*> implementation_types;
+  };
+
   std::unordered_map<std::string, UnitInfo> units;
 
   // Unit-level Pascal type declarations. UnitInfo maps point into this deque;
@@ -603,162 +773,144 @@ struct TypeRegistry {
   // this store, not the owner of child symbol lifetime.
   std::unordered_map<std::string, std::shared_ptr<TypeSymbol>>
       nested_type_symbols;
-  // rt-side reference classes (tobject, exception, ...). Method lookups
-  // (`lookup_class_method[s]`) consult this when a translated class chain
-  // reaches a runtime parent, so a source class that inherits Create from
-  // Exception still resolves to the synthesized constructor signature.
-  // Code-gen never touches this table.
-  std::unordered_map<std::string, ClassInfo> rt_classes;
-  // Anonymous/nested enum carriers have no TypeSymbol of their own, but raw
-  // TyEnum* values still need owner metadata after type inference.
-  std::deque<EnumInfoReg> anonymous_enum_infos;
-  std::unordered_map<const ast::TyEnum*, const EnumInfoReg*> enum_type_info;
-  // (unit, member) -> owning enum's AST node, populated from EnumInfoReg as
-  // each enum is registered. `EmitAnalysis::deduce_type` asks "is this Ident
-  // an enum member?" for nearly every identifier in the source; the answer
-  // is `no` for almost all of them. A direct hash lookup answers the common
-  // negative case in one probe instead of walking every enum's member list.
+  // Measured negative-query index for enum labels. Values point into the
+  // descriptor payload and include the ordinal, so this is not a second enum
+  // identity or metadata authority.
   std::unordered_map<std::string,
-                     std::unordered_map<std::string, const ast::TyEnum*>>
+                     std::unordered_map<std::string, EnumMemberInfo>>
       enum_members_by_unit;
   // TypeExpr nodes that require more than source-file unit lookup are indexed
   // to their lexical declaration context. The context tree models unit scope
   // plus enclosing class/object/record type scopes using TypeSymbol refs.
   std::deque<TypeLookupContext> type_lookup_context_storage;
-  std::unordered_map<const ast::TypeExpr*, const TypeLookupContext*>
-      type_lookup_contexts;
-  // Build-time semantic identity for TypeExpr nodes. TyName nodes resolve to
-  // the descriptor of the symbol they name; fresh nominal syntax owns a fresh
-  // descriptor. This is the transitional side table until the parser stores
-  // resolved type references directly.
-  std::deque<TypeDescriptor> type_descriptor_storage;
-  std::unordered_map<const ast::TypeExpr*, const TypeDescriptor*>
-      type_descriptors;
+  // Stable storage for semantic type identities. TypeExpr and TypeSymbol nodes
+  // point directly into this deque.
+  mutable std::deque<TypeDescriptor> type_descriptor_storage;
+  // Per-registry primitive metadata. Static declaration data is copied here so
+  // each entry can point directly back to this registry's descriptor.
+  std::deque<PrimitiveInfo> primitive_info_storage;
+  mutable std::unordered_map<InferredSetKey, std::shared_ptr<ast::TySet>,
+                             InferredSetKeyHash>
+      inferred_set_types;
+  mutable std::unordered_map<const TypeDescriptor*,
+                             std::shared_ptr<ast::TyPointer>>
+      inferred_pointer_types;
+  mutable std::unordered_map<ArrayTailKey, std::shared_ptr<ast::TyArray>,
+                             ArrayTailKeyHash>
+      array_tail_types;
   std::unordered_map<const TypeSymbol*, const TypeDescriptor*>
       metaclass_descriptors;
-  // For TypeExpr nodes that name a Pascal type symbol, remember the exact
-  // symbol chosen by semantic binding. This is distinct from descriptor
-  // identity: aliases share the target descriptor but still name the alias
-  // symbol at the reference site.
-  std::unordered_map<const ast::TypeExpr*, const TypeSymbol*>
-      type_reference_symbols;
   std::unordered_map<std::string, const TypeLookupContext*>
       unit_interface_type_contexts;
   std::unordered_map<std::string, const TypeLookupContext*>
       unit_implementation_type_contexts;
-  std::unordered_map<const ast::ProcDecl*, const TypeLookupContext*>
-      proc_signature_type_contexts;
-  std::unordered_map<const ast::ProcDecl*, const TypeLookupContext*>
-      proc_body_type_contexts;
-  // Type syntax can be rendered after its declaring unit has finished
-  // emitting. `Location::file` identifies the parsed source buffer that
-  // contributed that syntax, including include-file buffers, so this map keeps
-  // bound-name lookup in the unit that owned the source text without storing
-  // an entry for every TypeExpr node.
-  std::unordered_map<const SourceFile*, std::string> source_file_units;
-
-  // Descriptors for built-in type literals (atoms). Pascal is nominal: a
-  // type's identity is its declaration identity. Atoms like `integer`, `char`,
-  // and `ansistring` are one declaration per atom, so they have one identity
-  // independent of where they appear in source. TypeRegistry::build() interns
-  // each atom as a stable TypeSymbol and binds references to that descriptor.
-  std::unordered_map<std::string, const TypeSymbol*, StringViewHash,
-                     StringViewEqual>
-      builtin_literal_descriptors;
-
-  // Merged method overload sets across the class hierarchy, keyed by
-  // (current_unit, class_name, member_lowered) packed with NUL separators.
-  // Populated on demand by `lookup_class_methods` during emission; the
-  // registry is fully built before emission starts so this cache is safe
-  // without invalidation.  Mutable so the const lookup can populate it.
-  mutable std::unordered_map<std::string, std::vector<MethodSig>>
+  // Merged method overload sets across the class hierarchy, keyed by resolved
+  // class identity plus member name. The identity key matters for nested or
+  // same-named classes: once build has resolved the receiver, method lookup
+  // must not recover it again from a unit/name spelling.
+  // Populated on demand during emission; the registry is fully built before
+  // emission starts so this cache is safe without invalidation. Mutable so the
+  // const lookup can populate it.
+  mutable std::unordered_map<MethodCacheKey, std::vector<MethodSig>,
+                             MethodCacheKeyHash>
       merged_method_cache;
+  bool runtime_initialized = false;
+  std::unordered_map<std::string, ParseUnitTypeState> parse_unit_type_states;
 
-  // Fill from all parsed UnitNodes.
-  void build(const std::vector<const ast::UnitNode*>& units);
+  void initialize_runtime_types();
+  void begin_parsed_unit(std::string_view name);
+  void set_parsed_unit_imports(std::string_view name,
+                               const std::vector<std::string>& imports,
+                               bool in_interface);
+  void bind_parsed_declarations(
+      std::string_view name, const std::vector<ast::DeclPtr>& declarations,
+      bool in_interface);
+  void bind_parsed_unit_bodies(const ast::UnitNode& unit);
   const TypeLookupContext* lookup_context_for_type(
       const ast::TypeExpr* type) const;
   const TypeLookupContext* lookup_unit_context(
-      std::string_view unit, bool implementation) const;
+      PascalKey unit, bool implementation) const;
   const TypeLookupContext* lookup_proc_signature_context(
       const ast::ProcDecl* proc) const;
   const TypeLookupContext* lookup_proc_body_context(
       const ast::ProcDecl* proc) const;
+  const TypeSymbol* method_owner_symbol_for_proc(
+      const ast::ProcDecl* proc) const;
+  std::optional<const TypeSymbol*> exception_handler_type_result(
+      const ast::ExceptHandler* handler) const;
+  std::optional<const TypeSymbol*> type_name_expression_result(
+      const ast::Expr* expr) const;
+  std::optional<const TypeSymbol*> value_type_expression_result(
+      const ast::Expr* expr) const;
+  const TypeDescriptor* expression_result_descriptor(
+      const ast::Expr* expr) const;
   const TypeDescriptor* descriptor_for_type(
       const ast::TypeExpr* type) const;
+  bool bound_signature_type_exprs_match(const ast::TypeExpr* a,
+                                        const ast::TypeExpr* b) const;
+  bool bound_signature_params_match(const std::vector<ast::Param>& a,
+                                    const std::vector<ast::Param>& b) const;
   const TypeSymbol* referenced_symbol_for_type(
-      const ast::TypeExpr* type) const;
-  const TypeSymbol* canonical_symbol_for_type(
       const ast::TypeExpr* type) const;
   const TypeSymbol* resolved_symbol_for_type(
       const ast::TypeExpr* type) const;
   const TypeSymbol* metaclass_target_for_type(
       const ast::TypeExpr* type) const;
-  std::string_view declaration_unit_for_type(
-      const ast::TypeExpr* type) const;
   const TypeSymbol* lookup_type_symbol_in_context(
-      std::string_view name, const TypeLookupContext* context) const;
-  const TypeSymbol* lookup_type_symbol_in_scope_chain(
-      std::string_view name, const TypeLookupContext* context) const;
-  const TypeSymbol* lookup_type_symbol_exact(std::string_view unit,
-                                             std::string_view name) const;
-  TypeSymbol* lookup_type_symbol_exact_mut(std::string_view unit,
-                                           std::string_view name);
-  const TypeSymbol* lookup_type_symbol(std::string_view name,
-                                       std::string_view current_unit) const;
+      PascalKey name, const TypeLookupContext* context) const;
+  const TypeSymbol* lookup_type_symbol_exact(PascalKey unit,
+                                             PascalKey name) const;
+  TypeSymbol* lookup_type_symbol_exact_mut(PascalKey unit,
+                                           PascalKey name);
   const EnumInfoReg* enum_info_for_type(const ast::TyEnum* type) const;
-  // Constant-time "is `member` an enum member of an enum declared in
-  // `unit`?" Returns the owning TyEnum* or nullptr.
-  const ast::TyEnum* lookup_enum_member_in_unit(
+  const EnumMemberInfo* lookup_enum_member_in_unit(
       std::string_view unit, std::string_view member) const;
 
-  const ClassInfo* lookup_class(std::string_view name,
-                                std::string_view current_unit) const;
   // Pascal class ancestry for semantic lookup/conversion. Root reference
   // classes implicitly inherit runtime TObject, matching emitted C++ bases.
   const ClassInfo* lookup_parent_class(const ClassInfo& class_info) const;
+  bool same_class_identity(const ClassInfo& a, const ClassInfo& b) const;
   bool class_implements_interface(const ClassInfo& class_info,
                                   const InterfaceInfo& interface_info) const;
-  const InterfaceInfo* lookup_interface(std::string_view name,
-                                        std::string_view current_unit) const;
-  const RecordInfo* lookup_record(std::string_view name,
-                                  std::string_view current_unit) const;
   // Returns the canonical TypeSymbol for a built-in type literal (lowercased
   // Pascal name), or nullptr if `name` is not a builtin atom. The symbol's
   // `type` field is the canonical AST representative; pointer equality on it
   // is type identity.
   const TypeSymbol* builtin_literal(std::string_view name) const;
+  const ast::TySet* inferred_set_type(
+      const ast::TypeExpr* element,
+      std::optional<std::pair<int64_t, int64_t>> explicit_bounds) const;
+  const ast::TyPointer* inferred_pointer_type(
+      const ast::TypeExpr* target) const;
+  const ast::TyArray* array_tail_type(
+      const ast::TyArray* source, std::size_t first_dimension) const;
 
   // Pascal resolves type names and value names in different contexts. C++
   // class/struct scopes do not, so fields use value identifiers (`p_*`) while
   // named Pascal types use type identifiers (`t_*`).
   std::string field_cxx_name(std::string_view name) const;
 
-  const FieldInfo* lookup_class_field(
-      const std::string& class_name, const std::string& member,
-      std::string_view current_unit) const;
+  const FieldInfo* lookup_class_field(const ClassInfo& class_info,
+                                      const std::string& member) const;
 
   // Class member bodies may resolve inherited field-type enum labels before
   // unit-level lookup; this cache follows the class inheritance chain.
-  bool class_has_enum_member(
-      const std::string& class_name, const std::string& member,
-      std::string_view current_unit) const;
+  bool class_has_enum_member(const ClassInfo& class_info,
+                             const std::string& member) const;
+  const EnumMemberInfo* lookup_class_enum_member(
+      const ClassInfo& class_info, const std::string& member) const;
 
   // Full overload set, walking up the inheritance chain.
   const std::vector<MethodSig>* lookup_class_methods(
-      const std::string& class_name, const std::string& member,
-      std::string_view current_unit) const;
+      const ClassInfo& class_info, const std::string& member) const;
+  const std::vector<MethodSig>* lookup_interface_methods(
+      const InterfaceInfo& interface_info, const std::string& member) const;
 
-  const PropertyInfo* lookup_class_property(
-      const std::string& class_name, const std::string& member,
-      std::string_view current_unit) const;
+  const PropertyInfo* lookup_class_property(const ClassInfo& class_info,
+                                            const std::string& member) const;
 
   const PropertyInfo* lookup_default_property(
-      const std::string& class_name, std::string_view current_unit) const;
-
-  const FieldInfo* lookup_record_field(
-      const std::string& record_name, const std::string& member,
-      std::string_view current_unit = {}) const;
+      const ClassInfo& class_info) const;
 };
 
 // A Pascal enum type contributes both labels for name lookup and a C++ carrier
@@ -771,11 +923,7 @@ void register_enum_types_for_owner(
     const ast::TypeExpr* type, std::string_view owner_name,
     const ast::TyEnum* named_top_level = nullptr);
 TypeSymbol make_type_symbol_for_type(
-    std::string_view unit, std::string_view name,
+    TypeRegistry& registry, std::string_view unit, std::string_view name,
     std::shared_ptr<const ast::TypeExpr> type);
-void register_type_symbols_for_owner(
-    TypeSymbolScopeMap& out, std::shared_ptr<const ast::TypeExpr> type,
-    std::string_view owner_name,
-    const ast::TyEnum* named_top_level = nullptr);
 
 }  // namespace tp2cc

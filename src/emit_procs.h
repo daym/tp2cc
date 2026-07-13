@@ -57,22 +57,26 @@ class EmitProcs {
     std::string outer_result_name;
     std::string outer_result_slot_name;
     const ast::TypeExpr* outer_result_type = nullptr;
-    std::string current_class_name;
+    const TypeSymbol* current_class_symbol = nullptr;
     std::unordered_set<std::string> local_scope;
     std::unordered_map<std::string, const ast::TypeExpr*> local_value_types;
     std::unordered_map<std::string, const ast::ConstDecl*> local_consts;
     std::unordered_map<std::string, std::vector<ScopeStateView::NestedFn>>
         local_nested_fns;
     std::unordered_set<std::string> local_nested_forwards;
-    std::unordered_set<std::string> local_untyped_params;
+    std::unordered_map<std::string, const TypeDescriptor*>
+        local_untyped_params;
     const TypeLookupContext* type_scope = nullptr;
     std::unordered_set<std::string> local_const_params;
+    std::unordered_map<std::string, ScopeStateView::AbsoluteAlias>
+        local_absolute_targets;
     int block_depth = 0;
   };
 
   SavedProcState save_proc_state() const;
   void restore_proc_state(SavedProcState&& saved);
-  void setup_proc_frame(const ast::ProcDecl& pd, bool nested_lambda);
+  void setup_proc_frame(const ast::ProcDecl& pd, bool nested_lambda,
+                        const TypeSymbol* method_owner_symbol);
   bool insert_proc_local_name(Location where, const std::string& name);
   void seed_proc_scope(const ast::ProcDecl& pd);
   std::string nested_proc_cxx_name(const ast::ProcDecl& pd) const;

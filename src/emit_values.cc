@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -18,6 +19,26 @@ namespace tp2cc {
 using namespace ast;
 
 namespace {
+
+// Reference-class value compatibility is a class identity question, not a
+// spelling question. Use the built registry parent links so validation sees
+// the same hierarchy that overload scoring and method lookup use.
+bool reference_class_derives_from(const TypeRegistry& registry,
+                                  const ClassInfo* source,
+                                  const ClassInfo* target) {
+  if (!source || !target || !source->is_reference_type ||
+      !target->is_reference_type) {
+    return false;
+  }
+  std::unordered_set<const ClassInfo*> seen;
+  for (const ClassInfo* cur = source; cur; cur = registry.lookup_parent_class(*cur)) {
+    if (!seen.insert(cur).second) return false;
+    if (registry.same_class_identity(*cur, *target)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 std::string string_literal_body_char_to_cxx(char c) {
   switch (c) {
@@ -91,11 +112,6 @@ EmitValues::EmitValues(const TypeRegistry& registry, ScopeStateView& scope,
       overload_types_(overload_types),
       expr_ops_(expr_ops) {}
 
-bool EmitValues::same_cxx_type(const TypeExpr* a, const TypeExpr* b) {
-  if (!a || !b) return false;
-  return types_.type_to_cxx(*a) == types_.type_to_cxx(*b);
-}
-
 const TypeExpr* EmitValues::set_literal_member_source_type(const Expr& e) {
   // Set-literal member typing preserves the source enum owner's unit. A target
   // set type can be an alias from a different unit, but the literal's enum
@@ -145,19 +161,23 @@ std::string EmitValues::set_literal_to_cxx(const SetLit& s,
           common_literal_type = literal_type;
           continue;
         }
-        if (!same_cxx_type(common_literal_type, literal_type)) {
+        if (!analysis_.same_type_ast(common_literal_type, literal_type)) {
           consistent_literal_type = false;
           break;
         }
       }
-      // Cross-unit calls can context-type a set literal through a runtime enum
-      // alias (`tfpuexceptionmask`) even when every literal member comes from a
-      // unit-local enum (`globals.tfpuexception`). Preserve the literal's more
-      // specific enum type in that case so the generated `tp2cc_Set<...>`
-      // matches the actual Pascal members instead of forcing them through the
-      // runtime alias.
+      const TypeExpr* literal_set_type = analysis_.deduce_set_literal_type(s);
+      const bool literal_fits_target =
+          literal_set_type &&
+          analysis_.classify_set_conversion(literal_set_type, target) !=
+              SetConversionKind::Incompatible;
+      // Target typing can arrive through an alias whose element has the same
+      // ordinal domain as the enum constants but a different declaration
+      // identity. Use the constants' owner type for emission only after the
+      // Pascal set-conversion check says that source set is compatible.
       if (consistent_literal_type && common_literal_type &&
-          !same_cxx_type(common_literal_type, elem_type)) {
+          literal_fits_target &&
+          !analysis_.same_type_ast(common_literal_type, elem_type)) {
         elem_type = common_literal_type;
       }
     }
@@ -411,34 +431,25 @@ bool EmitValues::can_convert_proc_value(const Expr& e, const TypeExpr* target,
 bool EmitValues::can_convert_reference_class_value(const Expr& e,
                                                    const TypeExpr* source_type,
                                                    const TypeExpr* target) {
-  // Class values can canonicalize to a TyObject body, which no longer carries
-  // the Pascal class name needed for hierarchy checks. Recover the source and
-  // target names here, then delegate the actual compatibility rule to
-  // rank_conversion so value validation does not grow its own class model.
-  std::string source_name = analysis_.deduce_class_alias(e);
-  if (source_name.empty() && source_type) {
-    source_name = analysis_.direct_type_name(source_type);
+  const ClassInfo* source_class = analysis_.class_info_for_type(source_type);
+  if (!source_class) {
+    // A bare class identifier such as `TChild` is a value expression whose
+    // concrete class is carried by the identifier binding, not by the
+    // expression's TypeExpr.
+    if (const TypeSymbol* source_symbol = analysis_.deduce_class_symbol(e)) {
+      source_class = source_symbol->class_info();
+    }
   }
-  std::string target_name;
-  if (target) {
-    target_name = analysis_.direct_type_name(target);
-  }
-  if (source_name.empty() || target_name.empty()) return false;
-  if (!analysis_.type_is_reference_class(named_pascal_type(source_name)) ||
-      !analysis_.type_is_reference_class(named_pascal_type(target_name))) {
-    return false;
-  }
-  return resolution_
-      .rank_conversion(named_pascal_type(source_name),
-                       named_pascal_type(target_name),
-                       /*var_param=*/false)
-      .viable();
+  const ClassInfo* target_class = analysis_.class_info_for_type(target);
+  return reference_class_derives_from(registry_, source_class, target_class);
 }
 
 bool EmitValues::can_convert_value_to_type(const Expr& e,
                                            const TypeExpr* target,
                                            bool explicit_conversion) {
   if (!target) return true;
+  const TypeLookupContext* target_context =
+      registry_.lookup_context_for_type(target);
   const TypeExpr* canon_target = analysis_.semantic_shape_type(target);
   if (!canon_target) return true;
 
@@ -456,9 +467,9 @@ bool EmitValues::can_convert_value_to_type(const Expr& e,
       const TypeExpr* elem =
           arr.element ? analysis_.semantic_shape_type(arr.element.get()) : nullptr;
       const PrimitiveInfo* elem_info = analysis_.primitive_info_for_type(elem);
-      const std::string elem_atom = analysis_.builtin_atom_name_for_type(elem);
       if (arr.array_kind == ArrayKind::Fixed && arr.dims.size() == 1 && elem &&
-          ((elem_info && elem_info->is_char()) || elem_atom == "byte")) {
+          (elem_info && (elem_info->is_char() ||
+                         elem_info->kind == PrimitiveKind::Byte))) {
         return types_.array_dim_bounds_to_cxx(*arr.dims[0]).has_value();
       }
     }
@@ -494,15 +505,16 @@ bool EmitValues::can_convert_value_to_type(const Expr& e,
     return can_convert_proc_value(e, target, explicit_conversion);
   }
 
-  if ((analysis_.type_accepts_class_value(target) ||
-       analysis_.type_accepts_class_value(canon_target)) &&
-      !concrete_class_name_for_metaclass_value(e).empty()) {
+  if (analysis_.concrete_class_symbol_for_metaclass_target(e, target) ||
+      analysis_.concrete_class_symbol_for_metaclass_target(e, canon_target)) {
     return true;
   }
 
-  const TypeExpr* source_type = analysis_.explicit_typecast_result_type(e);
-  if (!source_type) source_type = overload_types_.type_for_overload(e);
+  const TypeExpr* explicit_cast_type =
+      analysis_.explicit_typecast_result_type(e);
+  const TypeExpr* source_type = explicit_cast_type;
   if (!source_type) source_type = analysis_.deduce_type(e);
+  if (!source_type) source_type = overload_types_.type_for_overload(e);
   const TypeExpr* raw_source_type = source_type;
   const TypeExpr* canon_source_type = analysis_.semantic_shape_type(source_type);
   if (!raw_source_type || !canon_source_type) return false;
@@ -512,11 +524,13 @@ bool EmitValues::can_convert_value_to_type(const Expr& e,
   }
 
   if (resolution_.rank_conversion(raw_source_type, target,
-                                  /*var_param=*/false)
+                                  /*var_param=*/false, target_context)
           .viable()) {
     return true;
   }
-  if (resolution_.find_assignment_operator(canon_source_type, target).decl) {
+  if (resolution_.find_assignment_operator(canon_source_type, target,
+                                           target_context)
+          .decl) {
     return true;
   }
   // See apply_target_pointer_conversion: this is the supported {$T-}
@@ -561,6 +575,8 @@ std::string EmitValues::const_value_to_cxx_impl(
     const Expr& e, const TypeExpr* target, bool explicit_conversion,
     bool typed_const_initializer) {
   if (!target) return expr_ops_.expr_to_cxx(e);
+  const TypeLookupContext* target_context =
+      registry_.lookup_context_for_type(target);
   if (e.kind == Kind::StringLit) {
     const auto& lit = static_cast<const StringLit&>(e);
     const TypeExpr* canon = analysis_.semantic_shape_type(target);
@@ -572,9 +588,9 @@ std::string EmitValues::const_value_to_cxx_impl(
       const TypeExpr* elem =
           arr.element ? analysis_.semantic_shape_type(arr.element.get()) : nullptr;
       const PrimitiveInfo* elem_info = analysis_.primitive_info_for_type(elem);
-      const std::string elem_atom = analysis_.builtin_atom_name_for_type(elem);
       if (arr.array_kind == ArrayKind::Fixed && arr.dims.size() == 1 && elem &&
-          ((elem_info && elem_info->is_char()) || elem_atom == "byte")) {
+          (elem_info && (elem_info->is_char() ||
+                         elem_info->kind == PrimitiveKind::Byte))) {
         auto bounds = types_.array_dim_bounds_to_cxx(*arr.dims[0]);
         if (bounds) {
           return "::rt::tp2cc_array_literal<" + types_.type_to_cxx(*elem) +
@@ -605,17 +621,11 @@ std::string EmitValues::const_value_to_cxx_impl(
   const TypeExpr* canon_target = analysis_.semantic_shape_type(target);
   if (e.kind == Kind::ArrayConst) {
     const TypeExpr* canon = canon_target;
-    std::shared_ptr<TyArray> nested_array_target;
     const TypeExpr* elem_type = nullptr;
     if (canon && canon->kind == Kind::TyArray) {
       const auto& arr = static_cast<const TyArray&>(*canon);
       if (arr.dims.size() > 1) {
-        std::vector<TypePtr> nested_dims(arr.dims.begin() + 1,
-                                         arr.dims.end());
-        nested_array_target = std::make_shared<TyArray>(
-            arr.loc, std::move(nested_dims), arr.element, arr.is_packed,
-            arr.array_kind);
-        elem_type = nested_array_target.get();
+        elem_type = registry_.array_tail_type(&arr, 1);
       } else {
         elem_type = arr.element.get();
       }
@@ -666,17 +676,11 @@ std::string EmitValues::const_value_to_cxx_impl(
   if (auto text = maybe_convert_proc_value(e, target, explicit_conversion)) {
     return *text;
   }
-  const TypeExpr* source_type = overload_types_.type_for_overload(e);
-  if (e.kind == Kind::Call) {
-    const auto& call = static_cast<const Call&>(e);
-    if (call.args.size() == 1 && call.callee->kind == Kind::Ident) {
-      const auto& id = static_cast<const Ident&>(*call.callee);
-      if (const TypeExpr* cast_type = analysis_.migration_fallback_named_type_expr_by_name(id.name)) {
-        source_type = cast_type;
-      }
-    }
-  }
+  const TypeExpr* explicit_cast_type =
+      analysis_.explicit_typecast_result_type(e);
+  const TypeExpr* source_type = explicit_cast_type;
   if (!source_type) source_type = analysis_.deduce_type(e);
+  if (!source_type) source_type = overload_types_.type_for_overload(e);
   if (source_type) source_type = analysis_.semantic_shape_type(source_type);
   if (canon_target && canon_target->kind == Kind::TyProcedural) {
     const auto& proc = static_cast<const TyProcedural&>(*canon_target);
@@ -687,9 +691,11 @@ std::string EmitValues::const_value_to_cxx_impl(
   }
   std::string out = expr_ops_.expr_to_cxx(e);
   if (source_type && canon_target) {
-    if (auto conv = resolution_.find_assignment_operator(source_type, target);
+    if (auto conv = resolution_.find_assignment_operator(source_type, target,
+                                                         target_context);
         conv.decl) {
-      std::string fn = pascal_assignment_operator_helper_name(*conv.decl);
+      std::string fn =
+          pascal_assignment_operator_helper_name(registry_, *conv.decl);
       if (!conv.defining_unit.empty()) {
         fn = unit_namespace_prefix(conv.defining_unit) + fn;
       }
@@ -701,15 +707,25 @@ std::string EmitValues::const_value_to_cxx_impl(
     out = storage_.lower_fixed_char_array_value_to_pchar(source_type, target,
                                                          out);
   }
-  out = apply_target_pointer_conversion(e, target, source_type, std::move(out),
-                                        explicit_conversion);
+  if (!explicit_cast_type ||
+      !analysis_.same_type_ast(explicit_cast_type, target)) {
+    out = apply_target_pointer_conversion(e, target, source_type,
+                                          std::move(out),
+                                          explicit_conversion);
+  }
   if (source_type && canon_target && source_type->kind == Kind::TySet &&
       canon_target->kind == Kind::TySet &&
       analysis_.classify_set_conversion(source_type, canon_target) !=
-          SetConversionKind::Incompatible &&
-      types_.type_to_cxx(*source_type) != types_.type_to_cxx(*canon_target)) {
-    out = "::rt::tp2cc_set_cast<" + types_.type_to_cxx(*target) + ">(" + out +
-          ")";
+          SetConversionKind::Incompatible) {
+    const auto& source_set = static_cast<const TySet&>(*source_type);
+    const auto& target_set = static_cast<const TySet&>(*canon_target);
+    const bool same_element =
+        analysis_.same_type_ast(source_set.element.get(),
+                                target_set.element.get());
+    if (!same_element) {
+      out = "::rt::tp2cc_set_cast<" + types_.type_to_cxx(*target) + ">(" +
+            out + ")";
+    }
   }
   if (auto cap = types_.shortstring_capacity_to_cxx(target);
       cap && !(source_type && storage_.type_is_stringish(source_type))) {
@@ -754,11 +770,11 @@ bool EmitValues::reject_metaclass_member_as_plain_proc_value(
   if (candidate->kind != Kind::Member) return false;
   const auto& mem = static_cast<const Member&>(*candidate);
   if (!mem.base) return false;
-  const std::string metaclass =
-      analysis_.metaclass_target_name(metaclass_value_base_type(*mem.base));
-  if (metaclass.empty()) return false;
-  const auto* methods = registry_.lookup_class_methods(
-      metaclass, mem.name, scope_.current_unit_name);
+  const TypeSymbol* metaclass =
+      analysis_.metaclass_target_symbol(metaclass_value_base_type(*mem.base));
+  const ClassInfo* class_info = metaclass ? metaclass->class_info() : nullptr;
+  if (!class_info) return false;
+  const auto* methods = registry_.lookup_class_methods(*class_info, mem.name);
   bool rejects = false;
   if (methods) {
     for (const auto& method : *methods) {
@@ -825,10 +841,15 @@ std::optional<std::string> EmitValues::maybe_convert_proc_value(
       resolution_.resolve_method_value_binding(e, proc, explicit_conversion);
   if (!bind || !bind->has_matching_decl()) return std::nullopt;
   const ast::ProcDecl& method_decl = bind->matching_decl();
+  if (!bind->owner_symbol) {
+    expr_ops_.report_error(e.loc, "unresolved method owner `" +
+                                      bind->class_name + "`");
+    return types_.type_to_cxx(*target) + "{}";
+  }
 
   const std::string target_cxx = types_.type_to_cxx(*target);
   const std::string code_text = "::rt::tp2cc_method_code<&" +
-                                types_.named_type_struct_cxx(bind->class_name) +
+                                types_.type_symbol_struct_cxx(*bind->owner_symbol) +
                                 "::" +
                                 types_.method_pointer_helper_name(method_decl) +
                                 ">()";
@@ -855,8 +876,9 @@ const TypeExpr* EmitValues::proc_value_source_type(const Expr& e) {
 }
 
 bool EmitValues::source_is_runtime_tmethod(const TypeExpr* source_type) {
-  const TypeExpr* source = analysis_.semantic_shape_type(source_type);
-  return source && types_.type_to_cxx(*source) == "::rt::t_tmethod";
+  const TypeDescriptor* descriptor =
+      registry_.descriptor_for_type(source_type);
+  return descriptor && descriptor->is_method_carrier;
 }
 
 std::optional<std::string> EmitValues::maybe_convert_tmethod_value(
@@ -903,6 +925,10 @@ std::optional<std::string> EmitValues::maybe_convert_plain_proc_value(
       resolution_.resolve_plain_proc_value_binding(e, proc, explicit_conversion);
   if (!bind || !bind->decl) return std::nullopt;
   const ProcDecl& decl = *bind->decl;
+  // Resolution has already accepted the Pascal procedural type. This comparison
+  // is only the backend thunk decision: by-value pointer-like Pascal formals
+  // erase to `void*` in procvar carriers, so an otherwise exact routine may
+  // still need an adapter before it can be stored as that C++ function pointer.
   const std::string source_sig = types_.formal_param_types_to_cxx(decl.params);
   const std::string target_sig = types_.procedural_param_types_to_cxx(proc.params);
   if (source_sig == target_sig) return expr_ops_.expr_to_cxx_no_autocall(e);
@@ -937,13 +963,15 @@ std::string EmitValues::plain_proc_adapter_value(const Expr& e,
     std::string carrier = types_.procedural_param_type_to_cxx(*target.param);
     lambda_params += carrier + " " + target.name;
     if (types_.procedural_param_uses_pointer_carrier(*target.param) &&
+        types_.procedural_param_needs_pointer_carrier_restore(*source.param) &&
         source.param->type) {
+      // Resolution has already proven that the source and target procedural
+      // signatures are compatible through the erased pointer carrier. The
+      // adapter must restore the actual callee formal from the source Pascal
+      // type identity; comparing generated C++ spellings would make aliases and
+      // carrier-equivalent types depend on backend naming.
       std::string actual = types_.type_to_cxx(*source.param->type);
-      if (actual == carrier) {
-        call_args += target.name;
-      } else {
-        call_args += "static_cast<" + actual + ">(" + target.name + ")";
-      }
+      call_args += "static_cast<" + actual + ">(" + target.name + ")";
     } else {
       call_args += target.name;
     }
@@ -956,25 +984,17 @@ std::string EmitValues::plain_proc_adapter_value(const Expr& e,
   return out;
 }
 
-std::string EmitValues::concrete_class_name_for_metaclass_value(
-    const Expr& src) {
-  return analysis_.concrete_class_name_for_metaclass_value(src);
-}
-
 std::optional<std::string> EmitValues::maybe_lower_metaclass_value(
     const Expr& e, const TypeExpr* target) {
-  const std::string base_name = analysis_.metaclass_target_name(target);
-  if (base_name.empty() && !analysis_.type_is_runtime_tclass(target)) {
-    return std::nullopt;
+  const TypeSymbol* concrete =
+      analysis_.concrete_class_symbol_for_metaclass_target(e, target);
+  if (!concrete) {
+    const TypeExpr* shape = analysis_.semantic_shape_type(target);
+    concrete =
+        analysis_.concrete_class_symbol_for_metaclass_target(e, shape);
   }
-
-  const std::string concrete_name = concrete_class_name_for_metaclass_value(e);
-  if (concrete_name.empty()) return std::nullopt;
-  if (!base_name.empty() &&
-      !analysis_.migration_fallback_class_info_by_name(base_name)) {
-    return std::nullopt;
-  }
-  return types_.metaclass_value_fn_cxx(concrete_name) + "()";
+  if (!concrete) return std::nullopt;
+  return types_.metaclass_value_fn_cxx(*concrete) + "()";
 }
 
 }  // namespace tp2cc

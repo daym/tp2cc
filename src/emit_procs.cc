@@ -5,6 +5,7 @@
 #include "emit_analysis.h"
 #include "emit_calls.h"
 #include "emit_decls.h"
+#include "emit_signature_scope.h"
 #include "emit_support.h"
 #include "emit_types.h"
 #include "typereg.h"
@@ -46,7 +47,7 @@ EmitProcs::SavedProcState EmitProcs::save_proc_state() const {
       .outer_result_name = scope_.outer_result_name,
       .outer_result_slot_name = scope_.outer_result_slot_name,
       .outer_result_type = scope_.outer_result_type,
-      .current_class_name = scope_.current_class_name,
+      .current_class_symbol = scope_.current_class_symbol,
       .local_scope = scope_.local_scope,
       .local_value_types = scope_.local_value_types,
       .local_consts = scope_.local_consts,
@@ -55,6 +56,7 @@ EmitProcs::SavedProcState EmitProcs::save_proc_state() const {
       .local_untyped_params = scope_.local_untyped_params,
       .type_scope = scope_.type_scope,
       .local_const_params = scope_.local_const_params,
+      .local_absolute_targets = scope_.local_absolute_targets,
       .block_depth = block_depth_};
 }
 
@@ -70,7 +72,7 @@ void EmitProcs::restore_proc_state(SavedProcState&& saved) {
   scope_.outer_result_name = std::move(saved.outer_result_name);
   scope_.outer_result_slot_name = std::move(saved.outer_result_slot_name);
   scope_.outer_result_type = saved.outer_result_type;
-  scope_.current_class_name = std::move(saved.current_class_name);
+  scope_.current_class_symbol = saved.current_class_symbol;
   scope_.local_scope = std::move(saved.local_scope);
   scope_.local_value_types = std::move(saved.local_value_types);
   scope_.local_consts = std::move(saved.local_consts);
@@ -79,10 +81,12 @@ void EmitProcs::restore_proc_state(SavedProcState&& saved) {
   scope_.local_untyped_params = std::move(saved.local_untyped_params);
   scope_.type_scope = saved.type_scope;
   scope_.local_const_params = std::move(saved.local_const_params);
+  scope_.local_absolute_targets = std::move(saved.local_absolute_targets);
   block_depth_ = saved.block_depth;
 }
 
-void EmitProcs::setup_proc_frame(const ProcDecl& pd, bool nested_lambda) {
+void EmitProcs::setup_proc_frame(const ProcDecl& pd, bool nested_lambda,
+                                 const TypeSymbol* method_owner_symbol) {
   std::string inherited_outer_result_name;
   std::string inherited_outer_result_slot_name;
   const TypeExpr* inherited_outer_result_type = nullptr;
@@ -123,10 +127,7 @@ void EmitProcs::setup_proc_frame(const ProcDecl& pd, bool nested_lambda) {
   scope_.outer_result_slot_name = inherited_outer_result_slot_name;
   scope_.outer_result_type = inherited_outer_result_type;
   if (!nested_lambda) {
-    scope_.current_class_name = pd.of_type.empty()
-                                    ? std::string{}
-                                    : analysis_.canonical_method_owner_type_name(
-                                          pd.of_type);
+    scope_.current_class_symbol = method_owner_symbol;
   }
   ++block_depth_;
 }
@@ -156,7 +157,7 @@ void EmitProcs::seed_proc_scope(const ProcDecl& pd) {
         // Untyped read-only params arrive as `const void*` in C++; keep the
         // const-mode bit so later pointer-slot coercions can make the
         // qualifier drop explicit instead of relying on `-fpermissive`.
-        scope_.local_untyped_params.insert(nm);
+        scope_.local_untyped_params.emplace(nm, p.descriptor);
         if (p.mode == Param::Const || p.mode == Param::ConstRef) {
           scope_.local_const_params.insert(nm);
         }
@@ -222,10 +223,15 @@ std::string EmitProcs::nested_proc_signature_types(const ProcDecl& pd) {
 }
 
 void EmitProcs::emit_proc_body(const ProcDecl& pd) {
-  std::string method_owner;
+  const TypeSymbol* method_owner_symbol = nullptr;
   const TypeLookupContext* saved_signature_type_scope = scope_.type_scope;
   if (!pd.of_type.empty()) {
-    method_owner = analysis_.canonical_method_owner_type_name(pd.of_type);
+    method_owner_symbol = registry_.method_owner_symbol_for_proc(&pd);
+    if (!method_owner_symbol) {
+      emit_ops_.report_error(pd.loc,
+                             "unresolved method owner `" + pd.of_type + "`");
+      return;
+    }
     // A Pascal method implementation is written outside the class declaration,
     // but its signature still resolves unqualified nested type names through
     // the owner class scope.
@@ -234,10 +240,9 @@ void EmitProcs::emit_proc_body(const ProcDecl& pd) {
 
   // Header line: ret ClassName::Method(args) or ret Method(args).
   std::string ret = decls_.proc_return_type_to_cxx(pd);
-  std::string qname = pascal_operator_decl_name_to_cxx(pd);
+  std::string qname = pascal_operator_decl_name_to_cxx(registry_, pd);
   if (!pd.of_type.empty()) {
-    qname = types_.named_type_struct_cxx(method_owner) +
-            "::" + qname;
+    qname = types_.type_symbol_struct_cxx(*method_owner_symbol) + "::" + qname;
   }
   emit_ops_.emitln(decls_.proc_attributes_to_cxx(pd) + ret + " " + qname +
                    "(" + decls_.param_list_to_cxx(pd.params) + ") {");
@@ -257,7 +262,7 @@ void EmitProcs::emit_proc_body(const ProcDecl& pd) {
 
   SavedProcState saved = save_proc_state();
   scope_.type_scope = registry_.lookup_proc_body_context(&pd);
-  setup_proc_frame(pd, /*nested_lambda=*/false);
+  setup_proc_frame(pd, /*nested_lambda=*/false, method_owner_symbol);
   seed_proc_scope(pd);
 
   // `Result` is a Pascal-visible implicit variable in functions, so it uses
@@ -308,7 +313,8 @@ void EmitProcs::emit_nested_proc_lambda(const ProcDecl& pd) {
 
   SavedProcState saved = save_proc_state();
   scope_.type_scope = registry_.lookup_proc_body_context(&pd);
-  setup_proc_frame(pd, /*nested_lambda=*/true);
+  setup_proc_frame(pd, /*nested_lambda=*/true,
+                   /*method_owner_symbol=*/nullptr);
   seed_proc_scope(pd);
 
   if (pd.pkind == ProcKind::Function && pd.return_type) {

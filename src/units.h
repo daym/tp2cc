@@ -24,6 +24,8 @@
 
 namespace tp2cc {
 
+struct TypeRegistry;
+
 struct ParsedUnit {
   std::string name;                    // lowercased canonical name
   std::filesystem::path path;
@@ -34,6 +36,7 @@ struct ParsedUnit {
 class UnitGraph {
  public:
   UnitGraph();
+  ~UnitGraph();
 
   // Add an explicit unit search path (`-Fu<dir>`). Search is non-recursive and
   // first-match-wins after the implicit current and entry directories.
@@ -73,6 +76,8 @@ class UnitGraph {
   const std::unordered_map<std::string, ParsedUnit>& units() const {
     return units_;
   }
+  TypeRegistry& type_registry();
+  const TypeRegistry& type_registry() const;
 
  private:
   std::vector<std::filesystem::path> roots_;
@@ -87,6 +92,8 @@ class UnitGraph {
   std::unordered_map<std::string, ParsedUnit> units_;
   std::unordered_map<std::string, std::filesystem::path> unit_path_index_;
   bool unit_path_index_ready_ = false;
+  struct ParseState;
+  std::unique_ptr<ParseState> parse_state_;
 
   static std::string to_lower(std::string_view s);
   void index_unit_search_root(
@@ -98,6 +105,7 @@ class UnitGraph {
                              const std::vector<std::string>& uses,
                              std::vector<std::filesystem::path>* paths);
   int parse_recursive(const std::filesystem::path& path);
+  int parse_pending_implementations();
   static void add_topo_dependency(
       const std::unordered_map<std::string, ParsedUnit>& units,
       std::unordered_map<std::string, std::unordered_set<std::string>>& deps,

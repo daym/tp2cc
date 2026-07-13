@@ -126,7 +126,8 @@ struct Emitter : ResolveNameProvider,
   // `var X` / `const X` / `X` form. Their C++ type is `void*` (not
   // `void*&`); the callee receives the caller's storage address.
   // `@X` on one of these emits as the ident itself -- no `&`.
-  std::unordered_set<std::string> local_untyped_params;
+  std::unordered_map<std::string, const TypeDescriptor*>
+      local_untyped_params;
 
   // Nested procs/functions declared in the current scope. For each
   // Pascal name, store the overload set. Pascal overload identity is the
@@ -653,7 +654,7 @@ struct Emitter : ResolveNameProvider,
   using ResolveResult = tp2cc::ResolveResult;
   // Qualifier: empty means unqualified lookup; otherwise it is a unit name.
   // Type-qualified member access is handled before this resolver, while the
-  // AST still carries the build-resolved type identity.
+  // AST still carries the semantically bound type identity.
   using QualifierKind = tp2cc::QualifierKind;
   ResolveResult resolve_name(const std::string& name,
                              QualifierKind qk = QualifierKind::None,
@@ -777,6 +778,14 @@ const TypeExpr* Emitter::compute_type_for_overload(const Expr& e) {
         static_cast<const Ident&>(*c.callee).name == "ord") {
       if (const TypeExpr* t = plain_expr_type(e)) return t;
     }
+    // The parser has already distinguished `T(expr)` from an ordinary call.
+    // Preserve that semantic decision before overload lookup: a class-of cast
+    // must remain a metaclass value even when its source expression resembles
+    // a constructor argument.
+    if (const TypeExpr* cast_type =
+            analysis_.explicit_typecast_result_type(e)) {
+      return cast_type;
+    }
     if (const TypeExpr* t = type_for_resolved_call(c)) {
       return t;
     }
@@ -799,32 +808,32 @@ const TypeExpr* Emitter::compute_type_for_overload(const Expr& e) {
 const TypeSymbol* Emitter::value_class_symbol(const Expr& e) {
   if (e.kind == Kind::Ident &&
       static_cast<const Ident&>(e).name == "self") {
-    return descriptor_payload_symbol(current_class_symbol);
+    return current_class_symbol;
   }
   const bool produced_value =
       e.kind == Kind::Call || e.kind == Kind::Binary || e.kind == Kind::Unary;
   if (!produced_value) {
     if (const TypeSymbol* symbol = analysis_.deduce_class_symbol(e)) {
-      return descriptor_payload_symbol(symbol);
+      return symbol;
     }
   }
   if (const TypeExpr* t = type_for_overload(e)) {
     if (const TypeSymbol* target = registry.metaclass_target_for_type(t)) {
-      return descriptor_payload_symbol(target);
+      return target;
     }
     if (const TypeSymbol* symbol = analysis_.class_symbol_for_type(t)) {
-      return descriptor_payload_symbol(symbol);
+      return symbol;
     }
     if (const TypeExpr* canon = semantic_shape_type(t)) {
       if (const TypeSymbol* target = registry.metaclass_target_for_type(canon)) {
-        return descriptor_payload_symbol(target);
+        return target;
       }
       if (const TypeSymbol* symbol = analysis_.class_symbol_for_type(canon)) {
-        return descriptor_payload_symbol(symbol);
+        return symbol;
       }
     }
   }
-  return descriptor_payload_symbol(analysis_.deduce_class_symbol(e));
+  return analysis_.deduce_class_symbol(e);
 }
 
 std::string Emitter::class_cast_rhs_type_cxx(const Expr& rhs) {
@@ -935,7 +944,8 @@ bool Emitter::expr_is_signed_integer_operand(const Expr& x) {
 }
 
 const PrimitiveInfo* Emitter::shift_carrier_for_expr(const Expr& x) {
-  return shift_carrier_primitive(integer_primitive_for_expr(x), target);
+  return shift_carrier_primitive(
+      registry, integer_primitive_for_expr(x), target);
 }
 
 std::optional<std::string> Emitter::member_base_ident(const Member& m) {
@@ -1015,6 +1025,9 @@ std::optional<std::string> Emitter::sizeof_type_operand_cxx(
 Emitter::PascalTypecastTarget Emitter::classify_pascal_typecast_target(
     const TypeSymbol* symbol) {
   PascalTypecastTarget out;
+  if (symbol && symbol->descriptor && symbol->descriptor->symbol) {
+    symbol = symbol->descriptor->symbol;
+  }
   if (symbol) {
     out.known = true;
     out.symbol = symbol;
@@ -1022,25 +1035,19 @@ Emitter::PascalTypecastTarget Emitter::classify_pascal_typecast_target(
     out.source_type = symbol->type;
     out.type = semantic_shape_type(symbol->type);
   }
-  const TypeSymbol* payload = descriptor_payload_symbol(symbol);
-  if (payload) {
+  if (symbol) {
     out.known = true;
-    if (const ClassInfo* ci = payload->class_info()) {
+    if (const ClassInfo* ci = symbol->class_info()) {
       out.kind = ci->is_reference_type ? PascalTypecastKind::ReferenceClass
                                        : PascalTypecastKind::Aggregate;
-      out.type = descriptor_payload_type(symbol);
+      out.type = symbol->descriptor ? symbol->descriptor->type : symbol->type;
       return out;
     }
-    if (payload->record_info()) {
+    if (symbol->record_info()) {
       out.kind = PascalTypecastKind::Aggregate;
-      out.type = descriptor_payload_type(symbol);
+      out.type = symbol->descriptor ? symbol->descriptor->type : symbol->type;
       return out;
     }
-  }
-
-  if (out.type && out.type->kind == Kind::TyName) {
-    out.type =
-        descriptor_payload_type(registry.resolved_symbol_for_type(out.type));
   }
 
   if (!out.type) return out;
@@ -1071,13 +1078,6 @@ bool Emitter::type_uses_reinterpret_copy_for_scalar_cast(const TypeExpr* t) {
       t->kind == Kind::TyObject || t->kind == Kind::TyProcedural) {
     return true;
   }
-  if (t->kind != Kind::TyName) return false;
-
-  const TypeSymbol* symbol = registry.resolved_symbol_for_type(t);
-  symbol = descriptor_payload_symbol(symbol);
-  if (!symbol) return false;
-  if (symbol->record_info()) return true;
-  if (const ClassInfo* ci = symbol->class_info()) return !ci->is_reference_type;
   return false;
 }
 
@@ -1250,7 +1250,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return mangle(n.name);
       }
       // A Pascal class identifier can be used as a metaclass value, but that
-      // decision belongs to build-time type binding. Falling through to
+      // decision belongs to semantic type binding. Falling through to
       // resolve_name() would make ordinary value lookup silently recover type
       // names that build failed to bind.
       if (const TypeSymbol* symbol =
@@ -1366,7 +1366,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                    cmp + " 0)";
           }
           if (pascal_operator_decl_uses_named_helper(*resolved.decl)) {
-            std::string fn = pascal_operator_decl_name_to_cxx(*resolved.decl);
+            std::string fn =
+                pascal_operator_decl_name_to_cxx(registry, *resolved.decl);
             if (!resolved.defining_unit.empty()) {
               fn = unit_namespace_prefix(resolved.defining_unit) + fn;
             }
@@ -1432,6 +1433,20 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                                                  : "tp2cc_int_mod";
         return std::string("::rt::") + fn + "(" +
                binary_operand_to_cxx(*n.lhs, *n.rhs) + ", " +
+               binary_operand_to_cxx(*n.rhs, *n.lhs) + ")";
+      }
+      if (n.op == BinOp::RealDiv &&
+          expr_is_integer_operand(*n.lhs) &&
+          expr_is_integer_operand(*n.rhs)) {
+        const TypeExpr* result_type = type_for_overload(n);
+        const PrimitiveInfo* result =
+            analysis_.primitive_info_for_type(result_type);
+        if (!result_type || !result || !result->is_real()) {
+          report_error(n.loc, "real division has no registered real result type");
+          return "/* untyped real division */";
+        }
+        return "(static_cast<" + type_to_cxx(*result_type) + ">(" +
+               binary_operand_to_cxx(*n.lhs, *n.rhs) + ") / " +
                binary_operand_to_cxx(*n.rhs, *n.lhs) + ")";
       }
       const char* op = "?";
@@ -1629,12 +1644,14 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // A `class of T` value is a pointer to a metaclass descriptor. Constructor
       // and class-method members are stored as descriptor function slots, not as
       // fields of an instance.
-      const TypeExpr* base_type = type_for_overload(*m.base);
+      const TypeExpr* base_type =
+          analysis_.explicit_typecast_result_type(*m.base);
+      if (!base_type) base_type = type_for_overload(*m.base);
       const TypeSymbol* metaclass_symbol =
-          descriptor_payload_symbol(registry.metaclass_target_for_type(base_type));
+          registry.metaclass_target_for_type(base_type);
       if (!metaclass_symbol) {
-        metaclass_symbol = descriptor_payload_symbol(
-            registry.metaclass_target_for_type(semantic_shape_type(base_type)));
+        metaclass_symbol =
+            registry.metaclass_target_for_type(semantic_shape_type(base_type));
       }
       const ClassInfo* metaclass_info =
           metaclass_symbol ? metaclass_symbol->class_info() : nullptr;
@@ -1760,6 +1777,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
     }
     case Kind::Deref: {
       const auto& d = static_cast<const Deref&>(e);
+      if (auto capacity =
+              types_.shortstring_capacity_to_cxx(plain_expr_type(e))) {
+        // A Pascal ^ShortString may point at a packed string containing only
+        // its length byte and live characters. It does not prove that a full
+        // tp2cc_ShortString<N> object exists at that address. Keep reads,
+        // writes, and indexing on the prefix proxy so they touch only bytes
+        // selected by the Pascal length.
+        return "::rt::tp2cc_ShortStringPtrRef<" + *capacity +
+               ">{reinterpret_cast<uint8_t*>(" +
+               expr_to_cxx(*d.operand) + ")}";
+      }
       if (member_base_context) {
         const TypeExpr* cast_target_type =
             analysis_.explicit_typecast_result_type(*d.operand);
@@ -1803,8 +1831,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // `@TClass.method` is an unbound-method pointer in Pascal; the
       // compiler subset we handle lowers that to the thunk code slot,
       // not to a C++ member-function pointer. Detect the AST pattern
-      // `AddrOf(Member(Ident=TypeName, method))` where TypeName is a
-      // known class/record alias in the registry.
+      // `AddrOf(Member(Ident=TypeName, method))` where the base is already
+      // bound as a class/record type value.
       if (a.operand && a.operand->kind == Kind::Member) {
         const auto& m = static_cast<const Member&>(*a.operand);
         if (m.base && m.base->kind == Kind::Ident) {
@@ -1885,7 +1913,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       suppress_packed_scalar_value_load = saved_suppress;
       is_callee_context_ = saved;
       if (storage) {
-        return storage_.storage_designator_typed_address_value(*storage);
+        return storage_.storage_designator_typed_address_value(*storage,
+                                                               a.loc);
       }
       return "(&" + inner + ")";
     }
@@ -1980,25 +2009,19 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         const auto& id = static_cast<const Ident&>(*c.callee);
         const std::string& n = id.name;
         const TypeSymbol* type_callee_symbol = nullptr;
-        const TypeSymbol* primitive_typecast_symbol = nullptr;
-        std::string primitive_typecast_name;
+        const PrimitiveInfo* primitive_typecast = nullptr;
         if (c.args.size() == 1) {
           if (std::optional<const TypeSymbol*> type_callee =
                   registry.type_name_expression_result(c.callee.get())) {
             type_callee_symbol = *type_callee;
-            const TypeSymbol* primitive_symbol =
-                descriptor_payload_symbol(type_callee_symbol);
-            if (!primitive_symbol) primitive_symbol = type_callee_symbol;
-            if (primitive_symbol &&
-                primitive_symbol->defining_unit == "__builtin__" &&
-                is_primitive_type(primitive_symbol->name)) {
-              primitive_typecast_symbol = primitive_symbol;
-              primitive_typecast_name = primitive_symbol->name;
-            }
+            primitive_typecast =
+                type_callee_symbol && type_callee_symbol->descriptor
+                    ? type_callee_symbol->descriptor->primitive
+                    : nullptr;
           }
         }
         const TypeExpr* primitive_typecast_type =
-            primitive_typecast_symbol ? primitive_typecast_symbol->type : nullptr;
+            primitive_typecast ? type_callee_symbol->type : nullptr;
 
         if (n == "unaligned" && c.args.size() == 1) {
           // Pascal `unaligned(x)` is an explicit bytewise load/store view,
@@ -2020,48 +2043,44 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (analysis_.class_or_record_type_value_symbol(*c.args[0])) {
             return "((void*)nullptr)";
           }
-        } else if (!primitive_typecast_name.empty()) {
-          const std::string& n = primitive_typecast_name;
+        } else if (primitive_typecast) {
+          const std::string primitive_cxx = primitive_typecast->cxx;
           // Function-style type cast in expression context.
           // Only the explicit lvalue forms handled elsewhere
           // (`T(lv) := ...`, `inc(T(lv))`, `dec(T(lv))`) reinterpret
           // storage. Plain `T(expr)` remains a value conversion.
-          if (n == "shortstring") {
+          if (primitive_typecast->kind == PrimitiveKind::ShortString) {
             return "::rt::tp2cc_shortstring_of<>(" +
                    single_call_arg_cxx(c) + ")";
           }
-          if (primitive_typecast_symbol &&
-              analysis_.type_is_long_string(primitive_typecast_symbol->type)) {
+          if (primitive_typecast->kind == PrimitiveKind::AnsiString ||
+              primitive_typecast->kind == PrimitiveKind::Utf8String) {
             return "::rt::tp2cc_ansistring_of(" + single_call_arg_cxx(c) + ")";
           }
-          if (n == "text") {
-            // Pascal `text(x)` names TextFile bytes at x's storage. The
-            // callers (`write`/`writeln`/`readln`/etc.) want a `TextFile&`
-            // to mutate file state during the call. Route through the
-            // bounded-lifetime typed-view wrapper: it materialises a live
-            // TextFile in a stack temp, hands its `T&` to the call, and
-            // memcpy-writes back at scope end. This keeps Pascal's
-            // observable mutate-in-place semantics without ever forming a
-            // typed C++ reference over storage of a different dynamic
-            // type (which would be strict-aliasing UB).
+          if (primitive_typecast->kind == PrimitiveKind::Text) {
+            // Pascal `text(x)` names TextFile at x's storage. File helpers
+            // require a real TextFile lvalue at that same address so aliases
+            // and addresses observed during the call retain Pascal identity.
             if (auto view = storage_.typecast_storage_view(c)) {
-              return "::rt::tp2cc_TypedView<::rt::tp2cc_TextFile>(" +
-                     view->source_ptr_cxx + ")";
+              auto storage = EmitStorageDesignator::bytewise(
+                  view->source_ptr_cxx, "::rt::tp2cc_TextFile",
+                  view->backing_ptr_cxx, view->backing_type_cxx);
+              return storage_.storage_designator_typed_lvalue(
+                  storage, "::rt::tp2cc_TextFile");
             }
           }
           const Expr* peeled = peel_primitive_casts(c.args[0].get());
           if (peeled && expr_is_untyped_storage_ref(*c.args[0])) {
-            return "::rt::tp2cc_reinterpret_load<" + primitive_type_cxx(n) +
+            return "::rt::tp2cc_reinterpret_load<" + primitive_cxx +
                    ">(" + expr_to_cxx(*peeled) + ")";
           }
           if (!storage_view_context) {
             if (auto ptr = untyped_pointer_deref_address(*c.args[0])) {
-              return "::rt::tp2cc_reinterpret_load<" + primitive_type_cxx(n) +
+              return "::rt::tp2cc_reinterpret_load<" + primitive_cxx +
                      ">(" + *ptr + ")";
             }
           }
-          if (const PrimitiveInfo* info = primitive_info(n);
-              info && (info->int_kind != PrimitiveIntKind::None)) {
+          if (primitive_typecast->int_kind != PrimitiveIntKind::None) {
             const TypeExpr* source_ty =
                 semantic_shape_type(type_for_overload(*c.args[0]));
             bool source_is_set =
@@ -2071,33 +2090,33 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               // Pascal `longint(set)` packs the set's element bits into
               // an integer (element i -> bit i). The set source can be
               // an rvalue literal `[a,b,c]`, so don't gate on lvalue.
-              return "::rt::tp2cc_set_to_int<" + primitive_type_cxx(n) +
+              return "::rt::tp2cc_set_to_int<" + primitive_cxx +
                      ">(" + single_call_arg_cxx(c) + ")";
             }
           }
-          if (const PrimitiveInfo* pi_char = primitive_info(n);
-              pi_char && pi_char->is_char()) {
+          if (primitive_typecast->is_char()) {
             return "::rt::p_chr(" + single_call_arg_cxx(c) + ")";
           }
-          if (n == "pointer" || n == "pchar" || n == "pansichar") {
+          if (primitive_typecast->kind == PrimitiveKind::Pointer ||
+              primitive_typecast->kind == PrimitiveKind::PChar) {
             std::string source =
                 (peeled && expr_is_storage_lvalue(*c.args[0]))
                     ? expr_to_cxx(*peeled)
                     : single_call_arg_cxx(c);
             std::string coerced = coerce_pointer_like_text(
-                primitive_type_cxx(n), primitive_typecast_type,
+                primitive_cxx, primitive_typecast_type,
                 type_for_overload(*c.args[0]),
                 source,
                 /*explicit_pascal_cast=*/true,
                 expr_is_const_untyped_storage_arg(*c.args[0]));
             if (coerced != source) return coerced;
             if (peeled && expr_is_storage_lvalue(*c.args[0])) {
-              return "((" + primitive_type_cxx(n) + ")(" +
+              return "((" + primitive_cxx + ")(" +
                      expr_to_cxx(*peeled) + "))";
             }
           }
           if (expr_is_charish(*c.args[0])) {
-            return "((" + primitive_type_cxx(n) + ")(" +
+            return "((" + primitive_cxx + ")(" +
                    ordinal_value_to_cxx(*c.args[0],
                                         single_call_arg_cxx(c)) + "))";
           }
@@ -2105,7 +2124,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                   type_for_overload(*c.args[0]), primitive_typecast_type,
                   registry.lookup_context_for_type(primitive_typecast_type));
               conv.decl) {
-            std::string fn = pascal_assignment_operator_helper_name(*conv.decl);
+            std::string fn =
+                pascal_assignment_operator_helper_name(registry, *conv.decl);
             if (!conv.defining_unit.empty()) {
               fn = unit_namespace_prefix(conv.defining_unit) + fn;
             }
@@ -2123,10 +2143,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             // values such as procvars. Procedural target casts are handled
             // earlier as target-typed procvar conversions, so reaching this
             // branch only means "copy source representation into scalar".
-            return "::rt::tp2cc_reinterpret_copy<" + primitive_type_cxx(n) +
+            return "::rt::tp2cc_reinterpret_copy<" + primitive_cxx +
                    ">(" + single_call_arg_cxx(c) + ")";
           }
-          return "((" + primitive_type_cxx(n) + ")(" +
+          return "((" + primitive_cxx + ")(" +
                  single_call_arg_cxx(c) + "))";
         } else if (c.args.size() == 1 && n != "inc" && n != "dec") {
           PascalTypecastTarget target =
@@ -2144,10 +2164,27 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           if (target.known && target.kind == PascalTypecastKind::Pointer) {
             const Expr* peeled = peel_primitive_casts(c.args[0].get());
             const TypeExpr* source_type = type_for_overload(*c.args[0]);
-            std::string source =
-                (peeled && expr_is_storage_lvalue(*c.args[0]))
-                    ? expr_to_cxx(*peeled)
-                    : single_call_arg_cxx(c);
+            std::string source;
+            if (c.args[0]->kind == Kind::AddrOf) {
+              const auto& address = static_cast<const AddrOf&>(*c.args[0]);
+              if (address.operand) {
+                if (expr_is_untyped_storage_ref(*address.operand)) {
+                  // An untyped parameter already is the caller's storage
+                  // address. Pascal `@arg` preserves that value; taking the
+                  // address of the local C++ void* slot would add one pointer
+                  // level.
+                  source = expr_to_cxx(*address.operand);
+                } else if (auto storage =
+                               storage_.storage_designator(*address.operand)) {
+                  source = storage_.storage_designator_raw_address(*storage);
+                }
+              }
+            }
+            if (source.empty()) {
+              source = (peeled && expr_is_storage_lvalue(*c.args[0]))
+                           ? expr_to_cxx(*peeled)
+                           : single_call_arg_cxx(c);
+            }
             std::string coerced = coerce_pointer_like_text(
                 target.cxx_type, target.type,
                 source_type,
@@ -2182,7 +2219,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                     registry.lookup_context_for_type(target.source_type));
                 conv.decl) {
               std::string fn =
-                  pascal_assignment_operator_helper_name(*conv.decl);
+                  pascal_assignment_operator_helper_name(registry,
+                                                         *conv.decl);
               if (!conv.defining_unit.empty()) {
                 fn = unit_namespace_prefix(conv.defining_unit) + fn;
               }
@@ -2191,10 +2229,9 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
           if (target.known &&
               target.kind == PascalTypecastKind::ReferenceClass) {
-            // The explicit Pascal cast target is the source-level type name.
-            // Passing a resolved payload type here loses alias qualification
-            // and can make the pointer-slot coercion rules answer for the
-            // class layout instead of the Pascal reference type being cast to.
+            // Use the descriptor owner's Pascal reference type, not the class
+            // body syntax, so pointer-slot coercion answers for the reference
+            // value rather than the class layout.
             std::string coerced = coerce_pointer_like_text(
                 target.cxx_type, target.source_type,
                 type_for_overload(*c.args[0]), single_call_arg_cxx(c),
@@ -2223,8 +2260,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               if (arr.dims.size() == 1) {
                 const PrimitiveInfo* pi_elem =
                     analysis_.primitive_info_for_type(elem);
-                if (analysis_.builtin_atom_name_for_type(elem) == "byte" ||
-                    (pi_elem && pi_elem->is_char())) {
+                if (pi_elem && (pi_elem->kind == PrimitiveKind::Byte ||
+                                pi_elem->is_char())) {
                   if (storage_view && storage_view->source_is_untyped_storage) {
                     return "::rt::tp2cc_reinterpret_load<" +
                            target.cxx_type + ">(" +
@@ -2350,7 +2387,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                 registry.type_name_expression_result(c.callee.get())) {
           symbol = *type_callee;
         }
-        const TypeExpr* tgt = descriptor_payload_type(symbol);
+        const TypeExpr* tgt =
+            symbol && symbol->descriptor ? symbol->descriptor->type : nullptr;
         if (tgt && tgt->kind == Kind::TyPointer) {
           cast_to_pointer = true;
           cast_type_cxx = types_.type_symbol_to_cxx(symbol);
@@ -2379,10 +2417,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if (std::optional<const TypeSymbol*> type_callee =
                 registry.type_name_expression_result(c.callee.get())) {
           if (const TypeSymbol* cast_symbol = *type_callee) {
-            // Build has already marked this callee as a Pascal type name, so
+            // Semantic binding marked this callee as a Pascal type name, so
             // lower it as an explicit cast instead of sending it through
             // procedure overload resolution.
-            const TypeExpr* cast_ty = descriptor_payload_type(cast_symbol);
+            const TypeExpr* cast_ty =
+                cast_symbol->descriptor ? cast_symbol->descriptor->type
+                                        : nullptr;
             if (cast_ty) cast_ty = semantic_shape_type(cast_ty);
             const std::string cast_type_cxx =
                 types_.type_symbol_to_cxx(cast_symbol);
@@ -2708,7 +2748,7 @@ static void emit_reference_metaclass_forward_decls_impl(
         return;
       }
       // Nested Pascal class bodies friend their namespace-scope metaclass value
-      // function. Forward-declare that carrier from the build-resolved symbol so
+      // function. Forward-declare that carrier from the bound symbol so
       // the declaration matches the owning unit/type path chosen by type binding.
       e.emitln("struct " + e.types_.metaclass_struct_cxx(*symbol) + ";");
     }
@@ -2718,7 +2758,6 @@ static void emit_reference_metaclass_forward_decls_impl(
       }
       const TypeSymbol* nested_symbol =
           e.registry.resolved_symbol_for_type(member.type_decl->type.get());
-      nested_symbol = descriptor_payload_symbol(nested_symbol);
       emit_reference_metaclass_forward_decls_impl(
           e, *member.type_decl, nested_symbol, /*emit_current=*/true);
     }
@@ -2730,7 +2769,6 @@ static void emit_reference_metaclass_forward_decls_impl(
       if (!nested) continue;
       const TypeSymbol* nested_symbol =
           e.registry.resolved_symbol_for_type(nested->type.get());
-      nested_symbol = descriptor_payload_symbol(nested_symbol);
       emit_reference_metaclass_forward_decls_impl(
           e, *nested, nested_symbol, /*emit_current=*/true);
     }
@@ -2746,8 +2784,7 @@ static void emit_forward_struct_decls_impl(Emitter& e,
     if (td.type->kind == Kind::TyRecord || td.type->kind == Kind::TyObject ||
         td.type->kind == Kind::TyInterface) {
       const TypeSymbol* symbol =
-          descriptor_payload_symbol(e.registry.resolved_symbol_for_type(
-              td.type.get()));
+          e.registry.resolved_symbol_for_type(td.type.get());
       e.emitln("struct " + type_mangle(td.name) + ";");
       if (td.type->kind == Kind::TyObject &&
           static_cast<const TyObject&>(*td.type).is_reference_type) {

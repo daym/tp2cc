@@ -165,34 +165,34 @@ const TypeExpr* EmitStmts::with_receiver_type(const Expr& expr) {
 const TypeSymbol* EmitStmts::value_class_symbol(const Expr& expr) {
   if (expr.kind == Kind::Ident &&
       static_cast<const Ident&>(expr).name == "self") {
-    return descriptor_payload_symbol(scope_.current_class_symbol);
+    return scope_.current_class_symbol;
   }
   const bool produced_value =
       expr.kind == Kind::Call || expr.kind == Kind::Binary ||
       expr.kind == Kind::Unary;
   if (!produced_value) {
     if (const TypeSymbol* symbol = analysis_.deduce_class_symbol(expr)) {
-      return descriptor_payload_symbol(symbol);
+      return symbol;
     }
   }
   if (const TypeExpr* t = selected_value_type(expr)) {
     if (const TypeSymbol* target = registry_.metaclass_target_for_type(t)) {
-      return descriptor_payload_symbol(target);
+      return target;
     }
     if (const TypeSymbol* symbol = analysis_.class_symbol_for_type(t)) {
-      return descriptor_payload_symbol(symbol);
+      return symbol;
     }
     if (const TypeExpr* canon = analysis_.semantic_shape_type(t)) {
       if (const TypeSymbol* target =
               registry_.metaclass_target_for_type(canon)) {
-        return descriptor_payload_symbol(target);
+        return target;
       }
       if (const TypeSymbol* symbol = analysis_.class_symbol_for_type(canon)) {
-        return descriptor_payload_symbol(symbol);
+        return symbol;
       }
     }
   }
-  return descriptor_payload_symbol(analysis_.deduce_class_symbol(expr));
+  return analysis_.deduce_class_symbol(expr);
 }
 
 const ClassInfo* EmitStmts::value_class_info(const Expr& expr) {
@@ -625,7 +625,7 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
         p = stmt_ops_.expr_to_cxx(*call_expr->args[0]);
       } else {
         stmt_ops_.emitln("::rt::p_new(" +
-                         storage_.storage_designator_typed_view_lvalue(
+                         storage_.storage_designator_typed_lvalue(
                              *storage) +
                          ");");
         p = "::rt::tp2cc_reinterpret_load<" + storage->type_cxx + ">(" +
@@ -887,19 +887,7 @@ std::optional<EmitStmts::ForInTypeRhs> EmitStmts::for_in_type_rhs(
 }
 
 const TypeSymbol* EmitStmts::for_in_class_symbol(const TypeExpr* type) {
-  if (!type) return nullptr;
-  if (type->kind == Kind::TyName) {
-    if (const TypeSymbol* symbol = analysis_.class_symbol_for_type(type)) {
-      return descriptor_payload_symbol(symbol);
-    }
-  }
-  type = analysis_.semantic_shape_type(type);
-  if (type && type->kind == Kind::TyName) {
-    if (const TypeSymbol* symbol = analysis_.class_symbol_for_type(type)) {
-      return descriptor_payload_symbol(symbol);
-    }
-  }
-  return nullptr;
+  return analysis_.class_symbol_for_type(type);
 }
 
 const MethodSig* EmitStmts::for_in_zero_arg_method(
@@ -932,8 +920,13 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_type_rhs(
   auto type_rhs = for_in_type_rhs(*f.in_expr);
   if (!type_rhs) return ForInEmitResult::NotMatched;
 
-  const TypeSymbol* symbol = descriptor_payload_symbol(type_rhs->symbol);
-  const TypeExpr* named = symbol ? descriptor_payload_type(symbol) : nullptr;
+  const TypeSymbol* symbol =
+      type_rhs->symbol && type_rhs->symbol->descriptor &&
+              type_rhs->symbol->descriptor->symbol
+          ? type_rhs->symbol->descriptor->symbol
+          : type_rhs->symbol;
+  const TypeExpr* named =
+      symbol && symbol->descriptor ? symbol->descriptor->type : nullptr;
   named = analysis_.semantic_shape_type(named);
   if (named && named->kind == Kind::TyEnum &&
       types_.enum_has_explicit_values(static_cast<const TyEnum&>(*named))) {
@@ -969,7 +962,8 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_operator_enumerator(
   std::vector<const Expr*> op_args{f.in_expr.get()};
   CallArgumentPlan op_plan = calls_.plan_call_arguments(
       op.decl, nullptr, op_args, op.defining_unit);
-  std::string fn = pascal_operator_decl_name_to_cxx(*op.decl);
+  std::string fn =
+      pascal_operator_decl_name_to_cxx(registry_, *op.decl);
   if (!op.defining_unit.empty()) {
     fn = unit_namespace_prefix(op.defining_unit) + fn;
   }
@@ -1031,8 +1025,10 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_enumerator_provider(
     return ForInEmitResult::Error;
   }
   const TypeExpr* move_ret = move->decl ? move->decl->return_type.get() : nullptr;
-  move_ret = analysis_.semantic_shape_type(move_ret);
-  if (!move->is_function || move_ret != builtin_boolean_type()) {
+  const PrimitiveInfo* move_primitive =
+      analysis_.primitive_info_for_type(move_ret);
+  if (!move->is_function || !move_primitive ||
+      move_primitive->kind != PrimitiveKind::Boolean) {
     stmt_ops_.report_error(provider.loc,
                            "enumerator MoveNext must return Boolean");
     return ForInEmitResult::Error;

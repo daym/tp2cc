@@ -15,6 +15,7 @@ namespace tp2cc {
 struct MethodSig;
 struct TypeRegistry;
 struct TypeSymbol;
+struct TypeLookupContext;
 
 class EmitTypeConstRender {
  public:
@@ -82,15 +83,13 @@ struct ArrayDimBounds {
 //
 // Do not collapse Pascal type identity, Pascal source spelling, and C++ emitted
 // spelling. Type identity comes from TypeRegistry descriptors. A Pascal
-// declaration name (`type X = ...`) is optional source spelling. This module
-// owns the separate backend policy for producing C++ type spellings: declared
-// Pascal type symbols normally use the deterministic generated carrier name
-// (`type X = ...` -> `t_x`, with owner/unit qualification as needed), while
-// anonymous nominal syntax such as bare `record end` or `class end` has no
-// Pascal source name and must use descriptor-attached/synthesized backend
-// spelling or an inline C++ form where C++ permits one. Keep registry-defined
-// types ahead of runtime stubs, preserve enum/subrange/array layout decisions,
-// and compute packed-record layout metadata for later static_asserts.
+// declaration name (`type X = ...`) is optional source spelling, not a C++
+// typedef requirement. Nominal descriptors use one generated carrier; aliases
+// and structural descriptors render that descriptor's carrier/shape directly.
+// Anonymous nominal syntax must use descriptor-attached synthesized spelling or
+// an inline C++ form where C++ permits one. Keep registry-defined types ahead of
+// runtime stubs, preserve enum/subrange/array layout decisions, and compute
+// packed-record layout metadata for later static_asserts.
 class EmitTypes {
  public:
   EmitTypes(const TypeRegistry& registry, ScopeStateView& scope,
@@ -100,14 +99,10 @@ class EmitTypes {
 
   std::string type_to_cxx(const ast::TypeExpr& t);
   std::string type_name_to_cxx(const ast::TyName& n);
-  std::string type_name_text_to_cxx(std::string_view name);
-  std::string type_symbol_to_cxx(const TypeSymbol* symbol) const;
-  std::string named_type_struct_cxx(std::string_view name);
+  std::string type_symbol_to_cxx(const TypeSymbol* symbol);
   std::string type_symbol_struct_cxx(const TypeSymbol& symbol) const;
   std::string metaclass_struct_cxx(const TypeSymbol& symbol) const;
-  std::string metaclass_struct_cxx(std::string_view class_name);
   std::string metaclass_value_fn_cxx(const TypeSymbol& symbol) const;
-  std::string metaclass_value_fn_cxx(std::string_view class_name);
   bool enum_has_explicit_values(const ast::TyEnum& e);
   std::optional<int64_t> enum_member_value_int64(const ast::TyEnum& e,
                                                  size_t index);
@@ -140,6 +135,8 @@ class EmitTypes {
   std::string formal_param_types_to_cxx(
       const std::vector<ast::Param>& params);
   bool procedural_param_uses_pointer_carrier(const ast::Param& param);
+  bool procedural_param_uses_plain_pointer_carrier(const ast::Param& param);
+  bool procedural_param_needs_pointer_carrier_restore(const ast::Param& param);
   std::string procedural_param_type_to_cxx(const ast::Param& param);
   std::string procedural_param_types_to_cxx(
       const std::vector<ast::Param>& params);
@@ -155,8 +152,8 @@ class EmitTypes {
   // case where the identifier must live inside the `(*)` declarator.
   std::string named_type_to_cxx(const ast::TypeExpr* t, std::string_view name,
                                 std::string_view name_prefix = {});
-  std::string low_high_expr_for_named_type(std::string_view name,
-                                           bool want_low);
+  std::string low_high_expr_for_type_symbol(const TypeSymbol* symbol,
+                                            bool want_low);
   std::string low_high_expr_for_type(const ast::TypeExpr* t, bool want_low);
   std::string open_array_type_to_cxx(const ast::TypeExpr& t);
 
@@ -180,11 +177,14 @@ class EmitTypes {
   const ast::TypeExpr* subrange_bound_source_type(const ast::Expr& e);
   const ast::TypeExpr* subrange_bound_canonical_type(const ast::Expr* e);
   std::string visible_enum_type_for_member(std::string_view name);
-  std::string visible_enum_type_for_type_name(std::string_view name);
+  std::string visible_enum_type_for_type_symbol(const TypeSymbol* symbol);
   std::string subrange_bound_enum_cxx_type(const ast::Expr* e);
   std::string enum_bound_cxx_name(std::string_view enum_name,
                                   std::string_view defining_unit,
                                   bool want_low);
+  std::string low_high_expr_for_type_in_context(
+      const ast::TypeExpr* t, bool want_low,
+      const TypeLookupContext* declaration_context);
 };
 
 }  // namespace tp2cc

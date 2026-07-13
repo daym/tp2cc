@@ -25,8 +25,6 @@ struct CallArgumentSlot {
   const ast::Expr* expr = nullptr;
   const ast::TypeExpr* param_type = nullptr;
   const TypeLookupContext* param_context = nullptr;
-  std::string param_unit;
-  std::string param_declaring_type;
   const TypeLookupContext* default_arg_context = nullptr;
   UntypedArgKind untyped_arg = UntypedArgKind::None;
   bool mutable_ref_arg = false;
@@ -69,7 +67,7 @@ class EmitCalls {
       const ast::ProcDecl* decl, const ast::Expr* callee,
       const std::vector<const ast::Expr*>& explicit_args,
       std::string_view default_arg_unit = {},
-      std::string_view signature_declaring_type = {});
+      const ProcInfo* selected_proc = nullptr);
 
   // Validate an already-planned call against the chosen formal slots. This is
   // the single-candidate counterpart to overload picking: arity alone is not a
@@ -87,8 +85,6 @@ class EmitCalls {
                              bool mutable_ref_arg,
                              std::string_view default_arg_unit = {},
                              const TypeLookupContext* default_arg_context = nullptr,
-                             std::string_view param_unit = {},
-                             std::string_view param_declaring_type = {},
                              const TypeLookupContext* param_context = nullptr);
   std::string lower_call_arg(const CallArgumentSlot& slot,
                              std::string_view default_arg_unit = {});
@@ -98,8 +94,7 @@ class EmitCalls {
   // implicit sites share the exact same lowering as explicit `Call`.
   std::string lower_implicit_zero_arg_call(const std::string& callee_text,
                                            const ast::ProcDecl* decl,
-                                           std::string_view default_arg_unit,
-                                           std::string_view signature_declaring_type = {});
+                                           std::string_view default_arg_unit);
 
   // Pascal `obj.Free` is the null-safe TObject cleanup entrypoint, not a
   // normal instance call, and `TClass.Create` on a metaclass value allocates a
@@ -108,26 +103,19 @@ class EmitCalls {
   std::optional<std::string> maybe_lower_class_free_member(
       const ast::Expr& base, std::string_view member_name);
   std::optional<std::string> maybe_lower_class_constructor_call(
-      Location where, std::string_view class_name, std::string_view member_name,
+      Location where, const TypeSymbol& class_symbol,
+      std::string_view member_name,
       const CallArgumentPlan& plan, const ast::ProcDecl* selected_decl);
 
  private:
   std::vector<CallArgumentSlot> append_default_call_slots(
       const ast::ProcDecl* decl, std::vector<CallArgumentSlot> slots);
+  std::vector<CallArgumentSlot> call_slots_with_proc_info(
+      const ProcInfo* proc_info, std::vector<CallArgumentSlot> slots);
   std::vector<CallArgumentSlot> call_slots_with_decl_param_info(
-      const ast::ProcDecl* decl, std::vector<CallArgumentSlot> slots,
-      std::string_view param_unit, std::string_view param_declaring_type);
-  static void mark_call_slot(std::vector<CallArgumentSlot>& slots,
-                             std::size_t index, UntypedArgKind untyped_kind,
-                             bool is_mutable,
-                             const ast::TypeExpr* type = nullptr);
-  static std::vector<CallArgumentSlot>
-  call_slots_with_builtin_memory_helper_info(
-      std::string_view name, std::vector<CallArgumentSlot> slots);
+      const ast::ProcDecl* decl, std::vector<CallArgumentSlot> slots);
   bool slot_accepts_argument(const CallArgumentSlot& slot,
                              std::string_view default_arg_unit);
-  std::vector<CallArgumentSlot> call_slots_with_builtin_helper_param_info(
-      const ast::Expr& callee, std::vector<CallArgumentSlot> slots);
   std::vector<CallArgumentSlot> call_slots_with_procedural_callee_param_info(
       const ast::Expr& callee, std::vector<CallArgumentSlot> slots);
   const ast::TypeExpr* procedural_callee_type(const ast::Expr& callee);

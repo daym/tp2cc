@@ -18,10 +18,12 @@ namespace tp2cc {
 
 struct ClassInfo;
 struct ConstInfo;
+struct EnumMemberInfo;
 struct EnumInfoReg;
 struct InterfaceInfo;
 struct PropertyInfo;
 struct TypeRegistry;
+struct TypeSymbol;
 struct UnitInfo;
 struct VarInfo;
 
@@ -53,7 +55,6 @@ struct ConvertedConstInt {
 // access path.
 struct ImplicitPropertyLookup {
   const PropertyInfo* prop = nullptr;
-  std::string class_name;
   std::string base_cxx;
   std::string base_access;
   bool from_with = false;
@@ -84,11 +85,7 @@ struct OrdinalDomain {
   OrdinalFamily family = OrdinalFamily::Invalid;
   int64_t low = 0;
   int64_t high = 0;
-  // Enum identity for `OrdinalFamily::Enum`. The TyEnum AST node IS the enum's
-  // identity: there's one per Pascal `type T = (...)` declaration, and the
-  // registry stores it (EnumInfoReg::type). Using the pointer directly avoids
-  // string-key aliasing across aliases and unit-qualified names.
-  const ast::TyEnum* enum_key = nullptr;
+  const TypeDescriptor* enum_key = nullptr;
 };
 
 class EmitAnalysis {
@@ -115,22 +112,12 @@ class EmitAnalysis {
   // reference lowering so C++ preserves aliasing/mutability semantics.
   bool const_param_needs_mutable_ref(const ast::TypeExpr* t);
   bool const_param_needs_const_ref(const ast::TypeExpr* t);
-  // MIGRATION_NAME_LOOKUP_FALLBACK: spelling-only type queries. These remain
-  // until parser-bound syntax covers callee names, sizeof/low/high type names,
-  // and stored string class names such as current_class_name.
-  const ClassInfo* migration_fallback_class_info_by_name(std::string_view name) const;
-  const ast::TypeExpr* migration_fallback_named_type_expr_by_name(
-      std::string_view name);
-  // Central transitional TypeExpr API. Consumers that have a TypeExpr should
-  // use these descriptor/symbol-backed helpers rather than re-querying a name.
+  // Descriptor-backed TypeExpr queries. Consumers must not re-query a name.
   const ClassInfo* class_info_for_type(const ast::TypeExpr* t);
-  const ClassInfo* class_info_for_type_in_context(
-      const ast::TypeExpr* t, const TypeLookupContext* context);
+  const TypeSymbol* class_symbol_for_type(const ast::TypeExpr* t);
   const InterfaceInfo* interface_info_for_type(const ast::TypeExpr* t);
   std::string direct_type_name(const ast::TypeExpr* t);
-  std::string pointer_target_type_name(const ast::TypeExpr* t);
-  std::string metaclass_target_name(const ast::TypeExpr* t);
-  bool type_is_runtime_tclass(const ast::TypeExpr* t);
+  const TypeSymbol* metaclass_target_symbol(const ast::TypeExpr* t);
   bool type_accepts_class_value(const ast::TypeExpr* t);
   bool type_is_reference_class(const ast::TypeExpr* t);
   bool type_is_interface(const ast::TypeExpr* t);
@@ -153,6 +140,7 @@ class EmitAnalysis {
       std::unordered_set<std::string>* visiting_const_names = nullptr);
   std::optional<ConstIntExprInfo> eval_const_int_expr(
       const ast::Expr& e, const TypeLookupContext* context);
+  const ast::TypeExpr* const_intrinsic_type_arg(const ast::Expr& arg);
   const ast::TypeExpr* deduce_set_literal_type(
       const ast::SetLit& s, const ast::TypeExpr* target = nullptr);
   SetConversionKind classify_set_conversion(const ast::TypeExpr* source,
@@ -170,21 +158,34 @@ class EmitAnalysis {
   // C++ carrier text, because unrelated Pascal pointer aliases may lower to
   // the same C++ representation.
   bool same_type_ast(const ast::TypeExpr* a, const ast::TypeExpr* b);
+  bool same_type_ast_in_context(const ast::TypeExpr* a,
+                                const TypeLookupContext* a_context,
+                                const ast::TypeExpr* b,
+                                const TypeLookupContext* b_context);
   // Pascal explicit typecasts are call-shaped in the AST. This returns the
   // source-language result type for `T(x)` / `unit.T(x)` when the callee is a
   // visible type name; null means the call is not a typecast.
   const ast::TypeExpr* explicit_typecast_result_type(const ast::Expr& e);
+  // Same parser-binding debt as explicit_typecast_result_type(), but for emit
+  // sites that need the declaration symbol to preserve named C++ carriers.
+  const TypeSymbol* explicit_typecast_target_symbol(const ast::Expr& e);
   // `Ord` is lowered by the compiler, not by a runtime helper. Its result type
   // follows the operand's ordinal domain so `Ord(Char)` stays byte-sized while
   // enums and integer subranges keep their own storage width.
   const ast::TypeExpr* ord_result_type_for_operand(const ast::Expr& operand);
   const ast::TypeExpr* ord_result_type_for_type(const ast::TypeExpr* t);
-  std::string deduce_class_alias(const ast::Expr& e);
+  const TypeSymbol* deduce_class_symbol(const ast::Expr& e);
+  const TypeSymbol* class_or_record_type_value_symbol(const ast::Expr& e);
   // Class identifiers and class aliases are values when passed to TClass or a
-  // `class of ...` formal. Return the concrete class denoted by that source
-  // expression; null string means the expression is not such a value.
-  std::string concrete_class_name_for_metaclass_value(const ast::Expr& e);
-  std::string canonical_method_owner_type_name(std::string_view owner);
+  // `class of ...` formal. Preserve the resolved class symbol so emission does
+  // not have to re-look up the same source spelling.
+  const TypeSymbol* concrete_class_symbol_for_metaclass_value(
+      const ast::Expr& e);
+  // For `TChild` used where `class of TBase` or `TClass` is expected, return
+  // the concrete class symbol only when bound ancestry proves the
+  // Pascal class value is assignment-compatible with the target metaclass.
+  const TypeSymbol* concrete_class_symbol_for_metaclass_target(
+      const ast::Expr& e, const ast::TypeExpr* target);
   const ast::TypeExpr* lookup_record_field_type_in_type(
       const ast::TypeExpr* type, std::string_view field_name);
   bool record_field_is_variant_in_type(const ast::TypeExpr* type,
@@ -215,7 +216,10 @@ class EmitAnalysis {
   std::optional<std::string> intrinsic_call_name(const ast::Expr& callee);
   const VarInfo* find_visible_unit_var(const std::string& name);
   const ConstInfo* find_visible_unit_const(const std::string& name);
+  const EnumMemberInfo* find_visible_enum_member(const std::string& name);
   const EnumInfoReg* find_visible_enum_info_for_member(const std::string& name);
+  const EnumInfoReg* find_enum_info_in_unit(std::string_view unit_name,
+                                            std::string_view member_name);
 
   // Find an implicit property visible from the current method / `with` scope.
   // This keeps property lookup in one place instead of scattering custom
@@ -223,16 +227,14 @@ class EmitAnalysis {
   std::optional<ImplicitPropertyLookup> find_implicit_class_property(
       std::string_view name);
 
-  // Type-identity predicates. Canonicalize the input first, then compare by
-  // pointer equality against the registered builtin-literal descriptor's
-  // `type` field. Pascal is nominal: same declaration == same canonical
-  // pointer == same type.
+  // Type-identity predicates consume the bound descriptor and its metadata.
+  // Pascal is nominal: aliases share one descriptor; unrelated declarations
+  // remain different even when their C++ carriers match.
   bool type_is_string_like(const ast::TypeExpr* t);
   bool type_is_long_string(const ast::TypeExpr* t);
 
-  // Primitive metadata and target access for callers that drive dispatch
-  // from the canonical atom rather than its name string.
-  std::string builtin_atom_name_for_type(const ast::TypeExpr* t);
+  // Primitive metadata is attached to the registry descriptor. Consumers do
+  // not recover a builtin declaration from its Pascal spelling.
   const PrimitiveInfo* primitive_info_for_type(const ast::TypeExpr* t);
   TargetInfo target() const { return target_; }
 
@@ -246,8 +248,8 @@ class EmitAnalysis {
  private:
   struct SetLiteralOrdinalSummary {
     OrdinalFamily family;
-    const ast::TyEnum* enum_key;
-    const ast::TypeExpr* enum_type;
+    const TypeDescriptor* enum_key;
+    const ast::TypeExpr* element_type;
     int64_t low;
     int64_t high;
   };
@@ -255,7 +257,7 @@ class EmitAnalysis {
   struct OrdinalExprValue {
     int64_t value;
     OrdinalFamily family;
-    const ast::TyEnum* enum_key;
+    const TypeDescriptor* enum_key;
   };
 
   std::string implicit_self_cxx();
@@ -280,8 +282,10 @@ class EmitAnalysis {
       std::optional<SetLiteralOrdinalSummary> summary, const ast::Expr& e);
   std::optional<SetLiteralOrdinalSummary> summarize_set_literal_ordinals(
       const ast::SetLit& s);
-  const ast::TypeExpr* const_intrinsic_type_arg(const ast::Expr& arg);
   const ast::TypeExpr* canonical_set_type(const ast::TypeExpr* t);
+  const ast::TypeExpr* integer_type(const PrimitiveInfo* info) const;
+  const ast::TypeExpr* ordinal_integer_type(PrimitiveIntKind kind,
+                                            uint8_t bits) const;
   bool type_is_numeric_primitive(const ast::TypeExpr* t);
   static bool binop_is_comparison(ast::BinOp op);
   static bool binop_is_arithmetic_like(ast::BinOp op);
@@ -293,41 +297,13 @@ class EmitAnalysis {
   std::optional<ConstIntExprInfo> fold_untyped_const_info(
       const ConstInfo& c,
       std::unordered_set<std::string>* visiting_const_names);
-  const EnumInfoReg* find_enum_info_in_unit(std::string_view unit_name,
-                                            std::string_view member_name);
+  const ClassInfo* current_class_info() const;
 
   const TypeRegistry& registry_;
   ScopeStateView& scope_;
   ResolveNameProvider& resolve_name_provider_;
   CallTypeProvider& call_type_provider_;
   TargetInfo target_;
-  struct SynthesizedSetKey {
-    const ast::TypeExpr* element = nullptr;
-    bool has_explicit_bounds = false;
-    int64_t low = 0;
-    int64_t high = 0;
-    bool operator==(const SynthesizedSetKey& other) const {
-      return element == other.element &&
-             has_explicit_bounds == other.has_explicit_bounds &&
-             low == other.low &&
-             high == other.high;
-    }
-  };
-  struct SynthesizedSetKeyHash {
-    std::size_t operator()(const SynthesizedSetKey& key) const {
-      std::size_t h = std::hash<const ast::TypeExpr*>{}(key.element);
-      h ^= std::hash<bool>{}(key.has_explicit_bounds) + 0x9e3779b9 +
-           (h << 6) + (h >> 2);
-      h ^= std::hash<int64_t>{}(key.low) + 0x9e3779b9 + (h << 6) + (h >> 2);
-      h ^= std::hash<int64_t>{}(key.high) + 0x9e3779b9 + (h << 6) + (h >> 2);
-      return h;
-    }
-  };
-  std::unordered_map<SynthesizedSetKey, std::shared_ptr<ast::TySet>,
-                     SynthesizedSetKeyHash>
-      synthesized_set_types_;
-  std::unordered_map<const ast::TypeExpr*, std::shared_ptr<ast::TyPointer>>
-      synthesized_pointer_types_;
 };
 
 }  // namespace tp2cc

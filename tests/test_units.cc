@@ -18,6 +18,7 @@
 
 #include "diag.h"
 #include "test_util.h"
+#include "typereg.h"
 #include "units.h"
 
 using namespace tp2cc;
@@ -275,6 +276,363 @@ void test_current_directory_precedes_entry_directory_and_unit_paths() {
   fs::remove_all(d);
 }
 
+void test_parser_driven_type_binding_across_units_and_forwards() {
+  auto d = make_tmpdir("semantic-types");
+  write_file(
+      d / "types.pas",
+      "unit types;\n"
+      "interface\n"
+      "type\n"
+      "  pnode = ^tnode;\n"
+      "  tnode = record next : pnode; end;\n"
+      "  talias = tnode;\n"
+      "implementation\n"
+      "end.\n");
+  auto program = write_program(d, "main", "types");
+  write_file(
+      program,
+      "program main;\n"
+      "uses types;\n"
+      "var value : talias;\n"
+      "begin\n"
+      "end.\n");
+
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK_EQ(graph.discover_from_entry(program), 0);
+
+  const ParsedUnit* types = graph.lookup("types");
+  const ParsedUnit* main = graph.lookup("main");
+  CHECK(types && types->ast);
+  CHECK(main && main->ast);
+  if (types && types->ast && main && main->ast) {
+    const auto* node_decl = static_cast<const ast::TypeDecl*>(
+        types->ast->interface_decls[1].get());
+    const auto* alias_decl = static_cast<const ast::TypeDecl*>(
+        types->ast->interface_decls[2].get());
+    const auto* value_decl = static_cast<const ast::VarDecl*>(
+        main->ast->impl_decls[0].get());
+    CHECK(node_decl->symbol && node_decl->type->descriptor);
+    CHECK_EQ(alias_decl->type->descriptor, node_decl->type->descriptor);
+    CHECK_EQ(value_decl->type->descriptor, node_decl->type->descriptor);
+
+    const auto* pointer_decl = static_cast<const ast::TypeDecl*>(
+        types->ast->interface_decls[0].get());
+    const auto* pointer_type =
+        static_cast<const ast::TyPointer*>(pointer_decl->type.get());
+    CHECK_EQ(pointer_type->target->descriptor, node_decl->type->descriptor);
+  }
+  fs::remove_all(d);
+}
+
+void test_parser_driven_imported_class_parent_and_alias() {
+  auto d = make_tmpdir("semantic-imported-class-parent");
+  write_file(
+      d / "base.pas",
+      "unit base;\n"
+      "interface\n"
+      "type\n"
+      "  tbase = class\n"
+      "    value : longint;\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  write_file(
+      d / "middle.pas",
+      "unit middle;\n"
+      "interface\n"
+      "uses base;\n"
+      "type\n"
+      "  tderived = class(tbase)\n"
+      "  end;\n"
+      "implementation\n"
+      "end.\n");
+  write_file(
+      d / "aliases.pas",
+      "unit aliases;\n"
+      "interface\n"
+      "uses middle;\n"
+      "type\n"
+      "  talias = tderived;\n"
+      "implementation\n"
+      "end.\n");
+  auto program = write_program(d, "main", "aliases");
+  write_file(
+      program,
+      "program main;\n"
+      "uses aliases;\n"
+      "var item : talias;\n"
+      "begin\n"
+      "  item.value := 1;\n"
+      "end.\n");
+
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK_EQ(graph.discover_from_entry(program), 0);
+
+  const TypeRegistry& registry = graph.type_registry();
+  const TypeSymbol* base = registry.lookup_type_symbol_exact(
+      pascal_key("base"), pascal_key("tbase"));
+  const TypeSymbol* derived = registry.lookup_type_symbol_exact(
+      pascal_key("middle"), pascal_key("tderived"));
+  const TypeSymbol* alias = registry.lookup_type_symbol_exact(
+      pascal_key("aliases"), pascal_key("talias"));
+  CHECK(base && derived && alias);
+  if (base && derived && alias) {
+    CHECK(derived->class_info());
+    if (derived->class_info()) {
+      CHECK_EQ(derived->class_info()->parent_symbol, base);
+    }
+    CHECK_EQ(alias->descriptor, derived->descriptor);
+  }
+  fs::remove_all(d);
+}
+
+void test_parser_driven_type_binding_rejects_ordinary_later_type() {
+  auto d = make_tmpdir("semantic-later-type");
+  auto program = d / "main.pas";
+  write_file(
+      program,
+      "program main;\n"
+      "type\n"
+      "  tfirst = tsecond;\n"
+      "  tsecond = record end;\n"
+      "begin\n"
+      "end.\n");
+
+  const int errors_before = error_count();
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK(graph.discover_from_entry(program) > 0);
+  CHECK(error_count() > errors_before);
+  fs::remove_all(d);
+}
+
+void test_parser_driven_type_binding_allows_class_self_reference() {
+  auto d = make_tmpdir("semantic-class-self");
+  auto program = d / "main.pas";
+  write_file(
+      program,
+      "program main;\n"
+      "type\n"
+      "  tnode = class\n"
+      "    next : tnode;\n"
+      "  end;\n"
+      "begin\n"
+      "end.\n");
+
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK_EQ(graph.discover_from_entry(program), 0);
+  const ParsedUnit* main = graph.lookup("main");
+  CHECK(main && main->ast);
+  if (main && main->ast) {
+    const auto* node_decl = static_cast<const ast::TypeDecl*>(
+        main->ast->impl_decls[0].get());
+    const auto* node_type =
+        static_cast<const ast::TyObject*>(node_decl->type.get());
+    const auto& field = node_type->members[0];
+    CHECK(node_decl->symbol && node_decl->type->descriptor);
+    CHECK_EQ(field.field_type->descriptor, node_decl->type->descriptor);
+  }
+  fs::remove_all(d);
+}
+
+void test_parser_driven_type_binding_completes_explicit_class_forward() {
+  auto d = make_tmpdir("semantic-class-forward");
+  auto program = d / "main.pas";
+  write_file(
+      program,
+      "program main;\n"
+      "type\n"
+      "  tnode = class;\n"
+      "type\n"
+      "  tnode = class\n"
+      "    next : tnode;\n"
+      "  end;\n"
+      "var value : tnode;\n"
+      "begin\n"
+      "end.\n");
+
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK_EQ(graph.discover_from_entry(program), 0);
+  const ParsedUnit* main = graph.lookup("main");
+  CHECK(main && main->ast);
+  if (main && main->ast) {
+    const auto* forward_decl = static_cast<const ast::TypeDecl*>(
+        main->ast->impl_decls[0].get());
+    const auto* complete_decl = static_cast<const ast::TypeDecl*>(
+        main->ast->impl_decls[1].get());
+    const auto* value_decl = static_cast<const ast::VarDecl*>(
+        main->ast->impl_decls[2].get());
+    CHECK(forward_decl->symbol && complete_decl->symbol);
+    CHECK_EQ(forward_decl->symbol, complete_decl->symbol);
+    CHECK_EQ(forward_decl->type->descriptor,
+             complete_decl->type->descriptor);
+    CHECK_EQ(value_decl->type->descriptor,
+             complete_decl->type->descriptor);
+  }
+  fs::remove_all(d);
+}
+
+void test_parser_driven_local_types_remain_in_procedure_scope() {
+  auto d = make_tmpdir("semantic-local-type");
+  auto program = d / "main.pas";
+  write_file(
+      program,
+      "program main;\n"
+      "procedure run;\n"
+      "type\n"
+      "  tlocal = record value : longint; end;\n"
+      "var item : tlocal;\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "end.\n");
+
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK_EQ(graph.discover_from_entry(program), 0);
+  const ParsedUnit* main = graph.lookup("main");
+  CHECK(main && main->ast);
+  if (main && main->ast) {
+    const auto* proc = static_cast<const ast::ProcDecl*>(
+        main->ast->impl_decls[0].get());
+    const auto* local_type =
+        static_cast<const ast::TypeDecl*>(proc->locals[0].get());
+    const auto* local_var =
+        static_cast<const ast::VarDecl*>(proc->locals[1].get());
+    CHECK(local_type->symbol && local_type->type->descriptor);
+    CHECK_EQ(local_var->type->descriptor, local_type->type->descriptor);
+    CHECK_EQ(graph.type_registry().lookup_type_symbol_exact(
+                 pascal_key("main"), pascal_key("tlocal")),
+             nullptr);
+  }
+  fs::remove_all(d);
+}
+
+void test_parser_driven_local_pointer_forward_stays_in_type_section() {
+  auto d = make_tmpdir("semantic-local-pointer-forward");
+  auto program = d / "main.pas";
+  write_file(
+      program,
+      "program main;\n"
+      "procedure run;\n"
+      "type\n"
+      "  pnode = ^tnode;\n"
+      "  tnode = record next : pnode; end;\n"
+      "var item : tnode;\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "end.\n");
+
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK_EQ(graph.discover_from_entry(program), 0);
+  const ParsedUnit* main = graph.lookup("main");
+  CHECK(main && main->ast);
+  if (main && main->ast) {
+    const auto* proc = static_cast<const ast::ProcDecl*>(
+        main->ast->impl_decls[0].get());
+    const auto* pointer_decl =
+        static_cast<const ast::TypeDecl*>(proc->locals[0].get());
+    const auto* record_decl =
+        static_cast<const ast::TypeDecl*>(proc->locals[1].get());
+    const auto* pointer_type =
+        static_cast<const ast::TyPointer*>(pointer_decl->type.get());
+    CHECK_EQ(pointer_decl->type_section_id, record_decl->type_section_id);
+    CHECK_EQ(pointer_type->target->descriptor,
+             record_decl->type->descriptor);
+  }
+  fs::remove_all(d);
+}
+
+void test_parser_driven_local_pointer_forward_rejects_later_section() {
+  auto d = make_tmpdir("semantic-local-pointer-later-section");
+  auto program = d / "main.pas";
+  write_file(
+      program,
+      "program main;\n"
+      "procedure run;\n"
+      "type\n"
+      "  pnode = ^tnode;\n"
+      "type\n"
+      "  tnode = record next : pnode; end;\n"
+      "begin\n"
+      "end;\n"
+      "begin\n"
+      "end.\n");
+
+  const int errors_before = error_count();
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK(graph.discover_from_entry(program) > 0);
+  CHECK(error_count() > errors_before);
+  fs::remove_all(d);
+}
+
+void test_parser_driven_nested_pointer_forward_stays_in_type_section() {
+  auto d = make_tmpdir("semantic-nested-pointer-forward");
+  auto program = d / "main.pas";
+  write_file(
+      program,
+      "program main;\n"
+      "type\n"
+      "  towner = record\n"
+      "  type\n"
+      "    pnode = ^tnode;\n"
+      "    tnode = record next : pnode; end;\n"
+      "  end;\n"
+      "begin\n"
+      "end.\n");
+
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK_EQ(graph.discover_from_entry(program), 0);
+  const ParsedUnit* main = graph.lookup("main");
+  CHECK(main && main->ast);
+  if (main && main->ast) {
+    const auto* owner_decl = static_cast<const ast::TypeDecl*>(
+        main->ast->impl_decls[0].get());
+    const auto* owner =
+        static_cast<const ast::TyRecord*>(owner_decl->type.get());
+    const auto* pointer_decl = owner->nested_types[0].get();
+    const auto* record_decl = owner->nested_types[1].get();
+    const auto* pointer_type =
+        static_cast<const ast::TyPointer*>(pointer_decl->type.get());
+    CHECK_EQ(pointer_decl->type_section_id, record_decl->type_section_id);
+    CHECK_EQ(pointer_type->target->descriptor,
+             record_decl->type->descriptor);
+  }
+  fs::remove_all(d);
+}
+
+void test_parser_driven_nested_pointer_forward_rejects_later_section() {
+  auto d = make_tmpdir("semantic-nested-pointer-later-section");
+  auto program = d / "main.pas";
+  write_file(
+      program,
+      "program main;\n"
+      "type\n"
+      "  towner = record\n"
+      "  type\n"
+      "    pnode = ^tnode;\n"
+      "  type\n"
+      "    tnode = record next : pnode; end;\n"
+      "  end;\n"
+      "begin\n"
+      "end.\n");
+
+  const int errors_before = error_count();
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK(graph.discover_from_entry(program) > 0);
+  CHECK(error_count() > errors_before);
+  fs::remove_all(d);
+}
+
 void test_real_fpc_compiler_acyclic() {
   // Optional rpm/compiler fixture: walking pp.pas with the bootstrap defines
   // should not find a unit cycle.
@@ -313,6 +671,18 @@ int main() {
   RUN_TEST(test_current_directory_is_implicit_unit_search_root);
   RUN_TEST(test_entry_directory_is_implicit_unit_search_root);
   RUN_TEST(test_current_directory_precedes_entry_directory_and_unit_paths);
+  RUN_TEST(test_parser_driven_type_binding_across_units_and_forwards);
+  RUN_TEST(test_parser_driven_imported_class_parent_and_alias);
+  RUN_TEST(test_parser_driven_type_binding_rejects_ordinary_later_type);
+  RUN_TEST(test_parser_driven_type_binding_allows_class_self_reference);
+  RUN_TEST(test_parser_driven_type_binding_completes_explicit_class_forward);
+  RUN_TEST(test_parser_driven_local_types_remain_in_procedure_scope);
+  RUN_TEST(test_parser_driven_local_pointer_forward_stays_in_type_section);
+  RUN_TEST(
+      test_parser_driven_local_pointer_forward_rejects_later_section);
+  RUN_TEST(test_parser_driven_nested_pointer_forward_stays_in_type_section);
+  RUN_TEST(
+      test_parser_driven_nested_pointer_forward_rejects_later_section);
   RUN_TEST(test_real_fpc_compiler_acyclic);
 
   int n = tp2cc_test::failures();

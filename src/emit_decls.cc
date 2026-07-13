@@ -179,12 +179,10 @@ std::vector<EmitDecls::MetaclassCallable> EmitDecls::collect_metaclass_callables
     const ClassInfo& root_info) {
   std::vector<MetaclassCallable> out;
   std::vector<const ClassInfo*> chain;
-  std::unordered_set<std::string> seen;
+  std::unordered_set<const ClassInfo*> seen;
   const ClassInfo* ci = &root_info;
   while (ci) {
-    const std::string identity = registry_.class_identity_key(*ci);
-    if (seen.count(identity)) break;
-    seen.insert(identity);
+    if (!seen.insert(ci).second) break;
     chain.push_back(ci);
     ci = registry_.lookup_parent_class(*ci);
   }
@@ -263,12 +261,10 @@ std::vector<EmitDecls::MetaclassCallable> EmitDecls::collect_metaclass_callables
 std::optional<EmitDecls::MetaclassCallableImpl>
 EmitDecls::find_metaclass_callable_impl(const ClassInfo& concrete_class,
                                         const MetaclassCallable& target) {
-  std::unordered_set<std::string> seen;
+  std::unordered_set<const ClassInfo*> seen;
   const ClassInfo* ci = &concrete_class;
   while (ci) {
-    const std::string identity = registry_.class_identity_key(*ci);
-    if (seen.count(identity)) break;
-    seen.insert(identity);
+    if (!seen.insert(ci).second) break;
     auto mit = ci->methods.find(target.name);
     if (mit != ci->methods.end()) {
       for (const auto& sig : mit->second) {
@@ -287,11 +283,9 @@ EmitDecls::find_metaclass_callable_impl(const ClassInfo& concrete_class,
     // through the concrete metaclass instead of treating the derived
     // declaration as if it erased the inherited constructor.
     const ClassInfo* root = &concrete_class;
-    std::unordered_set<std::string> root_seen;
+    std::unordered_set<const ClassInfo*> root_seen;
     while (root) {
-      const std::string identity = registry_.class_identity_key(*root);
-      if (root_seen.count(identity)) break;
-      root_seen.insert(identity);
+      if (!root_seen.insert(root).second) break;
       if (root->defining_unit == "__rt__" && root->name == "tobject") {
         return MetaclassCallableImpl{root, nullptr, true};
       }
@@ -470,7 +464,7 @@ void EmitDecls::emit_virtual_metaclass_callable(
 }
 
 const TypeSymbol* EmitDecls::class_symbol(const ClassInfo& info) const {
-  return descriptor_payload_symbol(info.symbol);
+  return info.symbol;
 }
 
 std::string EmitDecls::class_struct_cxx(const ClassInfo& info) const {
@@ -737,8 +731,8 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool,
     if (to.is_forward) {
       return;
     }
-    const TypeSymbol* symbol = registry_.canonical_symbol_for_type(td.type.get());
-    const TypeSymbol* payload_symbol = descriptor_payload_symbol(symbol);
+    const TypeSymbol* symbol = registry_.resolved_symbol_for_type(td.type.get());
+    const TypeSymbol* payload_symbol = symbol;
     const ClassInfo* current_class_info =
         payload_symbol ? payload_symbol->class_info() : nullptr;
     const ClassInfo* parent_info =
@@ -755,11 +749,9 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool,
       const std::string method_name = ascii_lower(pd.name);
       const std::string cxx_name = mangle(pd.name);
       const ClassInfo* parent = parent_info;
-      std::unordered_set<std::string> seen;
+      std::unordered_set<const ClassInfo*> seen;
       while (parent) {
-        const std::string identity = registry_.class_identity_key(*parent);
-        if (seen.count(identity)) break;
-        seen.insert(identity);
+        if (!seen.insert(parent).second) break;
 
         auto mit = parent->methods.find(method_name);
         if (mit != parent->methods.end()) {
@@ -968,12 +960,19 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool,
     return;
   }
 
+  const TypeSymbol* symbol = td.symbol;
+  if (!symbol || !symbol->descriptor ||
+      symbol->descriptor->symbol != symbol) {
+    // `type Y = X` only adds a Pascal name for X's descriptor. No backend
+    // carrier is created for Y, and consumers cannot depend on alias spelling.
+    return;
+  }
+
   std::string rhs = td.type ? types_.type_to_cxx(*td.type)
                             : std::string("int32_t");
-  // MIGRATION: this preserves Pascal alias spelling as a C++ `using`
-  // declaration. Keep only if a later compatibility decision explicitly wants
-  // alias declarations in the generated C++ surface; semantic consumers must
-  // not depend on this alias existing.
+  // This `using` names a fresh Pascal type object (array, pointer, set,
+  // subrange, procedural type, etc.) for C++. It is not a Pascal alias:
+  // descriptor ownership above is the distinction.
   emit_ops_.emitln("using " + name + " = " + rhs + ";");
 }
 
@@ -1107,7 +1106,7 @@ void EmitDecls::emit_pending_reference_class_support(
 
   // Pascal reference classes need namespace-scope C++ helper definitions for
   // `class of' values and TObject virtual metadata. The declaration pass
-  // records the build-resolved ClassInfo while class scopes are open. The
+  // records the bound ClassInfo while class scopes are open. The
   // containing type drains the records after its closing brace, when qualified
   // out-of-class definitions are legal C++; re-looking up the class name here
   // would hide failed build binding and reintroduce emission-time name lookup.
@@ -1121,11 +1120,9 @@ void EmitDecls::emit_var_decl(const VarDecl& vd, bool in_header) {
   if (vd.is_absolute) {
     // Register the alias in the scope map; do not emit any C++ variable.
     // Name lookup later synthesises a bytewise storage designator whose
-    // ptr expression is `&target`, so every use of the alias flows through
-    // memcpy helpers (reads/writes/inc/dec) or the bounded `tp2cc_TypedView`
-    // wrapper (method calls, var/out args). This avoids the strict-aliasing
-    // UB that a persistent `T&` reference over storage of a foreign
-    // dynamic type would introduce.
+    // ptr expression is `&target`, so value operations use memcpy helpers.
+    // Method and var/out consumers begin the alias carrier's lifetime at that
+    // same address for the full expression, then restore the target carrier.
     auto target = storage_.resolve_absolute_target(vd);
     if (!target || !vd.type) {
       // resolve_absolute_target already reported the specific reason.
@@ -1133,7 +1130,8 @@ void EmitDecls::emit_var_decl(const VarDecl& vd, bool in_header) {
     }
     for (const auto& n : vd.names) {
       scope_.local_absolute_targets[n] = ScopeStateView::AbsoluteAlias{
-          target->cxx, vd.type.get(), target->is_pointerish,
+          target->cxx, vd.type.get(), target->type,
+          target->value_is_storage_address,
           target->is_const_storage};
       // Also register the alias in `local_value_types` so type deduction
       // for `alias.field`, `Ptype(alias)`, etc. sees the alias's declared
@@ -1360,7 +1358,8 @@ void EmitDecls::emit_proc_decl_signature(const ProcDecl& pd) {
   }
   std::string params = param_list_to_cxx(pd.params);
   emit_ops_.emitln(proc_attributes_to_cxx(pd) + ret + " " +
-                   pascal_operator_decl_name_to_cxx(pd) + "(" + params + ");");
+                   pascal_operator_decl_name_to_cxx(registry_, pd) + "(" +
+                   params + ");");
 }
 
 void EmitDecls::emit_decl(const Decl& d, bool in_header) {

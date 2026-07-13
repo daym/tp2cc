@@ -1,11 +1,14 @@
 #include "emit_units.h"
 
 #include <cstdlib>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include "diag.h"
 #include "emit_support.h"
 #include "typereg.h"
 
@@ -44,182 +47,249 @@ ClassLifecycleHooks collect_class_lifecycle_hooks(
                              .destructors = std::move(destructors)};
 }
 
-std::string class_lifecycle_call_cxx(const ProcDecl& pd) {
-  return type_mangle(pd.of_type) + "::" + mangle(pd.name);
+std::string type_symbol_struct_cxx_in_unit(const TypeSymbol& symbol,
+                                           std::string_view current_unit) {
+  std::string out = (!symbol.defining_unit.empty() &&
+                     symbol.defining_unit != current_unit)
+                        ? unit_namespace_prefix(symbol.defining_unit)
+                        : std::string{};
+  for (const auto& owner : symbol.owner_path) {
+    out += type_mangle(owner);
+    out += "::";
+  }
+  out += type_mangle(symbol.name);
+  return out;
 }
 
-void collect_variant_type_refs(const std::shared_ptr<ast::VariantPart>& vpart,
-                               std::unordered_set<std::string>& out);
+void collect_type_dependencies(
+    const TypeExpr& type,
+    std::unordered_set<const TypeDescriptor*>& dependencies);
 
-// Collect every TyName (lowercased) mentioned in a TypeExpr. Recurses into
-// records/objects so that a record's field types contribute dependencies.
-void collect_type_refs(const TypeExpr& t, std::unordered_set<std::string>& out) {
-  switch (t.kind) {
+void collect_variant_dependencies(
+    const std::shared_ptr<VariantPart>& variant,
+    std::unordered_set<const TypeDescriptor*>& dependencies) {
+  if (!variant) return;
+  if (variant->tag_type) {
+    collect_type_dependencies(*variant->tag_type, dependencies);
+  }
+  for (const auto& variant_case : variant->cases) {
+    for (const auto& field : variant_case.fields) {
+      if (field.type) collect_type_dependencies(*field.type, dependencies);
+    }
+    collect_variant_dependencies(variant_case.variant_part, dependencies);
+  }
+}
+
+void collect_params_dependencies(
+    const std::vector<Param>& params,
+    std::unordered_set<const TypeDescriptor*>& dependencies) {
+  for (const auto& param : params) {
+    if (param.type) collect_type_dependencies(*param.type, dependencies);
+  }
+}
+
+// C++ declaration ordering is a backend constraint. Its edges come only from
+// parser-bound descriptor identity; source spelling is never looked up here.
+void collect_type_dependencies(
+    const TypeExpr& type,
+    std::unordered_set<const TypeDescriptor*>& dependencies) {
+  switch (type.kind) {
     case Kind::TyName:
-      out.insert(static_cast<const TyName&>(t).name);
+      if (type.descriptor) dependencies.insert(type.descriptor);
       return;
-    case Kind::TyPointer:
-      if (static_cast<const TyPointer&>(t).target) {
-        collect_type_refs(*static_cast<const TyPointer&>(t).target, out);
+    case Kind::TyPointer: {
+      const auto& pointer = static_cast<const TyPointer&>(type);
+      if (pointer.target) {
+        collect_type_dependencies(*pointer.target, dependencies);
       }
-      return;
-    case Kind::TyArray: {
-      const auto& a = static_cast<const TyArray&>(t);
-      for (const auto& d : a.dims)
-        if (d) collect_type_refs(*d, out);
-      if (a.element) collect_type_refs(*a.element, out);
       return;
     }
-    case Kind::TySet:
-      if (static_cast<const TySet&>(t).element) {
-        collect_type_refs(*static_cast<const TySet&>(t).element, out);
+    case Kind::TyArray: {
+      const auto& array = static_cast<const TyArray&>(type);
+      for (const auto& dim : array.dims) {
+        if (dim) collect_type_dependencies(*dim, dependencies);
+      }
+      if (array.element) {
+        collect_type_dependencies(*array.element, dependencies);
       }
       return;
-    case Kind::TyFile:
-      if (static_cast<const TyFile&>(t).element) {
-        collect_type_refs(*static_cast<const TyFile&>(t).element, out);
-      }
+    }
+    case Kind::TySet: {
+      const auto& set = static_cast<const TySet&>(type);
+      if (set.element) collect_type_dependencies(*set.element, dependencies);
       return;
+    }
+    case Kind::TyFile: {
+      const auto& file = static_cast<const TyFile&>(type);
+      if (file.element) collect_type_dependencies(*file.element, dependencies);
+      return;
+    }
     case Kind::TyRecord: {
-      const auto& r = static_cast<const TyRecord&>(t);
-      for (const auto& f : r.fields)
-        if (f.type) collect_type_refs(*f.type, out);
-      collect_variant_type_refs(r.variant_part, out);
+      const auto& record = static_cast<const TyRecord&>(type);
+      for (const auto& nested : record.nested_types) {
+        if (nested && nested->type) {
+          collect_type_dependencies(*nested->type, dependencies);
+        }
+      }
+      for (const auto& field : record.fields) {
+        if (field.type) collect_type_dependencies(*field.type, dependencies);
+      }
+      collect_variant_dependencies(record.variant_part, dependencies);
       return;
     }
     case Kind::TyObject: {
-      const auto& o = static_cast<const TyObject&>(t);
-      if (!o.parent.empty()) out.insert(o.parent);
-      for (const auto& iface : o.interfaces) out.insert(iface);
-      for (const auto& m : o.members) {
-        if (m.kind == ObjectMemberKind::Field && m.field_type) {
-          collect_type_refs(*m.field_type, out);
-        } else if (m.kind == ObjectMemberKind::Method && m.method) {
-          if (m.method->return_type) collect_type_refs(*m.method->return_type, out);
-          for (const auto& p : m.method->params) {
-            if (p.type) collect_type_refs(*p.type, out);
+      const auto& object = static_cast<const TyObject&>(type);
+      if (const ClassInfo* info =
+              type.descriptor ? type.descriptor->class_info() : nullptr) {
+        if (info->parent_symbol && info->parent_symbol->descriptor) {
+          dependencies.insert(info->parent_symbol->descriptor);
+        }
+        for (const TypeSymbol* interface_symbol : info->interface_symbols) {
+          if (interface_symbol && interface_symbol->descriptor) {
+            dependencies.insert(interface_symbol->descriptor);
           }
-        } else if (m.kind == ObjectMemberKind::Property) {
-          if (m.property.type) collect_type_refs(*m.property.type, out);
-          for (const auto& p : m.property.params) {
-            if (p.type) collect_type_refs(*p.type, out);
+        }
+      }
+      for (const auto& member : object.members) {
+        if (member.kind == ObjectMemberKind::Field && member.field_type) {
+          collect_type_dependencies(*member.field_type, dependencies);
+        } else if (member.kind == ObjectMemberKind::Method && member.method) {
+          collect_params_dependencies(member.method->params, dependencies);
+          if (member.method->return_type) {
+            collect_type_dependencies(*member.method->return_type,
+                                      dependencies);
           }
+        } else if (member.kind == ObjectMemberKind::Property) {
+          collect_params_dependencies(member.property.params, dependencies);
+          if (member.property.type) {
+            collect_type_dependencies(*member.property.type, dependencies);
+          }
+        } else if (member.kind == ObjectMemberKind::Type &&
+                   member.type_decl && member.type_decl->type) {
+          collect_type_dependencies(*member.type_decl->type, dependencies);
         }
       }
       return;
     }
     case Kind::TyInterface: {
-      const auto& i = static_cast<const TyInterface&>(t);
-      for (const auto& m : i.members) {
-        if (m.kind != ObjectMemberKind::Method || !m.method) continue;
-        if (m.method->return_type) collect_type_refs(*m.method->return_type, out);
-        for (const auto& p : m.method->params) {
-          if (p.type) collect_type_refs(*p.type, out);
+      const auto& interface_type = static_cast<const TyInterface&>(type);
+      for (const auto& member : interface_type.members) {
+        if (member.kind == ObjectMemberKind::Method && member.method) {
+          collect_params_dependencies(member.method->params, dependencies);
+          if (member.method->return_type) {
+            collect_type_dependencies(*member.method->return_type,
+                                      dependencies);
+          }
+        } else if (member.kind == ObjectMemberKind::Type &&
+                   member.type_decl && member.type_decl->type) {
+          collect_type_dependencies(*member.type_decl->type, dependencies);
         }
       }
       return;
     }
-    case Kind::TySubrange:
-    case Kind::TyString:
-    case Kind::TyEnum:
-      return;
     case Kind::TyProcedural: {
-      const auto& p = static_cast<const TyProcedural&>(t);
-      if (p.return_type) collect_type_refs(*p.return_type, out);
-      for (const auto& par : p.params) {
-        if (par.type) collect_type_refs(*par.type, out);
+      const auto& procedural = static_cast<const TyProcedural&>(type);
+      collect_params_dependencies(procedural.params, dependencies);
+      if (procedural.return_type) {
+        collect_type_dependencies(*procedural.return_type, dependencies);
       }
       return;
     }
+    case Kind::TyDistinct: {
+      const auto& distinct = static_cast<const TyDistinct&>(type);
+      if (distinct.underlying) {
+        collect_type_dependencies(*distinct.underlying, dependencies);
+      }
+      return;
+    }
+    case Kind::TyMetaclass:
+      if (type.descriptor && type.descriptor->metaclass_target &&
+          type.descriptor->metaclass_target->descriptor) {
+        dependencies.insert(
+            type.descriptor->metaclass_target->descriptor);
+      }
+      return;
+    case Kind::TyEnum:
+    case Kind::TySubrange:
+    case Kind::TyString:
+      return;
     default:
       return;
   }
 }
 
-void collect_variant_type_refs(const std::shared_ptr<ast::VariantPart>& vpart,
-                               std::unordered_set<std::string>& out) {
-  if (!vpart) return;
-  if (vpart->tag_type) collect_type_refs(*vpart->tag_type, out);
-  for (const auto& vc : vpart->cases) {
-    for (const auto& f : vc.fields)
-      if (f.type) collect_type_refs(*f.type, out);
-    collect_variant_type_refs(vc.variant_part, out);
-  }
+bool is_forward_declarable_type(const TypeDecl& declaration) {
+  return declaration.type &&
+         (declaration.type->kind == Kind::TyRecord ||
+          declaration.type->kind == Kind::TyObject ||
+          declaration.type->kind == Kind::TyInterface);
 }
 
-// Reorder type decls so every alias (non-record, non-object) appears after
-// the types it references by name. Record/object types are already
-// forward-declared by emit_forward_struct_decls, so aliases that point to
-// them via `^T` always work; this function only needs to handle aliases
-// that depend on other aliases (e.g. `pfoo = ^tfoo` where `tfoo` is itself
-// an alias to an array type).
-//
-// `in` must contain only type decls (checked by the caller); this runs
-// against a single contiguous Pascal `type` section.
-std::vector<const Decl*> ordered_type_decls(const std::vector<const Decl*>& in) {
-  std::vector<const Decl*> type_decls(in);
-
-  // Map name -> index for quick lookup.
-  std::unordered_map<std::string, int> index_of;
-  for (int i = 0; i < static_cast<int>(type_decls.size()); ++i) {
-    index_of[static_cast<const TypeDecl*>(type_decls[i])->name] = i;
+std::vector<const Decl*> ordered_type_decls(
+    const std::vector<const Decl*>& declarations) {
+  std::unordered_map<const TypeDescriptor*, size_t> declaration_for_descriptor;
+  for (size_t i = 0; i < declarations.size(); ++i) {
+    const auto& declaration =
+        static_cast<const TypeDecl&>(*declarations[i]);
+    if (declaration.symbol && declaration.symbol->descriptor &&
+        declaration.symbol->descriptor->symbol == declaration.symbol) {
+      // A completed class intentionally replaces its earlier `T = class;`
+      // entry for ordering purposes.
+      declaration_for_descriptor[declaration.symbol->descriptor] = i;
+    }
   }
 
-  // For each type decl, which in-unit types does it reference?
-  std::vector<std::unordered_set<int>> deps(type_decls.size());
-  for (int i = 0; i < static_cast<int>(type_decls.size()); ++i) {
-    const auto& td = *static_cast<const TypeDecl*>(type_decls[i]);
-    if (!td.type) continue;
-    std::unordered_set<std::string> refs;
-    collect_type_refs(*td.type, refs);
-    for (const auto& r : refs) {
-      auto it = index_of.find(r);
-      if (it == index_of.end()) continue;
-      int j = it->second;
-      if (j == i) continue;
-      const auto& rd = *static_cast<const TypeDecl*>(type_decls[j]);
-      // Pointer-to-record aliases don't need the record body before them:
-      // `using t_pfoo = t_tfoo*;` only needs the struct forward declaration
-      // (emitted by emit_forward_struct_decls). This break lets cycles
-      // like `Pfoo = ^Tfoo; Tfoo = record next: Pfoo; end;` remain a DAG.
-      if (rd.type && (rd.type->kind == Kind::TyRecord ||
-                      rd.type->kind == Kind::TyObject ||
-                      rd.type->kind == Kind::TyInterface) &&
-          td.type->kind == Kind::TyPointer) {
+  std::vector<std::unordered_set<size_t>> dependencies(declarations.size());
+  for (size_t i = 0; i < declarations.size(); ++i) {
+    const auto& declaration =
+        static_cast<const TypeDecl&>(*declarations[i]);
+    if (!declaration.type) continue;
+
+    std::unordered_set<const TypeDescriptor*> descriptors;
+    collect_type_dependencies(*declaration.type, descriptors);
+    for (const TypeDescriptor* descriptor : descriptors) {
+      auto target = declaration_for_descriptor.find(descriptor);
+      if (target == declaration_for_descriptor.end() || target->second == i) {
         continue;
       }
-      deps[i].insert(j);
+      const auto& target_declaration =
+          static_cast<const TypeDecl&>(*declarations[target->second]);
+      // `using P = T*` only needs a prior `struct T;`. Sets, arrays, pointer
+      // aliases, and other C++ aliases cannot be forward-declared and retain
+      // the dependency edge.
+      if (declaration.type->kind == Kind::TyPointer &&
+          is_forward_declarable_type(target_declaration)) {
+        continue;
+      }
+      dependencies[i].insert(target->second);
     }
   }
 
-  // Kahn topological sort (stable: ties broken by original order).
-  std::vector<int> indeg(type_decls.size(), 0);
-  for (int i = 0; i < static_cast<int>(type_decls.size()); ++i) {
-    for (int j : deps[i]) (void)j, ++indeg[i];
+  std::vector<size_t> indegree(declarations.size());
+  std::vector<size_t> ready;
+  for (size_t i = 0; i < declarations.size(); ++i) {
+    indegree[i] = dependencies[i].size();
+    if (indegree[i] == 0) ready.push_back(i);
   }
-  std::vector<int> ready;
-  for (int i = 0; i < static_cast<int>(type_decls.size()); ++i) {
-    if (indeg[i] == 0) ready.push_back(i);
-  }
-  std::vector<const Decl*> out;
-  std::unordered_set<int> emitted_set;
-  while (!ready.empty()) {
-    int n = ready.front();
-    ready.erase(ready.begin());
-    out.push_back(type_decls[n]);
-    emitted_set.insert(n);
-    for (int i = 0; i < static_cast<int>(type_decls.size()); ++i) {
-      if (!deps[i].count(n)) continue;
-      if (--indeg[i] == 0) ready.push_back(i);
+
+  std::vector<const Decl*> ordered;
+  std::unordered_set<size_t> emitted;
+  for (size_t ready_index = 0; ready_index < ready.size(); ++ready_index) {
+    const size_t declaration_index = ready[ready_index];
+    ordered.push_back(declarations[declaration_index]);
+    emitted.insert(declaration_index);
+    for (size_t i = 0; i < declarations.size(); ++i) {
+      if (!dependencies[i].contains(declaration_index)) continue;
+      if (--indegree[i] == 0) ready.push_back(i);
     }
   }
-  // Anything left has a cycle among non-pointer aliases. Emit the remaining
-  // declarations in source order so the generated C++ reports the invalid type
-  // cycle instead of omitting declarations from the translation.
-  for (int i = 0; i < static_cast<int>(type_decls.size()); ++i) {
-    if (!emitted_set.count(i)) out.push_back(type_decls[i]);
+
+  // Invalid non-pointer cycles remain in source order so generated C++ still
+  // diagnoses them rather than silently dropping declarations.
+  for (size_t i = 0; i < declarations.size(); ++i) {
+    if (!emitted.contains(i)) ordered.push_back(declarations[i]);
   }
-  return out;
+  return ordered;
 }
 
 }  // namespace
@@ -255,8 +325,15 @@ void EmitUnits::emit_ordered_type_decls(
 void EmitUnits::emit_type_decl_run(const std::vector<DeclPtr>& decls,
                                    bool in_header) {
   std::vector<const Decl*> run;
+  size_t section_id = 0;
   for (const auto& d : decls) {
     if (d->kind == Kind::TypeDecl) {
+      const auto& type_decl = static_cast<const TypeDecl&>(*d);
+      if (!run.empty() && type_decl.type_section_id != section_id) {
+        emit_ordered_type_decls(run, in_header);
+        run.clear();
+      }
+      section_id = type_decl.type_section_id;
       run.push_back(d.get());
     } else {
       emit_ordered_type_decls(run, in_header);
@@ -265,6 +342,17 @@ void EmitUnits::emit_type_decl_run(const std::vector<DeclPtr>& decls,
     }
   }
   emit_ordered_type_decls(run, in_header);
+}
+
+std::optional<std::string> EmitUnits::class_lifecycle_call_cxx(
+    const ProcDecl& pd) const {
+  const TypeSymbol* owner = registry_.method_owner_symbol_for_proc(&pd);
+  if (!owner) {
+    report_error(pd.loc, "unresolved method owner `" + pd.of_type + "`");
+    return std::nullopt;
+  }
+  return type_symbol_struct_cxx_in_unit(*owner, scope_.current_unit_name) +
+         "::" + mangle(pd.name);
 }
 
 void EmitUnits::emit_unit_hook(
@@ -276,11 +364,15 @@ void EmitUnits::emit_unit_hook(
   ops_.indent();
   ++block_depth_;
   for (const ProcDecl* pd : before_body) {
-    ops_.emitln(class_lifecycle_call_cxx(*pd) + "();");
+    if (std::optional<std::string> call = class_lifecycle_call_cxx(*pd)) {
+      ops_.emitln(*call + "();");
+    }
   }
   if (body) ops_.emit_stmt(*body);
   for (const ProcDecl* pd : after_body) {
-    ops_.emitln(class_lifecycle_call_cxx(*pd) + "();");
+    if (std::optional<std::string> call = class_lifecycle_call_cxx(*pd)) {
+      ops_.emitln(*call + "();");
+    }
   }
   --block_depth_;
   ops_.dedent();
@@ -293,7 +385,7 @@ void EmitUnits::emit_unit(const UnitNode& u) {
   scope_.current_unit_name = ascii_lower(u.name);
   const TypeLookupContext* saved_type_scope = scope_.type_scope;
   scope_.type_scope = registry_.lookup_unit_context(
-      scope_.current_unit_name, /*implementation=*/false);
+      pascal_key(scope_.current_unit_name), /*implementation=*/false);
   auto saved_local_consts = scope_.local_consts;
 
   if (scope_.current_unit_name == "tpexcept") {
@@ -338,7 +430,7 @@ void EmitUnits::emit_unit(const UnitNode& u) {
   ops_.emitln("// Generated by tp2cc. Do not edit.");
   ops_.emitln("#include \"p_" + hguard + ".h\"");
   scope_.type_scope = registry_.lookup_unit_context(
-      scope_.current_unit_name, /*implementation=*/true);
+      pascal_key(scope_.current_unit_name), /*implementation=*/true);
   seed_unit_const_scope(u.impl_decls);
   for (const auto& uu : u.impl_uses) {
     ops_.emitln("#include \"p_" + uu + ".h\"");
@@ -400,11 +492,14 @@ void EmitUnits::emit_unit(const UnitNode& u) {
     // Register program-local fini hooks so Halt and normal return share the
     // same cleanup path.
     for (const ProcDecl* pd : class_lifecycle.constructors) {
-      ops_.emitln(class_lifecycle_call_cxx(*pd) + "();");
+      if (std::optional<std::string> call = class_lifecycle_call_cxx(*pd)) {
+        ops_.emitln(*call + "();");
+      }
     }
     for (const ProcDecl* pd : class_lifecycle.destructors) {
-      ops_.emitln("if (std::atexit(" + class_lifecycle_call_cxx(*pd) +
-                  ") != 0) std::abort();");
+      if (std::optional<std::string> call = class_lifecycle_call_cxx(*pd)) {
+        ops_.emitln("if (std::atexit(" + *call + ") != 0) std::abort();");
+      }
     }
     if (u.init_body) ops_.emit_stmt(*u.init_body);
     --block_depth_;
@@ -417,8 +512,7 @@ void EmitUnits::emit_unit(const UnitNode& u) {
   scope_.local_consts = std::move(saved_local_consts);
 }
 
-void EmitUnits::emit_tpexcept_unit(const UnitNode& u) {
-  (void)u;
+void EmitUnits::emit_tpexcept_unit(const UnitNode&) {
   ops_.set_header();
   ops_.emitln("// Generated by tp2cc. Do not edit.");
   ops_.emitln("#pragma once");

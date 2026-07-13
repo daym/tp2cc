@@ -104,9 +104,7 @@ class EmitValues {
   std::string pchar_string_literal_to_cxx(const ast::StringLit& lit);
   const ast::TypeExpr* set_literal_member_source_type(const ast::Expr& e);
   const ast::TypeExpr* metaclass_value_base_type(const ast::Expr& e);
-  bool same_cxx_type(const ast::TypeExpr* a, const ast::TypeExpr* b);
   bool reject_metaclass_member_as_plain_proc_value(const ast::Expr& value);
-  std::string concrete_class_name_for_metaclass_value(const ast::Expr& src);
 
   const TypeRegistry& registry_;
   ScopeStateView& scope_;

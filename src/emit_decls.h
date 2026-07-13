@@ -59,13 +59,14 @@ class EmitDecls {
     // records the Pascal slot; implementation lookup is separate because a
     // derived metaclass value may fill an inherited slot from the concrete class.
     std::string name;
+    std::string slot_name;
     const MethodSig* sig = nullptr;
     bool implicit_root_create = false;
   };
 
   struct MetaclassCallableImpl {
     // Concrete method that fills one metaclass callable slot.
-    std::string owner_class;
+    const ClassInfo* owner_class = nullptr;
     const MethodSig* sig = nullptr;
     bool implicit_root_create = false;
   };
@@ -102,6 +103,7 @@ class EmitDecls {
       const ClassInfo& concrete_class, const MetaclassCallable& target);
   bool metaclass_callable_matches_impl(const MetaclassCallable& target,
                                        const MethodSig& candidate);
+  bool method_sig_params_match(const MethodSig& a, const MethodSig& b);
   std::string method_sig_param_types(const MethodSig& sig);
   std::string method_sig_param_list(const MethodSig& sig);
   std::string metaclass_callable_param_types(
@@ -116,50 +118,21 @@ class EmitDecls {
       const MetaclassCallable& callable,
       const std::vector<MetaclassCallable>& parent_callables);
   std::string metaclass_callable_return_type(
-      std::string_view target_class, const MetaclassCallable& callable);
-  std::string metaclass_callable_return_type(
       const ClassInfo& target_info, const MetaclassCallable& callable);
-  std::string metaclass_callable_return_type(
-      const ClassInfo& target_info, std::string_view target_class,
-      const MetaclassCallable& callable);
   std::string metaclass_callable_param_list(const MetaclassCallable& callable);
   std::string metaclass_callable_arg_list(const MetaclassCallable& callable);
   std::string metaclass_callable_ctor_param(
-      std::string_view target_class, const MetaclassCallable& callable);
-  std::string metaclass_callable_ctor_param(
-      const ClassInfo& target_info, std::string_view target_class,
-      const MetaclassCallable& callable);
+      const ClassInfo& target_info, const MetaclassCallable& callable);
   std::string metaclass_callable_ctor_init(const MetaclassCallable& callable);
-  void emit_virtual_metaclass_callable(std::string_view owner_class,
-                                       const MetaclassCallable& callable,
-                                       bool has_same_parent_slot);
   void emit_virtual_metaclass_callable(const ClassInfo& owner_info,
-                                       std::string_view owner_class,
                                        const MetaclassCallable& callable,
                                        bool has_same_parent_slot);
   const TypeSymbol* class_symbol(const ClassInfo& info) const;
-  const TypeSymbol* class_symbol(const ClassInfo& info,
-                                 std::string_view source_name) const;
   std::string class_struct_cxx(const ClassInfo& info) const;
-  std::string class_struct_cxx(const ClassInfo& info,
-                               std::string_view fallback_name) const;
-  std::string class_struct_cxx(std::string_view class_name,
-                               const MethodSig* sig) const;
   std::string metaclass_struct_cxx(const ClassInfo& info) const;
-  std::string metaclass_struct_cxx(const ClassInfo& info,
-                                   std::string_view fallback_name) const;
   std::string metaclass_value_fn_cxx(const ClassInfo& info) const;
-  std::string metaclass_value_fn_cxx(const ClassInfo& info,
-                                     std::string_view fallback_name) const;
   std::string build_metaclass_ctor_expr(const ClassInfo& target_info,
-                                        std::string_view concrete_class);
-  std::string build_metaclass_ctor_expr(const ClassInfo& target_info,
-                                        std::string_view target_class,
-                                        std::string_view concrete_class);
-  std::string build_metaclass_ctor_expr(const ClassInfo& target_info,
-                                        std::string_view target_class,
-                                        const ClassInfo& concrete_info,
-                                        std::string_view concrete_class);
+                                        const ClassInfo& concrete_info);
   void emit_enum_carrier(const ast::TyEnum& te, std::string_view cxx_name,
                          std::string_view bound_name);
   void emit_enum_carrier_decls(const ast::TypeExpr* t,
@@ -172,8 +145,7 @@ class EmitDecls {
       std::vector<PendingReferenceClassSupport>& pending_support);
   void emit_reference_class_support(const ast::TypeDecl& td,
                                     const ClassInfo& class_info,
-                                    std::string_view qualified_cxx_name,
-                                    std::string_view source_type_name);
+                                    std::string_view qualified_cxx_name);
   void emit_pending_reference_class_support(
       const PendingReferenceClassSupport& pending);
   bool should_emit_var_type_helpers(const ast::VarDecl& vd, bool in_header);

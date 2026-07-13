@@ -11,6 +11,7 @@ namespace tp2cc {
 class EmitAnalysis;
 class EmitProperties;
 struct TypeRegistry;
+struct ClassInfo;
 
 // Pascal identifier lookup. This module owns the full unqualified and
 // qualified name-resolution order used while emitting expressions and
@@ -19,7 +20,7 @@ struct TypeRegistry;
 //   - unqualified: `with` -> locals -> nested procs -> current class chain ->
 //                  current unit -> uses chain -> implicit runtime unit
 //   - `Unit.name`: symbols exported by a visible Pascal unit
-//   - `Class.name` / `obj.name`: class members walking ancestors
+//   - `obj.name`: class members walking ancestors
 //
 // Keeping that lookup tree here prevents emit paths from duplicating
 // "is this a method? a unit export? a with-bound field?" checks.
@@ -31,6 +32,8 @@ class EmitLookup {
   ResolveResult resolve_name(const std::string& name,
                              QualifierKind qk = QualifierKind::None,
                              const std::string& qualifier = {});
+  ResolveResult resolve_class_member(const ClassInfo& class_info,
+                                     const std::string& name);
 
  private:
   const TypeRegistry& registry_;

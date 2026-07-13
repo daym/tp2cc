@@ -6,8 +6,7 @@
 namespace tp2cc {
 
 enum class RuntimeUnitExportKind {
-  TypeAlias,
-  RuntimeClass,
+  Type,
   Proc,
   Var,
   Const,

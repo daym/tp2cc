@@ -8,12 +8,127 @@
 #include "lexer.h"
 #include "parser.h"
 #include "runtime_units.h"
+#include "typereg.h"
 
 namespace fs = std::filesystem;
 
 namespace tp2cc {
 
-UnitGraph::UnitGraph() = default;
+struct UnitGraph::ParseState {
+  enum class Phase {
+    ParsingInterface,
+    InterfaceReady,
+    Complete,
+    Failed,
+  };
+
+  struct Session;
+
+  struct Actions final : ParserSemanticActions {
+    UnitGraph& graph;
+    Session& session;
+
+    Actions(UnitGraph& graph_in, Session& session_in)
+        : graph(graph_in), session(session_in) {}
+
+    void begin_compilation_unit(std::string_view name,
+                                bool is_program) override;
+    void import_units(const std::vector<std::string>& units,
+                      bool in_interface) override;
+    void parsed_type_section(
+        const std::vector<ast::DeclPtr>& declarations,
+        bool in_interface) override;
+    void parsed_declaration(const ast::DeclPtr& declaration,
+                            bool in_interface) override;
+    void finish_compilation_unit(const ast::UnitNode& unit) override;
+  };
+
+  struct Session {
+    std::filesystem::path path;
+    std::string name;
+    bool is_program = false;
+    Phase phase = Phase::ParsingInterface;
+    std::unique_ptr<Lexer> lexer;
+    std::unique_ptr<Actions> actions;
+    std::unique_ptr<Parser> parser;
+    std::shared_ptr<ast::UnitNode> ast;
+  };
+
+  TypeRegistry registry;
+  std::unordered_map<std::string, std::unique_ptr<Session>> sessions_by_path;
+  std::unordered_map<std::string, Session*> sessions_by_name;
+};
+
+void UnitGraph::ParseState::Actions::begin_compilation_unit(
+    std::string_view name, bool is_program) {
+  session.name = UnitGraph::to_lower(name);
+  session.is_program = is_program;
+  auto existing = graph.parse_state_->sessions_by_name.find(session.name);
+  if (existing != graph.parse_state_->sessions_by_name.end() &&
+      existing->second != &session) {
+    report_warning({}, "duplicate unit '" + session.name + "' at " +
+                           session.path.string());
+  } else {
+    graph.parse_state_->sessions_by_name[session.name] = &session;
+  }
+  graph.parse_state_->registry.begin_parsed_unit(session.name);
+  graph.units_.try_emplace(
+      session.name,
+      ParsedUnit{.name = session.name,
+                 .path = session.path,
+                 .ast = nullptr,
+                 .ok = false});
+}
+
+void UnitGraph::ParseState::Actions::import_units(
+    const std::vector<std::string>& imports, bool in_interface) {
+  for (const std::string& imported : imports) {
+    const std::string unit = UnitGraph::to_lower(imported);
+    if (has_runtime_unit_model(unit)) continue;
+    auto existing = graph.parse_state_->sessions_by_name.find(unit);
+    if (existing != graph.parse_state_->sessions_by_name.end()) {
+      if (existing->second->phase == Phase::ParsingInterface) {
+        report_error({}, "interface uses cycle involving `" + session.name +
+                             "` and `" + unit + "`");
+      }
+      continue;
+    }
+    const fs::path dependency = graph.find_unit_path(unit);
+    if (dependency.empty()) {
+      report_error({}, "unresolved unit `" + unit + "` used by `" +
+                           session.name + "`");
+      continue;
+    }
+    graph.parse_recursive(dependency);
+  }
+  graph.parse_state_->registry.set_parsed_unit_imports(
+      session.name, imports, in_interface);
+}
+
+void UnitGraph::ParseState::Actions::parsed_type_section(
+    const std::vector<ast::DeclPtr>& declarations, bool in_interface) {
+  graph.parse_state_->registry.bind_parsed_declarations(
+      session.name, declarations, in_interface);
+}
+
+void UnitGraph::ParseState::Actions::parsed_declaration(
+    const ast::DeclPtr& declaration, bool in_interface) {
+  graph.parse_state_->registry.bind_parsed_declarations(
+      session.name, std::vector<ast::DeclPtr>{declaration}, in_interface);
+}
+
+void UnitGraph::ParseState::Actions::finish_compilation_unit(
+    const ast::UnitNode& unit) {
+  graph.parse_state_->registry.bind_parsed_unit_bodies(unit);
+}
+
+UnitGraph::UnitGraph() : parse_state_(std::make_unique<ParseState>()) {}
+UnitGraph::~UnitGraph() = default;
+
+TypeRegistry& UnitGraph::type_registry() { return parse_state_->registry; }
+const TypeRegistry& UnitGraph::type_registry() const {
+  return parse_state_->registry;
+}
 
 void UnitGraph::add_search_root(fs::path p) { roots_.push_back(std::move(p)); }
 
@@ -88,70 +203,118 @@ int UnitGraph::unit_paths_to_discover(
 }
 
 int UnitGraph::parse_recursive(const fs::path& path) {
+  const std::string path_key =
+      fs::absolute(path).lexically_normal().string();
+  if (auto existing = parse_state_->sessions_by_path.find(path_key);
+      existing != parse_state_->sessions_by_path.end()) {
+    if (existing->second->phase == ParseState::Phase::ParsingInterface) {
+      report_error({}, "interface uses cycle at `" + path.string() + "`");
+      return 1;
+    }
+    return 0;
+  }
+
   auto sf = SourceFile::load(path);
   if (!sf) return 1;
 
   int errs_before = error_count();
-  Lexer lex(std::move(sf), include_paths_);
-  for (const auto& d : defines_) lex.define(d);
-  lex.set_overflow_check_default(overflow_check_default_);
-  lex.set_range_check_default(range_check_default_);
-  Parser parser(lex);
-  auto node = parser.parse();
+  auto session = std::make_unique<ParseState::Session>();
+  session->path = path;
+  session->lexer = std::make_unique<Lexer>(std::move(sf), include_paths_);
+  for (const auto& d : defines_) session->lexer->define(d);
+  session->lexer->set_overflow_check_default(overflow_check_default_);
+  session->lexer->set_range_check_default(range_check_default_);
+  ParseState::Session* active = session.get();
+  session->actions =
+      std::make_unique<ParseState::Actions>(*this, *active);
+  session->parser =
+      std::make_unique<Parser>(*session->lexer, session->actions.get());
+  parse_state_->sessions_by_path.emplace(path_key, std::move(session));
+
+  std::shared_ptr<ast::UnitNode> node;
+  if (active->parser->starts_unit()) {
+    node = active->parser->parse_unit_interface();
+    active->phase = node ? ParseState::Phase::InterfaceReady
+                         : ParseState::Phase::Failed;
+  } else {
+    node = active->parser->parse();
+    active->phase = node ? ParseState::Phase::Complete
+                         : ParseState::Phase::Failed;
+  }
   int errs = error_count() - errs_before;
 
   std::string unit_name = node ? to_lower(node->name) : std::string{};
   if (unit_name.empty()) {
     unit_name = std::string("__prog_") + path.stem().string();
   }
-  const bool parsed_ok = errs == 0 && node != nullptr;
+  active->name = unit_name;
+  active->ast = node;
+  const bool parsed_ok =
+      errs == 0 && node != nullptr &&
+      active->phase == ParseState::Phase::Complete;
   ParsedUnit pu{.name = std::move(unit_name),
                 .path = path,
-                .ast = std::move(node),
+                .ast = node,
                 .ok = parsed_ok};
 
   auto it = units_.find(pu.name);
   if (it != units_.end()) {
-    if (it->second.path != pu.path) {
+    if (!it->second.path.empty() && it->second.path != pu.path) {
       report_warning(pu.ast ? pu.ast->loc : Location{},
                      "duplicate unit '" + pu.name + "' at " +
                          path.string() + " (first seen at " +
                          it->second.path.string() + ")");
     }
+    it->second.path = pu.path;
+    it->second.ast = pu.ast;
+    it->second.ok = pu.ok;
     return errs > 0 ? errs : 0;
   }
 
   std::string key = pu.name;
   units_.emplace(key, std::move(pu));
-  int errors = errs > 0 ? errs : 0;
-  auto key_it = units_.find(key);
-  if (key_it == units_.end() || !key_it->second.ok || !key_it->second.ast) {
-    return errors > 0 ? errors : 1;
-  }
+  return errs > 0 ? errs : 0;
+}
 
-  std::vector<fs::path> deps;
-  errors += unit_paths_to_discover(
-      *key_it->second.ast, key_it->second.ast->interface_uses, &deps);
-  for (const auto& dep_path : deps) {
-    errors += parse_recursive(dep_path);
+int UnitGraph::parse_pending_implementations() {
+  int errors_before = error_count();
+  for (;;) {
+    ParseState::Session* pending = nullptr;
+    for (auto& [_, session] : parse_state_->sessions_by_path) {
+      if (session->phase == ParseState::Phase::InterfaceReady) {
+        pending = session.get();
+        break;
+      }
+    }
+    if (!pending) break;
+    std::shared_ptr<ast::UnitNode> node =
+        pending->parser->parse_unit_implementation();
+    pending->ast = node;
+    pending->phase = node ? ParseState::Phase::Complete
+                          : ParseState::Phase::Failed;
+    auto found = units_.find(pending->name);
+    if (found != units_.end()) {
+      found->second.ast = node;
+      found->second.ok = node != nullptr;
+    }
   }
-  deps.clear();
-  errors += unit_paths_to_discover(
-      *key_it->second.ast, key_it->second.ast->impl_uses, &deps);
-  for (const auto& dep_path : deps) {
-    errors += parse_recursive(dep_path);
-  }
-  return errors;
+  return error_count() - errors_before;
 }
 
 int UnitGraph::discover_from_entry(fs::path entry_path) {
   units_.clear();
+  parse_state_ = std::make_unique<ParseState>();
   unit_path_index_.clear();
   unit_path_index_ready_ = false;
   if (!entry_path.is_absolute()) entry_path = fs::absolute(entry_path);
   current_dir_ = fs::current_path();
   entry_dir_ = entry_path.parent_path();
-  return parse_recursive(entry_path);
+  int errors = parse_recursive(entry_path);
+  errors += parse_pending_implementations();
+  for (auto& [_, unit] : units_) {
+    unit.ok = unit.ast != nullptr;
+  }
+  return errors;
 }
 
 void UnitGraph::add_topo_dependency(

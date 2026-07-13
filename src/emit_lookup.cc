@@ -44,7 +44,7 @@ static ResolveResult resolved_value(ResolvedKind kind, std::string cxx) {
 static ResolveResult zero_arg_callable(ResolvedKind kind, std::string cxx) {
   return ResolveResult::callable(kind, std::move(cxx),
                                  /*is_parameterless=*/true, nullptr,
-                                 /*accepts_zero_args=*/true, {}, {});
+                                 /*accepts_zero_args=*/true, {});
 }
 
 static std::optional<ResolveResult> resolve_proc_overloads(
@@ -54,12 +54,11 @@ static std::optional<ResolveResult> resolve_proc_overloads(
     return ResolveResult::callable(kind, std::move(cxx),
                                    proc->param_count == 0, proc->decl.get(),
                                    /*accepts_zero_args=*/true,
-                                   proc->return_type_name,
                                    proc->defining_unit);
   }
   return ResolveResult::callable(kind, std::move(cxx),
                                  /*is_parameterless=*/false, nullptr,
-                                 /*accepts_zero_args=*/false, {}, {});
+                                 /*accepts_zero_args=*/false, {});
 }
 
 static std::optional<ResolveResult> resolve_method_overloads(
@@ -69,18 +68,16 @@ static std::optional<ResolveResult> resolve_method_overloads(
     return ResolveResult::callable(kind, std::move(cxx),
                                    method->param_count == 0,
                                    method->decl.get(),
-                                   /*accepts_zero_args=*/true, {},
-                                   method->defining_unit,
-                                   method->declaring_type);
+                                   /*accepts_zero_args=*/true,
+                                   method->defining_unit);
   }
   return ResolveResult::callable(kind, std::move(cxx),
                                  /*is_parameterless=*/false, nullptr,
-                                 /*accepts_zero_args=*/false, {}, {});
+                                 /*accepts_zero_args=*/false, {});
 }
 
 static std::optional<ResolveResult> resolve_nested_overloads(
-    const std::vector<ScopeStateView::NestedFn>& overloads,
-    std::string_view current_unit_name) {
+    const std::vector<ScopeStateView::NestedFn>& overloads) {
   if (overloads.empty()) return std::nullopt;
   const ScopeStateView::NestedFn* zero_arg = nullptr;
   for (const auto& overload : overloads) {
@@ -89,20 +86,19 @@ static std::optional<ResolveResult> resolve_nested_overloads(
       return ResolveResult::callable(
           ResolvedKind::NestedFn, overloads.front().cxx_name,
           /*is_parameterless=*/false, nullptr,
-          /*accepts_zero_args=*/false, {}, {});
+          /*accepts_zero_args=*/false, {});
     }
     zero_arg = &overload;
   }
   if (zero_arg) {
     return ResolveResult::callable(
         ResolvedKind::NestedFn, zero_arg->cxx_name, zero_arg->param_count == 0,
-        zero_arg->decl, zero_arg->accepts_zero_args, {},
-        std::string(current_unit_name));
+        zero_arg->decl, zero_arg->accepts_zero_args, {});
   }
   return ResolveResult::callable(
       ResolvedKind::NestedFn, overloads.front().cxx_name,
       /*is_parameterless=*/false, nullptr,
-      /*accepts_zero_args=*/false, {}, {});
+      /*accepts_zero_args=*/false, {});
 }
 
 EmitLookup::EmitLookup(const TypeRegistry& registry, ScopeStateView& scope,
@@ -112,10 +108,25 @@ EmitLookup::EmitLookup(const TypeRegistry& registry, ScopeStateView& scope,
       analysis_(analysis),
       properties_(properties) {}
 
+ResolveResult EmitLookup::resolve_class_member(const ClassInfo& class_info,
+                                               const std::string& name) {
+  const std::string member_cxx = mangle(name);
+  if (auto result = resolve_method_overloads(
+          registry_.lookup_class_methods(class_info, name),
+          ResolvedKind::ClassMethod, member_cxx)) {
+    return *result;
+  }
+  if (registry_.lookup_class_field(class_info, name)) {
+    return resolved_value(ResolvedKind::ClassField,
+                          registry_.field_cxx_name(name));
+  }
+  return resolved_value(ResolvedKind::Unknown, member_cxx);
+}
+
 ResolveResult EmitLookup::resolve_name(const std::string& name,
                                        QualifierKind qk,
                                        const std::string& qualifier) {
-  // ----- Qualified lookups first: `Unit.name` / `Class.name`. -----
+  // ----- Qualified unit lookup: `Unit.name`. -----
   if (qk == QualifierKind::Unit) {
     const std::string unit_cxx = unit_namespace_prefix(qualifier) + mangle(name);
     auto uit = registry_.units.find(qualifier);
@@ -137,28 +148,9 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         if (own_unit ? u.has_enum_member(name) : u.has_export_enum_member(name)) {
           return resolved_value(ResolvedKind::EnumMember, unit_cxx);
         }
-        if (own_unit ? u.has_type(name) : u.has_export_type(name)) {
-          return resolved_value(ResolvedKind::UnitType, unit_cxx);
-        }
     }
     return resolved_value(ResolvedKind::Unknown, {});
   }
-  if (qk == QualifierKind::Class) {
-    const std::string member_cxx = mangle(name);
-    if (auto result = resolve_method_overloads(
-            registry_.lookup_class_methods(qualifier, name,
-                                           scope_.current_unit_name),
-            ResolvedKind::ClassMethod, member_cxx)) {
-      return *result;
-    }
-    if (registry_.lookup_class_field(
-            qualifier, name, scope_.current_unit_name)) {
-      return resolved_value(ResolvedKind::ClassField,
-                            registry_.field_cxx_name(name));
-    }
-    return resolved_value(ResolvedKind::Unknown, member_cxx);
-  }
-
   // ----- Unqualified lookup. -----
 
   // 1. Function-name-as-read inside its own body -> the implicit Pascal
@@ -181,9 +173,12 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   //    class (walking ancestors) shadow outer scopes.
   for (auto it = scope_.with_stack.rbegin(); it != scope_.with_stack.rend();
        ++it) {
-      const std::string& cls = it->class_name;
       const std::string& access = it->access_op;
-      const ClassInfo* ci = analysis_.migration_fallback_class_info_by_name(cls);
+      const TypeSymbol* with_symbol = it->class_symbol;
+      const ClassInfo* ci =
+          with_symbol ? with_symbol->class_info() : nullptr;
+      const InterfaceInfo* iface =
+          with_symbol ? with_symbol->interface_info() : nullptr;
       if (ci && ci->is_reference_type &&
           (name == "classtype" || name == "instancesize")) {
         return zero_arg_callable(ResolvedKind::WithMethod,
@@ -199,16 +194,17 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
         return resolved_value(ResolvedKind::WithMethod,
                               "::rt::t_tobject::p_free(" + it->cxx_text + ")");
       }
-      if (!cls.empty()) {
+      if (ci || iface) {
+        const std::vector<MethodSig>* methods =
+            ci ? registry_.lookup_class_methods(*ci, name)
+               : registry_.lookup_interface_methods(*iface, name);
         if (auto result = resolve_method_overloads(
-                registry_.lookup_class_methods(cls, name,
-                                               scope_.current_unit_name),
+                methods,
                 ResolvedKind::WithMethod,
                 it->cxx_text + access + mangle(name))) {
           return *result;
         }
-        if (registry_.lookup_class_field(
-                cls, name, scope_.current_unit_name)) {
+        if (ci && registry_.lookup_class_field(*ci, name)) {
           return resolved_value(ResolvedKind::WithField,
                                 it->cxx_text + access +
                                     registry_.field_cxx_name(name));
@@ -237,8 +233,7 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   {
     auto nit = scope_.local_nested_fns.find(name);
     if (nit != scope_.local_nested_fns.end()) {
-      if (auto resolved =
-              resolve_nested_overloads(nit->second, scope_.current_unit_name)) {
+      if (auto resolved = resolve_nested_overloads(nit->second)) {
         return *resolved;
       }
     }
@@ -251,45 +246,32 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   if (scope_.local_consts.count(name)) {
     return resolved_value(ResolvedKind::Local, mangle(name));
   }
-  const std::string low_name = ascii_lower(name);
-  for (const TypeLookupContext* frame = scope_.type_scope; frame;
-       frame = frame->parent) {
-    for (const auto& [_, symbol] : frame->type_symbols) {
-      if (!symbol) continue;
-      const EnumInfoReg* info = symbol->enum_info();
-      if (!info || !info->type) continue;
-      for (const auto& member : info->type->members) {
-        if (ascii_lower(member.name) == low_name) {
-          return resolved_value(ResolvedKind::EnumMember, mangle(name));
-        }
-      }
-    }
+  if (local_enum_info_for_member(scope_, name)) {
+    return resolved_value(ResolvedKind::EnumMember, mangle(name));
   }
   if (auto prop = properties_.maybe_resolve_implicit_property(name)) {
     return *prop;
   }
 
   // 5. Current class's members (chain).
-  if (!scope_.current_class_name.empty()) {
-    if (const auto* ci =
-            analysis_.migration_fallback_class_info_by_name(scope_.current_class_name);
-        ci && ci->is_reference_type &&
+  const TypeSymbol* current_symbol = scope_.current_class_symbol;
+  const ClassInfo* current_class =
+      current_symbol ? current_symbol->class_info() : nullptr;
+  if (current_class) {
+    if (current_class->is_reference_type &&
         (name == "classtype" || name == "instancesize")) {
       return zero_arg_callable(ResolvedKind::ClassMethod, mangle(name));
     }
     if (auto result = resolve_method_overloads(
-            registry_.lookup_class_methods(scope_.current_class_name, name,
-                                           scope_.current_unit_name),
+            registry_.lookup_class_methods(*current_class, name),
             ResolvedKind::ClassMethod, mangle(name))) {
       return *result;
     }
-    if (registry_.lookup_class_field(scope_.current_class_name, name,
-                                     scope_.current_unit_name)) {
+    if (registry_.lookup_class_field(*current_class, name)) {
       return resolved_value(ResolvedKind::ClassField,
                             registry_.field_cxx_name(name));
     }
-    if (registry_.class_has_enum_member(scope_.current_class_name, name,
-                                        scope_.current_unit_name)) {
+    if (registry_.class_has_enum_member(*current_class, name)) {
       return resolved_value(ResolvedKind::EnumMember, mangle(name));
     }
   }
@@ -323,9 +305,6 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     }
     if (scope_frame_has_enum_member(*frame, name)) {
       return resolved_value(ResolvedKind::EnumMember, prefix + mangle(name));
-    }
-    if (scope_frame_has_type(*frame, name)) {
-      return resolved_value(ResolvedKind::UnitType, prefix + mangle(name));
     }
   }
 

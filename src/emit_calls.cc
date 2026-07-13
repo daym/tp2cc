@@ -440,13 +440,6 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
         return expr_ops_.expr_to_cxx(arg);
       }
       if (storage->is_bytewise()) {
-        if (auto view = storage_.typecast_storage_view(arg);
-            view && view->target_is_primitive) {
-          expr_ops_.report_error(
-              arg.loc,
-              "primitive storage typecast cannot be passed to var/out parameter");
-          return expr_ops_.expr_to_cxx(arg);
-        }
         if (storage->type_cxx.empty()) {
           expr_ops_.report_error(
               arg.loc, "typed var/out argument requires a resolved storage type");
@@ -459,15 +452,15 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
             view_type_cxx = std::move(formal_cxx);
           }
         }
-        return storage_.storage_designator_typed_view_lvalue(*storage,
-                                                             view_type_cxx);
+        return storage_.storage_designator_typed_lvalue(*storage,
+                                                        view_type_cxx);
       }
       if (is_plain_pascal_pointer_type(analysis_, arg_type) &&
           is_typed_pascal_pointer_type(analysis_, canon_param_type)) {
         if (std::string formal_cxx = types_.type_to_cxx(*param_type);
             !formal_cxx.empty()) {
-          return storage_.storage_designator_typed_view_lvalue(*storage,
-                                                               formal_cxx);
+          return storage_.storage_designator_typed_lvalue(*storage,
+                                                          formal_cxx);
         }
       }
     }
@@ -500,7 +493,8 @@ std::string EmitCalls::lower_call_arg(const Expr& arg, const TypeExpr* param_typ
     if (auto conv = resolution_.find_assignment_operator(
             arg_type, param_type, effective_param_context);
         conv.decl) {
-      std::string fn = pascal_assignment_operator_helper_name(*conv.decl);
+      std::string fn =
+          pascal_assignment_operator_helper_name(registry_, *conv.decl);
       if (!conv.defining_unit.empty()) {
         fn = unit_namespace_prefix(conv.defining_unit) + fn;
       }
@@ -599,7 +593,7 @@ std::optional<std::string> EmitCalls::maybe_lower_class_free_member(
 std::optional<std::string> EmitCalls::maybe_lower_class_constructor_call(
     Location where, const TypeSymbol& class_symbol, std::string_view member_name,
     const CallArgumentPlan& plan, const ProcDecl* selected_decl) {
-  const TypeSymbol* symbol = descriptor_payload_symbol(&class_symbol);
+  const TypeSymbol* symbol = &class_symbol;
   const ClassInfo* ci = symbol ? symbol->class_info() : nullptr;
   if (!ci || !ci->is_reference_type) {
     return std::nullopt;

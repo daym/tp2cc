@@ -194,7 +194,8 @@ ast::ProcModifiers Parser::external_proc_modifier(
 // ---------------------------------------------------------------------------
 // Token stream plumbing
 
-Parser::Parser(Lexer& lex) : lex_(lex) {
+Parser::Parser(Lexer& lex, ParserSemanticActions* semantic_actions)
+    : lex_(lex), semantic_actions_(semantic_actions) {
   cur_ = lex_.next();
 }
 
@@ -310,7 +311,10 @@ PropertyDecl::Accessor Parser::parse_property_accessor_path(const char* ctx) {
 // Entry
 
 std::shared_ptr<UnitNode> Parser::parse() {
-  if (cur_.kind == Tok::KwUnit) return parse_unit();
+  if (cur_.kind == Tok::KwUnit) {
+    if (!parse_unit_interface()) return nullptr;
+    return parse_unit_implementation();
+  }
   if (cur_.kind == Tok::KwProgram) return parse_program();
   // Some sources are `.inc` files or program-body-only; treat as program
   // without a header.
@@ -332,6 +336,9 @@ std::shared_ptr<UnitNode> Parser::parse_program() {
   Location loc = cur_.loc;
   expect(Tok::KwProgram, "program header");
   std::string name = consume_name_or_directive("program name");
+  if (semantic_actions_) {
+    semantic_actions_->begin_compilation_unit(name, /*is_program=*/true);
+  }
   // Optional program parameter list: program foo(input, output);
   if (accept(Tok::LParen)) {
     while (!at_end() && !check(Tok::RParen)) {
@@ -348,6 +355,9 @@ std::shared_ptr<UnitNode> Parser::parse_program() {
     impl_uses = parse_uses_clause();
     expect(Tok::Semi, "uses clause");
   }
+  if (semantic_actions_) {
+    semantic_actions_->import_units(impl_uses, /*in_interface=*/false);
+  }
   std::vector<DeclPtr> impl_decls =
       parse_decl_block(/*in_interface=*/false);
   // Main body.
@@ -356,17 +366,28 @@ std::shared_ptr<UnitNode> Parser::parse_program() {
     init_body = parse_compound_statement();
   }
   expect(Tok::Dot, "program tail");
-  return std::make_shared<UnitNode>(
+  auto program = std::make_shared<UnitNode>(
       loc, std::move(name), std::vector<std::string>{}, std::vector<DeclPtr>{},
       std::move(impl_uses), std::move(impl_decls), std::move(init_body),
       nullptr, true);
+  if (semantic_actions_) semantic_actions_->finish_compilation_unit(*program);
+  return program;
 }
 
 std::shared_ptr<UnitNode> Parser::parse_unit() {
+  if (!parse_unit_interface()) return nullptr;
+  return parse_unit_implementation();
+}
+
+std::shared_ptr<UnitNode> Parser::parse_unit_interface() {
+  if (partial_unit_) return partial_unit_;
   Location loc = cur_.loc;
   expect(Tok::KwUnit, "unit header");
   std::string name = consume_name_or_directive("unit name");
   expect(Tok::Semi, "unit header");
+  if (semantic_actions_) {
+    semantic_actions_->begin_compilation_unit(name, /*is_program=*/false);
+  }
 
   expect(Tok::KwInterface, "unit interface");
   std::vector<std::string> interface_uses;
@@ -375,15 +396,30 @@ std::shared_ptr<UnitNode> Parser::parse_unit() {
     interface_uses = parse_uses_clause();
     expect(Tok::Semi, "interface uses");
   }
+  if (semantic_actions_) {
+    semantic_actions_->import_units(interface_uses, /*in_interface=*/true);
+  }
   std::vector<DeclPtr> interface_decls =
       parse_decl_block(/*in_interface=*/true);
 
   expect(Tok::KwImplementation, "unit implementation");
+  partial_unit_ = std::make_shared<UnitNode>(
+      loc, std::move(name), std::move(interface_uses),
+      std::move(interface_decls), std::vector<std::string>{},
+      std::vector<DeclPtr>{}, nullptr, nullptr, false);
+  return partial_unit_;
+}
+
+std::shared_ptr<UnitNode> Parser::parse_unit_implementation() {
+  if (!partial_unit_) return nullptr;
   std::vector<std::string> impl_uses;
   if (check(Tok::KwUses)) {
     advance();
     impl_uses = parse_uses_clause();
     expect(Tok::Semi, "implementation uses");
+  }
+  if (semantic_actions_) {
+    semantic_actions_->import_units(impl_uses, /*in_interface=*/false);
   }
   std::vector<DeclPtr> impl_decls =
       parse_decl_block(/*in_interface=*/false);
@@ -409,11 +445,14 @@ std::shared_ptr<UnitNode> Parser::parse_unit() {
   } else {
     expect(Tok::KwEnd, "unit tail");
   }
-  return std::make_shared<UnitNode>(
-      loc, std::move(name), std::move(interface_uses),
-      std::move(interface_decls), std::move(impl_uses),
-      std::move(impl_decls), std::move(init_body), std::move(final_body),
-      false);
+  partial_unit_->impl_uses = std::move(impl_uses);
+  partial_unit_->impl_decls = std::move(impl_decls);
+  partial_unit_->init_body = std::move(init_body);
+  partial_unit_->final_body = std::move(final_body);
+  if (semantic_actions_) {
+    semantic_actions_->finish_compilation_unit(*partial_unit_);
+  }
+  return partial_unit_;
 }
 
 std::vector<std::string> Parser::parse_uses_clause() {
@@ -448,30 +487,55 @@ StmtPtr Parser::parse_statement_block_until(std::initializer_list<Tok> stops) {
 // ---------------------------------------------------------------------------
 // Decl block
 
+void Parser::note_parsed_declaration(const DeclPtr& declaration,
+                                     bool in_interface) {
+  if (semantic_actions_ && decl_block_depth_ == 1 && declaration) {
+    semantic_actions_->parsed_declaration(declaration, in_interface);
+  }
+}
+
 std::vector<DeclPtr> Parser::parse_decl_block(bool in_interface) {
+  struct DepthGuard {
+    size_t& depth;
+    explicit DepthGuard(size_t& depth_in) : depth(depth_in) { ++depth; }
+    ~DepthGuard() { --depth; }
+  } depth_guard(decl_block_depth_);
+
   std::vector<DeclPtr> out;
   for (;;) {
     switch (cur_.kind) {
       case Tok::KwConst: {
         auto section = parse_const_section();
+        for (const auto& declaration : section) {
+          note_parsed_declaration(declaration, in_interface);
+        }
         out.insert(out.end(), std::make_move_iterator(section.begin()),
                    std::make_move_iterator(section.end()));
         break;
       }
       case Tok::KwType: {
         auto section = parse_type_section();
+        if (semantic_actions_ && decl_block_depth_ == 1) {
+          semantic_actions_->parsed_type_section(section, in_interface);
+        }
         out.insert(out.end(), std::make_move_iterator(section.begin()),
                    std::make_move_iterator(section.end()));
         break;
       }
       case Tok::KwVar: {
         auto section = parse_var_section();
+        for (const auto& declaration : section) {
+          note_parsed_declaration(declaration, in_interface);
+        }
         out.insert(out.end(), std::make_move_iterator(section.begin()),
                    std::make_move_iterator(section.end()));
         break;
       }
       case Tok::KwLabel: {
         auto section = parse_label_section();
+        for (const auto& declaration : section) {
+          note_parsed_declaration(declaration, in_interface);
+        }
         out.insert(out.end(), std::make_move_iterator(section.begin()),
                    std::make_move_iterator(section.end()));
         break;
@@ -480,19 +544,28 @@ std::vector<DeclPtr> Parser::parse_decl_block(bool in_interface) {
         auto d = parse_proc_decl(ProcKind::Procedure, in_interface,
                                  /*is_class_method=*/false,
                                  /*in_type_member=*/false);
-        if (d) out.push_back(std::move(d));
+        if (d) {
+          note_parsed_declaration(d, in_interface);
+          out.push_back(std::move(d));
+        }
         break;
       }
       case Tok::KwFunction: {
         auto d = parse_proc_decl(ProcKind::Function, in_interface,
                                  /*is_class_method=*/false,
                                  /*in_type_member=*/false);
-        if (d) out.push_back(std::move(d));
+        if (d) {
+          note_parsed_declaration(d, in_interface);
+          out.push_back(std::move(d));
+        }
         break;
       }
       case Tok::KwOperator: {
         auto d = parse_operator_decl(in_interface);
-        if (d) out.push_back(std::move(d));
+        if (d) {
+          note_parsed_declaration(d, in_interface);
+          out.push_back(std::move(d));
+        }
         break;
       }
       case Tok::KwClass: {
@@ -508,7 +581,10 @@ std::vector<DeclPtr> Parser::parse_decl_block(bool in_interface) {
         else if (check(Tok::KwDestructor)) pk = ProcKind::Destructor;
         auto d = parse_proc_decl(pk, in_interface, /*is_class_method=*/true,
                                  /*in_type_member=*/false);
-        if (d) out.push_back(std::move(d));
+        if (d) {
+          note_parsed_declaration(d, in_interface);
+          out.push_back(std::move(d));
+        }
         break;
       }
       case Tok::KwConstructor:
@@ -518,7 +594,10 @@ std::vector<DeclPtr> Parser::parse_decl_block(bool in_interface) {
         auto d = parse_proc_decl(pk, in_interface,
                                  /*is_class_method=*/false,
                                  /*in_type_member=*/false);
-        if (d) out.push_back(std::move(d));
+        if (d) {
+          note_parsed_declaration(d, in_interface);
+          out.push_back(std::move(d));
+        }
         break;
       }
       default:
@@ -627,20 +706,25 @@ ast::ExprPtr Parser::parse_const_value(const TypeExpr* target) {
 std::vector<DeclPtr> Parser::parse_type_section() {
   std::vector<DeclPtr> out;
   expect(Tok::KwType, "type section");
+  const size_t type_section_id = next_type_section_id_++;
   while (check(Tok::Ident)) {
-    out.push_back(parse_type_decl_from_current_ident("type decl"));
+    out.push_back(
+        parse_type_decl_from_current_ident("type decl", type_section_id));
   }
   return out;
 }
 
 std::shared_ptr<TypeDecl> Parser::parse_type_decl_from_current_ident(
-    const char* ctx) {
+    const char* ctx, size_t type_section_id) {
   Location loc = cur_.loc;
   std::string name = consume_ident(ctx);
   expect(Tok::Eq, ctx);
   TypePtr type = parse_type();
   expect(Tok::Semi, ctx);
-  return std::make_shared<TypeDecl>(loc, std::move(name), std::move(type));
+  auto declaration =
+      std::make_shared<TypeDecl>(loc, std::move(name), std::move(type));
+  declaration->type_section_id = type_section_id;
+  return declaration;
 }
 
 std::vector<DeclPtr> Parser::parse_var_section() {
@@ -1081,10 +1165,8 @@ TypePtr Parser::parse_type() {
   if (accept(Tok::Caret)) {
     return std::make_shared<TyPointer>(loc, parse_type());
   }
-  // Treat this spelling as an alias until the dormant TyDistinct AST
-  // model has complete assignment, overload, storage, and range semantics.
   if (accept(Tok::KwType)) {
-    return parse_type();
+    return std::make_shared<TyDistinct>(loc, parse_type());
   }
   bool packed = false;
   if (accept(Tok::KwPacked)) packed = true;
@@ -1270,9 +1352,11 @@ TypePtr Parser::parse_record_type(bool packed) {
   expect(Tok::KwRecord, "record");
   std::vector<RecordField> fields;
   std::vector<std::shared_ptr<TypeDecl>> nested_types;
+  std::vector<RecordMember> member_order;
 
   enum class MemberBlock { General, Type };
   MemberBlock member_block = MemberBlock::General;
+  size_t type_section_id = 0;
   while (!at_end() && !check(Tok::KwEnd) && !check(Tok::KwCase)) {
     // Delphi/FPC nested type sections are not terminated by `Ident :`.
     // Once `type' is seen, ordinary identifiers keep starting type
@@ -1280,6 +1364,7 @@ TypePtr Parser::parse_record_type(bool packed) {
     // returns control to the containing record/class member parser.
     if (accept(Tok::KwType)) {
       member_block = MemberBlock::Type;
+      type_section_id = next_type_section_id_++;
       continue;
     }
     if (accept(Tok::KwVar)) {
@@ -1301,8 +1386,10 @@ TypePtr Parser::parse_record_type(bool packed) {
     if (cur_.kind != Tok::Ident) break;
     if (member_block == MemberBlock::Type &&
         !identifier_ends_nested_type_block()) {
+      size_t index = nested_types.size();
       nested_types.push_back(parse_type_decl_from_current_ident(
-          "nested record type decl"));
+          "nested record type decl", type_section_id));
+      member_order.emplace_back(RecordMemberKind::Type, index);
       continue;
     }
     std::vector<std::string> names;
@@ -1314,7 +1401,9 @@ TypePtr Parser::parse_record_type(bool packed) {
       advance();
     }
     expect(Tok::Colon, "record field");
+    size_t index = fields.size();
     fields.emplace_back(std::move(names), parse_type());
+    member_order.emplace_back(RecordMemberKind::Field, index);
     if (!accept(Tok::Semi)) break;
   }
 
@@ -1322,8 +1411,8 @@ TypePtr Parser::parse_record_type(bool packed) {
 
   expect(Tok::KwEnd, "record");
   return std::make_shared<TyRecord>(
-      loc, std::move(fields), std::move(nested_types), std::move(vpart),
-      packed);
+      loc, std::move(fields), std::move(nested_types), std::move(member_order),
+      std::move(vpart), packed);
 }
 
 TypePtr Parser::parse_object_type() {
@@ -1372,6 +1461,7 @@ TypePtr Parser::parse_object_type() {
   bool class_var_section = false;
   enum class MemberBlock { General, Type };
   MemberBlock member_block = MemberBlock::General;
+  size_t type_section_id = 0;
   std::vector<ObjectMember> members;
   while (!at_end() && !check(Tok::KwEnd)) {
     // visibility change
@@ -1427,6 +1517,7 @@ TypePtr Parser::parse_object_type() {
     if (accept(Tok::KwType)) {
       class_var_section = false;
       member_block = MemberBlock::Type;
+      type_section_id = next_type_section_id_++;
       continue;
     }
     if (accept(Tok::KwVar)) {
@@ -1442,7 +1533,8 @@ TypePtr Parser::parse_object_type() {
       Location member_loc = cur_.loc;
       members.emplace_back(
           member_loc, vis,
-          parse_type_decl_from_current_ident("nested object type decl"));
+          parse_type_decl_from_current_ident("nested object type decl",
+                                             type_section_id));
       continue;
     }
 

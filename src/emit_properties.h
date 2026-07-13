@@ -33,13 +33,11 @@ class EmitProperties {
 
   std::string lower_property_read(Location where, const std::string& base_cxx,
                                   std::string_view base_access,
-                                  const std::string& class_name,
                                   const PropertyInfo& prop,
                                   const std::vector<const ast::Expr*>& indices);
   std::string lower_property_write(
       Location where, const std::string& base_cxx,
-      std::string_view base_access,
-      const std::string& class_name, const PropertyInfo& prop,
+      std::string_view base_access, const PropertyInfo& prop,
       const std::vector<const ast::Expr*>& indices, const ast::Expr& value);
 
   std::optional<ResolveResult> maybe_resolve_implicit_property(
@@ -50,11 +48,9 @@ class EmitProperties {
  private:
   std::optional<std::string> maybe_property_read_text(
       const std::string& base_cxx, std::string_view base_access,
-      const std::string& class_name,
       const PropertyInfo& prop, const std::vector<const ast::Expr*>& indices);
   std::optional<std::string> maybe_property_write_text(
       const std::string& base_cxx, std::string_view base_access,
-      const std::string& class_name,
       const PropertyInfo& prop, const std::vector<const ast::Expr*>& indices,
       const ast::Expr& value);
 

@@ -1019,9 +1019,8 @@ Token Lexer::scan_identifier_or_keyword() {
   while (!at_eof_of_current() && is_ident_cont(peek())) {
     text.push_back(get());
   }
-  // Pascal identifiers are case-insensitive; keep lowercase for comparison
-  // but keep original for emission? We'll lowercase -- emitter will preserve
-  // casing by looking up a canonical form. For now, lowercase.
+  // Pascal identifiers are case-insensitive. The lexer is the raw-source
+  // boundary, so later semantic tables only see canonical lowercase names.
   std::string key = lower(text);
   auto it = keywords_.find(key);
   if (it != keywords_.end()) {

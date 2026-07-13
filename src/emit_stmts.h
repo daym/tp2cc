@@ -18,6 +18,7 @@ class EmitProperties;
 class EmitResolution;
 class EmitStorage;
 class EmitTypes;
+struct ClassInfo;
 struct MethodSig;
 struct TypeRegistry;
 
@@ -58,21 +59,19 @@ class EmitStmts {
  private:
   enum class ForInEmitResult { NotMatched, Emitted, Error };
 
+  struct ForInTypeRhs {
+    const TypeSymbol* symbol = nullptr;
+  };
+
   struct ForInEnumeratorProvider {
     std::string value_cxx;
     const ast::TypeExpr* type = nullptr;
     const MethodSig* method = nullptr;
-    // A class-scoped GetEnumerator can return a nested class by bare name.
-    // Keep the provider owner so return-type lookup does not fall back to an
-    // unrelated unit-level type with the same spelling.
-    std::string owner_class_name;
     Location loc;
     ForInEnumeratorProvider(std::string value_cxx_in,
-                            const ast::TypeExpr* type_in, Location loc_in,
-                            std::string owner_class_name_in = {})
+                            const ast::TypeExpr* type_in, Location loc_in)
         : value_cxx(std::move(value_cxx_in)),
           type(type_in),
-          owner_class_name(std::move(owner_class_name_in)),
           loc(loc_in) {}
   };
 
@@ -109,16 +108,15 @@ class EmitStmts {
   const ast::TypeExpr* procedural_designator_type(const ast::Expr& expr);
   const ast::TypeExpr* selected_value_type(const ast::Expr& expr);
   const ast::TypeExpr* with_receiver_type(const ast::Expr& expr);
-  std::string value_class_alias(const ast::Expr& expr);
+  const TypeSymbol* value_class_symbol(const ast::Expr& expr);
+  const ClassInfo* value_class_info(const ast::Expr& expr);
   std::string value_receiver_access_op(const ast::Expr& expr);
-  std::optional<std::string> for_in_type_rhs_name(const ast::Expr& e);
-  std::string for_in_class_type_name(
-      const ast::TypeExpr* type,
-      std::string_view owner_class_name = std::string_view{},
-      const MethodSig* method = nullptr);
+  std::optional<ForInTypeRhs> for_in_type_rhs(const ast::Expr& e);
+  const TypeSymbol* for_in_class_symbol(const ast::TypeExpr* type);
   const MethodSig* for_in_zero_arg_method(Location loc,
-                                          const std::string& class_name,
-                                          const std::string& method_name);
+                                          const TypeSymbol& class_symbol,
+                                          std::string_view method_key,
+                                          std::string_view display_name);
   std::string case_selector_expr(const ast::Expr& e);
   std::string case_binary_condition(const ast::ExprPtr& selector_expr,
                                     ast::BinOp op, const ast::Expr& rhs);

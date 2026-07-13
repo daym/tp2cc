@@ -14,9 +14,11 @@
 
 namespace tp2cc {
 
+struct ClassInfo;
 struct ProcInfo;
 struct PrimitiveInfo;
 struct TypeRegistry;
+struct TypeSymbol;
 
 struct AssignmentOperatorResult {
   const ast::ProcDecl* decl = nullptr;
@@ -53,6 +55,7 @@ struct MethodValueBinding {
 
   Kind kind;
   const ast::ProcDecl* decl = nullptr;
+  const TypeSymbol* owner_symbol = nullptr;
   std::string class_name;
   const ast::Expr* member_base = nullptr;
   int distance = 0;
@@ -61,19 +64,24 @@ struct MethodValueBinding {
   const ast::ProcDecl& matching_decl() const { return *decl; }
 
   static MethodValueBinding via_self(const ast::ProcDecl* decl,
+                                     const TypeSymbol* owner_symbol,
                                      std::string class_name,
                                      int distance = 0) {
-    return {Kind::Bound, decl, std::move(class_name), nullptr, distance};
+    return {Kind::Bound, decl, owner_symbol, std::move(class_name), nullptr,
+            distance};
   }
   static MethodValueBinding via_member(const ast::ProcDecl* decl,
+                                       const TypeSymbol* owner_symbol,
                                        std::string class_name,
                                        const ast::Expr* base,
                                        int distance = 0) {
-    return {Kind::Bound, decl, std::move(class_name), base, distance};
+    return {Kind::Bound, decl, owner_symbol, std::move(class_name), base,
+            distance};
   }
   static MethodValueBinding signature_mismatch(std::string class_name,
                                                const ast::Expr* base) {
-    return {Kind::SignatureMismatch, nullptr, std::move(class_name), base, 0};
+    return {Kind::SignatureMismatch, nullptr, nullptr, std::move(class_name),
+            base, 0};
   }
 };
 
@@ -135,9 +143,12 @@ class EmitResolution {
 
   // Pascal `operator :=' is a conversion operator. C++ has no namespace-scope
   // assignment operator, so emit sites that know a source and destination type
-  // ask for the matching helper ProcDecl explicitly.
+  // ask for the matching helper ProcDecl explicitly. The destination context
+  // is the formal's declaration scope; dropping it would make validation and
+  // lowering answer the conversion question in different Pascal scopes.
   AssignmentOperatorResult find_assignment_operator(
-      const ast::TypeExpr* source, const ast::TypeExpr* target);
+      const ast::TypeExpr* source, const ast::TypeExpr* target,
+      const TypeLookupContext* target_context = nullptr);
 
   // Resolve a method-value expression against a `procedure of object` target.
   // Pascal admits `@method`, a bare method name, or `receiver.method` here.
@@ -151,6 +162,7 @@ class EmitResolution {
       bool allow_pointer_carrier_adapters = false);
   bool procedural_types_match(const ast::TyProcedural& source,
                               const ast::TyProcedural& target);
+  const TypeSymbol* value_receiver_type_symbol(const ast::Expr& e);
 
  private:
   // One row in a callable-name lookup result. `decl` is null only for
@@ -163,7 +175,8 @@ class EmitResolution {
     std::string callee_unit;       // nonempty for namespace-spelled unit procs
     std::string declaration_unit;  // scope for default parameter expressions
     std::string declaring_type;    // owning type scope for method signatures
-    std::string return_type_name;  // for decl-less runtime builtins
+    const TypeSymbol* return_type_symbol = nullptr;
+    const ProcInfo* proc_info = nullptr;
   };
   struct ScoredCandidate {
     const ast::ProcDecl* decl = nullptr;
@@ -185,31 +198,34 @@ class EmitResolution {
 
     Kind kind = Kind::NoInstanceMethod;
     const ast::ProcDecl* decl = nullptr;
+    const TypeSymbol* owner_symbol = nullptr;
     int distance = 0;
 
     static InstanceMethodLookup no_instance_method() { return {}; }
     static InstanceMethodLookup signature_mismatch() {
-      return {Kind::SignatureMismatch, nullptr, 0};
+      return {Kind::SignatureMismatch, nullptr, nullptr, 0};
     }
     static InstanceMethodLookup match(const ast::ProcDecl* decl,
+                                      const TypeSymbol* owner_symbol,
                                       int distance) {
-      return {Kind::Match, decl, distance};
+      return {Kind::Match, decl, owner_symbol, distance};
     }
   };
   // Pascal lookup order for an unqualified callable name:
   // `with` stack -> nested procs -> current class chain -> lexical unit/import
   // frames. The first contributing non-import frame wins; imported frames
   // aggregate so same-name overloads across imports compete together.
-  std::vector<AnyCand> class_method_cands(const std::string& cls,
+  std::vector<AnyCand> class_method_cands(const ClassInfo& cls,
                                           const std::string& name);
-  std::vector<AnyCand> metaclass_method_cands(const std::string& cls,
+  std::vector<AnyCand> type_method_cands(const TypeSymbol& type,
+                                         const std::string& name);
+  std::vector<AnyCand> metaclass_method_cands(const ClassInfo& cls,
                                               const std::string& name);
   std::vector<AnyCand> unit_export_proc_cands(const std::string& unit,
                                               const std::string& name);
   std::vector<AnyCand> gather_callable_in_pascal_scope(
       const std::string& name);
   std::vector<AnyCand> gather_operator_in_pascal_scope(const std::string& op);
-  std::string type_cxx_or_empty(const ast::TypeExpr* t);
   const ast::TypeExpr* strip_conversion_wrapper(const ast::TypeExpr* t);
   ConvScore class_hierarchy_conversion_score(
       const ast::TypeExpr* arg, const TypeLookupContext* arg_context,
@@ -244,8 +260,11 @@ class EmitResolution {
   // SignatureMismatch means the Pascal method name exists but is not viable for
   // this procedural target type.
   InstanceMethodLookup pick_instance_method_decl(
-      const std::string& cls, const std::string& name,
+      const TypeSymbol& cls, const std::string& name,
       const ast::TyProcedural& proc, bool allow_pointer_carrier_adapters);
+  InstanceMethodLookup pick_instance_method_decl_from_methods(
+      const std::vector<MethodSig>* methods, const ast::TyProcedural& proc,
+      bool allow_pointer_carrier_adapters);
   bool conversion_score_less(const ConvScore& a, const ConvScore& b) const;
   bool conversion_candidate_dominates(const ScoredCandidate& a,
                                       const ScoredCandidate& b) const;
@@ -256,9 +275,15 @@ class EmitResolution {
   ResolvedCall resolved_call_from_candidate(const std::string& member_name,
                                             const AnyCand& chosen,
                                             bool ran_type_picker) const;
-  std::string value_class_alias(const ast::Expr& e);
-  std::string value_metaclass_target(const ast::Expr& e);
-  std::string receiver_class_for_member_call(const ast::Expr& callee);
+  ResolvedCall resolve_candidates(
+      const std::string& member_name, const std::vector<AnyCand>& all_cands,
+      const std::vector<const ast::Expr*>& args);
+  const TypeSymbol* class_or_interface_symbol_for_type(
+      const ast::TypeExpr* type);
+  const TypeSymbol* value_class_symbol(const ast::Expr& e);
+  const TypeSymbol* value_metaclass_target_symbol(const ast::Expr& e);
+  const TypeSymbol* receiver_type_symbol_for_member_call(
+      const ast::Expr& callee);
   bool operand_type_allows_operator_lookup(const ast::TypeExpr* t);
   bool operands_are_pointer_nil_comparison(const ast::Expr& lhs,
                                            const ast::TypeExpr* lhs_type,
@@ -267,11 +292,8 @@ class EmitResolution {
   bool operands_are_both_pcharish(const ast::TypeExpr* lhs,
                                   const ast::TypeExpr* rhs);
   ConvScore object_pointer_hierarchy_conversion_score(
-      const ast::TypeExpr* arg, const ast::TypeExpr* param);
-  ConvScore score_conversion(const ast::TypeExpr* arg,
-                             const ast::TypeExpr* param,
-                             bool var_param,
-                             bool allow_assignment_operator_conversions);
+      const ast::TypeExpr* arg, const ast::TypeExpr* param,
+      const TypeLookupContext* param_context);
   std::optional<ConvScore> score_procedural_argument_conversion(
       const ast::Expr& arg, const ast::TyProcedural& proc);
   const ast::TypeExpr* argument_source_type_for_conversion(

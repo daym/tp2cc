@@ -10,13 +10,32 @@
 
 namespace tp2cc {
 
+class ParserSemanticActions {
+ public:
+  virtual ~ParserSemanticActions() = default;
+  virtual void begin_compilation_unit(std::string_view name,
+                                      bool is_program) = 0;
+  virtual void import_units(const std::vector<std::string>& units,
+                            bool in_interface) = 0;
+  virtual void parsed_type_section(
+      const std::vector<ast::DeclPtr>& declarations,
+      bool in_interface) = 0;
+  virtual void parsed_declaration(const ast::DeclPtr& declaration,
+                                  bool in_interface) = 0;
+  virtual void finish_compilation_unit(const ast::UnitNode& unit) = 0;
+};
+
 class Parser {
  public:
-  explicit Parser(Lexer& lex);
+  explicit Parser(Lexer& lex,
+                  ParserSemanticActions* semantic_actions = nullptr);
 
   // Parse one compilation unit. Returns null on fatal errors (errors are
   // also reported via diag.h).
   std::shared_ptr<ast::UnitNode> parse();
+  std::shared_ptr<ast::UnitNode> parse_unit_interface();
+  std::shared_ptr<ast::UnitNode> parse_unit_implementation();
+  bool starts_unit() const { return cur_.kind == Tok::KwUnit; }
 
  private:
   enum class ProcModifierFlag {
@@ -34,6 +53,9 @@ class Parser {
 
   // ---- token stream ----
   Lexer& lex_;
+  ParserSemanticActions* semantic_actions_ = nullptr;
+  size_t decl_block_depth_ = 0;
+  size_t next_type_section_id_ = 1;
   Token cur_;
   Token peek_;  // 1-token lookahead
   bool have_peek_ = false;
@@ -55,12 +77,14 @@ class Parser {
   std::vector<std::string> parse_uses_clause();
   // in_interface:  suppress parsing of proc bodies (interface signatures only)
   std::vector<ast::DeclPtr> parse_decl_block(bool in_interface);
+  void note_parsed_declaration(const ast::DeclPtr& declaration,
+                               bool in_interface);
 
   // ---- declarations ----
   std::vector<ast::DeclPtr> parse_const_section();
   std::vector<ast::DeclPtr> parse_type_section();
   std::shared_ptr<ast::TypeDecl> parse_type_decl_from_current_ident(
-      const char* ctx);
+      const char* ctx, size_t type_section_id);
   std::vector<ast::DeclPtr> parse_var_section();
   std::vector<ast::DeclPtr> parse_label_section();
   std::shared_ptr<ast::ProcDecl> parse_proc_decl(ast::ProcKind pk,
@@ -142,6 +166,8 @@ class Parser {
   // scalar expressions, array constants `(a,b,c)`, and record constants
   // `(f:v;f:v)` including nesting.
   ast::ExprPtr parse_const_value(const ast::TypeExpr* target = nullptr);
+
+  std::shared_ptr<ast::UnitNode> partial_unit_;
 };
 
 }  // namespace tp2cc

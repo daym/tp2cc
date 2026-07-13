@@ -1152,6 +1152,11 @@ struct t_edivbyzero : t_einterror {
   using inherited = t_einterror;
   using inherited::p_create;
 };
+struct t_eoserror : t_exception {
+  using inherited = t_exception;
+  using inherited::p_create;
+  int32_t p_errorcode = 0;
+};
 
 [[noreturn]] inline void tp2cc_throw_int_overflow() {
   auto* e = new t_eintoverflow{};
@@ -2352,6 +2357,9 @@ struct tp2cc_DynArray {
   std::shared_ptr<T[]> data{};
   int32_t count = 0;
 
+  tp2cc_DynArray() = default;
+  tp2cc_DynArray(std::nullptr_t) {}
+
   tp2cc_DynArray& operator=(std::nullptr_t) {
     data.reset();
     count = 0;
@@ -2580,76 +2588,56 @@ inline void tp2cc_reinterpret_store(void* p, const T& value) {
   std::memcpy(p, &value, sizeof(T));
 }
 
-// Bounded-lifetime typed lvalue over byte storage.
+// Begin the lifetime of an aligned implicit-lifetime T at its Pascal storage
+// address without changing the stored bytes. C++20 specifies that memmove
+// implicitly creates suitable implicit-lifetime objects in its destination;
+// using the same region as source and destination leaves the representation
+// unchanged. This avoids placement default-initialization, which could run
+// default member initializers and destroy the Pascal value being viewed.
 //
-// Pascal has constructs whose semantics are "for the duration of this call,
-// treat these bytes as a T; commit any changes back after the call":
-//
-//   - `variant_record.tag_field.method()` on packed variant records
-//   - `Ptype(untyped_ptr)^.method()` and `.field := v` where Ptype's pointee
-//     is not the storage's dynamic type
-//   - Pascal `absolute` variables: `var view: T absolute other`; every use of
-//     `view` is a T-typed access to `other`'s bytes
-//   - passing bytewise storage to a typed `var`/`out` parameter
-//
-// A bare `reinterpret_cast<T*>(void_ptr)` for these would be strict-aliasing
-// UB whenever the storage's dynamic type is not T. Emitting the access as
-// `tp2cc_reinterpret_load<T>` alone is only enough for read-only or full
-// value-return cases; it cannot model methods that mutate `Self`, nor
-// var/out parameters that write through their reference.
-//
-// This wrapper resolves both problems in defined C++:
-//
-//   1. Construction memcpy-loads the bytes into `tmp_`, a real live T with
-//      full C++ object identity. Method calls, field access, and reference
-//      binding on `tmp_` are ordinary well-defined operations, not
-//      aliasing-UB access through a manufactured typed pointer.
-//   2. Destruction memcpy-stores `tmp_` back into `backing_`, propagating
-//      any mutations the caller made. Exception-safe: the write-back
-//      happens whether the call returned normally or unwound with an
-//      exception, matching Pascal's observable "state as it was when the
-//      call last touched it" semantics.
-//
-// The `is_trivially_copyable_v` static_assert is load-bearing: without it
-// the memcpy round-trip is UB in general C++ (non-trivial types have
-// invariants that memcpy would silently break). Pascal's storage-view
-// constructs are only meaningful over POD-shaped records, so the assert
-// also acts as a guardrail against accidentally routing a class type (with
-// virtual dispatch, refcount, etc.) through this pattern.
-//
-// Non-copyable by design: a TypedView owns the memcpy write-back for one
-// backing address. Copying would double-write or leave a live tmp with a
-// stale backing pointer.
-//
-// Known caveat, for reviewer awareness: if the wrapped method stashes
-// `&*view` or `&*view.method_receiver` somewhere for later use, that
-// stash points into `tmp_` and dangles once the view's scope ends. Pascal
-// source that does this is rare and dubious even in Pascal.
+// Unlike the former copy-in/copy-out TypedView, the returned object occupies
+// the original address. Pascal aliases therefore alias during the call, and
+// `@Self` observes the Pascal storage address. Non-trivial C++ objects are
+// deliberately excluded: constructing them without running their semantic
+// initialization would not model Pascal storage reinterpretation.
 template <typename T>
-class tp2cc_TypedView {
+inline T& tp2cc_storage_ref(void* p) {
   static_assert(std::is_trivially_copyable_v<T>,
-                "TypedView requires a trivially copyable T; class types "
-                "with virtual dispatch or non-trivial special members must "
-                "not be routed through byte-storage aliasing");
-  T tmp_;
+                "typed Pascal byte storage requires an implicit-lifetime "
+                "C++ carrier");
+  if (reinterpret_cast<std::uintptr_t>(p) % alignof(T) != 0) std::abort();
+  return *static_cast<T*>(std::memmove(p, p, sizeof(T)));
+}
+
+// A source-backed Pascal type view, such as `T(x)` or `absolute`, temporarily
+// replaces the C++ object representing x. The view itself is at x's address;
+// after the full expression, the source carrier's lifetime is restarted over
+// the unchanged bytes so later ordinary accesses to x remain valid C++.
+template <typename T, typename Backing>
+class tp2cc_ScopedStorageView {
+  static_assert(std::is_trivially_copyable_v<T>,
+                "typed Pascal storage view requires an implicit-lifetime "
+                "target carrier");
+  static_assert(std::is_trivially_copyable_v<Backing>,
+                "typed Pascal storage view requires an implicit-lifetime "
+                "backing carrier");
+
+  T* view_;
   void* backing_;
 
  public:
-  explicit tp2cc_TypedView(void* p) : backing_(p) {
-    std::memcpy(&tmp_, p, sizeof(T));
-  }
-  ~tp2cc_TypedView() { std::memcpy(backing_, &tmp_, sizeof(T)); }
+  tp2cc_ScopedStorageView(void* view, void* backing)
+      : view_(&tp2cc_storage_ref<T>(view)), backing_(backing) {}
+  ~tp2cc_ScopedStorageView() { (void)tp2cc_storage_ref<Backing>(backing_); }
 
-  tp2cc_TypedView(const tp2cc_TypedView&) = delete;
-  tp2cc_TypedView& operator=(const tp2cc_TypedView&) = delete;
-  tp2cc_TypedView(tp2cc_TypedView&&) = delete;
-  tp2cc_TypedView& operator=(tp2cc_TypedView&&) = delete;
+  tp2cc_ScopedStorageView(const tp2cc_ScopedStorageView&) = delete;
+  tp2cc_ScopedStorageView& operator=(const tp2cc_ScopedStorageView&) = delete;
+  tp2cc_ScopedStorageView(tp2cc_ScopedStorageView&&) = delete;
+  tp2cc_ScopedStorageView& operator=(tp2cc_ScopedStorageView&&) = delete;
 
-  T* operator->() { return &tmp_; }
-  T& operator*() { return tmp_; }
-  // Implicit conversion so a TypedView binds directly to a `T&` parameter
-  // when passed as a Pascal var/out actual over bytewise storage.
-  operator T&() { return tmp_; }
+  T* operator->() { return view_; }
+  T& operator*() { return *view_; }
+  operator T&() { return *view_; }
 };
 
 // Pascal `unaligned(x)` reads/writes the bytes of `x` without making an
@@ -2993,8 +2981,8 @@ struct tp2cc_TextFile {
   tp2cc_ShortString<> name{};
   int32_t iores = 0;  // last IOResult
 };
-// Locked in so Pascal `text(untyped_ptr^)` can route through
-// `tp2cc_TypedView<tp2cc_TextFile>`, which requires trivial copyability.
+// Locked in so Pascal `text(untyped_ptr^)` can create an address-preserving
+// implicit-lifetime storage view.
 // If a future change adds a user-declared destructor, virtual method, or
 // non-trivial member here, this assert catches it before the emitter
 // silently starts emitting something else.
@@ -3032,6 +3020,10 @@ template <int N> inline int p_length(const tp2cc_ShortStringPtrRef<N>& s) {
 inline int p_length(const tp2cc_AnsiString& s) { return s.length(); }
 template <typename T> inline int p_length(const tp2cc_DynArray<T>& a) { return a.count; }
 template <typename T> inline int p_length(const tp2cc_OpenArray<T>& a) { return a.count; }
+template <typename T, auto Lo, std::size_t N>
+constexpr int p_length(const tp2cc_Array<T, Lo, N>&) {
+  return static_cast<int>(N);
+}
 template <typename T> inline int p_length(const std::array<T, 0>&) { return 0; }
 
 template <int N, typename Src>

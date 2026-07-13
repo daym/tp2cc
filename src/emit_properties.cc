@@ -14,7 +14,6 @@ EmitProperties::EmitProperties(EmitAnalysis& analysis,
 
 std::optional<std::string> EmitProperties::maybe_property_read_text(
     const std::string& base_cxx, std::string_view base_access,
-    const std::string&,
     const PropertyInfo& prop, const std::vector<const Expr*>& indices) {
   // Properties are Pascal-side metadata only. Reads/writes rewrite to the
   // declared backing field/getter/setter so we do not invent extra C++
@@ -41,11 +40,10 @@ std::optional<std::string> EmitProperties::maybe_property_read_text(
 
 std::string EmitProperties::lower_property_read(
     Location where, const std::string& base_cxx,
-    std::string_view base_access, const std::string& class_name,
+    std::string_view base_access,
     const PropertyInfo& prop, const std::vector<const Expr*>& indices) {
   if (auto text =
-          maybe_property_read_text(base_cxx, base_access, class_name, prop,
-                                   indices)) {
+          maybe_property_read_text(base_cxx, base_access, prop, indices)) {
     return *text;
   }
   expr_ops_.report_error(
@@ -56,7 +54,6 @@ std::string EmitProperties::lower_property_read(
 
 std::optional<std::string> EmitProperties::maybe_property_write_text(
     const std::string& base_cxx, std::string_view base_access,
-    const std::string&,
     const PropertyInfo& prop, const std::vector<const Expr*>& indices,
     const Expr& value) {
   const std::string access(base_access);
@@ -90,12 +87,12 @@ std::optional<std::string> EmitProperties::maybe_property_write_text(
 
 std::string EmitProperties::lower_property_write(
     Location where, const std::string& base_cxx,
-    std::string_view base_access, const std::string& class_name,
+    std::string_view base_access,
     const PropertyInfo& prop, const std::vector<const Expr*>& indices,
     const Expr& value) {
   if (auto text =
-          maybe_property_write_text(base_cxx, base_access, class_name, prop,
-                                    indices, value)) {
+          maybe_property_write_text(base_cxx, base_access, prop, indices,
+                                    value)) {
     return *text;
   }
   if (prop.write.empty()) {
@@ -114,8 +111,7 @@ std::optional<ResolveResult> EmitProperties::maybe_resolve_implicit_property(
   if (!found || !found->prop || !found->prop->params.empty()) return std::nullopt;
   std::vector<const Expr*> no_indices;
   if (auto text = maybe_property_read_text(found->base_cxx, found->base_access,
-                                           found->class_name, *found->prop,
-                                           no_indices)) {
+                                           *found->prop, no_indices)) {
     return ResolveResult(found->from_with ? ResolvedKind::WithProperty
                                           : ResolvedKind::ClassProperty,
                          *text);
@@ -129,8 +125,7 @@ std::optional<std::string> EmitProperties::maybe_lower_implicit_property_write(
   if (!found || !found->prop || !found->prop->params.empty()) return std::nullopt;
   std::vector<const Expr*> no_indices;
   return lower_property_write(where, found->base_cxx, found->base_access,
-                              found->class_name, *found->prop, no_indices,
-                              value);
+                              *found->prop, no_indices, value);
 }
 
 }  // namespace tp2cc

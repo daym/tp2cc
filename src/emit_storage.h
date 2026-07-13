@@ -54,7 +54,7 @@ struct EmitPackedScalarValueLoad {
 struct EmitAbsoluteTargetInfo {
   std::string cxx;
   const ast::TypeExpr* type = nullptr;
-  bool is_pointerish = false;
+  bool value_is_storage_address = false;
   bool is_const_storage = false;
   static EmitAbsoluteTargetInfo untyped_param(std::string cxx_in) {
     return EmitAbsoluteTargetInfo{std::move(cxx_in), nullptr, true, false};
@@ -72,6 +72,8 @@ struct EmitTypecastStorageView {
   bool source_is_bytewise_storage = false;
   bool source_is_unaligned_bytewise_storage = false;
   bool pointee_view = false;
+  std::string backing_ptr_cxx;
+  std::string backing_type_cxx;
   EmitTypecastStorageView(const ast::Expr* source_in,
                           std::string source_cxx_in,
                           std::string source_ptr_cxx_in,
@@ -81,7 +83,9 @@ struct EmitTypecastStorageView {
                           bool source_is_untyped_storage_in,
                           bool source_is_bytewise_storage_in,
                           bool source_is_unaligned_bytewise_storage_in,
-                          bool pointee_view_in)
+                          bool pointee_view_in,
+                          std::string backing_ptr_cxx_in,
+                          std::string backing_type_cxx_in)
       : source(source_in),
         source_cxx(std::move(source_cxx_in)),
         source_ptr_cxx(std::move(source_ptr_cxx_in)),
@@ -92,7 +96,9 @@ struct EmitTypecastStorageView {
         source_is_bytewise_storage(source_is_bytewise_storage_in),
         source_is_unaligned_bytewise_storage(
             source_is_unaligned_bytewise_storage_in),
-        pointee_view(pointee_view_in) {}
+        pointee_view(pointee_view_in),
+        backing_ptr_cxx(std::move(backing_ptr_cxx_in)),
+        backing_type_cxx(std::move(backing_type_cxx_in)) {}
 };
 
 enum class EmitStorageAccess {
@@ -123,7 +129,7 @@ struct EmitStorageDesignator {
                                         std::string type_cxx_in) {
     return EmitStorageDesignator(EmitStorageAccess::Ordinary,
                                  std::move(text_in), {},
-                                 std::move(type_cxx_in),
+                                 std::move(type_cxx_in), {}, {},
                                  EmitStorageAddressForm::None);
   }
 
@@ -131,29 +137,41 @@ struct EmitStorageDesignator {
       std::string text_in, std::string ptr_cxx_in, std::string type_cxx_in) {
     return EmitStorageDesignator(EmitStorageAccess::Ordinary,
                                  std::move(text_in), std::move(ptr_cxx_in),
-                                 std::move(type_cxx_in),
+                                 std::move(type_cxx_in), {}, {},
                                  EmitStorageAddressForm::TypedStoragePointer);
   }
 
   static EmitStorageDesignator bytewise(std::string ptr_cxx_in,
-                                        std::string type_cxx_in) {
+                                        std::string type_cxx_in,
+                                        std::string backing_ptr_cxx_in = {},
+                                        std::string backing_type_cxx_in = {}) {
     return raw_byte_address(EmitStorageAccess::Bytewise, {},
-                            std::move(ptr_cxx_in), std::move(type_cxx_in));
+                            std::move(ptr_cxx_in), std::move(type_cxx_in),
+                            std::move(backing_ptr_cxx_in),
+                            std::move(backing_type_cxx_in));
   }
 
   static EmitStorageDesignator unaligned_bytewise(std::string ptr_cxx_in,
-                                                  std::string type_cxx_in) {
+                                                  std::string type_cxx_in,
+                                                  std::string backing_ptr_cxx_in = {},
+                                                  std::string backing_type_cxx_in = {}) {
     return raw_byte_address(EmitStorageAccess::UnalignedBytewise, {},
-                            std::move(ptr_cxx_in), std::move(type_cxx_in));
+                            std::move(ptr_cxx_in), std::move(type_cxx_in),
+                            std::move(backing_ptr_cxx_in),
+                            std::move(backing_type_cxx_in));
   }
 
   static EmitStorageDesignator raw_byte_address(EmitStorageAccess access_in,
                                                 std::string text_in,
                                                 std::string ptr_cxx_in,
-                                                std::string type_cxx_in) {
+                                                std::string type_cxx_in,
+                                                std::string backing_ptr_cxx_in = {},
+                                                std::string backing_type_cxx_in = {}) {
     return EmitStorageDesignator(access_in, std::move(text_in),
                                  std::move(ptr_cxx_in),
                                  std::move(type_cxx_in),
+                                 std::move(backing_ptr_cxx_in),
+                                 std::move(backing_type_cxx_in),
                                  EmitStorageAddressForm::RawBytePointer);
   }
 
@@ -165,6 +183,11 @@ struct EmitStorageDesignator {
   // dereference a pointer or bind a reinterpreted reference.
   std::string ptr_cxx;
   std::string type_cxx;
+  // A bytewise designator can be a temporary type view over a live generated
+  // C++ object. Typed-reference consumers restart this backing carrier after
+  // the full expression; raw variant/untyped storage leaves both fields empty.
+  std::string backing_ptr_cxx;
+  std::string backing_type_cxx;
   EmitStorageAddressForm ptr_form = EmitStorageAddressForm::None;
 
   bool is_bytewise() const {
@@ -179,11 +202,15 @@ struct EmitStorageDesignator {
  private:
   EmitStorageDesignator(EmitStorageAccess access_in, std::string text_in,
                         std::string ptr_cxx_in, std::string type_cxx_in,
+                        std::string backing_ptr_cxx_in,
+                        std::string backing_type_cxx_in,
                         EmitStorageAddressForm ptr_form_in)
       : access(access_in),
         text(std::move(text_in)),
         ptr_cxx(std::move(ptr_cxx_in)),
         type_cxx(std::move(type_cxx_in)),
+        backing_ptr_cxx(std::move(backing_ptr_cxx_in)),
+        backing_type_cxx(std::move(backing_type_cxx_in)),
         ptr_form(ptr_form_in) {}
 };
 
@@ -218,9 +245,9 @@ class EmitStorage {
       const ResolveResult& rr);
   std::string storage_designator_value(const EmitStorageDesignator& d);
   std::string storage_designator_member_base(const EmitStorageDesignator& d);
-  std::string storage_designator_typed_view_lvalue(
+  std::string storage_designator_typed_lvalue(
       const EmitStorageDesignator& d);
-  std::string storage_designator_typed_view_lvalue(
+  std::string storage_designator_typed_lvalue(
       const EmitStorageDesignator& d, std::string_view type_cxx);
   // Raw address of the Pascal storage denoted by a designator. This is for
   // internal storage computations: byte offsets, memcpy helpers, and backing
@@ -229,7 +256,7 @@ class EmitStorage {
   // Typed Pascal pointer value produced by `@expr`. This may cast an internal
   // raw byte address to `T*` because `@expr` has the type "^T" in Pascal.
   std::string storage_designator_typed_address_value(
-      const EmitStorageDesignator& d);
+      const EmitStorageDesignator& d, Location where);
   // Address passed to untyped `var`/`const` formals. Those formals receive raw
   // caller storage as `void*`/`const void*`, not the typed value of `@expr`.
   std::string storage_designator_untyped_actual_address(

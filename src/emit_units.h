@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -45,6 +46,8 @@ class EmitUnits {
                                bool in_header);
   void emit_type_decl_run(const std::vector<ast::DeclPtr>& decls,
                           bool in_header);
+  std::optional<std::string> class_lifecycle_call_cxx(
+      const ast::ProcDecl& pd) const;
   void emit_unit_hook(std::string_view name, const ast::StmtPtr& body,
                       const std::vector<const ast::ProcDecl*>& before_body,
                       const std::vector<const ast::ProcDecl*>& after_body);

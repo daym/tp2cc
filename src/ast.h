@@ -26,6 +26,12 @@
 
 #include "source.h"
 
+namespace tp2cc {
+struct TypeDescriptor;
+struct TypeLookupContext;
+struct TypeSymbol;
+}
+
 namespace tp2cc::ast {
 
 enum class Kind : uint16_t {
@@ -102,10 +108,41 @@ struct Node {
   Node(Kind k, Location loc_in) : kind(k), loc(loc_in) {}
 };
 
-struct Expr : Node { using Node::Node; };
+struct Expr : Node {
+  using Node::Node;
+
+  // Result identity fixed by semantic binding. This is populated whenever the
+  // result follows from syntax and already-bound operands (literals, casts,
+  // comparisons, and fixed-result intrinsics). Value-scope-dependent results
+  // remain null until that separate semantic migration.
+  mutable const TypeDescriptor* result_descriptor = nullptr;
+  // Set only when this expression is used as a Pascal type operand, such as
+  // the target of a cast, SizeOf, `is`, or `as`.
+  mutable bool type_operand_bound = false;
+  mutable const TypeSymbol* type_operand_symbol = nullptr;
+  // A type name can also occur in value syntax, for example `TFoo.Create`.
+  // Keep that binding distinct from an actual type operand.
+  mutable bool type_value_bound = false;
+  mutable const TypeSymbol* type_value_symbol = nullptr;
+};
 struct Stmt : Node { using Node::Node; };
-struct Decl : Node { using Node::Node; };
-struct TypeExpr : Node { using Node::Node; };
+struct Decl : Node {
+  using Node::Node;
+  mutable const TypeLookupContext* type_context = nullptr;
+};
+struct TypeExpr : Node {
+  using Node::Node;
+
+  // Pascal semantic identity. Parser-driven semantic binding writes this once;
+  // consumers never recover it from spelling.
+  mutable const TypeDescriptor* descriptor = nullptr;
+  // Exact declaration selected by a named type reference. This remains
+  // distinct from descriptor identity because aliases share descriptors.
+  mutable const TypeSymbol* referenced_symbol = nullptr;
+  // Declaration-time lexical scope retained for constant evaluation in type
+  // bounds. Type identity itself never depends on consulting this later.
+  mutable const TypeLookupContext* type_context = nullptr;
+};
 
 using ExprPtr = std::shared_ptr<Expr>;
 using StmtPtr = std::shared_ptr<Stmt>;
@@ -485,6 +522,8 @@ struct AsmStmt : Stmt {
 struct ExceptHandler {
   std::string var_name;      // may be empty
   std::string class_name;    // lowercased; empty means catch-all (rare)
+  mutable bool class_binding_complete = false;
+  mutable const TypeSymbol* class_symbol = nullptr;
   StmtPtr body;
   ExceptHandler() = default;
   ExceptHandler(std::string var_name_in, std::string class_name_in,
@@ -550,6 +589,10 @@ struct ConstDecl : Decl {
 struct TypeDecl : Decl {
   std::string name;
   TypePtr type;
+  // Parser identity of the containing Pascal `type` section. Adjacent
+  // sections remain distinct even though declaration vectors are flattened.
+  size_t type_section_id = 0;
+  mutable const TypeSymbol* symbol = nullptr;
   TypeDecl() : Decl(Kind::TypeDecl) {}
   TypeDecl(Location loc_in, std::string name_in, TypePtr type_in)
       : Decl(Kind::TypeDecl, loc_in),
@@ -593,6 +636,9 @@ struct Param {
   enum Mode { Value, Var, Const, ConstRef, Out } mode = Value;
   std::vector<std::string> names;
   TypePtr type;        // may be null for untyped `var`/`const` params
+  // Null-typed Pascal parameters still have the semantic storage type
+  // Pointer. Signature binding records that descriptor here.
+  mutable const TypeDescriptor* descriptor = nullptr;
   ExprPtr default_value;  // optional
   Param() = default;
   Param(Mode mode_in, std::vector<std::string> names_in, TypePtr type_in,
@@ -634,6 +680,9 @@ struct ProcDecl : Decl {
   // For methods: the object/record type this belongs to, if parsed as
   // `procedure TFoo.Bar(...)`. Empty otherwise.
   std::string of_type;
+  mutable const TypeSymbol* method_owner_symbol = nullptr;
+  mutable const TypeLookupContext* signature_type_context = nullptr;
+  mutable const TypeLookupContext* body_type_context = nullptr;
   bool is_class_method;
   std::vector<Param> params;
   TypePtr return_type;  // only for Function/Constructor; null otherwise
@@ -747,9 +796,20 @@ struct VariantCase {
         variant_part(std::move(variant_part_in)) {}
 };
 
+enum class RecordMemberKind : uint8_t { Field, Type };
+
+struct RecordMember {
+  RecordMemberKind kind = RecordMemberKind::Field;
+  size_t index = 0;
+  RecordMember() = default;
+  RecordMember(RecordMemberKind kind_in, size_t index_in)
+      : kind(kind_in), index(index_in) {}
+};
+
 struct TyRecord : TypeExpr {
   std::vector<RecordField> fields;
   std::vector<std::shared_ptr<TypeDecl>> nested_types;
+  std::vector<RecordMember> member_order;
   // Optional variant part:
   std::shared_ptr<VariantPart> variant_part;
   bool is_packed = false;
@@ -762,10 +822,12 @@ struct TyRecord : TypeExpr {
         is_packed(is_packed_in) {}
   TyRecord(Location loc_in, std::vector<RecordField> fields_in,
            std::vector<std::shared_ptr<TypeDecl>> nested_types_in,
+           std::vector<RecordMember> member_order_in,
            std::shared_ptr<VariantPart> variant_part_in, bool is_packed_in)
       : TypeExpr(Kind::TyRecord, loc_in),
         fields(std::move(fields_in)),
         nested_types(std::move(nested_types_in)),
+        member_order(std::move(member_order_in)),
         variant_part(std::move(variant_part_in)),
         is_packed(is_packed_in) {}
 };

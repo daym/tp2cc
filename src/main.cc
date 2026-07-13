@@ -17,6 +17,7 @@
 #include "emit_makefile.h"
 #include "lexer.h"
 #include "parser.h"
+#include "registry_parser_actions.h"
 #include "runtime_units.h"
 #include "source.h"
 #include "typereg.h"
@@ -145,104 +146,21 @@ void collect_unit_init_order(const UnitGraph& g,
   }
 }
 
-std::string runtime_type_cxx_name(std::string_view name) {
-  return "t_" + to_lower(name);
-}
-
-std::string runtime_value_cxx_name(std::string_view name) {
-  return "p_" + to_lower(name);
-}
-
-void write_runtime_unit_exports(
-    std::ostream& h, const RuntimeUnitModel& model,
-    const std::unordered_set<std::string>& skipped_runtime_classes = {}) {
-  for (const RuntimeUnitExport& export_info : model.exports) {
-    const std::string name = to_lower(export_info.name);
-    switch (export_info.kind) {
-      case RuntimeUnitExportKind::TypeAlias:
-        h << "using " << runtime_type_cxx_name(name) << " = ::rt::"
-          << runtime_type_cxx_name(name) << ";\n";
-        break;
-      case RuntimeUnitExportKind::RuntimeClass:
-        if (!skipped_runtime_classes.count(name)) {
-          h << "using " << runtime_type_cxx_name(name) << " = ::rt::"
-            << runtime_type_cxx_name(name) << ";\n";
-        }
-        break;
-      case RuntimeUnitExportKind::Proc:
-      case RuntimeUnitExportKind::Var:
-      case RuntimeUnitExportKind::Const:
-        h << "using ::rt::" << runtime_value_cxx_name(name) << ";\n";
-        break;
-    }
-  }
-}
-
-void write_runtime_unit_shim(std::ostream& h, std::string_view unit_name) {
-  const RuntimeUnitModel* model = runtime_unit_model(unit_name);
-  if (!model) {
-    report_error(Location{}, "internal error: no runtime-backed model for unit `" +
-                             std::string(unit_name) + "`");
-    return;
-  }
-
-  h << "// tp2cc: runtime-backed Pascal unit '" << unit_name << "'.\n";
+void write_runtime_unit_shim(std::ostream& h, const UnitInfo& unit) {
+  h << "// tp2cc: runtime-backed Pascal unit '" << unit.name << "'.\n";
   h << "#pragma once\n";
   h << "#include \"tp2cc_rt/prelude.h\"\n";
 
-  if (unit_name == "sysutils") {
-    h << "namespace p_sysutils {\n";
-    h << "using t_exception = ::rt::t_exception;\n";
-    h << "using tp2cc_metaclass_t_exception = "
-         "::rt::tp2cc_metaclass_t_exception;\n";
-    h << "inline tp2cc_metaclass_t_exception* "
-         "tp2cc_metaclass_value_t_exception() {\n";
-    h << "  return ::rt::tp2cc_metaclass_value_t_exception();\n";
-    h << "}\n";
-    h << "\n";
-    h << "// Re-export the Pascal-visible SysUtils declarations listed in\n";
-    h << "// runtime_units.cc. The exception hierarchy below is handled separately\n";
-    h << "// because EOSError has a shim-only ErrorCode field.\n";
-    write_runtime_unit_exports(
-        h, *model,
-        {"exception", "eexternal", "einterror", "einouterror",
-         "eheapmemoryerror", "eheapexception", "eoutofmemory",
-         "eintoverflow", "erangeerror", "edivbyzero", "eoserror"});
-    h << "\n";
-    h << "// Compiler units catch a small SysUtils exception hierarchy even\n";
-    h << "// when the full SysUtils unit is not translated. The exception\n";
-    h << "// classes themselves live in `::rt::` (so checked-arith helpers\n";
-    h << "// can throw them); alias each into `p_sysutils` so translated\n";
-    h << "// code that says `on E: SysUtils.EIntOverflow do` resolves to\n";
-    h << "// the same C++ class the runtime throws.\n";
-    static constexpr const char* kRtAliasedExceptionClasses[] = {
-        "t_eexternal",
-        "t_einterror",
-        "t_einouterror",
-        "t_eheapmemoryerror",
-        "t_eheapexception",
-        "t_eoutofmemory",
-        "t_eintoverflow",
-        "t_erangeerror",
-        "t_edivbyzero",
-    };
-    for (const char* name : kRtAliasedExceptionClasses) {
-      h << "using " << name << " = ::rt::" << name << ";\n";
-    }
-    // EOSError carries an `errorcode` field that the rt-side base class
-    // does not provide; keep it as a stub redeclaration here.
-    h << "struct t_eoserror : public t_exception {\n";
-    h << "  using inherited = t_exception;\n";
-    h << "  using inherited::p_create;\n";
-    h << "  int32_t p_errorcode = 0;\n";
-    h << "};\n";
-    h << "}  // namespace p_sysutils\n";
-    return;
-  }
+  std::set<std::string> value_names;
+  for (const auto& [name, _] : unit.iface_procs) value_names.insert(name);
+  for (const auto& [name, _] : unit.iface_vars) value_names.insert(name);
+  for (const auto& [name, _] : unit.iface_consts) value_names.insert(name);
 
-  h << "namespace p_" << unit_name << " {\n";
-  write_runtime_unit_exports(h, *model);
-  h << "}  // namespace p_" << unit_name << "\n";
+  h << "namespace p_" << unit.name << " {\n";
+  for (const std::string& name : value_names) {
+    h << "using ::rt::p_" << name << ";\n";
+  }
+  h << "}  // namespace p_" << unit.name << "\n";
 }
 
 std::vector<std::string> runtime_unit_refs_in_uses(
@@ -476,12 +394,7 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
   std::vector<std::string> headers;
   std::string program_name;
 
-  std::vector<const ast::UnitNode*> asts;
-  for (const auto& [_, pu] : g.units()) {
-    if (pu.ast) asts.push_back(pu.ast.get());
-  }
-  TypeRegistry reg{};
-  reg.build(asts);
+  TypeRegistry& reg = g.type_registry();
 
   for (const auto& name : tr.order) {
     const auto* pu = g.lookup(name);
@@ -527,7 +440,14 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
   }
   for (const auto& u : rtl_refs) {
     std::ofstream h(fs::path(outdir) / ("p_" + u + ".h"));
-    write_runtime_unit_shim(h, u);
+    auto runtime_unit = reg.units.find(u);
+    if (runtime_unit == reg.units.end()) {
+      report_error(Location{}, "internal error: runtime-backed unit `" + u +
+                                   "` has no semantic model");
+      ++failed;
+      continue;
+    }
+    write_runtime_unit_shim(h, runtime_unit->second);
     headers.push_back("p_" + u + ".h");
   }
   if (opts.emit_makefile) {
@@ -553,16 +473,11 @@ int cmd_emit(const CliOptions& opts, const std::string& path,
              const std::string& outdir, TargetInfo target) {
   auto lex = make_lexer(path, opts);
   if (!lex) { std::fprintf(stderr, "cannot read %s\n", path.c_str()); return 2; }
-  Parser parser(*lex);
+  TypeRegistry reg;
+  RegistryParserActions semantic_actions(reg);
+  Parser parser(*lex, &semantic_actions);
   auto u = parser.parse();
   if (!u || error_count() > 0) return 1;
-  // Even single-unit emission needs a registry. Typecasts to local/unit array
-  // aliases are context-sensitive: value emission builds a copied array value,
-  // while storage contexts need a typed view of the original storage. That
-  // decision depends on knowing that the callee name is a Pascal type.
-  TypeRegistry reg{};
-  std::vector<const ast::UnitNode*> units{u.get()};
-  reg.build(units);
   int errs_before = error_count();
   auto out = emit_unit(*u, reg, nullptr, target);
   if (error_count() != errs_before) return 1;

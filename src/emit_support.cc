@@ -1,5 +1,6 @@
 #include "emit_support.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
@@ -73,30 +74,6 @@ const MethodSig* representative_method(const std::vector<MethodSig>& sigs) {
   return sigs.empty() ? nullptr : &sigs.front();
 }
 
-const ast::TyName* named_pascal_type(std::string_view name) {
-  static std::unordered_map<std::string, ast::TyName> cache;
-  std::string key(name);
-  auto [it, inserted] = cache.emplace(key, ast::TyName(key));
-  (void)inserted;
-  return &it->second;
-}
-
-const ast::TyName* builtin_char_type() {
-  return named_pascal_type("char");
-}
-
-const ast::TyName* builtin_string_type() {
-  return named_pascal_type("shortstring");
-}
-
-const ast::TyName* builtin_pchar_type() {
-  return named_pascal_type("pchar");
-}
-
-const ast::TyName* builtin_boolean_type() {
-  return named_pascal_type("boolean");
-}
-
 std::string nested_result_slot_name(std::string_view fn_name) {
   return "tp2cc_result_" + mangle(fn_name);
 }
@@ -140,11 +117,19 @@ std::string encode_helper_param_mode(ast::Param::Mode mode) {
 
 }  // namespace
 
-std::string encode_helper_type(const ast::TypeExpr& t) {
+std::string encode_helper_type(const TypeRegistry& registry,
+                               const ast::TypeExpr& t) {
+  if (const TypeDescriptor* descriptor = registry.descriptor_for_type(&t)) {
+    if (const TypeSymbol* symbol = descriptor->symbol) {
+      // The generated helper is already inside the declaring C++ unit/type
+      // scope. Use the descriptor owner's local name: aliases share this owner
+      // and therefore cannot create a second helper spelling.
+      return "name_" + encode_helper_ident(symbol->name);
+    }
+  }
   switch (t.kind) {
     case ast::Kind::TyName:
-      return "name_" +
-             encode_helper_ident(static_cast<const ast::TyName&>(t).name);
+      return "unbound";
     case ast::Kind::TyArray: {
       const auto& a = static_cast<const ast::TyArray&>(t);
       std::string out;
@@ -161,7 +146,7 @@ std::string encode_helper_type(const ast::TypeExpr& t) {
           break;
       }
       out += "_";
-      out += a.element ? encode_helper_type(*a.element)
+      out += a.element ? encode_helper_type(registry, *a.element)
                        : std::string("void");
       return out;
     }
@@ -175,26 +160,27 @@ std::string encode_helper_type(const ast::TypeExpr& t) {
       return "interface";
     case ast::Kind::TySet:
       return "set_" +
-             encode_helper_type(*static_cast<const ast::TySet&>(t).element);
+             encode_helper_type(
+                 registry, *static_cast<const ast::TySet&>(t).element);
     case ast::Kind::TyFile: {
       const auto& f = static_cast<const ast::TyFile&>(t);
       if (f.is_text) return "text";
-      return f.element ? "file_" + encode_helper_type(*f.element)
+      return f.element ? "file_" + encode_helper_type(registry, *f.element)
                        : std::string("file_untyped");
     }
     case ast::Kind::TyPointer: {
       const auto& p = static_cast<const ast::TyPointer&>(t);
-      return p.target ? "ptr_" + encode_helper_type(*p.target)
+      return p.target ? "ptr_" + encode_helper_type(registry, *p.target)
                       : std::string("ptr_void");
     }
     case ast::Kind::TyProcedural: {
       const auto& p = static_cast<const ast::TyProcedural&>(t);
       std::string out = p.is_method ? "method" : "proc";
       out += p.is_function ? "_fn_" : "_proc_";
-      out += encode_helper_params(p.params);
+      out += encode_helper_params(registry, p.params);
       out += "_ret_";
       out += (p.is_function && p.return_type)
-                 ? encode_helper_type(*p.return_type)
+                 ? encode_helper_type(registry, *p.return_type)
                  : std::string("void");
       return out;
     }
@@ -207,23 +193,30 @@ std::string encode_helper_type(const ast::TypeExpr& t) {
       return s.max_length ? "string_sized" : std::string("string");
     }
     case ast::Kind::TyMetaclass:
-      return "metaclass_" + encode_helper_ident(
-                                 static_cast<const ast::TyMetaclass&>(t).class_name);
+      if (const TypeSymbol* target = registry.metaclass_target_for_type(&t)) {
+        return "metaclass_" +
+               encode_helper_ident(target->name);
+      }
+      return "metaclass_unbound";
     case ast::Kind::TyDistinct:
-      return "distinct_" + encode_helper_type(
-                               *static_cast<const ast::TyDistinct&>(t).underlying);
+      return "distinct_" +
+             encode_helper_type(
+                 registry,
+                 *static_cast<const ast::TyDistinct&>(t).underlying);
     default:
       return "type";
   }
 }
 
-std::string encode_helper_params(const std::vector<ast::Param>& params) {
+std::string encode_helper_params(const TypeRegistry& registry,
+                                 const std::vector<ast::Param>& params) {
   if (params.empty()) return "noargs";
   std::string out;
   for (const auto& param : params) {
     size_t repeats = param.names.empty() ? 1 : param.names.size();
     std::string type_code =
-        param.type ? encode_helper_type(*param.type) : std::string("untyped");
+        param.type ? encode_helper_type(registry, *param.type)
+                   : std::string("untyped");
     for (size_t i = 0; i < repeats; ++i) {
       if (!out.empty()) out += "_";
       out += encode_helper_param_mode(param.mode);
@@ -283,34 +276,37 @@ bool pascal_operator_decl_uses_named_helper(const ast::ProcDecl& pd) {
          pascal_operator_cxx_token(pd.operator_token).empty();
 }
 
-std::string pascal_operator_named_helper_name(const ast::ProcDecl& pd) {
+std::string pascal_operator_named_helper_name(
+    const TypeRegistry& registry, const ast::ProcDecl& pd) {
   std::string out = "tp2cc_operator_";
   out += encode_helper_ident(pd.operator_token);
   out += "_params_";
-  out += encode_helper_params(pd.params);
+  out += encode_helper_params(registry, pd.params);
   out += "_ret_";
-  out += pd.return_type ? encode_helper_type(*pd.return_type)
+  out += pd.return_type ? encode_helper_type(registry, *pd.return_type)
                         : std::string("void");
   return out;
 }
 
-std::string pascal_assignment_operator_helper_name(const ast::ProcDecl& pd) {
+std::string pascal_assignment_operator_helper_name(
+    const TypeRegistry& registry, const ast::ProcDecl& pd) {
   std::string out = "tp2cc_operator_assign";
   out += "_params_";
-  out += encode_helper_params(pd.params);
+  out += encode_helper_params(registry, pd.params);
   out += "_ret_";
-  out += pd.return_type ? encode_helper_type(*pd.return_type)
+  out += pd.return_type ? encode_helper_type(registry, *pd.return_type)
                         : std::string("void");
   return out;
 }
 
-std::string pascal_operator_decl_name_to_cxx(const ast::ProcDecl& pd) {
+std::string pascal_operator_decl_name_to_cxx(
+    const TypeRegistry& registry, const ast::ProcDecl& pd) {
   if (!pd.is_operator) return mangle(pd.name);
   if (pd.operator_token == ":=") {
-    return pascal_assignment_operator_helper_name(pd);
+    return pascal_assignment_operator_helper_name(registry, pd);
   }
   if (pascal_operator_decl_uses_named_helper(pd)) {
-    return pascal_operator_named_helper_name(pd);
+    return pascal_operator_named_helper_name(registry, pd);
   }
   std::string op = pascal_operator_cxx_token(pd.operator_token);
   return op.empty() ? mangle(pd.name) : "operator" + op;
@@ -331,120 +327,39 @@ std::string enum_bound_name(std::string_view type_name, std::string_view which) 
 
 const std::unordered_map<std::string, PrimitiveInfo>& primitive_type_map() {
   static const std::unordered_map<std::string, PrimitiveInfo> m = {
-      {"integer",      {.cxx = "int32_t",              .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .bits = 32}},
-      {"longint",      {.cxx = "int32_t",              .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .bits = 32}},
-      {"cardinal",     {.cxx = "uint32_t",             .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .bits = 32}},
-      {"longword",     {.cxx = "uint32_t",             .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .bits = 32}},
-      {"smallint",     {.cxx = "int16_t",              .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .bits = 16}},
-      {"word",         {.cxx = "uint16_t",             .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .bits = 16}},
-      {"shortint",     {.cxx = "int8_t",               .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .bits = 8}},
-      {"byte",         {.cxx = "uint8_t",              .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .bits = 8}},
-      {"char",         {.cxx = "::rt::p_char",         .family = PrimitiveFamily::Char}},
-      {"ansichar",     {.cxx = "::rt::p_char",         .family = PrimitiveFamily::Char}},
-      {"widechar",     {.cxx = "uint16_t",             .family = PrimitiveFamily::WideChar, .int_kind = PrimitiveIntKind::Unsigned, .bits = 16}},
-      {"boolean",      {.cxx = "bool",                 .family = PrimitiveFamily::Bool}},
-      {"bytebool",     {.cxx = "uint8_t",              .family = PrimitiveFamily::Bool, .int_kind = PrimitiveIntKind::Unsigned, .bits = 8}},
-      {"wordbool",     {.cxx = "uint16_t",             .family = PrimitiveFamily::Bool, .int_kind = PrimitiveIntKind::Unsigned, .bits = 16}},
-      {"longbool",     {.cxx = "uint32_t",             .family = PrimitiveFamily::Bool, .int_kind = PrimitiveIntKind::Unsigned, .bits = 32}},
-      {"qwordbool",    {.cxx = "uint64_t",             .family = PrimitiveFamily::Bool, .int_kind = PrimitiveIntKind::Unsigned, .bits = 64}},
-      {"single",       {.cxx = "float",                .family = PrimitiveFamily::Real, .float_tier = PrimitiveFloatTier::Single}},
-      {"double",       {.cxx = "double",               .family = PrimitiveFamily::Real, .float_tier = PrimitiveFloatTier::Double}},
-      {"real",         {.cxx = "double",               .family = PrimitiveFamily::Real, .float_tier = PrimitiveFloatTier::Double}},
-      {"extended",     {.cxx = "long double",          .family = PrimitiveFamily::Real, .float_tier = PrimitiveFloatTier::Extended}},
-      {"comp",         {.cxx = "long double",          .family = PrimitiveFamily::Real, .float_tier = PrimitiveFloatTier::Extended}},
-      {"pointer",      {.cxx = "void*",                .family = PrimitiveFamily::Pointer}},
-      {"pchar",        {.cxx = "::rt::p_char*",        .family = PrimitiveFamily::Pointer}},
-      {"pansichar",    {.cxx = "::rt::p_char*",        .family = PrimitiveFamily::Pointer}},
-      {"text",         {.cxx = "::rt::tp2cc_TextFile", .family = PrimitiveFamily::Text}},
-      {"int64",        {.cxx = "int64_t",              .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .bits = 64}},
-      {"qword",        {.cxx = "uint64_t",             .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .bits = 64}},
-      {"dword",        {.cxx = "uint32_t",             .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .bits = 32}},
-      {"currency",     {.cxx = "::rt::t_currency",     .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .bits = 64}},
-      {"ptrint",       {.cxx = "::rt::t_ptrint",       .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .pointer_sized = true}},
-      {"ptruint",      {.cxx = "::rt::t_ptruint",      .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .pointer_sized = true}},
-      {"sizeint",      {.cxx = "::rt::t_sizeint",      .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .pointer_sized = true}},
-      {"sizeuint",     {.cxx = "::rt::t_sizeuint",     .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .pointer_sized = true}},
-      {"shortstring",  {.cxx = "::rt::tp2cc_ShortString<>", .family = PrimitiveFamily::String}},
-      {"ansistring",   {.cxx = "::rt::tp2cc_AnsiString",    .family = PrimitiveFamily::String}},
-      {"utf8string",   {.cxx = "::rt::tp2cc_AnsiString",    .family = PrimitiveFamily::String}},
+      {"longint",      {.kind = PrimitiveKind::LongInt,     .cxx = "int32_t",              .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .bits = 32, .is_ordinal_integer = true}},
+      {"longword",     {.kind = PrimitiveKind::LongWord,    .cxx = "uint32_t",             .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .bits = 32, .is_ordinal_integer = true}},
+      {"smallint",     {.kind = PrimitiveKind::SmallInt,    .cxx = "int16_t",              .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .bits = 16, .is_ordinal_integer = true}},
+      {"word",         {.kind = PrimitiveKind::Word,        .cxx = "uint16_t",             .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .bits = 16, .is_ordinal_integer = true}},
+      {"shortint",     {.kind = PrimitiveKind::ShortInt,    .cxx = "int8_t",               .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .bits = 8, .is_ordinal_integer = true}},
+      {"byte",         {.kind = PrimitiveKind::Byte,        .cxx = "uint8_t",              .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .bits = 8, .is_ordinal_integer = true}},
+      {"char",         {.kind = PrimitiveKind::Char,        .cxx = "::rt::p_char",         .family = PrimitiveFamily::Char}},
+      {"widechar",     {.kind = PrimitiveKind::WideChar,    .cxx = "uint16_t",             .family = PrimitiveFamily::WideChar, .int_kind = PrimitiveIntKind::Unsigned, .bits = 16}},
+      {"boolean",      {.kind = PrimitiveKind::Boolean,     .cxx = "bool",                 .family = PrimitiveFamily::Bool}},
+      {"bytebool",     {.kind = PrimitiveKind::ByteBool,    .cxx = "uint8_t",              .family = PrimitiveFamily::Bool, .int_kind = PrimitiveIntKind::Unsigned, .bits = 8}},
+      {"wordbool",     {.kind = PrimitiveKind::WordBool,    .cxx = "uint16_t",             .family = PrimitiveFamily::Bool, .int_kind = PrimitiveIntKind::Unsigned, .bits = 16}},
+      {"longbool",     {.kind = PrimitiveKind::LongBool,    .cxx = "uint32_t",             .family = PrimitiveFamily::Bool, .int_kind = PrimitiveIntKind::Unsigned, .bits = 32}},
+      {"qwordbool",    {.kind = PrimitiveKind::QWordBool,   .cxx = "uint64_t",             .family = PrimitiveFamily::Bool, .int_kind = PrimitiveIntKind::Unsigned, .bits = 64}},
+      {"single",       {.kind = PrimitiveKind::Single,      .cxx = "float",                .family = PrimitiveFamily::Real, .float_tier = PrimitiveFloatTier::Single}},
+      {"double",       {.kind = PrimitiveKind::Double,      .cxx = "double",               .family = PrimitiveFamily::Real, .float_tier = PrimitiveFloatTier::Double}},
+      {"real",         {.kind = PrimitiveKind::Real,        .cxx = "double",               .family = PrimitiveFamily::Real, .float_tier = PrimitiveFloatTier::Double}},
+      {"extended",     {.kind = PrimitiveKind::Extended,    .cxx = "long double",          .family = PrimitiveFamily::Real, .float_tier = PrimitiveFloatTier::Extended}},
+      {"comp",         {.kind = PrimitiveKind::Comp,        .cxx = "long double",          .family = PrimitiveFamily::Real, .float_tier = PrimitiveFloatTier::Extended}},
+      {"pointer",      {.kind = PrimitiveKind::Pointer,     .cxx = "void*",                .family = PrimitiveFamily::Pointer}},
+      {"pchar",        {.kind = PrimitiveKind::PChar,       .cxx = "::rt::p_char*",        .family = PrimitiveFamily::Pointer}},
+      {"text",         {.kind = PrimitiveKind::Text,        .cxx = "::rt::tp2cc_TextFile", .family = PrimitiveFamily::Text}},
+      {"int64",        {.kind = PrimitiveKind::Int64,       .cxx = "int64_t",              .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .bits = 64, .is_ordinal_integer = true}},
+      {"qword",        {.kind = PrimitiveKind::QWord,       .cxx = "uint64_t",             .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .bits = 64, .is_ordinal_integer = true}},
+      {"currency",     {.kind = PrimitiveKind::Currency,    .cxx = "::rt::t_currency",     .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .bits = 64}},
+      {"ptrint",       {.kind = PrimitiveKind::PtrInt,      .cxx = "::rt::t_ptrint",       .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .pointer_sized = true}},
+      {"ptruint",      {.kind = PrimitiveKind::PtrUInt,     .cxx = "::rt::t_ptruint",      .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .pointer_sized = true}},
+      {"sizeint",      {.kind = PrimitiveKind::SizeInt,     .cxx = "::rt::t_sizeint",      .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Signed,   .pointer_sized = true}},
+      {"sizeuint",     {.kind = PrimitiveKind::SizeUInt,    .cxx = "::rt::t_sizeuint",     .family = PrimitiveFamily::Integer, .int_kind = PrimitiveIntKind::Unsigned, .pointer_sized = true}},
+      {"shortstring",  {.kind = PrimitiveKind::ShortString, .cxx = "::rt::tp2cc_ShortString<>", .family = PrimitiveFamily::String}},
+      {"ansistring",   {.kind = PrimitiveKind::AnsiString,  .cxx = "::rt::tp2cc_AnsiString",    .family = PrimitiveFamily::String}},
+      {"utf8string",   {.kind = PrimitiveKind::Utf8String,  .cxx = "::rt::tp2cc_AnsiString",    .family = PrimitiveFamily::String}},
   };
   return m;
-}
-
-const std::unordered_map<std::string, const char*>& runtime_named_type_map() {
-  static const std::unordered_map<std::string, const char*> m = {
-      {"currency", "::rt::t_currency"},
-      {"datetime", "::rt::t_datetime"},
-      {"hresult", "::rt::t_hresult"},
-      {"tdatetime", "::rt::t_tdatetime"},
-      {"texecuteflag", "::rt::t_texecuteflag"},
-      {"texecuteflags", "::rt::t_texecuteflags"},
-      {"tsyscharset", "::rt::t_tsyscharset"},
-      {"comstr", "::rt::t_comstr"},
-      {"dirstr", "::rt::t_dirstr"},
-      {"namestr", "::rt::t_namestr"},
-      {"extstr", "::rt::t_extstr"},
-      {"pansistring", "::rt::t_pansistring"},
-      {"pcardinal", "::rt::t_pcardinal"},
-      {"pcurrency", "::rt::t_pcurrency"},
-      {"pdword", "::rt::t_pdword"},
-      {"pint64", "::rt::t_pint64"},
-      {"plongword", "::rt::t_plongword"},
-      {"pathstr", "::rt::t_pathstr"},
-      {"ppointer", "::rt::t_ppointer"},
-      {"pqword", "::rt::t_pqword"},
-      {"pshortstring", "::rt::t_pshortstring"},
-      {"ptrint", "::rt::t_ptrint"},
-      {"ptruint", "::rt::t_ptruint"},
-      {"searchrec", "::rt::t_searchrec"},
-      {"signalhandler", "::rt::t_signalhandler"},
-      {"sizeint", "::rt::t_sizeint"},
-      {"sizeuint", "::rt::t_sizeuint"},
-      {"stat", "::rt::t_stat"},
-      {"tclass", "::rt::t_tclass"},
-      {"tfpuexception", "::rt::t_tfpuexception"},
-      {"tfpuexceptionmask", "::rt::t_tfpuexceptionmask"},
-      {"tsearchrec", "::rt::t_tsearchrec"},
-      {"tsystemtime", "::rt::t_tsystemtime"},
-      {"tmethod", "::rt::t_tmethod"},
-      {"tprocedure", "::rt::t_tprocedure"},
-  };
-  return m;
-}
-
-std::string runtime_named_type_cxx(std::string_view lowname) {
-  auto it = runtime_named_type_map().find(ascii_lower(lowname));
-  return it == runtime_named_type_map().end() ? std::string()
-                                              : std::string(it->second);
-}
-
-const std::unordered_map<std::string, std::string_view>&
-builtin_reference_class_map() {
-  static const std::unordered_map<std::string, std::string_view> m = {
-      {"tobject", "::rt::t_tobject"},
-      {"exception", "::rt::t_exception"},
-      {"eexternal", "::p_sysutils::t_eexternal"},
-      {"einterror", "::p_sysutils::t_einterror"},
-      {"einouterror", "::p_sysutils::t_einouterror"},
-      {"eheapmemoryerror", "::p_sysutils::t_eheapmemoryerror"},
-      {"eheapexception", "::p_sysutils::t_eheapexception"},
-      {"eoutofmemory", "::p_sysutils::t_eoutofmemory"},
-      {"eintoverflow", "::p_sysutils::t_eintoverflow"},
-      {"eoserror", "::p_sysutils::t_eoserror"},
-  };
-  return m;
-}
-
-std::string builtin_reference_class_struct_cxx(std::string_view lowname) {
-  auto it = builtin_reference_class_map().find(ascii_lower(lowname));
-  return it == builtin_reference_class_map().end()
-             ? std::string()
-             : std::string(it->second);
-}
-
-std::string unit_namespace_prefix(std::string_view unit_name) {
-  return unit_name == "__rt__" ? std::string("::rt::")
-                               : ("::" + mangle(unit_name) + "::");
 }
 
 const PrimitiveInfo* primitive_info(std::string_view lowname) {
@@ -452,13 +367,9 @@ const PrimitiveInfo* primitive_info(std::string_view lowname) {
   return it == primitive_type_map().end() ? nullptr : &it->second;
 }
 
-bool is_primitive_type(std::string_view lowname) {
-  return primitive_info(lowname) != nullptr;
-}
-
-std::string primitive_type_cxx(std::string_view lowname) {
-  auto* info = primitive_info(lowname);
-  return info ? info->cxx : std::string();
+std::string unit_namespace_prefix(std::string_view unit_name) {
+  return unit_name == "__rt__" ? std::string("::rt::")
+                               : ("::" + mangle(unit_name) + "::");
 }
 
 uint64_t low_bits(uint64_t value, uint8_t bits) {
@@ -544,8 +455,7 @@ std::string signed_bits_literal_text(uint64_t bits, uint8_t width,
   return "-" + uint64_literal_text(magnitude);
 }
 
-std::string primitive_low_high_expr(std::string_view lowname, bool want_low) {
-  const PrimitiveInfo* info = primitive_info(lowname);
+std::string primitive_low_high_expr(const PrimitiveInfo* info, bool want_low) {
   if (!info) return {};
   if (info->is_char()) {
     return want_low ? "::rt::tp2cc_char_of(0)" : "::rt::tp2cc_char_of(255)";
@@ -559,42 +469,53 @@ std::string primitive_low_high_expr(std::string_view lowname, bool want_low) {
   return "::std::numeric_limits<" + std::string(info->cxx) + ">::max()";
 }
 
-const ast::TyName* builtin_integer_type(std::string_view lowname) {
-  const PrimitiveInfo* info = primitive_info(lowname);
-  if (!info || info->int_kind == PrimitiveIntKind::None) return nullptr;
-  // Pascal integer alias spellings in FPC's default mode: `integer` is
-  // longint (32-bit), `longword`/`dword` are alternate spellings of cardinal.
-  if (lowname == "integer") return named_pascal_type("longint");
-  if (lowname == "longword" || lowname == "dword")
-    return named_pascal_type("cardinal");
-  return named_pascal_type(lowname);
-}
-
-const PrimitiveInfo* primitive_info_for_value(int64_t value) {
-  if (value >= -128 && value <= 127) return primitive_info("shortint");
-  if (value >= 0 && value <= 255) return primitive_info("byte");
-  if (value >= -32768 && value <= 32767) return primitive_info("smallint");
-  if (value >= 0 && value <= 65535) return primitive_info("word");
-  if (value >= INT32_MIN && value <= INT32_MAX) return primitive_info("longint");
-  if (value >= 0) return primitive_info("cardinal");
-  return primitive_info("int64");
-}
-
-const ast::TyName* builtin_integer_type(const PrimitiveInfo* info) {
-  if (!info) return nullptr;
-  for (const auto& [name, pi] : primitive_type_map()) {
-    if (&pi == info) return builtin_integer_type(name);
+const PrimitiveInfo* ordinal_integer_primitive(
+    const TypeRegistry& registry, PrimitiveIntKind kind, uint8_t bits) {
+  for (const PrimitiveInfo& candidate : registry.primitive_info_storage) {
+    if (candidate.is_ordinal_integer && candidate.int_kind == kind &&
+        candidate.bits == bits) {
+      return &candidate;
+    }
   }
   return nullptr;
 }
 
-const PrimitiveInfo* shift_carrier_primitive(const PrimitiveInfo* info,
+const PrimitiveInfo* primitive_info_for_value(const TypeRegistry& registry,
+                                              int64_t value) {
+  if (value >= -128 && value <= 127) {
+    return ordinal_integer_primitive(
+        registry, PrimitiveIntKind::Signed, 8);
+  }
+  if (value >= 0 && value <= 255) {
+    return ordinal_integer_primitive(
+        registry, PrimitiveIntKind::Unsigned, 8);
+  }
+  if (value >= -32768 && value <= 32767) {
+    return ordinal_integer_primitive(
+        registry, PrimitiveIntKind::Signed, 16);
+  }
+  if (value >= 0 && value <= 65535) {
+    return ordinal_integer_primitive(
+        registry, PrimitiveIntKind::Unsigned, 16);
+  }
+  if (value >= INT32_MIN && value <= INT32_MAX) {
+    return ordinal_integer_primitive(
+        registry, PrimitiveIntKind::Signed, 32);
+  }
+  if (value >= 0) {
+    return ordinal_integer_primitive(
+        registry, PrimitiveIntKind::Unsigned, 32);
+  }
+  return ordinal_integer_primitive(
+      registry, PrimitiveIntKind::Signed, 64);
+}
+
+const PrimitiveInfo* shift_carrier_primitive(const TypeRegistry& registry,
+                                             const PrimitiveInfo* info,
                                              TargetInfo target) {
   if (!info || info->int_kind == PrimitiveIntKind::None) return nullptr;
   if (primitive_bits(*info, target) >= 64) return info;
-  return (info->int_kind == PrimitiveIntKind::Unsigned)
-             ? primitive_info("cardinal")
-             : primitive_info("longint");
+  return ordinal_integer_primitive(registry, info->int_kind, 32);
 }
 
 bool checked_add_int64(int64_t a, int64_t b, int64_t* out) {
@@ -685,12 +606,12 @@ namespace {
 bool checked_pascal_shift_int64_impl(int64_t a, const PrimitiveInfo* carrier,
                                      int64_t shift, bool shift_left,
                                      int64_t* out, TargetInfo target) {
-  carrier = shift_carrier_primitive(carrier, target);
   if (!carrier || carrier->int_kind == PrimitiveIntKind::None) {
     return false;
   }
 
-  const uint8_t bits = primitive_bits(*carrier, target);
+  const uint8_t bits =
+      std::max<uint8_t>(primitive_bits(*carrier, target), 32);
   const uint64_t amount =
       static_cast<uint64_t>(shift) & static_cast<uint64_t>(bits - 1);
   uint64_t value_bits = low_bits(static_cast<uint64_t>(a), bits);
@@ -727,11 +648,6 @@ bool checked_pascal_shr_int64(int64_t a, const PrimitiveInfo* carrier,
                               int64_t shift, int64_t* out,
                               TargetInfo target) {
   return checked_pascal_shift_int64_impl(a, carrier, shift, false, out, target);
-}
-
-bool primitive_name_is_charish(std::string_view lowname) {
-  std::string low = ascii_lower(lowname);
-  return low == "char" || low == "ansichar";
 }
 
 }  // namespace tp2cc
