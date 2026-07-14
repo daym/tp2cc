@@ -133,10 +133,13 @@ if [ -n "$STARTUP_AS" ]; then
   # ppas.sh, but make the wrapper-provided startup object explicit so it is not
   # searched as a file in the invocation directory.
   tmp_link_res="$link_res.tmp"
-  awk -v name="$startup_obj_name" -v path="$startup_obj" '
-    $0 == name { print path; next }
-    { print }
-  ' "$link_res" >"$tmp_link_res"
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$line" = "$startup_obj_name" ]; then
+      printf '%s\n' "$startup_obj"
+    else
+      printf '%s\n' "$line"
+    fi
+  done <"$link_res" >"$tmp_link_res"
   mv "$tmp_link_res" "$link_res"
 fi
 
