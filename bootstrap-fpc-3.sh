@@ -25,12 +25,14 @@ SOURCE_DIR="${FPC3_SRC:-$ROOT/../fpc-3.0.0}"
 fpc_source_version() {
   local v="$SOURCE_DIR/compiler/version.pas"
   [ -r "$v" ] || { echo "unknown"; return; }
-  awk -F"'" '
-    /version_nr *=/ { vn=$2 }
-    /release_nr *=/ { rn=$2 }
-    /patch_nr *=/   { pn=$2 }
-    END { if (vn != "") print vn"."rn"."pn; else print "unknown" }
-  ' "$v"
+  vn=$(sed -n "s/.*version_nr[[:space:]]*:*=[[:space:]]*'\\([^']*\\)'.*/\\1/p" "$v")
+  rn=$(sed -n "s/.*release_nr[[:space:]]*:*=[[:space:]]*'\\([^']*\\)'.*/\\1/p" "$v")
+  pn=$(sed -n "s/.*patch_nr[[:space:]]*:*=[[:space:]]*'\\([^']*\\)'.*/\\1/p" "$v")
+  if [ -n "$vn" ]; then
+    printf '%s.%s.%s\n' "$vn" "$rn" "$pn"
+  else
+    echo "unknown"
+  fi
 }
 
 fpc_compiler_version_defines() {
