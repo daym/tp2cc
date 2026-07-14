@@ -1,0 +1,20 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-07-13
+Subject: Keep the x86-64 program image base
+License: expat
+
+The x86-64 linker script first selects address zero for libraries or
+0x400000 for programs, then unconditionally resets the address to zero.
+The resulting program has a low-address load segment and crashes before
+reaching PascalMain.  Remove the stray reset, as in later FPC releases.
+
+--- a/compiler/systems/t_linux.pas
++++ b/compiler/systems/t_linux.pas
+@@ -579,7 +579,6 @@
+         add('  . = 0 +  SIZEOF_HEADERS;')
+       else
+         add('  PROVIDE (__executable_start = 0x0400000); . = 0x0400000 +  SIZEOF_HEADERS;');
+-      add('  . = 0 +  SIZEOF_HEADERS;');
+       add('  .interp         : { *(.interp) }');
+       add('  .hash           : { *(.hash) }');
+       add('  .dynsym         : { *(.dynsym) }');
