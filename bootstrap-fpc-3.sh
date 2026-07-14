@@ -194,7 +194,7 @@ echo "FPC source: $SOURCE_DIR (version $(fpc_source_version))"
 # instead of stopping at the first bad cast/overflow and forcing a rebuild loop.
 # ASan still aborts on memory-corruption classes where continuing is unsafe.
 SAN="${SAN:--fsanitize=address,undefined -fsanitize-recover=undefined -fno-omit-frame-pointer}"
-CXXFLAGS="-std=gnu++20 -I. -O3 -g -pipe -Wno-narrowing -Wno-invalid-offsetof $SAN"
+CXXFLAGS="-std=gnu++20 -I. -O3 -g -pipe -Wno-narrowing -Wno-invalid-offsetof $SAN -fPIE"
 CFLAGS="-std=gnu11 -O3 -g -pipe $SAN -fPIE"
 LDFLAGS="${LDFLAGS:-} $SAN -pie"
 export CXXFLAGS
