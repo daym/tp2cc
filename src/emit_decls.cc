@@ -820,6 +820,31 @@ void EmitDecls::emit_type_decl_impl(const TypeDecl& td, bool,
     } else if (to.is_reference_type) {
       emit_ops_.emitln("using inherited = ::rt::t_tobject;");
     }
+    if (parent_info && current_class_info && payload_symbol) {
+      std::vector<std::string> continued_overloads;
+      for (const auto& [method_name, _] : current_class_info->methods) {
+        const auto* visible =
+            registry_.lookup_class_methods(*current_class_info, method_name);
+        if (visible &&
+            std::any_of(visible->begin(), visible->end(),
+                        [&](const MethodSig& method) {
+                          return method.declaring_symbol != payload_symbol;
+                        })) {
+          continued_overloads.push_back(method_name);
+        }
+      }
+      std::sort(continued_overloads.begin(), continued_overloads.end());
+      for (const std::string& method_name : continued_overloads) {
+        // Pascal `overload` can continue a same-name overload set from an
+        // ancestor; lookup_class_methods() is the semantic decision and includes
+        // that ancestor's registered MethodSig entries in `visible`. C++20
+        // [class.member.lookup] instead stops ordinary member lookup at the
+        // declarations in the derived class. A base-class using-declaration
+        // ([namespace.udecl]) introduces the inherited declarations into the
+        // derived overload set, preserving the Pascal lookup result in C++.
+        emit_ops_.emitln("using inherited::" + mangle(method_name) + ";");
+      }
+    }
     if (to.is_reference_type) {
       emit_ops_.emitln("virtual ::rt::t_tclass p_classtype() const override;");
       emit_ops_.emitln("virtual int32_t p_instancesize() const override;");

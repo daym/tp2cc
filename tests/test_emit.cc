@@ -12873,6 +12873,43 @@ void test_class_overload_continuation_matches_fpc_any_procdef_rule() {
   CHECK_EQ(overload_marked, size_t{2});
 }
 
+void test_class_overload_continuation_keeps_inherited_cxx_overloads_visible() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  TBase = class\n"
+      "    function MakeRegSize(list : pointer; reg, size : longint) : "
+      "longint; virtual;\n"
+      "  end;\n"
+      "  TChild = class(TBase)\n"
+      "  protected\n"
+      "    function MakeRegSize(reg, size : longint) : longint; overload;\n"
+      "  public\n"
+      "    procedure Load(list : pointer; var reg : longint; size : "
+      "longint);\n"
+      "  end;\n"
+      "implementation\n"
+      "function TBase.MakeRegSize(list : pointer; reg, size : longint) : "
+      "longint;\n"
+      "begin\n"
+      "  MakeRegSize := reg;\n"
+      "end;\n"
+      "function TChild.MakeRegSize(reg, size : longint) : longint;\n"
+      "begin\n"
+      "  MakeRegSize := reg;\n"
+      "end;\n"
+      "procedure TChild.Load(list : pointer; var reg : longint; size : "
+      "longint);\n"
+      "begin\n"
+      "  reg := MakeRegSize(list, reg, size);\n"
+      "end;\n"
+      "end.\n");
+
+  CHECK(contains(out.header, "using inherited::p_makeregsize;"));
+  CHECK(contains(out.impl, "p_makeregsize(p_list, p_reg, p_size)"));
+}
+
 void test_overload_ambiguous_default_arg_vs_no_default_reports_error() {
   // `f(x : longint)` and `f(x : longint = 5)` are both viable for `f(7)`:
   // the first by exact match, the second also by exact match (default
@@ -16974,6 +17011,8 @@ int main() {
   RUN_TEST(test_overload_aggregates_explicit_overloads_across_direct_uses);
   RUN_TEST(test_non_overload_unit_proc_hides_earlier_uses);
   RUN_TEST(test_class_overload_continuation_matches_fpc_any_procdef_rule);
+  RUN_TEST(
+      test_class_overload_continuation_keeps_inherited_cxx_overloads_visible);
   RUN_TEST(test_overload_ambiguous_default_arg_vs_no_default_reports_error);
   RUN_TEST(test_overload_ambiguous_two_default_arg_overloads_reports_error);
   RUN_TEST(test_overload_default_arg_extends_arity_disambiguates_cleanly);
