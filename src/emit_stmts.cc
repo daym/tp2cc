@@ -1406,11 +1406,12 @@ void EmitStmts::emit_stmt(const Stmt& s) {
         scope_.with_stack.emplace_back(nm, ty, class_symbol, access_op);
         if (storage && !reference_receiver && !storage->type_cxx.empty()) {
           // A normal `with rec do` binding may later expose a Pascal variant
-          // payload field. Those payload fields need byte-offset selection
-          // even though ordinary fields on the same binding stay direct.
+          // payload field. Compose that field's byte address from the binding,
+          // not from the original receiver: Pascal evaluates the `with`
+          // receiver exactly once, including when it is a function call.
           scope_.with_stack.back().bytewise_storage =
               ScopeStateView::WithBind::BytewiseStorage(
-                  storage_.storage_designator_raw_address(*storage),
+                  "(&" + nm + ")",
                   storage->type_cxx,
                   storage->access == EmitStorageAccess::UnalignedBytewise,
                   ScopeStateView::WithBind::BytewiseStorage::FieldSelection::

@@ -11659,8 +11659,9 @@ void test_with_variant_payload_object_field_method_keeps_payload_storage() {
       "end.\n");
   // A bare field inside `with` still names the variant payload slot. Calling an
   // object method on it must bind `Self` to that slot, not to a copied value.
+  // Derive the slot from the `with` binding so the receiver is evaluated once.
   const std::string slot =
-      "::rt::tp2cc_byte_offset((&p_item), offsetof(t_titem, p_symderef))";
+      "::rt::tp2cc_byte_offset((&tp2cc_with_0), offsetof(t_titem, p_symderef))";
   CHECK(contains(out.impl,
                  "::rt::tp2cc_storage_ref<t_tderef>(" + slot +
                      ").p_reset();"));
@@ -16033,6 +16034,46 @@ void test_with_local_record_pointer_uses_bound_storage_for_fields() {
   CHECK(!contains(out.impl, "\n        p_y = p_x;"));
 }
 
+void test_with_side_effecting_receiver_evaluates_once_for_variant_fields() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure demo;\n"
+      "implementation\n"
+      "type\n"
+      "  plocation = ^tlocation;\n"
+      "  tlocation = record\n"
+      "    size : integer;\n"
+      "    case boolean of\n"
+      "      false : (reg : integer);\n"
+      "      true : (address : pointer);\n"
+      "  end;\n"
+      "var\n"
+      "  location : tlocation;\n"
+      "function add_location : plocation;\n"
+      "begin\n"
+      "  add_location := @location;\n"
+      "end;\n"
+      "procedure demo;\n"
+      "begin\n"
+      "  with add_location^ do\n"
+      "  begin\n"
+      "    size := 1;\n"
+      "    reg := 8;\n"
+      "  end;\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  // One occurrence is the function definition and one is the receiver
+  // evaluation. A third occurrence would evaluate the receiver again while
+  // selecting the variant field.
+  CHECK_EQ(count_substring(out.impl, "p_add_location()"), size_t{2});
+  CHECK(contains(
+      out.impl,
+      "::rt::tp2cc_byte_offset((&tp2cc_with_0), offsetof(t_tlocation, p_reg))"));
+}
+
 void test_statement_new_and_dispose_use_runtime_storage_helpers() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -17166,6 +17207,7 @@ int main() {
   RUN_TEST(test_pointer_indexed_class_field_chain_keeps_arrow_access);
   RUN_TEST(test_as_cast_member_chain_keeps_arrow_access);
   RUN_TEST(test_with_local_record_pointer_uses_bound_storage_for_fields);
+  RUN_TEST(test_with_side_effecting_receiver_evaluates_once_for_variant_fields);
   RUN_TEST(test_statement_new_and_dispose_use_runtime_storage_helpers);
   RUN_TEST(test_shadowed_new_and_dispose_statements_call_user_procs);
   RUN_TEST(test_expression_new_uses_runtime_storage_helper);
