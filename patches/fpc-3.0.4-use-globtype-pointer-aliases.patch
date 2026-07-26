@@ -20,6 +20,9 @@ the compiler-local type namespace.
        aasmbase,aasmcpu,aasmtai,aasmdata,
        cpubase,
        cgbase,
+@@ -105 +106 @@
+-      globtype,globals,aoptcpub;
++      globals,aoptcpub;
 
 --- a/compiler/owar.pas
 +++ b/compiler/owar.pas
