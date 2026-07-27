@@ -581,9 +581,13 @@ std::string EmitDecls::build_metaclass_ctor_expr(
 void EmitDecls::emit_const_decl(const ConstDecl& cd, bool) {
   const std::string name = mangle(cd.name);
   emit_enum_carrier_decls(cd.type.get());
+  if (analysis_.required_const_int_expr_overflows(*cd.value)) {
+    emit_ops_.report_error(cd.value->loc,
+                           "integer overflow in constant expression");
+  }
   std::string val = cd.type
-                        ? values_.typed_const_value_to_cxx(*cd.value,
-                                                           cd.type.get())
+                        ? values_.const_initializer_to_cxx(*cd.value,
+                                                          cd.type.get())
                         : values_.const_value_to_cxx(*cd.value);
 
   // Two things drive the qualifiers:
@@ -642,7 +646,7 @@ generic_emit:;
   if (const TypeExpr* inferred_ty = analysis_.deduce_const_decl_type(cd)) {
     if (const auto* info = analysis_.primitive_info_for_type(inferred_ty);
         info && info->int_kind != PrimitiveIntKind::None) {
-      val = values_.const_value_to_cxx(*cd.value, inferred_ty);
+      val = values_.const_initializer_to_cxx(*cd.value, inferred_ty);
       emit_ops_.emitln(linkage + "const " + types_.type_to_cxx(*inferred_ty) +
                        " " + name + " = " + val + ";");
       return;

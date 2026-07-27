@@ -200,12 +200,6 @@ const PrimitiveInfo* shift_carrier_primitive(const TypeRegistry& registry,
 // semantics, not generic C++ math convenience.
 bool checked_add_int64(int64_t a, int64_t b, int64_t* out);
 bool checked_sub_int64(int64_t a, int64_t b, int64_t* out);
-bool checked_mul_int64(int64_t a, int64_t b, int64_t* out);
-bool checked_div_int64(int64_t a, int64_t b, int64_t* out);
-bool checked_mod_int64(int64_t a, int64_t b, int64_t* out);
-bool checked_shift_count(int64_t shift);
-bool checked_shl_int64(int64_t a, int64_t shift, int64_t* out);
-bool checked_shr_int64(int64_t a, int64_t shift, int64_t* out);
 bool checked_pascal_shl_int64(int64_t a, const PrimitiveInfo* carrier,
                               int64_t shift, int64_t* out,
                               TargetInfo target);

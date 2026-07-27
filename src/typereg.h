@@ -96,7 +96,10 @@ struct EnumInfoReg;
 
 struct EnumMemberInfo {
   const EnumInfoReg* owner = nullptr;
-  int64_t ordinal = 0;
+  // Declaration position, not the Pascal ordinal. Explicit enum expressions
+  // can assign a different ordinal; the constant evaluator computes that
+  // value in the declaration's existing lexical scope.
+  size_t member_index = 0;
 };
 
 struct MethodSig {

@@ -132,14 +132,12 @@ class EmitAnalysis {
       Location where, const ConstIntExprInfo& value,
       const ast::TypeExpr* target,
       bool explicit_conversion, bool diagnose);
-  std::optional<ConstIntExprInfo> eval_const_int_cast(
-      const ast::Call& c,
-      std::unordered_set<std::string>* visiting_const_names);
-  std::optional<ConstIntExprInfo> eval_const_int_expr(
-      const ast::Expr& e,
-      std::unordered_set<std::string>* visiting_const_names = nullptr);
+  std::optional<ConstIntExprInfo> eval_const_int_expr(const ast::Expr& e);
   std::optional<ConstIntExprInfo> eval_const_int_expr(
       const ast::Expr& e, const TypeLookupContext* context);
+  bool required_const_int_expr_overflows(const ast::Expr& e);
+  std::optional<int64_t> enum_member_ordinal(
+      const EnumMemberInfo& member);
   const ast::TypeExpr* const_intrinsic_type_arg(const ast::Expr& arg);
   const ast::TypeExpr* deduce_set_literal_type(
       const ast::SetLit& s, const ast::TypeExpr* target = nullptr);
@@ -277,6 +275,9 @@ class EmitAnalysis {
   std::optional<OrdinalExprValue> eval_ordinal_expr(const ast::Expr& e);
   std::optional<OrdinalExprValue> eval_ordinal_expr(
       const ast::Expr& e, const TypeLookupContext* context);
+  std::optional<ConstIntExprInfo> eval_const_low_high(
+      const ast::TypeExpr* type, bool want_low);
+  void evaluate_enum_ordinals(const EnumInfoReg& info);
   std::optional<SetLiteralOrdinalSummary>
   extend_set_literal_ordinal_summary(
       std::optional<SetLiteralOrdinalSummary> summary, const ast::Expr& e);
@@ -291,12 +292,22 @@ class EmitAnalysis {
   static bool binop_is_arithmetic_like(ast::BinOp op);
   const ast::TypeExpr* deduce_binary_expr_type(const ast::Binary& b);
   const ast::TypeExpr* deduce_low_high_result_type(const ast::TypeExpr* t);
+  std::optional<ConstIntExprInfo> eval_const_int_expr_impl(
+      const ast::Expr& e,
+      std::unordered_set<std::string>* visiting_const_names,
+      bool* overflow);
+  std::optional<ConstIntExprInfo> eval_const_int_cast(
+      const ast::Call& c,
+      std::unordered_set<std::string>* visiting_const_names,
+      bool* overflow);
   std::optional<ConstIntExprInfo> fold_untyped_const_decl(
       const ast::ConstDecl& cd,
-      std::unordered_set<std::string>* visiting_const_names);
+      std::unordered_set<std::string>* visiting_const_names,
+      bool* overflow);
   std::optional<ConstIntExprInfo> fold_untyped_const_info(
       const ConstInfo& c,
-      std::unordered_set<std::string>* visiting_const_names);
+      std::unordered_set<std::string>* visiting_const_names,
+      bool* overflow);
   const ClassInfo* current_class_info() const;
 
   const TypeRegistry& registry_;
@@ -304,6 +315,14 @@ class EmitAnalysis {
   ResolveNameProvider& resolve_name_provider_;
   CallTypeProvider& call_type_provider_;
   TargetInfo target_;
+  // Enum expressions are evaluated through the existing Pascal value
+  // resolver. Cache only the resulting ordinals so EmitTypes, Ord, Low/High,
+  // and subrange analysis consume one answer instead of maintaining parallel
+  // enum evaluators.
+  std::unordered_map<const EnumInfoReg*,
+                     std::vector<std::optional<int64_t>>>
+      enum_ordinal_cache_;
+  std::unordered_set<const EnumInfoReg*> enums_being_evaluated_;
 };
 
 }  // namespace tp2cc

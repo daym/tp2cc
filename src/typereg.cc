@@ -1154,7 +1154,7 @@ void add_unit_enum_members(UnitInfo* ui, bool is_interface,
   for (size_t ordinal = 0; ordinal < info.members.size(); ++ordinal) {
     members.try_emplace(
         info.members[ordinal],
-        EnumMemberInfo{&info, static_cast<int64_t>(ordinal)});
+        EnumMemberInfo{&info, ordinal});
   }
 }
 
@@ -1170,7 +1170,7 @@ void add_enum_members(
     for (size_t ordinal = 0; ordinal < info->members.size(); ++ordinal) {
       members.try_emplace(
           info->members[ordinal],
-          EnumMemberInfo{info, static_cast<int64_t>(ordinal)});
+          EnumMemberInfo{info, ordinal});
     }
   }
 }
@@ -1202,7 +1202,7 @@ void index_enum_info(TypeRegistry& r, UnitInfo* ui, bool is_interface,
       continue;
     }
     auto [it, inserted] = by_member.emplace(
-        member, EnumMemberInfo{&info, static_cast<int64_t>(ordinal)});
+        member, EnumMemberInfo{&info, ordinal});
     if (!inserted && it->second.owner != &info) {
       report_error(info.type->loc, "duplicate identifier `" + member + "`");
     }
@@ -2487,7 +2487,7 @@ void register_context_enum_symbol(TypeRegistry& r, TypeLookupContext& context,
   for (size_t ordinal = 0; ordinal < info->members.size(); ++ordinal) {
     context.enum_members.try_emplace(
         info->members[ordinal],
-        EnumMemberInfo{info, static_cast<int64_t>(ordinal)});
+        EnumMemberInfo{info, ordinal});
   }
 }
 
@@ -3819,6 +3819,10 @@ void TypeRegistry::initialize_runtime_types() {
       {"assigned",   1, true,  false, "boolean"},
       {"odd",        1, true,  false, "boolean"},
       {"chr",        1, true,  false, "char"},
+      {"low",        1, true,  false, ""},
+      {"high",       1, true,  false, ""},
+      {"ord",        1, true,  false, ""},
+      {"sizeof",     1, true,  false, "longint"},
       {"hi",         1, true,  false, ""},
       {"lo",         1, true,  false, ""},
       {"abs",        1, true,  false, ""},

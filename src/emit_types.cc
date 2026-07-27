@@ -335,34 +335,18 @@ bool EmitTypes::enum_has_explicit_values(const TyEnum& e) {
 
 std::optional<int64_t> EmitTypes::enum_member_value_int64(const TyEnum& e,
                                                           size_t index) {
-  const TypeLookupContext* declaration_context =
-      declaration_context_for_type(registry_, &e);
-  ScopedDeclarationLookup declaration_scope(
-      scope_, declaration_context,
-      declaration_context ? std::string_view(declaration_context->unit)
-                          : std::string_view{});
-  int64_t value = 0;
-  for (size_t i = 0; i <= index; ++i) {
-    if (e.members[i].value) {
-      auto info = analysis_.eval_const_int_expr(*e.members[i].value);
-      if (!info) return std::nullopt;
-      value = info->value;
-    } else if (i != 0) {
-      if (value == INT64_MAX) return std::nullopt;
-      ++value;
-    }
-  }
-  return value;
+  const EnumInfoReg* info =
+      e.descriptor ? e.descriptor->enum_info() : nullptr;
+  if (!info || index >= info->members.size()) return std::nullopt;
+  return analysis_.enum_member_ordinal(EnumMemberInfo{info, index});
 }
 
 std::string EmitTypes::enum_member_value_to_cxx(const TyEnum& e, size_t index) {
-  // Pascal/FPC enum ordinals are assigned left-to-right. Each explicit value
-  // resets the running ordinal for later implicit members.
   const TypeLookupContext* declaration_context =
       declaration_context_for_type(registry_, &e);
-  // Explicit enum ordinal expressions belong to the enum declaration. Rendering
-  // them under the later emission scope can bind same-named constants from the
-  // wrong unit or declaration section.
+  // An enum value expression is emitted where the enum is declared. Rendering
+  // it in a later caller's scope could bind an unqualified constant to a
+  // different declaration.
   ScopedDeclarationLookup declaration_scope(
       scope_, declaration_context,
       declaration_context ? std::string_view(declaration_context->unit)

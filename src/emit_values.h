@@ -44,10 +44,10 @@ class EmitValues {
   std::string const_value_to_cxx(const ast::Expr& e,
                                  const ast::TypeExpr* target = nullptr,
                                  bool explicit_conversion = false);
-  // Lower a full typed-const initializer. There is no later assignment/call
-  // conversion phase for `const x: T = ...`, so aggregate fields/elements keep
-  // this mode while passing their own target types down to initializer leaves.
-  std::string typed_const_value_to_cxx(const ast::Expr& e,
+  // Lower an initializer in a context that requires a compile-time constant.
+  // Aggregate fields and elements keep that requirement while receiving their
+  // own target types.
+  std::string const_initializer_to_cxx(const ast::Expr& e,
                                        const ast::TypeExpr* target,
                                        bool explicit_conversion = false);
   bool can_convert_value_to_type(const ast::Expr& e,
@@ -61,7 +61,7 @@ class EmitValues {
   std::string const_value_to_cxx_impl(const ast::Expr& e,
                                       const ast::TypeExpr* target,
                                       bool explicit_conversion,
-                                      bool typed_const_initializer);
+                                      bool constant_initializer);
   std::optional<std::string> maybe_convert_proc_value(
       const ast::Expr& e, const ast::TypeExpr* target,
       bool explicit_conversion);
@@ -96,7 +96,7 @@ class EmitValues {
                                               bool explicit_conversion);
   std::optional<std::string> maybe_lower_target_pointer_arithmetic(
       const ast::Expr& e, const ast::TypeExpr* target,
-      bool explicit_conversion, bool typed_const_initializer);
+      bool explicit_conversion, bool constant_initializer);
   bool can_lower_target_pointer_arithmetic(const ast::Expr& e,
                                            const ast::TypeExpr* target,
                                            bool explicit_conversion);

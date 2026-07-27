@@ -91,6 +91,13 @@ EmittedUnit compile_snippet(std::string text) {
   return compile_snippet_with_registry(std::move(text));
 }
 
+EmittedUnit compile_snippet_for_target(std::string text, TargetInfo target) {
+  TypeRegistry registry;
+  auto unit = parse_unit("<mem>", std::move(text), &registry);
+  if (!unit) return {};
+  return emit_unit(*unit, registry, nullptr, target);
+}
+
 EmittedUnit compile_snippet_with_init_order(
     std::string text, std::vector<std::string> init_order) {
   auto sf = std::make_unique<SourceFile>();
@@ -341,6 +348,38 @@ void test_enum_explicit_values_use_declaring_unit_scope() {
         "end.\n"}});
   CHECK(contains(out.header, "p_first = ::p_dep::p_start"));
   CHECK(!contains(out.header, "p_first = p_start"));
+}
+
+void test_explicit_enum_ordinals_use_values_and_prior_members() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tstate = (first := 5, second := ord(first) + 1);\n"
+      "const\n"
+      "  firstvalue = ord(first);\n"
+      "  secondvalue = ord(second);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header, "p_first = 5"));
+  CHECK(contains(
+      out.header,
+      "p_second = ::rt::tp2cc_wrap_add(static_cast<int32_t>(p_first), 1)"));
+  CHECK(contains(out.header,
+                 "p_firstvalue = static_cast<int32_t>(p_first)"));
+  CHECK(contains(out.header,
+                 "p_secondvalue = static_cast<int32_t>(p_second)"));
+}
+
+void test_explicit_enum_ordinals_must_ascend() {
+  const int before = error_count();
+  compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "type tstate = (first := 5, second := 2);\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 1);
 }
 
 void test_packed_record_uses_byte_sized_enum_fields() {
@@ -1346,6 +1385,62 @@ void test_non_system_qualified_low_call_stays_unit_call() {
   CHECK(!contains(out.impl, "::std::numeric_limits"));
 }
 
+void test_source_calls_shadow_low_high_ord_sizeof_intrinsics() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function low(x : longint) : longint;\n"
+      "function high(x : longint) : longint;\n"
+      "function ord(x : longint) : longint;\n"
+      "function sizeof(x : longint) : longint;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "function low(x : longint) : longint;\n"
+      "begin\n"
+      "  low := x;\n"
+      "end;\n"
+      "function high(x : longint) : longint;\n"
+      "begin\n"
+      "  high := x;\n"
+      "end;\n"
+      "function ord(x : longint) : longint;\n"
+      "begin\n"
+      "  ord := x;\n"
+      "end;\n"
+      "function sizeof(x : longint) : longint;\n"
+      "begin\n"
+      "  sizeof := x;\n"
+      "end;\n"
+      "procedure run;\n"
+      "var x : longint;\n"
+      "begin\n"
+      "  x := low(1) + high(2) + ord(3) + sizeof(4);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "::p_u::p_low(1)"));
+  CHECK(contains(out.impl, "::p_u::p_high(2)"));
+  CHECK(contains(out.impl, "::p_u::p_ord(3)"));
+  CHECK(contains(out.impl, "::p_u::p_sizeof(4)"));
+  CHECK(!contains(out.impl, "::std::numeric_limits"));
+  CHECK(!contains(out.impl, "static_cast<int32_t>(sizeof(4))"));
+}
+
+void test_type_named_high_remains_a_typecast() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type high = longint;\n"
+      "function run : longint;\n"
+      "implementation\n"
+      "function run : longint;\n"
+      "begin\n"
+      "  run := high(1);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result = 1;"));
+  CHECK(!contains(out.impl, "::std::numeric_limits"));
+}
+
 void test_system_qualified_runtime_exports_use_implicit_unit() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1804,7 +1899,7 @@ void test_descriptor_owned_semantic_indexes() {
     CHECK(red != unit_info->second.iface_enum_members.end());
     if (red != unit_info->second.iface_enum_members.end()) {
       CHECK_EQ(red->second.owner, color_info);
-      CHECK_EQ(red->second.ordinal, 0);
+      CHECK_EQ(red->second.member_index, size_t{0});
     }
   }
   const EnumMemberInfo* fast_red =
@@ -3427,7 +3522,7 @@ void test_explicit_integer_cast_literal_uses_converted_value() {
   CHECK(contains(out.impl, "p_b = 255;"));
 }
 
-void test_assignment_const_expr_is_lowered_to_target_value() {
+void test_executable_integer_expression_is_not_constant_folded() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -3442,7 +3537,10 @@ void test_assignment_const_expr_is_lowered_to_target_value() {
       "end;\n"
       "end.\n");
   CHECK_EQ(error_count() - before, 0);
-  CHECK(contains(out.impl, "p_b = 255;"));
+  // This is executable code, so runtime overflow-check mode remains
+  // observable. Only expressions required to be constants are folded.
+  CHECK(contains(out.impl,
+                 "p_b = ::rt::tp2cc_wrap_sub(16384, 16129);"));
 }
 
 void test_implicit_const_expr_wraps_without_emit_error() {
@@ -3501,7 +3599,71 @@ void test_untyped_integer_const_uses_pascal_initial_type() {
   CHECK_EQ(error_count() - before, 0);
   CHECK(contains(out.header, "const uint8_t p_x = 255;"));
   CHECK(contains(out.header, "const uint32_t p_y = 4294967295;"));
-  CHECK(contains(out.impl, "p_b = 255;"));
+  CHECK(contains(out.impl, "p_b = p_x;"));
+}
+
+void test_constant_evaluator_uses_target_width_for_pointer_sized_shift() {
+  const std::string source =
+      "unit u;\n"
+      "interface\n"
+      "const top = high(ptruint) shr 31;\n"
+      "implementation\n"
+      "end.\n";
+  const auto out32 =
+      compile_snippet_for_target(source, TargetInfo{.pointer_bits = 32});
+  const auto out64 =
+      compile_snippet_for_target(source, TargetInfo{.pointer_bits = 64});
+  CHECK(contains(out32.header, "inline const uint32_t p_top = 1;"));
+  CHECK(contains(
+      out64.header,
+      "inline const ::rt::t_ptruint p_top = "
+      "((::rt::t_ptruint)(8589934591));"));
+}
+
+void test_constant_evaluator_handles_pascal_shift_and_ordinal_bounds() {
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "const\n"
+      "  shifted = longword($ffffffff) shl 1;\n"
+      "  boolhigh = ord(high(boolean));\n"
+      "  charhigh = ord(high(char));\n"
+      "implementation\n"
+      "end.\n");
+  CHECK(contains(out.header,
+                 "inline const uint32_t p_shifted = 4294967294;"));
+  CHECK(contains(out.header,
+                 "inline const uint8_t p_boolhigh = "
+                 "static_cast<uint8_t>(true);"));
+  CHECK(contains(out.header,
+                 "inline const uint8_t p_charhigh = "
+                 "::rt::tp2cc_char_byte(::rt::tp2cc_char_of(255));"));
+}
+
+void test_constant_integer_domain_extends_through_qword() {
+  const int before = error_count();
+  auto out = compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "const beyondsigned = high(int64) + 1;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(
+      out.header,
+      "inline const uint64_t p_beyondsigned = "
+      "((uint64_t)(9223372036854775808ULL));"));
+}
+
+void test_constant_evaluator_rejects_unsigned_constant_overflow() {
+  const int before = error_count();
+  compile_snippet(
+      "unit u;\n"
+      "interface\n"
+      "const wrapped = high(qword) + 1;\n"
+      "implementation\n"
+      "end.\n");
+  CHECK_EQ(error_count() - before, 1);
 }
 
 void test_typed_const_read_is_not_folded_through_initializer() {
@@ -16606,6 +16768,8 @@ int main() {
   RUN_TEST(test_enum_type);
   RUN_TEST(test_enum_type_with_explicit_values);
   RUN_TEST(test_enum_explicit_values_use_declaring_unit_scope);
+  RUN_TEST(test_explicit_enum_ordinals_use_values_and_prior_members);
+  RUN_TEST(test_explicit_enum_ordinals_must_ascend);
   RUN_TEST(test_packed_record_uses_byte_sized_enum_fields);
   RUN_TEST(test_packenum_two_uses_word_sized_enum);
   RUN_TEST(test_minenumsize_alias_uses_packenum_rules);
@@ -16651,6 +16815,8 @@ int main() {
   RUN_TEST(test_low_high_on_local_array_type_lowers_to_index_bounds);
   RUN_TEST(test_system_qualified_low_high_lowers_like_unqualified);
   RUN_TEST(test_non_system_qualified_low_call_stays_unit_call);
+  RUN_TEST(test_source_calls_shadow_low_high_ord_sizeof_intrinsics);
+  RUN_TEST(test_type_named_high_remains_a_typecast);
   RUN_TEST(test_system_qualified_runtime_exports_use_implicit_unit);
   RUN_TEST(test_system_extensionseparator_resolves_as_implicit_runtime_const);
   RUN_TEST(test_system_member_access_respects_value_shadowing);
@@ -16737,10 +16903,14 @@ int main() {
   RUN_TEST(test_parenthesized_record_const);
   RUN_TEST(test_call_arg_literal_is_lowered_to_parameter_value);
   RUN_TEST(test_explicit_integer_cast_literal_uses_converted_value);
-  RUN_TEST(test_assignment_const_expr_is_lowered_to_target_value);
+  RUN_TEST(test_executable_integer_expression_is_not_constant_folded);
   RUN_TEST(test_implicit_const_expr_wraps_without_emit_error);
   RUN_TEST(test_explicit_integer_cast_const_expr_wraps_without_error);
   RUN_TEST(test_untyped_integer_const_uses_pascal_initial_type);
+  RUN_TEST(test_constant_evaluator_uses_target_width_for_pointer_sized_shift);
+  RUN_TEST(test_constant_evaluator_handles_pascal_shift_and_ordinal_bounds);
+  RUN_TEST(test_constant_integer_domain_extends_through_qword);
+  RUN_TEST(test_constant_evaluator_rejects_unsigned_constant_overflow);
   RUN_TEST(test_typed_const_read_is_not_folded_through_initializer);
   RUN_TEST(test_exit_literal_uses_function_result_type);
   RUN_TEST(test_local_result_name_is_rejected_in_function_body);

@@ -297,23 +297,28 @@ bool EmitAnalysis::const_param_needs_const_ref(const TypeExpr*) {
 
 const TypeExpr* EmitAnalysis::deduce_const_decl_type(const ConstDecl& cd) {
   if (cd.type) return cd.type.get();
+  // Evaluation may use a narrower integer carrier for the value, but that
+  // must not replace an expression's resolved Pascal result type. In
+  // particular, Low/High can return a distinct or subrange type.
+  if (const TypeExpr* type = deduce_type(*cd.value)) return type;
   auto info = eval_const_int_expr(*cd.value);
   if (info && info->type) return integer_type(info->type);
   if (cd.value->kind == Kind::SetLit) {
     return deduce_set_literal_type(static_cast<const SetLit&>(*cd.value));
   }
-  return cd.value ? deduce_type(*cd.value) : nullptr;
+  return nullptr;
 }
 
 const TypeExpr* EmitAnalysis::deduce_const_info_type(const ConstInfo& c) {
   if (c.type) return c.type.get();
   if (!c.value) return nullptr;
+  if (const TypeExpr* type = deduce_type(*c.value)) return type;
   auto info = eval_const_int_expr(*c.value);
   if (info && info->type) return integer_type(info->type);
   if (c.value->kind == Kind::SetLit) {
     return deduce_set_literal_type(static_cast<const SetLit&>(*c.value));
   }
-  return deduce_type(*c.value);
+  return nullptr;
 }
 
 const TySet* EmitAnalysis::synthesize_set_type(
@@ -533,8 +538,11 @@ EmitAnalysis::eval_ordinal_expr(const Expr& e) {
     }
     if (const EnumMemberInfo* member = find_visible_enum_member(low);
         member && member->owner) {
-      return OrdinalExprValue{member->ordinal, OrdinalFamily::Enum,
-                              member->owner->descriptor};
+      if (std::optional<int64_t> ordinal = enum_member_ordinal(*member)) {
+        return OrdinalExprValue{*ordinal, OrdinalFamily::Enum,
+                                member->owner->descriptor};
+      }
+      return std::nullopt;
     }
   }
   if (e.kind == Kind::Member) {
@@ -546,17 +554,20 @@ EmitAnalysis::eval_ordinal_expr(const Expr& e) {
               registry_.lookup_enum_member_in_unit(
                   unit_member->unit_name, unit_member->member_name);
           member && member->owner) {
-        return OrdinalExprValue{member->ordinal, OrdinalFamily::Enum,
-                                member->owner->descriptor};
+        if (std::optional<int64_t> ordinal = enum_member_ordinal(*member)) {
+          return OrdinalExprValue{*ordinal, OrdinalFamily::Enum,
+                                  member->owner->descriptor};
+        }
+        return std::nullopt;
       }
     }
   }
   if (e.kind == Kind::Call) {
     const auto& call = static_cast<const Call&>(e);
-    if (call.callee && call.callee->kind == Kind::Ident &&
-        call.args.size() == 1 && call.args[0]) {
-      const std::string name =
-          ascii_lower(static_cast<const Ident&>(*call.callee).name);
+    if (call.callee && call.args.size() == 1 && call.args[0]) {
+      const std::optional<std::string> intrinsic =
+          intrinsic_call_name(*call.callee);
+      const std::string name = intrinsic ? *intrinsic : std::string{};
       if (name == "low" || name == "high") {
         if (const TypeExpr* type = const_intrinsic_type_arg(*call.args[0])) {
           if (std::optional<OrdinalDomain> domain =
@@ -631,6 +642,108 @@ EmitAnalysis::eval_ordinal_expr(const Expr& e) {
   return std::nullopt;
 }
 
+std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_low_high(
+    const TypeExpr* type, bool want_low) {
+  if (!type) return std::nullopt;
+  const TypeExpr* shape = semantic_shape_type(type);
+  const PrimitiveInfo* primitive = primitive_info_for_type(type);
+  if (primitive) {
+    if (primitive->kind == PrimitiveKind::Boolean) {
+      const uint64_t bits = want_low ? 0 : 1;
+      return ConstIntExprInfo{static_cast<int64_t>(bits), bits, primitive};
+    }
+    if (primitive->kind == PrimitiveKind::Char) {
+      const uint64_t bits = want_low ? 0 : 255;
+      return ConstIntExprInfo{static_cast<int64_t>(bits), bits, primitive};
+    }
+    if (primitive->kind == PrimitiveKind::WideChar) {
+      const uint64_t bits = want_low ? 0 : 65535;
+      return ConstIntExprInfo{static_cast<int64_t>(bits), bits, primitive};
+    }
+    if (primitive->int_kind != PrimitiveIntKind::None) {
+      const uint8_t width = resolved_primitive_bits(*primitive);
+      if (primitive->int_kind == PrimitiveIntKind::Unsigned) {
+        const uint64_t bits =
+            want_low ? 0 : unsigned_mask_for_bits(width);
+        return ConstIntExprInfo{static_cast<int64_t>(bits), bits, primitive};
+      }
+      const int64_t value =
+          want_low ? signed_min_for_bits(width) : signed_max_for_bits(width);
+      return ConstIntExprInfo{value, static_cast<uint64_t>(value), primitive};
+    }
+  }
+  if (shape && shape->kind == Kind::TySet) {
+    return eval_const_low_high(
+        static_cast<const TySet&>(*shape).element.get(), want_low);
+  }
+  if (std::optional<OrdinalDomain> domain =
+          ordinal_domain_for_type(type)) {
+    const int64_t value = want_low ? domain->low : domain->high;
+    return ConstIntExprInfo{
+        value, primitive_info_for_value(registry_, value)};
+  }
+  return std::nullopt;
+}
+
+std::optional<int64_t> EmitAnalysis::enum_member_ordinal(
+    const EnumMemberInfo& member) {
+  if (!member.owner || !member.owner->type ||
+      member.member_index >= member.owner->members.size()) {
+    return std::nullopt;
+  }
+  auto [it, inserted] = enum_ordinal_cache_.try_emplace(
+      member.owner, member.owner->members.size());
+  if (inserted || !it->second[member.member_index]) {
+    evaluate_enum_ordinals(*member.owner);
+  }
+  return it->second[member.member_index];
+}
+
+void EmitAnalysis::evaluate_enum_ordinals(const EnumInfoReg& info) {
+  auto found = enum_ordinal_cache_.find(&info);
+  if (found == enum_ordinal_cache_.end() || !info.type) return;
+  if (!enums_being_evaluated_.insert(&info).second) return;
+
+  std::vector<std::optional<int64_t>>& values = found->second;
+  const TypeLookupContext* context =
+      registry_.lookup_context_for_type(info.type);
+  int64_t previous = -1;
+  bool have_previous = false;
+  for (size_t index = 0;
+       index < info.type->members.size() && index < values.size(); ++index) {
+    if (!values[index]) {
+      const EnumMember& member = info.type->members[index];
+      if (member.value) {
+        std::optional<ConstIntExprInfo> value =
+            eval_const_int_expr(*member.value, context);
+        if (!value || (value->type &&
+                       value->type->int_kind == PrimitiveIntKind::Unsigned &&
+                       value->bits >
+                           static_cast<uint64_t>(
+                               std::numeric_limits<int64_t>::max()))) {
+          break;
+        }
+        values[index] = value->value;
+      } else if (!have_previous) {
+        values[index] = 0;
+      } else {
+        int64_t next = 0;
+        if (!checked_add_int64(previous, 1, &next)) break;
+        values[index] = next;
+      }
+    }
+    if (!values[index]) break;
+    if (have_previous && *values[index] <= previous) {
+      const EnumMember& member = info.type->members[index];
+      report_error(member.value ? member.value->loc : info.type->loc,
+                   "enum values must be strictly ascending");
+    }
+    previous = *values[index];
+    have_previous = true;
+  }
+  enums_being_evaluated_.erase(&info);
+}
+
 std::optional<OrdinalDomain> EmitAnalysis::ordinal_domain_for_type(
     const TypeExpr* t) {
   const TypeLookupContext* context =
@@ -676,6 +789,21 @@ std::optional<OrdinalDomain> EmitAnalysis::ordinal_domain_for_type(
   }
   if (t->kind == Kind::TyEnum) {
     const auto& en = static_cast<const TyEnum&>(*t);
+    const EnumInfoReg* info =
+        en.descriptor ? en.descriptor->enum_info() : nullptr;
+    if (info && !info->members.empty()) {
+      const EnumMemberInfo first{info, 0};
+      const EnumMemberInfo last{info, info->members.size() - 1};
+      std::optional<int64_t> low = enum_member_ordinal(first);
+      std::optional<int64_t> high = enum_member_ordinal(last);
+      if (low && high) {
+        return OrdinalDomain{.family = OrdinalFamily::Enum,
+                             .low = *low,
+                             .high = *high,
+                             .enum_key = t->descriptor};
+      }
+      return std::nullopt;
+    }
     return OrdinalDomain{
         .family = OrdinalFamily::Enum,
         .low = 0,
@@ -952,7 +1080,8 @@ std::optional<ConvertedConstInt> EmitAnalysis::convert_const_int_value(
 
 std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_cast(
     const Call& c,
-    std::unordered_set<std::string>* visiting_const_names) {
+    std::unordered_set<std::string>* visiting_const_names,
+    bool* overflow) {
   if (c.args.size() != 1) return std::nullopt;
   const TypeSymbol* symbol = explicit_typecast_target_symbol(c);
   const TypeDescriptor* descriptor = symbol ? symbol->descriptor : nullptr;
@@ -962,7 +1091,8 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_cast(
           ? descriptor->type
           : nullptr;
   if (!cast_type) return std::nullopt;
-  auto arg = eval_const_int_expr(*c.args[0], visiting_const_names);
+  auto arg =
+      eval_const_int_expr_impl(*c.args[0], visiting_const_names, overflow);
   if (!arg) return std::nullopt;
   auto converted =
       convert_const_int_value(c.loc, *arg, cast_type, true, false);
@@ -997,19 +1127,21 @@ const TypeExpr* EmitAnalysis::const_intrinsic_type_arg(const Expr& arg) {
 
 std::optional<ConstIntExprInfo> EmitAnalysis::fold_untyped_const_decl(
     const ConstDecl& cd,
-    std::unordered_set<std::string>* visiting_const_names) {
+    std::unordered_set<std::string>* visiting_const_names,
+    bool* overflow) {
   // Untyped `const X = ...` is a compile-time constant. Typed
   // `const X: T = ...` has storage identity, so folding later references
   // through the initializer would erase aliasing/address semantics.
   if (cd.type || !cd.value) return std::nullopt;
-  return eval_const_int_expr(*cd.value, visiting_const_names);
+  return eval_const_int_expr_impl(*cd.value, visiting_const_names, overflow);
 }
 
 std::optional<ConstIntExprInfo> EmitAnalysis::fold_untyped_const_info(
     const ConstInfo& c,
-    std::unordered_set<std::string>* visiting_const_names) {
+    std::unordered_set<std::string>* visiting_const_names,
+    bool* overflow) {
   if (c.type || !c.value) return std::nullopt;
-  return eval_const_int_expr(*c.value, visiting_const_names);
+  return eval_const_int_expr_impl(*c.value, visiting_const_names, overflow);
 }
 
 bool EmitAnalysis::type_is_string_like(const TypeExpr* t) {
@@ -1258,7 +1390,22 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
 }
 
 std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
-    const Expr& e, std::unordered_set<std::string>* visiting_const_names) {
+    const Expr& e) {
+  std::unordered_set<std::string> visiting_const_names;
+  return eval_const_int_expr_impl(e, &visiting_const_names, nullptr);
+}
+
+bool EmitAnalysis::required_const_int_expr_overflows(const Expr& e) {
+  std::unordered_set<std::string> visiting_const_names;
+  bool overflow = false;
+  (void)eval_const_int_expr_impl(e, &visiting_const_names, &overflow);
+  return overflow;
+}
+
+std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr_impl(
+    const Expr& e,
+    std::unordered_set<std::string>* visiting_const_names,
+    bool* overflow) {
   const auto type_for_value = [&](int64_t value) {
     return primitive_info_for_value(registry_, value);
   };
@@ -1276,36 +1423,118 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
     }
     case Kind::Unary: {
       const auto& u = static_cast<const Unary&>(e);
-      auto operand = eval_const_int_expr(*u.operand, visiting_const_names);
+      auto operand =
+          eval_const_int_expr_impl(*u.operand, visiting_const_names, overflow);
       if (!operand) return std::nullopt;
       if (u.op == UnOp::Plus) return operand;
       if (u.op != UnOp::Neg) return std::nullopt;
       int64_t value = 0;
-      if (!checked_sub_int64(0, operand->value, &value)) return std::nullopt;
+      if (!checked_sub_int64(0, operand->value, &value)) {
+        if (overflow) *overflow = true;
+        return std::nullopt;
+      }
       return ConstIntExprInfo{value, type_for_value(value)};
     }
     case Kind::Binary: {
       const auto& b = static_cast<const Binary&>(e);
-      auto lhs = eval_const_int_expr(*b.lhs, visiting_const_names);
-      auto rhs = eval_const_int_expr(*b.rhs, visiting_const_names);
+      auto lhs =
+          eval_const_int_expr_impl(*b.lhs, visiting_const_names, overflow);
+      auto rhs =
+          eval_const_int_expr_impl(*b.rhs, visiting_const_names, overflow);
       if (!lhs || !rhs) return std::nullopt;
+
+      const auto is_negative = [](const ConstIntExprInfo& operand) {
+        return operand.value < 0 &&
+               !(operand.type &&
+                 operand.type->int_kind == PrimitiveIntKind::Unsigned);
+      };
+      const auto magnitude = [&](const ConstIntExprInfo& operand) {
+        return is_negative(operand) ? uint64_t{0} - operand.bits
+                                    : operand.bits;
+      };
+      const auto make_result =
+          [&](bool negative,
+              uint64_t result) -> std::optional<ConstIntExprInfo> {
+        if (negative) {
+          const uint64_t min_int64_magnitude = uint64_t{1} << 63;
+          if (result > min_int64_magnitude) {
+            if (overflow) *overflow = true;
+            return std::nullopt;
+          }
+          const int64_t value =
+              result == min_int64_magnitude
+                  ? std::numeric_limits<int64_t>::min()
+                  : -static_cast<int64_t>(result);
+          return ConstIntExprInfo{value, type_for_value(value)};
+        }
+        if (result <= static_cast<uint64_t>(
+                          std::numeric_limits<int64_t>::max())) {
+          const int64_t value = static_cast<int64_t>(result);
+          return ConstIntExprInfo{value, type_for_value(value)};
+        }
+        return ConstIntExprInfo{
+            static_cast<int64_t>(result), result,
+            ordinal_integer_primitive(
+                registry_, PrimitiveIntKind::Unsigned, 64)};
+      };
+      const auto add_signed_magnitudes =
+          [&](bool lhs_negative, uint64_t lhs_magnitude,
+              bool rhs_negative, uint64_t rhs_magnitude)
+          -> std::optional<ConstIntExprInfo> {
+        if (lhs_negative != rhs_negative) {
+          if (lhs_magnitude >= rhs_magnitude) {
+            return make_result(lhs_negative,
+                               lhs_magnitude - rhs_magnitude);
+          }
+          return make_result(rhs_negative,
+                             rhs_magnitude - lhs_magnitude);
+        }
+        if (lhs_magnitude > UINT64_MAX - rhs_magnitude) {
+          if (overflow) *overflow = true;
+          return std::nullopt;
+        }
+        return make_result(lhs_negative,
+                           lhs_magnitude + rhs_magnitude);
+      };
+
+      const bool lhs_negative = is_negative(*lhs);
+      const bool rhs_negative = is_negative(*rhs);
+      const uint64_t lhs_magnitude = magnitude(*lhs);
+      const uint64_t rhs_magnitude = magnitude(*rhs);
+      if (b.op == BinOp::Add) {
+        return add_signed_magnitudes(
+            lhs_negative, lhs_magnitude, rhs_negative, rhs_magnitude);
+      }
+      if (b.op == BinOp::Sub) {
+        return add_signed_magnitudes(
+            lhs_negative, lhs_magnitude, !rhs_negative, rhs_magnitude);
+      }
+      if (b.op == BinOp::Mul || b.op == BinOp::IntDiv ||
+          b.op == BinOp::Mod) {
+        if (rhs_magnitude == 0 &&
+            (b.op == BinOp::IntDiv || b.op == BinOp::Mod)) {
+          return std::nullopt;
+        }
+        if (b.op == BinOp::Mul &&
+            rhs_magnitude != 0 &&
+            lhs_magnitude > UINT64_MAX / rhs_magnitude) {
+          if (overflow) *overflow = true;
+          return std::nullopt;
+        }
+        if (b.op == BinOp::Mul) {
+          return make_result(lhs_negative != rhs_negative,
+                             lhs_magnitude * rhs_magnitude);
+        }
+        if (b.op == BinOp::IntDiv) {
+          return make_result(lhs_negative != rhs_negative,
+                             lhs_magnitude / rhs_magnitude);
+        }
+        return make_result(lhs_negative,
+                           lhs_magnitude % rhs_magnitude);
+      }
+
       int64_t value = 0;
       switch (b.op) {
-        case BinOp::Add:
-          if (!checked_add_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
-        case BinOp::Sub:
-          if (!checked_sub_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
-        case BinOp::Mul:
-          if (!checked_mul_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
-        case BinOp::IntDiv:
-          if (!checked_div_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
-        case BinOp::Mod:
-          if (!checked_mod_int64(lhs->value, rhs->value, &value)) return std::nullopt;
-          break;
         case BinOp::Shl:
           if (!checked_pascal_shl_int64(
                   lhs->value,
@@ -1342,6 +1571,11 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
           value = static_cast<int64_t>(static_cast<uint64_t>(lhs->value) ^
                                        static_cast<uint64_t>(rhs->value));
           break;
+        case BinOp::Add:
+        case BinOp::Sub:
+        case BinOp::Mul:
+        case BinOp::IntDiv:
+        case BinOp::Mod:
         default:
           return std::nullopt;
       }
@@ -1349,14 +1583,22 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
     }
     case Kind::Call: {
       const auto& c = static_cast<const Call&>(e);
-      if (c.args.size() == 1 && c.callee->kind == Kind::Ident) {
-        const auto& callee = static_cast<const Ident&>(*c.callee);
-        const std::string callee_name = ascii_lower(callee.name);
+      if (c.args.size() == 1 && c.callee) {
+        const std::optional<std::string> intrinsic =
+            intrinsic_call_name(*c.callee);
+        const std::string callee_name =
+            intrinsic ? *intrinsic : std::string{};
         if (callee_name == "length" && c.args[0]->kind == Kind::StringLit) {
           const auto& s = static_cast<const StringLit&>(*c.args[0]);
           if (s.value.size() <= static_cast<size_t>(INT64_MAX)) {
             int64_t value = static_cast<int64_t>(s.value.size());
             return ConstIntExprInfo{value, type_for_value(value)};
+          }
+        }
+        if (callee_name == "low" || callee_name == "high") {
+          if (const TypeExpr* type =
+                  const_intrinsic_type_arg(*c.args[0])) {
+            return eval_const_low_high(type, callee_name == "low");
           }
         }
         if ((callee_name == "pred" || callee_name == "succ") && c.args[0]) {
@@ -1373,10 +1615,11 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
         if (callee_name == "ord" && c.args[0]) {
           if (c.args[0]->kind == Kind::Call) {
             const auto& inner = static_cast<const Call&>(*c.args[0]);
-            if (inner.callee && inner.callee->kind == Kind::Ident &&
-                inner.args.size() == 1 && inner.args[0]) {
+            if (inner.callee && inner.args.size() == 1 && inner.args[0]) {
+              const std::optional<std::string> inner_intrinsic =
+                  intrinsic_call_name(*inner.callee);
               const std::string inner_name =
-                  ascii_lower(static_cast<const Ident&>(*inner.callee).name);
+                  inner_intrinsic ? *inner_intrinsic : std::string{};
               if (inner_name == "low" || inner_name == "high") {
                 // `high(T)` normally lowers to an emitted enum-bound helper.
                 // Inside `ord(...)` in a type bound, the integer folder needs
@@ -1398,25 +1641,26 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr(
           }
         }
       }
-      return eval_const_int_cast(c, visiting_const_names);
+      return eval_const_int_cast(c, visiting_const_names, overflow);
     }
     case Kind::Ident: {
       const auto& id = static_cast<const Ident&>(e);
       if (!visiting_const_names) {
         std::unordered_set<std::string> local_visiting;
-        return eval_const_int_expr(e, &local_visiting);
+        return eval_const_int_expr_impl(e, &local_visiting, overflow);
       }
       if (!visiting_const_names->insert(id.name).second) return std::nullopt;
       std::optional<ConstIntExprInfo> out;
 
       auto lit = scope_.local_consts.find(id.name);
       if (lit != scope_.local_consts.end() && lit->second && lit->second->value) {
-        out = fold_untyped_const_decl(*lit->second, visiting_const_names);
+        out = fold_untyped_const_decl(*lit->second, visiting_const_names,
+                                      overflow);
       } else {
         for (const TypeLookupContext* frame = scope_.type_scope; frame;
              frame = frame->parent) {
           if (const auto* c = scope_frame_find_const(*frame, id.name)) {
-            out = fold_untyped_const_info(*c, visiting_const_names);
+            out = fold_untyped_const_info(*c, visiting_const_names, overflow);
             break;
           }
         }
@@ -2057,7 +2301,19 @@ EmitAnalysis::resolve_unit_qualified_member(const ast::Member& mem) {
 std::optional<std::string>
 EmitAnalysis::intrinsic_call_name(const Expr& callee) {
   if (callee.kind == Kind::Ident) {
-    return static_cast<const Ident&>(callee).name;
+    // Typecasts share call syntax with intrinsics. The parser/type registry
+    // has already bound a visible type callee, so it takes precedence over the
+    // implicit runtime callable with the same spelling.
+    if (std::optional<const TypeSymbol*> type =
+            registry_.type_name_expression_result(&callee);
+        type && *type) {
+      return std::nullopt;
+    }
+    const std::string& name = static_cast<const Ident&>(callee).name;
+    ResolveResult resolved = resolve_name_provider_.resolve_name(name);
+    return resolved.kind == ResolvedKind::RtBuiltin
+               ? std::optional<std::string>(name)
+               : std::nullopt;
   }
   if (callee.kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(callee);

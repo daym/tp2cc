@@ -502,7 +502,9 @@ const PrimitiveInfo* primitive_info_for_value(const TypeRegistry& registry,
     return ordinal_integer_primitive(
         registry, PrimitiveIntKind::Signed, 32);
   }
-  if (value >= 0) {
+  if (value >= 0 &&
+      static_cast<uint64_t>(value) <=
+          static_cast<uint64_t>(UINT32_MAX)) {
     return ordinal_integer_primitive(
         registry, PrimitiveIntKind::Unsigned, 32);
   }
@@ -531,73 +533,6 @@ bool checked_sub_int64(int64_t a, int64_t b, int64_t* out) {
     return false;
   }
   *out = a - b;
-  return true;
-}
-
-bool checked_mul_int64(int64_t a, int64_t b, int64_t* out) {
-  if (a == 0 || b == 0) {
-    *out = 0;
-    return true;
-  }
-  if (a == -1) {
-    if (b == INT64_MIN) return false;
-    *out = -b;
-    return true;
-  }
-  if (b == -1) {
-    if (a == INT64_MIN) return false;
-    *out = -a;
-    return true;
-  }
-  if (a > 0) {
-    if (b > 0) {
-      if (a > INT64_MAX / b) return false;
-    } else if (b < INT64_MIN / a) {
-      return false;
-    }
-  } else if (b > 0) {
-    if (a < INT64_MIN / b) return false;
-  } else if (a != 0 && b < INT64_MAX / a) {
-    return false;
-  }
-  *out = a * b;
-  return true;
-}
-
-bool checked_div_int64(int64_t a, int64_t b, int64_t* out) {
-  if (b == 0) return false;
-  if (a == INT64_MIN && b == -1) return false;
-  *out = a / b;
-  return true;
-}
-
-bool checked_mod_int64(int64_t a, int64_t b, int64_t* out) {
-  if (b == 0) return false;
-  if (a == INT64_MIN && b == -1) {
-    *out = 0;
-    return true;
-  }
-  *out = a % b;
-  return true;
-}
-
-bool checked_shift_count(int64_t shift) {
-  return shift >= 0 && shift < 64;
-}
-
-bool checked_shl_int64(int64_t a, int64_t shift, int64_t* out) {
-  if (!checked_shift_count(shift)) return false;
-  uint64_t bits = static_cast<uint64_t>(a);
-  bits = low_bits(bits << static_cast<unsigned>(shift), 64);
-  *out = static_cast<int64_t>(bits);
-  return true;
-}
-
-bool checked_shr_int64(int64_t a, int64_t shift, int64_t* out) {
-  if (!checked_shift_count(shift)) return false;
-  uint64_t bits = static_cast<uint64_t>(a);
-  bits >>= static_cast<unsigned>(shift);
-  *out = static_cast<int64_t>(bits);
   return true;
 }
 

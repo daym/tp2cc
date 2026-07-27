@@ -308,7 +308,7 @@ std::string EmitValues::apply_target_pointer_conversion(
 
 std::optional<std::string> EmitValues::maybe_lower_target_pointer_arithmetic(
     const Expr& e, const TypeExpr* target, bool explicit_conversion,
-    bool typed_const_initializer) {
+    bool constant_initializer) {
   const TypeExpr* canon_target = analysis_.semantic_shape_type(target);
   if (!canon_target || !storage_.type_is_pointerish(canon_target) ||
       e.kind != Kind::Binary) {
@@ -336,13 +336,13 @@ std::optional<std::string> EmitValues::maybe_lower_target_pointer_arithmetic(
   // The actual pointer adaptation remains in coerce_pointer_like_text.
   if (lhs_ptr && rhs_int) {
     return "(" + const_value_to_cxx_impl(*b.lhs, target, explicit_conversion,
-                                         typed_const_initializer) +
+                                         constant_initializer) +
            op + expr_ops_.expr_to_cxx(*b.rhs) + ")";
   }
   if (b.op == BinOp::Add && lhs_int && rhs_ptr) {
     return "(" + expr_ops_.expr_to_cxx(*b.lhs) + op +
            const_value_to_cxx_impl(*b.rhs, target, explicit_conversion,
-                                   typed_const_initializer) +
+                                   constant_initializer) +
            ")";
   }
   return std::nullopt;
@@ -386,13 +386,13 @@ bool EmitValues::type_is_integer_primitive(const TypeExpr* t) {
 std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target,
                                            bool explicit_conversion) {
   return const_value_to_cxx_impl(e, target, explicit_conversion,
-                                 /*typed_const_initializer=*/false);
+                                 /*constant_initializer=*/false);
 }
 
-std::string EmitValues::typed_const_value_to_cxx(
+std::string EmitValues::const_initializer_to_cxx(
     const Expr& e, const TypeExpr* target, bool explicit_conversion) {
   return const_value_to_cxx_impl(e, target, explicit_conversion,
-                                 /*typed_const_initializer=*/true);
+                                 /*constant_initializer=*/true);
 }
 
 bool EmitValues::can_convert_proc_value(const Expr& e, const TypeExpr* target,
@@ -573,7 +573,7 @@ bool EmitValues::can_convert_value_to_type(const Expr& e,
 
 std::string EmitValues::const_value_to_cxx_impl(
     const Expr& e, const TypeExpr* target, bool explicit_conversion,
-    bool typed_const_initializer) {
+    bool constant_initializer) {
   if (!target) return expr_ops_.expr_to_cxx(e);
   const TypeLookupContext* target_context =
       registry_.lookup_context_for_type(target);
@@ -636,7 +636,7 @@ std::string EmitValues::const_value_to_cxx_impl(
       if (i) out += ", ";
       out += const_value_to_cxx_impl(*ac.elements[i], elem_type,
                                      explicit_conversion,
-                                     typed_const_initializer);
+                                     constant_initializer);
     }
     out += "}";
     if (canon && canon->kind == Kind::TyArray) return "{.data = " + out + "}";
@@ -654,7 +654,7 @@ std::string EmitValues::const_value_to_cxx_impl(
       std::string field_val =
           const_value_to_cxx_impl(*rc.fields[i].second, field_type,
                                   explicit_conversion,
-                                  typed_const_initializer);
+                                  constant_initializer);
       out += "." + field_name + " = " + field_val;
     }
     out += "}";
@@ -664,11 +664,14 @@ std::string EmitValues::const_value_to_cxx_impl(
     return set_literal_to_cxx(static_cast<const SetLit&>(e), target);
   }
   if (auto text = maybe_lower_target_pointer_arithmetic(
-          e, target, explicit_conversion, typed_const_initializer)) {
+          e, target, explicit_conversion, constant_initializer)) {
     return *text;
   }
-  if (auto text = maybe_convert_const_int_expr(e, target, explicit_conversion)) {
-    return *text;
+  if (constant_initializer || e.kind != Kind::Binary) {
+    if (auto text =
+            maybe_convert_const_int_expr(e, target, explicit_conversion)) {
+      return *text;
+    }
   }
   if (auto text = maybe_lower_metaclass_value(e, target)) {
     return *text;
@@ -742,6 +745,16 @@ std::string EmitValues::const_value_to_cxx_impl(
 std::optional<std::string> EmitValues::maybe_convert_const_int_expr(
     const Expr& e, const TypeExpr* target, bool explicit_conversion) {
   if (!target) return std::nullopt;
+  // Named constants and intrinsics already have resolved Pascal types and
+  // target-correct lowerings. Replacing them with evaluator literals would
+  // discard declaration qualification and enum/subrange result identity.
+  if (e.kind == Kind::Ident) return std::nullopt;
+  if (e.kind == Kind::Call) {
+    const auto& call = static_cast<const Call&>(e);
+    if (call.callee && analysis_.intrinsic_call_name(*call.callee)) {
+      return std::nullopt;
+    }
+  }
   auto value = analysis_.eval_const_int_expr(e);
   if (!value) return std::nullopt;
   auto converted = analysis_.convert_const_int_value(
