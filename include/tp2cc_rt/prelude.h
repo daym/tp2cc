@@ -903,10 +903,11 @@ struct tp2cc_AnsiStringCharValue {
 
 struct tp2cc_AnsiStringCharRef {
   tp2cc_AnsiString* owner = nullptr;
-  int index = 0;  // zero-based byte index within the payload
+  std::ptrdiff_t index = 0;  // zero-based byte index within the payload
 
   constexpr tp2cc_AnsiStringCharRef() = default;
-  constexpr tp2cc_AnsiStringCharRef(tp2cc_AnsiString* owner_, int index_)
+  constexpr tp2cc_AnsiStringCharRef(tp2cc_AnsiString* owner_,
+                                    std::ptrdiff_t index_)
       : owner(owner_), index(index_) {}
   constexpr tp2cc_AnsiStringCharRef(const tp2cc_AnsiStringCharRef&) = default;
 
@@ -1018,12 +1019,19 @@ class tp2cc_AnsiString {
     return out;
   }
 
-  tp2cc_AnsiStringCharRef operator[](int i) {
-    return {this, i - 1};
+  // Pascal string indexing accepts ordinal carriers directly. Keep that
+  // resolved carrier here so emission does not invent a target-sized cast.
+  template <typename Index>
+    requires(std::is_integral_v<Index> || std::is_enum_v<Index>)
+  tp2cc_AnsiStringCharRef operator[](Index i) {
+    return {this, static_cast<std::ptrdiff_t>(i) - 1};
   }
 
-  tp2cc_AnsiStringCharValue operator[](int i) const {
-    return tp2cc_AnsiStringCharValue{data + (i - 1)};
+  template <typename Index>
+    requires(std::is_integral_v<Index> || std::is_enum_v<Index>)
+  tp2cc_AnsiStringCharValue operator[](Index i) const {
+    return tp2cc_AnsiStringCharValue{
+        data + (static_cast<std::ptrdiff_t>(i) - 1)};
   }
 
  private:

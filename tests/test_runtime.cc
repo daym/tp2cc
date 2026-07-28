@@ -523,6 +523,12 @@ void test_ansistring_index_proxy_has_byte_cast_like_shortstring() {
   uint8_t z = static_cast<uint8_t>(s[2]);
   CHECK_EQ(a, static_cast<uint8_t>('A'));
   CHECK_EQ(z, static_cast<uint8_t>('z'));
+  // AnsiString indexes may use any Pascal integer carrier. Verify that the
+  // runtime accepts signed and unsigned 64-bit carriers without narrowing them.
+  int64_t first = 1;
+  uint64_t second = 2;
+  CHECK_EQ(static_cast<uint8_t>(s[first]), static_cast<uint8_t>('A'));
+  CHECK_EQ(static_cast<uint8_t>(s[second]), static_cast<uint8_t>('z'));
   // Mirror the ShortString side so the symmetry is locked.
   tp2cc_ShortString<> ss = tp2cc_shortstring_of<>("Az");
   CHECK_EQ(static_cast<uint8_t>(ss[1]), static_cast<uint8_t>('A'));

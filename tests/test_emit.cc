@@ -4550,6 +4550,24 @@ void test_var_ansistring_call_keeps_lvalue_storage() {
   CHECK(!contains(out.impl, "p_replace(::rt::tp2cc_ansistring_of"));
 }
 
+void test_ansistring_index_preserves_resolved_index_type() {
+  auto out = compile_snippet_for_target(
+      "unit u;\n"
+      "interface\n"
+      "procedure run(var s : ansistring; i : longint; c : char);\n"
+      "implementation\n"
+      "procedure run(var s : ansistring; i : longint; c : char);\n"
+      "begin\n"
+      "  c := s[i + 1];\n"
+      "  s[i + 1] := c;\n"
+      "end;\n"
+      "end.\n",
+      TargetInfo{.pointer_bits = 64});
+  CHECK(contains(out.impl,
+                 "p_s[::rt::tp2cc_wrap_add<int64_t>("));
+  CHECK(!contains(out.impl, "p_s[static_cast<::rt::t_ptruint>("));
+}
+
 void test_overloaded_string_and_bool_call_keeps_boolean_argument_raw() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -17438,6 +17456,7 @@ int main() {
   RUN_TEST(test_var_runtime_shortstring_alias_uses_storage_ref);
   RUN_TEST(test_procvar_var_shortstring_call_uses_storage_ref);
   RUN_TEST(test_var_ansistring_call_keeps_lvalue_storage);
+  RUN_TEST(test_ansistring_index_preserves_resolved_index_type);
   RUN_TEST(test_overloaded_string_and_bool_call_keeps_boolean_argument_raw);
   RUN_TEST(test_custom_operator_declarations_emit_cxx_operators_and_assignment_helpers);
   RUN_TEST(test_implementation_operator_sees_interface_operator_overload);
