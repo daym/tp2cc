@@ -297,9 +297,15 @@ bool EmitAnalysis::const_param_needs_const_ref(const TypeExpr*) {
 
 const TypeExpr* EmitAnalysis::deduce_const_decl_type(const ConstDecl& cd) {
   if (cd.type) return cd.type.get();
-  // Evaluation may use a narrower integer carrier for the value, but that
-  // must not replace an expression's resolved Pascal result type. In
-  // particular, Low/High can return a distinct or subrange type.
+  // A required binary constant is reified as a new Pascal integer literal;
+  // its initial type follows the evaluated value, not the carrier that an
+  // executable occurrence of the same operator would use. Other expression
+  // forms keep their resolved declaration identity, notably Low/High of
+  // distinct and subrange types.
+  if (cd.value->kind == Kind::Binary) {
+    auto info = eval_const_int_expr(*cd.value);
+    if (info && info->type) return integer_type(info->type);
+  }
   if (const TypeExpr* type = deduce_type(*cd.value)) return type;
   auto info = eval_const_int_expr(*cd.value);
   if (info && info->type) return integer_type(info->type);
@@ -312,6 +318,10 @@ const TypeExpr* EmitAnalysis::deduce_const_decl_type(const ConstDecl& cd) {
 const TypeExpr* EmitAnalysis::deduce_const_info_type(const ConstInfo& c) {
   if (c.type) return c.type.get();
   if (!c.value) return nullptr;
+  if (c.value->kind == Kind::Binary) {
+    auto info = eval_const_int_expr(*c.value);
+    if (info && info->type) return integer_type(info->type);
+  }
   if (const TypeExpr* type = deduce_type(*c.value)) return type;
   auto info = eval_const_int_expr(*c.value);
   if (info && info->type) return integer_type(info->type);
@@ -544,6 +554,20 @@ EmitAnalysis::eval_ordinal_expr(const Expr& e) {
       }
       return std::nullopt;
     }
+    if (const TypeExpr* type = deduce_type(e)) {
+      const std::optional<OrdinalDomain> domain =
+          ordinal_domain_for_type(type);
+      const std::optional<ConstIntExprInfo> value =
+          domain ? eval_const_int_expr(e) : std::nullopt;
+      if (domain && value) {
+        // An untyped constant initialized from an enum label retains that
+        // enum's Pascal type. Set bounds such as `First..LastAlias` therefore
+        // have one enum domain even though the alias's stored value is an
+        // integer ordinal.
+        return OrdinalExprValue{value->value, domain->family,
+                                domain->enum_key};
+      }
+    }
   }
   if (e.kind == Kind::Member) {
     const auto& mem = static_cast<const Member&>(e);
@@ -579,17 +603,17 @@ EmitAnalysis::eval_ordinal_expr(const Expr& e) {
         }
       }
       if (name == "pred" || name == "succ") {
-        if (std::optional<OrdinalExprValue> value =
-                eval_ordinal_expr(*call.args[0])) {
-          int64_t adjusted = value->value;
-          const bool valid =
-              name == "pred"
-                  ? checked_sub_int64(adjusted, 1, &adjusted)
-                  : checked_add_int64(adjusted, 1, &adjusted);
-          if (valid) {
-            value->value = adjusted;
-            return value;
-          }
+        const BoundIntrinsicOperation* operation =
+            bind_intrinsic_operation(call);
+        std::optional<ConstIntExprInfo> adjusted =
+            operation ? eval_bound_ordinal_step(call, *operation, nullptr,
+                                                 nullptr)
+                      : std::nullopt;
+        std::optional<OrdinalExprValue> source =
+            eval_ordinal_expr(*call.args[0]);
+        if (adjusted && source) {
+          source->value = adjusted->value;
+          return source;
         }
       }
       if (name == "ord") {
@@ -926,11 +950,19 @@ EmitAnalysis::summarize_set_literal_ordinals(const SetLit& s) {
 
 const TypeExpr* EmitAnalysis::deduce_set_literal_type(const SetLit& s,
                                                       const TypeExpr* target) {
-  if (const TypeExpr* set_target = canonical_set_type(target)) {
-    return set_target;
+  const TypeExpr* set_target = canonical_set_type(target);
+  if (s.result_descriptor && s.result_descriptor->type &&
+      canonical_set_type(s.result_descriptor->type)) {
+    const TypeExpr* inferred = s.result_descriptor->type;
+    if (!set_target) return inferred;
+    return classify_set_conversion(inferred, set_target) !=
+                   SetConversionKind::Incompatible
+               ? set_target
+               : nullptr;
   }
-  if (s.elements.empty()) return nullptr;
+  if (s.elements.empty()) return set_target;
 
+  const TypeExpr* inferred = nullptr;
   auto summary = summarize_set_literal_ordinals(s);
   if (!summary) {
     const TypeExpr* element_type = nullptr;
@@ -962,14 +994,22 @@ const TypeExpr* EmitAnalysis::deduce_set_literal_type(const SetLit& s,
     // type. Use that type's full domain so overload ranking can match the set
     // literal against `set of T` parameters without pretending to know which
     // runtime elements will be present.
-    return synthesize_set_type(element_type,
-                               std::make_pair(domain->low, domain->high));
+    inferred = synthesize_set_type(
+        element_type, std::make_pair(domain->low, domain->high));
+  } else {
+    const TypeExpr* element_type = summary->element_type;
+    if (!element_type) return nullptr;
+    inferred = synthesize_set_type(
+        element_type, std::make_pair(summary->low, summary->high));
   }
-
-  const TypeExpr* element_type = summary->element_type;
-  if (!element_type) return nullptr;
-  return synthesize_set_type(element_type,
-                             std::make_pair(summary->low, summary->high));
+  if (!inferred) return nullptr;
+  s.result_descriptor = registry_.descriptor_for_type(inferred);
+  if (!set_target) return inferred;
+  if (classify_set_conversion(inferred, set_target) ==
+      SetConversionKind::Incompatible) {
+    return nullptr;
+  }
+  return set_target;
 }
 
 SetConversionKind EmitAnalysis::classify_set_conversion(
@@ -1028,30 +1068,7 @@ std::optional<ConvertedConstInt> EmitAnalysis::convert_const_int_value(
   if (!info || info->int_kind == PrimitiveIntKind::None) return std::nullopt;
 
   const uint8_t width = resolved_primitive_bits(*info);
-  const PrimitiveInfo* source_info = value.type;
-  const bool source_is_unsigned =
-      source_info && source_info->int_kind == PrimitiveIntKind::Unsigned;
-  bool fits = true;
-  if (info->int_kind == PrimitiveIntKind::Unsigned) {
-    if (source_is_unsigned) {
-      fits = width >= 64 || value.bits <= unsigned_mask_for_bits(width);
-    } else if (value.value < 0) {
-      fits = false;
-    } else if (width < 64) {
-      fits = static_cast<uint64_t>(value.value) <= unsigned_mask_for_bits(width);
-    }
-  } else {
-    if (source_is_unsigned) {
-      const uint64_t hi =
-          width >= 64 ? static_cast<uint64_t>(INT64_MAX)
-                      : static_cast<uint64_t>(signed_max_for_bits(width));
-      fits = value.bits <= hi;
-    } else {
-      const int64_t lo = signed_min_for_bits(width);
-      const int64_t hi = signed_max_for_bits(width);
-      fits = value.value >= lo && value.value <= hi;
-    }
-  }
+  const bool fits = const_int_fits_primitive(value, *info);
   if (!fits && diagnose && !explicit_conversion) {
     report_warning(where, "range check error while evaluating constants");
   }
@@ -1245,7 +1262,749 @@ const TypeExpr* EmitAnalysis::canonicalize_for_arithmetic(const TypeExpr* t) {
   return ordinal_integer_type(PrimitiveIntKind::Unsigned, 64);
 }
 
+const PrimitiveInfo* EmitAnalysis::default_integer_primitive(
+    PrimitiveIntKind kind) const {
+  return ordinal_integer_primitive(registry_, kind, target_.pointer_bits);
+}
+
+const PrimitiveInfo* EmitAnalysis::common_integer_primitive(
+    const PrimitiveInfo& lhs, const PrimitiveInfo& rhs) const {
+  const uint8_t lhs_bits = primitive_bits(lhs, target_);
+  const uint8_t rhs_bits = primitive_bits(rhs, target_);
+  if (lhs.int_kind == rhs.int_kind) {
+    return ordinal_integer_primitive(
+        registry_, lhs.int_kind, std::max(lhs_bits, rhs_bits));
+  }
+
+  const PrimitiveInfo& signed_type =
+      lhs.int_kind == PrimitiveIntKind::Signed ? lhs : rhs;
+  const PrimitiveInfo& unsigned_type =
+      lhs.int_kind == PrimitiveIntKind::Unsigned ? lhs : rhs;
+  const uint8_t signed_bits = primitive_bits(signed_type, target_);
+  const uint8_t unsigned_bits = primitive_bits(unsigned_type, target_);
+  if (signed_bits > unsigned_bits) {
+    return ordinal_integer_primitive(registry_, PrimitiveIntKind::Signed,
+                                     signed_bits);
+  }
+  if (unsigned_bits < 64) {
+    const uint8_t result_bits =
+        unsigned_bits < 8 ? 8
+        : unsigned_bits < 16 ? 16
+        : unsigned_bits < 32 ? 32
+                             : 64;
+    return ordinal_integer_primitive(registry_, PrimitiveIntKind::Signed,
+                                     result_bits);
+  }
+
+  // No signed 64-bit carrier contains the whole UInt64 domain. Callers that
+  // require signed-64 precedence handle it before asking for a common range.
+  return ordinal_integer_primitive(registry_, PrimitiveIntKind::Unsigned, 64);
+}
+
+const PrimitiveInfo* EmitAnalysis::integer_arithmetic_primitive(
+    BinOp op, const PrimitiveInfo& lhs, const PrimitiveInfo& rhs) const {
+  const uint8_t lhs_bits = primitive_bits(lhs, target_);
+  const uint8_t rhs_bits = primitive_bits(rhs, target_);
+  if ((lhs.int_kind == PrimitiveIntKind::Signed && lhs_bits == 64) ||
+      (rhs.int_kind == PrimitiveIntKind::Signed && rhs_bits == 64)) {
+    return ordinal_integer_primitive(registry_, PrimitiveIntKind::Signed, 64);
+  }
+  if ((lhs.int_kind == PrimitiveIntKind::Unsigned && lhs_bits == 64) ||
+      (rhs.int_kind == PrimitiveIntKind::Unsigned && rhs_bits == 64)) {
+    return ordinal_integer_primitive(registry_, PrimitiveIntKind::Unsigned,
+                                     64);
+  }
+
+  // On a 32-bit target, mixing the native unsigned carrier with a signed
+  // operand, or subtracting native unsigned operands, requires the next
+  // larger signed carrier. On a 64-bit target the native unsigned carrier was
+  // handled by the 64-bit case above.
+  const bool lhs_native_unsigned =
+      lhs.int_kind == PrimitiveIntKind::Unsigned &&
+      lhs_bits == target_.pointer_bits;
+  const bool rhs_native_unsigned =
+      rhs.int_kind == PrimitiveIntKind::Unsigned &&
+      rhs_bits == target_.pointer_bits;
+  if (target_.pointer_bits == 32 &&
+      (lhs_native_unsigned || rhs_native_unsigned) &&
+      (lhs.int_kind == PrimitiveIntKind::Signed ||
+       rhs.int_kind == PrimitiveIntKind::Signed || op == BinOp::Sub)) {
+    return ordinal_integer_primitive(registry_, PrimitiveIntKind::Signed, 64);
+  }
+
+  // Ordinary integer arithmetic promotes to the target default integer
+  // carrier. Subtraction is signed even when both narrower operands are
+  // unsigned; addition/multiplication stay unsigned only when both operands
+  // are unsigned.
+  if (lhs.int_kind == PrimitiveIntKind::Signed ||
+      rhs.int_kind == PrimitiveIntKind::Signed || op == BinOp::Sub) {
+    return default_integer_primitive(PrimitiveIntKind::Signed);
+  }
+  return default_integer_primitive(PrimitiveIntKind::Unsigned);
+}
+
+const PrimitiveInfo* EmitAnalysis::integer_bitwise_primitive(
+    BinOp op, const PrimitiveInfo& lhs, const PrimitiveInfo& rhs) const {
+  if (lhs.kind == PrimitiveKind::Currency ||
+      rhs.kind == PrimitiveKind::Currency) {
+    return nullptr;
+  }
+  const uint8_t lhs_bits = primitive_bits(lhs, target_);
+  const uint8_t rhs_bits = primitive_bits(rhs, target_);
+  if (op == BinOp::And) {
+    if (lhs.int_kind != rhs.int_kind) {
+      const PrimitiveInfo& signed_type =
+          lhs.int_kind == PrimitiveIntKind::Signed ? lhs : rhs;
+      const PrimitiveInfo& unsigned_type =
+          lhs.int_kind == PrimitiveIntKind::Unsigned ? lhs : rhs;
+      const uint8_t signed_bits = primitive_bits(signed_type, target_);
+      const uint8_t unsigned_bits = primitive_bits(unsigned_type, target_);
+      if (unsigned_bits >= signed_bits &&
+          unsigned_bits >= std::min<uint8_t>(target_.pointer_bits, 32)) {
+        return ordinal_integer_primitive(
+            registry_, PrimitiveIntKind::Unsigned, unsigned_bits);
+      }
+    }
+    return common_integer_primitive(lhs, rhs);
+  }
+  if (lhs.int_kind == rhs.int_kind && lhs_bits < 64 && rhs_bits < 64) {
+    return common_integer_primitive(lhs, rhs);
+  }
+  return integer_arithmetic_primitive(BinOp::Add, lhs, rhs);
+}
+
+bool EmitAnalysis::const_int_fits_primitive(
+    const ConstIntExprInfo& value, const PrimitiveInfo& target) const {
+  if (target.int_kind == PrimitiveIntKind::None) return false;
+  const uint8_t width = resolved_primitive_bits(target);
+  const bool source_is_unsigned =
+      value.type && value.type->int_kind == PrimitiveIntKind::Unsigned;
+  if (target.int_kind == PrimitiveIntKind::Unsigned) {
+    if (source_is_unsigned) {
+      return width >= 64 || value.bits <= unsigned_mask_for_bits(width);
+    }
+    return value.value >= 0 &&
+           (width >= 64 ||
+            static_cast<uint64_t>(value.value) <=
+                unsigned_mask_for_bits(width));
+  }
+  if (source_is_unsigned) {
+    const uint64_t high =
+        width >= 64 ? static_cast<uint64_t>(INT64_MAX)
+                    : static_cast<uint64_t>(signed_max_for_bits(width));
+    return value.bits <= high;
+  }
+  return value.value >= signed_min_for_bits(width) &&
+         value.value <= signed_max_for_bits(width);
+}
+
+bool EmitAnalysis::const_expr_fits_primitive(
+    const Expr& expr, const PrimitiveInfo& target) {
+  const std::optional<ConstIntExprInfo> value = eval_const_int_expr(expr);
+  return value && const_int_fits_primitive(*value, target);
+}
+
+const PrimitiveInfo* EmitAnalysis::integer_division_primitive(
+    const Expr& lhs_expr, const PrimitiveInfo& lhs,
+    const Expr& rhs_expr, const PrimitiveInfo& rhs) {
+  const PrimitiveInfo* converted_lhs = &lhs;
+  const PrimitiveInfo* converted_rhs = &rhs;
+  const uint8_t original_lhs_bits = primitive_bits(lhs, target_);
+  const uint8_t original_rhs_bits = primitive_bits(rhs, target_);
+  if (rhs.int_kind == PrimitiveIntKind::Unsigned &&
+      ((const_expr_fits_primitive(lhs_expr, rhs)) ||
+       (lhs.int_kind == PrimitiveIntKind::Unsigned &&
+        original_rhs_bits >= original_lhs_bits))) {
+    converted_lhs = &rhs;
+  }
+  if (lhs.int_kind == PrimitiveIntKind::Unsigned &&
+      ((const_expr_fits_primitive(rhs_expr, lhs)) ||
+       (rhs.int_kind == PrimitiveIntKind::Unsigned &&
+        original_lhs_bits >= original_rhs_bits))) {
+    converted_rhs = &lhs;
+  }
+
+  const PrimitiveInfo& effective_lhs = *converted_lhs;
+  const PrimitiveInfo& effective_rhs = *converted_rhs;
+  const uint8_t lhs_bits = primitive_bits(effective_lhs, target_);
+  const uint8_t rhs_bits = primitive_bits(effective_rhs, target_);
+  if (lhs_bits == 64 || rhs_bits == 64) {
+    return ordinal_integer_primitive(
+        registry_,
+        effective_lhs.int_kind == PrimitiveIntKind::Signed ||
+                effective_rhs.int_kind == PrimitiveIntKind::Signed
+            ? PrimitiveIntKind::Signed
+            : PrimitiveIntKind::Unsigned,
+        64);
+  }
+
+  const bool lhs_native_unsigned =
+      effective_lhs.int_kind == PrimitiveIntKind::Unsigned &&
+      lhs_bits == target_.pointer_bits;
+  const bool rhs_native_unsigned =
+      effective_rhs.int_kind == PrimitiveIntKind::Unsigned &&
+      rhs_bits == target_.pointer_bits;
+  if (target_.pointer_bits == 32 &&
+      (lhs_native_unsigned || rhs_native_unsigned) &&
+      (effective_lhs.int_kind == PrimitiveIntKind::Signed ||
+       effective_rhs.int_kind == PrimitiveIntKind::Signed)) {
+    return ordinal_integer_primitive(registry_, PrimitiveIntKind::Signed, 64);
+  }
+  if (lhs_native_unsigned || rhs_native_unsigned) {
+    return default_integer_primitive(PrimitiveIntKind::Unsigned);
+  }
+  return default_integer_primitive(PrimitiveIntKind::Signed);
+}
+
+std::optional<bool> EmitAnalysis::compare_constant_integers(
+    BinOp op, const Expr& lhs_expr, const Expr& rhs_expr) {
+  const std::optional<ConstIntExprInfo> lhs =
+      eval_const_int_expr(lhs_expr);
+  const std::optional<ConstIntExprInfo> rhs =
+      eval_const_int_expr(rhs_expr);
+  if (!lhs || !rhs) return std::nullopt;
+  const bool lhs_negative =
+      lhs->type && lhs->type->int_kind == PrimitiveIntKind::Signed &&
+      lhs->value < 0;
+  const bool rhs_negative =
+      rhs->type && rhs->type->int_kind == PrimitiveIntKind::Signed &&
+      rhs->value < 0;
+  int order = 0;
+  if (lhs_negative != rhs_negative) {
+    order = lhs_negative ? -1 : 1;
+  } else if (lhs_negative) {
+    order = lhs->value < rhs->value ? -1
+            : lhs->value > rhs->value ? 1
+                                      : 0;
+  } else {
+    order = lhs->bits < rhs->bits ? -1
+            : lhs->bits > rhs->bits ? 1
+                                    : 0;
+  }
+  switch (op) {
+    case BinOp::Eq: return order == 0;
+    case BinOp::NotEq: return order != 0;
+    case BinOp::Lt: return order < 0;
+    case BinOp::Gt: return order > 0;
+    case BinOp::LtEq: return order <= 0;
+    case BinOp::GtEq: return order >= 0;
+    default: return std::nullopt;
+  }
+}
+
+const PrimitiveInfo* EmitAnalysis::integer_comparison_primitive(
+    const Expr& lhs_expr, const PrimitiveInfo& lhs,
+    const Expr& rhs_expr, const PrimitiveInfo& rhs) {
+  const uint8_t lhs_bits = primitive_bits(lhs, target_);
+  const uint8_t rhs_bits = primitive_bits(rhs, target_);
+  if (lhs.int_kind == rhs.int_kind && lhs_bits < 64 && rhs_bits < 64) {
+    return common_integer_primitive(lhs, rhs);
+  }
+  if (lhs.int_kind != rhs.int_kind) {
+    if (const_expr_fits_primitive(lhs_expr, rhs)) return &rhs;
+    if (const_expr_fits_primitive(rhs_expr, lhs)) return &lhs;
+  }
+  return integer_arithmetic_primitive(BinOp::Add, lhs, rhs);
+}
+
+const BoundBinaryOperation* EmitAnalysis::bind_set_binary_operation(
+    const Binary& b, const TypeExpr* lhs_source_type,
+    const TypeExpr* rhs_source_type) {
+  BoundBinaryKind kind = BoundBinaryKind::None;
+  switch (b.op) {
+    case BinOp::Add:
+      kind = BoundBinaryKind::SetUnion;
+      break;
+    case BinOp::Sub:
+      kind = BoundBinaryKind::SetDifference;
+      break;
+    case BinOp::Mul:
+      kind = BoundBinaryKind::SetIntersection;
+      break;
+    case BinOp::SymDiff:
+      kind = BoundBinaryKind::SetSymmetricDifference;
+      break;
+    default:
+      return nullptr;
+  }
+
+  const TypeExpr* lhs_set = canonical_set_type(lhs_source_type);
+  const TypeExpr* rhs_set = canonical_set_type(rhs_source_type);
+  if (!lhs_set && b.lhs->kind == Kind::SetLit && rhs_set) {
+    lhs_source_type = deduce_set_literal_type(
+        static_cast<const SetLit&>(*b.lhs), rhs_source_type);
+    lhs_set = canonical_set_type(lhs_source_type);
+  }
+  if (!rhs_set && b.rhs->kind == Kind::SetLit && lhs_set) {
+    rhs_source_type = deduce_set_literal_type(
+        static_cast<const SetLit&>(*b.rhs), lhs_source_type);
+    rhs_set = canonical_set_type(rhs_source_type);
+  }
+  if (!lhs_set || !rhs_set) return nullptr;
+
+  const std::optional<OrdinalDomain> lhs_domain =
+      ordinal_domain_for_set_type(lhs_set);
+  const std::optional<OrdinalDomain> rhs_domain =
+      ordinal_domain_for_set_type(rhs_set);
+  if (!lhs_domain || !rhs_domain ||
+      lhs_domain->family != rhs_domain->family ||
+      lhs_domain->enum_key != rhs_domain->enum_key) {
+    return nullptr;
+  }
+
+  const TypeExpr* result_type = nullptr;
+  if (classify_set_conversion(rhs_set, lhs_set) !=
+      SetConversionKind::Incompatible) {
+    result_type = lhs_source_type;
+  } else if (classify_set_conversion(lhs_set, rhs_set) !=
+             SetConversionKind::Incompatible) {
+    result_type = rhs_source_type;
+  } else {
+    const int64_t result_low = std::min(lhs_domain->low, rhs_domain->low);
+    const int64_t result_high = std::max(lhs_domain->high, rhs_domain->high);
+    const auto& lhs = static_cast<const TySet&>(*lhs_set);
+    const auto& rhs = static_cast<const TySet&>(*rhs_set);
+    const TypeExpr* result_element = lhs.element.get();
+
+    if (lhs_domain->family == OrdinalFamily::Integer) {
+      const std::optional<OrdinalDomain> lhs_element_domain =
+          ordinal_domain_for_type(lhs.element.get());
+      const std::optional<OrdinalDomain> rhs_element_domain =
+          ordinal_domain_for_type(rhs.element.get());
+      if (lhs_element_domain && lhs_element_domain->low <= result_low &&
+          lhs_element_domain->high >= result_high) {
+        result_element = lhs.element.get();
+      } else if (rhs_element_domain &&
+                 rhs_element_domain->low <= result_low &&
+                 rhs_element_domain->high >= result_high) {
+        result_element = rhs.element.get();
+      } else {
+        const OrdinalDomain result_domain{
+            .family = OrdinalFamily::Integer,
+            .low = result_low,
+            .high = result_high,
+        };
+        const PrimitiveInfo* primitive =
+            ordinal_integer_primitive_for_domain(result_domain);
+        result_element =
+            primitive && primitive->descriptor
+                ? primitive->descriptor->type
+                : nullptr;
+      }
+    }
+    if (!result_element) return nullptr;
+    result_type = synthesize_set_type(
+        result_element, std::make_pair(result_low, result_high));
+  }
+
+  const TypeDescriptor* lhs_source =
+      registry_.descriptor_for_type(lhs_source_type);
+  const TypeDescriptor* rhs_source =
+      registry_.descriptor_for_type(rhs_source_type);
+  const TypeDescriptor* result = registry_.descriptor_for_type(result_type);
+  if (!lhs_source || !rhs_source || !result) return nullptr;
+
+  b.bound_operation = BoundBinaryOperation{
+      .binding_complete = true,
+      .kind = kind,
+      .lhs_source = lhs_source,
+      .rhs_source = rhs_source,
+      .lhs = result,
+      .rhs = result,
+      .result = result,
+  };
+  b.result_descriptor = result;
+  return &b.bound_operation;
+}
+
+const BoundBinaryOperation* EmitAnalysis::bind_binary_operation(
+    const Binary& b) {
+  if (b.bound_operation.binding_complete) {
+    return b.bound_operation.kind != BoundBinaryKind::None
+               ? &b.bound_operation
+               : nullptr;
+  }
+  b.bound_operation.binding_complete = true;
+
+  const TypeExpr* lhs_source_type = deduce_type(*b.lhs);
+  const TypeExpr* rhs_source_type = deduce_type(*b.rhs);
+  if (const BoundBinaryOperation* set_operation =
+          bind_set_binary_operation(b, lhs_source_type, rhs_source_type)) {
+    return set_operation;
+  }
+  const TypeDescriptor* lhs_source =
+      registry_.descriptor_for_type(lhs_source_type);
+  const TypeDescriptor* rhs_source =
+      registry_.descriptor_for_type(rhs_source_type);
+  const TypeExpr* lhs_type =
+      canonicalize_for_arithmetic(lhs_source_type);
+  const TypeExpr* rhs_type =
+      canonicalize_for_arithmetic(rhs_source_type);
+  const PrimitiveInfo* lhs = primitive_info_for_type(lhs_type);
+  const PrimitiveInfo* rhs = primitive_info_for_type(rhs_type);
+  if (!lhs || !rhs || lhs->int_kind == PrimitiveIntKind::None ||
+      rhs->int_kind == PrimitiveIntKind::None) {
+    return nullptr;
+  }
+  // ByteBool, WordBool, LongBool, QWordBool, and WideChar use integer C++
+  // storage, but their Pascal operators belong to the Boolean or character
+  // families. Storage representation must not make the integer binder claim
+  // those operations.
+  if (lhs->family != PrimitiveFamily::Integer ||
+      rhs->family != PrimitiveFamily::Integer) {
+    return nullptr;
+  }
+  // Currency uses a scaled representation and CPU-family-dependent operator
+  // rules. Treating that representation as an ordinary signed integer would
+  // bind the wrong Pascal operation; TargetInfo must model that distinction
+  // before Currency can join this integer binder.
+  if (lhs->kind == PrimitiveKind::Currency ||
+      rhs->kind == PrimitiveKind::Currency) {
+    return nullptr;
+  }
+
+  const PrimitiveInfo* lhs_conversion = nullptr;
+  const PrimitiveInfo* rhs_conversion = nullptr;
+  const PrimitiveInfo* result = nullptr;
+  BoundBinaryKind kind = BoundBinaryKind::None;
+  switch (b.op) {
+    case BinOp::Add:
+      result = integer_arithmetic_primitive(b.op, *lhs, *rhs);
+      kind = BoundBinaryKind::IntegerAdd;
+      lhs_conversion = rhs_conversion = result;
+      break;
+    case BinOp::Sub:
+      result = integer_arithmetic_primitive(b.op, *lhs, *rhs);
+      kind = BoundBinaryKind::IntegerSub;
+      lhs_conversion = rhs_conversion = result;
+      break;
+    case BinOp::Mul:
+      result = integer_arithmetic_primitive(b.op, *lhs, *rhs);
+      kind = BoundBinaryKind::IntegerMul;
+      lhs_conversion = rhs_conversion = result;
+      break;
+    case BinOp::IntDiv:
+      result = integer_division_primitive(*b.lhs, *lhs, *b.rhs, *rhs);
+      kind = BoundBinaryKind::IntegerDiv;
+      lhs_conversion = rhs_conversion = result;
+      break;
+    case BinOp::Mod:
+      result = integer_division_primitive(*b.lhs, *lhs, *b.rhs, *rhs);
+      kind = BoundBinaryKind::IntegerMod;
+      lhs_conversion = rhs_conversion = result;
+      break;
+    case BinOp::And:
+    case BinOp::Or:
+    case BinOp::Xor:
+      kind = BoundBinaryKind::IntegerBitwise;
+      result = integer_bitwise_primitive(b.op, *lhs, *rhs);
+      lhs_conversion = rhs_conversion = result;
+      break;
+    case BinOp::Eq:
+    case BinOp::NotEq:
+    case BinOp::Lt:
+    case BinOp::Gt:
+    case BinOp::LtEq:
+    case BinOp::GtEq:
+      kind = BoundBinaryKind::IntegerCompare;
+      lhs_conversion = rhs_conversion = integer_comparison_primitive(
+          *b.lhs, *lhs, *b.rhs, *rhs);
+      if (const TypeSymbol* boolean = registry_.builtin_literal("boolean")) {
+        result = boolean->descriptor ? boolean->descriptor->primitive : nullptr;
+      }
+      break;
+    case BinOp::Shl:
+    case BinOp::Shr:
+      kind = BoundBinaryKind::IntegerShift;
+      lhs_conversion = shift_carrier_primitive(registry_, lhs, target_);
+      rhs_conversion =
+          default_integer_primitive(PrimitiveIntKind::Signed);
+      result = lhs_conversion;
+      break;
+    default:
+      return nullptr;
+  }
+  if (!lhs_conversion || !rhs_conversion || !result ||
+      !lhs_conversion->descriptor || !rhs_conversion->descriptor ||
+      !result->descriptor) {
+    return nullptr;
+  }
+
+  b.bound_operation = BoundBinaryOperation{
+      .binding_complete = true,
+      .kind = kind,
+      .lhs_source = lhs_source,
+      .rhs_source = rhs_source,
+      .lhs = lhs_conversion->descriptor,
+      .rhs = rhs_conversion->descriptor,
+      .result = result->descriptor,
+      .check_overflow = b.q_check,
+  };
+  if (kind == BoundBinaryKind::IntegerCompare) {
+    if (std::optional<bool> constant =
+            compare_constant_integers(b.op, *b.lhs, *b.rhs)) {
+      b.bound_operation.has_constant_boolean = true;
+      b.bound_operation.constant_boolean = *constant;
+    }
+  }
+  if (!binop_is_comparison(b.op)) {
+    b.result_descriptor = result->descriptor;
+  }
+  return &b.bound_operation;
+}
+
+const PrimitiveInfo* EmitAnalysis::abs_sqr_primitive(
+    BoundIntrinsicKind kind, const PrimitiveInfo& operand) const {
+  if (operand.is_real()) return &operand;
+  if (operand.family != PrimitiveFamily::Integer ||
+      operand.kind == PrimitiveKind::Currency) {
+    return nullptr;
+  }
+  if (operand.int_kind == PrimitiveIntKind::None) return nullptr;
+
+  const uint8_t bits = primitive_bits(operand, target_);
+  if (operand.int_kind == PrimitiveIntKind::Signed) {
+    return ordinal_integer_primitive(
+        registry_, PrimitiveIntKind::Signed, bits <= 32 ? 32 : 64);
+  }
+  if (bits <= 16) {
+    return ordinal_integer_primitive(registry_, PrimitiveIntKind::Signed, 32);
+  }
+  if (kind == BoundIntrinsicKind::Abs) {
+    return bits == 32
+               ? ordinal_integer_primitive(
+                     registry_, PrimitiveIntKind::Signed, 64)
+               : nullptr;
+  }
+  return ordinal_integer_primitive(registry_, PrimitiveIntKind::Unsigned, 64);
+}
+
+const PrimitiveInfo* EmitAnalysis::ordinal_integer_primitive_for_domain(
+    const OrdinalDomain& domain) const {
+  if (domain.low < 0) {
+    const uint8_t bits =
+        domain.low >= signed_min_for_bits(8) &&
+                domain.high <= signed_max_for_bits(8)
+            ? 8
+        : domain.low >= signed_min_for_bits(16) &&
+                  domain.high <= signed_max_for_bits(16)
+            ? 16
+        : domain.low >= signed_min_for_bits(32) &&
+                  domain.high <= signed_max_for_bits(32)
+            ? 32
+            : 64;
+    return ordinal_integer_primitive(registry_, PrimitiveIntKind::Signed,
+                                     bits);
+  }
+  const uint64_t high = static_cast<uint64_t>(domain.high);
+  const uint8_t bits =
+      high <= unsigned_mask_for_bits(8) ? 8
+      : high <= unsigned_mask_for_bits(16) ? 16
+      : high <= unsigned_mask_for_bits(32) ? 32
+                                           : 64;
+  return ordinal_integer_primitive(registry_, PrimitiveIntKind::Unsigned,
+                                   bits);
+}
+
+const PrimitiveInfo* EmitAnalysis::ordinal_storage_primitive(
+    const TypeExpr* type) {
+  if (const PrimitiveInfo* primitive = primitive_info_for_type(type);
+      primitive && primitive->int_kind != PrimitiveIntKind::None) {
+    return primitive;
+  }
+  const TypeExpr* shape = semantic_shape_type(type);
+  const std::optional<OrdinalDomain> domain =
+      ordinal_domain_for_type(type);
+  if (!domain) return nullptr;
+  if (domain->family == OrdinalFamily::Enum) {
+    const TypeExpr* enum_type =
+        domain->enum_key ? semantic_shape_type(domain->enum_key->type) : shape;
+    if (!enum_type || enum_type->kind != Kind::TyEnum) return nullptr;
+    const auto& enum_decl = static_cast<const TyEnum&>(*enum_type);
+    if (enum_decl.members.empty()) {
+      return ordinal_integer_primitive(
+          registry_, PrimitiveIntKind::Signed, 32);
+    }
+    const std::optional<OrdinalDomain> enum_domain =
+        ordinal_domain_for_type(enum_type);
+    if (!enum_domain) return nullptr;
+
+    // Enum representation is declaration-controlled, not inferred from the
+    // current subrange. This is the same decision used by enum declaration
+    // emission, so arithmetic and storage cannot disagree about its width.
+    uint8_t bits = 8;
+    if (enum_domain->low < std::numeric_limits<int32_t>::min() ||
+        enum_domain->high >
+            static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+      bits = 64;
+    } else if (enum_decl.packenum >= 4 ||
+               enum_domain->low < std::numeric_limits<int16_t>::min() ||
+               enum_domain->high >
+                   static_cast<int64_t>(
+                       std::numeric_limits<uint16_t>::max())) {
+      bits = 32;
+    } else if (enum_decl.packenum >= 2 ||
+               enum_domain->low < std::numeric_limits<int8_t>::min() ||
+               enum_domain->high >
+                   static_cast<int64_t>(
+                       std::numeric_limits<uint8_t>::max())) {
+      bits = 16;
+    }
+    return ordinal_integer_primitive(
+        registry_,
+        enum_domain->low < 0 ? PrimitiveIntKind::Signed
+                             : PrimitiveIntKind::Unsigned,
+        bits);
+  }
+  return ordinal_integer_primitive_for_domain(*domain);
+}
+
+const BoundIntrinsicOperation* EmitAnalysis::bind_intrinsic_operation(
+    const Call& call) {
+  if (call.bound_intrinsic.kind != BoundIntrinsicKind::None) {
+    return &call.bound_intrinsic;
+  }
+  if (!call.callee) return nullptr;
+  const std::optional<std::string> intrinsic =
+      intrinsic_call_name(*call.callee);
+  if (!intrinsic) return nullptr;
+
+  BoundIntrinsicKind kind = BoundIntrinsicKind::None;
+  if (*intrinsic == "abs" && call.args.size() == 1) {
+    kind = BoundIntrinsicKind::Abs;
+  } else if (*intrinsic == "sqr" && call.args.size() == 1) {
+    kind = BoundIntrinsicKind::Sqr;
+  } else if (*intrinsic == "succ" && call.args.size() == 1) {
+    kind = BoundIntrinsicKind::Succ;
+  } else if (*intrinsic == "pred" && call.args.size() == 1) {
+    kind = BoundIntrinsicKind::Pred;
+  } else if (*intrinsic == "inc" &&
+             (call.args.size() == 1 || call.args.size() == 2)) {
+    kind = BoundIntrinsicKind::Inc;
+  } else if (*intrinsic == "dec" &&
+             (call.args.size() == 1 || call.args.size() == 2)) {
+    kind = BoundIntrinsicKind::Dec;
+  } else {
+    return nullptr;
+  }
+
+  const TypeExpr* operand_type = deduce_type(*call.args[0]);
+  const TypeDescriptor* operand =
+      registry_.descriptor_for_type(operand_type);
+  if (!operand) return nullptr;
+  const TypeDescriptor* source = operand;
+  const TypeDescriptor* result = operand;
+  const TypeDescriptor* carrier = operand;
+  const TypeExpr* delta_type =
+      call.args.size() == 2 ? deduce_type(*call.args[1]) : nullptr;
+  const TypeDescriptor* delta_source =
+      registry_.descriptor_for_type(delta_type);
+  if (!delta_source &&
+      (kind == BoundIntrinsicKind::Inc ||
+       kind == BoundIntrinsicKind::Dec)) {
+    const TypeSymbol* one = registry_.builtin_literal("shortint");
+    delta_source = one ? one->descriptor : nullptr;
+  }
+  const TypeDescriptor* delta = delta_source;
+  const PrimitiveInfo* delta_primitive = nullptr;
+  if ((kind == BoundIntrinsicKind::Inc ||
+       kind == BoundIntrinsicKind::Dec) &&
+      call.args.size() == 2) {
+    delta_primitive = primitive_info_for_type(
+        canonicalize_for_arithmetic(delta_type));
+    if (!delta_primitive ||
+        delta_primitive->family != PrimitiveFamily::Integer ||
+        delta_primitive->kind == PrimitiveKind::Currency ||
+        delta_primitive->int_kind == PrimitiveIntKind::None) {
+      return nullptr;
+    }
+  }
+  if (kind == BoundIntrinsicKind::Abs ||
+      kind == BoundIntrinsicKind::Sqr) {
+    const PrimitiveInfo* source =
+        primitive_info_for_type(operand_type);
+    const PrimitiveInfo* selected =
+        source ? abs_sqr_primitive(kind, *source) : nullptr;
+    if (!selected || !selected->descriptor) return nullptr;
+    operand = selected->descriptor;
+    carrier = selected->descriptor;
+    result = selected->descriptor;
+  } else if (kind == BoundIntrinsicKind::Succ ||
+             kind == BoundIntrinsicKind::Pred ||
+             kind == BoundIntrinsicKind::Inc ||
+             kind == BoundIntrinsicKind::Dec) {
+    const PrimitiveInfo* storage_carrier =
+        ordinal_storage_primitive(operand_type);
+    if (storage_carrier && storage_carrier->descriptor) {
+      const PrimitiveInfo* operation_carrier = storage_carrier;
+      if (call.q_check || call.r_check) {
+        const PrimitiveInfo* delta_carrier =
+            delta_primitive
+                ? delta_primitive
+                : ordinal_integer_primitive(
+                      registry_, PrimitiveIntKind::Signed, 8);
+        if (!delta_carrier) return nullptr;
+        operation_carrier = integer_arithmetic_primitive(
+            (kind == BoundIntrinsicKind::Pred ||
+             kind == BoundIntrinsicKind::Dec)
+                ? BinOp::Sub
+                : BinOp::Add,
+            *storage_carrier, *delta_carrier);
+      }
+      if (!operation_carrier || !operation_carrier->descriptor) {
+        return nullptr;
+      }
+      carrier = operation_carrier->descriptor;
+      delta = operation_carrier->descriptor;
+    } else {
+      const TypeExpr* shape = semantic_shape_type(operand_type);
+      const PrimitiveInfo* primitive =
+          primitive_info_for_type(operand_type);
+      const bool pointer =
+          (shape && shape->kind == Kind::TyPointer) ||
+          (primitive && primitive->is_pointer_primitive());
+      if (!(pointer && (kind == BoundIntrinsicKind::Inc ||
+                       kind == BoundIntrinsicKind::Dec))) {
+        return nullptr;
+      }
+      if (!delta_primitive && delta_source) {
+        delta_primitive = delta_source->primitive;
+      }
+      if (!delta_primitive ||
+          delta_primitive->int_kind == PrimitiveIntKind::None) {
+        return nullptr;
+      }
+      const TypeSymbol* pointer_delta = registry_.builtin_literal(
+          delta_primitive->int_kind == PrimitiveIntKind::Unsigned
+              ? "ptruint"
+              : "ptrint");
+      if (!pointer_delta || !pointer_delta->descriptor) return nullptr;
+      delta = pointer_delta->descriptor;
+    }
+  }
+
+  call.bound_intrinsic = BoundIntrinsicOperation{
+      .kind = kind,
+      .source = source,
+      .operand = operand,
+      .delta_source = delta_source,
+      .delta = delta,
+      .carrier = carrier,
+      .result = result,
+      .check_overflow = call.q_check,
+      .check_range = call.r_check,
+  };
+  if (kind != BoundIntrinsicKind::Inc &&
+      kind != BoundIntrinsicKind::Dec) {
+    call.result_descriptor = result;
+  }
+  return &call.bound_intrinsic;
+}
+
 const TypeExpr* EmitAnalysis::deduce_binary_expr_type(const Binary& b) {
+  if (const BoundBinaryOperation* operation = bind_binary_operation(b)) {
+    return operation->result ? operation->result->type : nullptr;
+  }
   if (b.op == BinOp::As) {
     if (std::optional<const TypeSymbol*> rhs_type =
             registry_.type_name_expression_result(b.rhs.get())) {
@@ -1402,6 +2161,103 @@ bool EmitAnalysis::required_const_int_expr_overflows(const Expr& e) {
   return overflow;
 }
 
+std::optional<ConstIntExprInfo> EmitAnalysis::eval_bound_ordinal_step(
+    const Call& call, const BoundIntrinsicOperation& operation,
+    std::unordered_set<std::string>* visiting_const_names,
+    bool* overflow) {
+  if (call.args.size() != 1 || !call.args[0] || !operation.source ||
+      !operation.source->type || !operation.carrier ||
+      !operation.carrier->primitive || !operation.result ||
+      (operation.kind != BoundIntrinsicKind::Succ &&
+       operation.kind != BoundIntrinsicKind::Pred)) {
+    return std::nullopt;
+  }
+
+  const PrimitiveInfo* storage =
+      ordinal_storage_primitive(operation.source->type);
+  const PrimitiveInfo* carrier = operation.carrier->primitive;
+  if (!storage || !storage->descriptor || !carrier->descriptor ||
+      storage->int_kind == PrimitiveIntKind::None ||
+      carrier->int_kind == PrimitiveIntKind::None) {
+    return std::nullopt;
+  }
+
+  std::optional<ConstIntExprInfo> source =
+      eval_const_int_expr_impl(*call.args[0], visiting_const_names, overflow);
+  if (!source) {
+    const std::optional<OrdinalExprValue> ordinal =
+        eval_ordinal_expr(*call.args[0]);
+    if (!ordinal) return std::nullopt;
+    source = ConstIntExprInfo{
+        ordinal->value, static_cast<uint64_t>(ordinal->value), storage};
+  }
+  const std::optional<ConvertedConstInt> converted =
+      convert_const_int_value(call.loc, *source, carrier->descriptor->type,
+                              true, false);
+  if (!converted) return std::nullopt;
+
+  const uint8_t carrier_bits = resolved_primitive_bits(*carrier);
+  const uint64_t carrier_mask = unsigned_mask_for_bits(carrier_bits);
+  const auto signed_carrier_value = [&](uint64_t bits) {
+    bits &= carrier_mask;
+    if (carrier_bits == 64) return static_cast<int64_t>(bits);
+    const uint64_t sign = uint64_t{1} << (carrier_bits - 1);
+    return (bits & sign) == 0
+               ? static_cast<int64_t>(bits)
+               : static_cast<int64_t>(bits | ~carrier_mask);
+  };
+
+  uint64_t result_bits = converted->bits & carrier_mask;
+  if (operation.check_overflow &&
+      carrier->int_kind == PrimitiveIntKind::Signed) {
+    const int64_t value = signed_carrier_value(result_bits);
+    int64_t result = 0;
+    const bool valid =
+        operation.kind == BoundIntrinsicKind::Succ
+            ? !__builtin_add_overflow(value, int64_t{1}, &result)
+            : !__builtin_sub_overflow(value, int64_t{1}, &result);
+    if (!valid ||
+        (carrier_bits < 64 &&
+         (result < signed_min_for_bits(carrier_bits) ||
+          result > signed_max_for_bits(carrier_bits)))) {
+      if (overflow) *overflow = true;
+      return std::nullopt;
+    }
+    result_bits = static_cast<uint64_t>(result) & carrier_mask;
+  } else if (operation.kind == BoundIntrinsicKind::Succ) {
+    result_bits = (result_bits + 1) & carrier_mask;
+  } else {
+    result_bits = (result_bits - 1) & carrier_mask;
+  }
+
+  if (operation.check_range) {
+    const std::optional<OrdinalDomain> domain =
+        ordinal_domain_for_type(operation.source->type);
+    if (!domain) return std::nullopt;
+    if (carrier->int_kind == PrimitiveIntKind::Signed) {
+      const int64_t value = signed_carrier_value(result_bits);
+      if (value < domain->low || value > domain->high) return std::nullopt;
+    } else if (domain->low < 0 ||
+               result_bits > static_cast<uint64_t>(domain->high)) {
+      return std::nullopt;
+    }
+  }
+
+  const uint8_t storage_bits = resolved_primitive_bits(*storage);
+  const uint64_t storage_mask = unsigned_mask_for_bits(storage_bits);
+  result_bits &= storage_mask;
+  int64_t result_value = static_cast<int64_t>(result_bits);
+  if (storage->int_kind == PrimitiveIntKind::Signed &&
+      storage_bits < 64) {
+    const uint64_t sign = uint64_t{1} << (storage_bits - 1);
+    if ((result_bits & sign) != 0) {
+      result_value =
+          static_cast<int64_t>(result_bits | ~storage_mask);
+    }
+  }
+  return ConstIntExprInfo{result_value, result_bits, storage};
+}
+
 std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr_impl(
     const Expr& e,
     std::unordered_set<std::string>* visiting_const_names,
@@ -1437,11 +2293,16 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr_impl(
     }
     case Kind::Binary: {
       const auto& b = static_cast<const Binary&>(e);
+      const BoundBinaryOperation* operation = bind_binary_operation(b);
+      if (!operation) return std::nullopt;
       auto lhs =
           eval_const_int_expr_impl(*b.lhs, visiting_const_names, overflow);
       auto rhs =
           eval_const_int_expr_impl(*b.rhs, visiting_const_names, overflow);
       if (!lhs || !rhs) return std::nullopt;
+      if (operation->kind == BoundBinaryKind::IntegerCompare) {
+        return std::nullopt;
+      }
 
       const auto is_negative = [](const ConstIntExprInfo& operand) {
         return operand.value < 0 &&
@@ -1501,31 +2362,33 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr_impl(
       const bool rhs_negative = is_negative(*rhs);
       const uint64_t lhs_magnitude = magnitude(*lhs);
       const uint64_t rhs_magnitude = magnitude(*rhs);
-      if (b.op == BinOp::Add) {
+      if (operation->kind == BoundBinaryKind::IntegerAdd) {
         return add_signed_magnitudes(
             lhs_negative, lhs_magnitude, rhs_negative, rhs_magnitude);
       }
-      if (b.op == BinOp::Sub) {
+      if (operation->kind == BoundBinaryKind::IntegerSub) {
         return add_signed_magnitudes(
             lhs_negative, lhs_magnitude, !rhs_negative, rhs_magnitude);
       }
-      if (b.op == BinOp::Mul || b.op == BinOp::IntDiv ||
-          b.op == BinOp::Mod) {
+      if (operation->kind == BoundBinaryKind::IntegerMul ||
+          operation->kind == BoundBinaryKind::IntegerDiv ||
+          operation->kind == BoundBinaryKind::IntegerMod) {
         if (rhs_magnitude == 0 &&
-            (b.op == BinOp::IntDiv || b.op == BinOp::Mod)) {
+            (operation->kind == BoundBinaryKind::IntegerDiv ||
+             operation->kind == BoundBinaryKind::IntegerMod)) {
           return std::nullopt;
         }
-        if (b.op == BinOp::Mul &&
+        if (operation->kind == BoundBinaryKind::IntegerMul &&
             rhs_magnitude != 0 &&
             lhs_magnitude > UINT64_MAX / rhs_magnitude) {
           if (overflow) *overflow = true;
           return std::nullopt;
         }
-        if (b.op == BinOp::Mul) {
+        if (operation->kind == BoundBinaryKind::IntegerMul) {
           return make_result(lhs_negative != rhs_negative,
                              lhs_magnitude * rhs_magnitude);
         }
-        if (b.op == BinOp::IntDiv) {
+        if (operation->kind == BoundBinaryKind::IntegerDiv) {
           return make_result(lhs_negative != rhs_negative,
                              lhs_magnitude / rhs_magnitude);
         }
@@ -1534,50 +2397,35 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr_impl(
       }
 
       int64_t value = 0;
-      switch (b.op) {
-        case BinOp::Shl:
-          if (!checked_pascal_shl_int64(
-                  lhs->value,
-                  lhs->type,
-                  rhs->value, &value, target_)) {
-            return std::nullopt;
-          }
-          if (const PrimitiveInfo* carrier =
-                  shift_carrier_primitive(registry_, lhs->type, target_)) {
-            return ConstIntExprInfo{value, carrier};
-          }
-          return std::nullopt;
-        case BinOp::Shr:
-          if (!checked_pascal_shr_int64(
-                  lhs->value,
-                  lhs->type,
-                  rhs->value, &value, target_)) {
-            return std::nullopt;
-          }
-          if (const PrimitiveInfo* carrier =
-                  shift_carrier_primitive(registry_, lhs->type, target_)) {
-            return ConstIntExprInfo{value, carrier};
-          }
-          return std::nullopt;
-        case BinOp::And:
-          value = static_cast<int64_t>(static_cast<uint64_t>(lhs->value) &
-                                       static_cast<uint64_t>(rhs->value));
-          break;
-        case BinOp::Or:
-          value = static_cast<int64_t>(static_cast<uint64_t>(lhs->value) |
-                                       static_cast<uint64_t>(rhs->value));
-          break;
-        case BinOp::Xor:
-          value = static_cast<int64_t>(static_cast<uint64_t>(lhs->value) ^
-                                       static_cast<uint64_t>(rhs->value));
-          break;
-        case BinOp::Add:
-        case BinOp::Sub:
-        case BinOp::Mul:
-        case BinOp::IntDiv:
-        case BinOp::Mod:
-        default:
-          return std::nullopt;
+      if (operation->kind == BoundBinaryKind::IntegerShift) {
+        const bool valid =
+            b.op == BinOp::Shl
+                ? checked_pascal_shl_int64(
+                      lhs->value, lhs->type, rhs->value, &value, target_)
+                : checked_pascal_shr_int64(
+                      lhs->value, lhs->type, rhs->value, &value, target_);
+        if (!valid) return std::nullopt;
+        if (const PrimitiveInfo* carrier =
+                shift_carrier_primitive(registry_, lhs->type, target_)) {
+          return ConstIntExprInfo{value, carrier};
+        }
+        return std::nullopt;
+      }
+      if (operation->kind != BoundBinaryKind::IntegerBitwise) {
+        return std::nullopt;
+      }
+      if (b.op == BinOp::And) {
+        value = static_cast<int64_t>(
+            static_cast<uint64_t>(lhs->value) &
+            static_cast<uint64_t>(rhs->value));
+      } else if (b.op == BinOp::Or) {
+        value = static_cast<int64_t>(
+            static_cast<uint64_t>(lhs->value) |
+            static_cast<uint64_t>(rhs->value));
+      } else {
+        value = static_cast<int64_t>(
+            static_cast<uint64_t>(lhs->value) ^
+            static_cast<uint64_t>(rhs->value));
       }
       return ConstIntExprInfo{value, type_for_value(value)};
     }
@@ -1602,14 +2450,11 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr_impl(
           }
         }
         if ((callee_name == "pred" || callee_name == "succ") && c.args[0]) {
-          if (auto ordinal = eval_ordinal_expr(*c.args[0])) {
-            int64_t value = ordinal->value;
-            if (callee_name == "pred") {
-              if (!checked_sub_int64(value, 1, &value)) return std::nullopt;
-            } else if (!checked_add_int64(value, 1, &value)) {
-              return std::nullopt;
-            }
-            return ConstIntExprInfo{value, type_for_value(value)};
+          const BoundIntrinsicOperation* operation =
+              bind_intrinsic_operation(c);
+          if (operation) {
+            return eval_bound_ordinal_step(
+                c, *operation, visiting_const_names, overflow);
           }
         }
         if (callee_name == "ord" && c.args[0]) {
@@ -1645,6 +2490,21 @@ std::optional<ConstIntExprInfo> EmitAnalysis::eval_const_int_expr_impl(
     }
     case Kind::Ident: {
       const auto& id = static_cast<const Ident&>(e);
+      if (const EnumMemberInfo* member =
+              find_visible_enum_member(id.name);
+          member && member->owner) {
+        if (const std::optional<int64_t> ordinal =
+                enum_member_ordinal(*member)) {
+          // ConstIntExprInfo carries the value domain used by the partial
+          // evaluator, not the enum's nominal identity. Callers such as
+          // eval_ordinal_expr retain that identity from the bound expression
+          // type while using this numeric value for aliases and arithmetic.
+          return ConstIntExprInfo{
+              *ordinal, static_cast<uint64_t>(*ordinal),
+              type_for_value(*ordinal)};
+        }
+        return std::nullopt;
+      }
       if (!visiting_const_names) {
         std::unordered_set<std::string> local_visiting;
         return eval_const_int_expr_impl(e, &local_visiting, overflow);
@@ -1695,18 +2555,8 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
       return deduce_type(*static_cast<const Unary&>(e).operand);
     case Kind::Binary: {
       const auto& b = static_cast<const Binary&>(e);
-      if (b.op == BinOp::Shl || b.op == BinOp::Shr) {
-        const TypeExpr* lt = deduce_type(*b.lhs);
-        if (lt) lt = canonicalize_for_arithmetic(lt);
-        if (const PrimitiveInfo* pi = primitive_info_for_type(lt)) {
-          if (const PrimitiveInfo* carrier =
-                  shift_carrier_primitive(registry_, pi, target_)) {
-            return integer_type(carrier);
-          }
-        }
-      }
-      if (auto info = eval_const_int_expr(e); info && info->type) {
-        return integer_type(info->type);
+      if (const BoundBinaryOperation* operation = bind_binary_operation(b)) {
+        return operation->result ? operation->result->type : nullptr;
       }
       return deduce_binary_expr_type(b);
     }
@@ -1999,6 +2849,10 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
     }
     case Kind::Call: {
       const auto& c = static_cast<const Call&>(e);
+      if (const BoundIntrinsicOperation* operation =
+              bind_intrinsic_operation(c)) {
+        return operation->result ? operation->result->type : nullptr;
+      }
       // Semantic binding has already distinguished `T(expr)` from an ordinary
       // call.
       // Preserve the selected declaration type directly; primitive aliases
@@ -2007,6 +2861,14 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         if (const TypeExpr* cast_type = explicit_typecast_result_type(e)) {
           return cast_type;
         }
+      }
+      if (c.callee->kind == Kind::Ident && c.args.size() == 1 &&
+          static_cast<const Ident&>(*c.callee).name == "unaligned") {
+        // `unaligned(x)` changes how x's storage may be accessed, not its
+        // Pascal value type. Keeping the operand type here lets assignment,
+        // Inc/Dec, and address lowering share the storage designator without
+        // inventing a second type from its emitted byte-copy representation.
+        return deduce_type(*c.args[0]);
       }
       // Intrinsics that work the same whether spelled `low(t)` or
       // `system.low(t)` are dispatched through intrinsic_call_name so the
@@ -2036,11 +2898,6 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           const TypeDescriptor* result =
               argument ? argument->lo_hi_result : nullptr;
           if (result) return result->type;
-        }
-        if ((n == "succ" || n == "pred" ||
-             n == "abs" || n == "sqr") &&
-            c.args.size() == 1) {
-          return deduce_type(*c.args[0]);
         }
       }
       const TypeExpr* callee_type = deduce_type(*c.callee);

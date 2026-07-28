@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -263,9 +264,9 @@ class EmitStorage {
       const EmitStorageDesignator& d, std::string_view ptr_cast);
   std::string storage_designator_store(const EmitStorageDesignator& d,
                                        const std::string& value_cxx);
-  std::string storage_designator_inc_dec(const EmitStorageDesignator& d,
-                                         bool is_inc,
-                                         const std::string& delta_cxx = {});
+  std::string storage_designator_update_once(
+      const EmitStorageDesignator& d,
+      const std::function<std::string(const std::string&)>& update);
 
   std::optional<EmitBytewiseStorage> bytewise_storage_ref(const ast::Expr& e);
   std::optional<EmitBytewiseStorage> packed_scalar_storage_ref(

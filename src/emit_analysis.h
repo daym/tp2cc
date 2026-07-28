@@ -151,6 +151,14 @@ class EmitAnalysis {
   // not by itself a diagnostic, and callers that need an error must own that
   // language rule explicitly.
   const ast::TypeExpr* deduce_type(const ast::Expr& e);
+  // Bind one built-in integer operation from Pascal operand types. The result
+  // is stored on the AST node and shared by type deduction, constant
+  // evaluation, and emission. A null result means this is not a built-in
+  // integer operation or an operand type is not yet available.
+  const ast::BoundBinaryOperation* bind_binary_operation(
+      const ast::Binary& b);
+  const ast::BoundIntrinsicOperation* bind_intrinsic_operation(
+      const ast::Call& call);
   // Pascal type identity after alias/distinct canonicalization. Overload
   // ranking needs this source-language identity before it falls back to emitted
   // C++ carrier text, because unrelated Pascal pointer aliases may lower to
@@ -234,6 +242,11 @@ class EmitAnalysis {
   // Primitive metadata is attached to the registry descriptor. Consumers do
   // not recover a builtin declaration from its Pascal spelling.
   const PrimitiveInfo* primitive_info_for_type(const ast::TypeExpr* t);
+  // Storage carrier selected by the declared Pascal ordinal type. In
+  // particular, enum storage follows {$PACKENUM}; its value range alone does
+  // not determine the representation used by Succ/Pred/Inc/Dec and loops.
+  const PrimitiveInfo* ordinal_storage_primitive(
+      const ast::TypeExpr* type);
   TargetInfo target() const { return target_; }
 
   // Resolve TySubrange to its host integer primitive type for arithmetic
@@ -288,12 +301,46 @@ class EmitAnalysis {
   const ast::TypeExpr* ordinal_integer_type(PrimitiveIntKind kind,
                                             uint8_t bits) const;
   bool type_is_numeric_primitive(const ast::TypeExpr* t);
+  const PrimitiveInfo* default_integer_primitive(
+      PrimitiveIntKind kind) const;
+  const PrimitiveInfo* integer_arithmetic_primitive(
+      ast::BinOp op, const PrimitiveInfo& lhs,
+      const PrimitiveInfo& rhs) const;
+  const PrimitiveInfo* integer_division_primitive(
+      const ast::Expr& lhs_expr, const PrimitiveInfo& lhs,
+      const ast::Expr& rhs_expr, const PrimitiveInfo& rhs);
+  const PrimitiveInfo* common_integer_primitive(
+      const PrimitiveInfo& lhs, const PrimitiveInfo& rhs) const;
+  const PrimitiveInfo* integer_bitwise_primitive(
+      ast::BinOp op, const PrimitiveInfo& lhs,
+      const PrimitiveInfo& rhs) const;
+  const PrimitiveInfo* integer_comparison_primitive(
+      const ast::Expr& lhs_expr, const PrimitiveInfo& lhs,
+      const ast::Expr& rhs_expr, const PrimitiveInfo& rhs);
+  bool const_int_fits_primitive(const ConstIntExprInfo& value,
+                                const PrimitiveInfo& target) const;
+  bool const_expr_fits_primitive(const ast::Expr& expr,
+                                 const PrimitiveInfo& target);
+  std::optional<bool> compare_constant_integers(
+      ast::BinOp op, const ast::Expr& lhs, const ast::Expr& rhs);
+  const PrimitiveInfo* abs_sqr_primitive(
+      ast::BoundIntrinsicKind kind, const PrimitiveInfo& operand) const;
   static bool binop_is_comparison(ast::BinOp op);
   static bool binop_is_arithmetic_like(ast::BinOp op);
+  const ast::BoundBinaryOperation* bind_set_binary_operation(
+      const ast::Binary& b, const ast::TypeExpr* lhs_source_type,
+      const ast::TypeExpr* rhs_source_type);
+  const PrimitiveInfo* ordinal_integer_primitive_for_domain(
+      const OrdinalDomain& domain) const;
   const ast::TypeExpr* deduce_binary_expr_type(const ast::Binary& b);
   const ast::TypeExpr* deduce_low_high_result_type(const ast::TypeExpr* t);
   std::optional<ConstIntExprInfo> eval_const_int_expr_impl(
       const ast::Expr& e,
+      std::unordered_set<std::string>* visiting_const_names,
+      bool* overflow);
+  std::optional<ConstIntExprInfo> eval_bound_ordinal_step(
+      const ast::Call& call,
+      const ast::BoundIntrinsicOperation& operation,
       std::unordered_set<std::string>* visiting_const_names,
       bool* overflow);
   std::optional<ConstIntExprInfo> eval_const_int_cast(

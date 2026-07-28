@@ -212,13 +212,50 @@ enum class BinOp : uint8_t {
   SymDiff,
 };
 
+enum class BoundBinaryKind : uint8_t {
+  None,
+  IntegerAdd,
+  IntegerSub,
+  IntegerMul,
+  IntegerDiv,
+  IntegerMod,
+  IntegerBitwise,
+  IntegerCompare,
+  IntegerShift,
+  SetUnion,
+  SetDifference,
+  SetIntersection,
+  SetSymmetricDifference,
+};
+
+struct BoundBinaryOperation {
+  // A completed negative answer is semantic information too. Without this
+  // bit, every consumer repeats full operand typing for set, string, real,
+  // pointer, and overloaded operations merely because `kind` remains None.
+  bool binding_complete = false;
+  BoundBinaryKind kind = BoundBinaryKind::None;
+  const TypeDescriptor* lhs_source = nullptr;
+  const TypeDescriptor* rhs_source = nullptr;
+  const TypeDescriptor* lhs = nullptr;
+  const TypeDescriptor* rhs = nullptr;
+  const TypeDescriptor* result = nullptr;
+  bool check_overflow = false;
+  bool has_constant_boolean = false;
+  bool constant_boolean = false;
+};
+
 struct Binary : Expr {
   BinOp op;
   ExprPtr lhs, rhs;
   // Snapshot of `{$Q+}` / `{$overflowchecks+}` at the point this node
-  // was parsed. The emitter routes integer arithmetic through checked
-  // helpers when set; otherwise plain `+` / `-` / `*`.
+  // was parsed. Semantic binding records that mode with the selected Pascal
+  // operation so constant evaluation and emission cannot observe later lexer
+  // state.
   bool q_check = false;
+  // Built-in Pascal operation selected from the resolved operand types.
+  // Constant evaluation, overload typing, and emission consume this one
+  // answer; the C++ runtime is never allowed to infer a carrier.
+  mutable BoundBinaryOperation bound_operation;
   Binary() : Expr(Kind::Binary) {}
   Binary(BinOp op_in, ExprPtr lhs_in, ExprPtr rhs_in, bool q_check_in)
       : Expr(Kind::Binary),
@@ -250,6 +287,31 @@ struct Unary : Expr {
         q_check(q_check_in) {}
 };
 
+enum class BoundIntrinsicKind : uint8_t {
+  None,
+  Abs,
+  Sqr,
+  Succ,
+  Pred,
+  Inc,
+  Dec,
+};
+
+struct BoundIntrinsicOperation {
+  BoundIntrinsicKind kind = BoundIntrinsicKind::None;
+  // Source is the declared operand/storage type. Operand and delta are the
+  // conversions selected for the operation; carrier executes it; result is
+  // converted back to the Pascal intrinsic result or Inc/Dec storage type.
+  const TypeDescriptor* source = nullptr;
+  const TypeDescriptor* operand = nullptr;
+  const TypeDescriptor* delta_source = nullptr;
+  const TypeDescriptor* delta = nullptr;
+  const TypeDescriptor* carrier = nullptr;
+  const TypeDescriptor* result = nullptr;
+  bool check_overflow = false;
+  bool check_range = false;
+};
+
 struct Call : Expr {
   ExprPtr callee;
   std::vector<ExprPtr> args;
@@ -258,14 +320,20 @@ struct Call : Expr {
   // are null.
   std::vector<ExprPtr> width;
   std::vector<ExprPtr> precision;
+  bool q_check = false;
+  bool r_check = false;
+  mutable BoundIntrinsicOperation bound_intrinsic;
   Call() : Expr(Kind::Call) {}
   Call(Location loc_in, ExprPtr callee_in, std::vector<ExprPtr> args_in,
-       std::vector<ExprPtr> width_in, std::vector<ExprPtr> precision_in)
+       std::vector<ExprPtr> width_in, std::vector<ExprPtr> precision_in,
+       bool q_check_in = false, bool r_check_in = false)
       : Expr(Kind::Call, loc_in),
         callee(std::move(callee_in)),
         args(std::move(args_in)),
         width(std::move(width_in)),
-        precision(std::move(precision_in)) {}
+        precision(std::move(precision_in)),
+        q_check(q_check_in),
+        r_check(r_check_in) {}
 };
 
 struct Index : Expr {

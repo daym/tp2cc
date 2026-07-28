@@ -121,29 +121,71 @@ void test_pascal_shift_helpers_mask_count_and_shr_logically() {
 void test_signed_wrap_helpers_avoid_ub() {
   CHECK_EQ(tp2cc_wrap_negate(std::numeric_limits<int64_t>::min()),
            std::numeric_limits<int64_t>::min());
-  CHECK_EQ(tp2cc_wrap_add(std::numeric_limits<int32_t>::max(), int32_t{1}),
+  CHECK_EQ(tp2cc_wrap_add<int32_t>(std::numeric_limits<int32_t>::max(),
+                                    int32_t{1}),
            std::numeric_limits<int32_t>::min());
-  CHECK_EQ(tp2cc_wrap_sub(std::numeric_limits<int32_t>::min(), int32_t{1}),
+  CHECK_EQ(tp2cc_wrap_sub<int32_t>(std::numeric_limits<int32_t>::min(),
+                                    int32_t{1}),
            std::numeric_limits<int32_t>::max());
-  CHECK_EQ(tp2cc_wrap_mul(int32_t{1} << 30, int32_t{4}), int32_t{0});
-  CHECK_EQ(p_abs(std::numeric_limits<int64_t>::min()),
+  CHECK_EQ(tp2cc_wrap_mul<int32_t>(int32_t{1} << 30, int32_t{4}),
+           int32_t{0});
+  CHECK_EQ(tp2cc_add_checked<uint32_t>(
+               std::numeric_limits<uint32_t>::max(), uint32_t{1}),
+           uint32_t{0});
+  CHECK_EQ((p_abs<int64_t, false>(std::numeric_limits<int64_t>::min())),
            std::numeric_limits<int64_t>::min());
-  CHECK_EQ(p_sqr(int32_t{1} << 30), int32_t{0});
-  CHECK_EQ(p_succ(std::numeric_limits<int32_t>::max()),
+  CHECK_EQ((p_sqr<int32_t, false>(int32_t{1} << 30)), int32_t{0});
+  bool saw_abs_overflow = false;
+  try {
+    (void)p_abs<int64_t, true>(std::numeric_limits<int64_t>::min());
+  } catch (t_tobject* e) {
+    saw_abs_overflow = dynamic_cast<t_eintoverflow*>(e) != nullptr;
+    delete e;
+  }
+  CHECK(saw_abs_overflow);
+  bool saw_sqr_overflow = false;
+  try {
+    (void)p_sqr<int32_t, true>(int32_t{1} << 30);
+  } catch (t_tobject* e) {
+    saw_sqr_overflow = dynamic_cast<t_eintoverflow*>(e) != nullptr;
+    delete e;
+  }
+  CHECK(saw_sqr_overflow);
+  CHECK_EQ((tp2cc_ordinal_add<int32_t, int32_t, false, false>(
+               std::numeric_limits<int32_t>::max(), 1,
+               std::numeric_limits<int32_t>::min(),
+               std::numeric_limits<int32_t>::max())),
            std::numeric_limits<int32_t>::min());
-  CHECK_EQ(p_pred(std::numeric_limits<int32_t>::min()),
+  CHECK_EQ((tp2cc_ordinal_sub<int32_t, int32_t, false, false>(
+               std::numeric_limits<int32_t>::min(), 1,
+               std::numeric_limits<int32_t>::min(),
+               std::numeric_limits<int32_t>::max())),
            std::numeric_limits<int32_t>::max());
+  bool saw_ordinal_range = false;
+  try {
+    (void)tp2cc_ordinal_add<uint8_t, int32_t, false, true>(
+        uint8_t{255}, 1, 0, 255);
+  } catch (t_tobject* e) {
+    saw_ordinal_range = dynamic_cast<t_erangeerror*>(e) != nullptr;
+    delete e;
+  }
+  CHECK(saw_ordinal_range);
   int32_t inc_v = std::numeric_limits<int32_t>::max();
-  p_inc(inc_v);
+  inc_v = tp2cc_ordinal_add<int32_t, int32_t, false, false>(
+      inc_v, 1, std::numeric_limits<int32_t>::min(),
+      std::numeric_limits<int32_t>::max());
   CHECK_EQ(inc_v, std::numeric_limits<int32_t>::min());
   int32_t dec_v = std::numeric_limits<int32_t>::min();
-  p_dec(dec_v);
+  dec_v = tp2cc_ordinal_sub<int32_t, int32_t, false, false>(
+      dec_v, 1, std::numeric_limits<int32_t>::min(),
+      std::numeric_limits<int32_t>::max());
   CHECK_EQ(dec_v, std::numeric_limits<int32_t>::max());
-  CHECK_EQ(tp2cc_int_mod(std::numeric_limits<int32_t>::min(), int32_t{-1}),
+  CHECK_EQ(tp2cc_int_mod<int32_t>(std::numeric_limits<int32_t>::min(),
+                                  int32_t{-1}),
            int32_t{0});
   bool saw_div_zero = false;
   try {
-    (void)tp2cc_int_div(int32_t{1}, int32_t{0});
+    (void)tp2cc_int_div<int32_t>(int32_t{1}, int32_t{0});
   } catch (t_tobject* e) {
     saw_div_zero = dynamic_cast<t_edivbyzero*>(e) != nullptr;
     delete e;
@@ -151,12 +193,22 @@ void test_signed_wrap_helpers_avoid_ub() {
   CHECK(saw_div_zero);
   bool saw_div_overflow = false;
   try {
-    (void)tp2cc_int_div(std::numeric_limits<int32_t>::min(), int32_t{-1});
+    (void)tp2cc_int_div<int32_t, true>(
+        std::numeric_limits<int32_t>::min(), int32_t{-1});
   } catch (t_tobject* e) {
     saw_div_overflow = dynamic_cast<t_eintoverflow*>(e) != nullptr;
     delete e;
   }
   CHECK(saw_div_overflow);
+}
+
+void test_pointer_step_helpers_preserve_unsigned_subtraction() {
+  uint16_t values[3] = {};
+  uint16_t* middle = &values[1];
+  CHECK_EQ((tp2cc_pointer_add<uint16_t*, std::uintptr_t>(middle, 1)),
+           &values[2]);
+  CHECK_EQ((tp2cc_pointer_sub<uint16_t*, std::uintptr_t>(middle, 1)),
+           &values[0]);
 }
 
 void test_runtime_path_helpers_match_compiler_expectations() {
@@ -793,10 +845,12 @@ void test_ansistring_from_shortstring_keeps_trailing_nul_storage() {
 void test_shortstring_charref_inc_and_dec_update_length_slot_storage() {
   tp2cc_ShortString<> s = tp2cc_shortstring_of<>("A");
 
-  p_inc(s[1]);
+  s[1] = tp2cc_ordinal_add<p_char, uint8_t, false, false>(
+      s[1], 1, 0, std::numeric_limits<uint8_t>::max());
   CHECK_EQ(tp2cc_to_std_string(s), std::string("B"));
 
-  p_dec(s[1], 1);
+  s[1] = tp2cc_ordinal_sub<p_char, uint8_t, false, false>(
+      s[1], 1, 0, std::numeric_limits<uint8_t>::max());
   CHECK_EQ(tp2cc_to_std_string(s), std::string("A"));
 }
 
@@ -1010,7 +1064,11 @@ void test_reinterpret_load_store_and_inc_handle_misaligned_bytes() {
   }
   CHECK_EQ(tp2cc_reinterpret_load<int32_t>(p), value);
 
-  tp2cc_reinterpret_inc<int32_t>(p);
+  tp2cc_reinterpret_update<int32_t>(p, [](int32_t current) {
+    return tp2cc_ordinal_add<int32_t, int32_t, false, false>(
+        current, 1, std::numeric_limits<int32_t>::min(),
+        std::numeric_limits<int32_t>::max());
+  });
   CHECK_EQ(tp2cc_reinterpret_load<int32_t>(p), value + 1);
 }
 
@@ -1028,10 +1086,18 @@ void test_unaligned_load_store_handle_misaligned_bytes() {
   }
   CHECK_EQ(tp2cc_unaligned_load<int32_t>(p), value);
 
-  tp2cc_unaligned_inc<int32_t>(p);
+  tp2cc_unaligned_update<int32_t>(p, [](int32_t current) {
+    return tp2cc_ordinal_add<int32_t, int32_t, false, false>(
+        current, 1, std::numeric_limits<int32_t>::min(),
+        std::numeric_limits<int32_t>::max());
+  });
   CHECK_EQ(tp2cc_unaligned_load<int32_t>(p), value + 1);
 
-  tp2cc_unaligned_dec<int32_t>(p, 2);
+  tp2cc_unaligned_update<int32_t>(p, [](int32_t current) {
+    return tp2cc_ordinal_sub<int32_t, int32_t, false, false>(
+        current, 2, std::numeric_limits<int32_t>::min(),
+        std::numeric_limits<int32_t>::max());
+  });
   CHECK_EQ(tp2cc_unaligned_load<int32_t>(p), value - 1);
 }
 
@@ -1190,8 +1256,8 @@ void test_getfattr_reports_directory_bit() {
 }
 
 void test_set_superset_operator_matches_pascal() {
-  auto bigger = set_of<int32_t>({1, 2});
-  auto smaller = set_of<int32_t>({1});
+  auto bigger = tp2cc_Set<int32_t>::from_list({1, 2});
+  auto smaller = tp2cc_Set<int32_t>::from_list({1});
 
   CHECK(bigger >= smaller);
   CHECK(!(smaller >= bigger));
@@ -1204,7 +1270,7 @@ void test_empty_set_membership_is_always_false() {
 }
 
 void test_explicit_set_cast_copies_bits() {
-  auto src = set_of<int32_t>({1, 7});
+  auto src = tp2cc_Set<int32_t>::from_list({1, 7});
   auto dst = tp2cc_set_cast<tp2cc_Set<uint8_t>>(src);
 
   CHECK(dst.contains(static_cast<uint8_t>(1)));
@@ -1591,6 +1657,7 @@ int main() {
   RUN_TEST(test_val_keeps_leading_zero_decimals_decimal);
   RUN_TEST(test_pascal_shift_helpers_mask_count_and_shr_logically);
   RUN_TEST(test_signed_wrap_helpers_avoid_ub);
+  RUN_TEST(test_pointer_step_helpers_preserve_unsigned_subtraction);
   RUN_TEST(test_runtime_path_helpers_match_compiler_expectations);
   RUN_TEST(test_runtime_tdatetime_decodes_current_and_dos_times);
   RUN_TEST(test_runtime_file_helpers_expose_real_sysutils_surface);

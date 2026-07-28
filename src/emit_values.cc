@@ -128,7 +128,19 @@ const TypeExpr* EmitValues::metaclass_value_base_type(const Expr& e) {
 
 std::string EmitValues::set_literal_to_cxx(const SetLit& s,
                                            const TypeExpr* target) {
-  if (!target) target = analysis_.deduce_set_literal_type(s);
+  const TypeExpr* bound_type = analysis_.deduce_set_literal_type(s, target);
+  if (target) {
+    if (!bound_type) {
+      expr_ops_.report_error(
+          s.loc, "set literal has no compatible resolved Pascal element type");
+      throw UnitEmissionAborted{};
+    }
+    target = bound_type;
+  } else {
+    const TypeDescriptor* descriptor =
+        registry_.expression_result_descriptor(&s);
+    target = descriptor ? descriptor->type : bound_type;
+  }
   const TypeExpr* elem_type = nullptr;
   if (target) {
     const TypeExpr* canon = analysis_.semantic_shape_type(target);
@@ -216,40 +228,12 @@ std::string EmitValues::set_literal_to_cxx(const SetLit& s,
   if (s.elements.empty()) {
     return "::rt::EmptySet{}";
   }
-  if (!has_range) {
-    std::string out = "::rt::set_of(";
-    for (size_t i = 0; i < s.elements.size(); ++i) {
-      if (i) out += ", ";
-      out += expr_ops_.expr_to_cxx(*s.elements[i]);
-    }
-    out += ")";
-    return out;
-  }
-
-  std::string first;
-  if (s.elements.front()->kind == Kind::Range) {
-    first = expr_ops_.expr_to_cxx(
-        *static_cast<const Range&>(*s.elements.front()).lo);
-  } else {
-    first = expr_ops_.expr_to_cxx(*s.elements.front());
-  }
-  std::string body =
-      "::rt::tp2cc_Set<decltype(" + first + ")> tp2cc_set{};";
-  for (const auto& el : s.elements) {
-    if (el->kind == Kind::Range) {
-      const auto& r = static_cast<const Range&>(*el);
-      body += " for (int64_t tp2cc_value = (int64_t)(" +
-              expr_ops_.expr_to_cxx(*r.lo) + "); tp2cc_value <= (int64_t)(" +
-              expr_ops_.expr_to_cxx(*r.hi) +
-              "); ++tp2cc_value) tp2cc_set.add(static_cast<decltype(" + first +
-              ")>(tp2cc_value));";
-    } else {
-      body += " tp2cc_set.add(" + expr_ops_.expr_to_cxx(*el) + ");";
-    }
-  }
-  body += " return tp2cc_set;";
-  const char* cap = expr_ops_.in_block_scope() ? "[&]" : "[]";
-  return std::string("(") + cap + "{ " + body + " }())";
+  // A nonempty Pascal set has one ordinal element type. Reaching emission
+  // without it is a failed semantic binding, not permission to derive a type
+  // from the first generated C++ expression.
+  expr_ops_.report_error(s.loc,
+                         "set literal has no resolved Pascal element type");
+  throw UnitEmissionAborted{};
 }
 
 std::string EmitValues::pchar_string_literal_to_cxx(const StringLit& lit) {

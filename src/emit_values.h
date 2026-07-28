@@ -17,6 +17,11 @@ struct ConvertedConstInt;
 struct ConstIntExprInfo;
 struct TypeRegistry;
 
+// Internal control flow for a diagnosed semantic failure that has no valid
+// emitted expression. The public driver catches it at the unit boundary so
+// emit-all can continue with independent units without inventing a value.
+struct UnitEmissionAborted {};
+
 class EmitValueExprOps {
  public:
   virtual ~EmitValueExprOps() = default;

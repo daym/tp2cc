@@ -408,10 +408,12 @@ struct Emitter : ResolveNameProvider,
                                     const ast::Expr& other);
   const PrimitiveInfo* integer_primitive_for_expr(const ast::Expr& x);
   bool expr_is_integer_operand(const ast::Expr& x);
-  bool expr_is_signed_integer_operand(const ast::Expr& x);
-  const PrimitiveInfo* shift_carrier_for_expr(const ast::Expr& x);
   std::optional<std::string> member_base_ident(const ast::Member& m);
   std::string single_call_arg_cxx(const ast::Call& c);
+  std::string bound_ordinal_step_to_cxx(
+      const ast::BoundIntrinsicOperation& operation, bool add,
+      const std::string& value, const std::string& delta, Location where,
+      std::string_view intrinsic);
   bool expr_is_const_untyped_storage_arg(const ast::Expr& e);
   bool type_uses_reinterpret_copy_for_scalar_cast(const ast::TypeExpr* t);
   std::optional<std::string> sizeof_type_operand_cxx(const ast::Expr& expr);
@@ -938,16 +940,6 @@ bool Emitter::expr_is_integer_operand(const Expr& x) {
   return integer_primitive_for_expr(x) != nullptr;
 }
 
-bool Emitter::expr_is_signed_integer_operand(const Expr& x) {
-  const PrimitiveInfo* pi = integer_primitive_for_expr(x);
-  return pi && pi->int_kind == PrimitiveIntKind::Signed;
-}
-
-const PrimitiveInfo* Emitter::shift_carrier_for_expr(const Expr& x) {
-  return shift_carrier_primitive(
-      registry, integer_primitive_for_expr(x), target);
-}
-
 std::optional<std::string> Emitter::member_base_ident(const Member& m) {
   if (m.base->kind != Kind::Ident) return std::nullopt;
   return static_cast<const Ident&>(*m.base).name;
@@ -957,6 +949,41 @@ std::string Emitter::single_call_arg_cxx(const Call& c) {
   // Callers only use this in one-argument intrinsic/typecast branches; a
   // fallback value would hide a violated parser/emitter invariant.
   return expr_to_cxx(*c.args[0]);
+}
+
+std::string Emitter::bound_ordinal_step_to_cxx(
+    const BoundIntrinsicOperation& operation, bool add,
+    const std::string& value, const std::string& delta, Location where,
+    std::string_view intrinsic) {
+  // Succ/Pred and Inc/Dec are the same Pascal ordinal operation in value and
+  // storage contexts. Consuming one bound operation here prevents their
+  // carrier, bounds, and checking modes from becoming separate semantics.
+  if (!operation.source || !operation.carrier || !operation.result ||
+      !operation.source->type || !operation.carrier->type ||
+      !operation.result->type) {
+    report_error(where, "unresolved ordinal carrier for '" +
+                            std::string(intrinsic) + "'");
+    throw UnitEmissionAborted{};
+  }
+  const std::string result_cxx = type_to_cxx(*operation.result->type);
+  const std::string carrier_cxx = type_to_cxx(*operation.carrier->type);
+  const std::string low =
+      low_high_expr_for_type(operation.source->type, true);
+  const std::string high =
+      low_high_expr_for_type(operation.source->type, false);
+  if (low.empty() || high.empty()) {
+    report_error(where, "unresolved ordinal bounds for '" +
+                            std::string(intrinsic) + "'");
+    throw UnitEmissionAborted{};
+  }
+  const char* helper = add ? "tp2cc_ordinal_add" : "tp2cc_ordinal_sub";
+  return "::rt::" + std::string(helper) + "<" + result_cxx + ", " +
+         carrier_cxx + ", " +
+         (operation.check_overflow ? "true" : "false") + ", " +
+         (operation.check_range ? "true" : "false") + ">(" + value +
+         ", static_cast<" + carrier_cxx + ">(" + delta +
+         "), static_cast<" + carrier_cxx + ">(" + low +
+         "), static_cast<" + carrier_cxx + ">(" + high + "))";
 }
 
 std::optional<std::string> Emitter::untyped_pointer_deref_address(
@@ -1287,13 +1314,6 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return "(" + expr_to_cxx(*n.rhs) + ").contains(" +
                expr_to_cxx(*n.lhs) + ")";
       }
-      if (n.op == BinOp::SymDiff) {
-        // tp2cc_Set symmetric difference `a >< b` -> `(a + b) - (a * b)` on our
-        // tp2cc_Set<> type (rt::tp2cc_Set has union/intersect/subtract overloads).
-        std::string a = expr_to_cxx(*n.lhs);
-        std::string b = expr_to_cxx(*n.rhs);
-        return "((" + a + " + " + b + ") - (" + a + " * " + b + "))";
-      }
       if (n.op == BinOp::Is) {
         // `class` names lower to pointer types, so `x is TChild` becomes a
         // pointer dynamic_cast rather than address-taking the lhs storage.
@@ -1383,27 +1403,67 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
         }
       }
-      if (n.q_check &&
-          (n.op == BinOp::Add || n.op == BinOp::Sub || n.op == BinOp::Mul) &&
-          expr_is_integer_operand(*n.lhs) && expr_is_integer_operand(*n.rhs)) {
-        const char* fn = (n.op == BinOp::Add) ? "tp2cc_add_checked"
-                       : (n.op == BinOp::Sub) ? "tp2cc_sub_checked"
-                                              : "tp2cc_mul_checked";
-        return std::string("::rt::") + fn + "(" +
-               binary_operand_to_cxx(*n.lhs, *n.rhs) + ", " +
-               binary_operand_to_cxx(*n.rhs, *n.lhs) + ")";
+      const BoundBinaryOperation* bound =
+          analysis_.bind_binary_operation(n);
+      auto bound_type_cxx =
+          [&](const TypeDescriptor* descriptor) -> std::string {
+        return descriptor && descriptor->type
+                   ? type_to_cxx(*descriptor->type)
+                   : std::string{};
+      };
+      auto bound_operand =
+          [&](const Expr& operand, const Expr& other,
+              const TypeDescriptor* source_descriptor,
+              const TypeDescriptor* descriptor) -> std::string {
+        const std::string cxx = bound_type_cxx(descriptor);
+        if (cxx.empty()) return binary_operand_to_cxx(operand, other);
+        const std::string value = binary_operand_to_cxx(operand, other);
+        if (source_descriptor == descriptor) return value;
+        return "static_cast<" + cxx + ">(" +
+               value + ")";
+      };
+      if (bound &&
+          (bound->kind == BoundBinaryKind::SetUnion ||
+           bound->kind == BoundBinaryKind::SetDifference ||
+           bound->kind == BoundBinaryKind::SetIntersection ||
+           bound->kind == BoundBinaryKind::SetSymmetricDifference)) {
+        const TypeExpr* result_type =
+            bound->result ? bound->result->type : nullptr;
+        if (!result_type) {
+          report_error(n.loc, "set operation has no resolved Pascal result");
+          throw UnitEmissionAborted{};
+        }
+        const std::string lhs = const_value_to_cxx(*n.lhs, result_type);
+        const std::string rhs = const_value_to_cxx(*n.rhs, result_type);
+        if (bound->kind == BoundBinaryKind::SetSymmetricDifference) {
+          return "::rt::tp2cc_set_symmetric_difference(" + lhs + ", " + rhs +
+                 ")";
+        }
+        const char* op =
+            bound->kind == BoundBinaryKind::SetUnion
+                ? "+"
+                : bound->kind == BoundBinaryKind::SetDifference ? "-" : "*";
+        return "(" + lhs + " " + op + " " + rhs + ")";
       }
-      if (!n.q_check &&
-          (n.op == BinOp::Add || n.op == BinOp::Sub || n.op == BinOp::Mul) &&
-          expr_is_integer_operand(*n.lhs) && expr_is_integer_operand(*n.rhs) &&
-          (expr_is_signed_integer_operand(*n.lhs) ||
-           expr_is_signed_integer_operand(*n.rhs))) {
-        const char* fn = (n.op == BinOp::Add) ? "tp2cc_wrap_add"
-                       : (n.op == BinOp::Sub) ? "tp2cc_wrap_sub"
-                                              : "tp2cc_wrap_mul";
-        return std::string("::rt::") + fn + "(" +
-               binary_operand_to_cxx(*n.lhs, *n.rhs) + ", " +
-               binary_operand_to_cxx(*n.rhs, *n.lhs) + ")";
+      if (bound &&
+          (bound->kind == BoundBinaryKind::IntegerAdd ||
+           bound->kind == BoundBinaryKind::IntegerSub ||
+           bound->kind == BoundBinaryKind::IntegerMul)) {
+        const char* fn =
+            bound->kind == BoundBinaryKind::IntegerAdd
+                ? (bound->check_overflow ? "tp2cc_add_checked"
+                                         : "tp2cc_wrap_add")
+                : bound->kind == BoundBinaryKind::IntegerSub
+                      ? (bound->check_overflow ? "tp2cc_sub_checked"
+                                               : "tp2cc_wrap_sub")
+                      : (bound->check_overflow ? "tp2cc_mul_checked"
+                                               : "tp2cc_wrap_mul");
+        const std::string result_cxx = bound_type_cxx(bound->result);
+        return std::string("::rt::") + fn + "<" + result_cxx + ">(" +
+               bound_operand(*n.lhs, *n.rhs, bound->lhs_source,
+                             bound->lhs) + ", " +
+               bound_operand(*n.rhs, *n.lhs, bound->rhs_source,
+                             bound->rhs) + ")";
       }
       // Keep the shift/rotate vocabulary precise here:
       // - shl: shift left, zeros come in on the right, high bits are discarded
@@ -1418,22 +1478,48 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // helpers instead of raw C++ `<<`/`>>`, because FPC masks the shift
       // count to the carrier width and `shr` stays logical even for signed
       // integers.
-      if ((n.op == BinOp::Shl || n.op == BinOp::Shr) &&
-          expr_is_integer_operand(*n.lhs)) {
-        if (const PrimitiveInfo* carrier = shift_carrier_for_expr(*n.lhs)) {
-          const char* fn = (n.op == BinOp::Shl) ? "p_shl" : "p_shr";
-          return std::string("::rt::") + fn + "<" + carrier->cxx + ">(" +
-                 binary_operand_to_cxx(*n.lhs, *n.rhs) + ", " +
-                 binary_operand_to_cxx(*n.rhs, *n.lhs) + ")";
-        }
+      if (bound && bound->kind == BoundBinaryKind::IntegerShift) {
+        const char* fn = (n.op == BinOp::Shl) ? "p_shl" : "p_shr";
+        return std::string("::rt::") + fn + "<" +
+               bound_type_cxx(bound->result) + ">(" +
+               bound_operand(*n.lhs, *n.rhs, bound->lhs_source,
+                             bound->lhs) + ", " +
+               bound_operand(*n.rhs, *n.lhs, bound->rhs_source,
+                             bound->rhs) + ")";
       }
-      if ((n.op == BinOp::IntDiv || n.op == BinOp::Mod) &&
-          expr_is_integer_operand(*n.lhs) && expr_is_integer_operand(*n.rhs)) {
-        const char* fn = (n.op == BinOp::IntDiv) ? "tp2cc_int_div"
-                                                 : "tp2cc_int_mod";
-        return std::string("::rt::") + fn + "(" +
-               binary_operand_to_cxx(*n.lhs, *n.rhs) + ", " +
-               binary_operand_to_cxx(*n.rhs, *n.lhs) + ")";
+      if (bound &&
+          (bound->kind == BoundBinaryKind::IntegerDiv ||
+           bound->kind == BoundBinaryKind::IntegerMod)) {
+        const std::string result_cxx = bound_type_cxx(bound->result);
+        std::string fn =
+            bound->kind == BoundBinaryKind::IntegerDiv
+                ? "tp2cc_int_div<" + result_cxx + ", " +
+                      (bound->check_overflow ? "true" : "false") + ">"
+                : "tp2cc_int_mod<" + result_cxx + ">";
+        return "::rt::" + fn + "(" +
+               bound_operand(*n.lhs, *n.rhs, bound->lhs_source,
+                             bound->lhs) + ", " +
+               bound_operand(*n.rhs, *n.lhs, bound->rhs_source,
+                             bound->rhs) + ")";
+      }
+      if (bound && bound->kind == BoundBinaryKind::IntegerBitwise) {
+        const char* op = n.op == BinOp::And ? "&" : n.op == BinOp::Or ? "|" : "^";
+        const std::string result_cxx = bound_type_cxx(bound->result);
+        return "static_cast<" + result_cxx + ">(" +
+               bound_operand(*n.lhs, *n.rhs, bound->lhs_source,
+                             bound->lhs) + " " + op + " " +
+               bound_operand(*n.rhs, *n.lhs, bound->rhs_source,
+                             bound->rhs) + ")";
+      }
+      if (bound && bound->kind == BoundBinaryKind::IntegerCompare) {
+        if (bound->has_constant_boolean) {
+          return bound->constant_boolean ? "true" : "false";
+        }
+        return "(" + bound_operand(*n.lhs, *n.rhs, bound->lhs_source,
+                                    bound->lhs) + " " +
+               pascal_operator_cxx_token(binary_pascal_operator_token(n.op)) +
+               " " + bound_operand(*n.rhs, *n.lhs, bound->rhs_source,
+                                    bound->rhs) + ")";
       }
       if (n.op == BinOp::RealDiv &&
           expr_is_integer_operand(*n.lhs) &&
@@ -1939,6 +2025,39 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       // branches.
       if (auto intrinsic = analysis_.intrinsic_call_name(*c.callee)) {
         const std::string& n = *intrinsic;
+        if ((n == "abs" || n == "sqr") && c.args.size() == 1) {
+          const BoundIntrinsicOperation* operation =
+              analysis_.bind_intrinsic_operation(c);
+          if (!operation || !operation->operand || !operation->result ||
+              !operation->operand->type || !operation->result->type) {
+            report_error(c.loc, "no matching call to '" + n +
+                                    "': incompatible argument type");
+            throw UnitEmissionAborted{};
+          }
+          const std::string operand_cxx =
+              type_to_cxx(*operation->operand->type);
+          const std::string result_cxx =
+              type_to_cxx(*operation->result->type);
+          const std::string argument =
+              "static_cast<" + operand_cxx + ">(" +
+              single_call_arg_cxx(c) + ")";
+          const char* helper = n == "abs" ? "p_abs" : "p_sqr";
+          return "::rt::" + std::string(helper) + "<" + result_cxx + ", " +
+                 (operation->check_overflow ? "true" : "false") + ">(" +
+                 argument + ")";
+        }
+        if ((n == "succ" || n == "pred") && c.args.size() == 1) {
+          const BoundIntrinsicOperation* operation =
+              analysis_.bind_intrinsic_operation(c);
+          if (!operation) {
+            report_error(c.loc, "no matching call to '" + n +
+                                    "': ordinal argument required");
+            throw UnitEmissionAborted{};
+          }
+          return bound_ordinal_step_to_cxx(
+              *operation, n == "succ", single_call_arg_cxx(c), "1", c.loc,
+              n);
+        }
         // Pascal `low` / `high` are type-driven:
         //   `high(longint)`   -> max value of the type
         //   `high(a)`         -> max value of a's type
@@ -2303,6 +2422,13 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           }
         } else if ((n == "inc" || n == "dec") &&
                    (c.args.size() == 1 || c.args.size() == 2)) {
+          const BoundIntrinsicOperation* operation =
+              analysis_.bind_intrinsic_operation(c);
+          if (!operation || !operation->source || !operation->source->type) {
+            report_error(c.loc, "no matching call to '" + n +
+                                    "': mutable ordinal or pointer required");
+            throw UnitEmissionAborted{};
+          }
           bool saved_storage_view = storage_view_context;
           storage_view_context = true;
           // `Inc`/`Dec` mutate a Pascal variable designator. The designator
@@ -2311,11 +2437,74 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           auto storage = storage_.storage_designator(*c.args[0]);
           storage_view_context = saved_storage_view;
           if (storage) {
-            return storage_.storage_designator_inc_dec(
-                *storage, n == "inc",
-                c.args.size() == 2 ? expr_to_cxx(*c.args[1]) : std::string{});
+            return storage_.storage_designator_update_once(
+                *storage, [&](const std::string& current) {
+                  const TypeExpr* source_shape =
+                      semantic_shape_type(operation->source->type);
+                  const PrimitiveInfo* source_primitive =
+                      analysis_.primitive_info_for_type(
+                          operation->source->type);
+                  const bool source_is_pointer =
+                      (source_shape &&
+                       source_shape->kind == Kind::TyPointer) ||
+                      (source_primitive &&
+                       source_primitive->is_pointer_primitive());
+                  if (source_is_pointer) {
+                    if (!operation->delta || !operation->delta->type) {
+                      report_error(
+                          c.loc, "unresolved pointer delta for '" + n + "'");
+                      throw UnitEmissionAborted{};
+                    }
+                    const std::string delta_cxx =
+                        type_to_cxx(*operation->delta->type);
+                    std::string delta =
+                        c.args.size() == 2 ? expr_to_cxx(*c.args[1]) : "1";
+                    const std::string pointer_cxx =
+                        type_to_cxx(*operation->source->type);
+                    const char* helper =
+                        n == "inc" ? "tp2cc_pointer_add"
+                                   : "tp2cc_pointer_sub";
+                    return "::rt::" + std::string(helper) + "<" +
+                           pointer_cxx + ", " + delta_cxx + ">(" + current +
+                           ", static_cast<" + delta_cxx + ">(" + delta +
+                           "))";
+                  }
+
+                  std::string delta;
+                  if (source_primitive &&
+                      source_primitive->kind == PrimitiveKind::Currency) {
+                    if (c.args.size() == 2) {
+                      if (!operation->delta_source ||
+                          !operation->delta_source->type) {
+                        report_error(c.loc,
+                                     "unresolved Currency delta type");
+                        throw UnitEmissionAborted{};
+                      }
+                      const std::string source_cxx =
+                          type_to_cxx(*operation->delta_source->type);
+                      delta =
+                          "::rt::tp2cc_integer_to_currency<" + source_cxx +
+                          ", " +
+                          (operation->check_overflow ? "true" : "false") +
+                          ", " +
+                          (operation->check_range ? "true" : "false") +
+                          ">(static_cast<" + source_cxx + ">(" +
+                          expr_to_cxx(*c.args[1]) + "))";
+                    } else {
+                      delta = "10000";
+                    }
+                  } else {
+                    delta = c.args.size() == 2
+                                ? expr_to_cxx(*c.args[1])
+                                : std::string("1");
+                  }
+                  return bound_ordinal_step_to_cxx(
+                      *operation, n == "inc", current, delta, c.loc, n);
+                });
           }
-          // Fall through to generic emission for invalid non-storage args.
+          report_error(c.loc, "no matching call to '" + n +
+                                  "': mutable variable required");
+          throw UnitEmissionAborted{};
         } else if (n == "new" && !c.args.empty()) {
           // Expression-form `new(T)` or `new(T, Ctor(args))`. The first
           // argument is a pointer type name, not a value expression; lowering
@@ -2810,7 +2999,11 @@ EmittedUnit emit_unit(const UnitNode& u, const TypeRegistry& registry,
                       const std::vector<std::string>* unit_init_order,
                       TargetInfo target) {
   Emitter e(registry, unit_init_order, target);
-  e.emit_unit(u);
+  try {
+    e.emit_unit(u);
+  } catch (const UnitEmissionAborted&) {
+    return {};
+  }
   return {std::move(e.header), std::move(e.impl)};
 }
 

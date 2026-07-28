@@ -114,6 +114,7 @@ class EmitTypes {
   std::optional<ArrayDimBounds> array_dim_bounds_to_cxx(
       const ast::TypeExpr& dim);
   std::string subrange_type_to_cxx(const ast::TySubrange& r);
+  std::string ordinal_storage_carrier_to_cxx(const ast::TypeExpr* type);
   std::string string_type_to_cxx(const ast::TyString& s);
   std::optional<std::string> shortstring_capacity_to_cxx(
       const ast::TypeExpr* t);

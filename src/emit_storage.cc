@@ -1018,26 +1018,27 @@ std::string EmitStorage::storage_designator_store(
          value_cxx + ")";
 }
 
-std::string EmitStorage::storage_designator_inc_dec(
-    const EmitStorageDesignator& d, bool is_inc, const std::string& delta_cxx) {
-  if (d.is_bytewise()) {
-    const bool unaligned = d.access == EmitStorageAccess::UnalignedBytewise;
-    const char* helper =
-        is_inc ? (unaligned ? "::rt::tp2cc_unaligned_inc"
-                            : "::rt::tp2cc_reinterpret_inc")
-               : (unaligned ? "::rt::tp2cc_unaligned_dec"
-                            : "::rt::tp2cc_reinterpret_dec");
-    std::string out = std::string(helper) + "<" + d.type_cxx + ">(" +
-                      d.ptr_cxx;
-    if (!delta_cxx.empty()) out += ", " + delta_cxx;
-    out += ")";
-    return out;
-  }
-  std::string out = std::string(is_inc ? "::rt::p_inc" : "::rt::p_dec") +
-                    "(" + d.text;
-  if (!delta_cxx.empty()) out += ", " + delta_cxx;
-  out += ")";
-  return out;
+std::string EmitStorage::storage_designator_update_once(
+    const EmitStorageDesignator& d,
+    const std::function<std::string(const std::string&)>& update) {
+  if (d.type_cxx.empty()) return {};
+  const std::string address = storage_designator_raw_address(d);
+  // Pascal evaluates a variable designator once for Inc/Dec. A generated
+  // update helper receives the address as one function argument, so indexes,
+  // casts, or property-backed paths with calls cannot run twice.
+  const char* helper =
+      d.access == EmitStorageAccess::UnalignedBytewise
+          ? "::rt::tp2cc_unaligned_update<"
+          : d.is_bytewise() ? "::rt::tp2cc_reinterpret_update<"
+                            : "::rt::tp2cc_update<";
+  const std::string typed_address =
+      d.is_bytewise()
+          ? address
+          : "static_cast<" + d.type_cxx + "*>(" + address + ")";
+  const std::string current = "tp2cc_current";
+  return std::string(helper) + d.type_cxx + ">(" + typed_address + ", [&](" +
+         d.type_cxx + " " + current + ") { return " + update(current) +
+         "; })";
 }
 
 std::optional<EmitBytewiseStorage> EmitStorage::bytewise_storage_ref(

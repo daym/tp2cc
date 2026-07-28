@@ -363,63 +363,8 @@ std::string EmitTypes::enum_member_value_to_cxx(const TyEnum& e, size_t index) {
 }
 
 std::string EmitTypes::enum_underlying_type_to_cxx(const TyEnum& e) {
-  if (e.members.empty()) return "int32_t";
-
-  int64_t lo = 0;
-  int64_t hi = 0;
-  for (size_t i = 0; i < e.members.size(); ++i) {
-    auto value = enum_member_value_int64(e, i);
-    if (!value) return "int32_t";
-    if (i == 0) {
-      lo = *value;
-      hi = *value;
-    } else {
-      lo = std::min(lo, *value);
-      hi = std::max(hi, *value);
-    }
-  }
-
-  // Match old FPC's enum storage rule:
-  // - default / `{$PACKENUM 4}` stores as 4 bytes
-  // - `{$PACKENUM 2}` stores as 2 bytes when the signed/unsigned ordinal range
-  //   fits, otherwise 4
-  // - `{$PACKENUM 1}` stores as 1/2/4 depending on the range
-  // Very large explicit ordinals still widen to 8 bytes so the emitted C++
-  // stays representable.
-  int width = 1;
-  if (lo < std::numeric_limits<int32_t>::min() ||
-      hi > std::numeric_limits<uint32_t>::max()) {
-    width = 8;
-  } else if (e.packenum >= 4 || lo < std::numeric_limits<int16_t>::min() ||
-             hi > std::numeric_limits<uint16_t>::max()) {
-    width = 4;
-  } else if (e.packenum >= 2 || lo < std::numeric_limits<int8_t>::min() ||
-             hi > std::numeric_limits<uint8_t>::max()) {
-    width = 2;
-  }
-
-  if (lo < 0) {
-    switch (width) {
-      case 1:
-        return "int8_t";
-      case 2:
-        return "int16_t";
-      case 4:
-        return "int32_t";
-      default:
-        return "int64_t";
-    }
-  }
-  switch (width) {
-    case 1:
-      return "uint8_t";
-    case 2:
-      return "uint16_t";
-    case 4:
-      return "uint32_t";
-    default:
-      return "uint64_t";
-  }
+  const PrimitiveInfo* storage = analysis_.ordinal_storage_primitive(&e);
+  return storage && storage->cxx ? storage->cxx : "int32_t";
 }
 
 std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
@@ -620,11 +565,6 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
     }
     return {};
   };
-  auto ordinal_cxx = [&](PrimitiveIntKind kind, uint8_t bits) -> std::string {
-    const PrimitiveInfo* primitive =
-        ordinal_integer_primitive(registry_, kind, bits);
-    return primitive && primitive->cxx ? primitive->cxx : std::string{};
-  };
 
   // If both bounds denote values from the same enum, preserve that enum carrier
   // so scalar subranges remain assignment-compatible with the parent enum.
@@ -664,38 +604,27 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
     return primitive_cxx(PrimitiveKind::WideChar);
   }
   if (domain->family != OrdinalFamily::Integer) return "int32_t";
+  const PrimitiveInfo* storage = analysis_.ordinal_storage_primitive(&r);
+  return storage && storage->cxx ? storage->cxx : "int32_t";
+}
 
-  int64_t lo = domain->low;
-  int64_t hi = domain->high;
-
-  // Match old FPC's ordinal subrange storage rule:
-  // - 0..255 -> byte
-  // - -128..127 -> shortint
-  // - 0..65535 -> word
-  // - -32768..32767 -> smallint
-  // - 0..4294967295 -> longword/cardinal
-  // - otherwise -> longint/int32_t
-  //
-  // We still widen beyond 32 bits if the explicit bounds exceed the classic
-  // longint/cardinal domain so the emitted C++ can represent the source range.
-  if (lo >= 0) {
-    uint64_t uhi = static_cast<uint64_t>(hi);
-    if (uhi <= UINT8_MAX)
-      return ordinal_cxx(PrimitiveIntKind::Unsigned, 8);
-    if (uhi <= UINT16_MAX)
-      return ordinal_cxx(PrimitiveIntKind::Unsigned, 16);
-    if (uhi <= UINT32_MAX)
-      return ordinal_cxx(PrimitiveIntKind::Unsigned, 32);
-    return ordinal_cxx(PrimitiveIntKind::Unsigned, 64);
+std::string EmitTypes::ordinal_storage_carrier_to_cxx(
+    const TypeExpr* type) {
+  if (!type) return {};
+  if (const PrimitiveInfo* storage =
+          analysis_.ordinal_storage_primitive(type);
+      storage && storage->descriptor && storage->descriptor->type) {
+    return type_to_cxx(*storage->descriptor->type);
   }
-  if (lo >= INT8_MIN && hi <= INT8_MAX)
-    return ordinal_cxx(PrimitiveIntKind::Signed, 8);
-  if (lo >= INT16_MIN && hi <= INT16_MAX) {
-    return ordinal_cxx(PrimitiveIntKind::Signed, 16);
+  const TypeExpr* shape = analysis_.semantic_shape_type(type);
+  if (shape && shape->kind == Kind::TySubrange) {
+    // A legal required-constant bound may remain symbolic until generated C++
+    // evaluates it, as with `0..SizeOf(formal)-1`. The declaration has still
+    // selected a concrete storage type; hidden loop steps must consume that
+    // same selection instead of independently requiring a numeric bound.
+    return subrange_type_to_cxx(static_cast<const TySubrange&>(*shape));
   }
-  if (lo >= INT32_MIN && hi <= INT32_MAX)
-    return ordinal_cxx(PrimitiveIntKind::Signed, 32);
-  return ordinal_cxx(PrimitiveIntKind::Signed, 64);
+  return {};
 }
 
 std::string EmitTypes::enum_bound_cxx_name(std::string_view enum_name,
@@ -1131,6 +1060,16 @@ std::string EmitTypes::low_high_expr_for_type_in_context(
   if (const TypeLookupContext* own_context =
           declaration_context_for_type(registry_, t)) {
     declaration_context = own_context;
+  }
+  if (const TypeDescriptor* descriptor =
+          registry_.descriptor_for_type(t);
+      descriptor && descriptor->enum_info() && descriptor->symbol) {
+    // Semantic binding can retain the descriptor-owned TyEnum directly
+    // (notably for Succ(Low(T))). Its declaration identity already supplies
+    // the bound name and unit; requiring a TyName here would discard that
+    // answer and attempt to reconstruct it during emission.
+    return enum_bound_cxx_name(descriptor->symbol->name,
+                               descriptor->symbol->defining_unit, want_low);
   }
   if (t->kind == Kind::TyName) {
     if (const TypeSymbol* symbol = registry_.resolved_symbol_for_type(t)) {

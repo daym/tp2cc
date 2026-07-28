@@ -458,7 +458,8 @@ std::string signed_bits_literal_text(uint64_t bits, uint8_t width,
 std::string primitive_low_high_expr(const PrimitiveInfo* info, bool want_low) {
   if (!info) return {};
   if (info->is_char()) {
-    return want_low ? "::rt::tp2cc_char_of(0)" : "::rt::tp2cc_char_of(255)";
+    // Pascal Char is p_char; C++ char is an unrelated host character type.
+    return want_low ? "::rt::p_char{0}" : "::rt::p_char{255}";
   }
   if (info->is_bool()) return want_low ? "false" : "true";
   if (info->int_kind == PrimitiveIntKind::None) return {};

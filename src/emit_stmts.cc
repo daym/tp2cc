@@ -846,12 +846,17 @@ void EmitStmts::emit_case_stmt(const CaseStmt& cs) {
 
 void EmitStmts::emit_ordinal_for_body(const For& f, const std::string& var,
                                       const std::string& from,
-                                      const std::string& to, bool downto) {
+                                      const std::string& to, bool downto,
+                                      const TypeExpr* type) {
   std::string n = std::to_string(++loop_label_counter_);
   std::string brk = "tp2cc_loop_break_" + n;
   std::string cont = "tp2cc_loop_continue_" + n;
   const char* cmp = downto ? ">=" : "<=";
-  const char* step = downto ? "::rt::p_dec" : "::rt::p_inc";
+  const std::string step = ordinal_step_cxx(var, type, downto);
+  if (step.empty()) {
+    stmt_ops_.report_error(f.loc, "cannot determine Pascal for-loop carrier");
+    return;
+  }
   stmt_ops_.emitln("{");
   stmt_ops_.indent();
   stmt_ops_.emitln("auto tp2cc_from = (" + from + ");");
@@ -867,7 +872,7 @@ void EmitStmts::emit_ordinal_for_body(const For& f, const std::string& var,
     stmt_ops_.emitln(cont + ":;");
   }
   stmt_ops_.emitln("if (" + var + " == tp2cc_to) break;");
-  stmt_ops_.emitln(std::string(step) + "(" + var + ");");
+  stmt_ops_.emitln(var + " = " + step + ";");
   stmt_ops_.dedent();
   stmt_ops_.emitln("}");
   stmt_ops_.dedent();
@@ -875,6 +880,25 @@ void EmitStmts::emit_ordinal_for_body(const For& f, const std::string& var,
   stmt_ops_.dedent();
   stmt_ops_.emitln("}");
   stmt_ops_.emitln(brk + ":;");
+}
+
+std::string EmitStmts::ordinal_step_cxx(
+    const std::string& value, const TypeExpr* type, bool subtract) {
+  if (!type) return {};
+  // A for-loop's hidden step is not a source Succ/Pred/Inc/Dec operation and
+  // therefore has no {$Q}/{$R} mode to bind. The endpoint test prevents a step
+  // past the loop bound; only the control variable's declared storage carrier
+  // is needed here, including its enum representation.
+  const std::string result_cxx = types_.type_to_cxx(*type);
+  const std::string carrier_cxx =
+      types_.ordinal_storage_carrier_to_cxx(type);
+  if (result_cxx.empty() || carrier_cxx.empty()) return {};
+  const char* helper =
+      subtract ? "tp2cc_ordinal_sub" : "tp2cc_ordinal_add";
+  return "::rt::" + std::string(helper) + "<" + result_cxx + ", " +
+         carrier_cxx + ", false, false>(" + value + ", static_cast<" +
+         carrier_cxx + ">(1), static_cast<" + carrier_cxx +
+         ">(0), static_cast<" + carrier_cxx + ">(0))";
 }
 
 std::optional<EmitStmts::ForInTypeRhs> EmitStmts::for_in_type_rhs(
@@ -944,7 +968,11 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_type_rhs(
     stmt_ops_.report_error(f.loc, "cannot determine bounds for for-in type");
     return ForInEmitResult::Error;
   }
-  emit_ordinal_for_body(f, var, low, high, false);
+  emit_ordinal_for_body(
+      f, var, low, high, false,
+      type_rhs->symbol && type_rhs->symbol->descriptor
+          ? type_rhs->symbol->descriptor->type
+          : nullptr);
   return ForInEmitResult::Emitted;
 }
 
@@ -1115,7 +1143,8 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_string(
     stmt_ops_.emitln(cont + ":;");
   }
   stmt_ops_.emitln("if (" + idx + " == tp2cc_high_" + n + ") break;");
-  stmt_ops_.emitln("::rt::p_inc(" + idx + ");");
+  stmt_ops_.emitln(
+      idx + " = ::rt::tp2cc_wrap_add<int32_t>(" + idx + ", 1);");
   stmt_ops_.dedent();
   stmt_ops_.emitln("}");
   stmt_ops_.dedent();
@@ -1156,12 +1185,34 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_array(
     high = "::rt::p_length(" + arr + ") - 1";
   }
 
+  const TypeSymbol* default_index =
+      registry_.builtin_literal("longint");
+  const TypeExpr* index_type =
+      arr_type.array_kind == ArrayKind::Fixed && !arr_type.dims.empty()
+          ? arr_type.dims[0].get()
+          : default_index && default_index->descriptor
+                ? default_index->descriptor->type
+                : nullptr;
+  if (!index_type) {
+    stmt_ops_.report_error(f.loc,
+                           "cannot determine array iteration index type");
+    return ForInEmitResult::Error;
+  }
+  const std::string next_index = ordinal_step_cxx(idx, index_type, false);
+  if (next_index.empty()) {
+    stmt_ops_.report_error(f.loc,
+                           "cannot determine array iteration index carrier");
+    return ForInEmitResult::Error;
+  }
+  const std::string index_cxx = types_.type_to_cxx(*index_type);
   stmt_ops_.emitln("{");
   stmt_ops_.indent();
   stmt_ops_.emitln("auto&& " + arr + " = (" +
                    stmt_ops_.expr_to_cxx(*f.in_expr) + ");");
-  stmt_ops_.emitln("auto " + idx + " = (" + low + ");");
-  stmt_ops_.emitln("auto tp2cc_high_" + n + " = (" + high + ");");
+  stmt_ops_.emitln(index_cxx + " " + idx + " = static_cast<" + index_cxx +
+                   ">(" + low + ");");
+  stmt_ops_.emitln(index_cxx + " tp2cc_high_" + n + " = static_cast<" +
+                   index_cxx + ">(" + high + ");");
   stmt_ops_.emitln("if (" + idx + " <= tp2cc_high_" + n + ") {");
   stmt_ops_.indent();
   stmt_ops_.emitln("while (true) {");
@@ -1173,7 +1224,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_array(
     stmt_ops_.emitln(cont + ":;");
   }
   stmt_ops_.emitln("if (" + idx + " == tp2cc_high_" + n + ") break;");
-  stmt_ops_.emitln("::rt::p_inc(" + idx + ");");
+  stmt_ops_.emitln(idx + " = " + next_index + ";");
   stmt_ops_.dedent();
   stmt_ops_.emitln("}");
   stmt_ops_.dedent();
@@ -1216,6 +1267,13 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_set(
   std::string elem_type = types_.type_to_cxx(*set_type.element);
   std::string low_value = "static_cast<" + elem_type + ">(" + low + ")";
   std::string high_value = "static_cast<" + elem_type + ">(" + high + ")";
+  const std::string next_item =
+      ordinal_step_cxx(item, set_type.element.get(), false);
+  if (next_item.empty()) {
+    stmt_ops_.report_error(f.loc,
+                           "cannot determine set iteration element carrier");
+    return ForInEmitResult::Error;
+  }
 
   stmt_ops_.emitln("{");
   stmt_ops_.indent();
@@ -1238,7 +1296,7 @@ EmitStmts::ForInEmitResult EmitStmts::emit_for_in_builtin_set(
   stmt_ops_.dedent();
   stmt_ops_.emitln("}");
   stmt_ops_.emitln("if (" + item + " == " + high_value + ") break;");
-  stmt_ops_.emitln("::rt::p_inc(" + item + ");");
+  stmt_ops_.emitln(item + " = " + next_item + ";");
   stmt_ops_.dedent();
   stmt_ops_.emitln("}");
   stmt_ops_.dedent();
@@ -1350,7 +1408,10 @@ void EmitStmts::emit_stmt(const Stmt& s) {
 
       std::string from = stmt_ops_.expr_to_cxx(*f.from);
       std::string to = stmt_ops_.expr_to_cxx(*f.to);
-      emit_ordinal_for_body(f, var, from, to, f.downto);
+      Ident var_expr(f.loc, f.var);
+      emit_ordinal_for_body(
+          f, var, from, to, f.downto,
+          selected_value_type(var_expr));
       break;
     }
     case Kind::CaseStmt: {

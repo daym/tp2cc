@@ -2266,7 +2266,9 @@ ExprPtr Parser::parse_postfix(ExprPtr lhs) {
       }
       expect(Tok::RParen, "call");
       lhs = std::make_shared<Call>(loc, std::move(lhs), std::move(args),
-                                   std::move(width), std::move(precision));
+                                   std::move(width), std::move(precision),
+                                   lex_.overflow_check_active(),
+                                   lex_.range_check_active());
       continue;
     }
     return lhs;

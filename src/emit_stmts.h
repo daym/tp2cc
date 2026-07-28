@@ -81,7 +81,9 @@ class EmitStmts {
   void emit_expr_stmt(const ast::ExprStmt& es);
   void emit_ordinal_for_body(const ast::For& f, const std::string& var,
                              const std::string& from, const std::string& to,
-                             bool downto);
+                             bool downto, const ast::TypeExpr* type);
+  std::string ordinal_step_cxx(const std::string& value,
+                               const ast::TypeExpr* type, bool subtract);
   // Pascal `for x in rhs` has a fixed dispatch order. Type RHS iterates
   // Low(T)..High(T). Expression RHS first checks operator enumerators, then
   // GetEnumerator providers, then built-in string/array/set iteration.

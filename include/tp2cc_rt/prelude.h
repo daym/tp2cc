@@ -1253,43 +1253,36 @@ tp2cc_real_to_int_trunc(SrcT src) {
   return static_cast<DstT>(src);
 }
 
-// Checked integer arithmetic for `{$Q+}`. Pascal's mixed-type rules
-// promote operands to a common type before the operation, then
-// overflow-check at that type. Mirror that with `std::common_type_t`:
-// C++'s usual arithmetic conversions match Pascal's promotion rules
-// closely enough for fpc's bootstrap source, and `__builtin_*_overflow`
-// detects the overflow at the promoted type. Pascal does not check
-// unsigned arithmetic under Q+, but `__builtin_*_overflow` for unsigned
-// types just reports the wraparound, which we accept silently.
-template <typename A, typename B>
-constexpr std::common_type_t<A, B> tp2cc_add_checked(A a, B b) {
-  using R = std::common_type_t<A, B>;
+// The compiler has already selected and emitted Pascal's operation carrier as
+// R. These helpers implement checked or wrapping arithmetic in that carrier;
+// accepting two independently deduced operand types here would create a second
+// type system in C++.
+template <typename R>
+constexpr R tp2cc_add_checked(std::type_identity_t<R> a,
+                               std::type_identity_t<R> b) {
+  static_assert(std::is_integral_v<R>);
   R r;
-  R ax = static_cast<R>(a);
-  R bx = static_cast<R>(b);
-  if (__builtin_add_overflow(ax, bx, &r)) {
+  if (__builtin_add_overflow(a, b, &r)) {
     if constexpr (std::is_signed_v<R>) tp2cc_throw_int_overflow();
   }
   return r;
 }
-template <typename A, typename B>
-constexpr std::common_type_t<A, B> tp2cc_sub_checked(A a, B b) {
-  using R = std::common_type_t<A, B>;
+template <typename R>
+constexpr R tp2cc_sub_checked(std::type_identity_t<R> a,
+                               std::type_identity_t<R> b) {
+  static_assert(std::is_integral_v<R>);
   R r;
-  R ax = static_cast<R>(a);
-  R bx = static_cast<R>(b);
-  if (__builtin_sub_overflow(ax, bx, &r)) {
+  if (__builtin_sub_overflow(a, b, &r)) {
     if constexpr (std::is_signed_v<R>) tp2cc_throw_int_overflow();
   }
   return r;
 }
-template <typename A, typename B>
-constexpr std::common_type_t<A, B> tp2cc_mul_checked(A a, B b) {
-  using R = std::common_type_t<A, B>;
+template <typename R>
+constexpr R tp2cc_mul_checked(std::type_identity_t<R> a,
+                               std::type_identity_t<R> b) {
+  static_assert(std::is_integral_v<R>);
   R r;
-  R ax = static_cast<R>(a);
-  R bx = static_cast<R>(b);
-  if (__builtin_mul_overflow(ax, bx, &r)) {
+  if (__builtin_mul_overflow(a, b, &r)) {
     if constexpr (std::is_signed_v<R>) tp2cc_throw_int_overflow();
   }
   return r;
@@ -1317,93 +1310,123 @@ constexpr T tp2cc_wrap_negate(T x) {
   }
 }
 
-template <typename A, typename B>
-constexpr std::common_type_t<A, B> tp2cc_wrap_add(A a, B b) {
-  using R = std::common_type_t<A, B>;
-  if constexpr (std::is_signed_v<R> && std::is_integral_v<R>) {
-    using U = std::make_unsigned_t<R>;
-    return static_cast<R>(static_cast<U>(static_cast<R>(a)) +
-                          static_cast<U>(static_cast<R>(b)));
+template <typename R>
+constexpr R tp2cc_integer_from_bits(std::make_unsigned_t<R> bits) {
+  if constexpr (std::is_signed_v<R>) return std::bit_cast<R>(bits);
+  else return bits;
+}
+
+template <typename R>
+constexpr R tp2cc_wrap_add(std::type_identity_t<R> a,
+                            std::type_identity_t<R> b) {
+  static_assert(std::is_integral_v<R>);
+  using U = std::make_unsigned_t<R>;
+  return tp2cc_integer_from_bits<R>(
+      static_cast<U>(static_cast<uint64_t>(static_cast<U>(a)) +
+                     static_cast<uint64_t>(static_cast<U>(b))));
+}
+
+template <typename R>
+constexpr R tp2cc_wrap_sub(std::type_identity_t<R> a,
+                            std::type_identity_t<R> b) {
+  static_assert(std::is_integral_v<R>);
+  using U = std::make_unsigned_t<R>;
+  return tp2cc_integer_from_bits<R>(
+      static_cast<U>(static_cast<uint64_t>(static_cast<U>(a)) -
+                     static_cast<uint64_t>(static_cast<U>(b))));
+}
+
+template <typename R>
+constexpr R tp2cc_wrap_mul(std::type_identity_t<R> a,
+                            std::type_identity_t<R> b) {
+  static_assert(std::is_integral_v<R>);
+  using U = std::make_unsigned_t<R>;
+  return tp2cc_integer_from_bits<R>(
+      static_cast<U>(static_cast<uint64_t>(static_cast<U>(a)) *
+                     static_cast<uint64_t>(static_cast<U>(b))));
+}
+
+template <typename Result, typename Carrier>
+constexpr Result tp2cc_ordinal_from_carrier(Carrier value) {
+  static_assert(std::is_integral_v<Carrier>);
+  if constexpr (std::is_same_v<Result, bool>) {
+    return (static_cast<std::make_unsigned_t<Carrier>>(value) & 1u) != 0;
+  } else if constexpr (std::is_enum_v<Result>) {
+    using Underlying = std::underlying_type_t<Result>;
+    using Unsigned = std::make_unsigned_t<Underlying>;
+    const Unsigned bits = static_cast<Unsigned>(value);
+    const Underlying underlying =
+        tp2cc_integer_from_bits<Underlying>(bits);
+    return static_cast<Result>(underlying);
   } else {
-    return static_cast<R>(static_cast<R>(a) + static_cast<R>(b));
+    static_assert(std::is_integral_v<Result>);
+    using Unsigned = std::make_unsigned_t<Result>;
+    return tp2cc_integer_from_bits<Result>(
+        static_cast<Unsigned>(value));
   }
 }
 
-template <typename A, typename B>
-constexpr std::common_type_t<A, B> tp2cc_wrap_sub(A a, B b) {
-  using R = std::common_type_t<A, B>;
-  if constexpr (std::is_signed_v<R> && std::is_integral_v<R>) {
-    using U = std::make_unsigned_t<R>;
-    return static_cast<R>(static_cast<U>(static_cast<R>(a)) -
-                          static_cast<U>(static_cast<R>(b)));
-  } else {
-    return static_cast<R>(static_cast<R>(a) - static_cast<R>(b));
+template <typename Result, typename Carrier, bool CheckOverflow,
+          bool CheckRange>
+constexpr Result tp2cc_ordinal_add(
+    std::type_identity_t<Result> value,
+    std::type_identity_t<Carrier> delta,
+    std::type_identity_t<Carrier> low,
+    std::type_identity_t<Carrier> high) {
+  static_assert(std::is_integral_v<Carrier>);
+  const Carrier source = static_cast<Carrier>(value);
+  const Carrier result =
+      CheckOverflow ? tp2cc_add_checked<Carrier>(source, delta)
+                    : tp2cc_wrap_add<Carrier>(source, delta);
+  if constexpr (CheckRange) {
+    if (result < low || result > high) tp2cc_throw_range_error();
   }
+  return tp2cc_ordinal_from_carrier<Result>(result);
 }
 
-template <typename A, typename B>
-constexpr std::common_type_t<A, B> tp2cc_wrap_mul(A a, B b) {
-  using R = std::common_type_t<A, B>;
-  if constexpr (std::is_signed_v<R> && std::is_integral_v<R>) {
-    using U = std::make_unsigned_t<R>;
-    return static_cast<R>(static_cast<U>(static_cast<R>(a)) *
-                          static_cast<U>(static_cast<R>(b)));
-  } else {
-    return static_cast<R>(static_cast<R>(a) * static_cast<R>(b));
+template <typename Result, typename Carrier, bool CheckOverflow,
+          bool CheckRange>
+constexpr Result tp2cc_ordinal_sub(
+    std::type_identity_t<Result> value,
+    std::type_identity_t<Carrier> delta,
+    std::type_identity_t<Carrier> low,
+    std::type_identity_t<Carrier> high) {
+  static_assert(std::is_integral_v<Carrier>);
+  const Carrier source = static_cast<Carrier>(value);
+  const Carrier result =
+      CheckOverflow ? tp2cc_sub_checked<Carrier>(source, delta)
+                    : tp2cc_wrap_sub<Carrier>(source, delta);
+  if constexpr (CheckRange) {
+    if (result < low || result > high) tp2cc_throw_range_error();
   }
+  return tp2cc_ordinal_from_carrier<Result>(result);
 }
 
-template <typename T, bool IsEnum = std::is_enum_v<T>>
-struct tp2cc_ordinal_arith_type {
-  using type = T;
-};
-
-template <typename T>
-struct tp2cc_ordinal_arith_type<T, true> {
-  using type = std::underlying_type_t<T>;
-};
-
-template <typename T>
-using tp2cc_ordinal_arith_type_t = typename tp2cc_ordinal_arith_type<T>::type;
-
-template <typename T, typename N>
-constexpr T tp2cc_ord_wrap_add(T x, N n) {
-  using A = tp2cc_ordinal_arith_type_t<T>;
-  return static_cast<T>(tp2cc_wrap_add(static_cast<A>(x), n));
-}
-
-template <typename T, typename N>
-constexpr T tp2cc_ord_wrap_sub(T x, N n) {
-  using A = tp2cc_ordinal_arith_type_t<T>;
-  return static_cast<T>(tp2cc_wrap_sub(static_cast<A>(x), n));
-}
-
-template <typename A, typename B>
-constexpr std::common_type_t<A, B> tp2cc_int_div(A a, B b) {
-  using R = std::common_type_t<A, B>;
-  R ax = static_cast<R>(a);
-  R bx = static_cast<R>(b);
-  if (bx == 0) tp2cc_throw_div_by_zero();
+template <typename R, bool CheckOverflow = false>
+constexpr R tp2cc_int_div(std::type_identity_t<R> a,
+                          std::type_identity_t<R> b) {
+  static_assert(std::is_integral_v<R>);
+  if (b == 0) tp2cc_throw_div_by_zero();
   if constexpr (std::is_signed_v<R> && std::is_integral_v<R>) {
-    if (ax == std::numeric_limits<R>::min() && bx == static_cast<R>(-1)) {
-      tp2cc_throw_int_overflow();
+    if (a == std::numeric_limits<R>::min() && b == static_cast<R>(-1)) {
+      if constexpr (CheckOverflow) tp2cc_throw_int_overflow();
+      return a;
     }
   }
-  return static_cast<R>(ax / bx);
+  return static_cast<R>(a / b);
 }
 
-template <typename A, typename B>
-constexpr std::common_type_t<A, B> tp2cc_int_mod(A a, B b) {
-  using R = std::common_type_t<A, B>;
-  R ax = static_cast<R>(a);
-  R bx = static_cast<R>(b);
-  if (bx == 0) tp2cc_throw_div_by_zero();
+template <typename R>
+constexpr R tp2cc_int_mod(std::type_identity_t<R> a,
+                          std::type_identity_t<R> b) {
+  static_assert(std::is_integral_v<R>);
+  if (b == 0) tp2cc_throw_div_by_zero();
   if constexpr (std::is_signed_v<R> && std::is_integral_v<R>) {
-    if (ax == std::numeric_limits<R>::min() && bx == static_cast<R>(-1)) {
+    if (a == std::numeric_limits<R>::min() && b == static_cast<R>(-1)) {
       return static_cast<R>(0);
     }
   }
-  return static_cast<R>(ax % bx);
+  return static_cast<R>(a % b);
 }
 
 // Pascal `shl` / `shr` are not raw C++ shifts. FPC masks the shift count to
@@ -1941,6 +1964,80 @@ using t_plongword = uint32_t*;
 using t_ppointer  = void**;
 using t_pqword    = uint64_t*;
 using t_pshortstring = tp2cc_ShortString<>*;
+
+// Inc/Dec deltas are expressed in whole Currency units, while a Currency
+// variable stores ten-thousandths. Convert the already-bound integer delta
+// before the ordinal storage operation so C++ never sees the scale as a type
+// promotion rule.
+template <typename Source, bool CheckOverflow, bool CheckRange>
+constexpr t_currency tp2cc_integer_to_currency(
+    std::type_identity_t<Source> value) {
+  static_assert(std::is_integral_v<Source>);
+  bool overflow = false;
+  t_currency result = 0;
+  if constexpr (std::is_signed_v<Source>) {
+    overflow = __builtin_mul_overflow(
+        static_cast<t_currency>(value), t_currency{10000}, &result);
+  } else {
+    using UnsignedCurrency = std::make_unsigned_t<t_currency>;
+    UnsignedCurrency unsigned_result = 0;
+    overflow = __builtin_mul_overflow(
+        static_cast<UnsignedCurrency>(value), UnsignedCurrency{10000},
+        &unsigned_result);
+    overflow =
+        overflow ||
+        unsigned_result >
+            static_cast<UnsignedCurrency>(
+                std::numeric_limits<t_currency>::max());
+    result = tp2cc_integer_from_bits<t_currency>(unsigned_result);
+  }
+  if (overflow) {
+    if constexpr (CheckOverflow) tp2cc_throw_int_overflow();
+    if constexpr (CheckRange) tp2cc_throw_range_error();
+  }
+  if constexpr (!CheckOverflow && !CheckRange) {
+    using UnsignedCurrency = std::make_unsigned_t<t_currency>;
+    const UnsignedCurrency bits =
+        static_cast<UnsignedCurrency>(value) * UnsignedCurrency{10000};
+    return tp2cc_integer_from_bits<t_currency>(bits);
+  }
+  return result;
+}
+
+// Pascal typed-pointer Inc/Dec changes the address by pointee-sized units.
+// Integer address arithmetic also preserves Pascal's unsigned decrement
+// semantics without invoking C++ pointer arithmetic outside one array object.
+template <typename Pointer, typename Delta>
+Pointer tp2cc_pointer_add(std::type_identity_t<Pointer> value,
+                          std::type_identity_t<Delta> delta) {
+  static_assert(std::is_pointer_v<Pointer>);
+  static_assert(std::is_integral_v<Delta>);
+  using Pointee = std::remove_pointer_t<Pointer>;
+  constexpr std::uintptr_t stride = [] {
+    if constexpr (std::is_void_v<Pointee>) return std::uintptr_t{1};
+    else return static_cast<std::uintptr_t>(sizeof(Pointee));
+  }();
+  const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(value);
+  const std::uintptr_t displacement =
+      static_cast<std::uintptr_t>(delta) * stride;
+  return reinterpret_cast<Pointer>(address + displacement);
+}
+
+template <typename Pointer, typename Delta>
+Pointer tp2cc_pointer_sub(std::type_identity_t<Pointer> value,
+                          std::type_identity_t<Delta> delta) {
+  static_assert(std::is_pointer_v<Pointer>);
+  static_assert(std::is_integral_v<Delta>);
+  using Pointee = std::remove_pointer_t<Pointer>;
+  constexpr std::uintptr_t stride = [] {
+    if constexpr (std::is_void_v<Pointee>) return std::uintptr_t{1};
+    else return static_cast<std::uintptr_t>(sizeof(Pointee));
+  }();
+  const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(value);
+  const std::uintptr_t displacement =
+      static_cast<std::uintptr_t>(delta) * stride;
+  return reinterpret_cast<Pointer>(address - displacement);
+}
 
 // Only `vtAnsiString` is needed: ncgld.pas locally redeclares all the
 // other vt* tags in a procedure-scoped `const` block, so the bare name
@@ -2588,6 +2685,20 @@ inline void tp2cc_reinterpret_store(void* p, const T& value) {
   std::memcpy(p, &value, sizeof(T));
 }
 
+// Inc/Dec designators may contain calls or indexes with side effects. The
+// compiler passes their address once, then supplies the already-bound Pascal
+// update as this callback; bytewise variants preserve the same sequencing.
+template <typename T, typename Update>
+inline void tp2cc_update(T* slot, Update&& update) {
+  *slot = std::forward<Update>(update)(*slot);
+}
+
+template <typename T, typename Update>
+inline void tp2cc_reinterpret_update(void* slot, Update&& update) {
+  tp2cc_reinterpret_store<T>(
+      slot, std::forward<Update>(update)(tp2cc_reinterpret_load<T>(slot)));
+}
+
 // Begin the lifetime of an aligned implicit-lifetime T at its Pascal storage
 // address without changing the stored bytes. C++20 specifies that memmove
 // implicitly creates suitable implicit-lifetime objects in its destination;
@@ -2652,6 +2763,12 @@ inline T tp2cc_unaligned_load(const void* p) {
 template <typename T>
 inline void tp2cc_unaligned_store(void* p, const T& value) {
   tp2cc_reinterpret_store<T>(p, value);
+}
+
+template <typename T, typename Update>
+inline void tp2cc_unaligned_update(void* slot, Update&& update) {
+  tp2cc_unaligned_store<T>(
+      slot, std::forward<Update>(update)(tp2cc_unaligned_load<T>(slot)));
 }
 
 // Offset inside an object's byte representation. C++ only gives special
@@ -2778,11 +2895,6 @@ struct tp2cc_Set {
   }
 };
 
-template <typename Elem>
-tp2cc_Set<Elem> set_of(std::initializer_list<Elem> xs) {
-  return tp2cc_Set<Elem>::from_list(xs);
-}
-
 // compiler.pas masks FPU exceptions around the main compile so constant
 // folding does not raise stray FP traps. The actual mask read/write
 // happens via tp2cc_get/set_exception_mask_bits below; the enum/set here
@@ -2817,6 +2929,18 @@ inline t_tfpuexceptionmask p_setexceptionmask(t_tfpuexceptionmask mask) {
   previous.bits[0] = static_cast<unsigned char>(
       tp2cc_set_exception_mask_bits(static_cast<uint8_t>(mask.bits[0] & 0x3Fu)));
   return previous;
+}
+
+template <typename Elem>
+constexpr tp2cc_Set<Elem> tp2cc_set_symmetric_difference(
+    tp2cc_Set<Elem> lhs, tp2cc_Set<Elem> rhs) {
+  // Pascal `lhs >< rhs` evaluates each operand once. Expanding it into union,
+  // intersection, and difference at the call site would evaluate both twice.
+  tp2cc_Set<Elem> result{};
+  for (int i = 0; i < tp2cc_Set<Elem>::Nb; ++i) {
+    result.bits[i] = lhs.bits[i] ^ rhs.bits[i];
+  }
+  return result;
 }
 
 template <typename DstSet, typename SrcElem>
@@ -2860,26 +2984,6 @@ constexpr T tp2cc_set_to_int(const tp2cc_Set<E>& s) {
   return out;
 }
 
-// Mixed-type variadic `set_of` -- Pascal set literals like
-// `[newline, #13, '{', ';']` mix a CharConst (our wrapper for Pascal
-// `const X = 'c'`) with plain char literals. A single
-// `initializer_list<Elem>` can't deduce Elem across distinct argument
-// types, so take them as a variadic pack and add each explicitly.
-// The first argument's type drives the tp2cc_Set's element type.
-namespace detail {
-template <typename T> struct set_elem_type { using type = T; };
-template <> struct set_elem_type<char> { using type = p_char; };
-template <> struct set_elem_type<CharConst> { using type = p_char; };
-}
-template <typename T, typename... Rest>
-inline auto set_of(T first, Rest... rest) {
-  using E = typename detail::set_elem_type<T>::type;
-  tp2cc_Set<E> s{};  // value-init: zero the bits[] -- see note on from_list
-  s.add(static_cast<E>(first));
-  (s.add(static_cast<E>(rest)), ...);
-  return s;
-}
-
 // Empty set-literal sentinel. Pascal `[]` has no element type on its own
 // (the type is inferred from use context). We emit it as `EmptySet{}`
 // which implicitly converts to any tp2cc_Set<T>. Membership against `[]`
@@ -2892,9 +2996,6 @@ struct EmptySet {
   template <typename T>
   constexpr bool contains(const T&) const { return false; }
 };
-inline tp2cc_Set<int> set_of(std::initializer_list<EmptySet>) { return {}; }
-inline EmptySet set_of() { return {}; }
-
 template <typename A, typename B>
 requires (!std::is_same_v<A, B>)
 constexpr tp2cc_Set<A> operator+(tp2cc_Set<A> a, tp2cc_Set<B> b) {
@@ -3242,16 +3343,21 @@ inline constexpr T p_not(T x) {
   else return static_cast<T>(~static_cast<int64_t>(x));
 }
 
-template <typename T> inline T p_abs(T x) {
+template <typename T, bool CheckOverflow>
+inline T p_abs(std::type_identity_t<T> x) {
   if constexpr (std::is_signed_v<T> && std::is_integral_v<T>) {
-    return x < 0 ? tp2cc_wrap_negate(x) : x;
+    if (x >= 0) return x;
+    if constexpr (CheckOverflow) return tp2cc_negate_checked(x);
+    else return tp2cc_wrap_negate(x);
   } else {
     return x < 0 ? -x : x;
   }
 }
-template <typename T> inline T p_sqr(T x) {
-  if constexpr (std::is_signed_v<T> && std::is_integral_v<T>) {
-    return tp2cc_wrap_mul(x, x);
+template <typename T, bool CheckOverflow>
+inline T p_sqr(std::type_identity_t<T> x) {
+  if constexpr (std::is_integral_v<T>) {
+    if constexpr (CheckOverflow) return tp2cc_mul_checked<T>(x, x);
+    else return tp2cc_wrap_mul<T>(x, x);
   } else {
     return x * x;
   }
@@ -3271,88 +3377,6 @@ inline int32_t     p_trunc(double x)        { return static_cast<int32_t>(x); }
 inline int32_t     p_round(double x)        { using namespace std; return static_cast<int32_t>(lround(x)); }
 inline double      p_int(double x)          { using namespace std; return trunc(x); }
 inline double      p_frac(double x)         { using namespace std; return x - trunc(x); }
-
-template <typename T> inline T p_succ(T x) { return tp2cc_ord_wrap_add(x, 1); }
-template <typename T> inline T p_pred(T x) { return tp2cc_ord_wrap_sub(x, 1); }
-
-// Pascal `inc`/`dec` work on ordinal types, including enums, and on
-// typed pointers (pointer arithmetic in units of `sizeof(*ptr)`).
-// For ordinal arithmetic, avoid raw signed C++ overflow: fpc's default Q-
-// semantics wrap, while UBSan treats signed overflow in `++`/`--`/`+`/`-`
-// as undefined. Pointers stay in C++ pointer arithmetic.
-template <typename T> inline void p_inc(T& x) {
-  if constexpr (std::is_pointer_v<T>) ++x;
-  else x = p_succ(x);
-}
-inline void p_inc(tp2cc_ShortStringCharRef x) { ++(*x.byte); }
-template <typename T, typename N> inline void p_inc(T& x, N n) {
-  if constexpr (std::is_pointer_v<T>) x += n;
-  else x = tp2cc_ord_wrap_add(x, n);
-}
-template <typename N>
-inline void p_inc(tp2cc_ShortStringCharRef x, N n) {
-  *x.byte = static_cast<uint8_t>(static_cast<int64_t>(*x.byte) + n);
-}
-template <typename T> inline void p_dec(T& x) {
-  if constexpr (std::is_pointer_v<T>) --x;
-  else x = p_pred(x);
-}
-inline void p_dec(tp2cc_ShortStringCharRef x) { --(*x.byte); }
-template <typename T, typename N> inline void p_dec(T& x, N n) {
-  if constexpr (std::is_pointer_v<T>) x -= n;
-  else x = tp2cc_ord_wrap_sub(x, n);
-}
-template <typename N>
-inline void p_dec(tp2cc_ShortStringCharRef x, N n) {
-  *x.byte = static_cast<uint8_t>(static_cast<int64_t>(*x.byte) - n);
-}
-
-template <typename T> inline void tp2cc_reinterpret_inc(void* p) {
-  T x = tp2cc_reinterpret_load<T>(p);
-  p_inc(x);
-  tp2cc_reinterpret_store<T>(p, x);
-}
-template <typename T, typename N> inline void tp2cc_reinterpret_inc(void* p, N n) {
-  T x = tp2cc_reinterpret_load<T>(p);
-  p_inc(x, n);
-  tp2cc_reinterpret_store<T>(p, x);
-}
-template <typename T> inline void tp2cc_reinterpret_dec(void* p) {
-  T x = tp2cc_reinterpret_load<T>(p);
-  p_dec(x);
-  tp2cc_reinterpret_store<T>(p, x);
-}
-template <typename T, typename N> inline void tp2cc_reinterpret_dec(void* p, N n) {
-  T x = tp2cc_reinterpret_load<T>(p);
-  p_dec(x, n);
-  tp2cc_reinterpret_store<T>(p, x);
-}
-
-template <typename T> inline void tp2cc_unaligned_inc(void* p) {
-  T x = tp2cc_unaligned_load<T>(p);
-  p_inc(x);
-  tp2cc_unaligned_store<T>(p, x);
-}
-template <typename T, typename N> inline void tp2cc_unaligned_inc(void* p, N n) {
-  T x = tp2cc_unaligned_load<T>(p);
-  p_inc(x, n);
-  tp2cc_unaligned_store<T>(p, x);
-}
-template <typename T> inline void tp2cc_unaligned_dec(void* p) {
-  T x = tp2cc_unaligned_load<T>(p);
-  p_dec(x);
-  tp2cc_unaligned_store<T>(p, x);
-}
-template <typename T, typename N> inline void tp2cc_unaligned_dec(void* p, N n) {
-  T x = tp2cc_unaligned_load<T>(p);
-  p_dec(x, n);
-  tp2cc_unaligned_store<T>(p, x);
-}
-
-// No rvalue `p_inc`/`p_dec` overloads here. Storage-view casts such as
-// `inc(longint(p))` are emitted through `tp2cc_reinterpret_inc` /
-// `tp2cc_reinterpret_dec` above so the operation copies bytes instead of
-// manufacturing a C++ reference to a different object type.
 
 // --- Missing small RTL procedures ------------------------------------------
 
@@ -5994,7 +6018,8 @@ inline tp2cc_AnsiString p_includetrailingpathdelimiter(const Str& input) {
 // separators (e.g. accept '\' even on unix); cfileutils.pas tests `s[i] in
 // AllowDirectorySeparators` against arbitrary input paths.
 inline tp2cc_Set<p_char> p_allowdirectoryseparators =
-    set_of<p_char>({tp2cc_char_of('/'), tp2cc_char_of('\\')});
+    tp2cc_Set<p_char>::from_list(
+        {tp2cc_char_of('/'), tp2cc_char_of('\\')});
 
 // SysUtils.SetDirSeparators copies the path and replaces each character in
 // AllowDirectorySeparators with DirectorySeparator.
