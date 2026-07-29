@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <unordered_set>
 #include <vector>
 
 #include "emit_analysis.h"
@@ -314,7 +313,7 @@ std::optional<EmitStorageDesignator> EmitStorage::raw_address_index_designator(
       const std::string index_cxx =
           expr_ops_.expr_value_to_cxx(*i.indices[0]);
       const char* offset_helper = base_address_is_pointer_value
-                                      ? "::rt::tp2cc_pointer_byte_offset"
+                                      ? "::rt::tp2cc_object_byte_offset"
                                       : "::rt::tp2cc_byte_offset";
       const std::string base_addr = storage_designator_raw_address(base);
       const std::string offset_cxx =
@@ -358,7 +357,7 @@ std::optional<EmitStorageDesignator> EmitStorage::raw_address_index_designator(
     const std::string offset = "((" + index_cxx + ") - (" + bounds->low +
                                ")) * sizeof(" + elem_cxx + ")";
     const char* offset_helper = dim == 0 && base_address_is_pointer_value
-                                    ? "::rt::tp2cc_pointer_byte_offset"
+                                    ? "::rt::tp2cc_object_byte_offset"
                                     : "::rt::tp2cc_byte_offset";
     ptr_cxx = std::string(offset_helper) + "(" + ptr_cxx + ", " + offset + ")";
   }
@@ -645,7 +644,7 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
           base_addr = storage_designator_raw_address(*base);
         }
         const char* offset_helper = base_addr_is_pointer_value
-                                        ? "::rt::tp2cc_pointer_byte_offset"
+                                        ? "::rt::tp2cc_object_byte_offset"
                                         : "::rt::tp2cc_byte_offset";
         field_ptr_cxx = std::string(offset_helper) + "(" + base_addr +
                         ", offsetof(" + offset_type + ", " + member_cxx + "))";
@@ -753,12 +752,8 @@ std::optional<EmitStorageDesignator> EmitStorage::storage_designator(
   if (t) type_cxx = types_.type_to_cxx(*t);
   if (e.kind == Kind::Deref) {
     const auto& d = static_cast<const Deref&>(e);
-    // Pascal `Ptype(p)^` where Ptype's pointee is not related to `p`'s
-    // pointee through a C++ inheritance chain. Bytewise routing prevents
-    // `*(Ptype)p` strict-aliasing UB by loading/storing through memcpy
-    // helpers; downstream field/index access composes byte offsets on top.
-    if (auto bytewise = pointer_typecast_deref_as_bytewise(d)) {
-      return bytewise;
+    if (auto representation = pointer_deref_representation_storage(d)) {
+      return representation;
     }
     // `p^` is an ordinary typed Pascal lvalue for reads and writes, but Pascal
     // address-of cancels the dereference: `@p^` is the operand pointer
@@ -933,6 +928,9 @@ std::string EmitStorage::storage_designator_value(
 std::string EmitStorage::storage_designator_member_base(
     const EmitStorageDesignator& d) {
   if (!d.is_bytewise()) return d.text;
+  if (d.ptr_form == EmitStorageAddressForm::TypedStoragePointer) {
+    return storage_designator_value(d);
+  }
   return storage_designator_typed_lvalue(d);
 }
 
@@ -944,6 +942,14 @@ std::string EmitStorage::storage_designator_typed_lvalue(
 std::string EmitStorage::storage_designator_typed_lvalue(
     const EmitStorageDesignator& d, std::string_view type_cxx) {
   const std::string address = storage_designator_raw_address(d);
+  if (d.is_bytewise() &&
+      d.ptr_form == EmitStorageAddressForm::TypedStoragePointer &&
+      d.type_cxx == type_cxx) {
+    // A typed-reference consumer relies on the Pascal pointer's live-object
+    // precondition. Normal value reads and writes remain byte copies, but
+    // var/out must pass the actual pointee rather than a copied temporary.
+    return "::rt::tp2cc_deref(" + address + ")";
+  }
   if (!d.backing_type_cxx.empty() && !d.backing_ptr_cxx.empty()) {
     return "(*::rt::tp2cc_ScopedStorageView<" + std::string(type_cxx) +
            ", " + d.backing_type_cxx + ">(" + address + ", " +
@@ -972,6 +978,20 @@ std::string EmitStorage::storage_designator_typed_address_value(
     const EmitStorageDesignator& d, Location where) {
   const std::string address = storage_designator_raw_address(d);
   if (address.empty() || d.type_cxx.empty()) return address;
+  if (d.is_bytewise() &&
+      d.ptr_form == EmitStorageAddressForm::TypedStoragePointer) {
+    // `@p^` is p. The byte-copy policy for ordinary reads and writes must not
+    // turn address-of into a temporary storage view or evaluate p twice.
+    return address;
+  }
+  if (d.access == EmitStorageAccess::Bytewise &&
+      d.backing_type_cxx.empty()) {
+    // Address formation does not read the pointee or require a T object to
+    // exist yet. Return the Pascal ^T value directly; a later scalar access
+    // remains byte-copy based, while aggregate access keeps its live-object
+    // precondition.
+    return "static_cast<" + d.type_cxx + "*>(" + address + ")";
+  }
   if (d.raw_address_needs_typed_cast()) {
     if (d.access == EmitStorageAccess::Ordinary &&
         d.ptr_form == EmitStorageAddressForm::RawBytePointer) {
@@ -1496,32 +1516,6 @@ bool EmitStorage::type_is_open_array(const TypeExpr* t) {
          static_cast<const TyArray&>(*t).array_kind == ArrayKind::Open;
 }
 
-bool EmitStorage::fixed_array_pointer_can_decay_to_element_pointer(
-    const TypeExpr* src_type, const TypeExpr* dst_type) {
-  const TypeExpr* src = analysis_.semantic_shape_type(src_type);
-  const TypeExpr* dst = analysis_.semantic_shape_type(dst_type);
-  if (!src || src->kind != Kind::TyPointer || !dst) return false;
-
-  const TypeExpr* src_pointee = analysis_.semantic_shape_type(
-      static_cast<const TyPointer&>(*src).target.get());
-  if (!src_pointee || src_pointee->kind != Kind::TyArray ||
-      static_cast<const TyArray&>(*src_pointee).array_kind !=
-          ArrayKind::Fixed) {
-    return false;
-  }
-  const TypeExpr* src_elem = analysis_.semantic_shape_type(
-      static_cast<const TyArray&>(*src_pointee).element.get());
-  if (!src_elem) return false;
-
-  const TypeExpr* dst_elem = nullptr;
-  if (dst->kind == Kind::TyPointer) {
-    dst_elem = analysis_.semantic_shape_type(
-        static_cast<const TyPointer&>(*dst).target.get());
-  }
-  if (!dst_elem) return false;
-  return analysis_.same_type_ast(src_elem, dst_elem);
-}
-
 bool EmitStorage::fixed_char_array_value_can_decay_to_pchar(
     const TypeExpr* src_type, const TypeExpr* dst_type) {
   const TypeExpr* src = analysis_.semantic_shape_type(src_type);
@@ -1561,47 +1555,9 @@ std::string EmitStorage::lower_fixed_char_array_value_to_pchar(
 bool EmitStorage::pointer_value_conversion_is_valid(
     const TypeExpr* dst_type, const TypeExpr* src_type,
     bool explicit_pascal_cast) {
-  const TypeExpr* raw_dst = dst_type;
-  const TypeExpr* raw_src = src_type;
-  const TypeExpr* dst = analysis_.semantic_shape_type(dst_type);
-  const TypeExpr* src = analysis_.semantic_shape_type(src_type);
-  if (!dst || !src) return false;
-
-  const bool dst_proc = is_nonmethod_procedural_type(dst);
-  const bool src_proc = is_nonmethod_procedural_type(src);
-  const bool dst_ptr = type_is_pointerish(dst);
-  const bool src_ptr = type_is_pointerish(src);
-  if (!(dst_ptr || dst_proc) || !(src_ptr || src_proc)) return false;
-
-  // Storage conversions are source-language decisions. Matching generated C++
-  // carrier text is not enough: unrelated Pascal pointer/procedural types can
-  // share a backend representation while still requiring an explicit cast.
-  if (analysis_.same_type_ast(raw_dst, raw_src)) return true;
-
-  const bool dst_void_ptr = is_plain_pointer_type(analysis_, dst);
-  const bool src_void_ptr = is_plain_pointer_type(analysis_, src);
-  if (fixed_array_pointer_can_decay_to_element_pointer(src, dst)) return true;
-  if (pointer_to_object_upcast_is_valid(raw_dst, raw_src)) return true;
-  if (class_to_interface_conversion_is_valid(raw_dst, raw_src)) return true;
-  if ((dst_proc && src_void_ptr) || (dst_void_ptr && src_proc)) return true;
-  if (src_void_ptr || dst_void_ptr) return true;
-
-  const bool dst_ref_class = type_is_reference_class(dst);
-  const bool src_ref_class = type_is_reference_class(src);
-  if (dst_ref_class && src_ref_class) {
-    // Reference-class conversions are nominal class-identity checks. Looking
-    // up raw TyName spelling here would hide missing semantic type binding
-    // and can pick the wrong unit/type when aliases or imports are involved.
-    const ClassInfo* dst_class = class_info_for_value_type(raw_dst, dst);
-    const ClassInfo* src_class = class_info_for_value_type(raw_src, src);
-    if (dst_class && src_class &&
-        class_parent_chain_contains(*dst_class, *src_class)) {
-      return true;
-    }
-    return explicit_pascal_cast;
-  }
-
-  return explicit_pascal_cast;
+  return analysis_.classify_pointer_conversion(
+             dst_type, src_type, explicit_pascal_cast) !=
+         PointerConversionKind::Incompatible;
 }
 
 std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
@@ -1610,72 +1566,37 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
                                                   const std::string& source_cxx,
                                                   bool explicit_pascal_cast,
                                                   bool source_is_const_storage) {
-  if (!pointer_value_conversion_is_valid(dst_type, src_type,
-                                         explicit_pascal_cast)) {
+  const PointerConversionKind conversion =
+      analysis_.classify_pointer_conversion(dst_type, src_type,
+                                            explicit_pascal_cast);
+  if (conversion == PointerConversionKind::Incompatible) {
     return source_cxx;
   }
   const TypeExpr* dst = analysis_.semantic_shape_type(dst_type);
   const TypeExpr* src = analysis_.semantic_shape_type(src_type);
   if (!dst || !src) return source_cxx;
 
-  const bool dst_proc = is_nonmethod_procedural_type(dst);
-  const bool src_proc = is_nonmethod_procedural_type(src);
-  const bool dst_ptr = type_is_pointerish(dst);
-  const bool src_ptr = type_is_pointerish(src);
-  if (!(dst_ptr || dst_proc) || !(src_ptr || src_proc)) return source_cxx;
-
   const std::string shaped_dst_cxx = types_.type_to_cxx(*dst);
   const std::string dst_cxx =
       dst_cxx_text.empty() ? shaped_dst_cxx : std::string(dst_cxx_text);
-  const bool dst_ref_class = type_is_reference_class(dst);
-  const bool src_ref_class = type_is_reference_class(src);
-  if (!dst_ref_class && !src_ref_class) {
-    if (analysis_.same_type_ast(dst_type, src_type)) return source_cxx;
-  }
-
-  const bool dst_void_ptr = is_plain_pointer_type(analysis_, dst);
-  const bool src_void_ptr = is_plain_pointer_type(analysis_, src);
-
-  // `^fixed_array of T -> ^T`: lower via the shared element-pointer helper.
-  // The destination must be a typed pointer whose pointee matches the source
-  // array's element type; otherwise the conversion is not value-preserving.
-  if (fixed_array_pointer_can_decay_to_element_pointer(src, dst)) {
-    return lower_pointer_to_fixed_array_to_element(src, source_cxx);
-  }
-
-  if (pointer_to_object_upcast_is_valid(dst_type, src_type)) {
-    return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
-  }
-  // Class-hierarchy exception (downcast): explicit `Pchild(pparent)` where
-  // Pchild's pointee descends from Pparent's pointee. Without this, the
-  // caller falls into the raw `reinterpret_cast` branch and any subsequent
-  // deref becomes strict-aliasing UB. `static_cast<Pchild>` keeps the C++
-  // inheritance chain visible to the compiler; virtual dispatch through
-  // `Pchild(pparent)^.VirtualMethod` then resolves against the object's
-  // actual dynamic type (Pascal's precondition is that the pointee really
-  // is a Pchild instance, same UB precondition as C++ downcast).
-  // Do not remove as an "unnecessary special case": routing this through
-  // the bytewise memcpy path would copy `*p as Pchild's pointee` into a
-  // temporary and dispatch on the temporary's static type, which loses
-  // virtual dispatch and object identity.
-  if (explicit_pascal_cast &&
-      pointer_to_object_downcast_is_valid(dst_type, src_type)) {
-    return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
-  }
-  if (class_to_interface_conversion_is_valid(dst_type, src_type)) {
-    return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
-  }
-
-  if (dst_proc && src_void_ptr) {
-    return "::rt::tp2cc_funptr_from_bits<" + dst_cxx + ">(" + source_cxx +
-           ")";
-  }
-  if (dst_void_ptr && src_proc) {
-    return "::rt::tp2cc_funptr_bits(" + source_cxx + ")";
-  }
-
-  if (src_void_ptr || dst_void_ptr) {
-    if (source_is_const_storage && !dst_void_ptr && !dst_proc) {
+  switch (conversion) {
+    case PointerConversionKind::Identity:
+      return source_cxx;
+    case PointerConversionKind::FixedArrayToElement:
+      return lower_pointer_to_fixed_array_to_element(src, source_cxx);
+    case PointerConversionKind::Hierarchy:
+      // The semantic classifier selected one Pascal hierarchy conversion.
+      // Keep that relationship explicit in the generated C++ rather than
+      // asking C++ overload resolution to infer it.
+      return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
+    case PointerConversionKind::UntypedPointerToProcedure:
+      return "::rt::tp2cc_funptr_from_bits<" + dst_cxx + ">(" + source_cxx +
+             ")";
+    case PointerConversionKind::ProcedureToUntypedPointer:
+      return "::rt::tp2cc_funptr_bits(" + source_cxx + ")";
+    case PointerConversionKind::FromUntypedPointer:
+      if (source_is_const_storage &&
+          !is_nonmethod_procedural_type(dst)) {
       // Pascal `const` untyped storage can still be re-viewed through a typed
       // pointer variable (`p := b; p[i] ...`), but in C++ that first appears
       // as `const void*`. Pascal's `const` qualifies the formal binding; it
@@ -1684,200 +1605,79 @@ std::string EmitStorage::coerce_pointer_like_text(std::string_view dst_cxx_text,
       // through the resulting pointer is valid only when the caller supplied
       // writable storage; make the shallow qualifier removal explicit rather
       // than relying on `-fpermissive`.
-      return "reinterpret_cast<" + dst_cxx + ">(const_cast<void*>(" +
-             source_cxx + "))";
-    }
-    return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
-  }
-
-  if (dst_ref_class && src_ref_class) {
-    // Keep the emitted cast policy tied to the same ClassInfo relationship
-    // test used for validity; do not reconstruct class names in emission.
-    const ClassInfo* dst_class = class_info_for_value_type(dst_type, dst);
-    const ClassInfo* src_class = class_info_for_value_type(src_type, src);
-    if (!explicit_pascal_cast && dst_class && src_class &&
-        registry_.same_class_identity(*dst_class, *src_class)) {
-      return source_cxx;
-    }
-    const bool related_upcast =
-        dst_class && src_class &&
-        class_parent_chain_contains(*dst_class, *src_class);
-    const bool related_downcast =
-        dst_class && src_class &&
-        class_parent_chain_contains(*src_class, *dst_class);
-    if (related_upcast || (explicit_pascal_cast && related_downcast)) {
+        return "reinterpret_cast<" + dst_cxx + ">(const_cast<void*>(" +
+               source_cxx + "))";
+      }
+      [[fallthrough]];
+    case PointerConversionKind::ToUntypedPointer:
       return "static_cast<" + dst_cxx + ">(" + source_cxx + ")";
-    }
-    if (!explicit_pascal_cast) return source_cxx;
-  }
-
-  if (explicit_pascal_cast || (dst_ptr && src_ptr)) {
-    // This is an address-value conversion, not a storage access. An immediate
-    // Pascal dereference of an unrelated cast is intercepted by
-    // pointer_typecast_deref_as_bytewise() and uses byte-addressed operations;
-    // class-hierarchy casts were handled above with static_cast so object
-    // identity and virtual dispatch remain intact. If this pointer value
-    // escapes into a variable, Pascal gives the later dereference the same
-    // source-level precondition as C++: the address must denote a live object
-    // compatible with the pointer's declared target type.
-    return "reinterpret_cast<" + dst_cxx + ">(" + source_cxx + ")";
+    case PointerConversionKind::IntegerToPointer:
+    case PointerConversionKind::PointerToInteger:
+      // These are the implementation-defined pointer/integer conversions in
+      // the target ABI contract. Arithmetic on the integer result does not
+      // preserve a pointer that may subsequently be dereferenced.
+      return "reinterpret_cast<" + dst_cxx + ">(" + source_cxx + ")";
+    case PointerConversionKind::Reinterpret:
+      // A Pascal cast changes only the pointer value's static type. A later
+      // access still requires a live, aligned object compatible with that
+      // target; the cast itself does not create one.
+      return "reinterpret_cast<" + dst_cxx + ">(" + source_cxx + ")";
+    case PointerConversionKind::Incompatible:
+      break;
   }
   return source_cxx;
 }
 
-bool EmitStorage::pointer_to_object_upcast_is_valid(const TypeExpr* dst_type,
-                                                    const TypeExpr* src_type) {
-  const ClassInfo* dst_class = class_info_for_pointer_target(dst_type);
-  const ClassInfo* src_class = class_info_for_pointer_target(src_type);
-  if (!dst_class || !src_class) return false;
-  if (dst_class->is_reference_type || src_class->is_reference_type) {
-    return false;
-  }
-  return class_parent_chain_contains(*dst_class, *src_class);
-}
-
-bool EmitStorage::pointer_to_object_downcast_is_valid(const TypeExpr* dst_type,
-                                                     const TypeExpr* src_type) {
-  const ClassInfo* dst_class = class_info_for_pointer_target(dst_type);
-  const ClassInfo* src_class = class_info_for_pointer_target(src_type);
-  if (!dst_class || !src_class) return false;
-  if (dst_class->is_reference_type || src_class->is_reference_type) {
-    return false;
-  }
-  return class_parent_chain_contains(*src_class, *dst_class);
-}
-
 std::optional<EmitStorageDesignator>
-EmitStorage::pointer_typecast_deref_as_bytewise(const Deref& d) {
-  if (!d.operand || d.operand->kind != Kind::Call) return std::nullopt;
+EmitStorage::pointer_deref_representation_storage(const Deref& d) {
+  if (!d.operand) return std::nullopt;
 
-  const TypeExpr* cast_target_type =
-      analysis_.explicit_typecast_result_type(*d.operand);
-  if (!cast_target_type) return std::nullopt;
-  const TypeExpr* cast_shape = analysis_.semantic_shape_type(cast_target_type);
-  if (!cast_shape || cast_shape->kind != Kind::TyPointer) return std::nullopt;
-
-  const auto& call = static_cast<const Call&>(*d.operand);
-  if (call.args.size() != 1 || !call.args[0]) return std::nullopt;
-
-  const TypeExpr* src_type = analysis_.deduce_type(*call.args[0]);
-  if (!src_type) return std::nullopt;
-
-  // Skip class-hierarchy-safe casts: those emit `static_cast<T*>` in
-  // `coerce_pointer_like_text`, and dereferencing through a `static_cast`
-  // pointer stays inside the object's dynamic type (same object identity,
-  // virtual dispatch preserved). Bytewise here would break virtual
-  // dispatch by copying `*p` into a temporary of the cast type.
-  if (pointer_to_object_upcast_is_valid(cast_target_type, src_type) ||
-      pointer_to_object_downcast_is_valid(cast_target_type, src_type)) {
+  const TypeExpr* pointer_type =
+      analysis_.semantic_shape_type(analysis_.deduce_type(*d.operand));
+  if (!pointer_type || pointer_type->kind != Kind::TyPointer) {
     return std::nullopt;
   }
-
   const TypeExpr* pointee =
-      static_cast<const TyPointer&>(*cast_shape).target.get();
+      static_cast<const TyPointer&>(*pointer_type).target.get();
   if (!pointee) return std::nullopt;
 
-  // `PT(arg)^` is the ordinary Pascal callback idiom when `arg : Pointer`
-  // and PT points at a record/object or managed array carrier. Access the live
-  // object directly so managed fields retain identity and mutations. A fixed
-  // array cast remains a representation view: FPC uses `PBytes(raw)^[i]` to
-  // inspect arbitrary storage, so that case stays on bytewise access.
   const TypeExpr* pointee_shape = analysis_.semantic_shape_type(pointee);
-  const bool live_object_pointee =
-      pointee_shape &&
-      (pointee_shape->kind == Kind::TyRecord ||
-       pointee_shape->kind == Kind::TyObject ||
-       pointee_shape->kind == Kind::TyInterface ||
-       (pointee_shape->kind == Kind::TyArray &&
-        static_cast<const TyArray&>(*pointee_shape).array_kind !=
-            ArrayKind::Fixed));
-  if (is_plain_pointer_type(analysis_, src_type) && live_object_pointee) {
-    return std::nullopt;
+  bool byte_array = false;
+  if (pointee_shape && pointee_shape->kind == Kind::TyArray) {
+    const auto& array = static_cast<const TyArray&>(*pointee_shape);
+    const TypeExpr* element =
+        array.element ? analysis_.semantic_shape_type(array.element.get())
+                      : nullptr;
+    const PrimitiveInfo* primitive =
+        analysis_.primitive_info_for_type(element);
+    byte_array =
+        array.array_kind == ArrayKind::Fixed && array.dims.size() == 1 &&
+        primitive &&
+        (primitive->kind == PrimitiveKind::Byte || primitive->is_char());
   }
+  const bool representation_carrier =
+      (!type_is_stringish(pointee) &&
+       !(pointee_shape && pointee_shape->kind == Kind::TySet) &&
+       !scalar_storage_type_cxx(pointee).empty()) ||
+      type_is_reference_class(pointee) ||
+      analysis_.type_is_interface(pointee) || type_is_metaclass(pointee) ||
+      (pointee_shape && pointee_shape->kind == Kind::TyProcedural);
+  if (!representation_carrier && !byte_array) return std::nullopt;
 
-  const std::string pointee_cxx = types_.type_to_cxx(*pointee);
-  const TypeSymbol* source_class_symbol =
-      analysis_.deduce_class_symbol(*call.args[0]);
-  const ClassInfo* source_class =
-      source_class_symbol ? source_class_symbol->class_info() : nullptr;
-  // Reference-class expressions such as `self` are pointer values in Pascal.
-  // The storage type may name the class body, so ask the bound class
-  // symbol before falling back to generic pointer-shaped type predicates.
-  const bool source_is_pointer_value =
-      (source_class && source_class->is_reference_type) ||
-      type_is_pointerish(src_type);
-  const std::string cast_ptr_cxx =
-      source_is_pointer_value ? expr_ops_.expr_to_cxx(*call.args[0])
-                              : expr_ops_.expr_to_cxx(*d.operand);
-  // Pascal `P(x)^` selects the pointee storage of the pointer value produced by
-  // `P(x)`. When `x` is already pointer-typed, `x` itself is that address; using
-  // the rendered target cast would introduce a typed pointer alias before the
-  // byte-copy helper sees the storage. When `x` is not pointer-typed, the
-  // explicit Pascal cast is what creates the pointer value, so the storage
-  // address must come from the rendered `P(x)`, not from `x`'s own variable
-  // slot. Because this is still carried as an emitted expression string, the
-  // final load/store/inc or untyped-actual lowering may consume it only once;
-  // any consumer needing it twice must bind a temporary first so side-effecting
-  // cast sources are evaluated exactly once.
-  std::string void_ptr =
-      "const_cast<void*>(static_cast<const void*>(" + cast_ptr_cxx + "))";
-  std::string backing_type_cxx;
-  const TypeExpr* source_shape = analysis_.semantic_shape_type(src_type);
-  if (source_shape && source_shape->kind == Kind::TyPointer) {
-    const TypeExpr* source_pointee =
-        static_cast<const TyPointer&>(*source_shape).target.get();
-    if (source_pointee) {
-      backing_type_cxx = types_.type_to_cxx(*source_pointee);
+  // Dereference consumes a pointer value. Start with value emission so
+  // integer-to-pointer casts remain conversions rather than views of the
+  // integer variable's bytes.
+  std::string pointer_cxx = expr_ops_.expr_value_to_cxx(*d.operand);
+  if (expr_is_storage_lvalue(*d.operand)) {
+    if (auto storage = storage_designator(*d.operand);
+        storage && storage->is_bytewise()) {
+      // Packed and variant pointer fields are real storage lvalues. Load the
+      // pointer representation from that slot; its address is not the pointee.
+      pointer_cxx = storage_designator_value(*storage);
     }
   }
-  const std::string backing_ptr_cxx =
-      backing_type_cxx.empty() ? std::string{} : void_ptr;
-  return EmitStorageDesignator::bytewise(
-      std::move(void_ptr), pointee_cxx, backing_ptr_cxx,
-      std::move(backing_type_cxx));
-}
-
-bool EmitStorage::class_to_interface_conversion_is_valid(
-    const TypeExpr* dst_type, const TypeExpr* src_type) {
-  const InterfaceInfo* interface = analysis_.interface_info_for_type(dst_type);
-  if (!interface) return false;
-
-  const TypeExpr* src = analysis_.semantic_shape_type(src_type);
-  if (!type_is_reference_class(src)) return false;
-
-  const ClassInfo* cls = class_info_for_value_type(src_type, src);
-  if (!cls) return false;
-  return registry_.class_implements_interface(*cls, *interface);
-}
-
-const ClassInfo* EmitStorage::class_info_for_pointer_target(
-    const TypeExpr* t) {
-  const TypeExpr* canonical = analysis_.semantic_shape_type(t);
-  if (!canonical || canonical->kind != Kind::TyPointer) return nullptr;
-  const TypeExpr* target =
-      static_cast<const TyPointer&>(*canonical).target.get();
-  return analysis_.class_info_for_type(target);
-}
-
-const ClassInfo* EmitStorage::class_info_for_value_type(
-    const TypeExpr* raw, const TypeExpr* canonical) {
-  if (const ClassInfo* info = analysis_.class_info_for_type(raw)) return info;
-  if (const ClassInfo* info = analysis_.class_info_for_type(canonical)) {
-    return info;
-  }
-  return nullptr;
-}
-
-bool EmitStorage::class_parent_chain_contains(
-    const ClassInfo& ancestor, const ClassInfo& current) const {
-  const ClassInfo* cls = &current;
-  std::unordered_set<const ClassInfo*> seen;
-  while (cls) {
-    if (registry_.same_class_identity(ancestor, *cls)) return true;
-    if (!seen.insert(cls).second) break;
-    cls = registry_.lookup_parent_class(*cls);
-  }
-  return false;
+  return EmitStorageDesignator::bytewise_typed_address(
+      std::move(pointer_cxx), types_.type_to_cxx(*pointee));
 }
 
 std::optional<EmitAbsoluteTargetInfo> EmitStorage::resolve_absolute_target(

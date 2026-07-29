@@ -298,11 +298,6 @@ class EmitResolution {
       const ast::Expr& arg, const ast::TyProcedural& proc);
   const ast::TypeExpr* argument_source_type_for_conversion(
       const ast::Expr& arg);
-  bool target_pointer_arithmetic_can_convert(const ast::Expr& arg,
-                                             const ast::TypeExpr* param,
-                                             const TypeLookupContext* param_context,
-                                             bool allow_assignment_operator_conversions);
-
   const TypeRegistry& registry_;
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;

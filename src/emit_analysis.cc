@@ -125,8 +125,9 @@ static const TypeExpr* method_set_value_result_type(
   return method_result_type(unique_zero_arg_method(methods));
 }
 
-static bool type_is_pointer_arithmetic_operand(const TypeExpr* t) {
-  return t && t->kind == Kind::TyPointer;
+static bool type_is_typed_pointer_arithmetic_operand(const TypeExpr* t) {
+  return t && t->kind == Kind::TyPointer &&
+         static_cast<const TyPointer&>(*t).target;
 }
 
 const TypeExpr* EmitAnalysis::semantic_shape_type(const TypeExpr* t) {
@@ -343,6 +344,252 @@ const TyPointer* EmitAnalysis::synthesize_pointer_type(
 bool EmitAnalysis::same_type_ast(const TypeExpr* a, const TypeExpr* b) {
   return same_type_ast_in_context(a, registry_.lookup_context_for_type(a), b,
                                   registry_.lookup_context_for_type(b));
+}
+
+bool EmitAnalysis::type_is_native_pointer_value(const TypeExpr* type) {
+  const TypeExpr* shape = semantic_shape_type(type);
+  return type &&
+         (type_is_reference_class(type) || type_is_interface(type) ||
+          type_accepts_class_value(type) ||
+          (shape && shape->kind == Kind::TyPointer));
+}
+
+bool EmitAnalysis::fixed_array_pointer_can_decay_to_element_pointer(
+    const TypeExpr* source, const TypeExpr* target) {
+  const TypeExpr* source_shape = semantic_shape_type(source);
+  const TypeExpr* target_shape = semantic_shape_type(target);
+  if (!source_shape || source_shape->kind != Kind::TyPointer ||
+      !target_shape || target_shape->kind != Kind::TyPointer) {
+    return false;
+  }
+  const TypeExpr* source_pointee = semantic_shape_type(
+      static_cast<const TyPointer&>(*source_shape).target.get());
+  const TypeExpr* target_pointee = semantic_shape_type(
+      static_cast<const TyPointer&>(*target_shape).target.get());
+  if (!source_pointee || source_pointee->kind != Kind::TyArray ||
+      !target_pointee) {
+    return false;
+  }
+  const auto& array = static_cast<const TyArray&>(*source_pointee);
+  return array.array_kind == ArrayKind::Fixed && array.element &&
+         same_type_ast(array.element.get(), target_pointee);
+}
+
+PointerConversionKind EmitAnalysis::classify_pointer_conversion(
+    const TypeExpr* target, const TypeExpr* source,
+    bool explicit_pascal_cast) {
+  const TypeExpr* raw_target = target;
+  const TypeExpr* raw_source = source;
+  const TypeDescriptor* target_descriptor =
+      registry_.descriptor_for_type(raw_target);
+  const TypeDescriptor* source_descriptor =
+      registry_.descriptor_for_type(raw_source);
+  if (target_descriptor && target_descriptor == source_descriptor) {
+    return PointerConversionKind::Identity;
+  }
+
+  target = semantic_shape_type(target);
+  source = semantic_shape_type(source);
+  if (!target || !source) return PointerConversionKind::Incompatible;
+
+  const auto is_plain_pointer = [](const TypeExpr* type) {
+    return type && type->kind == Kind::TyPointer &&
+           !static_cast<const TyPointer&>(*type).target;
+  };
+  const auto is_plain_procedure = [](const TypeExpr* type) {
+    return type && type->kind == Kind::TyProcedural &&
+           !static_cast<const TyProcedural&>(*type).is_method;
+  };
+  const PrimitiveInfo* target_primitive = primitive_info_for_type(target);
+  const PrimitiveInfo* source_primitive = primitive_info_for_type(source);
+  const bool target_integer =
+      target_primitive &&
+      target_primitive->int_kind != PrimitiveIntKind::None;
+  const bool source_integer =
+      source_primitive &&
+      source_primitive->int_kind != PrimitiveIntKind::None;
+  const bool target_procedure = is_plain_procedure(target);
+  const bool source_procedure = is_plain_procedure(source);
+  const bool target_pointer = type_is_native_pointer_value(target);
+  const bool source_pointer = type_is_native_pointer_value(source);
+  if (explicit_pascal_cast && target_pointer && source_integer) {
+    return PointerConversionKind::IntegerToPointer;
+  }
+  if (explicit_pascal_cast && target_integer && source_pointer) {
+    return resolved_primitive_bits(*target_primitive) >= target_.pointer_bits
+               ? PointerConversionKind::PointerToInteger
+               : PointerConversionKind::Incompatible;
+  }
+  if (!(target_pointer || target_procedure) ||
+      !(source_pointer || source_procedure)) {
+    return PointerConversionKind::Incompatible;
+  }
+  if (same_type_ast(raw_target, raw_source)) {
+    return PointerConversionKind::Identity;
+  }
+
+  if (fixed_array_pointer_can_decay_to_element_pointer(source, target)) {
+    return PointerConversionKind::FixedArrayToElement;
+  }
+
+  auto pointer_target_class = [&](const TypeExpr* pointer) {
+    if (!pointer || pointer->kind != Kind::TyPointer) {
+      return static_cast<const ClassInfo*>(nullptr);
+    }
+    const TypeExpr* pointee =
+        static_cast<const TyPointer&>(*pointer).target.get();
+    if (!pointee) return static_cast<const ClassInfo*>(nullptr);
+    return class_info_for_type(pointee);
+  };
+  auto hierarchy_conversion = [&](const ClassInfo* target_class,
+                                   const ClassInfo* source_class) {
+    return target_class && source_class &&
+           (registry_.class_ancestor_depth(*target_class, *source_class) >= 0 ||
+            (explicit_pascal_cast &&
+             registry_.class_ancestor_depth(*source_class, *target_class) >=
+                 0));
+  };
+
+  const ClassInfo* target_object = pointer_target_class(target);
+  const ClassInfo* source_object = pointer_target_class(source);
+  if (target_object && source_object && !target_object->is_reference_type &&
+      !source_object->is_reference_type &&
+      hierarchy_conversion(target_object, source_object)) {
+    return PointerConversionKind::Hierarchy;
+  }
+
+  const ClassInfo* target_class = class_info_for_type(raw_target);
+  const ClassInfo* source_class = class_info_for_type(raw_source);
+  const InterfaceInfo* target_interface = interface_info_for_type(raw_target);
+  if (target_interface && source_class &&
+      source_class->is_reference_type &&
+      registry_.class_implements_interface(*source_class,
+                                            *target_interface)) {
+    return PointerConversionKind::Hierarchy;
+  }
+  if (target_class && source_class && target_class->is_reference_type &&
+      source_class->is_reference_type &&
+      hierarchy_conversion(target_class, source_class)) {
+    return PointerConversionKind::Hierarchy;
+  }
+
+  const TypeSymbol* target_metaclass = metaclass_target_symbol(raw_target);
+  const TypeSymbol* source_metaclass = metaclass_target_symbol(raw_source);
+  if (target_metaclass && source_metaclass) {
+    const ClassInfo* target_metaclass_info = target_metaclass->class_info();
+    const ClassInfo* source_metaclass_info = source_metaclass->class_info();
+    if (hierarchy_conversion(target_metaclass_info,
+                             source_metaclass_info)) {
+      return PointerConversionKind::Hierarchy;
+    }
+  }
+
+  const bool target_untyped = is_plain_pointer(target);
+  const bool source_untyped = is_plain_pointer(source);
+  if (target_procedure && source_untyped) {
+    return PointerConversionKind::UntypedPointerToProcedure;
+  }
+  if (target_untyped && source_procedure) {
+    return PointerConversionKind::ProcedureToUntypedPointer;
+  }
+  if (target_untyped) return PointerConversionKind::ToUntypedPointer;
+  if (source_untyped) return PointerConversionKind::FromUntypedPointer;
+
+  return explicit_pascal_cast ? PointerConversionKind::Reinterpret
+                              : PointerConversionKind::Incompatible;
+}
+
+std::optional<TargetPointerArithmeticOperation>
+EmitAnalysis::bind_target_pointer_arithmetic(
+    const Expr& expression, const TypeExpr* target) {
+  const TypeExpr* target_shape = semantic_shape_type(target);
+  if (!type_is_typed_pointer_arithmetic_operand(target_shape) ||
+      expression.kind != Kind::Binary) {
+    return std::nullopt;
+  }
+  const auto& binary = static_cast<const Binary&>(expression);
+  if ((binary.op != BinOp::Add && binary.op != BinOp::Sub) ||
+      !binary.lhs || !binary.rhs) {
+    return std::nullopt;
+  }
+
+  const TypeExpr* lhs_type = deduce_type(*binary.lhs);
+  const TypeExpr* rhs_type = deduce_type(*binary.rhs);
+  const PrimitiveInfo* lhs_primitive = primitive_info_for_type(lhs_type);
+  const PrimitiveInfo* rhs_primitive = primitive_info_for_type(rhs_type);
+  const bool lhs_integer =
+      lhs_primitive &&
+      lhs_primitive->int_kind != PrimitiveIntKind::None;
+  const bool rhs_integer =
+      rhs_primitive &&
+      rhs_primitive->int_kind != PrimitiveIntKind::None;
+  const bool pointer_on_lhs =
+      binary.lhs->kind == Kind::AddrOf && rhs_integer;
+  const bool pointer_on_rhs =
+      binary.op == BinOp::Add && lhs_integer &&
+      binary.rhs->kind == Kind::AddrOf;
+  if (!pointer_on_lhs && !pointer_on_rhs) return std::nullopt;
+
+  const Expr* pointer = pointer_on_lhs ? binary.lhs.get() : binary.rhs.get();
+  const Expr* delta = pointer_on_lhs ? binary.rhs.get() : binary.lhs.get();
+  const TypeExpr* pointer_source =
+      pointer_on_lhs ? lhs_type : rhs_type;
+  if (classify_pointer_conversion(target, pointer_source,
+                                  /*explicit_pascal_cast=*/true) ==
+      PointerConversionKind::Incompatible) {
+    return std::nullopt;
+  }
+  const TypeDescriptor* pointer_type = registry_.descriptor_for_type(target);
+  const TypeDescriptor* delta_type =
+      pointer_type ? pointer_type->pointer_difference_result : nullptr;
+  if (!pointer_type || !delta_type || !delta_type->type) return std::nullopt;
+  return TargetPointerArithmeticOperation{
+      .pointer = pointer,
+      .delta = delta,
+      .pointer_type = pointer_type,
+      .delta_type = delta_type,
+      .op = binary.op,
+  };
+}
+
+const TypeDescriptor* EmitAnalysis::common_pointer_comparison_type(
+    const TypeExpr* lhs, const TypeDescriptor* lhs_descriptor,
+    const TypeExpr* rhs, const TypeDescriptor* rhs_descriptor) {
+  if (!lhs_descriptor && !rhs_descriptor) {
+    const TypeSymbol* pointer = registry_.builtin_literal("pointer");
+    return pointer ? pointer->descriptor : nullptr;
+  }
+  if (!lhs_descriptor) return rhs_descriptor;
+  if (!rhs_descriptor) return lhs_descriptor;
+  if (lhs_descriptor == rhs_descriptor) return lhs_descriptor;
+
+  const TypeSymbol* lhs_metaclass = lhs_descriptor->metaclass_target;
+  const TypeSymbol* rhs_metaclass = rhs_descriptor->metaclass_target;
+  if (lhs_metaclass || rhs_metaclass) {
+    if (!lhs_metaclass || !rhs_metaclass) return nullptr;
+    const ClassInfo* lhs_class = lhs_metaclass->class_info();
+    const ClassInfo* rhs_class = rhs_metaclass->class_info();
+    if (!lhs_class || !rhs_class) return nullptr;
+    if (registry_.class_ancestor_depth(*lhs_class, *rhs_class) >= 0) {
+      return lhs_descriptor;
+    }
+    if (registry_.class_ancestor_depth(*rhs_class, *lhs_class) >= 0) {
+      return rhs_descriptor;
+    }
+    return nullptr;
+  }
+
+  if (classify_pointer_conversion(lhs, rhs,
+                                  /*explicit_pascal_cast=*/false) !=
+      PointerConversionKind::Incompatible) {
+    return lhs_descriptor;
+  }
+  if (classify_pointer_conversion(rhs, lhs,
+                                  /*explicit_pascal_cast=*/false) !=
+      PointerConversionKind::Incompatible) {
+    return rhs_descriptor;
+  }
+  return nullptr;
 }
 
 bool EmitAnalysis::same_type_ast_in_context(
@@ -1632,17 +1879,39 @@ const BoundBinaryOperation* EmitAnalysis::bind_binary_operation(
       registry_.descriptor_for_type(lhs_source_type);
   const TypeDescriptor* rhs_source =
       registry_.descriptor_for_type(rhs_source_type);
+  if (!lhs_source) {
+    if (const TypeSymbol* symbol =
+            concrete_class_symbol_for_metaclass_value(*b.lhs)) {
+      lhs_source = registry_.metaclass_descriptor_for_target(symbol);
+    }
+  }
+  if (!rhs_source) {
+    if (const TypeSymbol* symbol =
+            concrete_class_symbol_for_metaclass_value(*b.rhs)) {
+      rhs_source = registry_.metaclass_descriptor_for_target(symbol);
+    }
+  }
   const TypeExpr* lhs_type =
       canonicalize_for_arithmetic(lhs_source_type);
   const TypeExpr* rhs_type =
       canonicalize_for_arithmetic(rhs_source_type);
   const PrimitiveInfo* lhs = primitive_info_for_type(lhs_type);
   const PrimitiveInfo* rhs = primitive_info_for_type(rhs_type);
-  // Pascal pointer arithmetic operates on address values and scales typed
-  // pointers by their pointee size. Bind it before integer arithmetic so the
-  // emitter never delegates these semantics to C++ pointer operators.
-  const bool lhs_pointer = lhs_type && lhs_type->kind == Kind::TyPointer;
-  const bool rhs_pointer = rhs_type && rhs_type->kind == Kind::TyPointer;
+  // Bind pointer operations before integer arithmetic so their legality,
+  // common pointer type, and result type are fixed once. Emission uses native
+  // C++ operators only for the selected same-array operations.
+  const bool lhs_pointer =
+      type_is_typed_pointer_arithmetic_operand(lhs_type);
+  const bool rhs_pointer =
+      type_is_typed_pointer_arithmetic_operand(rhs_type);
+  const bool lhs_pointer_value =
+      b.lhs->kind == Kind::NilLit ||
+      (lhs_source && lhs_source->metaclass_target) ||
+      type_is_native_pointer_value(lhs_source_type);
+  const bool rhs_pointer_value =
+      b.rhs->kind == Kind::NilLit ||
+      (rhs_source && rhs_source->metaclass_target) ||
+      type_is_native_pointer_value(rhs_source_type);
   const bool lhs_integer =
       lhs && lhs->family == PrimitiveFamily::Integer &&
       lhs->int_kind != PrimitiveIntKind::None;
@@ -1670,6 +1939,32 @@ const BoundBinaryOperation* EmitAnalysis::bind_binary_operation(
     b.result_descriptor = result;
     return &b.bound_operation;
   };
+  if ((b.op == BinOp::Eq || b.op == BinOp::NotEq ||
+       b.op == BinOp::Lt || b.op == BinOp::Gt ||
+       b.op == BinOp::LtEq || b.op == BinOp::GtEq) &&
+      lhs_pointer_value && rhs_pointer_value) {
+    const TypeDescriptor* common = common_pointer_comparison_type(
+        lhs_source_type, lhs_source, rhs_source_type, rhs_source);
+    const TypeSymbol* boolean = registry_.builtin_literal("boolean");
+    const TypeDescriptor* result =
+        boolean ? boolean->descriptor : nullptr;
+    if (!common || !result) {
+      return bind_pointer_operation(BoundBinaryKind::InvalidPointer,
+                                    lhs_source, rhs_source, nullptr);
+    }
+    return bind_pointer_operation(
+        b.op == BinOp::Eq || b.op == BinOp::NotEq
+            ? BoundBinaryKind::PointerEqual
+            : BoundBinaryKind::PointerOrder,
+        common, common, result);
+  }
+  if ((b.op == BinOp::Eq || b.op == BinOp::NotEq ||
+       b.op == BinOp::Lt || b.op == BinOp::Gt ||
+       b.op == BinOp::LtEq || b.op == BinOp::GtEq) &&
+      (lhs_pointer_value || rhs_pointer_value)) {
+    return bind_pointer_operation(BoundBinaryKind::InvalidPointer,
+                                  lhs_source, rhs_source, nullptr);
+  }
   if (ptrint && b.op == BinOp::Add &&
       ((lhs_pointer && rhs_integer) || (lhs_integer && rhs_pointer))) {
     return bind_pointer_operation(
@@ -1693,6 +1988,11 @@ const BoundBinaryOperation* EmitAnalysis::bind_binary_operation(
     }
     return bind_pointer_operation(BoundBinaryKind::PointerDifference,
                                   common_pointer, common_pointer, ptrint);
+  }
+  if ((lhs_pointer_value || rhs_pointer_value) &&
+      (b.op == BinOp::Add || b.op == BinOp::Sub)) {
+    return bind_pointer_operation(BoundBinaryKind::InvalidPointer,
+                                  lhs_source, rhs_source, nullptr);
   }
   if (!lhs || !rhs || lhs->int_kind == PrimitiveIntKind::None ||
       rhs->int_kind == PrimitiveIntKind::None) {
@@ -2026,11 +2326,9 @@ const BoundIntrinsicOperation* EmitAnalysis::bind_intrinsic_operation(
       delta = operation_carrier->descriptor;
     } else {
       const TypeExpr* shape = semantic_shape_type(operand_type);
-      const PrimitiveInfo* primitive =
-          primitive_info_for_type(operand_type);
       const bool pointer =
-          (shape && shape->kind == Kind::TyPointer) ||
-          (primitive && primitive->is_pointer_primitive());
+          shape && shape->kind == Kind::TyPointer &&
+          static_cast<const TyPointer&>(*shape).target;
       if (!(pointer && (kind == BoundIntrinsicKind::Inc ||
                        kind == BoundIntrinsicKind::Dec))) {
         return nullptr;
@@ -2114,33 +2412,6 @@ const TypeExpr* EmitAnalysis::deduce_binary_expr_type(const Binary& b) {
         return result ? result->type : nullptr;
       }
       return nullptr;
-    }
-    // Pascal pointer arithmetic preserves the pointer type for `p+n`,
-    // `n+p`, and `p-n`. Type deduction must keep that fact here because
-    // a later dereference (`(p+n)^`) needs the pointee type; without it,
-    // value intrinsics such as `Ord` cannot tell that a `pchar` element is
-    // a `char`.
-    const bool lptr = type_is_pointer_arithmetic_operand(ltc);
-    const bool rptr = type_is_pointer_arithmetic_operand(rtc);
-    const PrimitiveInfo* lpi = primitive_info_for_type(ltc);
-    const PrimitiveInfo* rpi = primitive_info_for_type(rtc);
-    const bool lint = lpi && lpi->int_kind != PrimitiveIntKind::None;
-    const bool rint = rpi && rpi->int_kind != PrimitiveIntKind::None;
-    if (b.op == BinOp::Add) {
-      if (lptr && rint) return lt;
-      if (rptr && lint) return rt;
-      if (lptr || rptr) return nullptr;
-    }
-    if (b.op == BinOp::Sub) {
-      if (lptr && rint) return lt;
-      if (lptr && rptr) {
-        const TypeDescriptor* pointer =
-            registry_.descriptor_for_type(ltc);
-        const TypeDescriptor* result =
-            pointer ? pointer->pointer_difference_result : nullptr;
-        return result ? result->type : nullptr;
-      }
-      if (lptr || rptr) return nullptr;
     }
     if (same_type_ast(ltc, rtc)) return ltc ? ltc : rtc;
     if (type_is_numeric_primitive(ltc) && type_is_numeric_primitive(rtc)) {
@@ -3090,15 +3361,9 @@ const TypeSymbol* EmitAnalysis::concrete_class_symbol_for_metaclass_target(
     return nullptr;
   }
 
-  std::unordered_set<const ClassInfo*> seen;
-  for (const ClassInfo* cur = concrete_class; cur;
-       cur = registry_.lookup_parent_class(*cur)) {
-    if (!seen.insert(cur).second) break;
-    if (registry_.same_class_identity(*cur, *target_class)) {
-      return concrete;
-    }
-  }
-  return nullptr;
+  return registry_.class_ancestor_depth(*target_class, *concrete_class) >= 0
+             ? concrete
+             : nullptr;
 }
 
 const TypeExpr* EmitAnalysis::lookup_record_field_type_in_type(

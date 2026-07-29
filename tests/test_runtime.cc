@@ -202,23 +202,6 @@ void test_signed_wrap_helpers_avoid_ub() {
   CHECK(saw_div_overflow);
 }
 
-void test_pointer_arithmetic_helpers_use_pascal_address_semantics() {
-  uint16_t values[3] = {};
-  uint16_t* middle = &values[1];
-  CHECK_EQ((tp2cc_pointer_add<uint16_t*, std::uintptr_t>(middle, 1)),
-           &values[2]);
-  CHECK_EQ((tp2cc_pointer_sub<uint16_t*, std::uintptr_t>(middle, 1)),
-           &values[0]);
-  CHECK_EQ((tp2cc_pointer_difference<std::intptr_t, uint16_t*>(
-               &values[2], &values[0])),
-           2);
-  void* small_address = reinterpret_cast<void*>(std::uintptr_t{0x1b6});
-  void* wrapped = tp2cc_pointer_sub<void*, std::intptr_t>(
-      small_address, std::intptr_t{1000});
-  CHECK_EQ(reinterpret_cast<std::uintptr_t>(wrapped),
-           std::uintptr_t{0x1b6} - std::uintptr_t{1000});
-}
-
 void test_runtime_path_helpers_match_compiler_expectations() {
   const auto path = tp2cc_ansistring_of("/tmp/archive.tar.gz");
 
@@ -1671,7 +1654,6 @@ int main() {
   RUN_TEST(test_val_keeps_leading_zero_decimals_decimal);
   RUN_TEST(test_pascal_shift_helpers_mask_count_and_shr_logically);
   RUN_TEST(test_signed_wrap_helpers_avoid_ub);
-  RUN_TEST(test_pointer_arithmetic_helpers_use_pascal_address_semantics);
   RUN_TEST(test_runtime_path_helpers_match_compiler_expectations);
   RUN_TEST(test_runtime_tdatetime_decodes_current_and_dos_times);
   RUN_TEST(test_runtime_file_helpers_expose_real_sysutils_surface);

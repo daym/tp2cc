@@ -2,7 +2,6 @@
 
 #include <memory>
 #include <string>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -19,26 +18,6 @@ namespace tp2cc {
 using namespace ast;
 
 namespace {
-
-// Reference-class value compatibility is a class identity question, not a
-// spelling question. Use the built registry parent links so validation sees
-// the same hierarchy that overload scoring and method lookup use.
-bool reference_class_derives_from(const TypeRegistry& registry,
-                                  const ClassInfo* source,
-                                  const ClassInfo* target) {
-  if (!source || !target || !source->is_reference_type ||
-      !target->is_reference_type) {
-    return false;
-  }
-  std::unordered_set<const ClassInfo*> seen;
-  for (const ClassInfo* cur = source; cur; cur = registry.lookup_parent_class(*cur)) {
-    if (!seen.insert(cur).second) return false;
-    if (registry.same_class_identity(*cur, *target)) {
-      return true;
-    }
-  }
-  return false;
-}
 
 std::string string_literal_body_char_to_cxx(char c) {
   switch (c) {
@@ -293,90 +272,20 @@ std::string EmitValues::apply_target_pointer_conversion(
 std::optional<std::string> EmitValues::maybe_lower_target_pointer_arithmetic(
     const Expr& e, const TypeExpr* target, bool explicit_conversion,
     bool constant_initializer) {
-  const TypeExpr* canon_target = analysis_.semantic_shape_type(target);
-  if (!canon_target || !storage_.type_is_pointerish(canon_target) ||
-      e.kind != Kind::Binary) {
-    return std::nullopt;
-  }
-
-  const auto& b = static_cast<const Binary&>(e);
-  if (b.op != BinOp::Add && b.op != BinOp::Sub) return std::nullopt;
-  if (!b.lhs || !b.rhs) return std::nullopt;
-
-  const TypeExpr* lhs_type =
-      analysis_.semantic_shape_type(overload_types_.type_for_overload(*b.lhs));
-  const TypeExpr* rhs_type =
-      analysis_.semantic_shape_type(overload_types_.type_for_overload(*b.rhs));
-
-  const bool lhs_ptr = storage_.type_is_pointerish(lhs_type);
-  const bool rhs_ptr = storage_.type_is_pointerish(rhs_type);
-  const bool lhs_int = type_is_integer_primitive(lhs_type);
-  const bool rhs_int = type_is_integer_primitive(rhs_type);
-
-  const bool pointer_on_lhs = lhs_ptr && rhs_int;
-  if (!pointer_on_lhs &&
-      !(b.op == BinOp::Add && lhs_int && rhs_ptr)) {
-    return std::nullopt;
-  }
-  const Expr& pointer_expr = pointer_on_lhs ? *b.lhs : *b.rhs;
-  const Expr& delta_expr = pointer_on_lhs ? *b.rhs : *b.lhs;
-  // Under {$T-}, `@fixed_array + n` first adapts the untyped address to the
-  // target pointer and therefore uses the target pointee size. Other pointer
-  // arithmetic already has a bound source operation and must not be lowered
-  // again in this target-conversion path.
-  if (pointer_expr.kind != Kind::AddrOf) return std::nullopt;
-  const TypeDescriptor* pointer_descriptor =
-      registry_.descriptor_for_type(canon_target);
-  const TypeDescriptor* ptrint =
-      pointer_descriptor ? pointer_descriptor->pointer_difference_result
-                         : nullptr;
-  if (!ptrint || !ptrint->type) return std::nullopt;
+  const auto operation =
+      analysis_.bind_target_pointer_arithmetic(e, target);
+  if (!operation) return std::nullopt;
   const std::string pointer = const_value_to_cxx_impl(
-      pointer_expr, target, explicit_conversion, constant_initializer);
-  const std::string delta = const_value_to_cxx_impl(
-      delta_expr, ptrint->type, /*explicit_conversion=*/false,
+      *operation->pointer, operation->pointer_type->type, explicit_conversion,
       constant_initializer);
-  const char* helper =
-      b.op == BinOp::Sub ? "tp2cc_pointer_sub" : "tp2cc_pointer_add";
-  return "::rt::" + std::string(helper) + "<" +
-         types_.type_to_cxx(*canon_target) + ", " +
-         types_.type_to_cxx(*ptrint->type) + ">(" + pointer + ", " + delta +
-         ")";
-}
-
-bool EmitValues::can_lower_target_pointer_arithmetic(
-    const Expr& e, const TypeExpr* target, bool explicit_conversion) {
-  const TypeExpr* canon_target = analysis_.semantic_shape_type(target);
-  if (!canon_target || !storage_.type_is_pointerish(canon_target) ||
-      e.kind != Kind::Binary) {
-    return false;
-  }
-
-  const auto& b = static_cast<const Binary&>(e);
-  if (b.op != BinOp::Add && b.op != BinOp::Sub) return false;
-  if (!b.lhs || !b.rhs) return false;
-
-  const TypeExpr* lhs_type =
-      analysis_.semantic_shape_type(overload_types_.type_for_overload(*b.lhs));
-  const TypeExpr* rhs_type =
-      analysis_.semantic_shape_type(overload_types_.type_for_overload(*b.rhs));
-
-  const bool lhs_ptr = storage_.type_is_pointerish(lhs_type);
-  const bool rhs_ptr = storage_.type_is_pointerish(rhs_type);
-  const bool lhs_int = type_is_integer_primitive(lhs_type);
-  const bool rhs_int = type_is_integer_primitive(rhs_type);
-  if (lhs_ptr && rhs_int) {
-    return can_convert_value_to_type(*b.lhs, target, explicit_conversion);
-  }
-  if (b.op == BinOp::Add && lhs_int && rhs_ptr) {
-    return can_convert_value_to_type(*b.rhs, target, explicit_conversion);
-  }
-  return false;
-}
-
-bool EmitValues::type_is_integer_primitive(const TypeExpr* t) {
-  const PrimitiveInfo* pi = analysis_.primitive_info_for_type(t);
-  return pi && pi->int_kind != PrimitiveIntKind::None;
+  const std::string delta = const_value_to_cxx_impl(
+      *operation->delta, operation->delta_type->type,
+      /*explicit_conversion=*/false,
+      constant_initializer);
+  // Target typing converts `@array` before native same-array stepping,
+  // preserving C++20 provenance instead of reconstructing integer address bits.
+  return "(" + pointer +
+         (operation->op == BinOp::Sub ? " - " : " + ") + delta + ")";
 }
 
 std::string EmitValues::const_value_to_cxx(const Expr& e, const TypeExpr* target,
@@ -437,7 +346,9 @@ bool EmitValues::can_convert_reference_class_value(const Expr& e,
     }
   }
   const ClassInfo* target_class = analysis_.class_info_for_type(target);
-  return reference_class_derives_from(registry_, source_class, target_class);
+  return source_class && target_class && source_class->is_reference_type &&
+         target_class->is_reference_type &&
+         registry_.class_ancestor_depth(*target_class, *source_class) >= 0;
 }
 
 bool EmitValues::can_convert_value_to_type(const Expr& e,
@@ -485,7 +396,7 @@ bool EmitValues::can_convert_value_to_type(const Expr& e,
   if (e.kind == Kind::ArrayConst) return canon_target->kind == Kind::TyArray;
   if (e.kind == Kind::RecordConst) return canon_target->kind == Kind::TyRecord;
 
-  if (can_lower_target_pointer_arithmetic(e, target, explicit_conversion)) {
+  if (analysis_.bind_target_pointer_arithmetic(e, target)) {
     return true;
   }
 

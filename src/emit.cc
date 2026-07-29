@@ -922,8 +922,8 @@ std::string Emitter::binary_operand_to_cxx(const Expr& operand,
   // that C++ arithmetic sees the element pointer, e.g. `(&buf)->data + n`.
   // The actual array-to-element pointer rule remains in EmitStorage.
   if (canon && storage_.type_is_pointerish(canon) &&
-      storage_.fixed_array_pointer_can_decay_to_element_pointer(operand_ty,
-                                                                other_ty)) {
+      analysis_.fixed_array_pointer_can_decay_to_element_pointer(operand_ty,
+                                                                 other_ty)) {
     return const_value_to_cxx(operand, other_ty);
   }
   return expr_to_cxx(operand);
@@ -1407,8 +1407,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           analysis_.bind_binary_operation(n);
       auto bound_type_cxx =
           [&](const TypeDescriptor* descriptor) -> std::string {
-        return descriptor && descriptor->type
-                   ? type_to_cxx(*descriptor->type)
+        if (!descriptor) return {};
+        if (descriptor->type) return type_to_cxx(*descriptor->type);
+        return descriptor->metaclass_target
+                   ? types_.metaclass_struct_cxx(
+                         *descriptor->metaclass_target) +
+                         "*"
                    : std::string{};
       };
       auto bound_operand =
@@ -1421,6 +1425,22 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         if (source_descriptor == descriptor) return value;
         return "static_cast<" + cxx + ">(" +
                value + ")";
+      };
+      auto bound_pointer_operand =
+          [&](const Expr& operand, const TypeDescriptor* source_descriptor,
+              const TypeDescriptor* descriptor) -> std::string {
+        if (operand.kind == Kind::NilLit) return "nullptr";
+        if (descriptor && descriptor->type) {
+          // The bound common pointer type owns array-to-element decay and
+          // other pointer conversions. Rendering through that type performs
+          // the conversion once instead of inferring it from the peer operand.
+          return const_value_to_cxx(operand, descriptor->type);
+        }
+        const std::string value = expr_to_cxx(operand);
+        if (source_descriptor == descriptor) return value;
+        const std::string cxx = bound_type_cxx(descriptor);
+        return cxx.empty() ? value
+                           : "static_cast<" + cxx + ">(" + value + ")";
       };
       if (bound &&
           (bound->kind == BoundBinaryKind::SetUnion ||
@@ -1466,7 +1486,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                              bound->rhs) + ")";
       }
       auto pointer_offset_to_cxx =
-          [&](const char* helper, bool pointer_on_left) {
+          [&](const char* op, bool pointer_on_left) {
         const TypeDescriptor* pointer_descriptor =
             pointer_on_left ? bound->lhs : bound->rhs;
         const TypeDescriptor* delta_descriptor =
@@ -1477,31 +1497,59 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
             pointer_on_left ? bound->lhs_source : bound->rhs_source;
         const TypeDescriptor* delta_source =
             pointer_on_left ? bound->rhs_source : bound->lhs_source;
-        return "::rt::" + std::string(helper) + "<" +
-               bound_type_cxx(pointer_descriptor) + ", " +
-               bound_type_cxx(delta_descriptor) + ">(" +
-               bound_operand(pointer_operand, delta_operand, pointer_source,
-                             pointer_descriptor) +
-               ", " +
-               bound_operand(delta_operand, pointer_operand, delta_source,
-                             delta_descriptor) +
-               ")";
+        const std::string pointer =
+            bound_pointer_operand(pointer_operand, pointer_source,
+                                  pointer_descriptor);
+        const std::string delta =
+            bound_operand(delta_operand, pointer_operand, delta_source,
+                          delta_descriptor);
+        return pointer_on_left ? "(" + pointer + " " + op + " " + delta + ")"
+                               : "(" + delta + " " + op + " " + pointer + ")";
       };
       if (bound && bound->kind == BoundBinaryKind::PointerAdd) {
-        return pointer_offset_to_cxx("tp2cc_pointer_add",
-                                     bound->pointer_on_lhs);
+        // Preserve the selected pointee type for portable same-array stepping;
+        // converting through integer address bits would lose C++20 provenance.
+        return pointer_offset_to_cxx("+", bound->pointer_on_lhs);
       }
       if (bound && bound->kind == BoundBinaryKind::PointerSubtract) {
-        return pointer_offset_to_cxx("tp2cc_pointer_sub", true);
+        return pointer_offset_to_cxx("-", true);
       }
       if (bound && bound->kind == BoundBinaryKind::PointerDifference) {
-        return "::rt::tp2cc_pointer_difference<" +
-               bound_type_cxx(bound->result) + ", " +
-               bound_type_cxx(bound->lhs) + ">(" +
-               bound_operand(*n.lhs, *n.rhs, bound->lhs_source, bound->lhs) +
-               ", " +
-               bound_operand(*n.rhs, *n.lhs, bound->rhs_source, bound->rhs) +
+        return "static_cast<" + bound_type_cxx(bound->result) + ">(" +
+               bound_pointer_operand(*n.lhs, bound->lhs_source, bound->lhs) +
+               " - " +
+               bound_pointer_operand(*n.rhs, bound->rhs_source, bound->rhs) +
                ")";
+      }
+      if (bound && bound->kind == BoundBinaryKind::PointerEqual) {
+        const char* op = n.op == BinOp::Eq ? "==" : "!=";
+        return "(" +
+               bound_pointer_operand(*n.lhs, bound->lhs_source, bound->lhs) +
+               " " + op + " " +
+               bound_pointer_operand(*n.rhs, bound->rhs_source, bound->rhs) +
+               ")";
+      }
+      if (bound && bound->kind == BoundBinaryKind::PointerOrder) {
+        // Built-in relational operators do not provide a total order for
+        // unrelated pointers. C++20 defines that order through std::less.
+        const std::string type = bound_type_cxx(bound->lhs);
+        const std::string lhs =
+            bound_pointer_operand(*n.lhs, bound->lhs_source, bound->lhs);
+        const std::string rhs =
+            bound_pointer_operand(*n.rhs, bound->rhs_source, bound->rhs);
+        const std::string less =
+            "::std::less<" + type + ">{}";
+        if (n.op == BinOp::Lt) return less + "(" + lhs + ", " + rhs + ")";
+        if (n.op == BinOp::Gt) return less + "(" + rhs + ", " + lhs + ")";
+        if (n.op == BinOp::LtEq)
+          return "!" + less + "(" + rhs + ", " + lhs + ")";
+        return "!" + less + "(" + lhs + ", " + rhs + ")";
+      }
+      if (bound && bound->kind == BoundBinaryKind::InvalidPointer) {
+        report_error(n.loc,
+                     "pointer operation is unsupported by the portable "
+                     "C++20 pointer model");
+        throw UnitEmissionAborted{};
       }
       // Keep the shift/rotate vocabulary precise here:
       // - shl: shift left, zeros come in on the right, high bits are discarded
@@ -1929,10 +1977,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           return "::rt::tp2cc_deref(" + pointer_cxx + ")";
         }
       }
-      // Pascal `Ptype(p)^` in rvalue context. The Deref itself has a bytewise
-      // storage designator; load through the memcpy helper instead of forming
-      // a typed C++ reference over reinterpreted storage.
-      if (auto storage = storage_.pointer_typecast_deref_as_bytewise(d)) {
+      if (auto storage = storage_.pointer_deref_representation_storage(d)) {
         return storage_.storage_designator_value(*storage);
       }
       if (auto storage = storage_.storage_designator(*d.operand);
@@ -2246,6 +2291,22 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
               return "::rt::tp2cc_set_to_int<" + primitive_cxx +
                      ">(" + single_call_arg_cxx(c) + ")";
             }
+            if (storage_.type_is_pointerish(source_ty)) {
+              const PointerConversionKind conversion =
+                  analysis_.classify_pointer_conversion(
+                      primitive_typecast_type, source_ty,
+                      /*explicit_pascal_cast=*/true);
+              if (conversion == PointerConversionKind::PointerToInteger) {
+                const std::string source = single_call_arg_cxx(c);
+                return coerce_pointer_like_text(
+                    primitive_cxx, primitive_typecast_type, source_ty, source,
+                    /*explicit_pascal_cast=*/true);
+              }
+              report_error(c.loc,
+                           "pointer value does not fit the selected Pascal "
+                           "integer type");
+              throw UnitEmissionAborted{};
+            }
           }
           if (primitive_typecast->is_char()) {
             return "::rt::p_chr(" + single_call_arg_cxx(c) + ")";
@@ -2493,15 +2554,11 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                         type_to_cxx(*operation->delta->type);
                     std::string delta =
                         c.args.size() == 2 ? expr_to_cxx(*c.args[1]) : "1";
-                    const std::string pointer_cxx =
-                        type_to_cxx(*operation->source->type);
-                    const char* helper =
-                        n == "inc" ? "tp2cc_pointer_add"
-                                   : "tp2cc_pointer_sub";
-                    return "::rt::" + std::string(helper) + "<" +
-                           pointer_cxx + ", " + delta_cxx + ">(" + current +
-                           ", static_cast<" + delta_cxx + ">(" + delta +
-                           "))";
+                    const char* op = n == "inc" ? "+" : "-";
+                    // Inc/Dec uses the same portable same-array operation;
+                    // integer-address helpers would lose C++20 provenance.
+                    return "(" + current + " " + op + " static_cast<" +
+                           delta_cxx + ">(" + delta + "))";
                   }
 
                   std::string delta;

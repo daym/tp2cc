@@ -2684,7 +2684,9 @@ void test_ansichar_and_pansichar_builtin_maps_to_char_carriers() {
   CHECK(contains(out.header, "void p_take(::rt::p_char p_c, ::rt::p_char* p_p);"));
   CHECK(contains(out.impl, "p_c = ::rt::p_chr(65);"));
   CHECK(contains(out.impl, "p_p = ((::rt::p_char*)((&p_c)));"));
-  CHECK(contains(out.impl, "p_c = ::rt::tp2cc_deref(p_p);"));
+  CHECK(contains(
+      out.impl,
+      "p_c = ::rt::tp2cc_reinterpret_load<::rt::p_char>(p_p);"));
   CHECK(contains(out.impl, "p_buf = ::rt::tp2cc_array_literal<::rt::p_char"));
   CHECK(!contains(out.header, "t_ansichar"));
   CHECK(!contains(out.header, "t_pansichar"));
@@ -2803,17 +2805,14 @@ void test_ord_pchar_offset_deref_uses_char_byte_value() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_char_byte(::rt::tp2cc_deref("
-                 "::rt::tp2cc_pointer_add<::rt::p_char*, ::rt::t_ptrint>("
-                 "p_p, static_cast<::rt::t_ptrint>(1))))"));
+                 "::rt::tp2cc_char_byte(::rt::tp2cc_reinterpret_load<::rt::p_char>("
+                 "(p_p + static_cast<::rt::t_ptrint>(1))))"));
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_char_byte(::rt::tp2cc_deref("
-                 "::rt::tp2cc_pointer_add<::rt::p_char*, ::rt::t_ptrint>("
-                 "p_p, static_cast<::rt::t_ptrint>(2))))"));
+                 "::rt::tp2cc_char_byte(::rt::tp2cc_reinterpret_load<::rt::p_char>("
+                 "(p_p + static_cast<::rt::t_ptrint>(2))))"));
   CHECK(contains(out.impl, "== 187"));
   CHECK(contains(out.impl, "== 191"));
-  CHECK(!contains(out.impl, "(p_p + 1)"));
-  CHECK(!contains(out.impl, "(p_p + 2)"));
+  CHECK(!contains(out.impl, "tp2cc_pointer_add"));
   CHECK(!contains(out.impl, "::rt::p_ord("));
 }
 
@@ -3813,23 +3812,19 @@ void test_pointer_dec_keeps_unsigned_delta_before_subtraction() {
       TargetInfo{.pointer_bits = 64});
   CHECK(contains(
       out.impl,
-      "::rt::tp2cc_pointer_sub<::rt::p_char*, ::rt::t_ptruint>("
-      "tp2cc_current, static_cast<::rt::t_ptruint>(p_n))"));
+      "(tp2cc_current - static_cast<::rt::t_ptruint>(p_n))"));
   CHECK(!contains(out.impl, "-(p_n)"));
 }
 
-void test_pointer_binary_arithmetic_uses_pascal_address_operations() {
+void test_typed_pointer_binary_arithmetic_uses_native_operations() {
   auto out = compile_snippet_for_target(
       "unit u;\n"
       "interface\n"
       "type pword = ^word;\n"
-      "function rawstep(p : pointer; n : ptrint) : ptruint;\n"
       "function step(p : pword; n : ptrint) : pword;\n"
       "function reverse(n : ptrint; p : pword) : pword;\n"
       "function distance(a, b : pword) : ptrint;\n"
       "implementation\n"
-      "function rawstep(p : pointer; n : ptrint) : ptruint;\n"
-      "begin rawstep := ptruint(p - n); end;\n"
       "function step(p : pword; n : ptrint) : pword;\n"
       "begin step := p - n; end;\n"
       "function reverse(n : ptrint; p : pword) : pword;\n"
@@ -3838,22 +3833,59 @@ void test_pointer_binary_arithmetic_uses_pascal_address_operations() {
       "begin distance := a - b; end;\n"
       "end.\n",
       TargetInfo{.pointer_bits = 64});
+  CHECK(contains(out.impl, "p_result = (p_p - p_n);"));
+  CHECK(contains(out.impl, "p_result = (p_n + p_p);"));
   CHECK(contains(
       out.impl,
-      "::rt::tp2cc_pointer_sub<void*, ::rt::t_ptrint>(p_p, p_n)"));
-  CHECK(contains(
-      out.impl,
-      "::rt::tp2cc_pointer_sub<uint16_t*, ::rt::t_ptrint>(p_p, p_n)"));
-  CHECK(contains(
-      out.impl,
-      "::rt::tp2cc_pointer_add<uint16_t*, ::rt::t_ptrint>(p_p, p_n)"));
-  CHECK(contains(
-      out.impl,
-      "::rt::tp2cc_pointer_difference<::rt::t_ptrint, uint16_t*>(p_a, "
-      "p_b)"));
-  CHECK(!contains(out.impl, "(p_p - p_n)"));
-  CHECK(!contains(out.impl, "(p_n + p_p)"));
-  CHECK(!contains(out.impl, "(p_a - p_b)"));
+      "p_result = static_cast<::rt::t_ptrint>(p_a - p_b);"));
+  CHECK(!contains(out.impl, "tp2cc_pointer_"));
+  CHECK(!contains(out.impl, "uintptr_t"));
+}
+
+void test_untyped_pointer_arithmetic_is_rejected() {
+  const int before = error_count();
+  auto out = compile_snippet_for_target(
+      "unit u;\n"
+      "interface\n"
+      "function step(p : pointer; n : ptrint) : pointer;\n"
+      "implementation\n"
+      "function step(p : pointer; n : ptrint) : pointer;\n"
+      "begin step := p + n; end;\n"
+      "end.\n",
+      TargetInfo{.pointer_bits = 64});
+  CHECK(error_count() > before);
+  CHECK(!contains(out.impl, "uintptr_t"));
+  CHECK(!contains(out.impl, "tp2cc_pointer_"));
+}
+
+void test_collection_accepts_opaque_integer_pointer_token() {
+  const std::string source =
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tcollection = class\n"
+      "    procedure add(value : pointer);\n"
+      "  end;\n"
+      "procedure run(collection : tcollection);\n"
+      "implementation\n"
+      "procedure tcollection.add(value : pointer);\n"
+      "begin\n"
+      "end;\n"
+      "procedure run(collection : tcollection);\n"
+      "begin\n"
+      "  collection.add(pointer(5));\n"
+      "end;\n"
+      "end.\n";
+  for (uint8_t pointer_bits : {uint8_t{32}, uint8_t{64}}) {
+    const int before = error_count();
+    auto out = compile_snippet_for_target(
+        source, TargetInfo{.pointer_bits = pointer_bits});
+    CHECK_EQ(error_count(), before);
+    CHECK(contains(
+        out.impl,
+        "p_collection->p_add(reinterpret_cast<void*>(5));"));
+    CHECK(!contains(out.impl, "uintptr_t"));
+  }
 }
 
 void test_implicit_const_expr_wraps_without_emit_error() {
@@ -5833,10 +5865,33 @@ void test_pchar_comparison_stays_pointer_comparison() {
       "  if a = b then ;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "if ((p_a < p_b))"));
+  CHECK(contains(
+      out.impl,
+      "if (::std::less<::rt::p_char*>{}(p_a, p_b))"));
   CHECK(contains(out.impl, "if ((p_a == p_b))"));
   CHECK(!contains(out.impl, "tp2cc_string_compare"));
   CHECK(!contains(out.impl, "tp2cc_shortstring_of"));
+}
+
+void test_nil_pointer_comparisons_use_untyped_pointer_identity() {
+  const int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var b : boolean;\n"
+      "begin\n"
+      "  b := nil = nil;\n"
+      "  b := nil <= nil;\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_b = (nullptr == nullptr);"));
+  CHECK(contains(
+      out.impl,
+      "p_b = !::std::less<void*>{}(nullptr, nullptr);"));
 }
 
 void test_tmethod_type_name_is_explicitly_qualified() {
@@ -6208,8 +6263,9 @@ void test_addr_of_primitive_cast_returns_typed_pointer() {
       "  addr := @longint(b);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl,
-                 "p_result = (&::rt::tp2cc_storage_ref<int32_t>(p_b));"));
+  // Forming @longint(b) does not read b or begin a C++ longint lifetime.
+  // Dereferencing the returned Pascal pointer remains a byte-copy operation.
+  CHECK(contains(out.impl, "p_result = static_cast<int32_t*>(p_b);"));
 }
 
 void test_inc_untyped_primitive_cast_reinterprets_storage_by_byte_copy() {
@@ -6530,12 +6586,40 @@ void test_pointer_alias_cast_on_pointer_expression_uses_plain_cast() {
       "  l := plongint(@raw[i*4])^;\n"
       "end;\n"
       "end.\n");
-  // `plongint(@raw[i*4])^` reads a longint from raw bytes. A typed
-  // `*reinterpret_cast<t_plongint>(...)` would be strict-aliasing UB when
-  // the storage's dynamic type is not longint; route through the memcpy
-  // helper instead.
+  // The pointer cast computes an address but does not access through the
+  // resulting C++ pointer. The following Pascal dereference performs the
+  // representation-safe byte-copy load.
   CHECK(contains(out.impl, "::rt::tp2cc_reinterpret_load<int32_t>("));
-  CHECK(!contains(out.impl, "reinterpret_cast<t_plongint>("));
+  CHECK(contains(out.impl, "reinterpret_cast<t_plongint>("));
+}
+
+void test_pointer_deref_representation_survives_intermediate_pointer() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type plongint = ^longint;\n"
+      "procedure run(raw : pointer; value : longint; var result : longint);\n"
+      "implementation\n"
+      "procedure run(raw : pointer; value : longint; var result : longint);\n"
+      "var p : plongint;\n"
+      "begin\n"
+      "  plongint(raw)^ := value;\n"
+      "  result := plongint(raw)^;\n"
+      "  p := plongint(raw);\n"
+      "  p^ := value;\n"
+      "  result := p^;\n"
+      "end;\n"
+      "end.\n");
+  // Storing the converted pointer must not change dereference semantics.
+  // Both forms copy the longint representation instead of creating a C++
+  // longint lvalue over storage whose active object is unknown.
+  CHECK_EQ(count_substring(
+               out.impl, "::rt::tp2cc_reinterpret_store<int32_t>("),
+           size_t{2});
+  CHECK_EQ(count_substring(
+               out.impl, "::rt::tp2cc_reinterpret_load<int32_t>("),
+           size_t{2});
+  CHECK(!contains(out.impl, "::rt::tp2cc_deref(p_p)"));
 }
 
 void test_absolute_typed_const_alias_reinterprets_same_storage() {
@@ -10075,10 +10159,9 @@ void test_integer_div_mod_lower_through_pascal_helpers() {
 }
 
 void test_addr_of_pointer_deref_field_uses_offsetof_arithmetic() {
-  // `ptrint(@p^.field) - ptrint(p)` computes a field offset even when `p`
-  // is nil. Lowering through `&deref(p).field` would bind a C++ reference
-  // to `*p`; use integer arithmetic plus `offsetof` so the pointer value is
-  // not dereferenced.
+  // `ptrint(@p^.field) - ptrint(p)` computes a field offset through a typed
+  // record pointer. Preserve that pointer's object provenance while selecting
+  // the field representation; `p` must designate a live `trec`.
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -10096,7 +10179,7 @@ void test_addr_of_pointer_deref_field_uses_offsetof_arithmetic() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "static_cast<int32_t*>(::rt::tp2cc_pointer_byte_offset(p_p, offsetof("));
+                 "static_cast<int32_t*>(::rt::tp2cc_object_byte_offset(p_p, offsetof("));
   CHECK(!contains(out.impl, "&::rt::tp2cc_deref(p_p).p_b"));
 }
 
@@ -10151,9 +10234,29 @@ void test_addr_of_array_value_typecasts_lower_without_proxy() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "p_raw = static_cast<void*>((&p_buf));"));
-  CHECK(contains(out.impl, "p_bits = ((::rt::t_ptrint)((&p_buf)));"));
+  CHECK(contains(
+      out.impl,
+      "p_bits = reinterpret_cast<::rt::t_ptrint>((&p_buf));"));
   CHECK(contains(out.impl, "p_ints = reinterpret_cast<t_plongint>((&p_buf));"));
   CHECK(!contains(out.impl, "tp2cc_array_addr"));
+}
+
+void test_pointer_to_narrow_integer_cast_is_rejected() {
+  const int before = error_count();
+  auto out = compile_snippet_for_target(
+      "unit u;\n"
+      "interface\n"
+      "function bits(p : pointer) : longint;\n"
+      "implementation\n"
+      "function bits(p : pointer) : longint;\n"
+      "begin\n"
+      "  bits := longint(p);\n"
+      "end;\n"
+      "end.\n",
+      TargetInfo{.pointer_bits = 64});
+  CHECK(error_count() > before);
+  CHECK(!contains(out.impl, "reinterpret_cast<int32_t>"));
+  CHECK(!contains(out.impl, "((int32_t)(p_p))"));
 }
 
 void test_addr_of_array_pointer_arithmetic_uses_element_pointer() {
@@ -10180,22 +10283,22 @@ void test_addr_of_array_pointer_arithmetic_uses_element_pointer() {
       "  pa := @buf;\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_b = (p_pc > ((&p_buf))->data);"));
   CHECK(contains(
       out.impl,
-      "p_pc = ::rt::tp2cc_pointer_add<::rt::p_char*, ::rt::t_ptrint>("
-      "((&p_buf))->data, ((::rt::t_ptrint)(1)));"));
+      "p_b = ::std::less<::rt::p_char*>{}(((&p_buf))->data, p_pc);"));
   CHECK(contains(
       out.impl,
-      "p_b = (p_pc > ::rt::tp2cc_pointer_add<::rt::p_char*, "
-      "::rt::t_ptrint>(((&p_buf))->data, p_n));"));
+      "p_pc = (((&p_buf))->data + ((::rt::t_ptrint)(1)));"));
   CHECK(contains(
       out.impl,
-      "p_b = (::rt::tp2cc_pointer_add<::rt::p_char*, ::rt::t_ptrint>("
-      "((&p_buf))->data, p_n) > p_pc);"));
+      "p_b = ::std::less<::rt::p_char*>{}((((&p_buf))->data + p_n), "
+      "p_pc);"));
+  CHECK(contains(
+      out.impl,
+      "p_b = ::std::less<::rt::p_char*>{}(p_pc, "
+      "(((&p_buf))->data + p_n));"));
   CHECK(contains(out.impl, "p_pa = (&p_buf);"));
-  CHECK(!contains(out.impl, "(&p_buf) + p_n"));
-  CHECK(!contains(out.impl, "((&p_buf) + p_n)"));
+  CHECK(!contains(out.impl, "tp2cc_pointer_add"));
   CHECK(!contains(out.impl, "->data)->data"));
 }
 
@@ -10237,13 +10340,13 @@ void test_addr_of_pointer_deref_array_field_uses_offsetof_addressing() {
       "  pa := @p^.code;\n"
       "end;\n"
       "end.\n");
-  // `@p^.code` must keep the nil-safe uintptr_t + offsetof lowering for the
-  // pointer walk, and then convert per destination: pchar takes the array's
-  // `data` member, pcode keeps the typed pointer-to-array.
+  // `@p^.code` preserves the typed record pointer while selecting the field,
+  // then converts per destination: pchar takes the array's `data` member and
+  // pcode keeps the typed pointer-to-array.
   CHECK(contains(out.impl,
-                 "(static_cast<t_tcode*>(::rt::tp2cc_pointer_byte_offset(p_p, offsetof(t_trec, p_code))))->data"));
+                 "(static_cast<t_tcode*>(::rt::tp2cc_object_byte_offset(p_p, offsetof(t_trec, p_code))))->data"));
   CHECK(contains(out.impl,
-                 "p_pa = static_cast<t_tcode*>(::rt::tp2cc_pointer_byte_offset(p_p, offsetof(t_trec, p_code)));"));
+                 "p_pa = static_cast<t_tcode*>(::rt::tp2cc_object_byte_offset(p_p, offsetof(t_trec, p_code)));"));
   CHECK(!contains(out.impl, "&::rt::tp2cc_deref(p_p).p_code"));
   CHECK(!contains(out.impl, "tp2cc_array_addr"));
 }
@@ -10263,7 +10366,7 @@ void test_addr_of_pointer_deref_array_index_uses_pointer_offset() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_outp = static_cast<::rt::p_char*>(::rt::tp2cc_pointer_byte_offset(p_p, ((p_i) - (0)) * sizeof(::rt::p_char)));"));
+                 "p_outp = static_cast<::rt::p_char*>(::rt::tp2cc_byte_offset(p_p, ((p_i) - (0)) * sizeof(::rt::p_char)));"));
   CHECK(!contains(out.impl, "&::rt::tp2cc_deref(p_p)[p_i]"));
   CHECK(!contains(out.impl, "tp2cc_storage_ref<::rt::p_char>"));
 }
@@ -10289,7 +10392,7 @@ void test_addr_of_dynamic_array_targets_array_handle_not_data_proxy() {
       "end.\n");
   CHECK(contains(out.impl, "p_pa = (&p_a);"));
   CHECK(contains(out.impl,
-                 "p_pr = static_cast<t_tbytes*>(::rt::tp2cc_pointer_byte_offset(p_r, offsetof("));
+                 "p_pr = static_cast<t_tbytes*>(::rt::tp2cc_object_byte_offset(p_r, offsetof("));
   CHECK(!contains(out.impl, "tp2cc_array_addr(p_a)"));
   CHECK(!contains(out.impl, "tp2cc_array_addr(reinterpret_cast<t_tbytes*"));
 }
@@ -10382,7 +10485,9 @@ void test_untyped_const_pointer_cast_from_integer_passes_pointed_address() {
       "  sink(pointer(value), 4);\n"
       "end;\n"
       "end.\n");
-  CHECK(contains(out.impl, "p_sink(((const void*)(((void*)(p_value)))), 4);"));
+  CHECK(contains(
+      out.impl,
+      "p_sink(((const void*)(reinterpret_cast<void*>(p_value))), 4);"));
   CHECK(!contains(out.impl, "static_cast<const void*>(p_value)"));
   CHECK(!contains(out.impl, "tp2cc_const_untyped_ptr(((void*)(p_value)))"));
 }
@@ -10403,7 +10508,8 @@ void test_untyped_const_pointer_cast_deref_from_integer_passes_pointee_storage()
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "p_sink(((const void*)(const_cast<void*>(static_cast<const void*>(((::rt::p_char*)(p_value)))))), 4);"));
+                 "p_sink(((const void*)("
+                 "reinterpret_cast<::rt::p_char*>(p_value))), 4);"));
   CHECK(!contains(out.impl, "static_cast<const void*>(p_value)"));
 }
 
@@ -10447,7 +10553,8 @@ void test_pointer_cast_deref_from_integer_loads_pointee_storage() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_reinterpret_load<int32_t>(const_cast<void*>(static_cast<const void*>(((t_plongint)(p_value)))))"));
+                 "::rt::tp2cc_reinterpret_load<int32_t>("
+                 "reinterpret_cast<t_plongint>(p_value))"));
   CHECK(!contains(out.impl, "static_cast<const void*>(p_value)"));
 }
 
@@ -12022,6 +12129,7 @@ void test_metaclass_value_can_flow_through_pointer_storage() {
 }
 
 void test_class_identifier_value_lowers_to_metaclass_descriptor() {
+  const int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -12035,9 +12143,13 @@ void test_class_identifier_value_lowers_to_metaclass_descriptor() {
       "function ischild(x : tbase) : boolean;\n"
       "begin\n"
       "  ischild := x.classtype = tchild;\n"
+      "end;\n"
       "end.\n");
+  CHECK_EQ(error_count(), before);
   CHECK(contains(out.impl,
-                 "p_result = (p_x->p_classtype() == tp2cc_metaclass_value_t_tchild());"));
+                 "p_result = (p_x->p_classtype() == "
+                 "static_cast<::rt::tp2cc_metaclass_t_tobject*>("
+                 "tp2cc_metaclass_value_t_tchild()));"));
 }
 
 void test_inline_anonymous_enum_class_field_resolves_members() {
@@ -12379,7 +12491,7 @@ void test_variant_record_payload_member_read_address_and_untyped_actual() {
   CHECK(contains(out.impl,
                  "p_result = ::rt::tp2cc_reinterpret_load<int32_t>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference)), offsetof(t_treference, p_offset)));"));
   CHECK(contains(out.impl,
-                 "p_result = (&::rt::tp2cc_storage_ref<int32_t>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference)), offsetof(t_treference, p_offset))));"));
+                 "p_result = static_cast<int32_t*>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference)), offsetof(t_treference, p_offset)));"));
   CHECK(contains(out.impl,
                  "p_raw(((void*)(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_loc), offsetof(t_tlocation, p_reference)), offsetof(t_treference, p_offset)))));"));
   CHECK(!contains(out.impl, "&::rt::tp2cc_reinterpret_load<int32_t>"));
@@ -12444,7 +12556,7 @@ void test_variant_record_payload_index_read_address_and_untyped_actual() {
   CHECK(contains(out.impl,
                  "p_result = ::rt::tp2cc_reinterpret_load<int32_t>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)), ((p_i) - (1)) * sizeof(int32_t)));"));
   CHECK(contains(out.impl,
-                 "p_result = (&::rt::tp2cc_storage_ref<int32_t>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)), ((p_i) - (1)) * sizeof(int32_t))));"));
+                 "p_result = static_cast<int32_t*>(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)), ((p_i) - (1)) * sizeof(int32_t)));"));
   CHECK(contains(out.impl,
                  "p_raw(((void*)(::rt::tp2cc_byte_offset(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)), ((p_i) - (1)) * sizeof(int32_t)))));"));
   CHECK(!contains(out.impl, "&::rt::tp2cc_reinterpret_load<int32_t>"));
@@ -12506,13 +12618,13 @@ void test_variant_record_payload_array_address_uses_payload_addressing() {
       "  pa := @view.items;\n"
       "end;\n"
       "end.\n");
-  // Variant-record payload addressing stays nil-safe via uintptr_t + offsetof,
-  // then converts per destination: pchar takes `data`, ptarr keeps the typed
-  // pointer-to-array.
+  // Address formation stays on the variant payload's byte address and does
+  // not start a C++ array lifetime. The destination conversion either selects
+  // the array data pointer or retains the Pascal pointer-to-array value.
   CHECK(contains(out.impl,
-                 "((&::rt::tp2cc_storage_ref<t_tarr>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)))))->data"));
+                 "(static_cast<t_tarr*>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items))))->data"));
   CHECK(contains(out.impl,
-                 "p_pa = (&::rt::tp2cc_storage_ref<t_tarr>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items))));"));
+                 "p_pa = static_cast<t_tarr*>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_items)));"));
   CHECK(!contains(out.impl, "tp2cc_array_addr"));
   CHECK(!contains(out.impl, "::rt::tp2cc_reinterpret_load<t_tarr>"));
 }
@@ -12556,7 +12668,7 @@ void test_variant_record_payload_shortstring_index_stays_on_storage() {
   CHECK(contains(out.impl,
                  "::rt::tp2cc_reinterpret_update<::rt::p_char>(" + slot));
   CHECK(contains(out.impl,
-                 "p_p = (&::rt::tp2cc_storage_ref<::rt::p_char>(" + slot + "));"));
+                 "p_p = static_cast<::rt::p_char*>(" + slot + ");"));
   CHECK(contains(out.impl, "p_raw(((void*)(" + slot + ")));"));
   CHECK(contains(out.impl,
                  "p_take(::rt::tp2cc_storage_ref<::rt::p_char>(" + slot + "));"));
@@ -12658,7 +12770,7 @@ void test_variant_record_pointer_payload_distinguishes_slot_from_pointee() {
   CHECK(contains(out.impl,
                  "p_touch(::rt::tp2cc_storage_ref<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item))));"));
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_deref(::rt::tp2cc_reinterpret_load<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item)))) = p_v;"));
+                 "::rt::tp2cc_reinterpret_store<int32_t>(::rt::tp2cc_reinterpret_load<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item))), p_v);"));
   CHECK(contains(out.impl,
                  "p_result = ::rt::tp2cc_reinterpret_load<t_pint>(::rt::tp2cc_byte_offset((&p_view), offsetof(t_tview, p_item)));"));
   CHECK(!contains(out.impl, "&::rt::tp2cc_deref"));
@@ -12727,7 +12839,7 @@ void test_variant_class_payload_member_loads_pointer_before_field_offset() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "tp2cc_pointer_byte_offset(::rt::tp2cc_reinterpret_load<t_tsym*>(::rt::tp2cc_pointer_byte_offset(p_plist, offsetof(t_titem, p_sym))), offsetof(t_tsym, p_owner))"));
+                 "tp2cc_object_byte_offset(::rt::tp2cc_reinterpret_load<t_tsym*>(::rt::tp2cc_object_byte_offset(p_plist, offsetof(t_titem, p_sym))), offsetof(t_tsym, p_owner))"));
   CHECK(!contains(out.impl,
                   "tp2cc_byte_offset(::rt::tp2cc_byte_offset(p_plist, offsetof(t_titem, p_sym)), offsetof(t_tsym, p_owner))"));
 }
@@ -12759,7 +12871,7 @@ void test_variant_payload_after_reference_field_loads_reference_before_offset() 
   CHECK(contains(out.impl,
                  "(&static_cast<t_tcall*>(static_cast<t_tcall*>(p_n)->p_right)->p_left->p_location)"));
   CHECK(!contains(out.impl,
-                  "tp2cc_byte_offset(::rt::tp2cc_pointer_byte_offset(static_cast<t_tcall*>(static_cast<t_tcall*>(p_n)->p_right), offsetof(t_tcall, p_left)), offsetof(t_tnode, p_location))"));
+                  "tp2cc_byte_offset(::rt::tp2cc_object_byte_offset(static_cast<t_tcall*>(static_cast<t_tcall*>(p_n)->p_right), offsetof(t_tcall, p_left)), offsetof(t_tnode, p_location))"));
 }
 
 void test_variant_payload_object_field_method_keeps_payload_storage() {
@@ -12798,7 +12910,7 @@ void test_variant_payload_object_field_method_keeps_payload_storage() {
   // need Pascal `Self` to name that payload slot, not a temporary value loaded
   // from the slot.
   const std::string slot =
-      "::rt::tp2cc_pointer_byte_offset(p_hp, offsetof(t_titem, p_symderef))";
+      "::rt::tp2cc_object_byte_offset(p_hp, offsetof(t_titem, p_symderef))";
   CHECK(contains(out.impl, "::rt::tp2cc_storage_ref<t_tderef>(" + slot +
                                ").p_reset();"));
   CHECK(contains(out.impl, "::rt::tp2cc_storage_ref<t_tderef>(" + slot +
@@ -13125,7 +13237,7 @@ void test_packed_record_field_through_pointer_slot_stays_bytewise() {
       "end;\n"
       "end.\n");
   const std::string slot =
-      "::rt::tp2cc_pointer_byte_offset(::rt::tp2cc_deref(p_slot), offsetof(t_tpacked, p_w))";
+      "::rt::tp2cc_object_byte_offset(::rt::tp2cc_reinterpret_load<t_ppacked>(p_slot), offsetof(t_tpacked, p_w))";
   CHECK(contains(out.impl,
                  "p_result = ::rt::tp2cc_unaligned_load<uint16_t>(" +
                      slot + ");"));
@@ -13234,11 +13346,11 @@ void test_unaligned_pointer_field_deref_through_packed_pointer_loads_pointer_val
   CHECK_EQ(error_count(), before);
   CHECK(contains(
       out.impl,
-      "::rt::tp2cc_unaligned_load<t_pitem>(::rt::tp2cc_pointer_byte_offset("));
+      "::rt::tp2cc_unaligned_load<t_pitem>(::rt::tp2cc_object_byte_offset("));
   CHECK(contains(out.impl, "::rt::tp2cc_deref(::rt::tp2cc_unaligned_load<t_pitem>("));
   CHECK(contains(out.impl,
                  "::rt::tp2cc_unaligned_load<int32_t>("
-                 "::rt::tp2cc_pointer_byte_offset("));
+                 "::rt::tp2cc_object_byte_offset("));
   CHECK(contains(out.impl, ".p_value"));
   CHECK(contains(out.impl, ".p_getvalue()"));
   CHECK(contains(out.impl, ".p_secidx"));
@@ -16479,11 +16591,14 @@ void test_pointer_slot_cast_from_default_property_keeps_storage_address() {
   const std::string slot = "p_list->p_getitem(p_i)";
   CHECK(contains(
       out.impl,
-      "::rt::tp2cc_deref(static_cast<t_pnode>(" + slot + ")) = p_node;"));
+      "::rt::tp2cc_reinterpret_store<t_tnode*>(static_cast<t_pnode>(" +
+          slot + "), p_node);"));
   CHECK(contains(
       out.impl,
-      "p_node = ::rt::tp2cc_deref(static_cast<t_pnode>(" + slot + "));"));
-  CHECK(!contains(out.impl, "tp2cc_reinterpret_load<t_pnode>()"));
+      "p_node = ::rt::tp2cc_reinterpret_load<t_tnode*>("
+      "static_cast<t_pnode>(" + slot + "));"));
+  CHECK(!contains(out.impl,
+                  "::rt::tp2cc_deref(static_cast<t_pnode>(" + slot + "))"));
 }
 
 void test_pointer_cast_of_packed_field_address_uses_raw_storage_address() {
@@ -17017,7 +17132,7 @@ void test_reference_class_alias_cast_uses_payload_carrier() {
   CHECK(contains(out.impl, "p_result = static_cast<t_tchild*>(p_p)->p_ops;"));
   CHECK(contains(out.impl,
                  "p_result = ::rt::tp2cc_reinterpret_load<int32_t>("
-                 "::rt::tp2cc_pointer_byte_offset("
+                 "::rt::tp2cc_object_byte_offset("
                  "::rt::tp2cc_reinterpret_load<t_tchild*>("));
   CHECK(!contains(out.impl, "static_cast<t_tinstr>(p_p)"));
   CHECK(!contains(out.header, "using t_pinstr = t_tinstr*;"));
@@ -17074,7 +17189,7 @@ void test_addr_of_object_pointer_field_returns_typed_pointer() {
       "end.\n");
   CHECK(contains(out.impl,
                  "p_result = static_cast<t_tinfo*>("
-                 "::rt::tp2cc_pointer_byte_offset(p_last, "
+                 "::rt::tp2cc_object_byte_offset(p_last, "
                  "offsetof(t_tai, p_fileinfo)));"));
 }
 
@@ -17517,7 +17632,9 @@ int main() {
   RUN_TEST(test_abs_sqr_bind_result_type_and_overflow_mode);
   RUN_TEST(test_ordinal_intrinsics_bind_storage_carrier_and_modes);
   RUN_TEST(test_pointer_dec_keeps_unsigned_delta_before_subtraction);
-  RUN_TEST(test_pointer_binary_arithmetic_uses_pascal_address_operations);
+  RUN_TEST(test_typed_pointer_binary_arithmetic_uses_native_operations);
+  RUN_TEST(test_untyped_pointer_arithmetic_is_rejected);
+  RUN_TEST(test_collection_accepts_opaque_integer_pointer_token);
   RUN_TEST(test_implicit_const_expr_wraps_without_emit_error);
   RUN_TEST(test_explicit_integer_cast_const_expr_wraps_without_error);
   RUN_TEST(test_untyped_integer_const_uses_pascal_initial_type);
@@ -17597,6 +17714,7 @@ int main() {
   RUN_TEST(test_system_pointer_aliases_bind_in_interface_declarations);
   RUN_TEST(test_string_comparison_uses_runtime_operator_resolution);
   RUN_TEST(test_pchar_comparison_stays_pointer_comparison);
+  RUN_TEST(test_nil_pointer_comparisons_use_untyped_pointer_identity);
   RUN_TEST(test_tmethod_type_name_is_explicitly_qualified);
   RUN_TEST(test_unknown_type_name_reports_error_instead_of_emitting_fallback);
   RUN_TEST(test_local_enum_members_do_not_fall_back_to_runtime);
@@ -17625,6 +17743,7 @@ int main() {
   RUN_TEST(test_absolute_pointer_alias_reinterprets_pointer_storage);
   RUN_TEST(test_absolute_class_alias_over_pointer_parameter_reads_pointer_slot);
   RUN_TEST(test_pointer_alias_cast_on_pointer_expression_uses_plain_cast);
+  RUN_TEST(test_pointer_deref_representation_survives_intermediate_pointer);
   RUN_TEST(test_absolute_typed_const_alias_reinterprets_same_storage);
   RUN_TEST(test_absolute_const_param_alias_stays_const_reference);
   RUN_TEST(test_property_getter_setter_lowering);
@@ -17718,6 +17837,7 @@ int main() {
   RUN_TEST(test_addr_of_pointer_deref_field_uses_offsetof_arithmetic);
   RUN_TEST(test_addr_of_array_value_lowered_per_target_type);
   RUN_TEST(test_addr_of_array_value_typecasts_lower_without_proxy);
+  RUN_TEST(test_pointer_to_narrow_integer_cast_is_rejected);
   RUN_TEST(test_addr_of_array_pointer_arithmetic_uses_element_pointer);
   RUN_TEST(test_typed_array_pointer_nil_comparison_keeps_pointer_value);
   RUN_TEST(test_addr_of_pointer_deref_array_field_uses_offsetof_addressing);

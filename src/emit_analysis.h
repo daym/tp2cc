@@ -72,6 +72,28 @@ enum class SetConversionKind : uint8_t {
   Compatible,
 };
 
+enum class PointerConversionKind : uint8_t {
+  Incompatible,
+  Identity,
+  FixedArrayToElement,
+  Hierarchy,
+  ToUntypedPointer,
+  FromUntypedPointer,
+  ProcedureToUntypedPointer,
+  UntypedPointerToProcedure,
+  IntegerToPointer,
+  PointerToInteger,
+  Reinterpret,
+};
+
+struct TargetPointerArithmeticOperation {
+  const ast::Expr* pointer = nullptr;
+  const ast::Expr* delta = nullptr;
+  const TypeDescriptor* pointer_type = nullptr;
+  const TypeDescriptor* delta_type = nullptr;
+  ast::BinOp op = ast::BinOp::Add;
+};
+
 enum class OrdinalFamily : uint8_t {
   Invalid,
   Integer,
@@ -122,6 +144,14 @@ class EmitAnalysis {
   bool type_is_reference_class(const ast::TypeExpr* t);
   bool type_is_interface(const ast::TypeExpr* t);
   bool type_is_value_object(const ast::TypeExpr* t);
+  bool fixed_array_pointer_can_decay_to_element_pointer(
+      const ast::TypeExpr* source, const ast::TypeExpr* target);
+  PointerConversionKind classify_pointer_conversion(
+      const ast::TypeExpr* target, const ast::TypeExpr* source,
+      bool explicit_pascal_cast);
+  std::optional<TargetPointerArithmeticOperation>
+  bind_target_pointer_arithmetic(const ast::Expr& expression,
+                                 const ast::TypeExpr* target);
 
   // Constant folding for Pascal integer expressions. These routines answer in
   // Pascal's type/value model, not C++'s promotion rules, so later emit-time
@@ -333,6 +363,10 @@ class EmitAnalysis {
       ast::BoundIntrinsicKind kind, const PrimitiveInfo& operand) const;
   static bool binop_is_comparison(ast::BinOp op);
   static bool binop_is_arithmetic_like(ast::BinOp op);
+  bool type_is_native_pointer_value(const ast::TypeExpr* type);
+  const TypeDescriptor* common_pointer_comparison_type(
+      const ast::TypeExpr* lhs, const TypeDescriptor* lhs_descriptor,
+      const ast::TypeExpr* rhs, const TypeDescriptor* rhs_descriptor);
   const ast::BoundBinaryOperation* bind_set_binary_operation(
       const ast::Binary& b, const ast::TypeExpr* lhs_source_type,
       const ast::TypeExpr* rhs_source_type);

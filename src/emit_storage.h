@@ -162,6 +162,14 @@ struct EmitStorageDesignator {
                             std::move(backing_type_cxx_in));
   }
 
+  static EmitStorageDesignator bytewise_typed_address(
+      std::string ptr_cxx_in, std::string type_cxx_in) {
+    return EmitStorageDesignator(EmitStorageAccess::Bytewise, {},
+                                 std::move(ptr_cxx_in),
+                                 std::move(type_cxx_in), {}, {},
+                                 EmitStorageAddressForm::TypedStoragePointer);
+  }
+
   static EmitStorageDesignator raw_byte_address(EmitStorageAccess access_in,
                                                 std::string text_in,
                                                 std::string ptr_cxx_in,
@@ -310,28 +318,16 @@ class EmitStorage {
   bool type_is_stringish(const ast::TypeExpr* t);
   bool type_is_pointerish(const ast::TypeExpr* t);
   bool type_is_open_array(const ast::TypeExpr* t);
-  bool fixed_array_pointer_can_decay_to_element_pointer(
-      const ast::TypeExpr* src_type, const ast::TypeExpr* dst_type);
   bool fixed_char_array_value_can_decay_to_pchar(
       const ast::TypeExpr* src_type, const ast::TypeExpr* dst_type);
-  bool pointer_to_object_upcast_is_valid(const ast::TypeExpr* dst_type,
-                                         const ast::TypeExpr* src_type);
-  bool pointer_to_object_downcast_is_valid(const ast::TypeExpr* dst_type,
-                                           const ast::TypeExpr* src_type);
-  bool class_to_interface_conversion_is_valid(const ast::TypeExpr* dst_type,
-                                              const ast::TypeExpr* src_type);
-  // Pascal `Ptype(p)^` where Ptype is a typed pointer and the cast is not
-  // covered by the class-hierarchy path. Without this route the emitter would
-  // produce `*(Ptype)p`, which is strict-aliasing UB whenever the pointee's
-  // dynamic type is not Ptype's pointee. Return a bytewise storage designator
-  // so downstream reads/writes go through the memcpy helpers.
-  std::optional<EmitStorageDesignator> pointer_typecast_deref_as_bytewise(
-      const ast::Deref& d);
-  const ClassInfo* class_info_for_pointer_target(const ast::TypeExpr* t);
-  const ClassInfo* class_info_for_value_type(const ast::TypeExpr* raw,
-                                             const ast::TypeExpr* canonical);
-  bool class_parent_chain_contains(const ClassInfo& ancestor,
-                                   const ClassInfo& current) const;
+  // Scalar and pointer carriers can be copied through object-representation
+  // bytes without assuming that an unrelated C++ object is active at the
+  // address. Class/object/record and managed aggregate dereferences retain
+  // ordinary typed access because copying them would lose identity or violate
+  // their lifetime rules. This classification depends on the pointer's bound
+  // target, not on whether an explicit cast is adjacent to the dereference.
+  std::optional<EmitStorageDesignator>
+  pointer_deref_representation_storage(const ast::Deref& d);
   // Central pointer-value coercion policy used by explicit typecasts, plain
   // assignments, and value call arguments. Implicit Pascal pointer conversions
   // are concrete conversions such as `pointer`/`void*` <-> typed data pointers,

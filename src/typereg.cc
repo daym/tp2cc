@@ -2238,6 +2238,12 @@ void resolve_class_links_for_symbol(TypeRegistry& r, TypeSymbol& symbol) {
                            symbol.type ? symbol.type->loc : Location{});
     }
     refresh_class_enum_members(*ci);
+    if (ci->is_reference_type) {
+      // Every reference-class declaration is also a Pascal class value.
+      // Register its target-keyed `class of T` identity during build so a bare
+      // class identifier never needs to create type metadata during emission.
+      make_metaclass_descriptor(r, &symbol);
+    }
   }
   if (auto* nested = nested_type_map_mut(symbol)) {
     for (auto& [_, child] : *nested) {
@@ -4533,6 +4539,15 @@ const TypeSymbol* TypeRegistry::metaclass_target_for_type(
   return descriptor ? descriptor->metaclass_target : nullptr;
 }
 
+const TypeDescriptor* TypeRegistry::metaclass_descriptor_for_target(
+    const TypeSymbol* target) const {
+  if (target && target->descriptor && target->descriptor->symbol) {
+    target = target->descriptor->symbol;
+  }
+  auto found = metaclass_descriptors.find(target);
+  return found != metaclass_descriptors.end() ? found->second : nullptr;
+}
+
 const TypeSymbol* TypeRegistry::lookup_type_symbol_in_context(
     PascalKey name, const TypeLookupContext* context) const {
   const std::string key = pascal_key_string(name);
@@ -4673,6 +4688,17 @@ bool TypeRegistry::same_class_identity(const ClassInfo& a,
                                        const ClassInfo& b) const {
   if (a.descriptor && b.descriptor) return a.descriptor == b.descriptor;
   return &a == &b;
+}
+
+int TypeRegistry::class_ancestor_depth(const ClassInfo& ancestor,
+                                       const ClassInfo& descendant) const {
+  const ClassInfo* candidate = &descendant;
+  SeenClassChain seen;
+  for (int depth = 0; candidate && seen.mark(candidate); ++depth) {
+    if (same_class_identity(ancestor, *candidate)) return depth;
+    candidate = lookup_parent_class(*candidate);
+  }
+  return -1;
 }
 
 const FieldInfo* TypeRegistry::lookup_class_field(

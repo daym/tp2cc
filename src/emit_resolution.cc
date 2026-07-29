@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
-#include <unordered_set>
 #include <utility>
 
 #include "emit_signature_scope.h"
@@ -364,18 +363,9 @@ ConvScore EmitResolution::class_hierarchy_conversion_score(
   if (!param_class) param_class = shaped_param_class;
   if (!arg_class || !param_class) return {};
 
-  std::unordered_set<const ClassInfo*> seen;
-  const ClassInfo* cur = arg_class;
-  int depth = 0;
-  while (cur) {
-    if (!seen.insert(cur).second) break;
-    if (registry_.same_class_identity(*cur, *param_class)) {
-      return {ConvRank::ClassHierarchy, depth};
-    }
-    cur = registry_.lookup_parent_class(*cur);
-    ++depth;
-  }
-  return {};
+  const int depth = registry_.class_ancestor_depth(*param_class, *arg_class);
+  return depth >= 0 ? ConvScore{ConvRank::ClassHierarchy, depth}
+                    : ConvScore{};
 }
 
 ConvScore EmitResolution::object_pointer_hierarchy_conversion_score(
@@ -415,18 +405,9 @@ ConvScore EmitResolution::object_pointer_hierarchy_conversion_score(
     return {};
   }
 
-  std::unordered_set<const ClassInfo*> seen;
-  const ClassInfo* cur = arg_class;
-  int depth = 0;
-  while (cur) {
-    if (!seen.insert(cur).second) break;
-    if (registry_.same_class_identity(*cur, *param_class)) {
-      return {ConvRank::ClassHierarchy, depth};
-    }
-    cur = registry_.lookup_parent_class(*cur);
-    ++depth;
-  }
-  return {};
+  const int depth = registry_.class_ancestor_depth(*param_class, *arg_class);
+  return depth >= 0 ? ConvScore{ConvRank::ClassHierarchy, depth}
+                    : ConvScore{};
 }
 
 const PrimitiveInfo* EmitResolution::primitive_for_type(const TypeExpr* t) {
@@ -575,51 +556,6 @@ bool EmitResolution::set_literal_can_construct_open_array(
     if (element && element->kind == Kind::Range) return false;
   }
   return true;
-}
-
-bool EmitResolution::target_pointer_arithmetic_can_convert(
-    const Expr& arg, const TypeExpr* param,
-    const TypeLookupContext* param_context,
-    bool allow_assignment_operator_conversions) {
-  const TypeExpr* canon_param =
-      analysis_.semantic_shape_type_in_context(param, param_context);
-  if (!canon_param || !type_ops_.type_is_pointerish(canon_param) ||
-      arg.kind != Kind::Binary) {
-    return false;
-  }
-
-  const auto& b = static_cast<const Binary&>(arg);
-  if (b.op != BinOp::Add && b.op != BinOp::Sub) return false;
-  if (!b.lhs || !b.rhs) return false;
-
-  const TypeExpr* lhs_type =
-      analysis_.semantic_shape_type(argument_source_type_for_conversion(*b.lhs));
-  const TypeExpr* rhs_type =
-      analysis_.semantic_shape_type(argument_source_type_for_conversion(*b.rhs));
-  auto integer_type = [this](const TypeExpr* t) {
-    const PrimitiveInfo* pi = primitive_for_type(t);
-    return pi && pi->int_kind != PrimitiveIntKind::None;
-  };
-
-  FlatCallParamInfo pointer_operand(param, /*untyped_in=*/false,
-                                    /*mutable_ref_in=*/false,
-                                    /*default_value_in=*/nullptr,
-                                    /*param_unit_in=*/{},
-                                    /*param_declaring_type_in=*/{},
-                                    /*owned_type_in=*/{},
-                                    param_context);
-  if (type_ops_.type_is_pointerish(lhs_type) && integer_type(rhs_type)) {
-    return score_argument_conversion(*b.lhs, pointer_operand,
-                                     allow_assignment_operator_conversions)
-        .viable();
-  }
-  if (b.op == BinOp::Add && integer_type(lhs_type) &&
-      type_ops_.type_is_pointerish(rhs_type)) {
-    return score_argument_conversion(*b.rhs, pointer_operand,
-                                     allow_assignment_operator_conversions)
-        .viable();
-  }
-  return false;
 }
 
 const TypeExpr* EmitResolution::argument_source_type_for_conversion(
@@ -1308,9 +1244,7 @@ ConvScore EmitResolution::score_argument_conversion(
       return {ConvRank::Exact, 0};
     }
   }
-  if (target_pointer_arithmetic_can_convert(
-          arg, param.type, param_context,
-          allow_assignment_operator_conversions)) {
+  if (analysis_.bind_target_pointer_arithmetic(arg, param.type)) {
     return {ConvRank::Exact, 0};
   }
   if (!param.mutable_ref && canon_param &&

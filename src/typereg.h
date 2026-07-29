@@ -861,6 +861,12 @@ struct TypeRegistry {
       const ast::TypeExpr* type) const;
   const TypeSymbol* metaclass_target_for_type(
       const ast::TypeExpr* type) const;
+  // `class of T` descriptors are keyed by the resolved class declaration
+  // because separately written `class of T` types are assignment-compatible.
+  // Value binding uses this identity for bare class identifiers, which have no
+  // TypeExpr result of their own during the transitional value migration.
+  const TypeDescriptor* metaclass_descriptor_for_target(
+      const TypeSymbol* target) const;
   const TypeSymbol* lookup_type_symbol_in_context(
       PascalKey name, const TypeLookupContext* context) const;
   const TypeSymbol* lookup_type_symbol_exact(PascalKey unit,
@@ -875,6 +881,11 @@ struct TypeRegistry {
   // classes implicitly inherit runtime TObject, matching emitted C++ bases.
   const ClassInfo* lookup_parent_class(const ClassInfo& class_info) const;
   bool same_class_identity(const ClassInfo& a, const ClassInfo& b) const;
+  // Return the number of parent links from descendant to ancestor, or -1 when
+  // they are unrelated. Conversion legality and overload ranking must share
+  // this walk so aliases and declaration identity cannot disagree by caller.
+  int class_ancestor_depth(const ClassInfo& ancestor,
+                           const ClassInfo& descendant) const;
   bool class_implements_interface(const ClassInfo& class_info,
                                   const InterfaceInfo& interface_info) const;
   // Returns the canonical TypeSymbol for a built-in type literal (lowercased

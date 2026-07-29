@@ -2012,62 +2012,6 @@ constexpr t_currency tp2cc_integer_to_currency(
   return result;
 }
 
-// Pascal typed-pointer Inc/Dec changes the address by pointee-sized units.
-// Integer address arithmetic also preserves Pascal's unsigned decrement
-// semantics without invoking C++ pointer arithmetic outside one array object.
-template <typename Pointer, typename Delta>
-Pointer tp2cc_pointer_add(std::type_identity_t<Pointer> value,
-                          std::type_identity_t<Delta> delta) {
-  static_assert(std::is_pointer_v<Pointer>);
-  static_assert(std::is_integral_v<Delta>);
-  using Pointee = std::remove_pointer_t<Pointer>;
-  constexpr std::uintptr_t stride = [] {
-    if constexpr (std::is_void_v<Pointee>) return std::uintptr_t{1};
-    else return static_cast<std::uintptr_t>(sizeof(Pointee));
-  }();
-  const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(value);
-  const std::uintptr_t displacement =
-      static_cast<std::uintptr_t>(delta) * stride;
-  return reinterpret_cast<Pointer>(address + displacement);
-}
-
-template <typename Pointer, typename Delta>
-Pointer tp2cc_pointer_sub(std::type_identity_t<Pointer> value,
-                          std::type_identity_t<Delta> delta) {
-  static_assert(std::is_pointer_v<Pointer>);
-  static_assert(std::is_integral_v<Delta>);
-  using Pointee = std::remove_pointer_t<Pointer>;
-  constexpr std::uintptr_t stride = [] {
-    if constexpr (std::is_void_v<Pointee>) return std::uintptr_t{1};
-    else return static_cast<std::uintptr_t>(sizeof(Pointee));
-  }();
-  const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(value);
-  const std::uintptr_t displacement =
-      static_cast<std::uintptr_t>(delta) * stride;
-  return reinterpret_cast<Pointer>(address - displacement);
-}
-
-// Pascal pointer subtraction is address arithmetic and is valid for pointer
-// values that do not designate one C++ array object. Compute the byte
-// difference in the unsigned address domain, recover PtrInt's signed value,
-// then convert a typed-pointer difference from bytes to elements.
-template <typename Result, typename Pointer>
-Result tp2cc_pointer_difference(std::type_identity_t<Pointer> left,
-                                 std::type_identity_t<Pointer> right) {
-  static_assert(std::is_integral_v<Result>);
-  static_assert(std::is_pointer_v<Pointer>);
-  using Pointee = std::remove_pointer_t<Pointer>;
-  constexpr std::uintptr_t stride = [] {
-    if constexpr (std::is_void_v<Pointee>) return std::uintptr_t{1};
-    else return static_cast<std::uintptr_t>(sizeof(Pointee));
-  }();
-  using UnsignedResult = std::make_unsigned_t<Result>;
-  const Result bytes = tp2cc_integer_from_bits<Result>(
-      static_cast<UnsignedResult>(reinterpret_cast<std::uintptr_t>(left) -
-                                  reinterpret_cast<std::uintptr_t>(right)));
-  return stride == 1 ? bytes : bytes / static_cast<Result>(stride);
-}
-
 // Only `vtAnsiString` is needed: ncgld.pas locally redeclares all the
 // other vt* tags in a procedure-scoped `const` block, so the bare name
 // `vtAnsiString` is the only one that falls through to the system unit.
@@ -2812,12 +2756,23 @@ inline const void* tp2cc_byte_offset(const void* p, std::ptrdiff_t n) {
   return static_cast<const void*>(static_cast<const unsigned char*>(p) + n);
 }
 
-inline void* tp2cc_pointer_byte_offset(const void* p, std::ptrdiff_t n) {
-  // Pascal address-of through a pointer designator, e.g. `@p^.field` or
-  // `@p^[i]`, computes an address from the pointer value. It does not read
-  // `p^`. C++ pointer arithmetic on a null pointer is undefined, so use integer
-  // address arithmetic for this case.
-  return reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(p) + n);
+template <typename T>
+inline void* tp2cc_object_byte_offset(T* object, std::ptrdiff_t n) {
+  static_assert(!std::is_void_v<T>);
+  // A typed pointer path starts from a live T object. Use the C++20 library
+  // view of that object's representation so the derived address retains its
+  // object provenance; converting through an integer would not establish a
+  // pointer that can later designate a subobject.
+  auto bytes = std::as_writable_bytes(std::span<T, 1>(object, 1));
+  return static_cast<void*>(bytes.data() + n);
+}
+
+template <typename T>
+inline const void* tp2cc_object_byte_offset(const T* object,
+                                             std::ptrdiff_t n) {
+  static_assert(!std::is_void_v<T>);
+  auto bytes = std::as_bytes(std::span<const T, 1>(object, 1));
+  return static_cast<const void*>(bytes.data() + n);
 }
 
 template <int N, typename Index>
