@@ -387,15 +387,9 @@ void resolve_anonymous_descriptor_payload(
     TypeRegistry& r, const TypeDescriptor* descriptor,
     const TypeLookupContext* context);
 
-enum class ExprSemanticUse {
-  Value,
-  Statement,
-};
-
 void bind_expr_semantics(
     TypeRegistry& r, const ExprPtr& expr,
-    const TypeLookupContext* context,
-    ExprSemanticUse use = ExprSemanticUse::Value);
+    const TypeLookupContext* context);
 void bind_stmt_semantics(TypeRegistry& r, const StmtPtr& stmt,
                          const TypeLookupContext* context);
 
@@ -3064,75 +3058,11 @@ void bind_type_name_expr_if_visible(TypeRegistry& r, const Expr& expr,
   expr.type_operand_bound = true;
 }
 
-bool value_name_visible_in_context(const TypeLookupContext* context,
-                                   PascalKey name) {
-  for (const TypeLookupContext* frame = context; frame;
-       frame = frame->parent) {
-    if (scope_frame_find_var(*frame, pascal_key_string(name)) ||
-        scope_frame_find_const(*frame, pascal_key_string(name)) ||
-        scope_frame_find_procs(*frame, pascal_key_string(name)) ||
-        scope_frame_has_enum_member(*frame, pascal_key_string(name))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool root_value_name_visible_in_context(const TypeLookupContext* context,
-                                        PascalKey path) {
-  std::string key = pascal_key_string(path);
-  if (const size_t dot = key.find('.'); dot != std::string::npos) {
-    key.resize(dot);
-  }
-  return value_name_visible_in_context(context, pascal_key(key));
-}
-
-void bind_value_type_expr_if_visible(
-    TypeRegistry& r, const Expr& expr, const TypeLookupContext* context) {
-  std::optional<std::string> path = type_name_path_from_expr(expr);
-  if (!path) return;
-  if (root_value_name_visible_in_context(context, pascal_key(*path))) return;
-  const TypeSymbol* symbol = nullptr;
-  if (context) {
-    symbol = r.lookup_type_symbol_in_context(pascal_key(*path), context);
-  }
-  if (!symbol) return;
-  expr.type_value_symbol = symbol;
-  expr.type_value_bound = true;
-}
-
 void bind_expr_list_semantics(TypeRegistry& r, const std::vector<ExprPtr>& exprs,
                               const TypeLookupContext* context) {
   for (const ExprPtr& expr : exprs) {
     bind_expr_semantics(r, expr, context);
   }
-}
-
-bool call_first_arg_can_be_type_operand(const Call& call,
-                                        ExprSemanticUse use) {
-  if (!call.callee) return false;
-  std::string_view name;
-  if (call.callee->kind == Kind::Ident) {
-    name = static_cast<const Ident&>(*call.callee).name;
-  } else if (call.callee->kind == Kind::Member) {
-    const auto& member = static_cast<const Member&>(*call.callee);
-    if (!member.base || member.base->kind != Kind::Ident ||
-        static_cast<const Ident&>(*member.base).name != "system") {
-      return false;
-    }
-    name = member.name;
-  } else {
-    return false;
-  }
-  if (name == "new") {
-    // Pascal statement-form `new(p)` allocates through an existing pointer
-    // slot. Expression-form `new(T, ...)` uses a type operand and produces the
-    // allocated pointer value, so only expression use binds the first argument
-    // in the type namespace.
-    return use == ExprSemanticUse::Value && !call.args.empty();
-  }
-  if (call.args.size() != 1) return false;
-  return name == "sizeof" || name == "low" || name == "high";
 }
 
 void bind_builtin_expression_result(TypeRegistry& registry, const Expr& expr,
@@ -3161,20 +3091,6 @@ void bind_integer_literal_result(TypeRegistry& registry,
     type_name = "int64";
   }
   bind_builtin_expression_result(registry, literal, type_name);
-}
-
-std::string_view semantic_intrinsic_name(const Expr* callee) {
-  if (!callee) return {};
-  if (callee->kind == Kind::Ident) {
-    return static_cast<const Ident&>(*callee).name;
-  }
-  if (callee->kind != Kind::Member) return {};
-  const auto& member = static_cast<const Member&>(*callee);
-  if (!member.base || member.base->kind != Kind::Ident ||
-      static_cast<const Ident&>(*member.base).name != "system") {
-    return {};
-  }
-  return member.name;
 }
 
 void bind_syntax_expression_result(TypeRegistry& registry, const Expr& expr) {
@@ -3210,36 +3126,16 @@ void bind_syntax_expression_result(TypeRegistry& registry, const Expr& expr) {
       }
       return;
     }
-    case Kind::Call: {
-      const auto& call = static_cast<const Call&>(expr);
-      if (call.args.size() == 1 && call.callee &&
-          call.callee->type_operand_symbol) {
-        expr.result_descriptor =
-            call.callee->type_operand_symbol->descriptor;
-        return;
-      }
-      const std::string_view intrinsic = semantic_intrinsic_name(call.callee.get());
-      if (intrinsic == "chr" && call.args.size() == 1) {
-        bind_builtin_expression_result(registry, expr, "char");
-      } else if (intrinsic == "sizeof" && call.args.size() == 1) {
-        bind_builtin_expression_result(registry, expr, "longint");
-      }
-      return;
-    }
     default:
       return;
   }
 }
 
 void bind_expr_semantics(TypeRegistry& r, const ExprPtr& expr,
-                         const TypeLookupContext* context,
-                         ExprSemanticUse use) {
+                         const TypeLookupContext* context) {
   if (!expr) return;
   switch (expr->kind) {
     case Kind::Ident:
-      if (use == ExprSemanticUse::Value) {
-        bind_value_type_expr_if_visible(r, *expr, context);
-      }
       break;
     case Kind::Binary: {
       const auto& e = static_cast<const Binary&>(*expr);
@@ -3260,18 +3156,6 @@ void bind_expr_semantics(TypeRegistry& r, const ExprPtr& expr,
       break;
     case Kind::Call: {
       const auto& e = static_cast<const Call&>(*expr);
-      if (call_first_arg_can_be_type_operand(e, use)) {
-        bind_type_name_expr_if_visible(r, *e.args[0], context,
-                                       /*report_missing=*/false);
-      }
-      if (e.args.size() == 1 && e.callee) {
-        // The parser represents Pascal typecasts as one-argument calls. Bind a
-        // visible type-name callee during build so later overload and value
-        // emission can distinguish `T(x)` from an ordinary call without
-        // re-running lexical type lookup.
-        bind_type_name_expr_if_visible(r, *e.callee, context,
-                                       /*report_missing=*/false);
-      }
       bind_expr_semantics(r, e.callee, context);
       bind_expr_list_semantics(r, e.args, context);
       bind_expr_list_semantics(r, e.width, context);
@@ -3285,9 +3169,6 @@ void bind_expr_semantics(TypeRegistry& r, const ExprPtr& expr,
       break;
     }
     case Kind::Member:
-      if (use == ExprSemanticUse::Value) {
-        bind_value_type_expr_if_visible(r, *expr, context);
-      }
       bind_expr_semantics(r, static_cast<const Member&>(*expr).base, context);
       break;
     case Kind::Deref:
@@ -3347,7 +3228,7 @@ void bind_stmt_semantics(TypeRegistry& r, const StmtPtr& stmt,
     }
     case Kind::ExprStmt:
       bind_expr_semantics(r, static_cast<const ExprStmt&>(*stmt).expr,
-                          context, ExprSemanticUse::Statement);
+                          context);
       break;
     case Kind::If: {
       const auto& s = static_cast<const If&>(*stmt);
@@ -4472,9 +4353,9 @@ bool is_import_frame(const TypeLookupContext& frame) {
   return frame.kind == ScopeFrameKind::ImportedUnitInterface;
 }
 
-const TypeSymbol* lookup_type_symbol_in_frame(const TypeLookupContext& frame,
-                                              PascalKey name,
-                                              bool include_imports) {
+const TypeSymbol* scope_frame_find_type(const TypeLookupContext& frame,
+                                        PascalKey name,
+                                        bool include_imports) {
   if (!include_imports && is_import_frame(frame)) return nullptr;
   const std::string key = pascal_key_string(name);
   auto local = frame.type_symbols.find(key);
@@ -4503,12 +4384,11 @@ const TypeSymbol* lookup_type_path_in_frame(const TypeLookupContext& frame,
   const std::string path_key = pascal_key_string(path);
   const size_t dot = path_key.find('.');
   if (dot == std::string::npos) {
-    return lookup_type_symbol_in_frame(frame, path, include_imports);
+    return scope_frame_find_type(frame, path, include_imports);
   }
   const std::string root_name = path_key.substr(0, dot);
   const TypeSymbol* root =
-      lookup_type_symbol_in_frame(frame, pascal_key(root_name),
-                                  include_imports);
+      scope_frame_find_type(frame, pascal_key(root_name), include_imports);
   return lookup_nested_type_symbol_path(root, path_key, dot + 1);
 }
 
@@ -4624,13 +4504,6 @@ std::optional<const TypeSymbol*> TypeRegistry::type_name_expression_result(
   return expr->type_operand_symbol;
 }
 
-std::optional<const TypeSymbol*>
-TypeRegistry::value_type_expression_result(
-    const Expr* expr) const {
-  if (!expr || !expr->type_value_bound) return std::nullopt;
-  return expr->type_value_symbol;
-}
-
 const TypeDescriptor* TypeRegistry::expression_result_descriptor(
     const Expr* expr) const {
   return expr ? expr->result_descriptor : nullptr;
@@ -4687,8 +4560,8 @@ const TypeSymbol* TypeRegistry::lookup_type_symbol_in_context(
   for (const TypeLookupContext* frame = context; frame;
        frame = frame->parent) {
     if (const TypeSymbol* symbol =
-            lookup_type_symbol_in_frame(*frame, name,
-                                        /*include_imports=*/true)) {
+            scope_frame_find_type(*frame, name,
+                                  /*include_imports=*/true)) {
       return symbol;
     }
   }

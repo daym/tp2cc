@@ -663,6 +663,10 @@ struct Emitter : ResolveNameProvider,
                              const std::string& qualifier = {}) override {
     return lookup_.resolve_name(name, qk, qualifier);
   }
+  const TypeSymbol* migration_type_symbol_for_expression(
+      const ast::Expr& expr) override {
+    return lookup_.migration_type_symbol_for_expression(expr);
+  }
   ResolveResult resolve_class_member(const ClassInfo& class_info,
                                      const std::string& name) {
     return lookup_.resolve_class_member(class_info, name);
@@ -724,10 +728,11 @@ std::string Emitter::ordinal_value_to_cxx(const Expr& e,
 const TypeExpr* Emitter::type_for_resolved_call(const Call& c) {
   if (c.callee->kind == Kind::Ident &&
       ascii_lower(static_cast<const Ident&>(*c.callee).name) == "new" &&
-      !c.args.empty()) {
-    if (std::optional<const TypeSymbol*> type_operand =
-            registry.type_name_expression_result(c.args[0].get())) {
-      return *type_operand ? (*type_operand)->type : nullptr;
+      !c.args.empty() &&
+      !analysis_.unqualified_special_form_is_shadowed(*c.callee, "new")) {
+    if (const TypeSymbol* type_operand =
+            analysis_.migration_type_symbol_for_expression(*c.args[0])) {
+      return type_operand->type;
     }
     return nullptr;
   }
@@ -1020,23 +1025,18 @@ bool Emitter::expr_is_const_untyped_storage_arg(const Expr& e) {
 
 std::optional<std::string> Emitter::sizeof_type_operand_cxx(
     const Expr& expr) {
-  if (std::optional<const TypeSymbol*> result =
-          registry.type_name_expression_result(&expr)) {
-    if (const TypeSymbol* symbol = *result) {
-      return types_.type_symbol_to_cxx(symbol);
-    }
-    return std::nullopt;
+  if (const TypeSymbol* symbol =
+          analysis_.migration_type_symbol_for_expression(expr)) {
+    return types_.type_symbol_to_cxx(symbol);
   }
 
   if (expr.kind != Kind::Deref) return std::nullopt;
   const auto& deref = static_cast<const Deref&>(expr);
   const TypeExpr* ptr_type = nullptr;
   if (deref.operand) {
-    if (std::optional<const TypeSymbol*> result =
-            registry.type_name_expression_result(deref.operand.get())) {
-      if (const TypeSymbol* symbol = *result) {
-        ptr_type = symbol->type;
-      }
+    if (const TypeSymbol* symbol =
+            analysis_.migration_type_symbol_for_expression(*deref.operand)) {
+      ptr_type = symbol->type;
     }
   }
   if (!ptr_type) ptr_type = type_for_overload(*deref.operand);
@@ -1112,9 +1112,9 @@ tp2cc::ResolvedCall Emitter::resolve_new_constructor_call(
     const Expr& pointer_type_expr, const Expr& ctor_callee,
     const std::vector<const Expr*>& args) {
   const TypeExpr* pointer_type = nullptr;
-  if (std::optional<const TypeSymbol*> type_operand =
-          registry.type_name_expression_result(&pointer_type_expr)) {
-    if (const TypeSymbol* symbol = *type_operand) pointer_type = symbol->type;
+  if (const TypeSymbol* symbol =
+          analysis_.migration_type_symbol_for_expression(pointer_type_expr)) {
+    pointer_type = symbol->type;
   }
   return resolution_.resolve_pointer_target_constructor(pointer_type,
                                                         ctor_callee, args);
@@ -1276,12 +1276,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           !outer_result_name.empty() && n.name == outer_result_name) {
         return mangle(n.name);
       }
-      // A Pascal class identifier can be used as a metaclass value, but that
-      // decision belongs to semantic type binding. Falling through to
-      // resolve_name() would make ordinary value lookup silently recover type
-      // names that build failed to bind.
+      // A Pascal class identifier can be used as a metaclass value. Call-shaped
+      // and value-shaped type syntax still shares the ordinary value namespace
+      // during this migration, so use the same ordered resolver that decides
+      // whether a nearer value shadows this type.
       if (const TypeSymbol* symbol =
-              analysis_.class_or_record_type_value_symbol(n)) {
+              analysis_.migration_class_or_record_type_value_symbol(n)) {
         if (const auto* ci = symbol->class_info(); ci && ci->is_reference_type) {
           return types_.metaclass_value_fn_cxx(*symbol) + "()";
         }
@@ -1696,11 +1696,10 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         return want_call ? text + "()" : text;
       }
 
-      // Same rule as bare class identifiers: `Unit.T` as a metaclass value
-      // must come from build's value-type binding, not a late qualified-unit
-      // lookup in the value resolver.
+      // Same rule as bare class identifiers: `Unit.T` is a metaclass value only
+      // after the migration resolver has ruled out a nearer value qualifier.
       if (const TypeSymbol* symbol =
-              analysis_.class_or_record_type_value_symbol(m)) {
+              analysis_.migration_class_or_record_type_value_symbol(m)) {
         if (const auto* ci = symbol->class_info(); ci && ci->is_reference_type) {
           return types_.metaclass_value_fn_cxx(*symbol) + "()";
         }
@@ -1722,7 +1721,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       }
       if (base_ident) {
         const TypeSymbol* base_type_symbol =
-            analysis_.class_or_record_type_value_symbol(*m.base);
+            analysis_.migration_class_or_record_type_value_symbol(*m.base);
         // `TClass.method` -- Pascal's way to call a specific
         // class's method (typically the parent's version from
         // inside an override). Emit `TClass::method`. This is a
@@ -1961,7 +1960,7 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         const auto& m = static_cast<const Member&>(*a.operand);
         if (m.base && m.base->kind == Kind::Ident) {
           const TypeSymbol* owner_symbol =
-              analysis_.class_or_record_type_value_symbol(*m.base);
+              analysis_.migration_class_or_record_type_value_symbol(*m.base);
           if (owner_symbol && owner_symbol->class_info()) {
             const ProcDecl* selected = nullptr;
             if (const auto* methods =
@@ -2104,14 +2103,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         // a raw runtime call in the generated C++.
         if ((n == "low" || n == "high") && c.args.size() == 1) {
           const bool want_low = (n == "low");
-          if (std::optional<const TypeSymbol*> type_operand =
-                  registry.type_name_expression_result(c.args[0].get())) {
-            if (const TypeSymbol* symbol = *type_operand) {
-              if (std::string rewrite =
-                      types_.low_high_expr_for_type_symbol(symbol, want_low);
-                  !rewrite.empty()) {
-                return rewrite;
-              }
+          if (const TypeSymbol* symbol =
+                  analysis_.migration_type_symbol_for_expression(*c.args[0])) {
+            if (std::string rewrite =
+                    types_.low_high_expr_for_type_symbol(symbol, want_low);
+                !rewrite.empty()) {
+              return rewrite;
             }
           }
           if (const TypeExpr* field_type =
@@ -2168,14 +2165,12 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         const TypeSymbol* type_callee_symbol = nullptr;
         const PrimitiveInfo* primitive_typecast = nullptr;
         if (c.args.size() == 1) {
-          if (std::optional<const TypeSymbol*> type_callee =
-                  registry.type_name_expression_result(c.callee.get())) {
-            type_callee_symbol = *type_callee;
-            primitive_typecast =
-                type_callee_symbol && type_callee_symbol->descriptor
-                    ? type_callee_symbol->descriptor->primitive
-                    : nullptr;
-          }
+          type_callee_symbol =
+              analysis_.migration_type_symbol_for_expression(*c.callee);
+          primitive_typecast =
+              type_callee_symbol && type_callee_symbol->descriptor
+                  ? type_callee_symbol->descriptor->primitive
+                  : nullptr;
         }
         const TypeExpr* primitive_typecast_type =
             primitive_typecast ? type_callee_symbol->type : nullptr;
@@ -2197,7 +2192,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           // `nullptr` with a dummy template-arg tag so the expression
           // at least compiles. Users of this value compare it for
           // equality/inequality at runtime only.
-          if (analysis_.class_or_record_type_value_symbol(*c.args[0])) {
+          if (analysis_.migration_class_or_record_type_value_symbol(
+                  *c.args[0])) {
             return "((void*)nullptr)";
           }
         } else if (primitive_typecast) {
@@ -2543,17 +2539,17 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
           report_error(c.loc, "no matching call to '" + n +
                                   "': mutable variable required");
           throw UnitEmissionAborted{};
-        } else if (n == "new" && !c.args.empty()) {
+        } else if (n == "new" && !c.args.empty() &&
+                   !analysis_.unqualified_special_form_is_shadowed(
+                       *c.callee, "new")) {
           // Expression-form `new(T)` or `new(T, Ctor(args))`. The first
           // argument is a pointer type name, not a value expression; lowering
           // it as type text keeps Pascal's type/value namespaces separate in
           // generated C++.
           std::string t;
-          if (std::optional<const TypeSymbol*> type_operand =
-                  registry.type_name_expression_result(c.args[0].get())) {
-            if (const TypeSymbol* symbol = *type_operand) {
-              t = types_.type_symbol_to_cxx(symbol);
-            }
+          if (const TypeSymbol* symbol =
+                  analysis_.migration_type_symbol_for_expression(*c.args[0])) {
+            t = types_.type_symbol_to_cxx(symbol);
           }
           if (t.empty()) {
             report_error(c.args[0]->loc,
@@ -2609,11 +2605,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         bool cast_to_pointer = false;
         std::string cast_type_cxx;
         const TypeExpr* pointer_cast_ty = nullptr;
-        const TypeSymbol* symbol = nullptr;
-        if (std::optional<const TypeSymbol*> type_callee =
-                registry.type_name_expression_result(c.callee.get())) {
-          symbol = *type_callee;
-        }
+        const TypeSymbol* symbol =
+            analysis_.migration_type_symbol_for_expression(*c.callee);
         const TypeExpr* tgt =
             symbol && symbol->descriptor ? symbol->descriptor->type : nullptr;
         if (tgt && tgt->kind == Kind::TyPointer) {
@@ -2641,51 +2634,49 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
       if (c.args.size() == 1 && c.callee->kind == Kind::Member) {
         // Same `Member` AST node as a call, but semantically this can be a
         // unit-qualified typecast: `Unit.Type(expr)`.
-        if (std::optional<const TypeSymbol*> type_callee =
-                registry.type_name_expression_result(c.callee.get())) {
-          if (const TypeSymbol* cast_symbol = *type_callee) {
-            // Semantic binding marked this callee as a Pascal type name, so
-            // lower it as an explicit cast instead of sending it through
-            // procedure overload resolution.
-            const TypeExpr* cast_ty =
-                cast_symbol->descriptor ? cast_symbol->descriptor->type
-                                        : nullptr;
-            if (cast_ty) cast_ty = semantic_shape_type(cast_ty);
-            const std::string cast_type_cxx =
-                types_.type_symbol_to_cxx(cast_symbol);
-            if (cast_ty && cast_ty->kind == Kind::TyProcedural) {
-              // Unit-qualified procedural casts are the same Pascal operation
-              // as unqualified ones: the target procedural type controls
-              // method-value binding and plain procedure-pointer conversion.
-              return const_value_to_cxx(*c.args[0], cast_ty,
-                                        /*explicit_conversion=*/true);
-            }
-            if (cast_ty && cast_ty->kind == Kind::TyPointer &&
-                !cast_type_cxx.empty()) {
-              // Pointer casts are still Pascal value conversions, but their
-              // source may be a typed storage view such as `T(x)`. Peel only
-              // primitive storage-view casts before the pointer coercion so the
-              // emitted C++ casts the original storage expression, not
-              // temporary/reference text built for another target type.
-              const Expr* peeled = peel_primitive_casts(c.args[0].get());
-              std::string source =
-                  (peeled && expr_is_storage_lvalue(*c.args[0]))
-                      ? expr_to_cxx(*peeled)
-                      : expr_to_cxx(*c.args[0]);
-              std::string coerced = coerce_pointer_like_text(
-                  cast_type_cxx, cast_ty, type_for_overload(*c.args[0]), source,
-                  /*explicit_pascal_cast=*/true);
-              if (coerced != source) return coerced;
-              if (peeled && expr_is_storage_lvalue(*c.args[0])) {
-                return "((" + cast_type_cxx + ")(" + expr_to_cxx(*peeled) +
-                       "))";
-              }
-              return "((" + cast_type_cxx + ")(" + source + "))";
-            }
-            if (cast_ty && !cast_type_cxx.empty()) {
-              return "((" + cast_type_cxx + ")(" + expr_to_cxx(*c.args[0]) +
+        if (const TypeSymbol* cast_symbol =
+                analysis_.migration_type_symbol_for_expression(*c.callee)) {
+          // The ordered migration resolver selected the Pascal type after
+          // checking value shadowing, so lower this as an explicit cast
+          // instead of sending it through procedure overload resolution.
+          const TypeExpr* cast_ty =
+              cast_symbol->descriptor ? cast_symbol->descriptor->type
+                                      : nullptr;
+          if (cast_ty) cast_ty = semantic_shape_type(cast_ty);
+          const std::string cast_type_cxx =
+              types_.type_symbol_to_cxx(cast_symbol);
+          if (cast_ty && cast_ty->kind == Kind::TyProcedural) {
+            // Unit-qualified procedural casts are the same Pascal operation
+            // as unqualified ones: the target procedural type controls
+            // method-value binding and plain procedure-pointer conversion.
+            return const_value_to_cxx(*c.args[0], cast_ty,
+                                      /*explicit_conversion=*/true);
+          }
+          if (cast_ty && cast_ty->kind == Kind::TyPointer &&
+              !cast_type_cxx.empty()) {
+            // Pointer casts are still Pascal value conversions, but their
+            // source may be a typed storage view such as `T(x)`. Peel only
+            // primitive storage-view casts before the pointer coercion so the
+            // emitted C++ casts the original storage expression, not
+            // temporary/reference text built for another target type.
+            const Expr* peeled = peel_primitive_casts(c.args[0].get());
+            std::string source =
+                (peeled && expr_is_storage_lvalue(*c.args[0]))
+                    ? expr_to_cxx(*peeled)
+                    : expr_to_cxx(*c.args[0]);
+            std::string coerced = coerce_pointer_like_text(
+                cast_type_cxx, cast_ty, type_for_overload(*c.args[0]), source,
+                /*explicit_pascal_cast=*/true);
+            if (coerced != source) return coerced;
+            if (peeled && expr_is_storage_lvalue(*c.args[0])) {
+              return "((" + cast_type_cxx + ")(" + expr_to_cxx(*peeled) +
                      "))";
             }
+            return "((" + cast_type_cxx + ")(" + source + "))";
+          }
+          if (cast_ty && !cast_type_cxx.empty()) {
+            return "((" + cast_type_cxx + ")(" + expr_to_cxx(*c.args[0]) +
+                   "))";
           }
         }
       }
@@ -2751,7 +2742,8 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
         const auto& mem = static_cast<const Member&>(*c.callee);
         if (mem.base->kind == Kind::Ident) {
           const TypeSymbol* class_type_symbol =
-              analysis_.class_or_record_type_value_symbol(*mem.base);
+              analysis_.migration_class_or_record_type_value_symbol(
+                  *mem.base);
           if (class_type_symbol) {
             if (auto ctor_call = maybe_lower_class_constructor_call(
                     c.loc, *class_type_symbol, mem.name, call_plan,

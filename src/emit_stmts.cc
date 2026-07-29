@@ -79,22 +79,6 @@ ExprPtr borrowed_expr_ptr(const Expr& expr) {
   return ExprPtr(const_cast<Expr*>(&expr), [](Expr*) {});
 }
 
-bool unqualified_builtin_name_is_shadowed(const Call* call_expr,
-                                          std::string_view name,
-                                          ResolveNameProvider& resolver) {
-  if (!call_expr || !call_expr->callee ||
-      call_expr->callee->kind != Kind::Ident) {
-    return false;
-  }
-  ResolveResult resolved = resolver.resolve_name(std::string(name));
-  // `new` has type/storage syntax and is not represented as an ordinary
-  // runtime proc, so unresolved means "still eligible for builtin lowering".
-  // `dispose` normally resolves through the implicit runtime unit. Any closer
-  // source declaration must win over the builtin statement form.
-  return resolved.kind != ResolvedKind::Unknown &&
-         resolved.kind != ResolvedKind::RtBuiltin;
-}
-
 }  // namespace
 
 EmitStmts::EmitStmts(const TypeRegistry& registry, ScopeStateView& scope,
@@ -608,8 +592,8 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
     return;
   }
   if (name == "new" && call_expr && !call_expr->args.empty() &&
-      !unqualified_builtin_name_is_shadowed(call_expr, name,
-                                            resolve_name_provider_)) {
+      !analysis_.unqualified_special_form_is_shadowed(*call_expr->callee,
+                                                      name)) {
     // new(p) or new(p, Ctor(args)). `p` might be `arr[i]` whose
     // `decltype` is a reference (`T&`); strip it before computing
     // the pointee so `new remove_pointer_t<T&>` doesn't arise. Route
@@ -674,8 +658,8 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
     return;
   }
   if (name == "dispose" && call_expr && !call_expr->args.empty() &&
-      !unqualified_builtin_name_is_shadowed(call_expr, name,
-                                            resolve_name_provider_)) {
+      !analysis_.unqualified_special_form_is_shadowed(*call_expr->callee,
+                                                      name)) {
     // dispose(p) or dispose(p, Done)
     std::string p = stmt_ops_.expr_to_cxx(*call_expr->args[0]);
     if (call_expr->args.size() >= 2) {
@@ -704,7 +688,8 @@ void EmitStmts::emit_expr_stmt(const ExprStmt& es) {
       {
         const TypeSymbol* cls_symbol = nullptr;
         if (mem.base && mem.base->kind == Kind::Ident) {
-          if (!analysis_.class_or_record_type_value_symbol(*mem.base)) {
+          if (!analysis_.migration_class_or_record_type_value_symbol(
+                  *mem.base)) {
             cls_symbol = value_class_symbol(*mem.base);
           }
         } else {
@@ -903,9 +888,9 @@ std::string EmitStmts::ordinal_step_cxx(
 
 std::optional<EmitStmts::ForInTypeRhs> EmitStmts::for_in_type_rhs(
     const Expr& e) {
-  if (std::optional<const TypeSymbol*> symbol =
-          registry_.value_type_expression_result(&e)) {
-    if (*symbol) return ForInTypeRhs{.symbol = *symbol};
+  if (const TypeSymbol* symbol =
+          analysis_.migration_type_symbol_for_expression(e)) {
+    return ForInTypeRhs{.symbol = symbol};
   }
   return std::nullopt;
 }

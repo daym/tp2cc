@@ -1462,6 +1462,26 @@ void test_type_named_high_remains_a_typecast() {
   CHECK(!contains(out.impl, "::std::numeric_limits"));
 }
 
+void test_local_routine_shadows_visible_type_in_call_syntax() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tconvert = longint;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var result_value : longint;\n"
+      "  function tconvert(value : longint) : longint;\n"
+      "  begin\n"
+      "    tconvert := value;\n"
+      "  end;\n"
+      "begin\n"
+      "  result_value := tconvert(4);\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl, "p_result_value = p_tconvert("));
+}
+
 void test_system_qualified_runtime_exports_use_implicit_unit() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1946,8 +1966,6 @@ void test_descriptor_owned_semantic_indexes() {
       reg.builtin_literal("boolean")->descriptor;
   const TypeDescriptor* character =
       reg.builtin_literal("char")->descriptor;
-  const TypeDescriptor* longint =
-      reg.builtin_literal("longint")->descriptor;
   CHECK_EQ(reg.expression_result_descriptor(
                static_cast<ConstDecl&>(*unit->interface_decls[2]).value.get()),
            boolean);
@@ -1957,9 +1975,13 @@ void test_descriptor_owned_semantic_indexes() {
   CHECK_EQ(reg.expression_result_descriptor(
                static_cast<ConstDecl&>(*unit->interface_decls[4]).value.get()),
            boolean);
+  // `longint(3)` is call-shaped syntax until ordinary value shadowing has
+  // ruled out a same-named callable. Build must not stamp a cast result from
+  // its type-only scope; emission resolves this ambiguity during the value
+  // binding migration.
   CHECK_EQ(reg.expression_result_descriptor(
                static_cast<ConstDecl&>(*unit->interface_decls[5]).value.get()),
-           longint);
+           nullptr);
 
   const TypeSymbol* integer_alias = reg.builtin_literal("integer");
   const TypeSymbol* longint_symbol = reg.builtin_literal("longint");
@@ -16888,6 +16910,27 @@ void test_expression_new_uses_declared_type_named_like_old_backend_stub() {
   CHECK(!contains(out.impl, "return nullptr;"));
 }
 
+void test_shadowed_expression_new_calls_user_function() {
+  int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function run : longint;\n"
+      "implementation\n"
+      "function new(value : longint) : longint;\n"
+      "begin\n"
+      "  new := value;\n"
+      "end;\n"
+      "function run : longint;\n"
+      "begin\n"
+      "  run := new(7);\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_result = ::p_u::p_new("));
+  CHECK(!contains(out.impl, "::rt::p_new(tp2cc_ptr)"));
+}
+
 void test_type_order_sees_method_signature_dependencies() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -17378,6 +17421,7 @@ int main() {
   RUN_TEST(test_non_system_qualified_low_call_stays_unit_call);
   RUN_TEST(test_source_calls_shadow_low_high_ord_sizeof_intrinsics);
   RUN_TEST(test_type_named_high_remains_a_typecast);
+  RUN_TEST(test_local_routine_shadows_visible_type_in_call_syntax);
   RUN_TEST(test_system_qualified_runtime_exports_use_implicit_unit);
   RUN_TEST(test_system_extensionseparator_resolves_as_implicit_runtime_const);
   RUN_TEST(test_system_member_access_respects_value_shadowing);
@@ -17962,6 +18006,7 @@ int main() {
   RUN_TEST(test_shadowed_new_and_dispose_statements_call_user_procs);
   RUN_TEST(test_expression_new_uses_runtime_storage_helper);
   RUN_TEST(test_expression_new_uses_declared_type_named_like_old_backend_stub);
+  RUN_TEST(test_shadowed_expression_new_calls_user_function);
   RUN_TEST(test_type_order_sees_method_signature_dependencies);
   RUN_TEST(test_reference_class_typecast_is_pointer_cast);
   RUN_TEST(test_reference_class_cast_keeps_pointer_member_access);

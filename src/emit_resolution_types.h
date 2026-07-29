@@ -39,6 +39,7 @@ enum class ResolvedKind {
   UnitProc,     // procedure/function exported from a visible Pascal unit
   EnumMember,   // enum value found through Pascal enum visibility
   RtBuiltin,    // runtime helper tracked without a Pascal AST decl
+  MigrationType,// type found while disambiguating call-shaped value syntax
 };
 
 struct ResolveResult {
@@ -67,6 +68,7 @@ struct ResolveResult {
   const ast::ProcDecl* proc = nullptr;   // declaration for call-site lowering
   bool accepts_zero_args = false;        // rt builtin or decl permits zero args
   std::string default_arg_unit;          // declaration scope for defaults
+  const TypeSymbol* migration_type_symbol = nullptr;
   // Metadata for a bare field resolved through `with` where the `with`
   // receiver is byte-addressed storage. The ordinary `cxx` expression cannot
   // name such a field without first manufacturing a C++ aggregate reference.
@@ -95,6 +97,13 @@ struct ResolveResult {
         BytewiseWithField(field_type, std::move(base_ptr_cxx),
                           std::move(base_type_cxx), std::move(field_cxx),
                           unaligned));
+  }
+
+  static ResolveResult migration_type(const TypeSymbol* symbol) {
+    ResolveResult result;
+    result.kind = ResolvedKind::MigrationType;
+    result.migration_type_symbol = symbol;
+    return result;
   }
 
  private:
@@ -128,6 +137,13 @@ class ResolveNameProvider {
   virtual ResolveResult resolve_name(const std::string& name,
                                      QualifierKind qk = QualifierKind::None,
                                      const std::string& qualifier = {}) = 0;
+  // Call-shaped Pascal syntax does not identify its namespace: `T(x)` may be
+  // either a typecast or a call after ordinary value shadowing. Until value
+  // binding moves out of emission, this debt-marked entry point asks the same
+  // ordered resolver for the type interpretation instead of maintaining a
+  // second, incomplete value environment during build.
+  virtual const TypeSymbol* migration_type_symbol_for_expression(
+      const ast::Expr& expr) = 0;
 };
 
 class OverloadTypeProvider {

@@ -168,23 +168,23 @@ class EmitAnalysis {
                                 const TypeLookupContext* a_context,
                                 const ast::TypeExpr* b,
                                 const TypeLookupContext* b_context);
-  // Pascal explicit typecasts are call-shaped in the AST. This returns the
-  // source-language result type for `T(x)` / `unit.T(x)` when the callee is a
-  // visible type name; null means the call is not a typecast.
+  // Pascal explicit typecasts are call-shaped in the AST, so the transitional
+  // value resolver must distinguish them from ordinary calls.
   const ast::TypeExpr* explicit_typecast_result_type(const ast::Expr& e);
-  // Same parser-binding debt as explicit_typecast_result_type(), but for emit
-  // sites that need the declaration symbol to preserve named C++ carriers.
   const TypeSymbol* explicit_typecast_target_symbol(const ast::Expr& e);
+  const TypeSymbol* migration_type_symbol_for_expression(
+      const ast::Expr& e);
   // `Ord` is lowered by the compiler, not by a runtime helper. Its result type
   // follows the operand's ordinal domain so `Ord(Char)` stays byte-sized while
   // enums and integer subranges keep their own storage width.
   const ast::TypeExpr* ord_result_type_for_operand(const ast::Expr& operand);
   const ast::TypeExpr* ord_result_type_for_type(const ast::TypeExpr* t);
   const TypeSymbol* deduce_class_symbol(const ast::Expr& e);
-  const TypeSymbol* class_or_record_type_value_symbol(const ast::Expr& e);
-  // Class identifiers and class aliases are values when passed to TClass or a
-  // `class of ...` formal. Preserve the resolved class symbol so emission does
-  // not have to re-look up the same source spelling.
+  const TypeSymbol* migration_class_or_record_type_value_symbol(
+      const ast::Expr& e);
+  // Class identifiers and aliases are values when passed to TClass or a
+  // `class of ...` formal. This remains emitter-time resolution until the
+  // general Pascal value-binding migration.
   const TypeSymbol* concrete_class_symbol_for_metaclass_value(
       const ast::Expr& e);
   // For `TChild` used where `class of TBase` or `TClass` is expected, return
@@ -220,6 +220,12 @@ class EmitAnalysis {
   // Returns nullopt when the callee is neither form (e.g. `self.foo(...)`,
   // `rec.field(...)`, or a plain function-pointer call).
   std::optional<std::string> intrinsic_call_name(const ast::Expr& callee);
+  // `new` is compiler syntax rather than an ordinary runtime declaration.
+  // Unresolved lookup therefore leaves the special form available; any source
+  // declaration selected by ordinary value lookup must shadow it. `dispose`
+  // uses the same rule even though its runtime declaration is indexed.
+  bool unqualified_special_form_is_shadowed(
+      const ast::Expr& callee, std::string_view name);
   const VarInfo* find_visible_unit_var(const std::string& name);
   const ConstInfo* find_visible_unit_const(const std::string& name);
   const EnumMemberInfo* find_visible_enum_member(const std::string& name);

@@ -32,10 +32,15 @@ class EmitLookup {
   ResolveResult resolve_name(const std::string& name,
                              QualifierKind qk = QualifierKind::None,
                              const std::string& qualifier = {});
+  const TypeSymbol* migration_type_symbol_for_expression(
+      const ast::Expr& expr);
   ResolveResult resolve_class_member(const ClassInfo& class_info,
                                      const std::string& name);
 
  private:
+  ResolveResult resolve_name_impl(const std::string& name, QualifierKind qk,
+                                  const std::string& qualifier,
+                                  bool include_migration_types);
   const TypeRegistry& registry_;
   ScopeStateView& scope_;
   EmitAnalysis& analysis_;

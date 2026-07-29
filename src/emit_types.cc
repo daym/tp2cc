@@ -49,7 +49,7 @@ bool is_single_char_string_literal(const Expr* e) {
          static_cast<const StringLit&>(*e).value.size() == 1;
 }
 
-bool array_bound_is_plain_integer_const_syntax(const TypeRegistry& registry,
+bool array_bound_is_plain_integer_const_syntax(EmitAnalysis& analysis,
                                                const Expr& e) {
   switch (e.kind) {
     case Kind::IntLit:
@@ -57,25 +57,22 @@ bool array_bound_is_plain_integer_const_syntax(const TypeRegistry& registry,
     case Kind::Member:
       return true;
     case Kind::Unary:
-      return array_bound_is_plain_integer_const_syntax(registry,
+      return array_bound_is_plain_integer_const_syntax(analysis,
           *static_cast<const Unary&>(e).operand);
     case Kind::Binary: {
       const auto& b = static_cast<const Binary&>(e);
-      return array_bound_is_plain_integer_const_syntax(registry, *b.lhs) &&
-             array_bound_is_plain_integer_const_syntax(registry, *b.rhs);
+      return array_bound_is_plain_integer_const_syntax(analysis, *b.lhs) &&
+             array_bound_is_plain_integer_const_syntax(analysis, *b.rhs);
     }
     case Kind::Call: {
       const auto& c = static_cast<const Call&>(e);
       if (!c.callee || c.args.size() != 1 || !c.args[0]) {
         return false;
       }
-      const TypeSymbol* symbol = nullptr;
-      if (std::optional<const TypeSymbol*> type_callee =
-              registry.type_name_expression_result(c.callee.get())) {
-        symbol = *type_callee;
-      }
+      const TypeSymbol* symbol =
+          analysis.migration_type_symbol_for_expression(*c.callee);
       return symbol && symbol->descriptor && symbol->descriptor->primitive &&
-             array_bound_is_plain_integer_const_syntax(registry, *c.args[0]);
+             array_bound_is_plain_integer_const_syntax(analysis, *c.args[0]);
     }
     default:
       return false;
@@ -420,10 +417,10 @@ std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
     // imported const as raw Pascal text would record an unresolved-id error.
     std::optional<ConstIntExprInfo> lo_value;
     std::optional<ConstIntExprInfo> hi_value;
-    if (array_bound_is_plain_integer_const_syntax(registry_, *sr.lo)) {
+    if (array_bound_is_plain_integer_const_syntax(analysis_, *sr.lo)) {
       lo_value = analysis_.eval_const_int_expr(*sr.lo);
     }
-    if (array_bound_is_plain_integer_const_syntax(registry_, *sr.hi)) {
+    if (array_bound_is_plain_integer_const_syntax(analysis_, *sr.hi)) {
       hi_value = analysis_.eval_const_int_expr(*sr.hi);
     }
     lo = lo_value ? std::to_string(lo_value->value)
@@ -543,14 +540,16 @@ std::string EmitTypes::subrange_bound_enum_cxx_type(const Expr* e) {
         call.args.size() != 1 || !call.args[0]) {
       return {};
     }
-    const std::string& callee = static_cast<const Ident&>(*call.callee).name;
-    if (callee == "low" || callee == "high") {
-      if (std::optional<const TypeSymbol*> symbol =
-              registry_.type_name_expression_result(call.args[0].get())) {
-        return visible_enum_type_for_type_symbol(*symbol);
+    const std::optional<std::string> intrinsic =
+        analysis_.intrinsic_call_name(*call.callee);
+    if (intrinsic && (*intrinsic == "low" || *intrinsic == "high")) {
+      if (const TypeSymbol* symbol =
+              analysis_.migration_type_symbol_for_expression(*call.args[0])) {
+        return visible_enum_type_for_type_symbol(symbol);
       }
       return {};
     }
+    const std::string& callee = static_cast<const Ident&>(*call.callee).name;
     if (callee == "pred" || callee == "succ") {
       return subrange_bound_enum_cxx_type(call.args[0].get());
     }

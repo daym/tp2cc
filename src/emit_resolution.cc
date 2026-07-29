@@ -1122,7 +1122,8 @@ std::optional<MethodValueBinding> EmitResolution::resolve_method_value_binding(
     const auto& id = static_cast<const Ident&>(*member.base);
     if (id.name == "self") {
       cls_symbol = scope_.current_class_symbol;
-    } else if (analysis_.class_or_record_type_value_symbol(*member.base)) {
+    } else if (analysis_.migration_class_or_record_type_value_symbol(
+                   *member.base)) {
       // `Klass.method` where Klass is a type name (not a value) - same as
       // the metaclass case above; not a method-value binding.
       return std::nullopt;
@@ -1700,7 +1701,7 @@ const TypeSymbol* EmitResolution::receiver_type_symbol_for_member_call(
       return scope_.current_class_symbol;
     }
     if (const TypeSymbol* symbol =
-        analysis_.class_or_record_type_value_symbol(*member.base)) {
+        analysis_.migration_class_or_record_type_value_symbol(*member.base)) {
       return symbol;
     }
     return value_receiver_type_symbol(*member.base);

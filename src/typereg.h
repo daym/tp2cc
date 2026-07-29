@@ -459,6 +459,10 @@ inline const EnumInfoReg* scope_frame_find_local_enum_info_for_member(
   return member ? member->owner : nullptr;
 }
 
+const TypeSymbol* scope_frame_find_type(const TypeLookupContext& frame,
+                                        PascalKey name,
+                                        bool include_imports = true);
+
 struct UnitInfo {
   std::string name;
   // Direct unit names from the corresponding source-section `uses` clauses.
@@ -842,8 +846,6 @@ struct TypeRegistry {
   std::optional<const TypeSymbol*> exception_handler_type_result(
       const ast::ExceptHandler* handler) const;
   std::optional<const TypeSymbol*> type_name_expression_result(
-      const ast::Expr* expr) const;
-  std::optional<const TypeSymbol*> value_type_expression_result(
       const ast::Expr* expr) const;
   const TypeDescriptor* expression_result_descriptor(
       const ast::Expr* expr) const;

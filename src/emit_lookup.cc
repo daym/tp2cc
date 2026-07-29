@@ -47,6 +47,19 @@ static ResolveResult zero_arg_callable(ResolvedKind kind, std::string cxx) {
                                  /*accepts_zero_args=*/true, {});
 }
 
+static std::optional<std::string> type_path_from_expression(
+    const ast::Expr& expr) {
+  if (expr.kind == ast::Kind::Ident) {
+    return static_cast<const ast::Ident&>(expr).name;
+  }
+  if (expr.kind != ast::Kind::Member) return std::nullopt;
+  const auto& member = static_cast<const ast::Member&>(expr);
+  if (!member.base) return std::nullopt;
+  std::optional<std::string> base = type_path_from_expression(*member.base);
+  if (!base) return std::nullopt;
+  return *base + "." + member.name;
+}
+
 static std::optional<ResolveResult> resolve_proc_overloads(
     const std::vector<ProcInfo>* procs, ResolvedKind kind, std::string cxx) {
   if (!procs || procs->empty()) return std::nullopt;
@@ -126,6 +139,13 @@ ResolveResult EmitLookup::resolve_class_member(const ClassInfo& class_info,
 ResolveResult EmitLookup::resolve_name(const std::string& name,
                                        QualifierKind qk,
                                        const std::string& qualifier) {
+  return resolve_name_impl(name, qk, qualifier,
+                           /*include_migration_types=*/false);
+}
+
+ResolveResult EmitLookup::resolve_name_impl(
+    const std::string& name, QualifierKind qk,
+    const std::string& qualifier, bool include_migration_types) {
   // ----- Qualified unit lookup: `Unit.name`. -----
   if (qk == QualifierKind::Unit) {
     const std::string unit_cxx = unit_namespace_prefix(qualifier) + mangle(name);
@@ -253,6 +273,21 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
     return *prop;
   }
 
+  // Type-shaped expression syntax is transitional: actual TypeExpr nodes were
+  // already bound during build. Procedure-local values must win first, but a
+  // procedure-local type must be considered before class and unit values.
+  if (include_migration_types) {
+    for (const TypeLookupContext* frame = scope_.type_scope;
+         frame && frame->kind == ScopeFrameKind::Local &&
+         frame->preserve_local_value_scope;
+         frame = frame->parent) {
+      if (const TypeSymbol* symbol =
+              scope_frame_find_type(*frame, pascal_key(name))) {
+        return ResolveResult::migration_type(symbol);
+      }
+    }
+  }
+
   // 5. Current class's members (chain).
   const TypeSymbol* current_symbol = scope_.current_class_symbol;
   const ClassInfo* current_class =
@@ -280,31 +315,45 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   // interface frames, then implicit runtime.
   for (const TypeLookupContext* frame = scope_.type_scope; frame;
        frame = frame->parent) {
-    if (!frame->unit_info) continue;
-    const bool imported = scope_frame_is_import(*frame);
-    const std::string prefix =
-        imported
-            ? unit_namespace_prefix(frame->unit)
-            : ((!scope_.lookup_emission_unit_name.empty() &&
-                scope_.lookup_emission_unit_name != frame->unit)
-                   ? unit_namespace_prefix(frame->unit)
-                   : std::string{});
-    const ResolvedKind proc_kind =
-        scope_frame_is_runtime(*frame) ? ResolvedKind::RtBuiltin
-                                       : ResolvedKind::UnitProc;
-    if (auto result = resolve_proc_overloads(
-            scope_frame_find_procs(*frame, name), proc_kind,
-            prefix + mangle(name))) {
-      return *result;
+    if (frame->unit_info) {
+      const bool imported = scope_frame_is_import(*frame);
+      const std::string prefix =
+          imported
+              ? unit_namespace_prefix(frame->unit)
+              : ((!scope_.lookup_emission_unit_name.empty() &&
+                  scope_.lookup_emission_unit_name != frame->unit)
+                     ? unit_namespace_prefix(frame->unit)
+                     : std::string{});
+      const ResolvedKind proc_kind =
+          scope_frame_is_runtime(*frame) ? ResolvedKind::RtBuiltin
+                                         : ResolvedKind::UnitProc;
+      if (auto result = resolve_proc_overloads(
+              scope_frame_find_procs(*frame, name), proc_kind,
+              prefix + mangle(name))) {
+        return *result;
+      }
+      if (scope_frame_find_var(*frame, name)) {
+        return resolved_value(ResolvedKind::UnitVar, prefix + mangle(name));
+      }
+      if (scope_frame_find_const(*frame, name)) {
+        return resolved_value(ResolvedKind::UnitConst, prefix + mangle(name));
+      }
+      if (scope_frame_has_enum_member(*frame, name)) {
+        return resolved_value(ResolvedKind::EnumMember, prefix + mangle(name));
+      }
     }
-    if (scope_frame_find_var(*frame, name)) {
-      return resolved_value(ResolvedKind::UnitVar, prefix + mangle(name));
+    if (include_migration_types) {
+      if (const TypeSymbol* symbol =
+              scope_frame_find_type(*frame, pascal_key(name))) {
+        return ResolveResult::migration_type(symbol);
+      }
     }
-    if (scope_frame_find_const(*frame, name)) {
-      return resolved_value(ResolvedKind::UnitConst, prefix + mangle(name));
-    }
-    if (scope_frame_has_enum_member(*frame, name)) {
-      return resolved_value(ResolvedKind::EnumMember, prefix + mangle(name));
+  }
+
+  if (include_migration_types) {
+    if (const TypeSymbol* symbol = registry_.lookup_type_symbol_in_context(
+            pascal_key(name), nullptr)) {
+      return ResolveResult::migration_type(symbol);
     }
   }
 
@@ -313,6 +362,31 @@ ResolveResult EmitLookup::resolve_name(const std::string& name,
   // unit on every unit's uses-chain; reaching this branch therefore means
   // "lookup failed", not "implicit runtime builtin".
   return resolved_value(ResolvedKind::Unknown, mangle(name));
+}
+
+const TypeSymbol* EmitLookup::migration_type_symbol_for_expression(
+    const ast::Expr& expr) {
+  std::optional<std::string> path = type_path_from_expression(expr);
+  if (!path) return nullptr;
+
+  const size_t dot = path->find('.');
+  const std::string root = path->substr(0, dot);
+  ResolveResult root_result = resolve_name_impl(
+      root, QualifierKind::None, {}, /*include_migration_types=*/true);
+  if (dot == std::string::npos) {
+    return root_result.kind == ResolvedKind::MigrationType
+               ? root_result.migration_type_symbol
+               : nullptr;
+  }
+
+  // A lexical value blocks interpreting `name.member` as a qualified type
+  // path. An unresolved root may still be a Pascal unit qualifier.
+  if (root_result.kind != ResolvedKind::Unknown &&
+      root_result.kind != ResolvedKind::MigrationType) {
+    return nullptr;
+  }
+  return registry_.lookup_type_symbol_in_context(pascal_key(*path),
+                                                  scope_.type_scope);
 }
 
 }  // namespace tp2cc

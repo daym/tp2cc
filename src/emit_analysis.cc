@@ -191,16 +191,11 @@ const TypeSymbol* EmitAnalysis::explicit_typecast_target_symbol(
   if (e.kind != Kind::Call) return nullptr;
   const auto& c = static_cast<const Call&>(e);
   if (c.args.size() != 1 || !c.callee) return nullptr;
-
-  if (std::optional<const TypeSymbol*> type_callee =
-          registry_.type_name_expression_result(c.callee.get())) {
-    const TypeSymbol* symbol = *type_callee;
-    return symbol && symbol->descriptor && symbol->descriptor->symbol
-               ? symbol->descriptor->symbol
-               : symbol;
-  }
-
-  return nullptr;
+  const TypeSymbol* symbol =
+      migration_type_symbol_for_expression(*c.callee);
+  return symbol && symbol->descriptor && symbol->descriptor->symbol
+             ? symbol->descriptor->symbol
+             : symbol;
 }
 
 const TypeExpr* EmitAnalysis::explicit_typecast_result_type(const Expr& e) {
@@ -208,12 +203,10 @@ const TypeExpr* EmitAnalysis::explicit_typecast_result_type(const Expr& e) {
   const auto& c = static_cast<const Call&>(e);
   if (c.args.size() != 1 || !c.callee) return nullptr;
 
-  if (std::optional<const TypeSymbol*> type_callee =
-          registry_.type_name_expression_result(c.callee.get())) {
-    const TypeSymbol* symbol = *type_callee;
-    if (!symbol) return nullptr;
+  if (const TypeSymbol* symbol =
+          migration_type_symbol_for_expression(*c.callee)) {
     // Metaclass descriptors are target-keyed and deliberately own no syntax
-    // node. The parser-selected declaration still carries the bound TyMetaclass
+    // node. The selected declaration still carries the bound TyMetaclass
     // expression needed by expression typing. Ordinary aliases likewise keep
     // their bound TyName here while sharing the target descriptor.
     if (symbol->type) return symbol->type;
@@ -221,6 +214,11 @@ const TypeExpr* EmitAnalysis::explicit_typecast_result_type(const Expr& e) {
   }
 
   return nullptr;
+}
+
+const TypeSymbol* EmitAnalysis::migration_type_symbol_for_expression(
+    const Expr& e) {
+  return resolve_name_provider_.migration_type_symbol_for_expression(e);
 }
 
 const TypeSymbol* EmitAnalysis::metaclass_target_symbol(const TypeExpr* t) {
@@ -1122,16 +1120,14 @@ const TypeExpr* EmitAnalysis::const_intrinsic_type_arg(const Expr& arg) {
   // Constant intrinsics such as `Ord(High(T))` receive their type operand
   // through expression syntax. Resolve only the Pascal type forms accepted in
   // that context; ordinary value identifiers are folded elsewhere.
-  if (std::optional<const TypeSymbol*> type_operand =
-          registry_.type_name_expression_result(&arg)) {
-    return *type_operand && (*type_operand)->descriptor
-               ? (*type_operand)->descriptor->type
-               : nullptr;
+  if (const TypeSymbol* type_operand =
+          migration_type_symbol_for_expression(arg)) {
+    return type_operand->descriptor ? type_operand->descriptor->type : nullptr;
   }
   if (arg.kind == Kind::Member) {
     const auto& m = static_cast<const Member&>(arg);
     if (const TypeSymbol* record_symbol =
-            class_or_record_type_value_symbol(*m.base)) {
+            migration_class_or_record_type_value_symbol(*m.base)) {
       // `low(T.field)` and `high(T.field)` ask for the declared field type of
       // a resolved record type. The base type identity is already bound; only the
       // member selection happens here because fields are not independent type
@@ -2807,7 +2803,7 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
           class_symbol = scope_.current_class_symbol;
         }
         else if (const TypeSymbol* symbol =
-                     class_or_record_type_value_symbol(*m.base)) {
+                     migration_class_or_record_type_value_symbol(*m.base)) {
           class_symbol = symbol;
         }
       }
@@ -2934,13 +2930,21 @@ const TypeExpr* EmitAnalysis::deduce_type(const Expr& e) {
         if (n == "ord" && c.args.size() == 1) {
           return ord_result_type_for_operand(*c.args[0]);
         }
+        if (n == "chr" && c.args.size() == 1) {
+          const TypeSymbol* result = registry_.builtin_literal("char");
+          return result && result->descriptor ? result->descriptor->type
+                                              : nullptr;
+        }
+        if (n == "sizeof" && c.args.size() == 1) {
+          const TypeSymbol* result = registry_.builtin_literal("longint");
+          return result && result->descriptor ? result->descriptor->type
+                                              : nullptr;
+        }
         if ((n == "low" || n == "high") && c.args.size() == 1) {
-          if (std::optional<const TypeSymbol*> type_operand =
-                  registry_.type_name_expression_result(c.args[0].get())) {
-            if (const TypeSymbol* symbol = *type_operand) {
-              return deduce_low_high_result_type(
-                  symbol->descriptor ? symbol->descriptor->type : nullptr);
-            }
+          if (const TypeSymbol* symbol =
+                  migration_type_symbol_for_expression(*c.args[0])) {
+            return deduce_low_high_result_type(
+                symbol->descriptor ? symbol->descriptor->type : nullptr);
           }
           return deduce_low_high_result_type(deduce_type(*c.args[0]));
         }
@@ -3033,35 +3037,24 @@ const TypeSymbol* EmitAnalysis::deduce_class_symbol(const Expr& e) {
   return nullptr;
 }
 
-const TypeSymbol* EmitAnalysis::class_or_record_type_value_symbol(
+const TypeSymbol*
+EmitAnalysis::migration_class_or_record_type_value_symbol(
     const Expr& e) {
-  if (e.kind == Kind::Ident) {
-    const auto& id = static_cast<const Ident&>(e);
-    if (identifier_is_shadowed_value(id.name)) return nullptr;
-  } else if (e.kind == Kind::Member) {
-    const auto& mem = static_cast<const Member&>(e);
-    if (!mem.base || mem.base->kind != Kind::Ident) return nullptr;
-    const auto& base = static_cast<const Ident&>(*mem.base);
-    if (identifier_is_shadowed_value(base.name)) return nullptr;
-  } else {
-    return nullptr;
-  }
-  if (std::optional<const TypeSymbol*> symbol =
-          registry_.value_type_expression_result(&e)) {
-    const TypeSymbol* payload =
-        *symbol && (*symbol)->descriptor && (*symbol)->descriptor->symbol
-            ? (*symbol)->descriptor->symbol
-            : *symbol;
-    if (payload && (payload->class_info() || payload->record_info())) {
-      return payload;
-    }
+  const TypeSymbol* symbol = migration_type_symbol_for_expression(e);
+  const TypeSymbol* payload =
+      symbol && symbol->descriptor && symbol->descriptor->symbol
+          ? symbol->descriptor->symbol
+          : symbol;
+  if (payload && (payload->class_info() || payload->record_info())) {
+    return payload;
   }
   return nullptr;
 }
 
 const TypeSymbol* EmitAnalysis::concrete_class_symbol_for_metaclass_value(
     const Expr& e) {
-  if (const TypeSymbol* symbol = class_or_record_type_value_symbol(e)) {
+  if (const TypeSymbol* symbol =
+          migration_class_or_record_type_value_symbol(e)) {
     const ClassInfo* ci = symbol->class_info();
     if (ci && ci->is_reference_type) return symbol;
   }
@@ -3214,12 +3207,10 @@ EmitAnalysis::resolve_unit_qualified_member(const ast::Member& mem) {
 std::optional<std::string>
 EmitAnalysis::intrinsic_call_name(const Expr& callee) {
   if (callee.kind == Kind::Ident) {
-    // Typecasts share call syntax with intrinsics. The parser/type registry
-    // has already bound a visible type callee, so it takes precedence over the
-    // implicit runtime callable with the same spelling.
-    if (std::optional<const TypeSymbol*> type =
-            registry_.type_name_expression_result(&callee);
-        type && *type) {
+    // Typecasts share call syntax with intrinsics. Ask the ordered migration
+    // resolver whether this spelling denotes a nearer Pascal type before
+    // accepting the implicit runtime callable.
+    if (migration_type_symbol_for_expression(callee)) {
       return std::nullopt;
     }
     const std::string& name = static_cast<const Ident&>(callee).name;
@@ -3332,6 +3323,18 @@ std::optional<ImplicitPropertyLookup> EmitAnalysis::find_implicit_class_property
                                   implicit_self_access(), false};
   }
   return std::nullopt;
+}
+
+bool EmitAnalysis::unqualified_special_form_is_shadowed(
+    const Expr& callee, std::string_view name) {
+  if (callee.kind != Kind::Ident ||
+      static_cast<const Ident&>(callee).name != name) {
+    return false;
+  }
+  ResolveResult resolved =
+      resolve_name_provider_.resolve_name(std::string(name));
+  return resolved.kind != ResolvedKind::Unknown &&
+         resolved.kind != ResolvedKind::RtBuiltin;
 }
 
 }  // namespace tp2cc

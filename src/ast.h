@@ -111,19 +111,15 @@ struct Node {
 struct Expr : Node {
   using Node::Node;
 
-  // Result identity fixed by semantic binding. This is populated whenever the
-  // result follows from syntax and already-bound operands (literals, casts,
-  // comparisons, and fixed-result intrinsics). Value-scope-dependent results
+  // Result identity fixed without value lookup. Value-scope-dependent results
   // remain null until that separate semantic migration.
   mutable const TypeDescriptor* result_descriptor = nullptr;
-  // Set only when this expression is used as a Pascal type operand, such as
-  // the target of a cast, SizeOf, `is`, or `as`.
+  // Set only where the grammar unambiguously requires a Pascal type, currently
+  // the right operand of `is` and `as`. Call-shaped forms such as `T(x)` and
+  // `High(T)` must first pass ordinary value shadowing and stay on the marked
+  // migration resolver until value binding moves out of emission.
   mutable bool type_operand_bound = false;
   mutable const TypeSymbol* type_operand_symbol = nullptr;
-  // A type name can also occur in value syntax, for example `TFoo.Create`.
-  // Keep that binding distinct from an actual type operand.
-  mutable bool type_value_bound = false;
-  mutable const TypeSymbol* type_value_symbol = nullptr;
 };
 struct Stmt : Node { using Node::Node; };
 struct Decl : Node {
