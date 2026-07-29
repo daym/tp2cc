@@ -1,0 +1,17 @@
+Author: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: 2026-07-29
+Subject: Count optcse references as pointer-sized integers
+License: expat
+
+`refs` is a TFPList only to reuse its indexed storage.  Its items are
+reference counts encoded in pointer-sized slots; they are never addresses
+and are never dereferenced.  Incrementing a Pointer therefore applies
+pointer arithmetic to integer data and misstates the operation.  Convert
+through PtrUInt so the count arithmetic is explicit and follows the target
+pointer width, then convert back for TFPList storage.
+
+--- a/compiler/optcse.pas
++++ b/compiler/optcse.pas
+@@ -177 +177 @@
+-                    plists(arg)^.refs[i]:=pointer(plists(arg)^.refs[i])+1;
++                    plists(arg)^.refs[i]:=pointer(ptruint(plists(arg)^.refs[i])+1);
