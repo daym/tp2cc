@@ -1904,12 +1904,12 @@ const BoundBinaryOperation* EmitAnalysis::bind_binary_operation(
       type_is_typed_pointer_arithmetic_operand(lhs_type);
   const bool rhs_pointer =
       type_is_typed_pointer_arithmetic_operand(rhs_type);
+  const bool lhs_nil = b.lhs->kind == Kind::NilLit;
+  const bool rhs_nil = b.rhs->kind == Kind::NilLit;
   const bool lhs_pointer_value =
-      b.lhs->kind == Kind::NilLit ||
       (lhs_source && lhs_source->metaclass_target) ||
       type_is_native_pointer_value(lhs_source_type);
   const bool rhs_pointer_value =
-      b.rhs->kind == Kind::NilLit ||
       (rhs_source && rhs_source->metaclass_target) ||
       type_is_native_pointer_value(rhs_source_type);
   const bool lhs_integer =
@@ -1942,7 +1942,8 @@ const BoundBinaryOperation* EmitAnalysis::bind_binary_operation(
   if ((b.op == BinOp::Eq || b.op == BinOp::NotEq ||
        b.op == BinOp::Lt || b.op == BinOp::Gt ||
        b.op == BinOp::LtEq || b.op == BinOp::GtEq) &&
-      lhs_pointer_value && rhs_pointer_value) {
+      ((lhs_pointer_value && (rhs_pointer_value || rhs_nil)) ||
+       (rhs_pointer_value && lhs_nil) || (lhs_nil && rhs_nil))) {
     const TypeDescriptor* common = common_pointer_comparison_type(
         lhs_source_type, lhs_source, rhs_source_type, rhs_source);
     const TypeSymbol* boolean = registry_.builtin_literal("boolean");
@@ -1989,8 +1990,11 @@ const BoundBinaryOperation* EmitAnalysis::bind_binary_operation(
     return bind_pointer_operation(BoundBinaryKind::PointerDifference,
                                   common_pointer, common_pointer, ptrint);
   }
-  if ((lhs_pointer_value || rhs_pointer_value) &&
-      (b.op == BinOp::Add || b.op == BinOp::Sub)) {
+  if ((b.op == BinOp::Add || b.op == BinOp::Sub) &&
+      ((lhs_pointer_value &&
+        (rhs_pointer_value || rhs_integer || rhs_nil)) ||
+       (rhs_pointer_value &&
+        (lhs_pointer_value || lhs_integer || lhs_nil)))) {
     return bind_pointer_operation(BoundBinaryKind::InvalidPointer,
                                   lhs_source, rhs_source, nullptr);
   }

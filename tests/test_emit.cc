@@ -5894,6 +5894,46 @@ void test_nil_pointer_comparisons_use_untyped_pointer_identity() {
       "p_b = !::std::less<void*>{}(nullptr, nullptr);"));
 }
 
+void test_nil_comparisons_preserve_nonpointer_nullable_types() {
+  const int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type tcallback = procedure of object;\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "var callback : tcallback;\n"
+      "    values : array of byte;\n"
+      "    b : boolean;\n"
+      "begin\n"
+      "  b := callback <> nil;\n"
+      "  b := values <> nil;\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  // Method-procedure values and dynamic arrays have their own nullable
+  // carriers. The native-pointer binder must leave those comparisons intact.
+  CHECK(contains(out.impl, "p_b = (p_callback != nullptr);"));
+  CHECK(contains(out.impl, "p_b = (p_values != nullptr);"));
+}
+
+void test_pchar_string_concatenation_is_not_pointer_arithmetic() {
+  const int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "function join(const prefix : ansistring; suffix : pchar) : ansistring;\n"
+      "implementation\n"
+      "function join(const prefix : ansistring; suffix : pchar) : ansistring;\n"
+      "begin\n"
+      "  join := prefix + suffix + #0;\n"
+      "end;\n"
+      "end.\n");
+  CHECK_EQ(error_count(), before);
+  CHECK(contains(out.impl, "p_prefix + p_suffix"));
+}
+
 void test_tmethod_type_name_is_explicitly_qualified() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -17715,6 +17755,8 @@ int main() {
   RUN_TEST(test_string_comparison_uses_runtime_operator_resolution);
   RUN_TEST(test_pchar_comparison_stays_pointer_comparison);
   RUN_TEST(test_nil_pointer_comparisons_use_untyped_pointer_identity);
+  RUN_TEST(test_nil_comparisons_preserve_nonpointer_nullable_types);
+  RUN_TEST(test_pchar_string_concatenation_is_not_pointer_arithmetic);
   RUN_TEST(test_tmethod_type_name_is_explicitly_qualified);
   RUN_TEST(test_unknown_type_name_reports_error_instead_of_emitting_fallback);
   RUN_TEST(test_local_enum_members_do_not_fall_back_to_runtime);
