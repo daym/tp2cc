@@ -47,6 +47,10 @@ struct UnitGraph::ParseState {
     std::filesystem::path path;
     std::string name;
     bool is_program = false;
+    // Interface parsing, deferred implementation parsing, and semantic
+    // callbacks all contribute to one compilation result. Once any phase
+    // fails, a later non-null AST must not make the unit successful again.
+    bool had_error = false;
     Phase phase = Phase::ParsingInterface;
     std::unique_ptr<Lexer> lexer;
     std::unique_ptr<Actions> actions;
@@ -90,6 +94,10 @@ void UnitGraph::ParseState::Actions::import_units(
       if (existing->second->phase == Phase::ParsingInterface) {
         report_error({}, "interface uses cycle involving `" + session.name +
                              "` and `" + unit + "`");
+        session.had_error = true;
+      } else if (existing->second->had_error ||
+                 existing->second->phase == Phase::Failed) {
+        session.had_error = true;
       }
       continue;
     }
@@ -97,9 +105,12 @@ void UnitGraph::ParseState::Actions::import_units(
     if (dependency.empty()) {
       report_error({}, "unresolved unit `" + unit + "` used by `" +
                            session.name + "`");
+      session.had_error = true;
       continue;
     }
-    graph.parse_recursive(dependency);
+    if (graph.parse_recursive(dependency) != 0) {
+      session.had_error = true;
+    }
   }
   graph.parse_state_->registry.set_parsed_unit_imports(
       session.name, imports, in_interface);
@@ -211,7 +222,10 @@ int UnitGraph::parse_recursive(const fs::path& path) {
       report_error({}, "interface uses cycle at `" + path.string() + "`");
       return 1;
     }
-    return 0;
+    return existing->second->had_error ||
+                   existing->second->phase == ParseState::Phase::Failed
+               ? 1
+               : 0;
   }
 
   auto sf = SourceFile::load(path);
@@ -242,6 +256,7 @@ int UnitGraph::parse_recursive(const fs::path& path) {
                          : ParseState::Phase::Failed;
   }
   int errs = error_count() - errs_before;
+  active->had_error = active->had_error || errs != 0;
 
   std::string unit_name = node ? to_lower(node->name) : std::string{};
   if (unit_name.empty()) {
@@ -250,7 +265,7 @@ int UnitGraph::parse_recursive(const fs::path& path) {
   active->name = unit_name;
   active->ast = node;
   const bool parsed_ok =
-      errs == 0 && node != nullptr &&
+      !active->had_error && node != nullptr &&
       active->phase == ParseState::Phase::Complete;
   ParsedUnit pu{.name = std::move(unit_name),
                 .path = path,
@@ -287,15 +302,19 @@ int UnitGraph::parse_pending_implementations() {
       }
     }
     if (!pending) break;
+    const int unit_errors_before = error_count();
     std::shared_ptr<ast::UnitNode> node =
         pending->parser->parse_unit_implementation();
+    pending->had_error =
+        pending->had_error || error_count() != unit_errors_before;
     pending->ast = node;
     pending->phase = node ? ParseState::Phase::Complete
                           : ParseState::Phase::Failed;
     auto found = units_.find(pending->name);
     if (found != units_.end()) {
       found->second.ast = node;
-      found->second.ok = node != nullptr;
+      found->second.ok = pending->phase == ParseState::Phase::Complete &&
+                         node != nullptr && !pending->had_error;
     }
   }
   return error_count() - errors_before;
@@ -311,9 +330,30 @@ int UnitGraph::discover_from_entry(fs::path entry_path) {
   entry_dir_ = entry_path.parent_path();
   int errors = parse_recursive(entry_path);
   errors += parse_pending_implementations();
-  for (auto& [_, unit] : units_) {
-    unit.ok = unit.ast != nullptr;
-  }
+
+  // Implementations are intentionally parsed after every reachable
+  // interface, so an implementation failure can be discovered after its
+  // importers were parsed. Propagate dependency failure only after both
+  // phases are complete; unrelated units remain usable by emit-all.
+  bool changed;
+  do {
+    changed = false;
+    for (auto& [_, unit] : units_) {
+      if (!unit.ok || !unit.ast) continue;
+      auto dependency_failed = [&](const std::vector<std::string>& uses) {
+        for (const std::string& dependency : uses) {
+          auto found = units_.find(to_lower(dependency));
+          if (found != units_.end() && !found->second.ok) return true;
+        }
+        return false;
+      };
+      if (dependency_failed(unit.ast->interface_uses) ||
+          dependency_failed(unit.ast->impl_uses)) {
+        unit.ok = false;
+        changed = true;
+      }
+    }
+  } while (changed);
   return errors;
 }
 

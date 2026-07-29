@@ -466,7 +466,7 @@ int cmd_emit_all(const CliOptions& opts, const std::string& input_path,
   std::printf("emit-all: %d emitted, %d failed (of %zu units), "
               "%zu runtime unit shims\n",
               emitted, failed, g.units().size(), rtl_refs.size());
-  return failed == 0 ? 0 : 1;
+  return failed == 0 && derr == 0 ? 0 : 1;
 }
 
 int cmd_emit(const CliOptions& opts, const std::string& path,

@@ -405,6 +405,96 @@ void test_parser_driven_type_binding_rejects_ordinary_later_type() {
   graph.add_search_root(d);
   CHECK(graph.discover_from_entry(program) > 0);
   CHECK(error_count() > errors_before);
+  const ParsedUnit* main = graph.lookup("main");
+  CHECK(main != nullptr);
+  if (main) CHECK(!main->ok);
+  fs::remove_all(d);
+}
+
+void test_implementation_binding_error_keeps_unit_failed() {
+  auto d = make_tmpdir("implementation-binding-error");
+  auto program = d / "main.pas";
+  write_file(
+      program,
+      "unit main;\n"
+      "interface\n"
+      "implementation\n"
+      "type\n"
+      "  tbad = tmissing;\n"
+      "end.\n");
+
+  const int errors_before = error_count();
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK(graph.discover_from_entry(program) > 0);
+  CHECK(error_count() > errors_before);
+  const ParsedUnit* main = graph.lookup("main");
+  CHECK(main != nullptr);
+  if (main) CHECK(!main->ok);
+  fs::remove_all(d);
+}
+
+void test_failed_interface_dependency_keeps_importer_failed() {
+  auto d = make_tmpdir("failed-interface-dependency");
+  write_file(
+      d / "broken.pas",
+      "unit broken;\n"
+      "interface\n"
+      "type tbad = tmissing;\n"
+      "implementation\n"
+      "end.\n");
+  auto program = write_program(d, "main", "broken");
+
+  const int errors_before = error_count();
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK(graph.discover_from_entry(program) > 0);
+  CHECK(error_count() > errors_before);
+  const ParsedUnit* broken = graph.lookup("broken");
+  const ParsedUnit* main = graph.lookup("main");
+  CHECK(broken != nullptr);
+  CHECK(main != nullptr);
+  if (broken) CHECK(!broken->ok);
+  if (main) CHECK(!main->ok);
+  fs::remove_all(d);
+}
+
+void test_failed_dependency_implementation_propagates_after_parsing() {
+  auto d = make_tmpdir("failed-dependency-implementation");
+  write_file(
+      d / "broken.pas",
+      "unit broken;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "procedure run;\n"
+      "type tbad = tmissing;\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+  write_unit(d, "good", "");
+  auto program = d / "main.pas";
+  write_file(
+      program,
+      "program main;\n"
+      "uses broken, good;\n"
+      "begin\n"
+      "end.\n");
+
+  const int errors_before = error_count();
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK(graph.discover_from_entry(program) > 0);
+  CHECK(error_count() > errors_before);
+  const ParsedUnit* broken = graph.lookup("broken");
+  const ParsedUnit* good = graph.lookup("good");
+  const ParsedUnit* main = graph.lookup("main");
+  CHECK(broken != nullptr);
+  CHECK(good != nullptr);
+  CHECK(main != nullptr);
+  if (broken) CHECK(!broken->ok);
+  if (good) CHECK(good->ok);
+  if (main) CHECK(!main->ok);
   fs::remove_all(d);
 }
 
@@ -674,6 +764,9 @@ int main() {
   RUN_TEST(test_parser_driven_type_binding_across_units_and_forwards);
   RUN_TEST(test_parser_driven_imported_class_parent_and_alias);
   RUN_TEST(test_parser_driven_type_binding_rejects_ordinary_later_type);
+  RUN_TEST(test_implementation_binding_error_keeps_unit_failed);
+  RUN_TEST(test_failed_interface_dependency_keeps_importer_failed);
+  RUN_TEST(test_failed_dependency_implementation_propagates_after_parsing);
   RUN_TEST(test_parser_driven_type_binding_allows_class_self_reference);
   RUN_TEST(test_parser_driven_type_binding_completes_explicit_class_forward);
   RUN_TEST(test_parser_driven_local_types_remain_in_procedure_scope);
