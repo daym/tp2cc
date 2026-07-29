@@ -1194,7 +1194,7 @@ void test_inherited_class_field_and_property_match_var_const_formals() {
   CHECK(!contains(out.impl, "error: no matching call"));
 }
 
-void test_unsupported_fixed_array_index_reports_error_and_stays_array_typed() {
+void test_unsupported_fixed_array_index_reports_error_without_fake_type() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
       "unit u;\n"
@@ -1204,8 +1204,8 @@ void test_unsupported_fixed_array_index_reports_error_and_stays_array_typed() {
       "implementation\n"
       "end.\n");
   CHECK(error_count() > before);
-  CHECK(contains(out.header,
-                 "using t_tmap = ::rt::tp2cc_Array<uint8_t, 0, 1>;"));
+  CHECK(!contains(out.header,
+                  "using t_tmap = ::rt::tp2cc_Array<uint8_t, 0, 1>;"));
   CHECK(!contains(out.header, "using t_tmap = uint8_t*;"));
 }
 
@@ -17410,7 +17410,7 @@ int main() {
   RUN_TEST(test_imported_object_property_matches_const_formal_type_symbol);
   RUN_TEST(test_inherited_class_field_and_property_match_var_const_formals);
   RUN_TEST(test_class_set_field_assignment_uses_declared_field_type);
-  RUN_TEST(test_unsupported_fixed_array_index_reports_error_and_stays_array_typed);
+  RUN_TEST(test_unsupported_fixed_array_index_reports_error_without_fake_type);
   RUN_TEST(test_low_high_use_resolved_pascal_type);
   RUN_TEST(test_low_high_on_record_field_type_uses_declared_field_type);
   RUN_TEST(test_low_high_on_set_type_uses_element_bounds);

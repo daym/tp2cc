@@ -214,6 +214,12 @@ EmitTypes::EmitTypes(const TypeRegistry& registry, ScopeStateView& scope,
       ordinal_ops_(ordinal_ops),
       diag_ops_(diag_ops) {}
 
+std::string EmitTypes::type_error_cxx(Location where,
+                                      std::string_view message) {
+  diag_ops_.report_error(where, std::string(message));
+  return "void";
+}
+
 std::string EmitTypes::type_name_to_cxx(const TyName& n) {
   auto emit_symbol_type = [&](const TypeSymbol* symbol) -> std::string {
     if (!symbol) return {};
@@ -361,7 +367,8 @@ std::string EmitTypes::enum_member_value_to_cxx(const TyEnum& e, size_t index) {
 
 std::string EmitTypes::enum_underlying_type_to_cxx(const TyEnum& e) {
   const PrimitiveInfo* storage = analysis_.ordinal_storage_primitive(&e);
-  return storage && storage->cxx ? storage->cxx : "int32_t";
+  if (storage && storage->cxx) return storage->cxx;
+  return type_error_cxx(e.loc, "enum has no resolved storage type");
 }
 
 std::optional<ArrayDimBounds> EmitTypes::array_dim_bounds_to_cxx(
@@ -490,71 +497,24 @@ const TypeExpr* EmitTypes::subrange_bound_canonical_type(const Expr* e) {
   return t ? analysis_.semantic_shape_type(t) : nullptr;
 }
 
-std::string EmitTypes::visible_enum_type_for_member(std::string_view name) {
-  if (const EnumInfoReg* info = local_enum_info_for_member(scope_, name)) {
-    return info->cxx_name;
-  }
-  assert(pascal_key_is_canonical(name));
-  const std::string member(name);
-  const auto* info = analysis_.find_visible_enum_info_for_member(member);
-  if (!info) return {};
-  std::string prefix;
-  if (should_qualify_unit(info->defining_unit)) {
-    prefix = unit_namespace_prefix(info->defining_unit);
-  }
-  return prefix + info->cxx_name;
-}
-
-std::string EmitTypes::visible_enum_type_for_type_symbol(
-    const TypeSymbol* symbol) {
-  const TypeSymbol* canonical =
-      symbol && symbol->descriptor && symbol->descriptor->symbol
-          ? symbol->descriptor->symbol
-          : symbol;
-  if (!canonical || !canonical->enum_info()) return {};
-  return type_symbol_to_cxx(symbol);
-}
-
 std::string EmitTypes::subrange_bound_enum_cxx_type(const Expr* e) {
   if (!e) return {};
-  if (e->kind == Kind::Ident) {
-    return visible_enum_type_for_member(static_cast<const Ident&>(*e).name);
-  }
-  if (e->kind == Kind::Member) {
-    const auto& mem = static_cast<const Member&>(*e);
-    if (auto unit_member = analysis_.resolve_unit_qualified_member(mem);
-        unit_member &&
-        unit_member->resolved.kind == ResolvedKind::EnumMember) {
-      if (const EnumInfoReg* info =
-              analysis_.find_enum_info_in_unit(unit_member->unit_name,
-                                               unit_member->member_name)) {
-        return unit_namespace_prefix(unit_member->unit_name) +
-               type_mangle(info->name);
-      }
-    }
+  // The existing value resolver has already selected the bound expression's
+  // Pascal type. Type emission must consume that descriptor instead of
+  // reinterpreting Low/High/Pred/Succ or enum-member source spellings.
+  const TypeExpr* bound_type = subrange_bound_source_type(*e);
+  const std::optional<OrdinalDomain> domain =
+      analysis_.ordinal_domain_for_type(bound_type);
+  if (!domain || domain->family != OrdinalFamily::Enum ||
+      !domain->enum_key || !domain->enum_key->type) {
     return {};
   }
-  if (e->kind == Kind::Call) {
-    const auto& call = static_cast<const Call&>(*e);
-    if (!call.callee || call.callee->kind != Kind::Ident ||
-        call.args.size() != 1 || !call.args[0]) {
-      return {};
-    }
-    const std::optional<std::string> intrinsic =
-        analysis_.intrinsic_call_name(*call.callee);
-    if (intrinsic && (*intrinsic == "low" || *intrinsic == "high")) {
-      if (const TypeSymbol* symbol =
-              analysis_.migration_type_symbol_for_expression(*call.args[0])) {
-        return visible_enum_type_for_type_symbol(symbol);
-      }
-      return {};
-    }
-    const std::string& callee = static_cast<const Ident&>(*call.callee).name;
-    if (callee == "pred" || callee == "succ") {
-      return subrange_bound_enum_cxx_type(call.args[0].get());
-    }
-  }
-  return {};
+  const TypeExpr* enum_type =
+      analysis_.semantic_shape_type(domain->enum_key->type);
+  if (!enum_type || enum_type->kind != Kind::TyEnum) return {};
+  return enum_carrier_type_to_cxx(
+             static_cast<const TyEnum&>(*enum_type))
+      .value_or(std::string{});
 }
 
 std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
@@ -591,7 +551,11 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
   // checks and set-literal conversion for imported aliases such as
   // `set of 0..MaxRegister`.
   auto domain = analysis_.ordinal_domain_for_type(&r);
-  if (!domain) return "int32_t";
+  if (!domain) {
+    const PrimitiveInfo* storage = analysis_.ordinal_storage_primitive(&r);
+    if (storage && storage->cxx) return storage->cxx;
+    return type_error_cxx(r.loc, "subrange has no resolved storage type");
+  }
 
   if (domain->family == OrdinalFamily::Boolean) {
     return primitive_cxx(PrimitiveKind::Boolean);
@@ -602,9 +566,12 @@ std::string EmitTypes::subrange_type_to_cxx(const TySubrange& r) {
   if (domain->family == OrdinalFamily::WideChar) {
     return primitive_cxx(PrimitiveKind::WideChar);
   }
-  if (domain->family != OrdinalFamily::Integer) return "int32_t";
+  if (domain->family != OrdinalFamily::Integer) {
+    return type_error_cxx(r.loc, "subrange has no resolved storage type");
+  }
   const PrimitiveInfo* storage = analysis_.ordinal_storage_primitive(&r);
-  return storage && storage->cxx ? storage->cxx : "int32_t";
+  if (storage && storage->cxx) return storage->cxx;
+  return type_error_cxx(r.loc, "subrange has no resolved storage type");
 }
 
 std::string EmitTypes::ordinal_storage_carrier_to_cxx(
@@ -695,6 +662,8 @@ std::string EmitTypes::pointer_type_to_cxx(const TyPointer& p) {
 }
 
 std::string EmitTypes::set_type_to_cxx(const TySet& s) {
+  if (!s.element)
+    return type_error_cxx(s.loc, "set has no resolved element type");
   return "::rt::tp2cc_Set<" + type_to_cxx(*s.element) + ">";
 }
 
@@ -715,7 +684,8 @@ std::optional<std::string> EmitTypes::enum_carrier_type_to_cxx(
 std::string EmitTypes::enum_type_to_cxx(const TyEnum& e,
                                         const std::string&) {
   if (auto carrier = enum_carrier_type_to_cxx(e)) return *carrier;
-  if (e.members.empty()) return "int32_t";
+  if (e.members.empty())
+    return type_error_cxx(e.loc, "enum has no resolved declaration");
   std::string out = "enum : ";
   out += enum_underlying_type_to_cxx(e);
   out += " { ";
@@ -742,9 +712,12 @@ std::vector<std::string> EmitTypes::enum_members_to_cxx(const TyEnum& e) {
 
 std::string EmitTypes::open_array_type_to_cxx(const TypeExpr& t) {
   const TypeExpr* canon = analysis_.semantic_shape_type(&t);
+  if (!canon || canon->kind != Kind::TyArray)
+    return type_error_cxx(t.loc, "open array has no resolved array type");
   const auto& a = static_cast<const TyArray&>(*canon);
-  return "::rt::tp2cc_OpenArray<" +
-         (a.element ? type_to_cxx(*a.element) : std::string("int32_t")) + ">";
+  if (!a.element)
+    return type_error_cxx(a.loc, "open array has no resolved element type");
+  return "::rt::tp2cc_OpenArray<" + type_to_cxx(*a.element) + ">";
 }
 
 std::string EmitTypes::array_type_to_cxx(const TyArray& a) {
@@ -752,20 +725,22 @@ std::string EmitTypes::array_type_to_cxx(const TyArray& a) {
     return open_array_type_to_cxx(a);
   }
   if (a.array_kind == ArrayKind::Dynamic) {
+    if (!a.element)
+      return type_error_cxx(a.loc,
+                            "dynamic array has no resolved element type");
     return "::rt::tp2cc_DynArray<" + type_to_cxx(*a.element) + ">";
   }
+  if (!a.element)
+    return type_error_cxx(a.loc, "fixed array has no resolved element type");
   // Fixed arrays preserve Pascal bounds at the type level by nesting
   // `tp2cc_Array<T, Lo, N>` wrappers from innermost to outermost.
   std::string ty = type_to_cxx(*a.element);
   for (auto it = a.dims.rbegin(); it != a.dims.rend(); ++it) {
     auto bounds = array_dim_bounds_to_cxx(**it);
     if (!bounds) {
-      // Keep unsupported fixed arrays as array wrappers so later emit paths do not
-      // silently change aliasing/value semantics to pointer semantics.
-      diag_ops_.report_error(
+      return type_error_cxx(
           a.loc,
           "unsupported fixed array index type; exact Pascal bounds are required");
-      return "::rt::tp2cc_Array<" + ty + ", 0, 1>";
     }
     ty = "::rt::tp2cc_Array<" + ty + ", " + bounds->low + ", " +
          bounds->size_expr + ">";
@@ -930,7 +905,7 @@ CxxRecordLayout EmitTypes::compute_record_layout(const TyRecord& tr) {
 
 EmitRecordFieldDecl EmitTypes::record_field_decl(const TypeExpr* type,
                                                  std::string_view name) {
-  std::string type_cxx = type ? type_to_cxx(*type) : std::string("int32_t");
+  std::string type_cxx = type ? type_to_cxx(*type) : std::string("void");
   std::string mangled_name =
       registry_.field_cxx_name(name);
   return EmitRecordFieldDecl(type, type_cxx, mangled_name,
@@ -951,13 +926,8 @@ std::vector<EmitRecordFieldDecl> EmitTypes::record_field_decls(
 std::string EmitTypes::named_type_to_cxx(const TypeExpr* t, std::string_view name,
                                          std::string_view name_prefix) {
   if (!t) {
-    if (name.empty()) {
-      return name_prefix.empty() ? std::string("int32_t")
-                                 : std::string("int32_t ") +
-                                       std::string(name_prefix);
-    }
-    return std::string("int32_t ") + std::string(name_prefix) +
-           std::string(name);
+    type_error_cxx({}, "declaration has no resolved Pascal type");
+    return attach_named_cxx_type("void", name, name_prefix);
   }
 
   // Direct procvar declarations need the identifier inside the `(*)`
@@ -981,6 +951,11 @@ std::string EmitTypes::named_type_to_cxx(const TypeExpr* t, std::string_view nam
 }
 
 std::string EmitTypes::type_to_cxx(const TypeExpr& t) {
+  // Build owns Pascal type binding. Choosing a convenient C++ carrier here
+  // would hide a missed binding and let an unrelated type reach generated
+  // output; report the invariant failure so the caller rejects this unit.
+  if (!registry_.descriptor_for_type(&t))
+    return type_error_cxx(t.loc, "unbound Pascal type reached type emission");
   switch (t.kind) {
     case Kind::TyName:
       return type_name_to_cxx(static_cast<const TyName&>(t));
@@ -1004,10 +979,9 @@ std::string EmitTypes::type_to_cxx(const TypeExpr& t) {
       if (const TypeSymbol* target = registry_.metaclass_target_for_type(&t)) {
         return metaclass_struct_cxx(*target) + "*";
       }
-      diag_ops_.report_error(
+      return type_error_cxx(
           t.loc, "unresolved metaclass target `" +
                      static_cast<const TyMetaclass&>(t).class_name + "`");
-      return "::rt::t_tclass";
     case Kind::TyFile: {
       const auto& tf = static_cast<const TyFile&>(t);
       if (tf.is_text || !tf.element) return "::rt::tp2cc_TextFile";
@@ -1017,15 +991,26 @@ std::string EmitTypes::type_to_cxx(const TypeExpr& t) {
       // Inline anonymous records are emitted as inline C++ anonymous structs.
       return compute_record_layout(static_cast<const TyRecord&>(t)).inline_text;
     }
-    case Kind::TyObject:
-      // Inline anonymous objects need base-class context the type-expression
-      // position cannot currently carry.
-      return "/* inline-object */ int32_t";
-    case Kind::TyInterface:
-      // Named interface declarations are emitted as pure virtual structs.
-      return "/* inline-interface */ void*";
+    case Kind::TyObject: {
+      const TypeDescriptor* descriptor = registry_.descriptor_for_type(&t);
+      if (descriptor && descriptor->symbol &&
+          descriptor->symbol->class_info()) {
+        return type_symbol_to_cxx(descriptor->symbol);
+      }
+      return type_error_cxx(t.loc,
+                            "anonymous object type cannot be emitted");
+    }
+    case Kind::TyInterface: {
+      const TypeDescriptor* descriptor = registry_.descriptor_for_type(&t);
+      if (descriptor && descriptor->symbol &&
+          descriptor->symbol->interface_info()) {
+        return type_symbol_to_cxx(descriptor->symbol);
+      }
+      return type_error_cxx(t.loc,
+                            "anonymous interface type cannot be emitted");
+    }
     default:
-      return "/* unsupported-type */ int32_t";
+      return type_error_cxx(t.loc, "unsupported Pascal type in emission");
   }
 }
 

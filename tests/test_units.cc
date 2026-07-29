@@ -434,6 +434,34 @@ void test_implementation_binding_error_keeps_unit_failed() {
   fs::remove_all(d);
 }
 
+void test_nested_unresolved_types_keep_unit_failed() {
+  auto d = make_tmpdir("nested-unresolved-types");
+  auto program = d / "main.pas";
+  write_file(
+      program,
+      "unit main;\n"
+      "interface\n"
+      "type\n"
+      "  trecord = record field : tmissingfield; end;\n"
+      "  tarray = array[0..1] of tmissingelement;\n"
+      "procedure run(value : tmissingparam);\n"
+      "implementation\n"
+      "procedure run(value : tmissingparam);\n"
+      "begin\n"
+      "end;\n"
+      "end.\n");
+
+  const int errors_before = error_count();
+  UnitGraph graph;
+  graph.add_search_root(d);
+  CHECK(graph.discover_from_entry(program) > 0);
+  CHECK(error_count() >= errors_before + 3);
+  const ParsedUnit* main = graph.lookup("main");
+  CHECK(main != nullptr);
+  if (main) CHECK(!main->ok);
+  fs::remove_all(d);
+}
+
 void test_failed_interface_dependency_keeps_importer_failed() {
   auto d = make_tmpdir("failed-interface-dependency");
   write_file(
@@ -765,6 +793,7 @@ int main() {
   RUN_TEST(test_parser_driven_imported_class_parent_and_alias);
   RUN_TEST(test_parser_driven_type_binding_rejects_ordinary_later_type);
   RUN_TEST(test_implementation_binding_error_keeps_unit_failed);
+  RUN_TEST(test_nested_unresolved_types_keep_unit_failed);
   RUN_TEST(test_failed_interface_dependency_keeps_importer_failed);
   RUN_TEST(test_failed_dependency_implementation_propagates_after_parsing);
   RUN_TEST(test_parser_driven_type_binding_allows_class_self_reference);

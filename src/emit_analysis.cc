@@ -1867,7 +1867,23 @@ const PrimitiveInfo* EmitAnalysis::ordinal_storage_primitive(
   const TypeExpr* shape = semantic_shape_type(type);
   const std::optional<OrdinalDomain> domain =
       ordinal_domain_for_type(type);
-  if (!domain) return nullptr;
+  if (!domain) {
+    if (!shape || shape->kind != Kind::TySubrange) return nullptr;
+    const auto& subrange = static_cast<const TySubrange&>(*shape);
+    if (!subrange.lo || !subrange.hi) return nullptr;
+    const PrimitiveInfo* low = primitive_info_for_type(
+        canonicalize_for_arithmetic(deduce_type(*subrange.lo)));
+    const PrimitiveInfo* high = primitive_info_for_type(
+        canonicalize_for_arithmetic(deduce_type(*subrange.hi)));
+    if (!low || !high || low->family != PrimitiveFamily::Integer ||
+        high->family != PrimitiveFamily::Integer ||
+        low->int_kind == PrimitiveIntKind::None ||
+        high->int_kind == PrimitiveIntKind::None) return nullptr;
+    // Required-constant bounds can remain symbolic until generated C++
+    // evaluates them. Their resolved Pascal expression types still select the
+    // common carrier; type emission must not invent one.
+    return integer_arithmetic_primitive(BinOp::Add, *low, *high);
+  }
   if (domain->family == OrdinalFamily::Enum) {
     const TypeExpr* enum_type =
         domain->enum_key ? semantic_shape_type(domain->enum_key->type) : shape;

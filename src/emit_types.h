@@ -168,6 +168,7 @@ class EmitTypes {
   EmitTypeOrdinalOps& ordinal_ops_;
   EmitTypeDiagOps& diag_ops_;
 
+  std::string type_error_cxx(Location where, std::string_view message);
   std::string active_emission_unit_name() const;
   bool should_qualify_unit(std::string_view defining_unit) const;
   std::string metaclass_symbol_cxx(const TypeSymbol& symbol,
@@ -177,8 +178,6 @@ class EmitTypes {
   std::string array_bound_ordinal_to_cxx(const ast::Expr& e);
   const ast::TypeExpr* subrange_bound_source_type(const ast::Expr& e);
   const ast::TypeExpr* subrange_bound_canonical_type(const ast::Expr* e);
-  std::string visible_enum_type_for_member(std::string_view name);
-  std::string visible_enum_type_for_type_symbol(const TypeSymbol* symbol);
   std::string subrange_bound_enum_cxx_type(const ast::Expr* e);
   std::string enum_bound_cxx_name(std::string_view enum_name,
                                   std::string_view defining_unit,
