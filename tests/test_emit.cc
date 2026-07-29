@@ -3888,6 +3888,30 @@ void test_collection_accepts_opaque_integer_pointer_token() {
   }
 }
 
+void test_opaque_pointer_token_arithmetic_is_explicitly_integer_typed() {
+  const std::string source =
+      "unit u;\n"
+      "interface\n"
+      "function nexttoken(value : pointer) : pointer;\n"
+      "implementation\n"
+      "function nexttoken(value : pointer) : pointer;\n"
+      "begin\n"
+      "  nexttoken := pointer(ptruint(value) + 1);\n"
+      "end;\n"
+      "end.\n";
+  for (uint8_t pointer_bits : {uint8_t{32}, uint8_t{64}}) {
+    const int before = error_count();
+    auto out = compile_snippet_for_target(
+        source, TargetInfo{.pointer_bits = pointer_bits});
+    CHECK_EQ(error_count(), before);
+    // The source explicitly chooses pointer-sized integer arithmetic. The
+    // compiler therefore performs two conversions, not pointer arithmetic.
+    CHECK(contains(out.impl, "reinterpret_cast<void*>("));
+    CHECK(contains(out.impl, "reinterpret_cast<::rt::t_ptruint>(p_value)"));
+    CHECK(!contains(out.impl, "tp2cc_pointer_"));
+  }
+}
+
 void test_implicit_const_expr_wraps_without_emit_error() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -17675,6 +17699,7 @@ int main() {
   RUN_TEST(test_typed_pointer_binary_arithmetic_uses_native_operations);
   RUN_TEST(test_untyped_pointer_arithmetic_is_rejected);
   RUN_TEST(test_collection_accepts_opaque_integer_pointer_token);
+  RUN_TEST(test_opaque_pointer_token_arithmetic_is_explicitly_integer_typed);
   RUN_TEST(test_implicit_const_expr_wraps_without_emit_error);
   RUN_TEST(test_explicit_integer_cast_const_expr_wraps_without_error);
   RUN_TEST(test_untyped_integer_const_uses_pascal_initial_type);
