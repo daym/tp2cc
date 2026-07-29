@@ -222,6 +222,9 @@ enum class BoundBinaryKind : uint8_t {
   IntegerBitwise,
   IntegerCompare,
   IntegerShift,
+  PointerAdd,
+  PointerSubtract,
+  PointerDifference,
   SetUnion,
   SetDifference,
   SetIntersection,
@@ -239,6 +242,7 @@ struct BoundBinaryOperation {
   const TypeDescriptor* lhs = nullptr;
   const TypeDescriptor* rhs = nullptr;
   const TypeDescriptor* result = nullptr;
+  bool pointer_on_lhs = true;
   bool check_overflow = false;
   bool has_constant_boolean = false;
   bool constant_boolean = false;

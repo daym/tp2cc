@@ -1465,6 +1465,44 @@ std::string Emitter::expr_to_cxx(const Expr& e) {
                bound_operand(*n.rhs, *n.lhs, bound->rhs_source,
                              bound->rhs) + ")";
       }
+      auto pointer_offset_to_cxx =
+          [&](const char* helper, bool pointer_on_left) {
+        const TypeDescriptor* pointer_descriptor =
+            pointer_on_left ? bound->lhs : bound->rhs;
+        const TypeDescriptor* delta_descriptor =
+            pointer_on_left ? bound->rhs : bound->lhs;
+        const Expr& pointer_operand = pointer_on_left ? *n.lhs : *n.rhs;
+        const Expr& delta_operand = pointer_on_left ? *n.rhs : *n.lhs;
+        const TypeDescriptor* pointer_source =
+            pointer_on_left ? bound->lhs_source : bound->rhs_source;
+        const TypeDescriptor* delta_source =
+            pointer_on_left ? bound->rhs_source : bound->lhs_source;
+        return "::rt::" + std::string(helper) + "<" +
+               bound_type_cxx(pointer_descriptor) + ", " +
+               bound_type_cxx(delta_descriptor) + ">(" +
+               bound_operand(pointer_operand, delta_operand, pointer_source,
+                             pointer_descriptor) +
+               ", " +
+               bound_operand(delta_operand, pointer_operand, delta_source,
+                             delta_descriptor) +
+               ")";
+      };
+      if (bound && bound->kind == BoundBinaryKind::PointerAdd) {
+        return pointer_offset_to_cxx("tp2cc_pointer_add",
+                                     bound->pointer_on_lhs);
+      }
+      if (bound && bound->kind == BoundBinaryKind::PointerSubtract) {
+        return pointer_offset_to_cxx("tp2cc_pointer_sub", true);
+      }
+      if (bound && bound->kind == BoundBinaryKind::PointerDifference) {
+        return "::rt::tp2cc_pointer_difference<" +
+               bound_type_cxx(bound->result) + ", " +
+               bound_type_cxx(bound->lhs) + ">(" +
+               bound_operand(*n.lhs, *n.rhs, bound->lhs_source, bound->lhs) +
+               ", " +
+               bound_operand(*n.rhs, *n.lhs, bound->rhs_source, bound->rhs) +
+               ")";
+      }
       // Keep the shift/rotate vocabulary precise here:
       // - shl: shift left, zeros come in on the right, high bits are discarded
       // - shr: logical shift right, zeros come in on the left, low bits are discarded

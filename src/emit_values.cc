@@ -312,24 +312,36 @@ std::optional<std::string> EmitValues::maybe_lower_target_pointer_arithmetic(
   const bool rhs_ptr = storage_.type_is_pointerish(rhs_type);
   const bool lhs_int = type_is_integer_primitive(lhs_type);
   const bool rhs_int = type_is_integer_primitive(rhs_type);
-  const char* op = b.op == BinOp::Add ? " + " : " - ";
 
-  // Pointer arithmetic is a target-typed value context for its pointer
-  // operand: `pchar := @fixed_array + n` first adapts `@fixed_array` to
-  // `pchar`, then applies C++ pointer arithmetic to that element pointer.
-  // The actual pointer adaptation remains in coerce_pointer_like_text.
-  if (lhs_ptr && rhs_int) {
-    return "(" + const_value_to_cxx_impl(*b.lhs, target, explicit_conversion,
-                                         constant_initializer) +
-           op + expr_ops_.expr_to_cxx(*b.rhs) + ")";
+  const bool pointer_on_lhs = lhs_ptr && rhs_int;
+  if (!pointer_on_lhs &&
+      !(b.op == BinOp::Add && lhs_int && rhs_ptr)) {
+    return std::nullopt;
   }
-  if (b.op == BinOp::Add && lhs_int && rhs_ptr) {
-    return "(" + expr_ops_.expr_to_cxx(*b.lhs) + op +
-           const_value_to_cxx_impl(*b.rhs, target, explicit_conversion,
-                                   constant_initializer) +
-           ")";
-  }
-  return std::nullopt;
+  const Expr& pointer_expr = pointer_on_lhs ? *b.lhs : *b.rhs;
+  const Expr& delta_expr = pointer_on_lhs ? *b.rhs : *b.lhs;
+  // Under {$T-}, `@fixed_array + n` first adapts the untyped address to the
+  // target pointer and therefore uses the target pointee size. Other pointer
+  // arithmetic already has a bound source operation and must not be lowered
+  // again in this target-conversion path.
+  if (pointer_expr.kind != Kind::AddrOf) return std::nullopt;
+  const TypeDescriptor* pointer_descriptor =
+      registry_.descriptor_for_type(canon_target);
+  const TypeDescriptor* ptrint =
+      pointer_descriptor ? pointer_descriptor->pointer_difference_result
+                         : nullptr;
+  if (!ptrint || !ptrint->type) return std::nullopt;
+  const std::string pointer = const_value_to_cxx_impl(
+      pointer_expr, target, explicit_conversion, constant_initializer);
+  const std::string delta = const_value_to_cxx_impl(
+      delta_expr, ptrint->type, /*explicit_conversion=*/false,
+      constant_initializer);
+  const char* helper =
+      b.op == BinOp::Sub ? "tp2cc_pointer_sub" : "tp2cc_pointer_add";
+  return "::rt::" + std::string(helper) + "<" +
+         types_.type_to_cxx(*canon_target) + ", " +
+         types_.type_to_cxx(*ptrint->type) + ">(" + pointer + ", " + delta +
+         ")";
 }
 
 bool EmitValues::can_lower_target_pointer_arithmetic(

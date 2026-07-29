@@ -1642,6 +1642,62 @@ const BoundBinaryOperation* EmitAnalysis::bind_binary_operation(
       canonicalize_for_arithmetic(rhs_source_type);
   const PrimitiveInfo* lhs = primitive_info_for_type(lhs_type);
   const PrimitiveInfo* rhs = primitive_info_for_type(rhs_type);
+  // Pascal pointer arithmetic operates on address values and scales typed
+  // pointers by their pointee size. Bind it before integer arithmetic so the
+  // emitter never delegates these semantics to C++ pointer operators.
+  const bool lhs_pointer = lhs_type && lhs_type->kind == Kind::TyPointer;
+  const bool rhs_pointer = rhs_type && rhs_type->kind == Kind::TyPointer;
+  const bool lhs_integer =
+      lhs && lhs->family == PrimitiveFamily::Integer &&
+      lhs->int_kind != PrimitiveIntKind::None;
+  const bool rhs_integer =
+      rhs && rhs->family == PrimitiveFamily::Integer &&
+      rhs->int_kind != PrimitiveIntKind::None;
+  const TypeDescriptor* pointer = lhs_pointer ? lhs_source : rhs_source;
+  const TypeDescriptor* ptrint =
+      pointer ? pointer->pointer_difference_result : nullptr;
+  auto bind_pointer_operation =
+      [&](BoundBinaryKind kind, const TypeDescriptor* lhs_conversion,
+          const TypeDescriptor* rhs_conversion,
+          const TypeDescriptor* result,
+          bool pointer_on_lhs = true) -> const BoundBinaryOperation* {
+    b.bound_operation = BoundBinaryOperation{
+        .binding_complete = true,
+        .kind = kind,
+        .lhs_source = lhs_source,
+        .rhs_source = rhs_source,
+        .lhs = lhs_conversion,
+        .rhs = rhs_conversion,
+        .result = result,
+        .pointer_on_lhs = pointer_on_lhs,
+    };
+    b.result_descriptor = result;
+    return &b.bound_operation;
+  };
+  if (ptrint && b.op == BinOp::Add &&
+      ((lhs_pointer && rhs_integer) || (lhs_integer && rhs_pointer))) {
+    return bind_pointer_operation(
+        BoundBinaryKind::PointerAdd, lhs_pointer ? lhs_source : ptrint,
+        rhs_pointer ? rhs_source : ptrint, pointer, lhs_pointer);
+  }
+  if (ptrint && b.op == BinOp::Sub && lhs_pointer && rhs_integer) {
+    return bind_pointer_operation(BoundBinaryKind::PointerSubtract, lhs_source,
+                                  ptrint, lhs_source);
+  }
+  if (ptrint && b.op == BinOp::Sub && lhs_pointer && rhs_pointer) {
+    const auto& lhs_pointer_type = static_cast<const TyPointer&>(*lhs_type);
+    const auto& rhs_pointer_type = static_cast<const TyPointer&>(*rhs_type);
+    const TypeDescriptor* common_pointer = lhs_source;
+    if (!lhs_pointer_type.target) {
+      common_pointer = rhs_source;
+    } else if (rhs_pointer_type.target &&
+               !registry_.bound_signature_type_exprs_match(
+                   lhs_type, rhs_type)) {
+      return nullptr;
+    }
+    return bind_pointer_operation(BoundBinaryKind::PointerDifference,
+                                  common_pointer, common_pointer, ptrint);
+  }
   if (!lhs || !rhs || lhs->int_kind == PrimitiveIntKind::None ||
       rhs->int_kind == PrimitiveIntKind::None) {
     return nullptr;

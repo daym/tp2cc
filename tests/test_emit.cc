@@ -2781,13 +2781,17 @@ void test_ord_pchar_offset_deref_uses_char_byte_value() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_char_byte(::rt::tp2cc_deref((p_p + 1)))"));
+                 "::rt::tp2cc_char_byte(::rt::tp2cc_deref("
+                 "::rt::tp2cc_pointer_add<::rt::p_char*, ::rt::t_ptrint>("
+                 "p_p, static_cast<::rt::t_ptrint>(1))))"));
   CHECK(contains(out.impl,
-                 "::rt::tp2cc_char_byte(::rt::tp2cc_deref((p_p + 2)))"));
+                 "::rt::tp2cc_char_byte(::rt::tp2cc_deref("
+                 "::rt::tp2cc_pointer_add<::rt::p_char*, ::rt::t_ptrint>("
+                 "p_p, static_cast<::rt::t_ptrint>(2))))"));
   CHECK(contains(out.impl, "== 187"));
   CHECK(contains(out.impl, "== 191"));
-  CHECK(!contains(out.impl, "::rt::tp2cc_deref((p_p + 1)) == 187"));
-  CHECK(!contains(out.impl, "::rt::tp2cc_deref((p_p + 2)) == 191"));
+  CHECK(!contains(out.impl, "(p_p + 1)"));
+  CHECK(!contains(out.impl, "(p_p + 2)"));
   CHECK(!contains(out.impl, "::rt::p_ord("));
 }
 
@@ -3790,6 +3794,44 @@ void test_pointer_dec_keeps_unsigned_delta_before_subtraction() {
       "::rt::tp2cc_pointer_sub<::rt::p_char*, ::rt::t_ptruint>("
       "tp2cc_current, static_cast<::rt::t_ptruint>(p_n))"));
   CHECK(!contains(out.impl, "-(p_n)"));
+}
+
+void test_pointer_binary_arithmetic_uses_pascal_address_operations() {
+  auto out = compile_snippet_for_target(
+      "unit u;\n"
+      "interface\n"
+      "type pword = ^word;\n"
+      "function rawstep(p : pointer; n : ptrint) : ptruint;\n"
+      "function step(p : pword; n : ptrint) : pword;\n"
+      "function reverse(n : ptrint; p : pword) : pword;\n"
+      "function distance(a, b : pword) : ptrint;\n"
+      "implementation\n"
+      "function rawstep(p : pointer; n : ptrint) : ptruint;\n"
+      "begin rawstep := ptruint(p - n); end;\n"
+      "function step(p : pword; n : ptrint) : pword;\n"
+      "begin step := p - n; end;\n"
+      "function reverse(n : ptrint; p : pword) : pword;\n"
+      "begin reverse := n + p; end;\n"
+      "function distance(a, b : pword) : ptrint;\n"
+      "begin distance := a - b; end;\n"
+      "end.\n",
+      TargetInfo{.pointer_bits = 64});
+  CHECK(contains(
+      out.impl,
+      "::rt::tp2cc_pointer_sub<void*, ::rt::t_ptrint>(p_p, p_n)"));
+  CHECK(contains(
+      out.impl,
+      "::rt::tp2cc_pointer_sub<uint16_t*, ::rt::t_ptrint>(p_p, p_n)"));
+  CHECK(contains(
+      out.impl,
+      "::rt::tp2cc_pointer_add<uint16_t*, ::rt::t_ptrint>(p_p, p_n)"));
+  CHECK(contains(
+      out.impl,
+      "::rt::tp2cc_pointer_difference<::rt::t_ptrint, uint16_t*>(p_a, "
+      "p_b)"));
+  CHECK(!contains(out.impl, "(p_p - p_n)"));
+  CHECK(!contains(out.impl, "(p_n + p_p)"));
+  CHECK(!contains(out.impl, "(p_a - p_b)"));
 }
 
 void test_implicit_const_expr_wraps_without_emit_error() {
@@ -10117,9 +10159,18 @@ void test_addr_of_array_pointer_arithmetic_uses_element_pointer() {
       "end;\n"
       "end.\n");
   CHECK(contains(out.impl, "p_b = (p_pc > ((&p_buf))->data);"));
-  CHECK(contains(out.impl, "p_pc = (((&p_buf))->data + 1);"));
-  CHECK(contains(out.impl, "p_b = (p_pc > (((&p_buf))->data + p_n));"));
-  CHECK(contains(out.impl, "p_b = ((((&p_buf))->data + p_n) > p_pc);"));
+  CHECK(contains(
+      out.impl,
+      "p_pc = ::rt::tp2cc_pointer_add<::rt::p_char*, ::rt::t_ptrint>("
+      "((&p_buf))->data, ((::rt::t_ptrint)(1)));"));
+  CHECK(contains(
+      out.impl,
+      "p_b = (p_pc > ::rt::tp2cc_pointer_add<::rt::p_char*, "
+      "::rt::t_ptrint>(((&p_buf))->data, p_n));"));
+  CHECK(contains(
+      out.impl,
+      "p_b = (::rt::tp2cc_pointer_add<::rt::p_char*, ::rt::t_ptrint>("
+      "((&p_buf))->data, p_n) > p_pc);"));
   CHECK(contains(out.impl, "p_pa = (&p_buf);"));
   CHECK(!contains(out.impl, "(&p_buf) + p_n"));
   CHECK(!contains(out.impl, "((&p_buf) + p_n)"));
@@ -17422,6 +17473,7 @@ int main() {
   RUN_TEST(test_abs_sqr_bind_result_type_and_overflow_mode);
   RUN_TEST(test_ordinal_intrinsics_bind_storage_carrier_and_modes);
   RUN_TEST(test_pointer_dec_keeps_unsigned_delta_before_subtraction);
+  RUN_TEST(test_pointer_binary_arithmetic_uses_pascal_address_operations);
   RUN_TEST(test_implicit_const_expr_wraps_without_emit_error);
   RUN_TEST(test_explicit_integer_cast_const_expr_wraps_without_error);
   RUN_TEST(test_untyped_integer_const_uses_pascal_initial_type);
