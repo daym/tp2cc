@@ -3,19 +3,17 @@ Date: 2026-05-01
 Subject: Make compiler units use compiler-side cutils align helper
 License: expat
 
-Several compiler/backend units call bare integer `align(...)` while not
-importing `cutils`.  Native FPC still accepts those calls via implicit
-`System.align`, but the compiler sources are trying to stay isolated from
-RTL-specific helpers.  Most of the compiler already gets integer `align`
-from the compiler-side `cutils` unit instead.
+Several parameter managers align signed compiler-internal stack sizes
+without importing `cutils`.  Bare calls instead bind to
+`System.Align(PtrUInt, PtrUInt)`, which treats its operands as addresses.
+Import the compiler helper so these operations remain in their signed
+integer domain.
 
 Import `cutils` at the remaining call sites that use integer
 `align(...)`:
 
   compiler/avr/cpupara.pas
   compiler/m68k/cpupara.pas
-  compiler/machoutils.pas
-  compiler/ogmacho.pas
   compiler/powerpc/cpupara.pas
   compiler/powerpc64/cpupara.pas
 
@@ -46,36 +44,6 @@ left alone.
         defutil;
  
      procedure tm68kparamanager.getintparaloc(calloption : tproccalloption; nr : longint;var cgpara : TCGPara);
---- a/compiler/machoutils.pas
-+++ b/compiler/machoutils.pas
-@@ -28,6 +28,7 @@
- {$mode objfpc}{$h+}
- 
- uses
-+  cutils,
-   macho;
- 
-   type
-@@ -1463,4 +1464,3 @@
-     end;
- 
- end.
--
---- a/compiler/ogmacho.pas
-+++ b/compiler/ogmacho.pas
-@@ -27,6 +27,7 @@
- 
- uses
-   cclasses,
-+  cutils,
-   globals, globtype, verbose,
-   owbase, ogbase,
-   aasmbase, assemble,
-@@ -1220,4 +1221,3 @@
-   RegisterAssembler(as_i386_darwin_info,TMachoAssembler);
- 
- end.
--
 --- a/compiler/powerpc/cpupara.pas
 +++ b/compiler/powerpc/cpupara.pas
 @@ -54,6 +54,7 @@
