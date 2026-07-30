@@ -48,7 +48,8 @@ std::shared_ptr<UnitNode> parse_unit(std::string path, std::string text,
 
 EmittedUnit compile_snippet_with_registry(
     std::string text,
-    std::vector<std::pair<std::string, std::string>> extra_units = {}) {
+    std::vector<std::pair<std::string, std::string>> extra_units = {},
+    TargetInfo target = kGoldenTarget) {
   if (!extra_units.empty()) {
     static size_t sequence = 0;
     const std::filesystem::path dir =
@@ -76,7 +77,7 @@ EmittedUnit compile_snippet_with_registry(
     }
     EmittedUnit result =
         root ? emit_unit(*root, graph.type_registry(), nullptr,
-                         kGoldenTarget)
+                         target)
              : EmittedUnit{};
     std::filesystem::remove_all(dir);
     return result;
@@ -3914,6 +3915,28 @@ void test_opaque_pointer_token_arithmetic_is_explicitly_integer_typed() {
   }
 }
 
+void test_opaque_pointer_token_is_recovered_before_integer_subtraction() {
+  const std::string source =
+      "unit u;\n"
+      "interface\n"
+      "function distance(stored : pointer; current : ptrint) : ptruint;\n"
+      "implementation\n"
+      "function distance(stored : pointer; current : ptrint) : ptruint;\n"
+      "begin\n"
+      "  distance := ptruint(abs(ptrint(stored) - current));\n"
+      "end;\n"
+      "end.\n";
+  for (uint8_t pointer_bits : {uint8_t{32}, uint8_t{64}}) {
+    const int before = error_count();
+    auto out = compile_snippet_for_target(
+        source, TargetInfo{.pointer_bits = pointer_bits});
+    CHECK_EQ(error_count(), before);
+    CHECK(contains(out.impl,
+                   "reinterpret_cast<::rt::t_ptrint>(p_stored)"));
+    CHECK(!contains(out.impl, "p_stored - p_current"));
+  }
+}
+
 void test_implicit_const_expr_wraps_without_emit_error() {
   int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -6422,6 +6445,38 @@ void test_inc_rejects_nonvariable_argument_before_emission() {
   CHECK(real_delta.impl.empty());
 }
 
+void test_system_align_result_is_usable_as_inc_delta() {
+  const int before = error_count();
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "procedure run;\n"
+      "implementation\n"
+      "uses sizes;\n"
+      "procedure run;\n"
+      "var Offset : LongInt; Size : TSize;\n"
+      "begin\n"
+      "  Inc(Offset, Align(Sizes[Size], 4));\n"
+      "end;\n"
+      "end.\n", {
+      {"sizes.pas",
+       "unit sizes;\n"
+       "interface\n"
+       "type\n"
+       "  TSize = (Size0, Size1);\n"
+       "const\n"
+       "  Sizes : array[TSize] of Integer = (0, 4);\n"
+       "implementation\n"
+       "end.\n"},
+      },
+      TargetInfo{.pointer_bits = 32});
+  // System.Align returns PtrUInt for integer input. Its result must remain
+  // typed when nested inside Inc so target-specific compiler code can align
+  // byte counts without importing an unrelated helper unit.
+  CHECK_EQ(error_count() - before, 0);
+  CHECK(contains(out.impl, "::rt::p_align("));
+}
+
 void test_inc_char_emits_typed_char_bounds() {
   const int before = error_count();
   auto out = compile_snippet_with_registry(
@@ -7640,7 +7695,7 @@ void test_operator_result_property_write_uses_selected_result_type() {
   CHECK(!contains(out.impl, "p_value = 3"));
 }
 
-void test_runtime_upcase_uses_typed_overload_results() {
+void test_runtime_case_conversion_uses_typed_overload_results() {
   auto out = compile_snippet_with_registry(
       "unit u;\n"
       "interface\n"
@@ -7657,6 +7712,9 @@ void test_runtime_upcase_uses_typed_overload_results() {
       "  i := pick(UpCase(c));\n"
       "  i := pick(UpCase(s));\n"
       "  i := pick(UpCase(a));\n"
+      "  i := pick(LowerCase(c));\n"
+      "  i := pick(LowerCase(s));\n"
+      "  i := pick(LowerCase(a));\n"
       "end;\n"
       "end.\n");
   CHECK(contains(
@@ -7671,6 +7729,18 @@ void test_runtime_upcase_uses_typed_overload_results() {
       out.impl,
       "p_pick(static_cast<::rt::tp2cc_AnsiString>("
       "::rt::p_upcase(static_cast<::rt::tp2cc_AnsiString>(p_a))))"));
+  CHECK(contains(
+      out.impl,
+      "p_pick(static_cast<::rt::p_char>("
+      "::rt::p_lowercase(static_cast<::rt::p_char>(p_c))))"));
+  CHECK(contains(
+      out.impl,
+      "p_pick(static_cast<::rt::tp2cc_ShortString<>>("
+      "::rt::p_lowercase(static_cast<::rt::tp2cc_ShortString<>>(p_s))))"));
+  CHECK(contains(
+      out.impl,
+      "p_pick(static_cast<::rt::tp2cc_AnsiString>("
+      "::rt::p_lowercase(static_cast<::rt::tp2cc_AnsiString>(p_a))))"));
 }
 
 void test_char_case_statement_uses_direct_comparison() {
@@ -17702,6 +17772,7 @@ int main() {
   RUN_TEST(test_untyped_pointer_arithmetic_is_rejected);
   RUN_TEST(test_collection_accepts_opaque_integer_pointer_token);
   RUN_TEST(test_opaque_pointer_token_arithmetic_is_explicitly_integer_typed);
+  RUN_TEST(test_opaque_pointer_token_is_recovered_before_integer_subtraction);
   RUN_TEST(test_implicit_const_expr_wraps_without_emit_error);
   RUN_TEST(test_explicit_integer_cast_const_expr_wraps_without_error);
   RUN_TEST(test_untyped_integer_const_uses_pascal_initial_type);
@@ -17803,6 +17874,7 @@ int main() {
   RUN_TEST(test_inc_primitive_cast_uses_byte_copy_storage);
   RUN_TEST(test_inc_side_effecting_designator_is_evaluated_once);
   RUN_TEST(test_inc_rejects_nonvariable_argument_before_emission);
+  RUN_TEST(test_system_align_result_is_usable_as_inc_delta);
   RUN_TEST(test_inc_char_emits_typed_char_bounds);
   RUN_TEST(test_untyped_array_view_index_uses_byte_load_store);
   RUN_TEST(test_aggregate_to_primitive_cast_reinterprets_bytes);
@@ -17846,7 +17918,7 @@ int main() {
   RUN_TEST(test_string_case_statement_with_operator_result_selector);
   RUN_TEST(test_operator_result_member_property_uses_selected_result_type);
   RUN_TEST(test_operator_result_property_write_uses_selected_result_type);
-  RUN_TEST(test_runtime_upcase_uses_typed_overload_results);
+  RUN_TEST(test_runtime_case_conversion_uses_typed_overload_results);
   RUN_TEST(test_char_case_statement_uses_direct_comparison);
   RUN_TEST(test_const_object_param_uses_mutable_ref);
   RUN_TEST(test_parameterless_procvar_stmt_autocalls);

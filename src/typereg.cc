@@ -3945,18 +3945,17 @@ void TypeRegistry::initialize_runtime_types() {
   units["__rt__"] = unit_info_for("__rt__", {}, {}, std::move(rt_iface_procs));
   UnitInfo& rt_exports = units["__rt__"];
 
+  static constexpr std::string_view character_case_types[] = {
+      "char", "shortstring", "ansistring"};
+  for (std::string_view helper : {"upcase", "lowercase"}) {
+    register_runtime_same_type_unary_overloads(
+        rt_exports, helper, character_case_types);
+  }
   register_runtime_proc(
-      rt_exports, ProcKind::Function, "upcase",
-      {runtime_const_param("c", runtime_type_name("char"))},
-      runtime_type_name("char"));
-  register_runtime_proc(
-      rt_exports, ProcKind::Function, "upcase",
-      {runtime_const_param("s", runtime_type_name("shortstring"))},
-      runtime_type_name("shortstring"));
-  register_runtime_proc(
-      rt_exports, ProcKind::Function, "upcase",
-      {runtime_const_param("s", runtime_type_name("ansistring"))},
-      runtime_type_name("ansistring"));
+      rt_exports, ProcKind::Function, "align",
+      {runtime_const_param("address", runtime_type_name("ptruint")),
+       runtime_const_param("alignment", runtime_type_name("ptruint"))},
+      runtime_type_name("ptruint"));
   register_runtime_proc(
       rt_exports, ProcKind::Function, "fexpand",
       {runtime_const_param("path", runtime_type_name("pathstr"))},

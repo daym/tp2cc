@@ -1952,6 +1952,14 @@ using t_sizeuint = std::size_t;
 using t_ptrint   = intptr_t;
 using t_ptruint  = uintptr_t;
 
+// Pascal System.Align over PtrUInt aligns an integer address/size carrier.
+// Keep this operation in the unsigned carrier so overflow has PtrUInt's
+// wrapping semantics and no C++ pointer provenance is invented or discarded.
+inline constexpr t_ptruint p_align(t_ptruint address, t_ptruint alignment) {
+  const t_ptruint upper = address + (alignment - 1);
+  return upper - (upper % alignment);
+}
+
 // objects unit
 using t_sw_integer = int32_t;
 using t_sw_word    = uint32_t;
@@ -5416,6 +5424,24 @@ inline tp2cc_ShortString<N> p_upcase(const tp2cc_ShortString<N>& s) {
 inline tp2cc_AnsiString p_upcase(const tp2cc_AnsiString& s) {
   tp2cc_AnsiString r = tp2cc_ansistring_of(s);
   for (int i = 1; i <= r.length(); ++i) r[i] = p_upcase(r[i]);
+  return r;
+}
+
+inline p_char p_lowercase(p_char c) {
+  uint8_t b = tp2cc_char_byte(c);
+  if (b >= 'A' && b <= 'Z') b = static_cast<uint8_t>(b + 32);
+  return tp2cc_char_of(b);
+}
+template <int N>
+inline tp2cc_ShortString<N> p_lowercase(const tp2cc_ShortString<N>& s) {
+  tp2cc_ShortString<N> r = s;
+  for (int i = 0; i < r.length; ++i) r.data[i] = p_lowercase(r.data[i]);
+  return r;
+}
+
+inline tp2cc_AnsiString p_lowercase(const tp2cc_AnsiString& s) {
+  tp2cc_AnsiString r = tp2cc_ansistring_of(s);
+  for (int i = 1; i <= r.length(); ++i) r[i] = p_lowercase(r[i]);
   return r;
 }
 
