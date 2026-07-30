@@ -3,35 +3,11 @@ Date: 2026-05-10
 Subject: Make compiler units use compiler-side align helper
 License: expat
 
-Several compiler units call bare integer `align(...)`; the compiler-side
-helper is declared in `cutils.pas`.  Import `cutils` explicitly at those
-call sites.
+The i386 backend aligns signed `LongInt` stack sizes.  A bare call binds
+to `System.Align(PtrUInt, PtrUInt)` and treats those sizes as addresses.
+Import the compiler helper so the operation remains signed `LongInt`
+arithmetic.
 
---- a/compiler/machoutils.pas
-+++ b/compiler/machoutils.pas
-@@ -28,6 +28,7 @@
- {$mode objfpc}{$h+}
- 
- uses
-+  cutils,
-   macho;
- 
-   type
---- a/compiler/ogmacho.pas
-+++ b/compiler/ogmacho.pas
-@@ -27,6 +27,7 @@
- 
- uses
-   cclasses,
-+  cutils,
-   globals, globtype, verbose,
-   owbase, ogbase,
-   aasmbase, assemble,
-@@ -1221,4 +1222,3 @@
-   RegisterAssembler(as_i386_darwin_info,TMachoAssembler);
- 
- end.
--
 --- a/compiler/i386/hlcgcpu.pas
 +++ b/compiler/i386/hlcgcpu.pas
 @@ -53,6 +53,7 @@
