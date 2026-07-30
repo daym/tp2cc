@@ -30,6 +30,8 @@ using namespace tp2cc_test;
 
 namespace {
 
+constexpr TargetInfo kGoldenTarget{.pointer_bits = 64};
+
 std::shared_ptr<UnitNode> parse_unit(std::string path, std::string text,
                                     TypeRegistry* registry = nullptr) {
   auto sf = std::make_unique<SourceFile>();
@@ -74,7 +76,7 @@ EmittedUnit compile_snippet_with_registry(
     }
     EmittedUnit result =
         root ? emit_unit(*root, graph.type_registry(), nullptr,
-                         default_target_info())
+                         kGoldenTarget)
              : EmittedUnit{};
     std::filesystem::remove_all(dir);
     return result;
@@ -84,7 +86,7 @@ EmittedUnit compile_snippet_with_registry(
   auto u = parse_unit("<mem>", std::move(text), &reg);
   if (!u) return {};
 
-  return emit_unit(*u, reg, nullptr, default_target_info());
+  return emit_unit(*u, reg, nullptr, kGoldenTarget);
 }
 
 EmittedUnit compile_snippet(std::string text) {
@@ -109,7 +111,7 @@ EmittedUnit compile_snippet_with_init_order(
   Parser p(lx, &actions);
   auto u = p.parse();
   if (!u) return {};
-  return emit_unit(*u, reg, &init_order, default_target_info());
+  return emit_unit(*u, reg, &init_order, kGoldenTarget);
 }
 
 bool contains(const std::string& s, std::string_view needle) {
