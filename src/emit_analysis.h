@@ -332,6 +332,8 @@ class EmitAnalysis {
       std::optional<SetLiteralOrdinalSummary> summary, const ast::Expr& e);
   std::optional<SetLiteralOrdinalSummary> summarize_set_literal_ordinals(
       const ast::SetLit& s);
+  bool set_literal_elements_convert_to(
+      const ast::SetLit& s, const ast::TypeExpr* target);
   const ast::TypeExpr* canonical_set_type(const ast::TypeExpr* t);
   const ast::TypeExpr* integer_type(const PrimitiveInfo* info) const;
   const ast::TypeExpr* ordinal_integer_type(PrimitiveIntKind kind,

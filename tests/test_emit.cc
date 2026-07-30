@@ -9347,6 +9347,27 @@ void test_typed_set_literal_uses_surrounding_set_type() {
   CHECK(contains(out.impl, "::rt::tp2cc_Set<uint8_t>::from_list({3})"));
 }
 
+void test_set_operand_context_converts_broad_ordinal_literal_element() {
+  auto out = compile_snippet_with_registry(
+      "unit u;\n"
+      "interface\n"
+      "type\n"
+      "  tsuperregister = type word;\n"
+      "  tcpuregisterset = set of 0..255;\n"
+      "procedure demo(registernumber : tsuperregister);\n"
+      "implementation\n"
+      "procedure demo(registernumber : tsuperregister);\n"
+      "var\n"
+      "  registers : tcpuregisterset;\n"
+      "begin\n"
+      "  registers := registers + [registernumber];\n"
+      "end;\n"
+      "end.\n");
+  CHECK(contains(out.impl,
+                 "::rt::tp2cc_Set<uint8_t>::from_list({p_registernumber})"));
+  CHECK(!contains(out.impl, "::rt::tp2cc_Set<uint16_t>"));
+}
+
 void test_cross_unit_enum_set_literal_keeps_exported_enum_type() {
   auto out = compile_snippet_with_registry(
       "unit pp;\n"
@@ -17938,6 +17959,7 @@ int main() {
   RUN_TEST(test_memory_helpers_reinterpret_typecast_pointer_slots);
   RUN_TEST(test_unit_local_enum_array_bounds_win_over_unrelated_same_name_types);
   RUN_TEST(test_typed_set_literal_uses_surrounding_set_type);
+  RUN_TEST(test_set_operand_context_converts_broad_ordinal_literal_element);
   RUN_TEST(test_cross_unit_enum_set_literal_keeps_exported_enum_type);
   RUN_TEST(test_imported_enum_member_lowers_with_defining_unit_prefix);
   RUN_TEST(test_duplicate_enum_type_names_keep_set_literal_member_unit);

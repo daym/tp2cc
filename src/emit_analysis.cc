@@ -1193,6 +1193,46 @@ EmitAnalysis::summarize_set_literal_ordinals(const SetLit& s) {
   return summary;
 }
 
+bool EmitAnalysis::set_literal_elements_convert_to(
+    const SetLit& s, const TypeExpr* target) {
+  const std::optional<OrdinalDomain> target_domain =
+      ordinal_domain_for_set_type(target);
+  if (!target_domain) return false;
+
+  auto element_matches = [&](const Expr& element) {
+    std::optional<OrdinalDomain> source_domain;
+    if (const TypeExpr* source_type = deduce_type(element)) {
+      source_domain = ordinal_domain_for_type(source_type);
+    }
+    if (!source_domain) {
+      if (std::optional<OrdinalExprValue> value =
+              eval_ordinal_expr(element)) {
+        source_domain = OrdinalDomain{
+            .family = value->family,
+            .low = value->value,
+            .high = value->value,
+            .enum_key = value->enum_key,
+        };
+      }
+    }
+    return source_domain &&
+           source_domain->family == target_domain->family &&
+           source_domain->enum_key == target_domain->enum_key;
+  };
+
+  for (const auto& element : s.elements) {
+    if (element->kind == Kind::Range) {
+      const auto& range = static_cast<const Range&>(*element);
+      if (!element_matches(*range.lo) || !element_matches(*range.hi)) {
+        return false;
+      }
+    } else if (!element_matches(*element)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 const TypeExpr* EmitAnalysis::deduce_set_literal_type(const SetLit& s,
                                                       const TypeExpr* target) {
   const TypeExpr* set_target = canonical_set_type(target);
@@ -1200,10 +1240,15 @@ const TypeExpr* EmitAnalysis::deduce_set_literal_type(const SetLit& s,
       canonical_set_type(s.result_descriptor->type)) {
     const TypeExpr* inferred = s.result_descriptor->type;
     if (!set_target) return inferred;
-    return classify_set_conversion(inferred, set_target) !=
-                   SetConversionKind::Incompatible
-               ? set_target
-               : nullptr;
+    if (classify_set_conversion(inferred, set_target) !=
+        SetConversionKind::Incompatible) {
+      return set_target;
+    }
+    // A set literal is context-typed. Its runtime ordinal elements are
+    // converted to the target set's element type, so a broad source type such
+    // as Word does not force `[value]` to remain `set of Word`.
+    return set_literal_elements_convert_to(s, set_target) ? set_target
+                                                          : nullptr;
   }
   if (s.elements.empty()) return set_target;
 
@@ -1252,7 +1297,8 @@ const TypeExpr* EmitAnalysis::deduce_set_literal_type(const SetLit& s,
   if (!set_target) return inferred;
   if (classify_set_conversion(inferred, set_target) ==
       SetConversionKind::Incompatible) {
-    return nullptr;
+    return set_literal_elements_convert_to(s, set_target) ? set_target
+                                                          : nullptr;
   }
   return set_target;
 }
@@ -1773,12 +1819,15 @@ const BoundBinaryOperation* EmitAnalysis::bind_set_binary_operation(
 
   const TypeExpr* lhs_set = canonical_set_type(lhs_source_type);
   const TypeExpr* rhs_set = canonical_set_type(rhs_source_type);
-  if (!lhs_set && b.lhs->kind == Kind::SetLit && rhs_set) {
+  // Context wins over an earlier standalone literal deduction. Pascal applies
+  // the other set operand's element conversion to `[value]`; retaining a
+  // cached `set of SourceType` here changes both the operation and its result.
+  if (b.lhs->kind == Kind::SetLit && rhs_set) {
     lhs_source_type = deduce_set_literal_type(
         static_cast<const SetLit&>(*b.lhs), rhs_source_type);
     lhs_set = canonical_set_type(lhs_source_type);
   }
-  if (!rhs_set && b.rhs->kind == Kind::SetLit && lhs_set) {
+  if (b.rhs->kind == Kind::SetLit && lhs_set) {
     rhs_source_type = deduce_set_literal_type(
         static_cast<const SetLit&>(*b.rhs), lhs_source_type);
     rhs_set = canonical_set_type(rhs_source_type);
